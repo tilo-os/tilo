@@ -3282,6 +3282,78 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     );
 }
 
+/// An action the device does not answer itself is answered by its person's part, not refused as
+/// one this computer offers not at all: asked on the device's own endpoint while that part runs,
+/// the person's tree answers it, as the connection that reached it a moment later would be.
+#[test]
+fn a_device_action_that_needs_the_person_is_answered_by_their_part() {
+    use tilo_actions::remote::{
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+        RemoteActionTarget,
+    };
+
+    let Some(_root) = crate::device::services::tests::isolated_root(
+        "daemon::tests::a_device_action_that_needs_the_person_is_answered_by_their_part",
+    ) else {
+        return;
+    };
+    let profile = super::default_profile().unwrap();
+    let mut device = crate::in_process::Device::start(&profile).unwrap();
+    // This computer starts its person, and the daemon starts again to serve them: their part runs.
+    device.found().expect("the device starts its person");
+    let session = device
+        .services(Duration::from_secs(30))
+        .expect("the person's part serves");
+    let keys = tilo_api::calls::device_keys();
+    let key = tilo_device_identity::persist::read_device_key(&keys.device_privkey)
+        .expect("the device key its daemon took");
+    let answers = crate::device::unclaimed::DeviceOnly::at(
+        key,
+        tilo_device_identity::login::Place::here(keys).expect("this computer's login"),
+        profile,
+        crate::device::services::this_account_uid(),
+    );
+    assert!(
+        answers.claimed(),
+        "the person's certificate names this device's key"
+    );
+    // As the daemon hands the part over once it starts.
+    answers.serving(&session);
+    // `devices#identities` is the person's to ask: the device's own actions answer it not.
+    let request = InvokeRequest {
+        on_behalf_of: None,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: tilo_device_identity::login::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                tilo_device_identity::login::RESOURCE,
+                tilo_device_identity::login::IDENTITIES,
+            ),
+        },
+        argument: InvokeArgument::Json(serde_json::Map::new()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+        asks: false,
+    };
+    let answered = answers
+        .invoke(&Caller::local_system(), request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    assert!(
+        matches!(
+            answered,
+            Some(Ok(ref receipt)) if matches!(receipt.status, ReceiptStatus::Completed { .. })
+        ),
+        "the person's part answers what the device does not: {answered:?}"
+    );
+    device.stop().expect("the device's daemon stops");
+}
+
 /// The session a sign-in answered a founding link is the one process the daemon tied the link to:
 /// an app the account runs, and any other program of theirs, is not that session. Neither redeems
 /// the secret, and neither makes a person.

@@ -913,6 +913,9 @@ fn serve_device(
         };
         drop(watched);
         tracing::info!("this daemon's person's part started");
+        // A login the device's own actions answer while this part runs is taken in by it, rather
+        // than at its next start.
+        device.serving(&session);
         serve_the_started(&session, native, person, stop)?;
         // A part serves from here: a stop told now is the part's to take up, with its folders to
         // unmount and its trees to keep.
@@ -925,6 +928,7 @@ fn serve_device(
         // ends the daemon rather than wait for the start that follows to take it up.
         stop.serving(false);
         person.set(None);
+        device.stopped_serving();
         native.forget_the_person();
         if stop.told() {
             // The part ended because it was told to stop: what it served is let go by the

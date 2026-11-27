@@ -103,6 +103,9 @@ pub(crate) struct ThisDevice {
     /// Told when this daemon's own founding, restoring or ticket login took this computer's
     /// person up: the wait for their services looks again then rather than at its next look.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// The person's services while they run: a login answered here is taken in by them as it is
+    /// answered, not at their next start.
+    serving: ServingHandle,
 }
 
 /// The calls this device took, and where each is: what a caller following one reads, whichever
@@ -315,6 +318,55 @@ pub(crate) fn take_key(
 /// The device a ticket made of this computer while its daemon runs, once one did.
 type Entered = Arc<std::sync::Mutex<Option<Device>>>;
 
+/// The person's services, while they run: what a login answered by the device's own actions is
+/// taken into as it is answered, and what a call this endpoint does not answer is handed to.
+#[derive(Default)]
+struct Serving {
+    part: std::sync::Mutex<Option<std::sync::Weak<super::services::Daemon>>>,
+    /// Told whenever [`Self::part`] is set or cleared: whoever waits for the person's part looks
+    /// again then rather than at its next look.
+    started: tokio::sync::Notify,
+}
+
+impl Serving {
+    /// The person's services run from now on, or (`None`) no longer.
+    fn set(&self, part: Option<&Arc<super::services::Daemon>>) {
+        *self.part.lock_recover() = part.map(Arc::downgrade);
+        self.started.notify_waiters();
+    }
+
+    /// The person's services, while they run.
+    fn now(&self) -> Option<Arc<super::services::Daemon>> {
+        self.part
+            .lock_recover()
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+    }
+
+    /// The person's services, waiting up to `within` for them to start: `None` when they did not.
+    async fn within(&self, within: Duration) -> Option<Arc<super::services::Daemon>> {
+        let deadline = std::time::Instant::now().checked_add(within);
+        loop {
+            // Armed before the look, so a part that starts between the two is not missed.
+            let heard = self.started.notified();
+            tokio::pin!(heard);
+            heard.as_mut().enable();
+            if let Some(part) = self.now() {
+                return Some(part);
+            }
+            let left = deadline.map_or(within, |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            });
+            if left.is_zero() || tokio::time::timeout(left, heard).await.is_err() {
+                return None;
+            }
+        }
+    }
+}
+
+/// The person's services, shared by the device and every action answered on its behalf.
+type ServingHandle = Arc<Serving>;
+
 impl ThisDevice {
     /// Take this computer's device over `profile`, its key made here on the first start of a
     /// computer whose system made none.
@@ -340,6 +392,7 @@ impl ThisDevice {
             entered: Entered::default(),
             founding: Arc::default(),
             ready: Arc::default(),
+            serving: ServingHandle::default(),
         })
     }
 
@@ -355,6 +408,19 @@ impl ThisDevice {
         claimed(&self.place, &self.key, &self.profile, self.own)
     }
 
+    /// The person's services run from now on: a login answered here is taken in by them as it is
+    /// answered, by the same path a start enters through, rather than at their next start, and a
+    /// call this endpoint does not answer is handed to them.
+    pub(crate) fn serving(&self, daemon: &Arc<super::services::Daemon>) {
+        self.serving.set(Some(daemon));
+    }
+
+    /// The person's services ended: a login answered from now on is taken up by the part that
+    /// starts next.
+    pub(crate) fn stopped_serving(&self) {
+        self.serving.set(None);
+    }
+
     /// The device's own actions, as its endpoints answer them before its person's services run:
     /// its package cache among them, the one it answers after a login too.
     pub(crate) fn answers(&self) -> DeviceOnly {
@@ -367,6 +433,7 @@ impl ThisDevice {
                 entered: Arc::clone(&self.entered),
                 founding: Arc::clone(&self.founding),
                 ready: Arc::clone(&self.ready),
+                serving: Arc::clone(&self.serving),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records: Arc::new(super::records::DeviceRecords::at(
@@ -523,6 +590,8 @@ struct Answering {
     /// Told when this daemon's own founding, restoring or ticket login took this computer's
     /// person up: the wait for their services looks again then rather than at its next look.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// The person's services while they run, once they do.
+    serving: ServingHandle,
     runtime: tokio::runtime::Handle,
     /// The device's package cache, which it answers before a login as after it.
     packages: std::sync::OnceLock<Arc<dyn ActionProvider + Send + Sync>>,
@@ -576,6 +645,7 @@ impl DeviceOnly {
                 entered: Entered::default(),
                 founding: Arc::default(),
                 ready: Arc::default(),
+                serving: ServingHandle::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records,
@@ -588,6 +658,14 @@ impl DeviceOnly {
     #[cfg(test)]
     pub(crate) fn records(&self) -> Arc<super::records::DeviceRecords> {
         Arc::clone(&self.0.records)
+    }
+
+    /// The person's services, as their part hands them to the device's own actions when it
+    /// starts: what a login answered now is taken into, and what a call this endpoint does not
+    /// answer is handed to.
+    #[cfg(test)]
+    pub(crate) fn serving(&self, daemon: &Arc<super::services::Daemon>) {
+        self.0.serving.set(Some(daemon));
     }
 
     /// These actions with the device's package cache `packages` among them: the first cache
@@ -669,6 +747,82 @@ impl DeviceOnly {
         };
         ActionCallError::Refused {
             reason: reason.into(),
+        }
+    }
+
+    /// `request`, one this endpoint does not answer itself: the person's part answers it, once
+    /// it serves. A part that is still starting is waited for within [`crate::daemon::
+    /// WAITED_WITHIN`], and one that does not start is answered unavailable, never as an action
+    /// this computer offers not at all. The wait is on the runtime, and opening the person's tree
+    /// waits on the workspaces: it is opened on a thread of its own.
+    fn answer_by_the_person(
+        &self,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A device no person's certificate names has none to answer it, and one whose
+        // connection is not the person's own is answered the device's actions alone: the
+        // person's tree is theirs, and no other account reaches it here.
+        if !self.claimed() || !self.is_the_person() {
+            return Pending::ready(Err(self.needs_a_person()));
+        }
+        let (done, answer) = tilo_actions::remote::pending();
+        let answering = self.clone();
+        self.0.runtime.spawn(async move {
+            let answered = match answering
+                .0
+                .serving
+                .within(crate::daemon::WAITED_WITHIN)
+                .await
+            {
+                Some(part) => {
+                    let made = tokio::task::spawn_blocking(move || {
+                        let tree = part.connection_tree_in(None);
+                        (part, tree)
+                    })
+                    .await;
+                    match made {
+                        Ok((_part, Ok((tree, caller)))) => {
+                            tree.invoke(&caller, request).await.unwrap_or_else(|| {
+                                Err(ActionCallError::unavailable(
+                                    "this computer's person's part abandoned the answer",
+                                ))
+                            })
+                        }
+                        Ok((_part, Err(why))) => Err(ActionCallError::Unavailable {
+                            reason: format!(
+                                "this computer's person's services are still starting ({why})"
+                            ),
+                        }),
+                        Err(error) => Err(ActionCallError::Unavailable {
+                            reason: format!(
+                                "this computer's person's services are still starting ({error})"
+                            ),
+                        }),
+                    }
+                }
+                None => Err(ActionCallError::Unavailable {
+                    reason: "this computer's person's services are still starting".to_owned(),
+                }),
+            };
+            done.complete(answered);
+        });
+        answer
+    }
+
+    /// Whether this connection is the person's own, whose part answers as them: the device's own
+    /// account on its own daemon, or the person it serves. Root of a computer's daemon, another
+    /// account, a founding session and a stranger reach the device's own actions alone.
+    fn is_the_person(&self) -> bool {
+        let Some(seated) = &self.1 else {
+            return true;
+        };
+        if seated.seats.system() {
+            return false;
+        }
+        match seated.seat.admitted {
+            Admitted::Device => true,
+            Admitted::Person(person) => self.person() == Some(person),
+            Admitted::Key { .. } | Admitted::Founding { .. } | Admitted::Stranger => false,
         }
     }
 
@@ -1232,7 +1386,7 @@ impl ActionProvider for DeviceOnly {
             return self.answer_setting(caller, invocation, &request.argument, &address.action);
         }
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
-            return Pending::ready(Err(self.needs_a_person()));
+            return self.answer_by_the_person(request);
         }
         if super::key_use::FOR_THE_SYSTEM.contains(&address.action.as_str()) {
             return self.for_the_system(invocation, &address.action, &request.argument);
@@ -1260,7 +1414,9 @@ impl ActionProvider for DeviceOnly {
                 let receipt = self.keep(invocation, InvocationUpdate::Accepted { invocation });
                 let answering = self.clone();
                 self.0.runtime.spawn(async move {
-                    let update = match answering.log_in(&Value::Object(argument)).await {
+                    // The login enters what it brought here before it answers a running part: a
+                    // future that big is boxed, so the task the runtime holds stays small.
+                    let update = match Box::pin(answering.log_in(&Value::Object(argument))).await {
                         Ok(value) => succeeded(invocation, value),
                         Err(error) => failed(invocation, &format!("{error:#}")),
                     };
@@ -1305,7 +1461,7 @@ impl ActionProvider for DeviceOnly {
                     ))),
                 }
             }
-            _ => Pending::ready(Err(self.needs_a_person())),
+            _ => self.answer_by_the_person(request),
         }
     }
 

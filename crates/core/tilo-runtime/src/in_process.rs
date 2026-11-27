@@ -149,6 +149,18 @@ impl Device {
         })
     }
 
+    /// The person's services, once they run: what a test drives a login through the device's own
+    /// actions against, while the part that serves them keeps running.
+    #[cfg(test)]
+    pub(crate) fn services(
+        &self,
+        within: Duration,
+    ) -> Option<std::sync::Arc<crate::device::services::Daemon>> {
+        self.running
+            .as_ref()
+            .and_then(|running| running.services(within).ok())
+    }
+
     /// The apps of `workspace`: the packages its host installed into it, which this device's
     /// follower reads too. Each is named by the manifest of the device's own copy when it holds
     /// one, and otherwise by the name its package id makes, as the catalogue names an app whose
