@@ -36,22 +36,18 @@ fn click(part: &mut ShellPart, name: &str) {
     }
 }
 
+/// The built-in packages of `app` loaded into `host`: the app's metadata.
+fn built_in(host: &Host, app: &str) -> tilolang_tilo::runtime::Meta {
+    let packages = tilolang_workspace::records::built_in(app).unwrap().unwrap();
+    packages.load_into(host).unwrap().pop().unwrap()
+}
+
 /// A room's notebook, published as the session publishes it.
 fn notebook() -> (ResourceService, tilolang_tilo::runtime::Meta) {
     let host = Host::new(Actor::Member(MemberId::person("Pat")), || None).unwrap();
-    host.load_builtin(
-        include_str!("../../../../../../apps/tl/discussion/app.tl"),
-        include_str!("../../../../../../apps/tl/discussion/app.ids"),
-    )
-    .unwrap();
-    let notes = host
-        .load_builtin(
-            include_str!("../../../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../../../apps/tl/notes/app.ids"),
-        )
-        .unwrap();
+    let notes = built_in(&host, NOTES_APP);
     host.root_of(NOTES_APP).unwrap();
-    (ResourceService::new(host, "Pat"), notes.meta)
+    (ResourceService::new(host, "Pat"), notes)
 }
 
 fn action_id(meta: &tilolang_tilo::runtime::Meta, name: &str) -> String {
@@ -395,18 +391,6 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     );
 }
 
-const CHAT: &str = include_str!("../../../../../../apps/tl/chat/app.tl");
-const CHAT_IDS: &str = include_str!("../../../../../../apps/tl/chat/app.ids");
-const DISCUSSION: &str = include_str!("../../../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../../../apps/tl/discussion/app.ids");
-const CONTACTS: &str = concat!(
-    include_str!("../../../../../../apps/tl/contacts/app.tl"),
-    "\n",
-    include_str!("../../../../../../apps/tl/contacts/identities.tl")
-);
-const CONTACTS_IDS: &str = include_str!("../../../../../../apps/tl/contacts/app.ids");
-const NOTES: &str = include_str!("../../../../../../apps/tl/notes/app.tl");
-const NOTES_IDS: &str = include_str!("../../../../../../apps/tl/notes/app.ids");
 const TASKS: &str = concat!(
     include_str!("../../../../../../apps/tl/tasks/app.tl"),
     "\n",
@@ -457,25 +441,23 @@ struct Room {
 
 fn room() -> Room {
     let host = Host::new(Actor::Member(MemberId::person("ada")), || None).unwrap();
-    let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
-    host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
+    let chat = built_in(&host, CHAT_APP);
     // Tasks names Contacts and Notes with `use`: each loads before it, as a package compiles
     // against the ones loaded before it.
-    host.load_builtin(CONTACTS, CONTACTS_IDS).unwrap();
-    host.load_builtin(NOTES, NOTES_IDS).unwrap();
+    built_in(&host, "so.tilo.contacts");
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&host.root_of(CHAT_APP).unwrap());
     let tasks_root = Value::resource(&host.root_of(TASKS_APP).unwrap());
     let team = call(
         &host,
-        &chat.meta,
+        &chat,
         "new_category",
         vec![all.clone(), Value::text("Team")],
     );
     let design = call(
         &host,
-        &chat.meta,
+        &chat,
         "new_channel",
         vec![
             all,
@@ -487,7 +469,7 @@ fn room() -> Room {
     let said = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(SAID));
     let message = call(
         &host,
-        &chat.meta,
+        &chat,
         "send",
         vec![design.clone(), said, Value::none()],
     );

@@ -23,10 +23,10 @@ use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, declare_app, hosting_device, install_app, revoke_grant, test_host_holding,
     uninstall_app,
 };
-use tilolang_workspace::records::{Packages, member, with_tl_record};
+use tilolang_workspace::records::{Packages, built_in, member, with_tl_record};
 
 use super::mount;
-use super::wakeups_tests::{APP, CLOCKS, alarm};
+use super::wakeups_tests::{APP, alarm};
 
 /// The workspace's policy as this device holds it now.
 async fn policy(workspaces: &Workspaces, workspace: &str) -> WorkspacePolicy {
@@ -94,7 +94,7 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
         .expect("a workspace is made")
         .workspace;
     assert!(workspaces.join_keys(&workspace).await);
-    let packages = Packages::compile(&[CLOCKS]).expect("Clocks compiles");
+    let packages = built_in(APP).unwrap().expect("Clocks is built in");
     declare_app(
         &desk,
         APP,
@@ -250,7 +250,7 @@ async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_b
         .expect("a workspace is made")
         .workspace;
     assert!(workspaces.join_keys(&workspace).await);
-    let packages = Packages::compile(&[CLOCKS]).expect("Clocks compiles");
+    let packages = built_in(APP).unwrap().expect("Clocks is built in");
     declare_app(
         &desk,
         APP,

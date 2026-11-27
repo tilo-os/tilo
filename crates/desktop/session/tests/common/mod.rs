@@ -642,16 +642,8 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (ResourceService, Vec<Strin
         || None,
     )
     .unwrap();
-    host.load_builtin(
-        include_str!("../../../../../apps/tl/discussion/app.tl"),
-        include_str!("../../../../../apps/tl/discussion/app.ids"),
-    )
-    .unwrap();
-    host.load_builtin(
-        include_str!("../../../../../apps/tl/notes/app.tl"),
-        include_str!("../../../../../apps/tl/notes/app.ids"),
-    )
-    .unwrap();
+    let notes = tilolang_workspace::records::built_in(NOTES).unwrap();
+    notes.expect("Notes is built in").load_into(&host).unwrap();
     host.root_of(NOTES).unwrap();
     let mut service = ResourceService::new(host, person);
     let book = service

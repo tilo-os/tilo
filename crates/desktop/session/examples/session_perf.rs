@@ -376,16 +376,11 @@ fn session(services: Vec<Box<dyn tilo_service::Service>>) -> (Session, u64) {
 fn notebook(titles: &[&str]) -> (ResourceService, Vec<String>) {
     let host = Host::new(tilo_actions::Actor::from(MemberId::person(PERSON)), || None)
         .expect("a tilolang host");
-    host.load_builtin(
-        include_str!("../../../../apps/tl/discussion/app.tl"),
-        include_str!("../../../../apps/tl/discussion/app.ids"),
-    )
-    .expect("the discussion package");
-    host.load_builtin(
-        include_str!("../../../../apps/tl/notes/app.tl"),
-        include_str!("../../../../apps/tl/notes/app.ids"),
-    )
-    .expect("the notes package");
+    let notes = tilolang_workspace::records::built_in(NOTES).expect("the built-in packages");
+    notes
+        .expect("Notes is built in")
+        .load_into(&host)
+        .expect("the notes packages");
     host.root_of(NOTES).expect("the notes app");
     let mut service = ResourceService::new(host, PERSON);
     let book = service

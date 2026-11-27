@@ -26,30 +26,6 @@ mod session_tests {
 
     use super::super::mount;
 
-    /// The packages the device runs, each with its ids lock: Tasks and what it builds on.
-    const PACKAGES: [(&str, &str); 4] = [
-        (
-            include_str!("../../../../../apps/tl/discussion/app.tl"),
-            include_str!("../../../../../apps/tl/discussion/app.ids"),
-        ),
-        (
-            include_str!("../../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../../apps/tl/notes/app.ids"),
-        ),
-        (
-            concat!(
-                include_str!("../../../../../apps/tl/contacts/app.tl"),
-                "\n",
-                include_str!("../../../../../apps/tl/contacts/identities.tl")
-            ),
-            include_str!("../../../../../apps/tl/contacts/app.ids"),
-        ),
-        (
-            include_str!("../../../../../apps/tl/tasks/app.tl"),
-            include_str!("../../../../../apps/tl/tasks/app.ids"),
-        ),
-    ];
-
     /// The documents a device's store changed, each whole: what sync carries to the workspace.
     type Documents = Vec<(String, Vec<u8>)>;
 
@@ -66,12 +42,12 @@ mod session_tests {
     /// (a host is held by one thread), each ask run as the record's published action.
     fn device(person: String, asks: &mpsc::Receiver<Ask>, opened: &mpsc::Sender<Documents>) {
         use tilolang_workspace::records::Port;
-        use tilolang_workspace::records::{LocalPort, Opened, Packages, ResourceStore};
+        use tilolang_workspace::records::{LocalPort, Opened, ResourceStore, built_in};
 
         let port = Rc::new(LocalPort::in_memory());
         let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn Port>);
         let viewer = tilo_actions::Actor::Member(tilo_actions::MemberId::person(person));
-        let packages = Packages::compile(&PACKAGES).unwrap();
+        let packages = built_in(TASKS).unwrap().expect("Tasks is built in");
         let mut record = Opened::open(store, &packages, viewer, None).unwrap();
         // The roots of the device's apps (its Tasks, which a new task is added to, its
         // Notebook, which a task's note is made in): made as an app makes its root, by the

@@ -31,6 +31,10 @@ tracing.workspace = true
 # runtime the record's port is exercised under.
 tokio = { workspace = true, features = ["macros", "rt"] }
 
+[build-dependencies]
+# The compiler the packages built into this build are compiled with as it is built.
+tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
+
 [dev-dependencies]
 # The worker process a test's automerge documents are decoded in.
 tilo-automerge-isolate.workspace = true

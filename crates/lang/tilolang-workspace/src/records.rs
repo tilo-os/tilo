@@ -29,6 +29,8 @@
 //! calls here is the device's own.
 
 pub mod provided;
+
+include!("records/compile.rs");
 #[cfg(test)]
 mod tests;
 
@@ -76,26 +78,7 @@ impl Packages {
     /// A source does not compile: its diagnostics.
     pub fn compile(sources: &[(&str, &str)]) -> Result<Self, String> {
         let platform = tilolang_tilo::platform::platform_packages()?;
-        let mut compiled: Vec<tilolang_tilo::tilolang::Compiled> = Vec::new();
-        for (source, ids) in sources {
-            let lock =
-                tilolang_tilo::tilolang::IdsLock::parse(ids).map_err(|error| error.to_string())?;
-            let imports: Vec<_> = compiled
-                .iter()
-                .map(|done| done.meta.clone())
-                .chain(platform.iter().cloned())
-                .collect();
-            let package = tilolang_tilo::tilolang::compile_package(source, &lock, &imports)
-                .map_err(|diagnostics| {
-                    diagnostics
-                        .iter()
-                        .map(|diagnostic| diagnostic.render("app.tl"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })?;
-            compiled.push(package);
-        }
-        Ok(Self::of(compiled, &platform))
+        Ok(Self::of(compile_each(sources, &platform)?, &platform))
     }
 
     /// `compiled`, each package after those it uses, with the platform's packages any of them
@@ -126,6 +109,28 @@ impl Packages {
                 self.1.as_slice(),
             )
         })
+    }
+
+    /// Load these packages into `host`: the platform's packages they use, the session's, held by
+    /// the types they publish as a window holds them, then each package, the app's last: each
+    /// package's metadata as it loaded.
+    ///
+    /// # Errors
+    /// A package does not load.
+    pub fn load_into(&self, host: &Host) -> Result<Vec<runtime::Meta>, String> {
+        for meta in self.1.iter() {
+            host.runtime()
+                .load_foreign(meta.clone())
+                .map_err(|error| format!("{} does not load: {error:?}", meta.app))?;
+        }
+        let loaded = self.0.iter().map(|package| host.load_compiled(package));
+        loaded
+            .map(|package| {
+                package
+                    .map(|package| package.meta)
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
     }
 
     /// The app the record is of: the last package's.
@@ -255,44 +260,9 @@ pub struct Declared {
     pub package: String,
 }
 
-/// The sources of the packages built into this build, each app after those it uses.
-const BUILT_IN: &[&[(&str, &str)]] = &[
-    &[(
-        include_str!("../../../../apps/tl/chat/app.tl"),
-        include_str!("../../../../apps/tl/chat/app.ids"),
-    )],
-    &[(
-        include_str!("../../../../apps/tl/discord/app.tl"),
-        include_str!("../../../../apps/tl/discord/app.ids"),
-    )],
-    // A device's daemon arms the alarms set for it from Clocks' record, window or no window.
-    &[(
-        include_str!("../../../../apps/tl/clocks/app.tl"),
-        include_str!("../../../../apps/tl/clocks/app.ids"),
-    )],
-    &[
-        (
-            include_str!("../../../../apps/tl/discussion/app.tl"),
-            include_str!("../../../../apps/tl/discussion/app.ids"),
-        ),
-        (
-            include_str!("../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../apps/tl/notes/app.ids"),
-        ),
-        (
-            concat!(
-                include_str!("../../../../apps/tl/contacts/app.tl"),
-                "\n",
-                include_str!("../../../../apps/tl/contacts/identities.tl")
-            ),
-            include_str!("../../../../apps/tl/contacts/app.ids"),
-        ),
-        (
-            include_str!("../../../../apps/tl/tasks/app.tl"),
-            include_str!("../../../../apps/tl/tasks/app.ids"),
-        ),
-    ],
-];
+/// The packages built into this build, each app after those it uses: each one's module and ids
+/// lock, as the build compiled them (`build.rs`).
+const BUILT_IN: &[&[(&[u8], &str)]] = include!(concat!(env!("OUT_DIR"), "/built_in.rs"));
 
 /// The packages `app`'s record is read through when the app is built into this build, compiled
 /// once: what runs in this device's own process. `None` for any other app, a workspace's
@@ -328,14 +298,26 @@ pub fn built_in_apps() -> Vec<String> {
         .collect()
 }
 
-/// The packages of each app built into this build, compiled once: an app compiled before others
-/// in its group is read through its own packages, never through the group's last app.
+/// The packages of each app built into this build, read once from the modules the build
+/// compiled, as an installed package's payload is: an app compiled before others in its group is
+/// read through its own packages, never through the group's last app.
 fn compiled() -> &'static Result<Vec<Packages>, String> {
     static COMPILED: OnceLock<Result<Vec<Packages>, String>> = OnceLock::new();
     COMPILED.get_or_init(|| {
+        let platform = tilolang_tilo::platform::platform_packages()?;
         let mut each = Vec::new();
-        for sources in BUILT_IN {
-            each.extend(Packages::compile(sources)?.each_app());
+        for group in BUILT_IN {
+            let compiled = group.iter().map(|(wasm, ids)| {
+                Ok(tilolang_tilo::tilolang::Compiled {
+                    meta: tilolang_tilo::tilolang::PackageMeta::from_wasm(wasm)
+                        .ok_or("a built-in module embeds no metadata")?,
+                    ids: tilolang_tilo::tilolang::IdsLock::parse(ids)
+                        .map_err(|error| error.to_string())?,
+                    wasm: wasm.to_vec(),
+                })
+            });
+            let compiled = compiled.collect::<Result<Vec<_>, String>>()?;
+            each.extend(Packages::of(compiled, &platform).each_app());
         }
         Ok(each)
     })
@@ -381,18 +363,7 @@ impl Opened {
         members: Option<Arc<WorkspacePolicy>>,
     ) -> Result<Self, String> {
         Self::open_loading(store, (viewer, access, members), packages.app(), |host| {
-            // The platform's packages the app uses are the session's, held here by the types
-            // they publish, as a window holds them.
-            for meta in packages.1.iter() {
-                host.runtime()
-                    .load_foreign(meta.clone())
-                    .map_err(|error| format!("{} does not load: {error:?}", meta.app))?;
-            }
-            for package in packages.0.iter() {
-                host.load_compiled(package)
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(())
+            packages.load_into(host).map(drop)
         })
     }
 

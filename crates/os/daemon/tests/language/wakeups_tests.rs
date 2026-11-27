@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use super::mount;
 
-use tilolang_workspace::records::{Packages, member, with_tl_record};
+use tilolang_workspace::records::{Packages, built_in, member, with_tl_record};
 use tilolang_workspace::runtime::{ResourceRef, Value};
 
 use tilo_app_host::served_notices::ServedNotices;
@@ -30,10 +30,6 @@ use tilo_workspace_service::workspaces::fixtures::{
 use tilo_workspace_service::workspaces::person_workspace;
 
 pub(super) const APP: &str = "so.tilo.clocks";
-pub(super) const CLOCKS: (&str, &str) = (
-    include_str!("../../../../../apps/tl/clocks/app.tl"),
-    include_str!("../../../../../apps/tl/clocks/app.ids"),
-);
 
 /// The platform's notifications, as a phone's are: what is armed for later, and what it showed.
 /// [`Platform::ring`] is the moment coming, which the platform rings with nothing else running.
@@ -187,7 +183,7 @@ async fn an_alarm_for_this_device_rings_from_its_own_wakeup_and_once() {
         .expect("a workspace is made")
         .workspace;
     assert!(workspaces.join_keys(&workspace).await);
-    let packages = Packages::compile(&[CLOCKS]).expect("Clocks compiles");
+    let packages = built_in(APP).unwrap().expect("Clocks is built in");
     declare_app(
         &desk,
         APP,
@@ -411,7 +407,7 @@ async fn a_wakeups_snooze_runs_on_the_alarm_with_no_network() {
     let here = hex::encode(cert.device_public_key);
     let workspace = workspaces.create("Home").await.unwrap().workspace;
     assert!(workspaces.join_keys(&workspace).await);
-    let packages = Packages::compile(&[CLOCKS]).unwrap();
+    let packages = built_in(APP).unwrap().expect("Clocks is built in");
     declare_app(&desk, APP, &packages.surface(APP).unwrap());
     let package = Package::Compiled(Compiled::new(packages.clone()));
     let platform = Arc::new(Platform::default());
