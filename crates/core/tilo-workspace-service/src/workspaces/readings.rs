@@ -239,6 +239,17 @@ impl Reading {
         super::resources::kept_record(&self.store, surfaces, app, record)
     }
 
+    /// The indexed fields of `app`'s record `record`, read without the workspace's lock. `None`
+    /// for a record the store holds nothing of.
+    pub(super) fn fields(
+        &self,
+        surfaces: &collab_types::app_surface::Surfaces,
+        app: &str,
+        record: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        super::resources::kept_fields(&self.store, surfaces, app, record)
+    }
+
     /// The store, a command at a time, without the workspace's lock.
     pub(super) fn store(&self) -> std::sync::MutexGuard<'_, tilo_resource_store::Store> {
         use tilo_lock::MutexRecover as _;

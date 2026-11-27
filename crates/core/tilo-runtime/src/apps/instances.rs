@@ -91,6 +91,9 @@ pub(crate) struct Instances {
     /// keeps: what its apps mint a resource's link under, `None` where it keeps no server.
     serving: OnceLock<Option<Serving>>,
     made: Mutex<Vec<Made>>,
+    /// The instances started here that show nothing, by app, workspace and instance: kept while
+    /// their process runs them.
+    no_view: Mutex<Vec<(String, String, u64)>>,
     next: AtomicU64,
 }
 
@@ -318,6 +321,7 @@ impl Instances {
             own_lines: OnceLock::new(),
             serving: OnceLock::new(),
             made: Mutex::default(),
+            no_view: Mutex::default(),
             next: AtomicU64::new(1),
         }
     }
@@ -424,16 +428,40 @@ impl Instances {
         workspace: &str,
         origin: Option<Descriptor>,
     ) -> Result<WindowlessStart, String> {
-        self.start(
+        let instance = self.start(
             (app, workspace, origin),
             self.person()?,
             Shows::Nothing,
             None,
             (None, None),
         )?;
+        self.no_view
+            .lock_recover()
+            .push((app.to_owned(), workspace.to_owned(), instance));
         let (started, start) = tokio::sync::oneshot::channel();
         let _ = started.send(Ok(()));
         Ok(start)
+    }
+
+    /// How many instances of `app` in `workspace` that show nothing ([`Self::start_with_no_view`])
+    /// their process runs now: one that ended is forgotten.
+    pub(crate) fn no_view_running(&self, app: &str, workspace: &str) -> usize {
+        let Some(processes) = self.processes.get() else {
+            return 0;
+        };
+        let running = processes.instances();
+        let mut no_view = self.no_view.lock_recover();
+        no_view.retain(|(app, workspace, instance)| {
+            running.iter().any(|process| {
+                &process.app == app
+                    && &process.workspace == workspace
+                    && process.instances.contains(instance)
+            })
+        });
+        no_view
+            .iter()
+            .filter(|(running, of, _)| running == app && of == workspace)
+            .count()
     }
 
     /// Start the instance of `app`'s window in `workspace` here, with no process drawing it: the

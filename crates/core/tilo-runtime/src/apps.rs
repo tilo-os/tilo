@@ -1399,12 +1399,19 @@ impl LauncherServices for Apps {
 }
 
 impl Apps {
-    /// How many processes this device runs `app` in `workspace` with no window on `record` now:
-    /// one per call that started one, so a second call answered by the same process leaves the
-    /// count where it was. `record` names what the launch opened, when it named one.
+    /// How many runs of `app` in `workspace` with no window on `record` this device keeps now,
+    /// whatever language the app is written in: a Rust app's own process, or a tilolang app's
+    /// instance in its app's process, which opens the app's own record (`record` is `None`).
+    /// One per call that started one, so a second call answered by the same run leaves the count
+    /// where it was. `record` names what the launch opened, when it named one.
     #[must_use]
     pub fn no_window_processes(&self, app: &str, workspace: &str, record: Option<&str>) -> usize {
-        self.launched.no_window_processes(app, workspace, record)
+        let instances = if record.is_none() {
+            self.instances.no_view_running(app, workspace)
+        } else {
+            0
+        };
+        self.launched.no_window_processes(app, workspace, record) + instances
     }
 }
 

@@ -105,6 +105,20 @@ pub(super) fn kept_record(
         .map(Automerge::save)
 }
 
+/// The indexed fields of `app`'s record `record`, for a record the store holds: what it holds
+/// while nothing was written to its content. `None` for a record the store holds nothing of.
+pub(super) fn kept_fields(
+    store: &std::sync::Arc<std::sync::Mutex<Store>>,
+    surfaces: &collab_types::app_surface::Surfaces,
+    app: &str,
+    record: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    use tilo_lock::MutexRecover as _;
+    let kept = store.lock_recover();
+    let kind = record_changes::kind_of(surfaces, &kept, app, None, record)?;
+    kept.fields_of(&kind, record)
+}
+
 /// Every document kept below `dir`, by its id, with its file: what [`file_name`] named.
 fn kept_docs(dir: &Path, named: &str, docs: &mut Vec<(String, PathBuf)>) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {

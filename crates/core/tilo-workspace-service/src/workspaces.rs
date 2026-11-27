@@ -2255,6 +2255,28 @@ impl Workspaces {
         }
     }
 
+    /// What `app`'s record `record` of `workspace` holds while nothing was written to its
+    /// content: its indexed fields, as the store keeps them. A record of a kind its app declares
+    /// is the store's from its first write, which may name its fields alone (a tilolang app's
+    /// root, an item with no text of its own); [`Self::resource_document`] answers it once its
+    /// content is written. `None` for a record the store holds nothing of.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not held here.
+    pub async fn resource_fields(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, CollaborationError> {
+        if collab_types::is_store_document(record) {
+            return Ok(None);
+        }
+        let reading = self.reading_now(workspace).await?;
+        Ok(reading.fields(&self.inner.host.surfaces, app, record))
+    }
+
     /// Whether `workspace`'s store holds the resource `id` of `kind` now: false for a workspace
     /// not kept here.
     pub async fn store_holds(&self, workspace: &str, kind: &str, id: &str) -> bool {

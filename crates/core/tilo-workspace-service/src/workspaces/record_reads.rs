@@ -718,12 +718,25 @@ impl RecordReads {
         address: &ResourceAddress,
         bytes: Option<Vec<u8>>,
     ) -> Result<ResourceCopy, ActionCallError> {
+        let copy = bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document);
+        self.handed(workspaces, caller, address, copy).await
+    }
+
+    /// `copy`, what `address` was read as for `caller`, handed out as [`Self::hand_out`] hands
+    /// one out.
+    async fn handed(
+        &self,
+        workspaces: &Workspaces,
+        caller: &Caller,
+        address: &ResourceAddress,
+        copy: ResourceCopy,
+    ) -> Result<ResourceCopy, ActionCallError> {
         let state = workspaces
             .state(&address.workspace)
             .await
             .ok_or_else(refused)?;
         self.decides(&state, caller, address, ActionKind::Read)?;
-        Ok(bytes.map_or(ResourceCopy::Absent, ResourceCopy::Document))
+        Ok(copy)
     }
 
     /// `read`, asked as `correlation`, answered for `caller` where it goes: a read the app action
@@ -953,12 +966,24 @@ impl RecordReads {
             Route::Held(workspaces) => workspaces,
             Route::Served(served) => return served.read(caller, address).await,
         };
+        let unavailable = |error: super::CollaborationError| ActionCallError::Unavailable {
+            reason: error.to_string(),
+        };
         let bytes = workspaces
             .resource_document(&address.workspace, &address.app, &address.record)
             .await
-            .map_err(|error| ActionCallError::Unavailable {
-                reason: error.to_string(),
-            })?;
+            .map_err(unavailable)?;
+        // A record the store holds with nothing written to its content yet holds its fields: it
+        // reads as them, never as a record nobody wrote.
+        if bytes.is_none()
+            && let Some(fields) = workspaces
+                .resource_fields(&address.workspace, &address.app, &address.record)
+                .await
+                .map_err(unavailable)?
+        {
+            let fields = ResourceCopy::Read(serde_json::Value::Object(fields));
+            return self.handed(&workspaces, caller, address, fields).await;
+        }
         self.hand_out(&workspaces, caller, address, bytes).await
     }
 

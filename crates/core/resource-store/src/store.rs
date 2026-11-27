@@ -1798,6 +1798,19 @@ impl Store {
         self.refused.get(doc).into_iter().flatten()
     }
 
+    /// The indexed fields of the resource `id` of `kind`, as JSON: a scalar as itself, a set as
+    /// the list of its members. `None` for a resource the store holds none of.
+    #[must_use]
+    pub fn fields_of(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        self.index
+            .get(kind, id)
+            .map(|held| fields_json(&held.fields))
+    }
+
     /// The content of the resource `id` of `kind`, as JSON; `None` while nothing was written to
     /// it, or its document is not in memory.
     #[must_use]
