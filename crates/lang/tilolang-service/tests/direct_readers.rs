@@ -347,7 +347,7 @@ fn the_entries_a_window_publishes_name_who_alone_reads_a_direct_conversation() {
     };
     assert_eq!(
         readers_of("salaries"),
-        Some(vec!["ada".to_owned(), "agent:scout".to_owned()]),
+        Some(vec!["ada".to_owned(), "agent:ada/scout".to_owned()]),
         "Ada's message to Scout is found by the two of them alone"
     );
     assert_eq!(
@@ -362,10 +362,10 @@ fn the_entries_a_window_publishes_name_who_alone_reads_a_direct_conversation() {
             .all(|entry| entry.found_by(reader))
     };
     assert!(found_by("salaries", Some("ada")));
-    assert!(found_by("salaries", Some("agent:scout")));
+    assert!(found_by("salaries", Some("agent:ada/scout")));
     assert!(!found_by("salaries", Some("bo")), "Bo finds nothing of it");
     assert!(
-        !found_by("salaries", Some("agent:helper")),
+        !found_by("salaries", Some("agent:bo/helper")),
         "nor an agent admitted to all of the workspace"
     );
     assert!(!found_by("salaries", None), "nor a caller who is no member");
