@@ -927,3 +927,49 @@ pub(super) fn stack_index(stack: &[NavPane], pane: NavPane) -> usize {
         })
         .unwrap_or(stack.len().saturating_sub(1))
 }
+
+/// What a geometry's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl NavGeometry {
+    /// The visible area of `column`.
+    #[must_use]
+    pub fn test_body(&self, column: Column) -> Rect {
+        self.body(column)
+    }
+
+    /// An open drawer from either edge, if one stands.
+    #[must_use]
+    pub fn test_open_drawer(&self) -> Option<Column> {
+        self.open_drawer()
+    }
+
+    /// The band `column`'s actions stand in.
+    #[must_use]
+    pub fn test_actions_band(&self, column: Column) -> Rect {
+        self.actions_band(column)
+    }
+
+    /// The column the toggle stands in, if one.
+    #[must_use]
+    pub fn test_toggle_column(&self) -> Option<Column> {
+        self.toggle_column
+    }
+
+    /// The column the back button stands in, if one.
+    #[must_use]
+    pub fn test_back_column(&self) -> Option<Column> {
+        self.back_column
+    }
+
+    /// `column`'s header row.
+    #[must_use]
+    pub fn test_header(&self, column: Column) -> Rect {
+        self.header(column)
+    }
+
+    /// Each column's header row.
+    #[must_use]
+    pub fn test_headers(&self) -> [Rect; 4] {
+        self.headers
+    }
+}

@@ -1,28 +1,75 @@
-use super::*;
-use crate::app::driver::Driver;
-use crate::state::State;
-use crate::widget::Text;
 use std::cell::Cell;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
 use std::rc::Rc as SharedRc;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::state::State;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::internals::nav_shell::Column;
+use tilo_ui::widget::internals::nav_shell::Metrics;
+use tilo_ui::widget::internals::nav_shell::Part;
+use tilo_ui::widget::internals::nav_shell::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
+#[path = "nav_shell_tests/adaptive.rs"]
 mod adaptive;
+#[path = "nav_shell_tests/band.rs"]
 mod band;
+#[path = "nav_shell_tests/capabilities.rs"]
 mod capabilities;
+#[path = "nav_shell_tests/chosen.rs"]
 mod chosen;
+#[path = "nav_shell_tests/content_swap.rs"]
 mod content_swap;
+#[path = "nav_shell_tests/counts.rs"]
 mod counts;
+#[path = "nav_shell_tests/hosted.rs"]
 mod hosted;
+#[path = "nav_shell_tests/inspector_sheet.rs"]
 mod inspector_sheet;
+#[path = "nav_shell_tests/listed_actions.rs"]
 mod listed_actions;
+#[path = "nav_shell_tests/motion.rs"]
 mod motion;
+#[path = "nav_shell_tests/nothing_listed.rs"]
 mod nothing_listed;
+#[path = "nav_shell_tests/page_title.rs"]
 mod page_title;
+#[path = "nav_shell_tests/places.rs"]
 mod places;
+#[path = "nav_shell_tests/sidebar_button.rs"]
 mod sidebar_button;
+#[path = "nav_shell_tests/sidebar_scroll.rs"]
 mod sidebar_scroll;
+#[path = "nav_shell_tests/touch.rs"]
 mod touch;
 
-use crate::testing::TestLeaf;
+use tilo_ui::testing::TestLeaf;
 
 fn mail_shell() -> NavShell {
     NavShell::new()
@@ -52,7 +99,7 @@ fn geometry(h: &Driver) -> NavGeometry {
 
 /// Where the widget with test id `id` stands in the frame, at any depth under the shell.
 fn rect_named(h: &Driver, id: &str) -> Option<Rect> {
-    fn find(node: &crate::headless::InspectionNode, id: &str) -> Option<Rect> {
+    fn find(node: &tilo_ui::headless::InspectionNode, id: &str) -> Option<Rect> {
         if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
             let [x, y, w, height] = node.rect;
             return Some(Rect::new(x, y, x + w, y + height));
@@ -175,7 +222,7 @@ tilo_test_env::scenario! {
                         "{name} {width}: the document fills the window"
                     );
                 }
-                assert_eq!(g.open_drawer(), None, "{name} {width}");
+                assert_eq!(g.test_open_drawer(), None, "{name} {width}");
             }
         }
         // A docked Files sidebar works down to a column of content, under the
@@ -408,11 +455,11 @@ tilo_test_env::scenario! {
     // the same page open.
     phase the_open_page_is_kept_across_docked_push_and_docked;
     {
-        let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        let list = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
             "pages",
             vec![
-                crate::widget::NavItem::new("general", "General"),
-                crate::widget::NavItem::new("appearance", "Appearance"),
+                tilo_ui::widget::NavItem::new("general", "General"),
+                tilo_ui::widget::NavItem::new("appearance", "Appearance"),
             ],
         )])
         .selected("appearance");
@@ -450,11 +497,11 @@ tilo_test_env::scenario! {
 /// arrowing through the list lands on the list screen, focus where it was.
 #[test]
 fn narrowing_keeps_the_keyboard_where_it_was() {
-    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+    let list = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
         "pages",
         vec![
-            crate::widget::NavItem::new("general", "General"),
-            crate::widget::NavItem::new("appearance", "Appearance"),
+            tilo_ui::widget::NavItem::new("general", "General"),
+            tilo_ui::widget::NavItem::new("appearance", "Appearance"),
         ],
     )])
     .selected("appearance");
@@ -484,12 +531,12 @@ fn narrowing_keeps_the_keyboard_where_it_was() {
 fn narrowing_shows_the_page_chosen_in_the_sidebar() {
     let shell = || {
         NavShell::new()
-            .sidebar(Box::new(crate::widget::NavList::new(vec![
-                crate::widget::NavSection::untitled(
+            .sidebar(Box::new(tilo_ui::widget::NavList::new(vec![
+                tilo_ui::widget::NavSection::untitled(
                     "pages",
                     vec![
-                        crate::widget::NavItem::new("general", "General"),
-                        crate::widget::NavItem::new("appearance", "Appearance"),
+                        tilo_ui::widget::NavItem::new("general", "General"),
+                        tilo_ui::widget::NavItem::new("appearance", "Appearance"),
                     ],
                 ),
             ])))
@@ -530,7 +577,7 @@ tilo_test_env::scenario! {
         assert!(!h.root::<NavShell>().is_sidebar_open());
         assert_eq!(hidden.sidebar_column, Rect::ZERO);
         assert_eq!(hidden.toggle, before.toggle, "the toggle stays top-leading");
-        assert_eq!(hidden.toggle_column, Some(Column::Overview));
+        assert_eq!(hidden.test_toggle_column(), Some(Column::Overview));
         assert!(
             child_rect(&h, "sidebar").is_none(),
             "a hidden sidebar takes no input"
@@ -563,7 +610,7 @@ tilo_test_env::scenario! {
         settle(&mut h, 1280, 800);
         let name = |h: &Driver| {
             h.root::<NavShell>()
-                .toggle
+                .test_toggle()
                 .accessibility()
                 .and_then(|node| node.name)
         };
@@ -623,7 +670,7 @@ fn an_open_drawer_floats_over_the_content_without_a_scrim() {
         (g.sidebar_column.x0 - gap).abs() < 0.5,
         "the drawer floats s2 in"
     );
-    assert_eq!(g.open_drawer(), Some(Column::Sidebar));
+    assert_eq!(g.test_open_drawer(), Some(Column::Sidebar));
     let ids: Vec<_> = h
         .root::<NavShell>()
         .children()
@@ -766,11 +813,11 @@ fn escape_pops_the_apps_page_stack() {
 
 #[test]
 fn choosing_a_destination_in_a_narrow_window_moves_on() {
-    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+    let list = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
         "places",
         vec![
-            crate::widget::NavItem::new("inbox", "Inbox"),
-            crate::widget::NavItem::new("sent", "Sent"),
+            tilo_ui::widget::NavItem::new("inbox", "Inbox"),
+            tilo_ui::widget::NavItem::new("sent", "Sent"),
         ],
     )]);
     let shell = NavShell::new()
@@ -781,8 +828,8 @@ fn choosing_a_destination_in_a_narrow_window_moves_on() {
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let g = geometry(&h);
-    let row = crate::widget::nav_list::nav_row::nav_row_height(&Theme::dark());
-    let point = Point::new(60.0, g.body(Column::Sidebar).y0 + row * 1.5);
+    let row = tilo_ui::widget::internals::nav_list::nav_row::nav_row_height(&Theme::dark());
+    let point = Point::new(60.0, g.test_body(Column::Sidebar).y0 + row * 1.5);
     let device = winit::event::DeviceId::dummy();
     h.dispatch_to_root(&WindowEvent::CursorMoved {
         device_id: device,
@@ -938,7 +985,7 @@ tilo_test_env::scenario! {
                 .unwrap();
             assert_eq!(button.state.checked, Some(false));
             assert!(
-                g.actions_band(Column::Content).x1 <= g.history.x0,
+                g.test_actions_band(Column::Content).x1 <= g.history.x0,
                 "the app's actions end before it"
             );
         }
@@ -1010,7 +1057,7 @@ tilo_test_env::scenario! {
         );
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "retry").unwrap();
         let status =
-            crate::widget::WindowStatus::says(NOT_SAVED).with_action(crate::widget::StatusAction {
+            tilo_ui::widget::WindowStatus::says(NOT_SAVED).with_action(tilo_ui::widget::StatusAction {
                 label: "Retry".into(),
                 binding,
             });
@@ -1024,7 +1071,7 @@ tilo_test_env::scenario! {
             .root::<NavShell>()
             .children()
             .into_iter()
-            .find(|child| child.test_id() == Some(crate::widget::STATUS_ACTION_ID))
+            .find(|child| child.test_id() == Some(tilo_ui::widget::STATUS_ACTION_ID))
             .map(|child| (child.get_rect(), child.name()))
             .expect("a button beside the status");
         let (button, name) = button;
@@ -1044,7 +1091,7 @@ tilo_test_env::scenario! {
             "the message {text:?} reads before its button {button:?}"
         );
 
-        let offline = crate::widget::WindowStatus::says("Working offline");
+        let offline = tilo_ui::widget::WindowStatus::says("Working offline");
         assert!(h.root_mut::<NavShell>().set_sync_status(Some(&offline)));
         settle(&mut h, 1280, 800);
         let told = |h: &Driver| {
@@ -1065,7 +1112,7 @@ tilo_test_env::scenario! {
             h.root::<NavShell>()
                 .children()
                 .into_iter()
-                .all(|child| child.test_id() != Some(crate::widget::STATUS_ACTION_ID)),
+                .all(|child| child.test_id() != Some(tilo_ui::widget::STATUS_ACTION_ID)),
             "no button without something to do"
         );
         assert!(h.root_mut::<NavShell>().set_sync_status(None));
@@ -1078,7 +1125,7 @@ tilo_test_env::scenario! {
     // leaves on its own, and paints nothing over the window.
     phase a_toast_is_the_window_bars_notice_and_paints_nothing_over_the_window;
     {
-        use crate::window_toolbar::{ToolbarNotice, notice, notify};
+        use tilo_ui::window_toolbar::{ToolbarNotice, notice, notify};
         notify(None);
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -1109,13 +1156,13 @@ tilo_test_env::scenario! {
     phase the_window_bar_merges_into_the_header_row;
     {
         let theme = Theme::dark();
-        let width = crate::widget::merged_row_width();
+        let width = tilo_ui::widget::merged_row_width();
         let mut h = harness(mail_shell(), 1280, 800, theme);
         h.root_mut::<NavShell>()
             .set_history_control(Some(HistoryControl::Closed));
         assert!(
             h.root_mut::<NavShell>()
-                .set_window_bar(Some(crate::widget::WindowBar {
+                .set_window_bar(Some(tilo_ui::widget::WindowBar {
                     controls_width: width,
                     lists_actions: false,
                 })),
@@ -1134,7 +1181,7 @@ tilo_test_env::scenario! {
             g.history.x1 <= g.window_controls.x0 - m.gap + 1e-9,
             "History stands before the window's controls: {g:?}"
         );
-        assert!(g.actions_band(Column::Content).x1 <= g.history.x0);
+        assert!(g.test_actions_band(Column::Content).x1 <= g.history.x0);
         let part = h
             .root::<NavShell>()
             .window_bar_part()
@@ -1165,7 +1212,7 @@ tilo_test_env::scenario! {
             assert!(WindowHeader::set_window_presents_search(&mut shell, true));
             let mut h = harness(shell, 1280, 800, Theme::dark());
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, tilo_ui::widget::search_request::APP_SEARCH_BUTTON_ID));
             assert!(has_child(&h, "note-menu"), "the app's other actions stay");
         }
 
@@ -1173,7 +1220,7 @@ tilo_test_env::scenario! {
             let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
             settle(&mut h, 1280, 800);
             assert!(
-                has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID),
+                has_child(&h, tilo_ui::widget::search_request::APP_SEARCH_BUTTON_ID),
                 "outside a window bar the header keeps its search button"
             );
             assert!(WindowHeader::set_window_presents_search(
@@ -1181,7 +1228,7 @@ tilo_test_env::scenario! {
                 true
             ));
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, tilo_ui::widget::search_request::APP_SEARCH_BUTTON_ID));
             assert!(has_child(&h, "note-menu"));
         }
 
@@ -1191,12 +1238,12 @@ tilo_test_env::scenario! {
             settle(&mut h, 1280, 800);
             h.root_mut::<NavShell>().set_content_header(
                 "Groceries",
-                vec![Box::new(crate::widget::search_request::search_button(
-                    crate::widget::search_request::SearchRequest::this_app(),
+                vec![Box::new(tilo_ui::widget::search_request::search_button(
+                    tilo_ui::widget::search_request::SearchRequest::this_app(),
                 ))],
             );
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, tilo_ui::widget::search_request::APP_SEARCH_BUTTON_ID));
         }
     }
 
@@ -1205,7 +1252,7 @@ tilo_test_env::scenario! {
     // become parts and run from the bar.
     phase a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_parts;
     {
-        use crate::window_toolbar::ToolbarEvent;
+        use tilo_ui::window_toolbar::ToolbarEvent;
         let shell = mail_shell().with_window_toolbar();
         let mut h = harness(shell, 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -1247,12 +1294,12 @@ tilo_test_env::scenario! {
         let toolbar = h.root::<NavShell>().window_toolbar();
         assert_eq!(
             toolbar.leading.first().map(|action| action.id.as_str()),
-            Some(super::window_toolbar::WINDOW_BACK)
+            Some(WINDOW_BACK)
         );
         assert!(
             h.root_mut::<NavShell>()
                 .window_toolbar_event(&ToolbarEvent::Action {
-                    id: super::window_toolbar::WINDOW_BACK.into()
+                    id: WINDOW_BACK.into()
                 })
         );
         settle(&mut h, 560, 800);
@@ -1331,16 +1378,16 @@ fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
 fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_content() {
     let chosen = SharedRc::new(std::cell::RefCell::new(Vec::new()));
     let seen = SharedRc::clone(&chosen);
-    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+    let list = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
         "places",
-        vec![crate::widget::NavItem::new("inbox", "Inbox")],
+        vec![tilo_ui::widget::NavItem::new("inbox", "Inbox")],
     )])
     .selected("inbox")
     .on_choose("places", move |id| seen.borrow_mut().push(id));
     assert!(
         Widget::as_any(&list)
             .unwrap()
-            .is::<crate::widget::NavList>()
+            .is::<tilo_ui::widget::NavList>()
     );
     let shell = NavShell::new()
         .mode(NavMode::Push)
@@ -1350,7 +1397,7 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
     settle(&mut h, 360, 800);
     assert_eq!(
         h.root_mut::<NavShell>()
-            .sidebar_mut::<crate::widget::NavList>()
+            .sidebar_mut::<tilo_ui::widget::NavList>()
             .expect("typed NavList access through the shared decorator")
             .selected_id()
             .as_deref(),
@@ -1374,9 +1421,9 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
 
 #[test]
 fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
-    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+    let list = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
         "places",
-        vec![crate::widget::NavItem::new("inbox", "Inbox")],
+        vec![tilo_ui::widget::NavItem::new("inbox", "Inbox")],
     )])
     .selected("inbox");
     let shell = NavShell::new()
@@ -1389,7 +1436,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
     {
         let mut shell = h.root_mut::<NavShell>();
         shell.show(NavPane::Content);
-        shell.inputs.borrow_mut().push_pos = Some(0.0);
+        shell.test_set_push_pos(Some(0.0));
     }
     h.relayout_at((360, 800)).expect("incoming page frame");
     assert!(geometry(&h).side_by_side, "no overview splits the content");
@@ -1408,8 +1455,8 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
         .into_iter()
         .find(|(_, node)| {
             node.label() == Some("Back")
-                && node.role() == crate::accesskit::Role::Button
-                && node.supports_action(crate::accesskit::Action::Click)
+                && node.role() == accesskit::Role::Button
+                && node.supports_action(accesskit::Action::Click)
         })
         .expect("Back remains exported during the transition");
     assert!(geometry(&h).back.x0 >= 0.0 && geometry(&h).back.x1 <= 360.0);
@@ -1422,7 +1469,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
 /// the notice once and takes it down.
 #[test]
 fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
-    use crate::window_toolbar::{ToolbarEvent, notice, notify};
+    use tilo_ui::window_toolbar::{ToolbarEvent, notice, notify};
     notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
@@ -1431,9 +1478,9 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
     let shown = notice().expect("the bar shows the notice");
     let button = shown.actions.into_iter().next().expect("with its button");
     assert_eq!(button.name, "Undo");
-    crate::window_toolbar::deliver(ToolbarEvent::Action { id: button.id });
+    tilo_ui::window_toolbar::deliver(ToolbarEvent::Action { id: button.id });
     assert!(
-        crate::window_toolbar::take_events().is_empty(),
+        tilo_ui::window_toolbar::take_events().is_empty(),
         "the press is the notice's, not among the app's part events"
     );
     drop(shell);
@@ -1453,7 +1500,7 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
 /// again in the shell built in its place, with its button, until it leaves on its own.
 #[test]
 fn a_shell_built_in_place_shows_the_notice_the_one_before_it_held() {
-    use crate::window_toolbar::{notice, notify};
+    use tilo_ui::window_toolbar::{notice, notify};
     notify(None);
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
@@ -1531,8 +1578,8 @@ fn notes_shell_with_search() -> NavShell {
             tilo_ui_base::icons::Icon::MoreHorizontal,
             "Note actions",
         )),
-        Box::new(crate::widget::search_request::search_button(
-            crate::widget::search_request::SearchRequest::this_app(),
+        Box::new(tilo_ui::widget::search_request::search_button(
+            tilo_ui::widget::search_request::SearchRequest::this_app(),
         )),
     ];
     NavShell::new()
@@ -1542,7 +1589,7 @@ fn notes_shell_with_search() -> NavShell {
         .content_header("", actions)
 }
 
-fn sidebar_resize_control(h: &Driver) -> Option<crate::headless::Control> {
+fn sidebar_resize_control(h: &Driver) -> Option<tilo_ui::headless::Control> {
     h.controls()
         .into_iter()
         .find(|control| control.name.as_deref() == Some("Resize sidebar"))
@@ -1555,7 +1602,7 @@ fn the_sidebar_resize_edge_is_an_accessible_separator() {
     let resize = sidebar_resize_control(&h).expect("the docked sidebar's edge is a control");
     h.operate_control(
         &resize.id,
-        &crate::headless::ControlInput::SetValue("25%".into()),
+        &tilo_ui::headless::ControlInput::SetValue("25%".into()),
     )
     .expect("set-value resizes the sidebar");
     settle(&mut h, 1400, 800);
@@ -1564,7 +1611,7 @@ fn the_sidebar_resize_edge_is_an_accessible_separator() {
     assert!(
         h.operate_control(
             &resize.id,
-            &crate::headless::ControlInput::SetValue("NaN%".into())
+            &tilo_ui::headless::ControlInput::SetValue("NaN%".into())
         )
         .is_err()
     );
@@ -1583,7 +1630,7 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
     settle(&mut h, 1400, 800);
     let resize = sidebar_resize_control(&h).expect("the docked sidebar's edge is a control");
-    h.operate_control(&resize.id, &crate::headless::ControlInput::Focus)
+    h.operate_control(&resize.id, &tilo_ui::headless::ControlInput::Focus)
         .expect("focus the edge");
     let before = geometry(&h).sidebar_column.width();
     h.key("ArrowRight");
@@ -1748,8 +1795,8 @@ fn the_sidebar_edge_takes_nothing_from_the_rows_beside_it() {
 #[test]
 fn a_phone_wide_bar_gives_the_app_its_row_before_the_windows_controls() {
     let phone = 390.0_f64;
-    let kept = crate::widget::merged_row_width_in(phone);
-    assert!(kept > 0.0 && kept < crate::widget::merged_row_width());
+    let kept = tilo_ui::widget::merged_row_width_in(phone);
+    assert!(kept > 0.0 && kept < tilo_ui::widget::merged_row_width());
     let actions: Vec<Element> = vec![
         Box::new(Button::new("new-note", "New note")),
         Box::new(Button::icon_only(
@@ -1764,7 +1811,7 @@ fn a_phone_wide_bar_gives_the_app_its_row_before_the_windows_controls() {
     let mut h = harness(shell, 390, 800, Theme::dark());
     assert!(
         h.root_mut::<NavShell>()
-            .set_window_bar(Some(crate::widget::WindowBar {
+            .set_window_bar(Some(tilo_ui::widget::WindowBar {
                 controls_width: kept,
                 lists_actions: false,
             }))
@@ -1791,7 +1838,7 @@ fn an_enlarged_drawer_leaves_a_target_that_puts_it_away() {
         h.root_mut::<NavShell>().open_sidebar();
         settle(&mut h, 480, 800);
         let g = geometry(&h);
-        assert_eq!(g.open_drawer(), Some(Column::Sidebar));
+        assert_eq!(g.test_open_drawer(), Some(Column::Sidebar));
         assert!(
             480.0 - g.sidebar_column.x1 >= target,
             "{}: room beside it",
@@ -1803,7 +1850,7 @@ fn an_enlarged_drawer_leaves_a_target_that_puts_it_away() {
         );
         settle(&mut h, 480, 800);
         assert_eq!(
-            geometry(&h).open_drawer(),
+            geometry(&h).test_open_drawer(),
             None,
             "{}: the press puts it away",
             theme.name
@@ -1815,11 +1862,11 @@ fn an_enlarged_drawer_leaves_a_target_that_puts_it_away() {
 /// narrows to the rail: the content stays beside it until even the rail does not fit.
 #[test]
 fn the_overview_narrows_into_its_rail_before_it_pushes() {
-    let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+    let rail = tilo_ui::widget::NavList::new(vec![tilo_ui::widget::NavSection::untitled(
         "places",
         vec![
-            crate::widget::NavItem::new("oslo", "Oslo").icon(tilo_ui_base::icons::Icon::Pin),
-            crate::widget::NavItem::new("lima", "Lima").icon(tilo_ui_base::icons::Icon::Pin),
+            tilo_ui::widget::NavItem::new("oslo", "Oslo").icon(tilo_ui_base::icons::Icon::Pin),
+            tilo_ui::widget::NavItem::new("lima", "Lima").icon(tilo_ui_base::icons::Icon::Pin),
         ],
     )])
     .rail();

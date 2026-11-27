@@ -1,7 +1,7 @@
 //! A sidebar's list scrolls by the wheel when its rows run past the window.
 
 use super::*;
-use crate::widget::{NavItem, NavList, NavSection};
+use tilo_ui::widget::{NavItem, NavList, NavSection};
 
 fn tall_list(rows: usize) -> NavList {
     NavList::new(vec![NavSection::untitled(
@@ -33,7 +33,7 @@ fn a_sidebar_taller_than_its_window_scrolls_by_wheel_to_its_last_row() {
         .content_header("Row 0", Vec::new());
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
-    let sidebar = geometry(&h).body(Column::Sidebar);
+    let sidebar = geometry(&h).test_body(Column::Sidebar);
     assert!(
         sidebar.height() > 0.0,
         "the window docks its sidebar: {sidebar:?}"

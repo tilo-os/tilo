@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
             1,
             "one leading control, the way back: {toolbar:?}"
         );
-        let event = crate::window_toolbar::ToolbarEvent::Action {
+        let event = tilo_ui::window_toolbar::ToolbarEvent::Action {
             id: WINDOW_BACK.into(),
         };
         assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));
@@ -113,7 +113,7 @@ tilo_test_env::scenario! {
             );
             let title = h
                 .root::<NavShell>()
-                .part(Part::Title(Column::Sidebar))
+                .test_part(Part::Title(Column::Sidebar))
                 .map(Widget::get_rect)
                 .unwrap_or_else(|| panic!("{input:?}: the places' title"));
             let back = geometry(&h).back;
@@ -165,7 +165,7 @@ fn the_places_go_back_to_the_screen_the_person_last_worked_in() {
     h.root_mut::<NavShell>().show(NavPane::Sidebar);
     settle(&mut h, W, H);
     assert_eq!(
-        geometry(&h).back_column,
+        geometry(&h).test_back_column(),
         Some(Column::Sidebar),
         "the places have the way back"
     );

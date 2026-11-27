@@ -48,14 +48,12 @@ mod open_states;
 mod parts;
 mod place;
 use place::{measure, place_parts};
-mod sidebar_resize;
+pub(crate) mod sidebar_resize;
 mod status_action;
 mod swap;
 mod window_header;
 mod window_toolbar;
 use crate::widget::OverflowButton;
-#[cfg(test)]
-use crate::widget::toast::ToastKind;
 use band::plan;
 use header_parts::HeaderTitle;
 use inspector::inspector_layout_of;
@@ -152,7 +150,7 @@ pub enum OverviewPlacement {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Column {
+pub enum Column {
     Sidebar,
     Overview,
     Content,
@@ -186,7 +184,7 @@ impl Column {
     }
 }
 
-fn at<T>(array: &[T; 4], column: Column) -> &T {
+pub fn at<T>(array: &[T; 4], column: Column) -> &T {
     let [sidebar, overview, content, inspector] = array;
     match column {
         Column::Sidebar => sidebar,
@@ -196,7 +194,7 @@ fn at<T>(array: &[T; 4], column: Column) -> &T {
     }
 }
 
-fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
+pub fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
     let [sidebar, overview, content, inspector] = array;
     match column {
         Column::Sidebar => sidebar,
@@ -207,7 +205,7 @@ fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Part {
+pub enum Part {
     Body(Column),
     /// The overview's rail, in place of the overview where the list
     /// does not fit.
@@ -235,12 +233,12 @@ enum Part {
     Band,
 }
 
-struct Header {
-    title: HeaderTitle,
-    binding: Option<LocalBinding<String>>,
-    actions: Vec<Element>,
-    more: OverflowButton,
-    leading: Option<Element>,
+pub struct Header {
+    pub title: HeaderTitle,
+    pub binding: Option<LocalBinding<String>>,
+    pub actions: Vec<Element>,
+    pub more: OverflowButton,
+    pub leading: Option<Element>,
 }
 
 impl Header {
@@ -285,45 +283,45 @@ impl Pending {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Metrics {
-    row: HeaderRowMetrics,
-    header: f64,
-    chip: f64,
-    inset: f64,
-    gap: f64,
-    sidebar: f64,
-    sidebar_min: f64,
-    sidebar_max: f64,
-    rail: f64,
-    overview: f64,
+pub struct Metrics {
+    pub row: HeaderRowMetrics,
+    pub header: f64,
+    pub chip: f64,
+    pub inset: f64,
+    pub gap: f64,
+    pub sidebar: f64,
+    pub sidebar_min: f64,
+    pub sidebar_max: f64,
+    pub rail: f64,
+    pub overview: f64,
     /// The widest the overview grows to fit what it lists.
-    overview_max: f64,
-    inspector: f64,
+    pub overview_max: f64,
+    pub inspector: f64,
     /// The inspector's docked width before larger text widens it: a
     /// sheet in a window short of twice that opens at the whole height.
-    sheet_least_half: f64,
-    drawer: f64,
-    drawer_dismiss_band: f64,
-    list_min: f64,
-    reading_min: f64,
-    page_min: f64,
-    grid_min: f64,
-    compact_min: f64,
-    hysteresis: f64,
-    filter: f64,
-    resize_grip: f64,
-    pointer: f64,
-    scale: f64,
+    pub sheet_least_half: f64,
+    pub drawer: f64,
+    pub drawer_dismiss_band: f64,
+    pub list_min: f64,
+    pub reading_min: f64,
+    pub page_min: f64,
+    pub grid_min: f64,
+    pub compact_min: f64,
+    pub hysteresis: f64,
+    pub filter: f64,
+    pub resize_grip: f64,
+    pub pointer: f64,
+    pub scale: f64,
     /// One line of body text: the unit of a page column's width.
-    body_line: f64,
+    pub body_line: f64,
     /// One `rem` in logical pixels ([`crate::widget::arrange::rem_of`]): the unit the width
     /// classes are measured in, so the content beside a sidebar keeps a column's width at every
     /// text size.
-    rem: f32,
-    reading_measure: f64,
-    scroll_gutter: f64,
+    pub rem: f32,
+    pub reading_measure: f64,
+    pub scroll_gutter: f64,
     /// A page column's inset: a `Column`'s own padding (`s6`).
-    page_pad: f64,
+    pub page_pad: f64,
 }
 
 impl Metrics {
@@ -339,7 +337,7 @@ impl Metrics {
 
     /// The narrowest content of `kind` stands at beside a sidebar: its own minimum, and never
     /// below the width class it is in there ([`ContentKind::beside_sidebar_class`]).
-    fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
+    pub fn beside_sidebar_min(&self, kind: ContentKind) -> f64 {
         self.content_min(kind)
             .max(f64::from(crate::widget::arrange::class_min_width(
                 kind.beside_sidebar_class(),
@@ -347,7 +345,7 @@ impl Metrics {
             )))
     }
 
-    fn resolve(theme: &Theme) -> Self {
+    pub fn resolve(theme: &Theme) -> Self {
         let m = theme.tokens.metrics;
         let s = theme.tokens.spacing;
         let growth = f64::from(theme.text_growth());
@@ -3700,7 +3698,7 @@ fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize
 /// The button a header action is: the action itself, the control under the view a decorator
 /// wrapped around it, or the one it shows as its face; the row fits it by its label, icon or
 /// faces, and its menu lists it by glyph and key.
-fn button_of(action: &dyn Widget) -> Option<&Button> {
+pub fn button_of(action: &dyn Widget) -> Option<&Button> {
     if let Some(button) = action.as_any().and_then(|any| any.downcast_ref::<Button>()) {
         return Some(button);
     }
@@ -4141,5 +4139,112 @@ impl NavShell {
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// What a navigation shell's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl NavShell {
+    /// The toggle that folds the sidebar.
+    #[must_use]
+    pub fn test_toggle(&self) -> &Button {
+        &self.toggle
+    }
+
+    /// Where the incoming page's frame stands, as a push the person is in the middle of.
+    pub fn test_set_push_pos(&mut self, at: Option<f64>) {
+        self.inputs.borrow_mut().push_pos = at;
+    }
+
+    /// The part `part` names, if the shell shows it.
+    #[must_use]
+    pub fn test_part(&self, part: Part) -> Option<&dyn Widget> {
+        self.part(part)
+    }
+
+    /// Whether `part` is shown in a menu rather than in its row.
+    #[must_use]
+    pub fn test_part_hidden(&self, part: Part) -> bool {
+        self.part_hidden(part)
+    }
+
+    /// The parts the shell shows to assistive technology and a check.
+    #[must_use]
+    pub fn test_exposed_parts(&self) -> Vec<Part> {
+        self.exposed_parts()
+    }
+
+    /// How many of `column`'s actions stand in its header row.
+    #[must_use]
+    pub fn test_shown_actions(&self, column: Column) -> usize {
+        self.shown_actions(column)
+    }
+
+    /// Whether the shell stands in for an empty list.
+    #[must_use]
+    pub fn test_nothing_listed_shown(&self) -> bool {
+        self.nothing_listed_shown()
+    }
+
+    /// Lay the shell out again on the next pass.
+    pub fn test_invalidate(&mut self) {
+        self.invalidate();
+    }
+
+    /// Whether the content's change is still fading.
+    #[must_use]
+    pub fn test_content_fade_moving(&self, now: crate::time::Instant) -> bool {
+        self.content_fade.is_moving(now)
+    }
+
+    /// How far the content's change has faded, from 0 to 1.
+    #[must_use]
+    pub fn test_content_fade_progress(&self, now: crate::time::Instant) -> f64 {
+        self.content_fade.progress(now)
+    }
+
+    /// The key the content shows, if the view gave one.
+    #[must_use]
+    pub fn test_content_key(&self) -> Option<&str> {
+        self.content_key.as_deref()
+    }
+
+    /// How far the column switch has faded, from 0 to 1.
+    #[must_use]
+    pub fn test_switch_fade_progress(&self, now: crate::time::Instant) -> f64 {
+        self.switch_fade.progress(now)
+    }
+
+    /// Which columns the switch has turned on its way.
+    #[must_use]
+    pub fn test_switch_columns(&self) -> [bool; 4] {
+        self.switch_columns
+    }
+
+    /// The parts the last pass laid out.
+    #[must_use]
+    pub fn test_laid_out_parts(&self) -> &[Part] {
+        &self.laid_out_parts
+    }
+
+    /// Each column's header.
+    #[must_use]
+    pub fn test_headers(&self) -> &[Header; 4] {
+        &self.headers
+    }
+
+    /// Each column's header, to choose an action from its menu.
+    #[must_use]
+    pub fn test_headers_mut(&mut self) -> &mut [Header; 4] {
+        &mut self.headers
+    }
+
+    /// Whether the incoming page is still sliding in.
+    #[must_use]
+    pub fn test_push_moving(&self, now: crate::time::Instant) -> bool {
+        self.inputs.borrow().push.is_moving(now)
+    }
+
+    /// How the sidebar adapts to its width, if it is a navigation list.
+    #[must_use]
+    pub fn test_adaptive(&self) -> Option<AdaptiveSidebar> {
+        self.inputs.borrow().adaptive
+    }
+}

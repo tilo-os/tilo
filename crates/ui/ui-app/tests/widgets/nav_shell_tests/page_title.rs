@@ -4,7 +4,7 @@ use super::*;
 
 fn title_rect(h: &Driver) -> Rect {
     h.root::<NavShell>()
-        .part(Part::Title(Column::Content))
+        .test_part(Part::Title(Column::Content))
         .map_or(Rect::ZERO, Widget::get_rect)
 }
 
@@ -37,7 +37,7 @@ tilo_test_env::scenario! {
         for (what, content, shown) in [
             (
                 "the page shows the same words as its large title",
-                Box::new(crate::widget::Column::new().push(heading(
+                Box::new(tilo_ui::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::LargeTitle,
                 ))) as Element,
@@ -46,14 +46,14 @@ tilo_test_env::scenario! {
             (
                 "the page shows other words",
                 Box::new(
-                    crate::widget::Column::new()
+                    tilo_ui::widget::Column::new()
                         .push(heading("Call the plumber", tilo_ui_base::TextRole::LargeTitle)),
                 ),
                 true,
             ),
             (
                 "the page says the words as a paragraph",
-                Box::new(crate::widget::Column::new().push(heading(
+                Box::new(tilo_ui::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::Body,
                 ))),
@@ -73,7 +73,7 @@ tilo_test_env::scenario! {
                 shown,
                 "{what}: the bar's title {title:?}"
             );
-            bodies.push(geometry(&h).body(Column::Content));
+            bodies.push(geometry(&h).test_body(Column::Content));
         }
         assert!(
             bodies.windows(2).all(|pair| pair[0] == pair[1]),
@@ -84,14 +84,14 @@ tilo_test_env::scenario! {
     phase the_bar_takes_the_title_back_once_the_heading_scrolls_away;
     {
         let tall = Box::new(
-            crate::widget::Column::new()
+            tilo_ui::widget::Column::new()
                 .push(heading(
                     "Call the landlord about the boiler",
                     tilo_ui_base::TextRole::LargeTitle,
                 ))
                 .push(Box::new(tilo_ui_base::widget::Spacer::fixed(1200.0))),
         ) as Element;
-        let scrolled = crate::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
+        let scrolled = tilo_ui::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
             .fill_parent_height()
             .with_child(tall);
         let mut h = harness(
@@ -106,9 +106,9 @@ tilo_test_env::scenario! {
             0.0,
             "the heading is on screen, so the bar shows only the way back"
         );
-        let body = geometry(&h).body(Column::Content);
+        let body = geometry(&h).test_body(Column::Content);
         h.root_mut::<NavShell>()
-            .content_mut::<crate::widget::Scrollable>()
+            .content_mut::<tilo_ui::widget::Scrollable>()
             .expect("the page scrolls")
             .set_offset_y(400.0);
         settle(&mut h, 390, 844);
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
             "the heading is out of view: the bar names the page again"
         );
         assert_eq!(
-            geometry(&h).body(Column::Content),
+            geometry(&h).test_body(Column::Content),
             body,
             "and the body stayed where it stood"
         );
@@ -130,8 +130,8 @@ tilo_test_env::scenario! {
     {
         let words = "Call the landlord about the boiler";
         let field = Box::new(
-            crate::widget::Column::new().push(Box::new(
-                crate::widget::TextInput::local()
+            tilo_ui::widget::Column::new().push(Box::new(
+                tilo_ui::widget::TextInput::local()
                     .with_initial_value(words)
                     .with_text_role(tilo_ui_base::TextRole::LargeTitle),
             )),
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
             .find(|(id, _)| *id == named)
             .and_then(|(_, node)| node.bounds())
             .expect("the page's name stands where the field does");
-        let body = geometry(&h).body(Column::Content);
+        let body = geometry(&h).test_body(Column::Content);
         assert!(
             bounds.x0 >= body.x0 - 1.0 && bounds.y0 >= body.y0 - 1.0,
             "the page's name stands inside the page: {bounds:?} in {body:?}"
@@ -165,11 +165,11 @@ tilo_test_env::scenario! {
     phase an_item_opened_among_a_lists_rows_leaves_the_column_its_title;
     {
         let row =
-            ListRow(crate::widget::Column::new().push(heading("Today", tilo_ui_base::TextRole::LargeTitle)));
+            ListRow(tilo_ui::widget::Column::new().push(heading("Today", tilo_ui_base::TextRole::LargeTitle)));
         let mut h = harness(
             page(
                 "Today",
-                Box::new(crate::widget::Column::new().push(Box::new(row))),
+                Box::new(tilo_ui::widget::Column::new().push(Box::new(row))),
             ),
             390,
             844,
@@ -183,16 +183,16 @@ tilo_test_env::scenario! {
     }
 }
 
-struct ListRow(crate::widget::Column);
+struct ListRow(tilo_ui::widget::Column);
 
 impl tilo_ui_base::widget::Decorator for ListRow {
-    type Inner = crate::widget::Column;
+    type Inner = tilo_ui::widget::Column;
 
-    fn inner(&self) -> &crate::widget::Column {
+    fn inner(&self) -> &tilo_ui::widget::Column {
         &self.0
     }
 
-    fn inner_mut(&mut self) -> &mut crate::widget::Column {
+    fn inner_mut(&mut self) -> &mut tilo_ui::widget::Column {
         &mut self.0
     }
 

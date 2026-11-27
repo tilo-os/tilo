@@ -28,7 +28,7 @@ tilo_test_env::scenario! {
     {
         let shell = NavShell::from_props("window", nothing_listed_props(true));
         assert!(
-            shell.nothing_listed_shown(),
+            shell.test_nothing_listed_shown(),
             "the state stands in for the columns"
         );
         let mut h = harness(shell, W, H, Theme::dark());
@@ -144,12 +144,12 @@ tilo_test_env::scenario! {
             "it opens on the empty state, not the sidebar"
         );
         assert_eq!(g.back, Rect::ZERO, "no Back chip");
-        assert_eq!(g.back_column, None, "Back goes nowhere");
+        assert_eq!(g.test_back_column(), None, "Back goes nowhere");
         assert_eq!(g.header_height, 0.0, "no header row");
-        assert!(g.headers.iter().all(|header| *header == Rect::ZERO));
+        assert!(g.test_headers().iter().all(|header| *header == Rect::ZERO));
         let back = h
             .root::<NavShell>()
-            .part(Part::Back)
+            .test_part(Part::Back)
             .map_or(Rect::ZERO, Widget::get_rect);
         assert!(back.width() <= 0.0, "no Back part shown: {back:?}");
         let empty = child_rect(&h, "empty").expect("the empty state is shown");

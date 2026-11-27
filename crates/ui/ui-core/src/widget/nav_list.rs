@@ -2346,9 +2346,9 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for NavList {
 
 mod bound;
 mod feed;
-mod model;
+pub(crate) mod model;
 pub mod nav_row;
-mod row;
+pub(crate) mod row;
 pub use feed::NavFeed;
 
 impl tilo_ui_base::widget::controls::ActionControls for NavList {
@@ -2514,7 +2514,29 @@ impl NavList {
     pub fn test_run_section_action(&mut self, key: &str) -> bool {
         self.shared.borrow_mut().run_section_action(key)
     }
-}
 
-#[cfg(test)]
-mod tests;
+    /// The rows it builds and keeps, to move one as a person would.
+    #[must_use]
+    pub fn test_list_mut(&mut self) -> &mut VirtualList<NavModel> {
+        &mut self.list
+    }
+
+    /// The sections as the view gave them.
+    #[must_use]
+    pub fn test_sections(&self) -> &[NavSection] {
+        &self.sections
+    }
+
+    /// Put the keyboard in the list, as a press on a row does.
+    pub fn test_inner_focus(&mut self) {
+        tilo_ui_base::widget::Widget::set_focus(&mut *self.list, true);
+    }
+
+    /// Where the section action at `key` is pressed, painted in `header`.
+    #[must_use]
+    pub fn test_section_action_rect(&self, key: &str, header: Rect) -> Option<Rect> {
+        let model = self.list.model();
+        let row = model.row_of(key)?;
+        self.paint.borrow().section_action_rect(row, header)
+    }
+}

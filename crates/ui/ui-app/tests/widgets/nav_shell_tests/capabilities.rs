@@ -1,5 +1,6 @@
 use super::*;
-use crate::widget::{FilterCount, Filterable};
+use taffy::{Size, Style};
+use tilo_ui::widget::{FilterCount, Filterable};
 use tilo_ui_base::component::Described;
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
@@ -12,7 +13,7 @@ fn icon(id: &'static str, icon: Icon, name: &str) -> Element {
 
 fn part_rect(h: &Driver, part: Part) -> Rect {
     h.root::<NavShell>()
-        .part(part)
+        .test_part(part)
         .map_or(Rect::ZERO, Widget::get_rect)
 }
 
@@ -80,7 +81,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             h.root::<NavShell>()
-                .part(Part::Action(Column::Overview, 0))
+                .test_part(Part::Action(Column::Overview, 0))
                 .and_then(Widget::accessibility)
                 .and_then(|node| node.name)
                 .as_deref(),
@@ -114,11 +115,11 @@ tilo_test_env::scenario! {
         settle(&mut h, 1400, 800);
         let heading = |h: &Driver, column: Column| {
             h.root::<NavShell>()
-                .part(Part::Title(column))
+                .test_part(Part::Title(column))
                 .and_then(Widget::accessibility)
                 .filter(|_| {
                     h.root::<NavShell>()
-                        .laid_out_parts
+                        .test_laid_out_parts()
                         .contains(&Part::Title(column))
                 })
                 .and_then(|node| node.name)
@@ -136,7 +137,7 @@ tilo_test_env::scenario! {
         assert_eq!(heading(&h, Column::Content).as_deref(), Some("Archive"));
         let count = h
             .root::<NavShell>()
-            .part(Part::Title(Column::Content))
+            .test_part(Part::Title(Column::Content))
             .and_then(Widget::accessibility)
             .and_then(|node| node.value);
         assert_eq!(
@@ -157,7 +158,7 @@ tilo_test_env::scenario! {
         let title = "Launch plan for the autumn release";
         let needs = |title: &str| {
             let (w, _) =
-                crate::widget::window_header::header_row::measure_title(&mut TextRenderer::new(), &theme, title, None);
+                test_measure_title(&mut TextRenderer::new(), &theme, title, None);
             w
         };
         let actions = || {
@@ -166,7 +167,7 @@ tilo_test_env::scenario! {
                 Box::new(
                     Button::new("new", "New note")
                         .with_icon(Icon::Plus)
-                        .role(crate::widget::ButtonRole::Primary)
+                        .role(tilo_ui::widget::ButtonRole::Primary)
                         .on_open(|| {}),
                 ) as Element,
                 labelled("pin", "Pin", Icon::Pin),
@@ -214,9 +215,9 @@ tilo_test_env::scenario! {
                 let cut = shown.width() + 1.0 < needs(title);
                 if cut {
                     let shell = h.root::<NavShell>();
-                    let labelled = (0..shell.shown_actions(Column::Content)).any(|i| {
+                    let labelled = (0..shell.test_shown_actions(Column::Content)).any(|i| {
                         shell
-                            .part(Part::Action(Column::Content, i))
+                            .test_part(Part::Action(Column::Content, i))
                             .and_then(|action| button_of(action))
                             .is_some_and(|button| {
                                 button.shrinks_to_icon() && !button.is_shown_compact()
@@ -246,7 +247,7 @@ tilo_test_env::scenario! {
         let title = "Quarterly planning for the autumn release, and the review after it";
         let primary = |icon: Option<Icon>| {
             let button = Button::new("new", "New note")
-                .role(crate::widget::ButtonRole::Primary)
+                .role(tilo_ui::widget::ButtonRole::Primary)
                 .on_open(|| {});
             Box::new(match icon {
                 Some(icon) => button.with_icon(icon),
@@ -321,7 +322,7 @@ tilo_test_env::scenario! {
         );
         let reply = h
             .root::<NavShell>()
-            .part(Part::Action(Column::Content, 0))
+            .test_part(Part::Action(Column::Content, 0))
             .and_then(Widget::accessibility)
             .and_then(|node| node.name);
         assert_eq!(
@@ -332,30 +333,30 @@ tilo_test_env::scenario! {
 
         let mut h = harness(titled_content(actions()), 220, 700, Theme::dark());
         settle(&mut h, 220, 700);
-        let shown = h.root::<NavShell>().shown_actions(Column::Content);
+        let shown = h.root::<NavShell>().test_shown_actions(Column::Content);
         assert!(shown < 4, "{shown}");
         let more = part_rect(&h, Part::More(Column::Content));
         assert!(more.width() > 0.0 && more.x1 <= 220.0);
         assert!(
             h.root::<NavShell>()
-                .part_hidden(Part::Action(Column::Content, 3)),
+                .test_part_hidden(Part::Action(Column::Content, 3)),
             "an action in the menu is not in the row"
         );
         assert!(
             h.root::<NavShell>()
-                .exposed_parts()
+                .test_exposed_parts()
                 .contains(&Part::More(Column::Content))
         );
         h.click_at(more.center().x, more.center().y);
         settle(&mut h, 220, 700);
         let doc = automerge::AutoCommit::new();
         h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-        let labels = at(&h.root::<NavShell>().headers, Column::Content)
+        let labels = at(&h.root::<NavShell>().test_headers(), Column::Content)
             .more
             .menu_labels();
         assert_eq!(labels.last().map(String::as_str), Some("Delete message"));
         let row = labels.len() - 1;
-        at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
+        at_mut(&mut h.root_mut::<NavShell>().test_headers_mut(), Column::Content)
             .more
             .choose(row);
         h.send(&tilo_ui_base::synthetic_input::cursor_moved(10.0, 300.0));
@@ -388,7 +389,7 @@ tilo_test_env::scenario! {
         settle(&mut h, 1024, 700);
         let g = geometry(&h);
         assert!(g.back.width() > 0.0, "a page pushed: Back shows");
-        assert_eq!(g.back_column, Some(Column::Content));
+        assert_eq!(g.test_back_column(), Some(Column::Content));
         assert!(part_rect(&h, Part::Title(Column::Content)).x0 >= g.back.x1);
 
         assert!(h.root_mut::<NavShell>().back());
@@ -440,10 +441,10 @@ tilo_test_env::scenario! {
             "under the header row"
         );
         let shell = h.root::<NavShell>();
-        assert!(shell.laid_out_parts.contains(&Part::Body(Column::Content)));
+        assert!(shell.test_laid_out_parts().contains(&Part::Body(Column::Content)));
         assert_eq!(
             shell
-                .part(Part::Body(Column::Content))
+                .test_part(Part::Body(Column::Content))
                 .map(Widget::get_rect),
             Some(before),
             "the content keeps its place beside the drawer"
@@ -550,7 +551,7 @@ tilo_test_env::scenario! {
             .content(TestLeaf::fill("detail").boxed().0)
             .overview_header("Contacts", Vec::new())
             .overview_controls(Box::new(
-                crate::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
+                tilo_ui::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
                     .with_accessible_name("Sort contacts"),
             ));
         let mut d = harness(shell, 1280, 800, Theme::dark());
@@ -621,7 +622,7 @@ tilo_test_env::scenario! {
             !h.root::<NavShell>().is_sidebar_open(),
             "the narrow window shows its content"
         );
-        let found = crate::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
+        let found = tilo_ui::widget::search_field::apply_filter(&mut *h.root_mut::<NavShell>(), "kai");
         assert_eq!(
             query.borrow().as_str(),
             "kai",
@@ -656,7 +657,7 @@ fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
         h.root_mut::<NavShell>().open_inspector();
         settle(&mut h, 480, 800);
         let g = geometry(&h);
-        assert_eq!(g.open_drawer(), Some(Column::Inspector));
+        assert_eq!(g.test_open_drawer(), Some(Column::Inspector));
         let content = child_rect(&h, "content").expect("the content stands");
         assert!(
             g.inspector_column.y0 - content.y0 >= band - 0.5,
@@ -671,7 +672,7 @@ fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
         settle(&mut h, 480, 800);
         assert!(events.events() > before, "the press reaches the content");
         assert_eq!(
-            geometry(&h).open_drawer(),
+            geometry(&h).test_open_drawer(),
             Some(Column::Inspector),
             "the sheet stays up while the content above is used"
         );
@@ -856,7 +857,7 @@ fn a_headers_parts_keep_their_places_beside_each_other() {
     let title = part_rect(&h, Part::Title(Column::Sidebar));
     let action = part_rect(&h, Part::Action(Column::Sidebar, 0));
     assert!(title.x1 <= action.x0, "{title:?} before {action:?}");
-    let style = crate::widget::window_header::header_row::title_style(&theme);
+    let style = test_title_style(&theme);
     assert_eq!(
         TextRenderer::new().elide_to_width_style(
             "Notes",

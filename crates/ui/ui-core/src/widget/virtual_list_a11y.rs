@@ -82,8 +82,8 @@ impl VirtualRows {
 
     /// Run `walk` with no row kept, as a list that keeps none walks, and
     /// keep the rows kept before it again afterwards.
-    #[cfg(test)]
-    pub(crate) fn walk_keeping_nothing<R>(&self, walk: impl FnOnce() -> R) -> R {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn walk_keeping_nothing<R>(&self, walk: impl FnOnce() -> R) -> R {
         let kept = self.access_rows.replace(KeptAccessRows::default());
         let walked = walk();
         *self.access_rows.borrow_mut() = kept;

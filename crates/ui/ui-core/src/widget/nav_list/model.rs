@@ -13,7 +13,7 @@ use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct NavItemSpec {
+pub struct NavItemSpec {
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
     pub depth: usize,
@@ -35,13 +35,13 @@ pub(crate) struct NavItemSpec {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NavRowData {
-    pub(crate) key: String,
-    pub(crate) kind: NavRowKind,
+pub struct NavRowData {
+    pub key: String,
+    pub kind: NavRowKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum NavRowKind {
+pub enum NavRowKind {
     /// A section header. `first` is the first row of the list, which has no
     /// space above it.
     Section {
@@ -123,7 +123,7 @@ pub(crate) fn filtered(sections: &[NavSection], query: &str) -> Vec<NavSection> 
 /// `items` narrowed to what matches `query` (folded), keeping the parents
 /// of matching children, open. A row found only by one of its
 /// [`NavItem::search_terms`] shows that term under its label.
-pub(super) fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
+pub fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
     items
         .iter()
         .filter_map(|item| {
@@ -159,7 +159,7 @@ impl NavModel {
         self.rows.get(index)
     }
 
-    pub(crate) fn row_of(&self, key: &str) -> Option<&NavRowData> {
+    pub fn row_of(&self, key: &str) -> Option<&NavRowData> {
         self.by_key.get(key).and_then(|index| self.rows.get(*index))
     }
 
@@ -260,7 +260,7 @@ impl NavModel {
     /// Whether `key` is a row the arrow keys stop on: a destination or a
     /// section header that folds. The empty section's caption and a pending
     /// row say something but do nothing.
-    pub(crate) fn is_stop(&self, key: &str) -> bool {
+    pub fn is_stop(&self, key: &str) -> bool {
         matches!(
             self.row_of(key).map(|row| &row.kind),
             Some(

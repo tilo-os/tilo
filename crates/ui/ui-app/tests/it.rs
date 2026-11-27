@@ -334,6 +334,10 @@ mod list_row_actions_tests;
 mod magnify_tests;
 #[path = "widgets/map_motion_tests.rs"]
 mod map_motion_tests;
+#[path = "widgets/nav_list_tests.rs"]
+mod nav_list_tests;
+#[path = "widgets/nav_shell_tests.rs"]
+mod nav_shell_tests;
 #[path = "widgets/page_edges_land_on_device_pixels.rs"]
 mod page_edges_land_on_device_pixels;
 #[path = "widgets/virtual_list_copy_tests.rs"]

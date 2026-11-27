@@ -2,7 +2,7 @@
 //! header leaves the number to the place beside it that already shows it.
 
 use super::*;
-use crate::widget::{NavItem, NavList, NavSection};
+use tilo_ui::widget::{NavItem, NavList, NavSection};
 
 /// A shell whose sidebar lists places, `inbox` chosen and holding `count`
 /// things, and whose overview header is that same place.
@@ -31,7 +31,7 @@ fn header_count(h: &Driver) -> Option<String> {
 
 fn header_part(h: &Driver) -> Option<tilo_ui_base::a11y::AccessNode> {
     h.root::<NavShell>()
-        .part(Part::Title(Column::Overview))
+        .test_part(Part::Title(Column::Overview))
         .and_then(Widget::accessibility)
 }
 
@@ -53,7 +53,7 @@ fn place_count(h: &Driver, place: &str) -> Option<String> {
 
 fn header_width(h: &Driver) -> f64 {
     h.root::<NavShell>()
-        .part(Part::Title(Column::Overview))
+        .test_part(Part::Title(Column::Overview))
         .map(Widget::get_rect)
         .map(|rect| rect.width())
         .expect("the overview's title")

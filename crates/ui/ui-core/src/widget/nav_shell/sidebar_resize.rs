@@ -317,14 +317,14 @@ impl NavShell {
 /// (`nav_list::AdaptiveNav`): narrower than [`Self::list_from`], a rail of tiles, icon over
 /// caption; from there on, a list, icon beside label.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct AdaptiveSidebar {
-    pub(super) rail: f64,
+pub struct AdaptiveSidebar {
+    pub rail: f64,
     /// The width from which it is a list: where every label stands whole
     /// beside its icon, never past the sidebar's own minimum.
-    pub(super) list_from: f64,
+    pub list_from: f64,
     /// The width it starts at: the sidebar's, or as much more as its labels
     /// need to stand whole, up to the sidebar's maximum.
-    pub(super) default: f64,
+    pub default: f64,
 }
 
 impl Inputs {

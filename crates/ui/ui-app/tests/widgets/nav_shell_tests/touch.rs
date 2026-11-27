@@ -1,8 +1,8 @@
 //! The shell's own buttons on a touchscreen: as large as an app's buttons are there.
 
 use super::*;
-use crate::headless::InspectionNode;
-use crate::widget::Button;
+use tilo_ui::headless::InspectionNode;
+use tilo_ui::widget::Button;
 use tilo_ui_base::interaction::InteractionEnvironment;
 
 fn actions() -> Vec<Element> {

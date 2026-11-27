@@ -1,6 +1,6 @@
 use super::*;
-use crate::widget::{NavFeed, NavItem, NavList, NavSection};
-use crate::window_toolbar::ToolbarEvent;
+use tilo_ui::widget::{NavFeed, NavItem, NavList, NavSection};
+use tilo_ui::window_toolbar::ToolbarEvent;
 
 fn places() -> Vec<NavSection> {
     let item = |id: &str, label: &str, icon: Icon| NavItem::new(id, label).icon(icon);
@@ -80,7 +80,7 @@ tilo_test_env::scenario! {
         let g = geometry(&h);
         assert_eq!(g.sidebar, SidebarPlacement::Screen);
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-        assert_eq!(g.back_column, None, "Back goes nowhere");
+        assert_eq!(g.test_back_column(), None, "Back goes nowhere");
         assert_eq!(g.back, Rect::ZERO);
         assert!(!shows_back_part(&h), "no Back part");
         assert!(!h.root::<NavShell>().can_go_back());
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         assert!(
             h.root_mut::<NavShell>()
                 .window_toolbar_event(&ToolbarEvent::Action {
-                    id: crate::widget::nav_shell::window_toolbar::WINDOW_BACK.into()
+                    id: WINDOW_BACK.into()
                 })
         );
         settle(&mut h, NARROW, H);
@@ -178,7 +178,7 @@ fn the_link_puts_the_shells_toggle_in_the_apps_window_bar() {
 
 fn shows_back_part(h: &Driver) -> bool {
     h.root::<NavShell>()
-        .part(Part::Back)
+        .test_part(Part::Back)
         .is_some_and(|back| back.get_rect().width() > 0.0)
 }
 
@@ -187,7 +187,7 @@ fn bar_back(h: &Driver) -> bool {
         .window_toolbar()
         .leading
         .iter()
-        .any(|action| action.id == crate::widget::nav_shell::window_toolbar::WINDOW_BACK)
+        .any(|action| action.id == WINDOW_BACK)
 }
 
 /// A choice the app does not take (a call it joins, not a place it opens)
@@ -329,7 +329,7 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         .sidebar_ref::<NavList>()
         .expect("the sidebar is the list");
     let field = list
-        .list()
+        .test_list()
         .rename_field()
         .expect("the title's field is open");
     assert_eq!(field.value(), "Projects");
@@ -366,7 +366,7 @@ fn a_notice_asked_through_the_bar_leaves_the_sidebar_as_it_is() {
         "a wide window opens with its sidebar docked and open"
     );
 
-    link.toast("Saved", crate::widget::toast::ToastKind::Success);
+    link.toast("Saved", tilo_ui::widget::toast::ToastKind::Success);
     settle(&mut h, 1100, 760);
     assert!(
         h.root::<NavShell>().is_sidebar_open(),
@@ -471,7 +471,7 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
         h.relayout();
     }
     assert_eq!(
-        crate::window_toolbar::declared(),
+        tilo_ui::window_toolbar::declared(),
         None,
         "the bar declares none of them"
     );
@@ -481,7 +481,7 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
         .expect("the frame hosts the shell")
         .geometry()
         .clone();
-    let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.header(c));
+    let rows = [Column::Sidebar, Column::Overview, Column::Content].map(|c| g.test_header(c));
     for row in rows {
         assert!(
             row.width() > 0.0 && row.y0.abs() < 1e-9,
@@ -522,7 +522,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         .sidebar(TestLeaf::fill("sidebar").boxed().0)
         .content(TestLeaf::fill("content").boxed().0);
     let mut h = harness(shell, 360, 520, Theme::dark());
-    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
+    tilo_ui::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
     link.stage_sidebar(true);
     link.put_drawer_away();
     settle(&mut h, 360, 520);
@@ -538,7 +538,7 @@ fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
         "no list over the card"
     );
 
-    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
+    tilo_ui::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
     settle(&mut h, 376, 520);
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);

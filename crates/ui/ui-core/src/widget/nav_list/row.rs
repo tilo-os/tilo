@@ -28,7 +28,7 @@ use tilo_ui_base::{widget::TaffyTreeExt, widget::Theme, widget::Widget};
 
 /// What every row of one list paints from beyond its own data: kept by the
 /// list, read by its rows at paint time.
-pub(crate) struct NavPaint {
+pub struct NavPaint {
     pub rail: bool,
     pub actions: Vec<(Icon, String)>,
     /// The theme the list was last laid out with, for geometry read outside
@@ -127,7 +127,7 @@ impl NavPaint {
     }
 
     /// The face of item row `row` at `rect`, without state.
-    pub(crate) fn item_face<'a>(
+    pub fn item_face<'a>(
         &self,
         spec: &'a NavItemSpec,
         rect: Rect,

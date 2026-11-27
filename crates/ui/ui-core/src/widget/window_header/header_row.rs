@@ -392,6 +392,23 @@ pub(crate) fn measure_title(
     (width, f64::from(h))
 }
 
+/// The title's text style, for a test that measures it from outside the module.
+#[cfg(feature = "test-support")]
+pub fn test_title_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
+    title_style(theme)
+}
+
+/// The width a title and its count take in the row, for a test outside the module.
+#[cfg(feature = "test-support")]
+pub fn test_measure_title(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    title: &str,
+    count: Option<usize>,
+) -> (f64, f64) {
+    measure_title(text, theme, title, count)
+}
+
 fn count_pill_size(text: &mut TextRenderer, theme: &Theme, count: usize) -> (f64, f64) {
     let pad = f64::from(theme.tokens.spacing.s2);
     let (w, h) = text.measure_style(&count.to_string(), None, &count_style(theme));

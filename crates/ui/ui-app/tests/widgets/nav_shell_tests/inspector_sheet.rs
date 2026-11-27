@@ -1,12 +1,12 @@
 use super::*;
-use crate::widget::SheetDetent;
+use tilo_ui::widget::SheetDetent;
 
 const W: u32 = 420;
 const H: u32 = 800;
 
 /// A narrow window with its inspector open as a sheet, settled at half
 /// height; and the content's input counter.
-fn sheet_open() -> (Driver, crate::testing::Seen) {
+fn sheet_open() -> (Driver, tilo_ui::testing::Seen) {
     let (content, events) = TestLeaf::fill("content").boxed();
     let shell = NavShell::new()
         .content(content)
@@ -49,7 +49,7 @@ fn drag_grip_to(h: &mut Driver, y: f64) {
 fn top_at(h: &Driver, detent: SheetDetent) -> f64 {
     let frame = geometry(h).sheet;
     let [peek, half, full] = [SheetDetent::Peek, SheetDetent::Half, SheetDetent::Full].map(|d| {
-        let mut sheet = crate::widget::BottomSheet::new();
+        let mut sheet = tilo_ui::widget::BottomSheet::new();
         sheet.snap_to(d);
         sheet.geometry(frame, 1.0, true).panel.y0
     });
@@ -167,10 +167,10 @@ fn dragging_the_grip_moves_the_sheet_between_its_detents() {
     );
 }
 
-fn grip_node(h: &Driver) -> (crate::accesskit::NodeId, crate::accesskit::Node) {
+fn grip_node(h: &Driver) -> (accesskit::NodeId, accesskit::Node) {
     h.a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.role() == crate::accesskit::Role::Slider)
+        .find(|(_, node)| node.role() == accesskit::Role::Slider)
         .expect("the sheet's grip is a slider")
 }
 
@@ -209,8 +209,8 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
         "the grip stands in the region"
     );
     assert_eq!(node.value(), Some("Half height"));
-    assert!(node.supports_action(crate::accesskit::Action::Increment));
-    assert!(node.supports_action(crate::accesskit::Action::Decrement));
+    assert!(node.supports_action(accesskit::Action::Increment));
+    assert!(node.supports_action(accesskit::Action::Decrement));
     h.perform_a11y_action(grip, &tilo_ui_base::a11y::Action::Increment)
         .expect("the grip steps up");
     settle(&mut h, W, H);
@@ -233,8 +233,8 @@ enum BackInput {
 fn go_back(h: &mut Driver, input: BackInput) {
     match input {
         BackInput::Bar => {
-            let event = crate::window_toolbar::ToolbarEvent::Action {
-                id: super::super::window_toolbar::WINDOW_BACK.into(),
+            let event = tilo_ui::window_toolbar::ToolbarEvent::Action {
+                id: WINDOW_BACK.into(),
             };
             assert!(h.root_mut::<NavShell>().window_toolbar_event(&event));
         }
@@ -274,7 +274,7 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
                     .window_toolbar()
                     .leading
                     .iter()
-                    .any(|action| action.id == super::super::window_toolbar::WINDOW_BACK),
+                    .any(|action| action.id == WINDOW_BACK),
                 "the bar offers Back while the sheet shows"
             );
             go_back(&mut h, input);

@@ -1003,10 +1003,19 @@ pub mod internals {
         pub use crate::widget::modal_dialog::*;
     }
     pub mod nav_list {
+        pub use crate::widget::nav_list::model::{NavItemSpec, NavRowKind};
+        pub use crate::widget::nav_list::row::NavPaint;
         pub use crate::widget::nav_list::*;
+        pub mod model {
+            pub use crate::widget::nav_list::model::*;
+        }
     }
     pub mod nav_shell {
+        pub use crate::widget::nav_shell::sidebar_resize::AdaptiveSidebar;
         pub use crate::widget::nav_shell::*;
+        pub use crate::widget::toast::ToastKind;
+        #[cfg(feature = "test-support")]
+        pub use crate::widget::window_header::header_row::{test_measure_title, test_title_style};
     }
     pub mod page_sidebar {
         pub use crate::widget::page_sidebar::*;

@@ -3,7 +3,7 @@
 //! arrow keys) one to one and is remembered per app.
 
 use super::*;
-use crate::widget::{NavItem, NavList, NavSection};
+use tilo_ui::widget::{NavItem, NavList, NavSection};
 
 fn places() -> NavList {
     NavList::new(place_sections()).with_id("places")
@@ -41,9 +41,7 @@ fn shows_rail(h: &Driver) -> bool {
 
 fn adaptive(h: &Driver) -> AdaptiveSidebar {
     h.root::<NavShell>()
-        .inputs
-        .borrow()
-        .adaptive
+        .test_adaptive()
         .expect("a navigation-list sidebar adapts to its width")
 }
 
@@ -163,7 +161,7 @@ fn places_that_arrive_after_the_first_layout_set_the_width() {
         .sidebar_mut::<NavList>()
         .expect("the sidebar is the list")
         .set_sections(place_sections());
-    h.root_mut::<NavShell>().invalidate();
+    h.root_mut::<NavShell>().test_invalidate();
     settle(&mut h, W, H);
     let adaptive = adaptive(&h);
     assert!(
