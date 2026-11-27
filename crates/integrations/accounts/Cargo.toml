@@ -23,7 +23,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # the key storage.
 tilo-secret-vault = { version = "0.1.0", path = "../../core/secret-vault" }
 # A vault entry's kinds, id, places and changes are the workspace's record vocabulary.
-tilo-workspace-records = { path = "../../core/workspace-records" }
+tilo-workspace-records = { version = "0.1.0", path = "../../core/workspace-records" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 serde.workspace = true
 serde_json.workspace = true
