@@ -2440,17 +2440,14 @@ fn spawn_and_wait(
     child_setup: ChildSetup,
     egress: &crate::egress_proxy::EgressDecision,
     egress_proxy: Option<&crate::sandbox::EgressProxyBind>,
-    observer: Option<(&dyn EnrolledProcessObserver, Option<PathBuf>)>,
+    observer: Option<&dyn EnrolledProcessObserver>,
+    debug_output: Option<PathBuf>,
 ) -> Result<ExitStatus, LaunchError> {
     let ChildSetup {
         seccomp_fds,
         services: resolved,
         latency_sensitive,
     } = child_setup;
-    let (observer, debug_output) = match observer {
-        Some((observer, debug_output)) => (Some(observer), debug_output),
-        None => (None, None),
-    };
     let debug_output = debug_output.and_then(|path| {
         std::fs::OpenOptions::new()
             .create(true)
@@ -2525,14 +2522,15 @@ fn spawn_and_wait(
             .stderr(app_stream(std::io::IsTerminal::is_terminal(
                 &std::io::stderr(),
             )));
-        if let Some((path, _)) = &debug_output {
-            tracing::warn!(
-                path = %path.display(),
-                "{DEBUG_STDERR_ENV}=1: capturing the managed child's output (debug only)",
-            );
-            cmd.stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-        }
+    }
+    if let Some((path, _)) = &debug_output {
+        tracing::warn!(
+            path = %path.display(),
+            "{DEBUG_STDERR_ENV}=1: capturing the app's output (debug only)",
+        );
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
     }
 
     // pre_exec: place both seccomp blobs on fixed child fds, and put each service socket on the fd
@@ -2605,19 +2603,26 @@ fn spawn_and_wait(
     }
     // 5.
     let mut child = cmd.spawn().map_err(LaunchError::Spawn)?;
+    let debug_path = debug_output.as_ref().map(|(path, _)| path.clone());
+    let mut readers = Vec::new();
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
         if let Some(out) = child.stdout.take() {
             let (sink, budget) = (sink.clone(), budget.clone());
-            let _ = std::thread::Builder::new()
+            if let Ok(reader) = std::thread::Builder::new()
                 .name("tilo-debug-stdout".into())
-                .spawn(move || copy_bounded_output(out, &sink, &budget));
+                .spawn(move || copy_bounded_output(out, &sink, &budget))
+            {
+                readers.push(reader);
+            }
         }
-        if let Some(err) = child.stderr.take() {
-            let _ = std::thread::Builder::new()
+        if let Some(err) = child.stderr.take()
+            && let Ok(reader) = std::thread::Builder::new()
                 .name("tilo-debug-stderr".into())
-                .spawn(move || copy_bounded_output(err, &sink, &budget));
+                .spawn(move || copy_bounded_output(err, &sink, &budget))
+        {
+            readers.push(reader);
         }
     }
     // Keep both filter fds alive until spawn has duplicated them in the child.
@@ -2632,13 +2637,23 @@ fn spawn_and_wait(
     } else {
         child.wait()?
     };
-    // A sandbox that ended badly names what it ran: an empty stream from the app leaves this as
-    // the only record of the program and the arguments it was given.
+    // The app's own streams are read out before its end is said, so what it wrote is whole.
+    for reader in readers {
+        let _ = reader.join();
+    }
+    // A sandbox that ended badly names what it ran, and what the app said before it went: an empty
+    // stream leaves this as the only record of the program and the arguments it was given.
     if !status.success() {
+        let said = debug_path
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .map(|text| last_lines(&text))
+            .filter(|said| !said.is_empty())
+            .map(|said| format!("; it said: {said}"))
+            .unwrap_or_default();
         eprintln!(
-            "tilo-launcher: {} {} ran {} {}",
+            "tilo-launcher: {} {status} ran {} {}{said}",
             opts.app_id.as_deref().unwrap_or("the app"),
-            status,
             bwrap.display(),
             argv.join(" ")
         );
@@ -3270,12 +3285,8 @@ pub(crate) fn launch_with_context(
         },
         &egress.decision,
         egress_proxy.as_ref(),
-        native_owner.map(|observer| {
-            (
-                observer,
-                opts.data_home.as_deref().and_then(debug_output_log),
-            )
-        }),
+        native_owner,
+        opts.data_home.as_deref().and_then(debug_output_log),
     );
     if result.is_ok()
         && let Some(namespace) = &mut headless_console
@@ -3295,6 +3306,34 @@ const DEBUG_OUTPUT_LIMIT: usize = 1024 * 1024;
 fn debug_output_log(data_home: &Path) -> Option<PathBuf> {
     (std::env::var_os(DEBUG_STDERR_ENV).as_deref() == Some(std::ffi::OsStr::new("1")))
         .then(|| data_home.join("launcher-debug-output.log"))
+}
+
+/// The last of what an app wrote, as one line of a launcher report: its most recent non-empty
+/// lines, within a length a log reads.
+fn last_lines(text: &str) -> String {
+    const KEPT_LINES: usize = 20;
+    const KEPT_BYTES: usize = 2000;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let said = lines
+        .get(lines.len().saturating_sub(KEPT_LINES)..)
+        .unwrap_or_default()
+        .join(" | ");
+    if said.len() <= KEPT_BYTES {
+        return said;
+    }
+    // The end is the part that says why it stopped: keep that, cut on a character boundary.
+    let mut cut = said.len().saturating_sub(KEPT_BYTES);
+    while !said.is_char_boundary(cut) {
+        cut = cut.saturating_add(1);
+    }
+    match said.get(cut..) {
+        Some(tail) => format!("…{tail}"),
+        None => said,
+    }
 }
 
 /// Copy `source` into `sink` until EOF or until `budget` bytes were written in total across all copiers
@@ -4384,7 +4423,8 @@ mod managed_spawn_policy_tests {
                     },
                     &crate::egress_proxy::EgressDecision::Blocked,
                     None,
-                    Some((&owner, None)),
+                    Some(&owner),
+                    None,
                 );
                 assert_eq!(owner.checked.load(AtomicOrdering::SeqCst), 1);
                 assert_eq!(
@@ -4437,7 +4477,8 @@ mod managed_spawn_policy_tests {
                     },
                     &crate::egress_proxy::EgressDecision::Blocked,
                     None,
-                    Some((&owner, None)),
+                    Some(&owner),
+                    None,
                 );
                 assert!(matches!(result, Err(LaunchError::InvalidServiceLaunch(reason))
                     if reason == "private service namespace missing"));
@@ -4474,7 +4515,8 @@ mod managed_spawn_policy_tests {
                     },
                     &crate::egress_proxy::EgressDecision::Blocked,
                     None,
-                    Some((&policy, None)),
+                    Some(&policy),
+                    None,
                 );
                 assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);
                 assert_eq!(
@@ -4524,6 +4566,28 @@ mod debug_output_tests {
             if std::env::var_os(DEBUG_STDERR_ENV).is_none() {
                 assert!(debug_output_log(Path::new("/nonexistent")).is_none());
             }
+        }
+
+        phase a_failed_launch_says_the_last_of_what_the_app_wrote;
+        {
+            assert_eq!(last_lines(""), "");
+            assert_eq!(
+                last_lines("loading\n\n  out of memory  \n"),
+                "loading | out of memory"
+            );
+            // Only the most recent lines are kept, and the end is what a person needs.
+            let many: String = (0..30)
+                .map(|n| format!("line {n}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let said = last_lines(&many);
+            assert!(said.starts_with("line 10"), "{said}");
+            assert!(said.ends_with("line 29"), "{said}");
+            // A very long line is cut from the front, never in the middle of a character.
+            let long = format!("{}\néchec", "x".repeat(4000));
+            let said = last_lines(&long);
+            assert!(said.starts_with('…'), "{said}");
+            assert!(said.ends_with("échec"), "{said}");
         }
     }
 }
