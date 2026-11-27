@@ -20,8 +20,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionDescriptor, ApiError, ExecutionLocus, InvocationId};
 use tilo_app_launch::{
-    Answer, Authority, Cause, HeldLink, Instance, Kind, Launch, Links, PlanContext, Planned,
-    Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
+    Answer, Cause, HeldLink, Instance, Kind, Launch, Links, PlanContext, Planned, Routed,
+    SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
 use tilo_broker_core::services::LaunchPlace;
 use tilo_desktop_search::LaunchPlace as OpenPlace;
@@ -56,8 +56,6 @@ struct AppConnections {
     /// Its connection to this session's tools service, made for this app in this workspace: what
     /// `File.open` asks which app opens a file and starts it.
     tools: Option<std::os::fd::OwnedFd>,
-    /// What the person may do in the app.
-    access: Option<tilo_action_policy::MemberAccess>,
 }
 
 use crate::search::AppActions;
@@ -170,14 +168,8 @@ struct State {
     /// The identity record this workspace's apps are given, when the session resolved one.
     identity: Option<PathBuf>,
     /// The person at this device, by the id the workspaces' governance names them by: whose
-    /// authority each app it starts is handed.
+    /// grants are minted here.
     person: String,
-    /// What the person's authority in a workspace is published as, for each app this session starts
-    /// there, and this session's hold on it.
-    authority: Authority,
-    /// The shell's revision the published authority was last brought up to: nothing is republished
-    /// while the shell has not moved.
-    authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
     /// The same display and GPU, as a Windows program started by the compatibility service is
@@ -227,9 +219,6 @@ struct State {
     /// workspace and app, and the session hands each tilolang window's instance to it. `Err` says
     /// why this session reaches no daemon.
     processes: Option<Result<DeviceProcesses, String>>,
-    /// Whether this session handed the daemon an instance: only then do processes run its windows,
-    /// whose people's access it says again when the workspace's policy changes.
-    handed_over: bool,
     /// This session's tools service, once it lent it: what a tilolang app's `File.open` asks, on a
     /// connection made for that app.
     tools: Option<crate::tools::Handle>,
@@ -414,8 +403,6 @@ impl Apps {
                 launcher,
                 identity: None,
                 person: String::new(),
-                authority: Authority::new(),
-                authority_at: None,
                 render_node: None,
                 windows_display: Arc::default(),
                 software: false,
@@ -432,7 +419,6 @@ impl Apps {
                 dispatch: None,
                 wake,
                 processes: None,
-                handed_over: false,
                 tools: None,
                 chosen: None,
                 view: None,
@@ -530,8 +516,7 @@ impl Apps {
     }
 
     /// The person at this device, by the id the workspaces' governance names them by: whose
-    /// authority in a workspace each app started from here on is handed, so it decides their
-    /// actions as the workspace's policy says.
+    /// grants are minted here.
     pub fn set_person(&self, person: impl Into<String>) {
         self.state.borrow_mut().person = person.into();
     }
@@ -787,9 +772,6 @@ impl Apps {
         } else {
             None
         };
-        // What the person may do in the app, as a launched app of it reads it: the instance's
-        // views offer and refuse by it.
-        let access = tilo_app_launch::authority::access(&self.workspace_named(workspace), app);
         // This session's tools service, on a connection the session makes for this app in this
         // workspace: what `File.open` asks which app opens a file, and starts it, since the app's
         // process holds no launch identity of its own to be read off a socket.
@@ -811,7 +793,6 @@ impl Apps {
             chooser,
             clipboard,
             tools,
-            access,
         })
     }
 
@@ -859,7 +840,8 @@ impl Apps {
             tools: resources.tools,
         };
         let handed = HandedInstance {
-            access: resources.access,
+            // What the person may do in the app is the device's to decide when the action reaches
+            // it, so the instance is handed no policy to decide with.
             app,
             workspace,
             instance,
@@ -884,7 +866,6 @@ impl Apps {
             locale: Self::person_locale(),
             link_home,
         };
-        self.state.borrow_mut().handed_over = true;
         // The daemon verifies the package and may start the process: never on the session's
         // loop.
         let handing = std::thread::Builder::new()
@@ -1123,7 +1104,6 @@ impl Apps {
         self.start_asked_now();
         self.follow_items();
         self.follow_ended();
-        self.follow_policy();
         self.follow_workspaces();
         #[cfg(target_os = "linux")]
         self.follow_kept();
@@ -1151,67 +1131,6 @@ impl Apps {
             .is_some_and(|launches| launches.waiting());
         if waiting {
             self.start_asked_of_services();
-        }
-    }
-
-    /// Bring what the person's authority in a workspace is published as up to the policy the shell
-    /// holds now, so a part given or taken back reaches the apps they already run. The shell's
-    /// revision says whether anything may have changed.
-    fn follow_policy(&self) {
-        let Some(desktop) = self.desktop.borrow().clone() else {
-            return;
-        };
-        let revision = desktop.with_policy(|policy| policy.handle().revision());
-        {
-            let state = self.state.borrow();
-            if (state.authority.is_empty() && !state.handed_over)
-                || state.authority_at == Some(revision)
-            {
-                return;
-            }
-        }
-        self.state.borrow_mut().authority_at = Some(revision);
-        // The processes running this session's windows' instances, as the daemon runs them.
-        let handed_over = self.state.borrow().handed_over;
-        let hosting = handed_over
-            .then(|| self.device_processes().ok())
-            .flatten()
-            .and_then(|processes| match processes.running() {
-                Ok(running) => Some((processes, running)),
-                Err(error) => {
-                    tracing::warn!(%error, "the tilolang processes running are not known");
-                    None
-                }
-            });
-        let mut named = self.state.borrow().authority.workspaces();
-        if let Some((_, running)) = &hosting {
-            named.extend(running.iter().map(|process| process.workspace.clone()));
-            named.sort();
-            named.dedup();
-        }
-        for id in named {
-            let workspace = self.workspace_named(&id);
-            if let Err(error) = self.state.borrow().authority.refresh(&workspace) {
-                tracing::warn!(%id, %error, "the person's authority there was not published");
-            }
-            // The windows whose instances a tilolang process runs are told on its link.
-            let Some((processes, running)) = &hosting else {
-                continue;
-            };
-            let apps: Vec<_> = running
-                .iter()
-                .filter(|process| process.workspace == workspace.id)
-                .map(|process| runtime_portal::process_link::AppAccess {
-                    access: tilo_app_launch::authority::access(&workspace, &process.app),
-                    app: process.app.clone(),
-                })
-                .collect();
-            if apps.is_empty() {
-                continue;
-            }
-            if let Err(error) = processes.access_changed(&workspace.id, apps) {
-                tracing::warn!(%id, %error, "the tilolang processes were not told what the person may now do");
-            }
         }
     }
 
@@ -1871,15 +1790,12 @@ impl Apps {
         self.device_answers.replace(Some(grants));
     }
 
-    /// `shown` as a launch into it is planned: what the person granted apps there, and the policy
-    /// their authority in it is projected from.
+    /// `shown` as a launch into it is planned: what the person granted apps there.
     fn launching_into(shown: &tilo_desktop_model::Workspace) -> Workspace {
         let mut launched = Workspace::under(&runtime_dir(), shown.id().to_string());
         launched.grants = tilo_permissions::caps::LaunchGrants {
             sandbox: shown.sandbox.clone(),
-            ..tilo_permissions::caps::LaunchGrants::default()
         };
-        launched.policy = Some(shown.policy.clone());
         launched
     }
 
@@ -2358,7 +2274,6 @@ impl Apps {
             workspace,
             launcher: state.launcher.clone(),
             identity: state.identity.clone(),
-            authority: Some(&state.authority),
             render_node: state.render_node.clone(),
             granted: &granted,
             new_window,
@@ -2452,11 +2367,11 @@ impl Apps {
             .map_err(ApiError::Failed)?;
         let (instance, collaboration) =
             Self::no_view_connection(&links, app, &workspace.id).map_err(ApiError::Failed)?;
-        self.state.borrow_mut().handed_over = true;
         processes
             .hand_over(
                 HandedInstance {
-                    access: resources.access,
+                    // What the person may do in the app is the device's to decide when the action
+                    // reaches it, so the instance is handed no policy to decide with.
                     app: app.to_owned(),
                     workspace: workspace.id.clone(),
                     instance,

@@ -3770,8 +3770,6 @@ struct SdkRoute {
     _moderation: Option<crate::route_endpoints::Registration<super::external_moderation::Endpoint>>,
     document: DocumentRoute,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
-    /// The task carrying what the host says of the actions the window last named.
-    shown_actions: Option<tokio::task::AbortHandle>,
     /// Reads the record's changes as it opens and each time it changed elsewhere, while the
     /// route lives; `None` on a route whose changes arrive as committed reads, or that carries
     /// no record.
@@ -5209,43 +5207,6 @@ async fn dispatch_sdk_request(
                         runtime_collab::WorkspaceControlCloseReason::Denied(error.to_string()),
                     ),
                 });
-            }
-        }
-        CollabRequest::DecideShownActions { actions } => {
-            if let Some(earlier) = route.shown_actions.take() {
-                earlier.abort();
-            }
-            if actions.is_empty() {
-                return true;
-            }
-            match route.channel.shown_actions(actions.clone()).await {
-                Ok(verdicts) => {
-                    let tx = inbound_tx.clone();
-                    let task = tokio::task::spawn_local(async move {
-                        while let Ok(verdicts) = verdicts.read().await {
-                            if !tx
-                                .send_durable(CollabEvent::ActionVerdicts { verdicts })
-                                .await
-                            {
-                                break;
-                            }
-                        }
-                    });
-                    route.shown_actions = Some(task.abort_handle());
-                }
-                Err(error) => {
-                    let reason = format!("The host couldn't be asked about this: {error}");
-                    let verdicts = actions
-                        .into_iter()
-                        .map(|action| tilo_permissions::shown_actions::ActionDecision {
-                            action,
-                            verdict: tilo_permissions::shown_actions::ActionVerdict::Refused(
-                                reason.clone(),
-                            ),
-                        })
-                        .collect();
-                    let _ = inbound_tx.send_reply(CollabEvent::ActionVerdicts { verdicts });
-                }
             }
         }
         CollabRequest::CloseWorkspaceControl { session_id } => {

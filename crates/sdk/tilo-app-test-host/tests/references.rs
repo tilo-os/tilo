@@ -113,6 +113,7 @@ fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
     env.set("TILO_WORKSPACE_ID", WORKSPACE);
 
     let api = Arc::new(Api::default());
+    tilo_app_test_host::answer_calls_in_process();
     let _served = RemoteActions::enter(api.clone(), Caller::local_person("ada"));
     let mut app = open_chip(&api);
     let asked = api.asked.lock().unwrap().pop().unwrap();
@@ -129,6 +130,7 @@ fn a_reference_chip_opens_its_resource_in_its_own_app_and_tells_a_refusal() {
         refusal: Some(ActionCallError::NotPermitted),
         ..Api::default()
     });
+    tilo_app_test_host::answer_calls_in_process();
     let _served = RemoteActions::enter(api.clone(), Caller::local_person("ada"));
     let mut app = open_chip(&api);
     let refused = app.refused().expect("the refusal is told");

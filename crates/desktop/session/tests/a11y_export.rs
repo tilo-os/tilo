@@ -254,24 +254,30 @@ fn an_app_the_session_hosts_is_exported_with_working_controls() {
     );
     DisplayTransaction::request(set, candidate).expect("a change staged");
 
-    let (place, keep) =
-        crate::common::wait_for(&mut session, "the display question's export", |session| {
+    // The sheet's first frame shows Keep before its device answered whether the person may press
+    // it, as any window does; the answer comes with the next. The button a screen reader reads
+    // is then one it can press.
+    let (place, keep) = crate::common::wait_for(
+        &mut session,
+        "the display question's export, with a Keep a screen reader can press",
+        |session| {
             session.step(REFRESH).expect("a turn of the session");
             let (place, tree) = named_window(&session.a11y_windows(), "Display change")?;
             let keep = tree
                 .nodes
                 .iter()
-                .find(|(_, node)| node.label() == Some("Keep") && !node.is_hidden())
+                .find(|(_, node)| {
+                    node.label() == Some("Keep")
+                        && !node.is_hidden()
+                        && node.supports_action(ui::accesskit::Action::Click)
+                })
                 .map(|(id, _)| *id)?;
             Some((place, keep))
-        });
+        },
+    );
     let (_, sheet) = window(&session.a11y_windows(), "Display change");
     let (_, node) = reached(&sheet, "Keep");
     assert_eq!(node.role(), Role::Button, "a button, as the app draws it");
-    assert!(
-        node.supports_action(ui::accesskit::Action::Click),
-        "the button a screen reader reads is one it can press"
-    );
 
     assert!(
         session.a11y_perform(place, keep, &Action::Activate),

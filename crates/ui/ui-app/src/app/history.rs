@@ -537,7 +537,7 @@ impl App {
             let restored = crate::history_mode::embedded::service_reviews(
                 self.root_widget.as_mut(),
                 &mut self.state,
-                &self.permission_ctx,
+                None,
                 &self.local_author,
             );
             if !restored.is_empty() {
@@ -588,7 +588,7 @@ impl App {
             let changed = history.service_restore(
                 &mut self.state,
                 self.root_widget.as_mut(),
-                &self.permission_ctx,
+                None,
                 &self.local_author,
             );
             let restored = history.take_restored_source();

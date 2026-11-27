@@ -168,11 +168,10 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             .is_some_and(|actions| !actions.is_empty()),
         "replacing the navigation tree must not withdraw the native publication"
     );
-    owner.permissions.set(
-        tilo_permissions::PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-        )
-        .at_unix_time(100),
+    // The device takes the person's access back.
+    crate::application_test_support::answer_read(
+        &owner.permissions,
+        &crate::application_test_support::stranger_device(),
     );
     app.publish_action_surface();
     assert!(

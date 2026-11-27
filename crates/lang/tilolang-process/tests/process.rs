@@ -412,7 +412,7 @@ fn instance_on(
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::new(
-        attributes,
+        bus.launched(route, attributes, &bundle),
         connection,
         (store, tilolang_process::hosted::memory_content()),
         Arc::new(bundle),
@@ -1897,18 +1897,15 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
     );
 }
 
-/// Two members, by the hex of their user root keys: the workspace's owner, and a viewer.
+/// A member, by the hex of their user root key: the workspace's owner.
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
-const BO: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 
 /// A host running `bundle`'s app `app` with no window for `person` ([`Shows::Nothing`]), on a
 /// broker the test plays: what its connection sent, what the broker holds for it, and its route.
-/// `access` is what the person may do in the app, as the session hands it with the instance.
 fn running_with_no_view(
     person: &str,
     app: &str,
     bundle: Bundle,
-    access: Option<tilo_action_policy::MemberAccess>,
 ) -> (
     TilolangProcess,
     Sent,
@@ -1918,7 +1915,8 @@ fn running_with_no_view(
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     // The broker answers the connection's reads as its person, as the session's does.
-    let broker = Broker::on(&Rc::default(), route.clone(), person);
+    let bus = Rc::new(tilolang_process::testing::Bus::default());
+    let broker = Broker::on(&bus, route.clone(), person);
     let (sent, inbox, workspace) = (broker.sent(), broker.inbox(), broker.workspace());
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
@@ -1932,10 +1930,11 @@ fn running_with_no_view(
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));
     let mut host = TilolangProcess::new(wake());
-    let mut spec = Spec::new(app, route.cluster_id.to_string(), 1, person).showing(Shows::Nothing);
-    if let Some(access) = access {
-        spec = spec.access(access);
-    }
+    let spec = bus.launched(
+        &route,
+        Spec::new(app, route.cluster_id.to_string(), 1, person).showing(Shows::Nothing),
+        &bundle,
+    );
     let hosted = Hosted::new(
         spec,
         connection,
@@ -2018,7 +2017,7 @@ tilo_test_env::scenario! {
     phase a_tasks_action_with_no_window_is_applied_as_its_invocers_step;
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle);
         settle_with_no_view(&mut host);
         // An instance that shows nothing has no window to bring forward: it offers no such verb.
         assert!(
@@ -2058,7 +2057,7 @@ tilo_test_env::scenario! {
         // callers name: a task one step made is there for the next step to act on, as the
         // Migrations app's record its engine makes is there for a person to start.
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let (mut host, sent, inbox, _) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, sent, inbox, _) = running_with_no_view("ada", &app, bundle);
         settle_with_no_view(&mut host);
         let new_task = published_as(&host, "New task");
         for id in 1..=2 {
@@ -2087,46 +2086,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_member_whose_access_denies_it_is_refused_and_nothing_is_written;
-    {
-        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let workspace = uuid::Uuid::new_v4();
-        let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace.to_string(), ADA);
-        policy.members.insert(BO.to_owned(), tilo_action_policy::Role::Viewer.into());
-        let access = tilo_action_policy::MemberAccess::person(policy, ADA);
-        let (mut host, sent, inbox, workspace) = running_with_no_view("ada", &app, bundle, Some(access));
-        settle_with_no_view(&mut host);
-        let new_task = published_as(&host, "New task");
-        let before = workspace.written().len();
-        // Bo is a viewer and Tasks lets one make no task: the step is refused, and the document
-        // holds nothing of it.
-        let (actor, context) = (tilo_actions::Actor::Member(tilo_actions::MemberId::person(BO)), None);
-        deliver_as(
-            &inbox,
-            1,
-            tilo_actions::InvocationId::new(),
-            &new_task,
-            actor,
-            context,
-        );
-        settle_with_no_view(&mut host);
-        let answer = answered(&sent, 1).expect("the broker hears the refusal");
-        let said = format!("{answer:?}");
-        assert!(
-            said.contains("not allowed") || said.contains("permission_denied"),
-            "Bo is refused, with why: {said}"
-        );
-        assert_eq!(
-            workspace.written().len(),
-            before,
-            "the refused step wrote nothing in the workspace"
-        );
-    }
+    // A member the workspace refuses is refused where the call is admitted, on the device, before
+    // it reaches an instance: `tilo-app-host`'s
+    // `a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said`.
 
     phase a_cancelled_invocation_writes_nothing;
     {
         let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let (mut host, _, inbox, workspace) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, _, inbox, workspace) = running_with_no_view("ada", &app, bundle);
         settle_with_no_view(&mut host);
         let new_task = published_as(&host, "New task");
         let before = workspace.written().len();
@@ -2797,7 +2764,8 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
     // The broker answers the connection's reads as its person, as the session's does.
-    let broker = Broker::on(&Rc::default(), route.clone(), "ada");
+    let bus: Rc<Bus> = Rc::default();
+    let broker = Broker::on(&bus, route.clone(), "ada");
     let sent = broker.sent();
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
@@ -2825,11 +2793,16 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
     let mut host = TilolangProcess::new(wake());
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
+    let notes = notes_bundle();
     let mut hosted = Hosted::new(
-        Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada"),
+        bus.launched(
+            &route,
+            Spec::new(NOTES, route.cluster_id.to_string(), 1, "ada"),
+            &notes,
+        ),
         connection,
         (store, content),
-        Arc::new(notes_bundle()),
+        Arc::new(notes),
         &kept,
         Box::new(ChannelTransport::new(ours).unwrap()),
         (&Rc::new(Phrases::new("en-US")), host.formats()),
@@ -3029,7 +3002,8 @@ fn listing(app: Option<&str>) -> runtime_interface::tools::ToolReply {
 fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess, Window) {
     let route = RouteSpec::app(OPENER, uuid::Uuid::new_v4());
     // The broker answers the connection's reads as its person, as the session's does.
-    let broker = Broker::on(&Rc::default(), route.clone(), "ada");
+    let bus: Rc<Bus> = Rc::default();
+    let broker = Broker::on(&bus, route.clone(), "ada");
     let sent = broker.sent();
     let mut manager = CollaborationManager::with_peer_transport(broker);
     assert!(manager.send(CollabRequest::Hello {
@@ -3058,11 +3032,16 @@ fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess,
     let mut host = TilolangProcess::new(wake());
     let (window, patches) = Channel::pair().unwrap();
     let watched = window.as_fd().try_clone_to_owned().unwrap();
+    let opener = opener();
     let mut hosted = Hosted::new(
-        Spec::new(OPENER, route.cluster_id.to_string(), 1, "ada"),
+        bus.launched(
+            &route,
+            Spec::new(OPENER, route.cluster_id.to_string(), 1, "ada"),
+            &opener,
+        ),
         connection,
         (store, content),
-        Arc::new(opener()),
+        Arc::new(opener),
         &kept,
         Box::new(ChannelTransport::new(window).unwrap()),
         (&Rc::new(Phrases::new("en-US")), host.formats()),

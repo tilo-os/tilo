@@ -1488,10 +1488,10 @@ fn a_reply_goes_out_as_far_as_the_workspace_lets_mail_send() {
         let workspace = route.cluster_id.to_string();
         let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
         policy.grants.extend(denials(&workspace));
-        let spec = Spec::new(APP, workspace, 1, "ada")
-            .in_language("en-US")
-            .access(MemberAccess::person(policy, "ada"));
-        let mut session = connector.attach(Session::brokered_as(&route, spec, Window::in_harness));
+        let bus = std::rc::Rc::new(tilolang_process::testing::Bus::default());
+        bus.set_access(&route, "ada", MemberAccess::person(policy, "ada"));
+        let spec = Spec::new(APP, workspace, 1, "ada").in_language("en-US");
+        let mut session = connector.attach(Session::on_bus(&bus, &route, spec));
         synced(&mut session);
         session.hold_for(0);
         let plan = session.thread("Launch plan");

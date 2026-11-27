@@ -128,11 +128,6 @@ pub struct WorkspaceSync {
     pub state: WorkspaceSyncState,
     #[serde(default)]
     pub workspace: String,
-    /// Whether this app may write the workspace now: the workspace's grants let the
-    /// person change it and make the app one of its authors, the same decision that
-    /// opened it writable or read-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub writable: Option<bool>,
     /// This device's writes to the workspace that are not yet synced: held on this device
     /// because no host of the workspace carries them now, or because the host did not
     /// keep them.
@@ -228,9 +223,6 @@ thread_local! {
     static HOLDINGS: RefCell<Option<Arriving<(), WorkspaceUnreachable>>> =
         const { RefCell::new(None) };
     static RETRY: Cell<bool> = const { Cell::new(false) };
-    #[cfg(feature = "model")]
-    static FOLLOWERS: RefCell<Vec<tilo_permissions::WeakPermissions>> =
-        const { RefCell::new(Vec::new()) };
     /// The spinner step an empty state painted last, and where (scene pixels) a new pose
     /// was painted that no presented frame has damaged yet.
     static SPINNER: Cell<(Option<u64>, Option<vello::kurbo::Rect>)> =
@@ -355,55 +347,11 @@ fn tell(sync: Option<WorkspaceSync>) -> bool {
             .as_ref()
             .filter(|told| told.sync.before_first_sync())
             .map_or_else(crate::time::now, |told| told.since);
-        #[cfg(feature = "model")]
-        let writable = sync.as_ref().and_then(|sync| sync.writable);
         *told = sync.map(|sync| Told { sync, since });
         drop(told);
-        #[cfg(feature = "model")]
-        if let Some(writable) = writable {
-            follow(writable);
-        }
         SPINNER.with(|spinner| spinner.set((None, None)));
         true
     })
-}
-
-/// Let `permissions`, a workspace launch's, follow the workspace's grants: when the shell
-/// says the app may write the workspace now, or may not any more, they become an author's
-/// or a viewer's at once ([`WorkspaceSync::writable`]).
-#[cfg(feature = "model")]
-pub fn follow_participation(permissions: &tilo_permissions::SharedPermissions) {
-    FOLLOWERS.with(|followers| {
-        let mut followers = followers.borrow_mut();
-        followers.retain(tilo_permissions::WeakPermissions::is_shared);
-        followers.push(permissions.downgrade());
-    });
-    if let Some(writable) = current().and_then(|sync| sync.writable) {
-        rebase(permissions, writable);
-    }
-}
-
-#[cfg(feature = "model")]
-fn follow(writable: bool) {
-    let live: Vec<_> = FOLLOWERS.with(|followers| {
-        let mut followers = followers.borrow_mut();
-        followers.retain(tilo_permissions::WeakPermissions::is_shared);
-        followers
-            .iter()
-            .filter_map(tilo_permissions::WeakPermissions::upgrade)
-            .collect()
-    });
-    for permissions in live {
-        rebase(&permissions, writable);
-    }
-}
-
-#[cfg(feature = "model")]
-fn rebase(permissions: &tilo_permissions::SharedPermissions, writable: bool) {
-    let next = permissions.borrow().with_participation(writable);
-    if let Some(next) = next {
-        permissions.set(next);
-    }
 }
 
 /// What the shell last said about this window's workspace.
@@ -581,7 +529,6 @@ mod tests {
         Some(WorkspaceSync {
             state,
             workspace: "Lounge".into(),
-            writable: None,
             unsynced_writes: 0,
             cannot_keep_writes: false,
         })
@@ -747,64 +694,12 @@ mod tests {
         let _ = take_spinner_damage();
     }
 
-    #[cfg(feature = "model")]
-    #[test]
-    fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
-        use crate::permissions::ActionKind;
-        use tilo_permissions::PermissionContext;
-        use tilo_permissions::PermissionScope;
-        use tilo_permissions::Role;
-        use tilo_permissions::SharedPermissions;
-        let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-        let writes = |permissions: &SharedPermissions| {
-            permissions
-                .borrow()
-                .check(&PermissionScope::workspace(ActionKind::Undoable))
-        };
-        set(None);
-        let launch = tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
-            workspace,
-            &crate::permissions::MemberId::person("person-a"),
-            Role::Viewer,
-        ));
-        let own = tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
-            workspace,
-            &crate::permissions::MemberId::person("person-a"),
-            Role::Owner,
-        ));
-        follow_participation(&launch);
-        follow_participation(&own);
-        assert!(!writes(&launch), "opened read-only");
-        let told = |writable| {
-            Some(WorkspaceSync {
-                state: WorkspaceSyncState::Synced,
-                workspace: "Lounge".into(),
-                writable,
-                unsynced_writes: 0,
-                cannot_keep_writes: false,
-            })
-        };
-        set(told(Some(true)));
-        assert!(writes(&launch), "writable the moment authorship arrives");
-        set(told(Some(false)));
-        assert!(!writes(&launch), "read-only again when it is withdrawn");
-        assert!(
-            writes(&own),
-            "an owner's own launch is no participation to follow"
-        );
-        set(told(Some(true)));
-        set(told(None));
-        assert!(writes(&launch));
-        set(None);
-    }
-
     #[test]
     fn writes_held_for_the_workspaces_hosts_say_they_are_not_yet_synced_until_kept() {
         let told = |unsynced_writes| {
             Some(WorkspaceSync {
                 state: WorkspaceSyncState::Synced,
                 workspace: "Lounge".into(),
-                writable: None,
                 unsynced_writes,
                 cannot_keep_writes: false,
             })
@@ -840,7 +735,6 @@ mod tests {
         let sync = WorkspaceSync {
             state: WorkspaceSyncState::HostNeedsUpdate,
             workspace: "Lounge".into(),
-            writable: None,
             unsynced_writes: 0,
             cannot_keep_writes: false,
         };

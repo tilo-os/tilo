@@ -15,13 +15,11 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
-use tilo_permissions::LivePermissions;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::TreePath;
 use tilo_resource::{Invoke, Resource};
 use tilo_ui_base::LocalState;
 use tilo_ui_base::workspace_sync::RecordNotHere;
 use tilo_ui_base::{arriving::Arriving, arriving::Source};
+use tilo_ui_base::{permissions::LivePermissions, permissions::TreePath};
 use ui_core::history_mode::HistoryOwner;
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
@@ -327,22 +325,26 @@ impl Core {
                 Answer::Deny
             };
         };
-        let current = permissions.current();
-        let current = if let Some(invoker) = invoker {
-            let Some(access) = current.access().invoked_by(&invoker.acting) else {
-                return Answer::Deny;
-            };
-            current.with_access(access)
-        } else {
-            current
-        };
-        current.answer(node, kind)
+        // A call another member invoked reaches the window through its device, which decided it
+        // for them and decides again what it writes; the window answers for its own person.
+        let _ = invoker;
+        permissions
+            .current()
+            .answer(&ui_core::shown_actions::ShownAction::at(node.clone(), kind))
     }
 
     fn independently_sealed(&self) -> bool {
         let (app, route) = (self.owner, self.id().route());
         collab_types::sealed_kind(app, route).is_some()
             || collab_types::decided_as_app_record(app, route)
+    }
+
+    /// Read what the device says of each verb the record declares: one not asked yet is asked
+    /// with the window's next questions.
+    fn ask_verbs(&self) {
+        for declared in (self.declarations)() {
+            let _ = self.may(declared.id);
+        }
     }
 
     fn may(&self, verb: &str) -> bool {
@@ -364,18 +366,22 @@ impl Core {
             return self.answer(&node, declared.kind) == tilo_actions::policy::Answer::Allow;
         }
         self.permissions.as_ref().is_none_or(|permissions| {
-            permissions.check(&PermissionScope::Action {
+            permissions.permits(&ui_core::shown_actions::ShownAction::at(
                 node,
-                kind: declared.kind,
-            })
+                declared.kind,
+            ))
         })
     }
 
     fn refused(&self) -> ActionError {
-        ActionError::Refused(format!(
+        let why = format!(
             "you may not change the workspace's {}",
             self.label.to_lowercase()
-        ))
+        );
+        ActionError::Refused(match &self.permissions {
+            Some(permissions) => permissions.refused(why),
+            None => why,
+        })
     }
 
     /// Refuse an action invoking `verb`, or else editing what `need` names, unless the
@@ -405,10 +411,7 @@ impl Core {
             self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
         } else {
             self.permissions.as_ref().is_none_or(|permissions| {
-                permissions.check(&PermissionScope::Action {
-                    node,
-                    kind: need.kind,
-                })
+                permissions.permits(&ui_core::shown_actions::ShownAction::at(node, need.kind))
             })
         };
         if allowed { Ok(()) } else { Err(self.refused()) }
@@ -653,7 +656,7 @@ impl<P: Resource> WorkspaceResource<P> {
             record.wake_on_arrival(wake.clone());
         }
         let live = Live::new(reader);
-        Ok(Self {
+        let opened = Self {
             shared: Rc::new(Shared::<P> {
                 core: Core {
                     record,
@@ -672,7 +675,11 @@ impl<P: Resource> WorkspaceResource<P> {
                 state: LocalState::new(live.get()),
                 live,
             }),
-        })
+        };
+        // What the record offers is asked of the device as it opens, so each verb is decided
+        // before anyone takes it.
+        opened.shared.core.ask_verbs();
+        Ok(opened)
     }
 
     /// The record's id, which names it in the workspace.

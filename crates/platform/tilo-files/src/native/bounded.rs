@@ -79,10 +79,10 @@ mod tests {
     }
 
     #[test]
-    fn action_authority_source_observes_atomic_replacement_deletion_and_byte_bound() {
+    fn a_bounded_read_reports_missing_and_large_files_and_follows_an_atomic_replacement() {
         let unique = tilo_clock::try_unix_now_ns().unwrap();
         let root =
-            std::env::temp_dir().join(format!("tilo-authority-{}-{unique}", std::process::id()));
+            std::env::temp_dir().join(format!("tilo-bounded-{}-{unique}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let path = root.join("current.json");
         let read = || super::read(&path, 4);

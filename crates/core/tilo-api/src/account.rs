@@ -1579,6 +1579,21 @@ impl ActionProvider for Joined {
         self.actions.as_ref()?.change_feed()
     }
 
+    /// What the device says of the actions a window shows: answered by the actions this tree
+    /// joins, which decide each as the person at the window.
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        match &self.actions {
+            Some(actions) => actions.shown_actions(caller, ask),
+            None => Pending::ready(Err(ActionCallError::Unavailable {
+                reason: tilo_actions::shown::UNAVAILABLE.into(),
+            })),
+        }
+    }
+
     fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
         match &self.actions {
             Some(actions) => actions.installed_surface(app_id),

@@ -562,21 +562,6 @@ impl RecordHandle {
         Ok(reply)
     }
 
-    /// Hold open what the host says of the `actions` a window shows: all of them now, then all
-    /// again whenever grants change one, until the stream is dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the host refuses or the connection fails.
-    pub async fn shown_actions(
-        &self,
-        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
-    ) -> Result<ActionVerdictFeed, NotAvailable> {
-        Ok(ActionVerdictFeed(
-            self.feed(Topic::ShownActions(actions)).await?,
-        ))
-    }
-
     async fn local_file(&self, bytes: Vec<u8>, parent: &[u8]) -> Result<Vec<u8>, NotAvailable> {
         self.command(Service::LocalFile, bytes, parent).await
     }
@@ -1101,22 +1086,6 @@ impl InvocationStream {
                 context_json: invocation.context.unwrap_or_default(),
                 typed: invocation.typed,
             }),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-/// What the host says of the actions a [`RecordHandle::shown_actions`] names; dropping it ends
-/// the subscription.
-pub struct ActionVerdictFeed(Feed);
-
-impl ActionVerdictFeed {
-    /// The decisions as they are next.
-    pub async fn read(
-        &self,
-    ) -> Result<Vec<tilo_permissions::shown_actions::ActionDecision>, NotAvailable> {
-        match self.0.event().await? {
-            Event::ShownActions(decisions) => Ok(decisions),
             other => Err(unexpected_event(&other)),
         }
     }

@@ -25,9 +25,17 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
             });
         SharedResource::new(head, SharedChildren::new(children))
     };
-    let at = |time| {
-        let moved = fixture.permissions.borrow().clone().at_unix_time(time);
-        fixture.permissions.set(moved);
+    // The device takes the person's access back, or gives it again: new verdicts.
+    let revoked = |revoked: bool| {
+        if revoked {
+            fixture.device.remove(&ActionFixture::user());
+        } else {
+            fixture.device.set_role(
+                &ActionFixture::user(),
+                tilo_ui_base::permissions::Role::Owner,
+            );
+        }
+        crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
     };
     let outline = |resources: &[ResourceSpec]| {
         fn walk(resource: &ResourceSpec, out: &mut Vec<String>) {
@@ -149,9 +157,9 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
                 items[index] = node(&id, &label, &[], vec![grandchild]);
             }
             8 => {
-                // A grant expires, or comes back: a new permission context.
+                // A grant is taken back, or comes back: new verdicts.
                 expired = !expired;
-                at(if expired { 120 } else { 100 });
+                revoked(expired);
                 token = crate::published::fresh_token();
             }
             9 => {

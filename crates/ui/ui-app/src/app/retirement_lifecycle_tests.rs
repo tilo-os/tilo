@@ -1,9 +1,7 @@
 //! Real SDK construction/lifecycle tests; the marker is resource-only.
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use crate::application_test_support::{
-    ProbeHarness, definition, runner_inputs, runner_permissions,
-};
+use crate::application_test_support::{ProbeHarness, definition, runner_inputs};
 use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
 };
@@ -151,7 +149,12 @@ fn factory(
 fn component(host: &ProbeHarness, mount: MountRetirement) -> AppComponent {
     let definition = definition(factory);
     let mut context = host
-        .prepare_with_permissions(&definition, 1, &LaunchTarget::New, runner_permissions())
+        .prepare_as(
+            &definition,
+            1,
+            &LaunchTarget::New,
+            tilo_ui_base::permissions::Role::Owner,
+        )
         .unwrap();
     context.bind_retirement(mount).unwrap();
     definition

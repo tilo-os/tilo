@@ -138,11 +138,7 @@ impl Row {
 }
 
 impl Widget for Row {
-    tilo_ui_base::provides!(
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
-        dyn tilo_ui_base::presence::capability::PublishesPresence
-    );
+    tilo_ui_base::provides!(dyn tilo_ui_base::presence::capability::PublishesPresence);
 
     flow_widget_methods!();
 

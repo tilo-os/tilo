@@ -1,20 +1,21 @@
 //! Testing a Tilo app the way a person's device hosts it: the app's window, opened headlessly
 //! ([`tilo_app::framework::testing::HeadlessApp`]), with the workspace broker beside it.
 //!
-//! A window decides no permission itself. The actions of the records it shows that another
+//! A window decides no permission itself: its device does. The actions of its own workspace are
+//! decided by the device standing in for the window's; those of the records it shows that another
 //! workspace holds (a person's profile records, held in their own workspace wherever they are
-//! shown) are decided by its host, with the broker's ordinary check in the workspace holding the
-//! record. [`TestApp`] answers them as that host does, so a test drives those controls as a
-//! person would.
+//! shown) by its host, with the device's ordinary check in the workspace that keeps the record.
+//! [`TestApp`] answers them as that host does, so a test drives those controls as a person would.
 //!
 //! The person's settings are kept as the session keeps them, as resources of their workspace
 //! (here in memory), so what a window sets is stepped back and forth from that history.
 
+use tilo_app::framework::harness_device::HarnessDevice;
 use tilo_app::framework::testing::{HeadlessApp, Host};
 use tilo_app::framework::{ResourceApp, testing::check_scenarios_reach_every_action};
 use tilo_app::headless::Driver;
+use tilo_app::shown_actions::ActionDecision;
 use tilo_app::tilo_actions::policy::{WorkspacePolicy, roles::workspace_of_person};
-use tilo_permissions::shown_actions::ActionDecision;
 
 /// A framework app opened on a fresh profile, hosted as the person's device hosts it
 /// ([`Broker`]).
@@ -30,8 +31,9 @@ impl Host for Broker {
         settings_store::keep_profile(root, || settings_sections::in_memory::attached().0);
     }
 
-    fn opened(driver: &mut Driver, author: &str) {
+    fn opened(driver: &mut Driver, author: &str, device: &HarnessDevice) {
         answer_calls_in_process();
+        let device = device.clone();
         let own = workspace_of_person(author).and_then(|id| {
             let mut workspace = tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId::parse(&id)?,
@@ -42,25 +44,30 @@ impl Host for Broker {
         });
         driver.decide_shown_actions(Box::new(move |actor, actions| {
             let now = tilo_app::time::unix_now();
-            let actor = broker_actor(actor);
-            actions
+            // The window's own workspace: its device decides, and says what is around each.
+            let (here, elsewhere): (Vec<_>, Vec<_>) = actions
                 .iter()
-                .map(|action| ActionDecision {
-                    action: action.clone(),
-                    verdict: match &actor {
-                        Some(actor) => actor.shown_verdict(
-                            own.as_ref()
-                                .filter(|(id, _)| action.workspace.as_ref() == Some(id))
-                                .map(|(_, workspace)| workspace),
-                            action,
-                            now,
-                        ),
-                        None => tilo_permissions::shown_actions::ActionVerdict::Refused(
-                            "only a member or their agent acts here".into(),
-                        ),
-                    },
-                })
-                .collect()
+                .cloned()
+                .partition(|action| action.workspace.is_none());
+            let mut decisions = device.decide(&here);
+            // Another workspace decides by the caller's own grants there.
+            let actor = broker_actor(actor);
+            decisions.extend(elsewhere.into_iter().map(|action| {
+                let verdict = match &actor {
+                    Some(actor) => actor.shown_verdict(
+                        own.as_ref()
+                            .filter(|(id, _)| action.workspace.as_ref() == Some(id))
+                            .map(|(_, workspace)| workspace),
+                        &action,
+                        now,
+                    ),
+                    None => tilo_app::shown_actions::ActionVerdict::Refused(
+                        "only a member or their agent acts here".into(),
+                    ),
+                };
+                ActionDecision { action, verdict }
+            }));
+            decisions
         }));
     }
 }

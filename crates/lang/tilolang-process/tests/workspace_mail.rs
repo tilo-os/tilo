@@ -117,6 +117,20 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     // every window reads the people it shows, and who may read, from.
     bus.member(collaboration::MemberId::person(ADA), "Ada");
     bus.member(collaboration::MemberId::person(BO), "Bo");
+    let mut policy = policy(workspace);
+    policy.grants.push(Grant::new(
+        "read-mail",
+        Grantee::role(Role::Viewer),
+        policy.node().app(MAIL),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(ADA),
+    ));
+    bus.set_access(
+        &route,
+        person,
+        MemberAccess::new(policy, Acting::person(person)),
+    );
     let broker = Broker::on(bus, route.clone(), person);
     let (inbox, sent) = (broker.inbox(), broker.sent());
     let mut manager = CollaborationManager::with_peer_transport(broker);
@@ -133,18 +147,12 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let mut host = TilolangProcess::new(wake());
-    let mut policy = policy(workspace);
-    policy.grants.push(Grant::new(
-        "read-mail",
-        Grantee::role(Role::Viewer),
-        policy.node().app(MAIL),
-        KindSet::READ,
-        Answer::Allow,
-        Grantee::person(ADA),
-    ));
     let hosted = Hosted::new(
-        Spec::new(MAIL, workspace.to_string(), 1, person)
-            .access(MemberAccess::new(policy, Acting::person(person))),
+        bus.launched(
+            &route,
+            Spec::new(MAIL, workspace.to_string(), 1, person),
+            bundle,
+        ),
         connection,
         (store, tilolang_process::hosted::memory_content()),
         Arc::clone(bundle),
@@ -282,8 +290,9 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
         "the viewer's command palette cannot archive a message"
     );
 
-    // Through the API, Bo asks Ada's instance to archive a conversation: refused, and the mail
-    // is as it was. Ada may.
+    // Through the API, Ada archives a conversation. Bo's call to do so is refused where it is
+    // admitted, on the device, and never reaches her instance (`tilo-app-host`'s
+    // `a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said`).
     let archive = ada
         .hosted()
         .published()
@@ -301,15 +310,6 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
         actor: tilo_actions::MemberId::person(actor).into(),
         context: None,
     };
-    let published = ada.published();
-    ada.inbox.borrow_mut().push_back(invoke(1, BO));
-    ada.settle();
-    assert!(
-        ada.answer(1).contains("the action is not allowed"),
-        "Bo is refused: {}",
-        ada.answer(1)
-    );
-    assert_eq!(ada.published(), published, "the mail is as it was");
     ada.inbox.borrow_mut().push_back(invoke(2, ADA));
     ada.settle();
     assert!(
@@ -317,13 +317,29 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
         "Ada archives the conversation: {}",
         ada.answer(2)
     );
-    // Ada takes Bo out of the workspace, as a person does: his mail closes with it.
+    // Ada takes Bo out of the workspace, as a person does: his device says so to his open
+    // window, and nothing it offered him is his to take any more.
+    let available = |bo: &Member| {
+        bo.hosted()
+            .published()
+            .iter()
+            .filter(|action| action.contract.availability.is_available())
+            .count()
+    };
+    assert!(available(&bo) > 0, "Bo, a viewer, may read his mail");
     let mut without_bo = policy(workspace);
     without_bo.members.remove(BO);
-    let revoked = MemberAccess::new(without_bo, Acting::person(BO));
-    assert!(bo.host.set_access(MAIL, Some(&revoked)));
-    assert_eq!(bo.host.instances().count(), 0);
-    assert_eq!(bo.host.take_ended(), [1]);
+    bus.set_access(
+        &bo.route,
+        BO,
+        MemberAccess::new(without_bo, Acting::person(BO)),
+    );
+    bo.settle();
+    assert_eq!(
+        available(&bo),
+        0,
+        "Bo's window offers him nothing once he left"
+    );
 }
 
 /// Ada's workspace, with a reply being written from her account and sent: the effect waits for
@@ -500,56 +516,6 @@ fn a_queued_effect_names_the_app_that_queued_it() {
     assert_eq!(field("capability"), "smtp.send");
 }
 
-/// Nobody outside the workspace reads its mail: a person who is no member of it asks another
-/// member's instance for its account's mail and is allowed nothing of it. A member the workspace
-/// removes loses its mail the same way, as the test above shows.
-#[test]
-fn nobody_outside_the_workspace_reads_its_mail() {
-    const CY: &str = "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef";
-
-    let bundle = Arc::new(mail());
-    let workspace = uuid::Uuid::new_v4();
-    let bus = Rc::new(Bus::default());
-    let mut ada = member(&bus, workspace, ADA, &bundle);
-    let mut cy = member(&bus, workspace, CY, &bundle);
-
-    // Ada's mail arrives.
-    ada.settle();
-    cy.settle();
-    ada.host
-        .instances_mut()
-        .next()
-        .unwrap()
-        .stage("a busy inbox")
-        .unwrap_or_else(|why| panic!("{why}"));
-    ada.settle();
-    for what in ADAS {
-        assert!(ada.window.shows().contains(what), "Ada's Mail shows {what}");
-    }
-
-    // Through the API, a person who is no member asks Ada's instance for an action of its mail:
-    // refused, and nothing is read or changed for them.
-    let archive = ada
-        .hosted()
-        .published()
-        .iter()
-        .find(|action| action.action_label == "Archive")
-        .expect("Ada's conversations offer Archive")
-        .address
-        .clone();
-    ada.inbox.borrow_mut().push_back(CollabEvent::Invocation {
-        id: 1,
-        invocation: tilo_actions::InvocationId::new(),
-        resource: archive.resource.clone(),
-        action: archive.action,
-        argument: None,
-        actor: tilo_actions::MemberId::person(CY).into(),
-        context: None,
-    });
-    ada.settle();
-    assert!(
-        ada.answer(1).contains("the action is not allowed"),
-        "an outsider is refused: {}",
-        ada.answer(1)
-    );
-}
+// Nobody outside the workspace reads its mail: a call from a person who is no member of it is
+// refused where it is admitted, on the device, and never reaches a member's instance
+// (`tilo-app-host`'s `a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said`).

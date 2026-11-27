@@ -590,10 +590,14 @@ fn button_for(role: tilo_permissions::Role) -> Driver {
     // The window's press reaches the workspace that grants its effects, as a window placed in
     // one does: without the stand-in for it, the effect would run at once and never be asked.
     driver.connect_peer();
-    driver.set_permission_ctx(tilo_permissions::PermissionContext::member(
-        &tilo_ui_base::permissions::MemberId::person("ada"),
-        role,
-    ));
+    driver.decide_shown_actions(
+        crate::harness_device::HarnessDevice::member_of(
+            tilo_ui_base::permissions::LOCAL_WORKSPACE,
+            &tilo_ui_base::permissions::MemberId::person("ada"),
+            role,
+        )
+        .host(),
+    );
     driver.relayout();
     driver
 }
@@ -661,11 +665,11 @@ fn hosted(host: &crate::application_test_support::ProbeHarness, worker: Worker) 
     let definition = crate::application_test_support::definition(worker_factory);
     let target = crate::application::LaunchTarget::New;
     let context = host
-        .prepare_with_permissions(
+        .prepare_as(
             &definition,
             31,
             &target,
-            crate::application_test_support::runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     let component = definition
@@ -1093,7 +1097,7 @@ fn a_failed_startup_control_keeps_an_empty_explicit_invocation_envelope() {
 
 use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
-    self as probe, ProbeHarness, runner_inputs, runner_permissions, runner_probe_definition,
+    self as probe, ProbeHarness, runner_inputs, runner_probe_definition,
 };
 use crate::resource::{DocumentCheckout, ResourceOwners, ResourceSaveStatus};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -1109,11 +1113,11 @@ impl VisualFixture {
         let definition = runner_probe_definition();
         let component = definition
             .instantiate(
-                host.prepare_with_permissions(
+                host.prepare_as(
                     definition,
                     11,
                     &LaunchTarget::New,
-                    runner_permissions(),
+                    tilo_ui_base::permissions::Role::Owner,
                 )
                 .unwrap(),
                 LaunchTarget::New,

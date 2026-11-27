@@ -489,6 +489,18 @@ impl Core {
     // ----- authority ---------------------------------------------------------------------
 
     fn decide(&self, ctx: &ExecCtx, aref: &ActionRef) -> Result<Decision, RuntimeError> {
+        self.decide_delivered(ctx, aref, false)
+            .map(|(decision, _)| decision)
+    }
+
+    /// [`Self::decide`] of a call that `admitted` says the dispatch delivered, admitted for its
+    /// invoker on their device, and whether it waits on that device ([`Authority::undecided`]).
+    fn decide_delivered(
+        &self,
+        ctx: &ExecCtx,
+        aref: &ActionRef,
+        admitted: bool,
+    ) -> Result<(Decision, bool), RuntimeError> {
         let pkg = self
             .registry
             .borrow()
@@ -504,8 +516,12 @@ impl Core {
             own: aref.author.as_ref().is_none_or(|a| *a == pkg.hash),
             module: pkg.hash.clone(),
             target: target_of(&pkg.meta, aref.args.first()),
+            admitted,
         };
-        Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
+        Ok((
+            self.authority.decide(&ctx.invoker, &ctx.chain, &info),
+            self.authority.undecided(&ctx.invoker, &ctx.chain, &info),
+        ))
     }
 
     /// Whether a rule of the invoker's or the workspace's asks first before `aref` runs, apart
@@ -526,6 +542,7 @@ impl Core {
             own: true,
             module: pkg.hash.clone(),
             target: target_of(&pkg.meta, aref.args.first()),
+            admitted: false,
         };
         Ok(self.authority.asks_first(invoker, &info))
     }
@@ -1500,7 +1517,6 @@ impl Core {
             at: None,
             gesture: gesture.map(str::to_owned),
         };
-        let decision = self.decide(&ctx, aref)?;
         // What was admitted is the call as its own package applies it: code an author wrote
         // around it was not.
         let admitted = admitted && {
@@ -1510,6 +1526,12 @@ impl Core {
                 .map(|pkg| pkg.hash.clone());
             ctx.chain.iter().all(|m| own.as_ref() == Some(m))
         };
+        let (decision, undecided) = self.decide_delivered(&ctx, aref, admitted)?;
+        // The person's device has not said yet what they may do of it: their device decides it,
+        // as it decides what reaches it from anywhere.
+        if undecided {
+            return self.decided_on_the_device(aref);
+        }
         // A person's own press, attested where it was made, or their yes on the system's confirm
         // to the call as it was shown: what the app's code calls on the way runs under it, as an
         // answer they gave runs on. A call the dispatch delivered as the
@@ -1588,6 +1610,22 @@ impl Core {
             _ if self.invoker.borrow().is_none() => Ok(InvokeOutcome::Asked(String::new())),
             Decision::Allow | Decision::Ask => self.wait_on_person(aref),
         }
+    }
+
+    /// `aref`, sent through the dispatch for the person's device to decide: it runs, waits on
+    /// their yes, or is refused there. With no dispatch here, nothing decides it: it is refused.
+    fn decided_on_the_device(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        if self.invoker.borrow().is_none() {
+            return Ok(InvokeOutcome::Denied);
+        }
+        Ok(match self.sent(aref, false)? {
+            Delegated::Waits(call) => InvokeOutcome::Asked(call),
+            Delegated::Ran(entry) => match *entry {
+                JournalEntry::Invoked { result, .. } => InvokeOutcome::Done(result),
+                JournalEntry::Failed { reason, .. } => return Err(RuntimeError::Trap(reason)),
+                _ => InvokeOutcome::Denied,
+            },
+        })
     }
 
     /// `aref`, which the authority asks a person about before it runs: sent through the dispatch

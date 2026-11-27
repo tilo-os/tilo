@@ -15,7 +15,6 @@ use taffy::Size;
 use taffy::Style;
 use taffy::TaffyTree;
 use tilo_permissions::MemberId;
-use tilo_permissions::PermissionContext;
 use tilo_ui_base::Theme;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
@@ -74,8 +73,6 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         title: "Manual".into(),
         icon: IconDescriptor::Glyph("M"),
         resource_type: ResourceType::new("manual"),
-        required: vec![],
-        optional: vec![],
         opens: &[],
         workspace_resource: false,
         opens_before_resource: false,
@@ -89,9 +86,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
                 views: views.clone(),
                 device_id: "D".into(),
                 instance_id: instance,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    PermissionContext::permissive(),
-                ),
+                permissions: tilo_permissions::SharedPermissions::default(),
                 author: MemberId::person("tester"),
                 action_context: tilo_actions::ActionContext::default(),
             },

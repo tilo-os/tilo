@@ -384,36 +384,6 @@ tilo_test_env::scenario! {
         assert_eq!(counter(&app), 1);
     }
 
-    phase hosted_pump_policy_change_and_expiry_refresh;
-    {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        let mut fixture = HostedPumpFixture::new(1);
-        let time = Arc::new(AtomicU64::new(100));
-        let sample = time.clone();
-        fixture.app.permission_ctx = tilo_permissions::PermissionContext::granted(
-            &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            &tilo_permissions::TreePath::root(),
-            tilo_action_types::KindSet::ALL,
-            Some(110),
-        )
-        .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
-        let generation = fixture.app.actions.resource_generation.get();
-        assert!(fixture.pump().synced, "a replaced policy refreshes");
-        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-        fixture.assert_idle();
-        time.store(105, Ordering::Release);
-        fixture.assert_idle();
-        time.store(110, Ordering::Release);
-        assert!(
-            fixture.pump().synced,
-            "capability expiry is a policy change"
-        );
-        fixture.assert_idle();
-    }
-
     phase hosted_pump_host_owner_permission_replacement_refreshes;
     {
         use crate::application::{
@@ -436,17 +406,18 @@ tilo_test_env::scenario! {
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
             resource_type: crate::resource::ResourceType::new("directory"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let permissions = tilo_permissions::SharedPermissions::new(
-            tilo_permissions::PermissionContext::permissive(),
+        let permissions = tilo_ui_base::permissions::SharedPermissions::default();
+        let device = crate::harness_device::HarnessDevice::member_of(
+            tilo_ui_base::permissions::LOCAL_WORKSPACE,
+            &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+            tilo_ui_base::permissions::Role::Owner,
         );
-        let context = ProcessContext::prepare(
+        let mut context = ProcessContext::prepare(
             &definition,
             ProcessContextInputs {
                 records,
@@ -460,6 +431,7 @@ tilo_test_env::scenario! {
             &LaunchTarget::New,
         )
         .unwrap();
+        context.provide_harness_device(device.shown());
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
@@ -482,16 +454,28 @@ tilo_test_env::scenario! {
         app.collaboration.manager.wait_for_commands_for_test();
         let before = tilo_actions::api::survey(&app.publication_resources()).len();
         assert!(before > 0);
+        crate::application_test_support::answer_read(&permissions, &device);
+        assert_eq!(
+            tilo_actions::api::survey(&app.publication_resources()).len(),
+            before,
+            "the owner keeps every published action"
+        );
+        let _ = app.pump_hosted_model_as(false);
         let generation = app.actions.resource_generation.get();
         assert_eq!(
             app.pump_hosted_model_as(false),
             model_lifecycle::HostedPumpReport::default()
         );
         assert_eq!(app.actions.resource_generation.get(), generation);
-        // What a host does with its recomputed authority before a pump.
-        permissions.set(tilo_permissions::PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-        ));
+        // The device refuses every action it was asked about and sends its new verdicts before a
+        // pump.
+        permissions.update(|verdicts| {
+            verdicts.take_missed();
+            let refused = crate::shown_actions::decide(&verdicts.asked(), |_| {
+                crate::shown_actions::ActionVerdict::Refused(crate::shown_actions::REFUSED.into())
+            });
+            verdicts.decide(&refused);
+        });
         let report = app.pump_hosted_model_as(false);
         assert!(report.synced && report.published);
         assert_ne!(app.actions.resource_generation.get(), generation);
@@ -526,8 +510,6 @@ tilo_test_env::scenario! {
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
             resource_type: crate::resource::ResourceType::new("directory"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -540,9 +522,7 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 83,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    tilo_permissions::PermissionContext::permissive(),
-                ),
+                permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -598,37 +578,6 @@ tilo_test_env::scenario! {
         assert!(report.synced && report.published);
         assert_ne!(fixture.app.actions.resource_generation.get(), generation);
         assert!(!fixture.sent.borrow().is_empty());
-    }
-
-    phase hosted_pump_action_authority_revoke_refreshes_without_forced_sync;
-    {
-        use tilo_permissions::PermissionContext;
-        use tilo_permissions::Role;
-        use std::sync::{Arc, Mutex};
-        let current = Arc::new(Mutex::new(Some(Role::Owner)));
-        let sample = current.clone();
-        let mut fixture = HostedPumpFixture::new(1);
-        fixture.app.permission_ctx =
-            tilo_permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
-                .with_action_authority(
-                    "test.directory".into(),
-                    Arc::new(move || {
-                        Ok(match *sample.lock().unwrap() {
-                            Some(role) => PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), role),
-                            None => PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("fixture-user")),
-                        })
-                    }),
-                );
-        assert!(fixture.pump().synced);
-        fixture.assert_idle();
-        *current.lock().unwrap() = None;
-        let generation = fixture.app.actions.resource_generation.get();
-        assert!(
-            fixture.pump().synced,
-            "ordinary worker observes revoked owner authority"
-        );
-        assert_ne!(fixture.app.actions.resource_generation.get(), generation);
-        fixture.assert_idle();
     }
 }
 

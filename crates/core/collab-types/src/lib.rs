@@ -40,7 +40,6 @@
 //! byte order); [`canonical::from_canonical_bytes`] enforces exact-length
 //! input — trailing bytes are an error, not a silent drop.
 
-pub mod action_authority;
 pub mod actors;
 pub mod app_actions;
 pub mod app_surface;

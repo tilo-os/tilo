@@ -28,7 +28,7 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # service vocabulary only, and a process installs its own `process::ProcessServices`.
-native = ["tilo-process/native", "dep:tokio", "dep:jni", "dep:tilo-files", "tilo-files/watch", "tilo-secrets/host-keyring"]
+native = ["tilo-process/native", "dep:tokio", "dep:jni", "tilo-secrets/host-keyring"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers and OpenURI are a platform crate's (`tilo-dialogs`), selected
@@ -54,8 +54,6 @@ agent-provider-config = { package = "tilo-agent-provider-config", version = "0.1
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
-# Bounded reads of the host-selected read-only policy projection.
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 tilo-rt.workspace = true
 # Only the native backends run futures on tokio.
 tokio = { workspace = true, optional = true, features = ["full"] }

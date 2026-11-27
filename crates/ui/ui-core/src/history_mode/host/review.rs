@@ -5,9 +5,7 @@
 )]
 use super::*;
 use crate::{State, widget::ModalDialog};
-use tilo_permissions::PermissionContext;
-use tilo_ui_base::i18n::I18nManager;
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{i18n::I18nManager, permissions::MemberId, permissions::Verdicts};
 
 #[derive(Clone, Copy)]
 pub(super) enum ReviewCommand {
@@ -27,11 +25,6 @@ pub(super) struct ReviewPanel {
     token: Option<crate::history_mode::RestoreReview>,
 }
 impl HistoryHost {
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_clock(&mut self, clock: fn() -> Option<u64>) {
-        self.clock = clock;
-    }
-
     pub(super) fn show_review(
         &mut self,
         token: Option<crate::history_mode::RestoreReview>,
@@ -94,7 +87,7 @@ impl HistoryHost {
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,
-        authority: &PermissionContext,
+        authority: Option<&Verdicts>,
         author: &MemberId,
     ) -> bool {
         let Some(command) = self.review_request.take() else {
@@ -198,7 +191,7 @@ impl HistoryHost {
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,
-        actor: (&PermissionContext, &MemberId),
+        actor: (Option<&Verdicts>, &MemberId),
     ) -> bool {
         let selected = self.selected.clone();
         self.write_selected(state, root, actor, ReviewedWrite::Changes(&selected))
@@ -210,7 +203,7 @@ impl HistoryHost {
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,
-        actor: (&PermissionContext, &MemberId),
+        actor: (Option<&Verdicts>, &MemberId),
     ) -> bool {
         let Some((start, end)) = self.selected_run() else {
             return false;
@@ -234,7 +227,7 @@ impl HistoryHost {
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,
-        actor: (&PermissionContext, &MemberId),
+        actor: (Option<&Verdicts>, &MemberId),
         write: ReviewedWrite<'_>,
     ) -> bool {
         let Some(controller) = &self.controller else {
@@ -255,15 +248,11 @@ impl HistoryHost {
         &mut self,
         state: &mut State,
         root: &mut dyn Widget,
-        actor: (&PermissionContext, &MemberId),
+        actor: (Option<&Verdicts>, &MemberId),
         review: &crate::history_mode::RestoreReview,
         write: ReviewedWrite<'_>,
     ) -> bool {
-        let Some(now) = (self.clock)() else {
-            self.show_review(None, I18nManager::lookup_plain("history-review-no-clock"));
-            return false;
-        };
-        match self.run_reviewed(state, root, actor, review, now, write) {
+        match self.run_reviewed(state, root, actor, review, write) {
             Ok(changed) => {
                 self.review = None;
                 if changed {
@@ -286,14 +275,13 @@ impl HistoryHost {
     }
 
     /// The store's history verb `write` names, run on the reviewed record by its owner: checked
-    /// against the review, the author's authority at `now` and the live frontier.
+    /// against the review, the author's authority and the live frontier.
     fn run_reviewed(
         &self,
         state: &mut State,
         root: &mut dyn Widget,
-        (authority, author): (&PermissionContext, &MemberId),
+        (authority, author): (Option<&Verdicts>, &MemberId),
         review: &crate::history_mode::RestoreReview,
-        now: u64,
         write: ReviewedWrite<'_>,
     ) -> Result<bool, String> {
         use crate::history_mode::owner::{FINISH_EDIT, HistoryRun, NOT_RESTORED, STALE_REVIEW};
@@ -360,20 +348,17 @@ impl HistoryHost {
             HistorySourceRegistration::OwnedDocument { owner, .. } => Some(owner),
             _ => None,
         };
-        let mut apply = |authority: &PermissionContext, author: &MemberId| {
-            let current = authority.clone().at_unix_time(now);
-            check_restore_authority(
-                &current,
-                author,
-                app_id,
-                owner.is_some().then_some(&review.resource().document_id),
-            )
-            .map_err(|refusal| match refusal {
-                RestoreRefusal::App => {
-                    "You no longer have permission to restore this document.".to_owned()
-                }
-                RestoreRefusal::File => "You do not have permission to write this file.".to_owned(),
-            })?;
+        let mut apply = |authority: Option<&Verdicts>, author: &MemberId| {
+            // Restoring changes the app's records: as the device says of that now. The window's
+            // own records are decided where the restore lands.
+            if authority.is_some_and(|authority| {
+                !authority.permits(&crate::shown_actions::ShownAction::app(
+                    app_id,
+                    tilo_ui_base::permissions::ActionKind::Undoable,
+                ))
+            }) {
+                return Err("You no longer have permission to restore this document.".to_owned());
+            }
             let run = HistoryRun {
                 edit: edit.clone(),
                 context: tilo_actions::ActionContext::for_resource(
@@ -410,51 +395,4 @@ enum ReviewedWrite<'a> {
     Whole,
     Changes(&'a [tilo_ui_base::widget::HistoryEntryId]),
     Name(&'a crate::GroupNameRequest),
-}
-
-enum RestoreRefusal {
-    App,
-    File,
-}
-
-/// Restoring writes: the author must be the actor `current` describes, and `current` must
-/// grant Write on the app and, for a file-backed record, on the file. `current` is
-/// already stamped at the caller's policy time.
-fn check_restore_authority(
-    current: &PermissionContext,
-    author: &MemberId,
-    app_id: &str,
-    record: Option<&crate::resource::DocumentId>,
-) -> Result<(), RestoreRefusal> {
-    use tilo_permissions::Access;
-    use tilo_ui_base::permissions::ActionKind;
-    use tilo_ui_base::permissions::MemberId;
-    // The installed solo-workspace person is the runner's existing local-author mapping.
-    // Other contexts must name the actual author.
-    let acting = current.acting();
-    let mapped = acting
-        .nodes()
-        .into_iter()
-        .filter_map(|node| node.by.member_id())
-        .any(|member| match member {
-            MemberId::Person(id) => member == author || id == tilo_permissions::LOCAL_USER,
-            MemberId::Agent { .. } | MemberId::Bot(_) => false,
-        });
-    if !mapped
-        || !current.check(&tilo_permissions::PermissionScope::app(
-            app_id.to_owned(),
-            ActionKind::Undoable,
-        ))
-    {
-        return Err(RestoreRefusal::App);
-    }
-    if let Some(path) = record.and_then(crate::resource::DocumentId::file_path)
-        && !current.check(&tilo_permissions::PermissionScope::path(
-            path.to_string_lossy().into_owned(),
-            Access::Write,
-        ))
-    {
-        return Err(RestoreRefusal::File);
-    }
-    Ok(())
 }

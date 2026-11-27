@@ -19,16 +19,10 @@ fn counted_control_app(duplicate: bool) -> (App, std::rc::Rc<Cell<bool>>) {
 }
 
 #[test]
-fn control_availability_follows_permissions_and_reads_without_committing() {
+fn control_availability_follows_visibility_and_reads_without_committing() {
     {
         let (mut app, visible) = counted_control_app(false);
         app.refresh_control_action_availability();
-        app.actions.permission_generation.set(u64::MAX);
-        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person("restricted"),
-        ));
-        assert!(!app.root_widget.children()[0].is_enabled());
-        app.set_permission_ctx(PermissionContext::permissive());
         assert!(app.root_widget.children()[0].is_enabled());
         visible.set(false);
         app.actions.resource_generation.set(u64::MAX);
@@ -206,13 +200,6 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
             app.refresh_control_action_availability();
             assert!(enabled.get(), "wrapper {wrapper}");
-            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("restricted"),
-            ));
-            assert!(
-                !enabled.get(),
-                "wrapper {wrapper} must refresh hidden custom emitter"
-            );
         }
     }
 

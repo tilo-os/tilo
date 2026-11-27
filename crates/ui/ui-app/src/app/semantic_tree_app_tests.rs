@@ -780,27 +780,6 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
     }
 
     {
-        let mut app = lazy_app(lazy_resource("test.lazy"));
-        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person("restricted"),
-        ));
-
-        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
-        let actor = tilo_actions::Actor::Member(app.local_author.clone());
-        let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-        assert!(matches!(denied, Err(tilo_actions::ApiError::Unknown(_))));
-        assert_eq!(counter(&app), 0, "the denied fallback must not run");
-
-        app.set_permission_ctx(PermissionContext::permissive());
-        let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
-        assert!(
-            allowed.is_ok(),
-            "restoring write permission should admit it"
-        );
-        assert_eq!(counter(&app), 1);
-    }
-
-    {
         let child = lazy_resource("test.lazy.child");
         let tree =
             ResourceSpec::new("test.lazy.parent", "test.lazy.parent", "Parent").with_child(child);
@@ -893,29 +872,6 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
             "AT-SPI activation must apply the bound action before success is returned"
         );
         assert!(app.state.peek_last_undo().is_some());
-    }
-
-    {
-        let mut app = app();
-        let node = app.focusable_order[0];
-        let pointer = app.layout.node_map[&node];
-        assert!(unsafe { (*pointer).is_enabled() });
-
-        app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person("restricted"),
-        ));
-        assert!(!unsafe { (*pointer).is_enabled() });
-        assert!(!unsafe {
-            (*pointer).perform_action(
-                &tilo_ui_base::a11y::Action::Activate,
-                &[],
-                &mut tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
-                &app.state.root,
-            )
-        });
-
-        app.set_permission_ctx(PermissionContext::permissive());
-        assert!(unsafe { (*pointer).is_enabled() });
     }
 
     {
@@ -1435,12 +1391,11 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             };
             assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
             observed.enqueue("run");
-            binding
-                .permissions
-                .set(tilo_permissions::PermissionContext::member(
-                    &tilo_ui_base::permissions::MemberId::person("reader"),
-                    collab_types::role::Role::Viewer,
-                ));
+            // The device decides the person is a viewer now.
+            crate::application_test_support::answer_read(
+                &binding.permissions,
+                &crate::application_test_support::device(tilo_ui_base::permissions::Role::Viewer),
+            );
             let before = owner
                 .records
                 .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
@@ -1522,77 +1477,6 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
                 observed.results.borrow().last(),
                 Some(Err(tilo_actions::ApiError::Unknown(_)))
             ));
-        }
-    }
-
-    {
-        use crate::app::control_result_probe::Probe;
-        // A Viewer's press is decided by the workspace: the control hears the call go, and,
-        // with no workspace to carry it, hears the refusal it settles with instead of a
-        // press dropped silent.
-        for connected in [true, false] {
-            let (probe, observed) = Probe::new(false);
-            let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
-            observed.enqueue("run");
-            let sent = Rc::new(RefCell::new(Vec::new()));
-            if connected {
-                host.collaboration.manager =
-                    CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-            }
-            let readonly = tilo_permissions::PermissionContext::member(
-                &tilo_ui_base::permissions::MemberId::person("reader"),
-                collab_types::role::Role::Viewer,
-            );
-            host.set_permission_ctx(readonly);
-            let before = host.state.doc.base_heads();
-            assert_eq!(
-                host.dispatch_control_invocations(),
-                usize::from(connected),
-                "connected={connected}"
-            );
-            assert_eq!(observed.calls.get(), 0, "permission checked before handler");
-            assert_eq!(host.state.doc.base_heads(), before);
-            assert_eq!(
-                automerge::transaction::Transactable::pending_ops(&host.state.doc),
-                0
-            );
-            if connected {
-                assert_eq!(
-                    *observed.results.borrow(),
-                    vec![Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)],
-                    "the control hears its press went to the workspace to be decided"
-                );
-                let asked = sent
-                    .borrow()
-                    .iter()
-                    .find_map(|request| match request {
-                        CollabRequest::RemoteAction {
-                            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                            ..
-                        } => Some(request.clone()),
-                        _ => None,
-                    })
-                    .expect("the press went to the workspace");
-                assert_eq!(asked.target.address.action, "run");
-            } else {
-                let shown = observed.results.borrow();
-                assert!(
-                    matches!(
-                        shown.as_slice(),
-                        [Err(tilo_actions::ApiError::Unavailable { .. })]
-                    ),
-                    "the control shows the refusal its press settled with: {shown:?}"
-                );
-                assert!(
-                    host.actions
-                        .refusals
-                        .iter()
-                        .any(|(said, _)| { said.contains("reached") || said.contains("go-ahead") }),
-                    "the window says why the press did not go: {:?}",
-                    host.actions.refusals
-                );
-            }
-            assert!(observed.pending.borrow().is_empty());
         }
     }
 

@@ -2,14 +2,12 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::SharedPermissions;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
+use tilo_ui::harness_device::HarnessDevice;
 use tilo_ui::launch_error::LaunchError;
 use tilo_ui::resource::{
     DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
@@ -20,8 +18,7 @@ use tilo_ui::wake::WakeHandle;
 use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 use tilo_ui_base::TextRole;
 use tilo_ui_base::local_state::LocalState;
-use tilo_ui_base::permissions::ActionKind;
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::MemberId, permissions::Role, permissions::SharedPermissions};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
 
@@ -234,32 +231,33 @@ pub fn captured_handles() -> Vec<WakeHandle> {
 pub fn local_state() -> LocalState<String> {
     LOCAL.with_borrow(|v| v.clone().unwrap())
 }
+/// What the probe's window starts from: nothing decided yet, so every control waits on the
+/// device that answers for it.
 pub fn permissions() -> SharedPermissions {
-    SharedPermissions::new(
-        PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("probe-author"))
-            .at_unix_time(100),
-    )
+    SharedPermissions::default()
 }
-/// The author as the workspace's Owner: everything is allowed, so an outside
-/// effect runs without asking.
-pub fn owner_permissions() -> SharedPermissions {
-    SharedPermissions::new(
-        PermissionContext::member(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_permissions::Role::Owner,
-        )
-        .at_unix_time(100),
-    )
+/// A device keeping the probe's workspace, where the author has `role`.
+pub fn device(role: Role) -> HarnessDevice {
+    HarnessDevice::member_of(WORKSPACE, &author(), role)
 }
-/// The author as an Editor of the workspace: may make undoable changes.
-pub fn editor_permissions() -> SharedPermissions {
-    SharedPermissions::new(
-        PermissionContext::member(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_permissions::Role::Editor,
-        )
-        .at_unix_time(100),
-    )
+/// A device keeping the probe's workspace, which the author does not belong to.
+pub fn stranger_device() -> HarnessDevice {
+    let device = device(Role::Viewer);
+    device.remove(&author());
+    device
+}
+/// Answer every question the window read of `shared` as `device` decides it now.
+pub fn answer_read(shared: &SharedPermissions, device: &HarnessDevice) {
+    shared.update(|verdicts| {
+        verdicts.take_missed();
+        let decisions = device.decide(&verdicts.asked());
+        verdicts.decide(&decisions);
+    });
+}
+/// `context`, answered by a device where the author has `role`.
+pub fn answered_as(mut context: ProcessContext, role: Role) -> ProcessContext {
+    context.provide_harness_device(device(role).shown());
+    context
 }
 pub fn author() -> MemberId {
     MemberId::person("probe-author")
@@ -267,17 +265,12 @@ pub fn author() -> MemberId {
 pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")
 }
-pub fn denied_scope() -> PermissionScope {
-    PermissionScope::workspace(ActionKind::Undoable)
-}
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: APP.into(),
         title: "Probe".into(),
         icon: IconDescriptor::Glyph("P"),
         resource_type: ResourceType::new("probe"),
-        required: vec![],
-        optional: vec![],
         opens: &[],
         workspace_resource: false,
         opens_before_resource: false,
@@ -294,14 +287,10 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
     DEFINITION.get_or_init(|| definition(action_probe_factory))
 }
 pub use tilo_ui::application::fixture_runner_inputs as runner_inputs;
+/// What a runner's probe window keeps: the device answered every action the probe publishes as
+/// the author, the workspace's owner, decides it.
 pub fn runner_permissions() -> SharedPermissions {
-    SharedPermissions::new(
-        PermissionContext::member(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            tilo_permissions::Role::Owner,
-        )
-        .at_unix_time(100),
-    )
+    decided_probe(APP, &device(Role::Owner))
 }
 pub struct ProbeHarness {
     pub owners: ResourceOwners,
@@ -401,6 +390,22 @@ impl ProbeHarness {
         target: &LaunchTarget,
     ) -> Result<ProcessContext, LaunchError> {
         self.prepare_with_permissions(definition, instance, target, permissions())
+    }
+    /// Prepare `instance` with a device answering where the author has `role`.
+    pub fn prepare_as(
+        &self,
+        definition: &ApplicationDefinition,
+        instance: u64,
+        target: &LaunchTarget,
+        role: Role,
+    ) -> Result<ProcessContext, LaunchError> {
+        self.prepare_with_permissions(
+            definition,
+            instance,
+            target,
+            decided_probe(&definition.app_id, &device(role)),
+        )
+        .map(|context| answered_as(context, role))
     }
     pub fn prepare_with_permissions(
         &self,
@@ -792,115 +797,7 @@ impl tilo_ui::widget::resources::PublishesResources for ProbeRoot {
         if !self.operational {
             return vec![];
         }
-        vec![
-            tilo_actions::ResourceSpec::new("probe:shared", "probe", "Shared probe")
-                .with_action(
-                    tilo_actions::ActionSpec::immediate(
-                        "edit",
-                        "Edit",
-                        "probe.edit",
-                        &ProbeAction("edited".into()),
-                    )
-                    .unwrap()
-                    .with_description(self.local_snapshot.clone()),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "view",
-                        "View",
-                        tilo_actions::OperationKind::View,
-                        "probe.view",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract::view()),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "effect",
-                        "Effect",
-                        tilo_actions::OperationKind::Effect,
-                        "probe.effect",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract::view()),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "pending",
-                        "Pending",
-                        tilo_actions::OperationKind::Effect,
-                        "probe.pending",
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract {
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        ..tilo_actions::ActionContract::view()
-                    }),
-                )
-                .with_action(tilo_actions::ActionSpec::prompted_param(
-                    "prompt",
-                    "Prompt",
-                    tilo_actions::ActionParam::required(
-                        "value",
-                        tilo_actions::ParamType::Text,
-                        "Value",
-                    ),
-                    "Value",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    |value| {
-                        tilo_actions::EncodedAction::encode(
-                            "probe.edit",
-                            &ProbeAction(value.into()),
-                        )
-                        .unwrap()
-                    },
-                ))
-                .with_action(tilo_actions::ActionSpec::typed(
-                    "typed",
-                    "Typed",
-                    "Value",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    vec![
-                        tilo_actions::ActionParam::required(
-                            "value",
-                            tilo_actions::ParamType::Text,
-                            "Value",
-                        ),
-                        tilo_actions::ActionParam::required(
-                            "enabled",
-                            tilo_actions::ParamType::Boolean,
-                            "Enabled",
-                        ),
-                    ],
-                    |args| {
-                        assert_eq!(args.boolean("enabled"), Some(true));
-                        tilo_actions::EncodedAction::encode(
-                            "probe.edit",
-                            &ProbeAction(args.text("value").unwrap().into()),
-                        )
-                        .unwrap()
-                    },
-                ))
-                .with_action(
-                    tilo_actions::ActionSpec::immediate(
-                        "confirm",
-                        "Confirm",
-                        "probe.edit",
-                        &ProbeAction("confirmed".into()),
-                    )
-                    .unwrap()
-                    // A question one Confirm answers: a typed name is only
-                    // for an irreversible action, and names what it loses.
-                    .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-        ]
+        vec![probe_shared_resource(self.local_snapshot.clone())]
     }
 }
 
@@ -1260,4 +1157,122 @@ impl DocumentPort for HeldWrites {
             Some(answer)
         })
     }
+}
+
+/// The one resource the probe publishes: the runner action matrix, its edit described by
+/// `description`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one shared resource declares the runner action matrix"
+)]
+pub fn probe_shared_resource(description: String) -> tilo_actions::ResourceSpec {
+    tilo_actions::ResourceSpec::new("probe:shared", "probe", "Shared probe")
+        .with_action(
+            tilo_actions::ActionSpec::immediate(
+                "edit",
+                "Edit",
+                "probe.edit",
+                &ProbeAction("edited".into()),
+            )
+            .unwrap()
+            .with_description(description),
+        )
+        .with_action(
+            tilo_actions::ActionSpec::operation(
+                "view",
+                "View",
+                tilo_actions::OperationKind::View,
+                "probe.view",
+                &(),
+            )
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::view()),
+        )
+        .with_action(
+            tilo_actions::ActionSpec::operation(
+                "effect",
+                "Effect",
+                tilo_actions::OperationKind::Effect,
+                "probe.effect",
+                &(),
+            )
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract::view()),
+        )
+        .with_action(
+            tilo_actions::ActionSpec::operation(
+                "pending",
+                "Pending",
+                tilo_actions::OperationKind::Effect,
+                "probe.pending",
+                &(),
+            )
+            .unwrap()
+            .with_contract(tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                ..tilo_actions::ActionContract::view()
+            }),
+        )
+        .with_action(tilo_actions::ActionSpec::prompted_param(
+            "prompt",
+            "Prompt",
+            tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Value"),
+            "Value",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |value| {
+                tilo_actions::EncodedAction::encode("probe.edit", &ProbeAction(value.into()))
+                    .unwrap()
+            },
+        ))
+        .with_action(tilo_actions::ActionSpec::typed(
+            "typed",
+            "Typed",
+            "Value",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![
+                tilo_actions::ActionParam::required(
+                    "value",
+                    tilo_actions::ParamType::Text,
+                    "Value",
+                ),
+                tilo_actions::ActionParam::required(
+                    "enabled",
+                    tilo_actions::ParamType::Boolean,
+                    "Enabled",
+                ),
+            ],
+            |args| {
+                assert_eq!(args.boolean("enabled"), Some(true));
+                tilo_actions::EncodedAction::encode(
+                    "probe.edit",
+                    &ProbeAction(args.text("value").unwrap().into()),
+                )
+                .unwrap()
+            },
+        ))
+        .with_action(
+            tilo_actions::ActionSpec::immediate(
+                "confirm",
+                "Confirm",
+                "probe.edit",
+                &ProbeAction("confirmed".into()),
+            )
+            .unwrap()
+            // A question one Confirm answers: a typed name is only
+            // for an irreversible action, and names what it loses.
+            .with_contract(tilo_actions::ActionContract {
+                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                ..tilo_actions::ActionContract::default()
+            }),
+        )
+}
+
+/// Verdicts the device gave of every action `resources` (and the resources inside them) publish
+/// as `app`, as `device` decides them: the window's questions answered before it shows them.
+pub use tilo_ui::harness_device::decided;
+
+/// [`decided`] of the one resource the probe publishes.
+pub fn decided_probe(app: &str, device: &HarnessDevice) -> SharedPermissions {
+    decided(app, &[probe_shared_resource(String::new())], device)
 }

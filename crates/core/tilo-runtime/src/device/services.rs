@@ -2823,10 +2823,6 @@ impl Daemon {
         // The person's formats and zone, as their region keeps them, reach every instance this
         // device hosts for them: read now, and again whenever they change it.
         follow_region(&apps, workspaces.copies(), identity.cert.user_public_key);
-        // A workspace's role records decide what this device's person may do in its apps: every
-        // process running one is told, as a session's push tells it, though a device that serves
-        // pages runs no session.
-        follow_app_access(&apps, workspaces.copies());
         workspaces.follow_admitted_writes(Arc::clone(&brokers), Arc::clone(&fanout));
         // The files of the workspaces whose work this device takes, once the broker that carries
         // their records runs: where a member taking a workspace's work runs it.
@@ -3321,6 +3317,14 @@ impl Daemon {
                 .map(|search| search as Arc<dyn tilo_workspace_records::search::Answers>),
             person: &actor,
         });
+        // What this device says of the actions a window shows: the person at it has the
+        // ordinary answer of the workspace that keeps each record, answered again when the grants
+        // change.
+        Arc::new(super::shown::Shown::new(
+            workspaces.copies().clone(),
+            hex::encode(identity.cert.user_public_key),
+        ))
+        .register(&workspaces.copies().providers());
         workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
         let asked = super::asked::DeviceAsked::new(
@@ -4486,6 +4490,7 @@ fn shell_processes(
             Arc::new(DeviceContent(workspaces.copies().clone()));
         processes.read_content_from(content);
         follow_content_changes(&processes, workspaces.copies());
+        processes.decide_verdicts_with(Arc::new(DeviceVerdicts(workspaces.copies().clone())));
         Some(processes.for_the_shell(
             Box::new(move |workspace| documents.workspaces().iter().any(|has| has == workspace)),
             Arc::clone(apps) as Arc<dyn crate::device::processes::Origins>,
@@ -4516,30 +4521,19 @@ impl super::processes::ContentOf for DeviceContent {
     }
 }
 
-/// Tell each of this device's tilolang processes what its app's person may now do, as a
-/// workspace's role records change: a device that serves the workspace's pages runs no session
-/// to tell them, so its own service reads the policy as the session's push reads it.
-fn follow_app_access(
-    apps: &Arc<apps::Apps>,
-    workspaces: &tilo_workspace_service::workspaces::Workspaces,
-) {
-    let mut governance = workspaces.governance_changes();
-    let apps = Arc::downgrade(apps);
-    tilo_rt::app().handle().spawn(async move {
-        loop {
-            let change = governance.recv().await;
-            let Some(apps) = apps.upgrade() else {
-                return;
-            };
-            match change {
-                Ok(workspace) => apps.access_changed(&workspace),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    apps.access_changed_everywhere();
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            }
+/// What this device says of an app's declared actions, for the person at a window of it.
+#[cfg(target_os = "linux")]
+struct DeviceVerdicts(tilo_workspace_service::workspaces::Workspaces);
+
+#[cfg(target_os = "linux")]
+impl super::processes::VerdictsOf for DeviceVerdicts {
+    fn declared(&self, workspace: &str, person: &str, app: &str, uses: &[&str]) -> String {
+        let decisions = super::shown::declared(&self.0, person, workspace, (app, uses));
+        if decisions.is_empty() {
+            return String::new();
         }
-    });
+        serde_json::to_string(&decisions).unwrap_or_default()
+    }
 }
 
 /// Keep every hosted instance's locale — the formats its dates and clocks are written in, and

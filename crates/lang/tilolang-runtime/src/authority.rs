@@ -30,6 +30,10 @@ pub struct ActionInfo {
     /// kind of its type. The authority decides the action at that node, as the change it makes
     /// is claimed there.
     pub target: Option<ActionTarget>,
+    /// The dispatch delivered the call, admitted for its invoker on their device: what that
+    /// device says of them was said there. A call made in the process itself (a press in the
+    /// window, what code calls on the way) was not.
+    pub admitted: bool,
 }
 
 /// A resource an action is invoked on, as the policy names it.
@@ -47,6 +51,15 @@ pub trait Authority {
     /// `chain` is the authorship chain, outermost first: each code author between the
     /// invoker and the action. It is empty for a call made straight by an actor.
     fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision;
+
+    /// Whether `invoker`'s call of `action` through `chain` waits on their device, which has not
+    /// said yet what they may do of it, while nothing here refuses it: the call goes to the
+    /// dispatch, which decides it on the device and runs it, asks them, or refuses it there. A
+    /// runtime whose person's device decides nothing here has none.
+    fn undecided(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> bool {
+        let _ = (invoker, chain, action);
+        false
+    }
 
     /// Whether a rule asks `invoker` first before `action` runs: one of their own, or the
     /// workspace's for them, apart from what the code that led there may do. A person's own
@@ -67,8 +80,9 @@ pub trait Authority {
     /// Whether `app` may carry out the outside effect `capability` (`smtp.send`) that the
     /// workspace queued: what the workspace granted it, judged when the effect is carried out
     /// rather than when it is queued. An entry the workspace does not let the app carry out
-    /// settles as refused, and never reaches the sink.
-    fn may_reach(&self, _app: &str, _capability: &str) -> bool {
-        true
+    /// settles as refused, and never reaches the sink. `None` while whoever decides it has not
+    /// said yet: the entry stays queued until they do.
+    fn may_reach(&self, _app: &str, _capability: &str) -> Option<bool> {
+        Some(true)
     }
 }

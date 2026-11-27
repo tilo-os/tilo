@@ -184,6 +184,9 @@ pub fn reads_of(access: &MemberAccess, me: &PersonId, host: &Host) -> Rc<Reads> 
 #[derive(Default)]
 pub struct MemberRecordReads {
     state: std::sync::Mutex<Option<MemberReadState>>,
+    /// The person a window's records are read and placed as when it keeps no access: what its
+    /// device synced to it is theirs ([`Self::as_window`]).
+    window: std::sync::Mutex<Option<PersonId>>,
 }
 
 struct MemberReadState {
@@ -204,6 +207,17 @@ fn viewer_person(viewer: &Actor, access: &MemberAccess) -> PersonId {
 }
 
 impl MemberRecordReads {
+    /// Read and place records as `viewer`'s person while no access is followed, as a window does:
+    /// its device synced it only what they read, and decides again whatever lands.
+    pub(crate) fn as_window(&self, viewer: &Actor) {
+        if let Ok(mut window) = self.window.lock() {
+            *window = viewer
+                .member_id()
+                .and_then(MemberId::person_id)
+                .map(PersonId::from);
+        }
+    }
+
     /// Follow the access and packages the host has now. Until there is an access, no field is
     /// placed: the store refuses one.
     pub(crate) fn follow(&self, access: Option<MemberAccess>, viewer: &Actor) {
@@ -231,7 +245,12 @@ impl MemberRecordReads {
 impl tilo_resource_store::RecordReader for MemberRecordReads {
     fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId> {
         let guard = self.state.lock().ok()?;
-        let state = guard.as_ref()?;
+        let Some(state) = guard.as_ref() else {
+            drop(guard);
+            let window = self.window.lock().ok()?.clone()?;
+            return (actor.member_id().and_then(MemberId::person_id) == Some(window.as_str()))
+                .then_some(window);
+        };
         let workspace = TreePath::workspace(state.access.workspace());
         let node = match state.kinds.get(kind) {
             Some((app, named)) => workspace.app(app).kind(named).resource(id.to_owned()),
@@ -271,8 +290,11 @@ impl Host {
             // A host with no workspace policy yet decides by none: the people its members'
             // resource names are in it, with no role. It follows the policy once one arrives.
             // Until then it is in no workspace whose members it could name, so nothing waits on
-            // a reading of them.
-            self.inner.members_known.set(true);
+            // a reading of them. A window keeps no policy, its device decides, yet it is in that
+            // device's workspace: its members are known once their reading arrives.
+            if !self.inner.window.get() {
+                self.inner.members_known.set(true);
+            }
             return false;
         };
         let person = access.person_id().unwrap_or_default();

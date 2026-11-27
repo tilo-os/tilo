@@ -1,7 +1,5 @@
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
@@ -17,8 +15,6 @@ pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
 }
 
 impl Default for Stack {
@@ -33,8 +29,6 @@ impl Stack {
             children: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
         }
     }
 
@@ -49,21 +43,10 @@ impl Stack {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Stack {
-    tilo_ui_base::provides!(
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
-        dyn tilo_ui_base::presence::capability::PublishesPresence
-    );
+    tilo_ui_base::provides!(dyn tilo_ui_base::presence::capability::PublishesPresence);
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
@@ -160,14 +143,12 @@ impl Widget for Stack {
 
     /// What its children changed.
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.guarded() || !self.presence_path.is_empty() {
-            if self.needs_redraw() || self.needs_animation_frame() {
-                regions.push(self.rect);
-            }
-        } else {
+        if self.presence_path.is_empty() {
             for child in &self.children {
                 child.collect_damage(regions);
             }
+        } else if self.needs_redraw() || self.needs_animation_frame() {
+            regions.push(self.rect);
         }
     }
 
@@ -224,30 +205,5 @@ impl Widget for Stack {
 impl tilo_ui_base::presence::capability::PublishesPresence for Stack {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl Stack {
-    /// Whether a permission scope guards this stack, so its denial scrim covers all of it.
-    #[cfg(feature = "model")]
-    fn guarded(&self) -> bool {
-        self.permission_scope.is_some()
-    }
-
-    /// Without Tilo's model no permission scope guards a widget.
-    #[cfg(not(feature = "model"))]
-    #[allow(
-        clippy::unused_self,
-        reason = "the model build reads the stack's scope"
-    )]
-    const fn guarded(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for Stack {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }

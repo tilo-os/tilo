@@ -432,8 +432,6 @@ tilo_test_env::scenario! {
             title: "Directory".into(),
             icon: crate::widget::IconDescriptor::Glyph("D"),
             resource_type: crate::resource::ResourceType::new("directory"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -446,9 +444,7 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 81,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    tilo_permissions::PermissionContext::permissive(),
-                ),
+                permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -666,64 +662,6 @@ tilo_test_env::scenario! {
         let next = app.action_directory_page(query);
         assert!(!next.stale_cursor);
         assert_eq!(next.rows.len(), 1);
-    }
-
-    phase hosted_directory_permission_expiry_or_failure_inside_notification_cannot_restore;
-    {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        for clock_failure in [false, true] {
-            let mut app = hosted_directory_fixture();
-            let time = Arc::new(AtomicU64::new(100));
-            let failed = Arc::new(AtomicBool::new(false));
-            let sample_time = time.clone();
-            let sample_failed = failed.clone();
-            app.permission_ctx = tilo_permissions::PermissionContext::granted(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_permissions::TreePath::root(),
-                tilo_action_types::KindSet::ALL,
-                Some(110),
-            )
-            .at_unix_time(100)
-            .with_policy_time_sampler(Arc::new(move || {
-                if sample_failed.load(Ordering::Acquire) {
-                    Err("actual clock retired".into())
-                } else {
-                    Ok(sample_time.load(Ordering::Acquire))
-                }
-            }));
-            app.invalidate_widget_resource_cache();
-            let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-                permissions: vec![],
-                apps: Vec::new(),
-            }]));
-            app.collaboration.manager =
-                CollaborationManager::with_peer_transport(HostedDirectoryNotificationTransport {
-                    events,
-                    before_poll: Some(Box::new(move || {
-                        if clock_failure {
-                            failed.store(true, Ordering::Release)
-                        } else {
-                            time.store(110, Ordering::Release)
-                        }
-                    })),
-                });
-            app.publish_action_surface();
-            let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
-            assert_eq!(
-                page.rows.len(),
-                1,
-                "the original sole grant admits the actual offer"
-            );
-            app.pump_hosted_model();
-            assert_ne!(app.action_directory_revision(), page.revision);
-            assert!(!matches!(
-                app.resolve_action_directory(&page.revision, "declared:0", "inspect"),
-                runtime_collab::ActionDirectoryResolution::Found { .. }
-            ));
-        }
     }
 
     phase hosted_directory_hidden_target_change_with_notification_cannot_restore;

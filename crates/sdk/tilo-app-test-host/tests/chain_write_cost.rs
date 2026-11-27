@@ -11,7 +11,6 @@ use tilo_app::resource::{DocumentCheckout, DocumentId, chain_resource_id};
 use tilo_app::tilo_resource::Collection;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
-use tilo_permissions::PermissionContext;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -128,7 +127,11 @@ fn copy_for(app: &TestApp<BoardApp>, member: &str) -> AttachedView {
         DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person(member),
-        PermissionContext::permissive(),
+        tilo_app::framework::harness_device::HarnessDevice::member_of(
+            TEST_WORKSPACE,
+            &MemberId::person(member),
+            tilo_app::Role::Owner,
+        ),
         false,
     )
     .unwrap()

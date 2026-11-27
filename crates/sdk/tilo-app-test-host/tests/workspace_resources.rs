@@ -475,7 +475,11 @@ fn attached<A: ResourceApp<Resource = Note>>(
         ),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person("ada"),
-        tilo_permissions::PermissionContext::permissive(),
+        tilo_app::framework::harness_device::HarnessDevice::member_of(
+            tilo_app::framework::testing::TEST_WORKSPACE,
+            &MemberId::person("ada"),
+            tilo_app::Role::Owner,
+        ),
         false,
     )
 }

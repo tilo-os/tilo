@@ -1,9 +1,7 @@
 //! What a window's person may do with the one item it shows, beyond what
 //! they may do with its record: an item shared with them to edit.
 
-use super::LivePermissions;
-use super::ResourceRoot;
-use tilo_permissions::PermissionScope;
+use super::{LivePermissions, ResourceRoot};
 
 impl ResourceRoot {
     /// Whether the person may change the item the window shows (its bar's
@@ -28,13 +26,13 @@ impl ResourceRoot {
             .record
             .as_ref()
             .map_or("", |record| record.route());
-        permissions.check(&PermissionScope::Action {
-            node: tilo_permissions::TreePath::root()
+        permissions.permits(&ui_core::shown_actions::ShownAction::at(
+            tilo_ui_base::permissions::TreePath::root()
                 .app(self.dispatch.app_id())
                 .kind(kind)
                 .resource(record)
                 .item(item),
-            kind: tilo_ui_base::permissions::ActionKind::Undoable,
-        })
+            tilo_ui_base::permissions::ActionKind::Undoable,
+        ))
     }
 }

@@ -18,7 +18,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
-use tilo_action_policy::WorkspacePolicy;
 use tilo_actions::{ActionAddress, ActionInvoker, ApiError, ResourceSpec};
 use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record};
 use tilo_service::{Service, Started};
@@ -127,14 +126,8 @@ pub(crate) struct Agents {
     daemon: tilo_session_client::daemon_documents::DaemonShell,
     /// Wakes the session's loop when a list moved.
     wake: tilo_service::Wake,
-    /// Each workspace's list of its agents, followed here at the grants it was followed with.
-    open: RefCell<BTreeMap<String, Opened>>,
-}
-
-struct Opened {
-    /// The grants it was followed with: a workspace whose grants changed has it followed again.
-    policy: WorkspacePolicy,
-    followed: FollowedResource<Record>,
+    /// Each workspace's list of its agents, followed here.
+    open: RefCell<BTreeMap<String, FollowedResource<Record>>>,
 }
 
 /// What a workspace's list of its agents is to a reader this pass.
@@ -169,11 +162,7 @@ impl Agents {
     /// Read each workspace's agents record as `person` , hand who keeps each agent to the broker,
     /// and answer the agents `person` keeps beside every agent each workspace lists, whoever
     /// keeps it.
-    pub(crate) fn feed(
-        &self,
-        person: &str,
-        workspaces: &[(String, WorkspacePolicy)],
-    ) -> (Vec<Kept>, Vec<Listed>) {
+    pub(crate) fn feed(&self, person: &str, workspaces: &[String]) -> (Vec<Kept>, Vec<Listed>) {
         let day = tilo_ui_base::clock::today().to_string();
         // Who keeps each agent, as the broker reads them, started from what it read last: a
         // workspace whose record cannot be read this pass keeps its listing, so a read that
@@ -184,7 +173,7 @@ impl Agents {
             .lock()
             .map(|held| held.clone())
             .unwrap_or_default();
-        listed.retain(|workspace, _| workspaces.iter().any(|(held, _)| held == workspace));
+        listed.retain(|workspace, _| workspaces.iter().any(|held| held == workspace));
         // What each agent may spend, kept the same way: a workspace read this pass replaces it.
         let mut spend: BTreeMap<(String, String), runtime_collab::AgentSpend> = self
             .roster
@@ -192,11 +181,11 @@ impl Agents {
             .lock()
             .map(|held| held.clone())
             .unwrap_or_default();
-        spend.retain(|(workspace, _), _| workspaces.iter().any(|(held, _)| held == workspace));
+        spend.retain(|(workspace, _), _| workspaces.iter().any(|held| held == workspace));
         let mut kept = Vec::new();
         let mut every = Vec::new();
-        for (workspace, policy) in workspaces {
-            let record = match self.record(workspace, policy, person) {
+        for workspace in workspaces {
+            let record = match self.record(workspace, person) {
                 Held::None => {
                     listed.remove(workspace);
                     spend.retain(|(held, _), _| held != workspace);
@@ -267,10 +256,9 @@ impl Agents {
     pub(crate) fn assistant(
         &self,
         workspace: &str,
-        policy: &WorkspacePolicy,
         person: &str,
     ) -> Option<(tilo_member_types::MemberId, String)> {
-        let Held::Open(record) = self.record(workspace, policy, person) else {
+        let Held::Open(record) = self.record(workspace, person) else {
             return None;
         };
         let state = record.get();
@@ -280,11 +268,10 @@ impl Agents {
             .map(|agent| (agent.member(), agent.name.clone()))
     }
 
-    /// The workspace's list of its agents, followed here where it is not, at the grants the pass
-    /// read, and read as it stands now: a workspace that keeps none is given none, so one nobody
+    /// The workspace's list of its agents, followed here where it is not, and read as it stands now: a workspace that keeps none is given none, so one nobody
     /// set an agent up in costs no list.
-    fn record(&self, workspace: &str, policy: &WorkspacePolicy, person: &str) -> Held {
-        let followed = self.followed(workspace, policy, person);
+    fn record(&self, workspace: &str, person: &str) -> Held {
+        let followed = self.followed(workspace, person);
         match followed.held() {
             Some(true) => Held::Open(followed),
             Some(false) => Held::None,
@@ -292,36 +279,22 @@ impl Agents {
         }
     }
 
-    /// The workspace's list of its agents, followed here where it is not, at the grants the pass
-    /// read. Its first state while the workspace keeps none: what the session publishes of it,
+    /// The workspace's list of its agents, followed here where it is not. Its first state while the workspace keeps none: what the session publishes of it,
     /// and what the workspace founds when an app first changes it.
-    pub(crate) fn followed(
-        &self,
-        workspace: &str,
-        policy: &WorkspacePolicy,
-        person: &str,
-    ) -> FollowedResource<Record> {
+    pub(crate) fn followed(&self, workspace: &str, person: &str) -> FollowedResource<Record> {
         let mut open = self.open.borrow_mut();
-        if open
-            .get(workspace)
-            .is_some_and(|opened| opened.policy != *policy)
-        {
-            open.remove(workspace);
-        }
-        let opened = open.entry(workspace.to_owned()).or_insert_with(|| Opened {
-            policy: policy.clone(),
-            followed: FollowedResource::follow(
+        let followed = open.entry(workspace.to_owned()).or_insert_with(|| {
+            FollowedResource::follow(
                 &self.daemon,
                 (workspace, OWNER, &collab_types::workspace_document_id(KIND)),
                 person,
-                Some(policy.clone()),
                 Arc::clone(&self.wake),
-            ),
+            )
         });
         // A write to it (the MCP server's, the person's Settings') reaches the follow, which
         // wakes the session to read it: a pass asks the daemon for nothing, so an idle session
         // keeps the broker asleep.
-        opened.followed.clone()
+        followed.clone()
     }
 }
 
@@ -331,13 +304,12 @@ impl crate::Shared {
     /// is read from the workspace's own record of them, as the broker admits an agent's session on,
     /// and its actions are admitted as the grants of the person it acts for say.
     pub(crate) fn feed_agents(&self) {
-        let workspaces: Vec<(String, tilo_action_policy::WorkspacePolicy)> =
-            self.handle.read(|tree| {
-                tree.workspaces
-                    .iter()
-                    .map(|held| (held.id().to_string(), held.policy.clone()))
-                    .collect()
-            });
+        let workspaces: Vec<String> = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|held| held.id().to_string())
+                .collect()
+        });
         let (kept, listed) = self.agents.feed(&self.person, &workspaces);
         self.search.set_kept_agents(&kept);
         self.search.set_listed_agents(&listed);
@@ -439,19 +411,17 @@ impl Served {
         }
     }
 
-    /// The workspace in front, and its grants.
-    fn workspace(&self) -> Option<(String, WorkspacePolicy)> {
-        self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| (held.id().to_string(), held.policy.clone()))
-        })
+    /// The workspace in front.
+    fn workspace(&self) -> Option<String> {
+        self.handle
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
     }
 
     /// The workspace's record of its agents, followed here: its first state while the workspace
     /// keeps none.
     fn record(&self) -> Option<FollowedResource<Record>> {
-        let (workspace, policy) = self.workspace()?;
-        Some(self.agents.followed(&workspace, &policy, &self.person))
+        let workspace = self.workspace()?;
+        Some(self.agents.followed(&workspace, &self.person))
     }
 
     /// What the record reads as now: its agents, each with its name, who it acts for, its model,

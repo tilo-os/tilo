@@ -1904,12 +1904,6 @@ impl WireConnection {
                             },
                         ))
                     }
-                    Topic::ShownActions(actions) => {
-                        let feed = session.shown_actions(actions).map_err(failed)?;
-                        tokio::task::spawn_local(pump(feed, id, frames, |decisions| {
-                            Some(Event::ShownActions(decisions))
-                        }))
-                    }
                 };
                 self.subscriptions
                     .borrow_mut()

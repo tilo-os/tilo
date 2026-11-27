@@ -16,7 +16,6 @@ pub(super) struct DirectoryObservation {
     pub registry_generation: u64,
     pub root_domain: tilo_ui_base::widget::ActionDirectoryInvocationDomain,
     pub provider_domains: Vec<tilo_ui_base::widget::ActionDirectoryInvocationDomain>,
-    pub permissions: tilo_permissions::DirectoryPermissionObservation,
     pub permission_generation: u64,
     pub route: Option<::collaboration::AcceptedRoute>,
     pub owners: Vec<crate::bound_dispatch::BoundDirectoryObservation>,
@@ -40,8 +39,7 @@ impl DirectoryObservation {
     }
 
     fn same_non_scheduling_fields(&self, other: &Self) -> bool {
-        self.permissions == other.permissions
-            && self.permission_generation == other.permission_generation
+        self.permission_generation == other.permission_generation
             && self.route == other.route
             && self.owners.len() == other.owners.len()
             && self

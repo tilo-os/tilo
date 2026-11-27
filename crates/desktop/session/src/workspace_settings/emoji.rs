@@ -234,7 +234,6 @@ impl Emoji {
             &self.daemon,
             (&workspace_id, OWNER, &id),
             person,
-            Some(workspace.policy.clone()),
             Arc::clone(&self.wake),
         );
         *self.open.borrow_mut() = Some(Open {

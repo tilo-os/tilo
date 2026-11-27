@@ -5,11 +5,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tilo_permissions::LivePermissions;
-use tilo_permissions::PermissionScope;
 use tilo_resource::{Invoke, Reader, Resource};
 use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_ui_base::permissions::ActionKind;
+use tilo_ui_base::permissions::LivePermissions;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::widget::Element;
 use ui_core::application::{
@@ -18,23 +17,22 @@ use ui_core::application::{
 };
 use ui_core::launch::LaunchError;
 use ui_core::resource::{DocumentId, ResourceType};
+use ui_core::shown_actions::ShownAction;
 use ui_core::storage::AppStorage;
 use ui_core::widget::IconDescriptor;
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
 // native presentation and profiles; a browser host prepares components itself.
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_permissions::PermissionContext;
-use tilo_permissions::Role;
-use ui_core::application::ApplicationOwner;
-use ui_core::application::Capture;
-use ui_core::application::ComponentRunnerInputs;
-use ui_core::application::NativeProcess;
-use ui_core::application::PreparedComponentInputs;
-use ui_core::headless::Driver;
-use ui_core::launch::LaunchArgs;
-use ui_core::launch::LaunchSpec;
-use ui_core::resource::DocumentCheckout;
+use {
+    tilo_ui_base::permissions::Role,
+    ui_core::application::{
+        ApplicationOwner, Capture, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
+    },
+    ui_core::headless::Driver,
+    ui_core::launch::{LaunchArgs, LaunchSpec},
+    ui_core::resource::DocumentCheckout,
+};
 
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
@@ -599,8 +597,6 @@ fn application_definition(
         title: app.title().into(),
         icon: icon(app),
         resource_type: ResourceType::new(app.kind),
-        required: vec![],
-        optional: vec![],
         opens,
         workspace_resource,
         opens_before_resource: workspace_resource && app.opens_before_resource,
@@ -794,15 +790,15 @@ pub(crate) enum Editing {
 
 /// The permission that makes the record an app opened editable: writing the app's records of
 /// the workspace.
-fn write_scope(app: &AppHooks) -> PermissionScope {
-    PermissionScope::app(app.id(), ActionKind::Undoable)
+fn write_scope(app: &AppHooks) -> ShownAction {
+    ShownAction::app(app.id(), ActionKind::Undoable)
 }
 
 /// What a root is built with besides its resource type: who edits it and
 /// how, what it was built for, and where its settings are kept.
 struct RootShell {
     /// The permission that makes the app's resource editable.
-    scope: PermissionScope,
+    scope: ShownAction,
     permissions: Option<LivePermissions>,
     read_only: bool,
     me: Option<MemberId>,
@@ -826,10 +822,15 @@ impl RootShell {
             Editing::ReadOnly(run) => (None, true, None, *run),
         };
         let scope = write_scope(app);
+        // View only once the device refused writing: until it answers, the window is not yet
+        // decided, and what its view submits waits for the answer.
         let read_only = read_only
-            || permissions
-                .as_ref()
-                .is_some_and(|permissions| !permissions.check(&scope));
+            || permissions.as_ref().is_some_and(|permissions| {
+                permissions
+                    .current()
+                    .refusal(&scope)
+                    .is_some_and(|why| why != tilo_actions::shown::CHECKING)
+            });
         let run = run.for_member(me.as_ref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
@@ -907,10 +908,14 @@ pub(crate) fn build_root<A: ResourceApp>(
             .as_ref()
             .map_or("", |record| record.route()),
     );
-    let dispatch = if permissions.is_none() {
-        dispatch.past()
-    } else {
-        dispatch
+    // It follows the window's permissions before the view is built: what the view submits as it
+    // is built waits for the device's answer rather than being refused before the window asked.
+    let dispatch = match &permissions {
+        None => dispatch.past(),
+        Some(permissions) => {
+            dispatch.core().follow(permissions.clone());
+            dispatch
+        }
     };
     // The name the app gives the record it opened: the first publication
     // names it by the state it holds then, and every one after by its own.
@@ -998,7 +1003,7 @@ type PastDrawing = ();
 fn finish_root(
     root: ResourceRoot,
     app: &AppHooks,
-    (permissions, scope): (Option<LivePermissions>, PermissionScope),
+    (permissions, scope): (Option<LivePermissions>, ShownAction),
     open_link: super::root::OpenLink,
     window: ui_core::application::WindowRole,
     past: Option<PastDrawing>,
@@ -1723,23 +1728,6 @@ fn merge_peer(
 #[cfg(not(target_arch = "wasm32"))]
 const CAPTURE_INSTANCE: u64 = 1;
 
-/// The permissions of `author` holding `role` in `workspace`, shared with the
-/// host so a later role change reaches the running app. They name the
-/// workspace the app keeps its records in, so what the host decides about
-/// those records is what the app is granted there.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn role_permissions(
-    workspace: &str,
-    author: &str,
-    role: Role,
-) -> tilo_permissions::SharedPermissions {
-    tilo_permissions::SharedPermissions::new(PermissionContext::member_of(
-        workspace,
-        &tilo_ui_base::permissions::MemberId::person(author),
-        role,
-    ))
-}
-
 /// Prepare `definition` on `host`: the record a launch named, else the one
 /// the instance showed last, else the workspace's default.
 #[cfg(tilo_native_runner)]
@@ -2097,11 +2085,19 @@ fn prepare_named(
             "capture-device".into(),
             &workspace,
             MemberId::person("capture-author"),
-            role_permissions(&workspace, "capture-author", Role::Owner),
+            tilo_ui_base::permissions::SharedPermissions::default(),
             tilo_actions::ActionContext::default(),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);
+        prepared.context.provide_harness_device(
+            super::harness_device::HarnessDevice::member_of(
+                &workspace,
+                &MemberId::person("capture-author"),
+                Role::Owner,
+            )
+            .shown(),
+        );
         // An audit and a headless drive certify and drive the app someone
         // uses; only a screenshot, or a drive of a named scenario, is built
         // from fixtures.
@@ -2133,11 +2129,7 @@ fn prepare_named(
             directory,
             definition.app_id(),
             &author,
-            role_permissions(
-                super::headless::DATA_DIR_WORKSPACE,
-                author.id(),
-                Role::Owner,
-            ),
+            tilo_ui_base::permissions::SharedPermissions::default(),
         )?;
         let mut prepared = prepare_on(
             &mut host,
@@ -2149,6 +2141,14 @@ fn prepare_named(
         prepared
             .context
             .provide_content(super::headless::data_dir_content(directory));
+        prepared.context.provide_harness_device(
+            super::harness_device::HarnessDevice::member_of(
+                super::headless::DATA_DIR_WORKSPACE,
+                &author,
+                Role::Owner,
+            )
+            .shown(),
+        );
         let prepared = super::headless::in_profile(
             prepared,
             &super::headless::data_dir_root(directory),

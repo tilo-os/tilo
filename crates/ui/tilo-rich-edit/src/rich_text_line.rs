@@ -282,10 +282,8 @@ pub struct RichTextLine {
     /// What the last frame drew, appended again while the line holds and
     /// only moves ([`tilo_ui_base::widget::CachedPaint`]).
     face: tilo_ui_base::widget::CachedPaint,
-    /// What `face` was drawn from, and the permission generation it was drawn at: a permission
-    /// change alters the field's check.
+    /// What `face` was drawn from.
     face_key: Option<LineFace>,
-    face_permissions: u64,
     accent_rgb: Option<[u8; 3]>,
     syntax: Option<tilo_ui_base::tokens::SyntaxPalette>,
     /// Drained once `handle_event` observes a text-input edit.
@@ -348,7 +346,6 @@ impl RichTextLine {
             paint_dirty: true,
             face: tilo_ui_base::widget::CachedPaint::default(),
             face_key: None,
-            face_permissions: 0,
             accent_rgb: None,
             syntax: None,
             pending_marks: Vec::new(),
@@ -1349,9 +1346,6 @@ impl RichTextLine {
         if self.paint_dirty || self.face.is_empty() {
             return false;
         }
-        if self.face_permissions != env.paint_permissions {
-            return false;
-        }
         if self.inner.paint_changed() || self.inner.needs_animation_frame() {
             return false;
         }
@@ -1781,7 +1775,6 @@ impl Widget for RichTextLine {
             ));
             self.face = face;
             self.face_key = Some(self.face_of(theme));
-            self.face_permissions = env.paint_permissions;
             note_face_work(Some(self.inner.value()));
         }
         self.face.append(scene, transform, self.inner.get_rect());

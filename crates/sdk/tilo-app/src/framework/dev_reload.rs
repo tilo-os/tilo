@@ -1,12 +1,11 @@
 //! The symbols a `thin` app library exports so `tilolang dev` can run new
 //! code inside the windows the process already has.
 
-use tilo_permissions::LivePermissions;
-use tilo_permissions::Role;
 use tilo_resource::{Doc, Reader};
+use tilo_ui_base::permissions::LivePermissions;
 use ui_core::widget::AppWidget;
 
-use super::app::{Editing, ResourceApp, action_registry, build_root, role_permissions};
+use super::app::{Editing, ResourceApp, action_registry, build_root};
 use super::scenario::Run;
 
 /// Address of the `ui` this library linked. The host compares it with its own
@@ -42,8 +41,7 @@ pub fn publish_root<A: ResourceApp>() -> i32 {
     let Some(reader) = reader else {
         return 0;
     };
-    let permissions =
-        LivePermissions::fixed(role_permissions("dev", "dev", Role::Owner).borrow().clone());
+    let permissions = LivePermissions::fixed(tilo_ui_base::permissions::Verdicts::default());
     let me = ::collaboration::local_user_id();
     let root = build_root::<A>(
         reader,

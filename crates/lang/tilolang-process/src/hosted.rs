@@ -120,11 +120,6 @@ pub struct Spec {
     /// package's source language otherwise. Empty for a session that names none, whose host reads
     /// its own process's language.
     pub language: String,
-    /// What the person may do in the app as the session handed it with the launch
-    /// (`InstanceRequest::access`): the views offer what it denies them disabled, and the
-    /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
-    /// for the workspace: the broker alone decides.
-    pub access: Option<tilo_action_policy::MemberAccess>,
     /// The workspace's content as this window reads it (`InstanceRequest::content`): its owners'
     /// limits on what members post there and the content a limit refused. `None` where the device
     /// reads none, and then the root reads as no limit and no refusal.
@@ -141,6 +136,9 @@ pub struct Spec {
     /// (`InstanceRequest::provided`): a package the app uses that is one of them is called at
     /// the addresses its provider registered, through the dispatch as any app's call is.
     pub provided: Vec<tilo_actions::remote::ProvidedPackage>,
+    /// What the person's device said of the actions the app declares, handed with the launch
+    /// (`InstanceRequest::verdicts`): what the window shows and acts on before it asked anything.
+    pub verdicts: Vec<tilo_actions::shown::ActionDecision>,
 }
 
 impl Spec {
@@ -160,11 +158,11 @@ impl Spec {
             person: person.into(),
             installed: BTreeMap::new(),
             language: String::new(),
-            access: None,
             content: None,
             shows: Shows::View,
             link_home: None,
             provided: Vec::new(),
+            verdicts: Vec::new(),
         }
     }
 
@@ -172,13 +170,6 @@ impl Spec {
     #[must_use]
     pub fn in_language(mut self, language: impl Into<String>) -> Self {
         self.language = language.into();
-        self
-    }
-
-    /// [`Self::new`] for a person whose access in the workspace is `access`.
-    #[must_use]
-    pub fn access(mut self, access: tilo_action_policy::MemberAccess) -> Self {
-        self.access = Some(access);
         self
     }
 
@@ -1961,13 +1952,13 @@ pub struct Hosted {
     identity: Option<runtime_portal::process_link::Descriptor>,
     /// The scope the instance's code runs in, its document's content store registered for it.
     scope: DocumentScope,
-    /// What the person may do in the app now: the launch's, until the session says it changed
-    /// ([`Self::set_access`]). The runtime reads it at each decision.
-    access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
     /// The workspace's content as the person reads it now: the launch's, until the device says
     /// it changed ([`Self::set_content`]). The instance serves it as `workspace.content` each
     /// frame it moved.
     content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
+    /// What the device says the person may do of each action the window reads: refused until it
+    /// said, and followed while the window is open ([`Self::follow_verdicts`]).
+    verdicts: Verdicts,
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
@@ -1997,6 +1988,12 @@ pub struct Hosted {
     /// What the app was opened with, until the turn that published its surface runs the action its
     /// package declares for the file's kind, or its `open-link` for a link ([`Self::opened`]).
     opening: Option<runtime_portal::process_link::OpenRequest>,
+    /// The scenario a capture staged, until the device said what the window read: its steps are
+    /// the person's, and a step is taken only once the device answered it.
+    staged: Option<String>,
+    /// Why the scenario staged last did not run whole, until it is taken
+    /// ([`Self::take_stage_failure`]).
+    stage_failed: Option<String>,
     /// The content store the app's files are kept in, which the session opened for it: the bytes
     /// of the file its launch named are read from here, as its own `file.text()` reads them.
     files: Option<tilo_content::ContentStore>,
@@ -2127,11 +2124,11 @@ struct Opened {
     instance: Instance,
     surface: SurfaceSlot,
     builds: BuildsSlot,
-    /// What the person may do in the app, which the instance reads at each decision.
-    access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
     /// The workspace's content as the person reads it, which the instance serves as
     /// `workspace.content` each frame it moved.
     content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
+    /// What the device says the person may do, which the instance reads at each decision.
+    verdicts: Verdicts,
     /// The platform roots the instance reads the device through, shared with the host.
     roots: Rc<RefCell<Roots>>,
     watches: Rc<crate::files::Watches>,
@@ -2185,6 +2182,47 @@ fn abandon_open_runs(store: &ResourceStore, connection: &Connection, host: &Host
             }
         }
     }
+}
+
+/// What the window of `spec`'s instance knows of its device's answers as it opens: what the launch
+/// handed, and what it asks with its first frame.
+fn launch_verdicts(spec: &Spec, bundle: &Bundle, connection: &Connection) -> Verdicts {
+    // What its runtime offers and invokes of the person's own is what their device says, asked
+    // as the window reads it: until it said, a call goes to the device to decide.
+    let mut verdicts = Verdicts::default();
+    if connection.is_local() {
+        verdicts.remote = None;
+    }
+    // What the device said of the app's declared actions with the launch: the window acts on them
+    // from its first frame, and keeps asking them so a grant that changes is heard.
+    verdicts
+        .permissions
+        .update(|current| current.handed(&spec.verdicts));
+    // And what it says of anything of the app and of each package it uses, which an action it
+    // publishes none of (one a scenario or its own code calls) takes: asked with its first frame
+    // where it was not handed, as a launch hands it.
+    // Each outside capability their code may queue is asked too: an effect goes out only once
+    // the device says the workspace lets the app reach it.
+    let metas =
+        std::iter::once(&bundle.meta).chain(bundle.imports.iter().map(|import| &import.meta));
+    let reaches: Vec<tilo_actions::shown::ShownAction> = metas
+        .flat_map(|meta| {
+            meta.actions.iter().flat_map(move |action| {
+                action.outside.iter().map(move |capability| {
+                    tilo_actions::shown::ShownAction::reach(&meta.app, capability)
+                })
+            })
+        })
+        .collect();
+    let apps = std::iter::once(spec.app.as_str())
+        .chain(bundle.imports.iter().map(|import| import.meta.app.as_str()));
+    verdicts.permissions.update(|current| {
+        current.ask_also(
+            apps.flat_map(|app| tilo_actions::shown::declared_by(app, &[]))
+                .chain(reaches),
+        );
+    });
+    verdicts
 }
 
 /// The instance `spec` runs in, on the device services `kept` holds, its words read by `phrases`
@@ -2257,24 +2295,25 @@ fn open_instance(
     if spec.shows == Shows::Nothing {
         instance.without_window();
     }
-    // What its runtime offers and invokes is decided by the person's access as the session
-    // says it, read at each decision.
-    let access = Rc::new(RefCell::new(spec.access.clone()));
-    let read = Rc::clone(&access);
-    instance.set_access(Rc::new(move || read.borrow().clone()));
     // What the workspace's owners let members post there, and what a limit refused: the device
     // hands it with the instance and says it again when it moved, and the host serves it as
     // `workspace.content` each frame that reads something else.
     let content = Rc::new(RefCell::new(spec.content.clone()));
     let reading = Rc::clone(&content);
     instance.set_content_source(Rc::new(move || reading.borrow().clone()));
+    let verdicts = launch_verdicts(spec, bundle, connection);
+    let read = verdicts.permissions.clone();
+    instance.set_verdicts(Rc::new(move |node, kind| {
+        read.borrow()
+            .said(&tilo_actions::shown::ShownAction::at(node.clone(), kind))
+    }));
     drop(in_scope);
     Opened {
         instance,
         surface,
         builds,
-        access,
         content,
+        verdicts,
         roots,
         watches,
         used,
@@ -2340,8 +2379,8 @@ impl Hosted {
             mut instance,
             surface,
             builds,
-            access,
             content: workspace_content,
+            verdicts,
             roots: platform_roots,
             watches,
             used,
@@ -2411,8 +2450,8 @@ impl Hosted {
             identity: None,
             scope,
             personal,
-            access,
             content: workspace_content,
+            verdicts,
             presence,
             presence_line,
             calls,
@@ -2422,6 +2461,8 @@ impl Hosted {
             early: Vec::new(),
             moved_records: Vec::new(),
             opening: None,
+            staged: None,
+            stage_failed: None,
             files: kept.content.clone(),
             outputs_sent: None,
             media_said: MediaSaid::Untold,
@@ -2629,14 +2670,61 @@ impl Hosted {
         self.instance.person_changed();
     }
 
-    /// What the person may do in the app changed (a role given or taken back): the views offer and
-    /// the runtime invokes by `access` from now on, and what they offer is drawn again. Whether
-    /// it changed.
-    pub fn set_access(&mut self, access: Option<tilo_action_policy::MemberAccess>) -> bool {
-        if *self.access.borrow() == access {
+    /// Ask the device of what the window read and it was not asked yet, send what is asked, and
+    /// take its verdicts as they arrive and each time the grants change: what the views offer is
+    /// answered and drawn again. Whether they moved.
+    fn follow_verdicts(&mut self) -> bool {
+        let verdicts = &mut self.verdicts;
+        // What the launch handed over is asked from the first turn too, so a grant that changes
+        // later is heard: the device keeps answering the one ask.
+        let missed = verdicts
+            .permissions
+            .update(tilo_permissions::Verdicts::take_missed);
+        if missed || verdicts.shown.is_none() {
+            let asked = verdicts.permissions.borrow().asked();
+            if asked != verdicts.asked {
+                if asked.is_empty() {
+                    verdicts.shown = None;
+                } else {
+                    let app = &self.spec.app;
+                    let remote = verdicts
+                        .remote
+                        .get_or_insert_with(|| ui_core::remote_of_the_window(app));
+                    verdicts.shown = Some(remote.shown(asked.clone()));
+                }
+                verdicts.asked = asked;
+                verdicts.decided = None;
+            }
+        }
+        if self.connection.is_local() {
+            if let Some(remote) = &verdicts.remote {
+                remote.poll();
+            }
+        } else if let Some(remote) = verdicts.remote.as_mut() {
+            let mut manager = self.connection.manager();
+            for request in ui_core::widget::Collaborative::take_collab_requests(remote) {
+                if let Err(error) = manager.try_send(request) {
+                    tracing::warn!(app = self.spec.app, %error, "the device was not asked what the window shows");
+                }
+            }
+        }
+        let Some(call) = verdicts
+            .shown
+            .as_ref()
+            .map(ui_core::remote_actions::ShownCall::call)
+        else {
+            return false;
+        };
+        if verdicts.decided == Some(call.revision()) {
             return false;
         }
-        *self.access.borrow_mut() = access;
+        let Some(decisions) = call.get().ready().cloned() else {
+            return false;
+        };
+        verdicts.decided = Some(call.revision());
+        verdicts
+            .permissions
+            .update(|current| current.decide(&decisions));
         self.published_from = None;
         self.answers = Answers::default();
         self.person_changed();
@@ -2676,13 +2764,16 @@ impl Hosted {
         true
     }
 
-    /// Run the package's scenario `scenario` in the instance now, as a capture stages one: its
+    /// Run the package's scenario `scenario` in the instance, as a capture stages one: its
     /// changes are the person's steps on the instance's document, which its next frame sends.
+    /// Its steps are taken once the device said what the window read: now when it has, else on
+    /// the turn it answers, and then why it did not run whole is kept for
+    /// [`Self::take_stage_failure`].
     ///
     /// # Errors
     ///
-    /// Why the scenario did not run whole, naming the step that failed, its action and why
-    /// ([`Instance::stage`]).
+    /// Why the scenario run now did not run whole, naming the step that failed, its action and
+    /// why ([`Instance::stage`]).
     pub fn stage(&mut self, scenario: &str) -> Result<(), String> {
         let _code = self.scope.enter();
         // A package's first scenario stands on what its outside services hold, which the
@@ -2690,7 +2781,54 @@ impl Hosted {
         tilolang_mail::sample::register();
         #[cfg(feature = "app-launch")]
         tilolang_youtube::sample::register();
-        self.instance.stage(scenario)
+        if self.device_answered() {
+            return self.instance.stage(scenario);
+        }
+        self.staged = Some(scenario.to_owned());
+        Ok(())
+    }
+
+    /// Why the scenario staged before the device answered did not run whole, once it ran: the
+    /// step that failed, its action and why. Taken once.
+    pub fn take_stage_failure(&mut self) -> Option<String> {
+        self.stage_failed.take()
+    }
+
+    /// Take what the device answered on the instance's own connection. An instance on no
+    /// connection asks on the window's, which hears the answers itself.
+    fn hear_verdicts(&mut self, events: &[CollabEvent]) {
+        if self.connection.is_local() {
+            return;
+        }
+        if let Some(remote) = self.verdicts.remote.as_mut() {
+            for event in events {
+                ui_core::widget::Collaborative::handle_collab_event(remote, event);
+            }
+        }
+    }
+
+    /// Run the scenario staged on the window once its device has said what the window read, now
+    /// that a frame read it. Whether it ran.
+    fn run_staged(&mut self) -> bool {
+        self.verdicts.turned = true;
+        if !self.device_answered() {
+            return false;
+        }
+        let Some(scenario) = self.staged.take() else {
+            return false;
+        };
+        if let Err(why) = self.instance.stage(&scenario) {
+            tracing::warn!(%why, "a scenario staged before the device answered did not run whole");
+            self.stage_failed = Some(why);
+        }
+        true
+    }
+
+    /// Whether the device said what the window read: what the person (or a scenario staged as
+    /// them) does waits until it did, and is then taken, never dropped. A window handed its
+    /// verdicts with its launch has them from its first frame.
+    fn device_answered(&self) -> bool {
+        self.verdicts.turned && !self.verdicts.permissions.borrow().undecided()
     }
 
     /// Run the action of each watched folder that changed since the last frame, as the member
@@ -2820,6 +2958,7 @@ impl Hosted {
         {
             self.personal.moved_again();
         }
+        self.hear_verdicts(&events);
         // Who else is here and who is writing, before the views that show it run.
         changed |= self.take_events(&mut events);
         // What the catalogue says cannot run now, asked again as it comes due: a control the
@@ -2830,6 +2969,8 @@ impl Hosted {
         // the session publishes rather than an app's waiting state.
         changed |= self.read_platform();
         changed |= self.instance.update();
+        changed |= self.follow_verdicts();
+        changed |= self.run_staged();
         // The presses the window's controls and forms ran, each recorded with the dispatch as
         // the call it ran as.
         for pressed in self.instance.take_pressed() {
@@ -2919,7 +3060,9 @@ impl Hosted {
 
         self.publish();
         self.answer_directory();
-        changed |= self.opened();
+        if self.device_answered() {
+            changed |= self.opened();
+        }
         // Where what plays comes out, after this frame's views ran: a person who moved the
         // session to a speaker or a cast target hears it there from the next frame.
         changed |= self.say_outputs();
@@ -3475,6 +3618,42 @@ impl Hosted {
         }
     }
 
+    /// Dim, for the person at the window, an action their device refuses them on a document that
+    /// holds its own keys, saying why in the device's words. The device decides by the document's
+    /// own rules as well as the workspace's grants; one it has not answered yet is asked with the
+    /// window's next questions, and one that asks first stays pressable: the press stops on the
+    /// Ask bar.
+    fn apply_document_verdicts(&self, descriptors: &mut [ActionDescriptor]) {
+        let route = self.connection.route();
+        let document = route.document.as_deref().unwrap_or("");
+        if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
+            return;
+        }
+        let verdicts = self.verdicts.permissions.borrow();
+        for descriptor in descriptors {
+            let need = descriptor.contract.need();
+            let question = tilo_actions::shown::ShownAction::at(
+                tilo_actions::action_node(
+                    &tilo_action_policy::TreePath::root(),
+                    &route.app_id,
+                    &descriptor.resource_kind,
+                    document,
+                    need.field.as_deref(),
+                    &descriptor.address.action,
+                ),
+                need.kind,
+            );
+            if verdicts.said(&question) == Some(tilo_action_policy::Answer::Deny) {
+                descriptor.contract.availability = tilo_actions::Availability::Unavailable {
+                    code: tilo_actions::Availability::NOT_ALLOWED.to_owned(),
+                    reason: verdicts
+                        .refusal(&question)
+                        .unwrap_or_else(|| self.phrases.say("tilolang-ask-denied", &[])),
+                };
+            }
+        }
+    }
+
     /// What the app says of `descriptor`'s action on its resource now, as the window shows it:
     /// what it is called there, the icon beside it, and whether it can run ([`Answers`]).
     fn show_offer(&mut self, host: &Host, at: u64, descriptor: &mut ActionDescriptor) {
@@ -3487,40 +3666,6 @@ impl Hosted {
             return;
         };
         descriptor.offers(&offered);
-    }
-
-    /// Dim, for the person at the window, an action the rules of a document that holds its own
-    /// keys deny them, saying so in their words. One the rules answer Ask stays pressable: the
-    /// press stops on the Ask bar.
-    fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
-        use tilo_action_policy::{Answer, Context, TreePath};
-
-        let route = self.connection.route();
-        let document = route.document.as_deref().unwrap_or("");
-        if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
-            return;
-        }
-        let access = self.access.borrow();
-        let Some(access) = &*access else {
-            return;
-        };
-        let app = TreePath::workspace(route.cluster_id.to_string()).app(&route.app_id);
-        let context = Context::at_time(tilo_clock::wall());
-        for descriptor in descriptors {
-            let need = descriptor.contract.need();
-            let node = app
-                .clone()
-                .kind(&descriptor.resource_kind)
-                .resource(document)
-                .field(need.field.as_deref().unwrap_or(""))
-                .action(&descriptor.address.action);
-            if access.answer(&node, need.kind, &context) == Answer::Deny {
-                descriptor.contract.availability = tilo_actions::Availability::Unavailable {
-                    code: tilo_actions::Availability::NOT_ALLOWED.to_owned(),
-                    reason: self.phrases.say("tilolang-ask-denied", &[]),
-                };
-            }
-        }
     }
 
     /// Where the publications stand now: what an answer is read at, and how far it stands
@@ -4996,7 +5141,7 @@ impl Hosted {
         }
         let mut descriptors = tilo_actions::api::survey(&resources);
         self.answer_what_the_window_shows(rows, &mut descriptors);
-        self.apply_document_grants(&mut descriptors);
+        self.apply_document_verdicts(&mut descriptors);
         if self.surveyed.len() >= SURVEYED
             && let Some(oldest) = self.surveyed.keys().next().cloned()
         {
@@ -5242,9 +5387,10 @@ impl Hosted {
         self.directory_behind = true;
         if answered {
             self.answer_what_the_window_shows(rows, &mut descriptors);
-            // What a document's own rules deny the person is read again with them, as a
-            // surface read whole reads it.
-            self.apply_document_grants(&mut descriptors);
+            // What the device refuses on a document that holds its own keys is read again with
+            // the rest, as a surface read whole reads it.
+            self.apply_document_verdicts(&mut descriptors);
+            self.apply_document_verdicts(&mut descriptors);
         }
         let published = if let Some(before) = &before {
             let (delta, state) =
@@ -5866,6 +6012,36 @@ fn kept_address(directory: &PublishedDirectory, resource: &str, action: &str) ->
     tilolang_tilo::publish::split_published(resource)
         .filter(|(_, path)| directory.answers(path, action))
         .map_or_else(|| resource.to_owned(), |(_, path)| path.to_owned())
+}
+
+/// What a window's device says its person may do, as the window asks it.
+struct Verdicts {
+    /// The device's verdicts, which the instance reads at each decision.
+    permissions: tilo_permissions::SharedPermissions,
+    /// The connection the window asks its device on. `None` for an instance on no connection
+    /// (one a window runs in its own process): it asks on the window's own, which the window
+    /// drains and answers, once it first asks.
+    remote: Option<ui_core::remote_actions::RemoteActions>,
+    /// What was asked last, and the ask the device keeps answering.
+    asked: Vec<tilo_actions::shown::ShownAction>,
+    shown: Option<ui_core::remote_actions::ShownCall>,
+    /// The revision of the verdicts taken last.
+    decided: Option<u64>,
+    /// Whether the window ran a frame, which reads what it asks.
+    turned: bool,
+}
+
+impl Default for Verdicts {
+    fn default() -> Self {
+        Self {
+            permissions: tilo_permissions::SharedPermissions::default(),
+            remote: Some(ui_core::remote_actions::RemoteActions::current()),
+            asked: Vec::new(),
+            shown: None,
+            decided: None,
+            turned: false,
+        }
+    }
 }
 
 #[cfg(test)]

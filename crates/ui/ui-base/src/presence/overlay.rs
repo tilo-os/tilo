@@ -36,14 +36,6 @@ impl PresenceCtx {
             .collect();
         DrawEnv {
             viewport: self.viewport.get(),
-            #[cfg(feature = "model")]
-            permissions: self.permission_context().map(|context| {
-                std::rc::Rc::new(context) as std::rc::Rc<dyn crate::permissions::WidgetAuthority>
-            }),
-            // Without Tilo's model no authority is lent, so everything is allowed.
-            #[cfg(not(feature = "model"))]
-            permissions: None,
-            paint_permissions: self.paint_permission_generation(),
             marks_changing: self.shows_writes(crate::time::now()),
             marks_generation: self.written_generation(),
             overlay: Some(self),

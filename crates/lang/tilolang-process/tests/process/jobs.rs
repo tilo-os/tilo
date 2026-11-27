@@ -35,11 +35,15 @@ fn opened(
     let number = u64::try_from(host.instances().count())
         .unwrap()
         .saturating_add(1);
-    let spec = Spec::new(
-        route.app_id.clone(),
-        route.cluster_id.to_string(),
-        number,
-        "ada",
+    let spec = bus.launched(
+        route,
+        Spec::new(
+            route.app_id.clone(),
+            route.cluster_id.to_string(),
+            number,
+            "ada",
+        ),
+        &bundle,
     );
     let (spec, transport, window, watched): (
         Spec,

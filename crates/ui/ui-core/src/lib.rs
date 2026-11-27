@@ -164,9 +164,48 @@ pub mod auth_backdrop;
 pub mod call_pictures;
 pub mod charts;
 #[cfg(feature = "model")]
-pub use tilo_actions::remote::native_media;
+pub use tilo_actions::shown as shown_actions;
+
+/// The client a window asks the device's own read over: the action line this process's launcher
+/// handed it ([`install_window_line`]), as the app `app`, else the client this thread has (a
+/// provider entered for it, or the session's collaboration).
 #[cfg(feature = "model")]
-pub use tilo_permissions::shown_actions;
+#[must_use]
+pub fn remote_of_the_window(app: &str) -> remote_actions::RemoteActions {
+    use remote_actions::RemoteActions;
+    if let Some((line, workspace)) = WINDOW_LINE.get() {
+        return RemoteActions::with_provider(
+            std::sync::Arc::clone(line),
+            tilo_actions::remote::Caller::local_app(app).in_workspace(workspace),
+        );
+    }
+    RemoteActions::current()
+}
+
+/// The action line an app's launcher handed this process, and the workspace it was started in.
+#[cfg(feature = "model")]
+type WindowLine = (
+    std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    String,
+);
+
+#[cfg(feature = "model")]
+static WINDOW_LINE: std::sync::OnceLock<WindowLine> = std::sync::OnceLock::new();
+
+/// Install the action line the app's launcher handed this process, in `workspace`: the runner
+/// that starts the app does, before the first frame, so the toolkit links nothing of the daemon's
+/// transport. The first install stands, since a process has one connection to its device; a host
+/// process (the shell, a test) installs none.
+#[cfg(feature = "model")]
+pub fn install_window_line(
+    line: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
+    workspace: String,
+) {
+    let _ = WINDOW_LINE.set((line, workspace));
+}
+
+#[cfg(feature = "model")]
+pub use tilo_actions::remote::native_media;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
 #[cfg(feature = "model")]
 pub mod activity_wire;
@@ -193,6 +232,8 @@ pub mod frame_probe;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
 /// to RGB in a shader.
 pub mod gpu_video;
+#[cfg(feature = "model")]
+pub mod harness_device;
 pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;

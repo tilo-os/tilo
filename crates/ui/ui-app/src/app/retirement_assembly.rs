@@ -9,7 +9,7 @@ use super::{
 #[cfg(feature = "model")]
 use super::{
     CollaborationManager, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
-    PermissionContext, PresenceRuntime,
+    PresenceRuntime,
 };
 #[cfg(feature = "model")]
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
@@ -112,8 +112,6 @@ pub(super) struct AppAssemblyValues {
     #[cfg(feature = "model")]
     pub action_publication_failure: Option<Option<String>>,
     pub presence_ctx: Option<PresenceCtx>,
-    #[cfg(feature = "model")]
-    pub permission_ctx: Option<PermissionContext>,
     #[cfg(feature = "model")]
     pub presence: Option<PresenceRuntime>,
     pub accessibility: Option<Box<AccessibilityRuntime>>,
@@ -251,7 +249,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
             &local_author,
         ));
         assembly.values.action_publication_failure = Some(None);
-        assembly.values.permission_ctx = Some(PermissionContext::permissive());
         assembly.values.presence = Some(PresenceRuntime::new());
         assembly.values.document_routes =
             Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
@@ -320,8 +317,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         #[cfg(feature = "model")]
             action_publication_failure: Some(action_publication_failure),
         presence_ctx: Some(presence_ctx),
-        #[cfg(feature = "model")]
-            permission_ctx: Some(permission_ctx),
         #[cfg(feature = "model")]
             presence: Some(presence),
         accessibility: Some(accessibility),
@@ -411,9 +406,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         presence_ctx,
         local_author,
         #[cfg(feature = "model")]
-        permission_ctx,
-        #[cfg(feature = "model")]
-        painted_permissions: tilo_permissions::shared_revision(),
+        painted_permissions: tilo_ui_base::permissions::shared_revision(),
         theme_epoch: 0,
         frame_theme_epoch: 0,
         #[cfg(feature = "model")]

@@ -17,7 +17,7 @@ use ui_core::launch::LaunchError;
 
 use tilo_resource::Resource;
 
-use super::app::{ResourceApp, definition, prepare_on, role_permissions};
+use super::app::{ResourceApp, definition, prepare_on};
 use super::headless::{AUTHOR, INSTANCE, Kept, surface_of};
 use super::root::ResourceRoot;
 
@@ -218,7 +218,7 @@ fn private_host<A: ResourceApp>(
         "test-device".into(),
         workspace,
         MemberId::person(AUTHOR),
-        role_permissions(workspace, AUTHOR, Role::Owner),
+        tilo_ui_base::permissions::SharedPermissions::default(),
         tilo_actions::ActionContext::default(),
     )
 }
@@ -231,7 +231,7 @@ fn live_window<A: ResourceApp>(
     mut host: ApplicationOwner,
     directory: &std::path::Path,
 ) -> Result<ui_core::App, LaunchError> {
-    let (component, _, inputs) = live_window_component::<A>(&mut host, directory)?;
+    let (component, _, inputs) = live_window_component::<A>(&mut host, directory, TEST_WORKSPACE)?;
     ui_core::App::from_component(component, inputs)
 }
 
@@ -241,6 +241,7 @@ fn live_window<A: ResourceApp>(
 fn live_window_component<A: ResourceApp>(
     host: &mut ApplicationOwner,
     directory: &std::path::Path,
+    workspace: &str,
 ) -> Result<
     (
         ui_core::application::AppComponent,
@@ -259,6 +260,16 @@ fn live_window_component<A: ResourceApp>(
     )?;
     let content = super::headless::window_content(directory);
     prepared.context.provide_content(content.clone());
+    // No device runs beside the window: one keeping the workspace, with the person its owner,
+    // answers what it asks.
+    prepared.context.provide_harness_device(
+        super::harness_device::HarnessDevice::member_of(
+            workspace,
+            &MemberId::person(AUTHOR),
+            Role::Owner,
+        )
+        .shown(),
+    );
     let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
     Ok((component, content, prepared.runner_inputs))
 }
@@ -271,7 +282,8 @@ pub fn live_window_in_workspace<A: ResourceApp>(
 ) -> Result<(Driver, tilo_content::ContentStore), LaunchError> {
     let profile = Kept::fresh()?;
     let mut host = private_host::<A>(&profile, workspace)?;
-    let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
+    let (component, content, inputs) =
+        live_window_component::<A>(&mut host, profile.path(), workspace)?;
     let driver = Driver::from_component(component, (1024, 768), inputs)?;
     Ok((driver, content))
 }

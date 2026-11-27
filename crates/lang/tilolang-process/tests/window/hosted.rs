@@ -848,10 +848,10 @@ impl Session {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
         policy.members.insert("bo".to_owned(), Role::Editor.into());
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "bo")
-            .in_language("en-US")
-            .access(MemberAccess::person(policy, "bo"));
-        Self::brokered_as(&route, spec, window)
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        bus.set_access(&route, "bo", MemberAccess::person(policy, "bo"));
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, "bo").in_language("en-US");
+        Self::on_bus_window(&bus, &route, spec, window)
     }
 
     /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
@@ -870,9 +870,8 @@ impl Session {
         use tilo_permissions::policy::WorkspacePolicy;
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
-            .in_language("en-US")
-            .access(MemberAccess::person(policy, person));
+        bus.set_access(&route, person, MemberAccess::person(policy, person));
+        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language("en-US");
         Self::on_bus_window(bus, &route, spec, Window::in_harness)
     }
 
@@ -892,6 +891,8 @@ impl Session {
         route: &RouteSpec,
         spec: Spec,
     ) -> Self {
+        let bundle = package(package_of(&spec.app));
+        let spec = bus.launched(route, spec, &bundle);
         let broker = Broker::on(bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
         let (sent, inbox) = (broker.sent(), broker.inbox());
@@ -918,6 +919,8 @@ impl Session {
         spec: Spec,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
+        let bundle = package(package_of(&spec.app));
+        let spec = bus.launched(route, spec, &bundle);
         let broker = Broker::on(bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
         let (sent, inbox) = (broker.sent(), broker.inbox());
@@ -952,6 +955,8 @@ impl Session {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let spec = Spec::new(app, route.cluster_id.to_string(), tab, person).in_language("en-US");
         let bus = Rc::new(tilolang_process::testing::Bus::default());
+        let bundle = package(package_of(&spec.app));
+        let spec = bus.launched(&route, spec, &bundle);
         let broker = Broker::on(&bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
         let (sent, inbox) = (broker.sent(), broker.inbox());

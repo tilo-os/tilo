@@ -421,22 +421,6 @@ impl JoinedChannel {
             .and_then(|lease| lease.local_media.as_ref())
             .and_then(|local| local.opened_with.clone())
     }
-
-    /// What this host says of the `actions` the window shows, as the person this channel was
-    /// admitted for would run them: now, and again on each change.
-    pub(super) fn shown_actions(
-        &self,
-        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
-    ) -> Result<super::wire::Feed<Vec<tilo_permissions::shown_actions::ActionDecision>>, BrokerError>
-    {
-        let route = self.route();
-        let current = self
-            .state
-            .revalidate_admission(&route, &self.verified_identity)?;
-        Ok(self
-            .state
-            .subscribe_shown_actions(current.broker_actor(), route.cluster_id, actions))
-    }
 }
 
 /// The `AppSettings` capability of the app `route` certifies: its own

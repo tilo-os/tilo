@@ -60,42 +60,43 @@ pub(super) fn shared_target(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(decider: &tilo_permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
+    type Shows<'a> = (&'a tilo_ui_base::permissions::Verdicts, &'a str);
+    fn kept(shows: Shows<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
-            .any(|action| decider.permits(&head.kind, head.id.as_str(), action))
-            || node.children().iter().any(|child| kept(decider, child))
+            .any(|action| shows.0.shows_published(shows.1, head, action))
+            || node.children().iter().any(|child| kept(shows, child))
     }
-    /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
+    /// The first node with resource id `id` that filtering keeps (any, with no binding). A node
     /// filtering drops has no kept node beneath it.
     fn first<'a>(
-        decider: Option<&tilo_permissions::ActionDecider<'_>>,
+        shows: Option<Shows<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {
-        if node.id() == id && decider.is_none_or(|decider| kept(decider, node)) {
+        if node.id() == id && shows.is_none_or(|shows| kept(shows, node)) {
             return Some(node);
         }
         node.children()
             .iter()
-            .find_map(|child| first(decider, child, id))
+            .find_map(|child| first(shows, child, id))
     }
     if !forest.iter().any(|node| resolves(node, address)) {
         return None;
     }
     let permissions = binding.map(|binding| binding.permissions.borrow());
-    let decider = binding
+    let shows = binding
         .zip(permissions.as_ref())
-        .map(|(binding, permissions)| permissions.action_decider(&binding.app_id));
+        .map(|(binding, permissions)| (&**permissions, binding.app_id.as_str()));
     let node = forest
         .iter()
-        .find_map(|node| first(decider.as_ref(), node, &address.resource))?;
+        .find_map(|node| first(shows, node, &address.resource))?;
     let mut resource = node.head().clone();
-    if let Some(decider) = &decider {
+    if let Some((permissions, app)) = shows {
         resource
             .actions
-            .retain(|action| decider.permits(&node.head().kind, node.head().id.as_str(), action));
+            .retain(|action| permissions.shows_published(app, node.head(), action));
     }
     resource
         .actions

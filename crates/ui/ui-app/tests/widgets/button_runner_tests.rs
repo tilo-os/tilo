@@ -80,17 +80,20 @@ fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
 
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
-    use tilo_permissions::PermissionContext;
-    use tilo_permissions::Role;
+    use tilo_permissions::{LOCAL_WORKSPACE, Role};
     let click = |root: tilo_ui_base::widget::Element, role: Role| {
         let mut harness =
             Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 200), Theme::dark());
         // The window stands in its workspace, whose grants ask about what reaches outside.
         harness.connect_peer();
-        harness.set_permission_ctx(PermissionContext::member(
-            &tilo_member_types::MemberId::person("ada"),
-            role,
-        ));
+        harness.decide_shown_actions(
+            tilo_ui::harness_device::HarnessDevice::member_of(
+                LOCAL_WORKSPACE,
+                &tilo_member_types::MemberId::person("ada"),
+                role,
+            )
+            .host(),
+        );
         harness.relayout();
         harness.click_named("go").unwrap();
         harness.relayout();

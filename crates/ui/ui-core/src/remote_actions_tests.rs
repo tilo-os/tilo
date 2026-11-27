@@ -639,3 +639,180 @@ tilo_test_env::scenario! {
         tilo_ui_base::press::forget();
     }
 }
+
+/// A device that decides the actions a window shows, keeping an ask that names the decisions it
+/// shows and waits until what it decides changes.
+#[derive(Default)]
+struct ShownDevice {
+    held: Mutex<
+        Vec<(
+            tilo_actions::shown::ShownAsk,
+            tilo_actions::remote::Completer<
+                Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>,
+            >,
+        )>,
+    >,
+    asked: Mutex<Vec<tilo_actions::shown::ShownAsk>>,
+    allows: std::sync::atomic::AtomicBool,
+}
+
+impl ShownDevice {
+    /// What this device says of `actions` now: allowed while `allows`, refused once.
+    fn decisions(
+        &self,
+        actions: &[tilo_actions::shown::ShownAction],
+    ) -> Vec<tilo_actions::shown::ActionDecision> {
+        let verdict = if self.allows.load(Ordering::SeqCst) {
+            tilo_actions::shown::ActionVerdict::Allowed
+        } else {
+            tilo_actions::shown::ActionVerdict::Refused("no".into())
+        };
+        tilo_actions::shown::decide(actions, |_| verdict.clone())
+    }
+
+    /// The grants change: every ask waiting on them is answered as they are now.
+    fn granted(&self) {
+        self.allows.store(true, Ordering::SeqCst);
+        let held = std::mem::take(&mut *self.held.lock().unwrap());
+        for (ask, answer) in held {
+            answer.complete(Ok(self.decisions(&ask.actions)));
+        }
+    }
+
+    fn asked(&self) -> Vec<(Option<String>, Option<u32>)> {
+        self.asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|ask| (ask.after.clone(), ask.wait_ms))
+            .collect()
+    }
+}
+
+impl ActionProvider for ShownDevice {
+    fn query(
+        &self,
+        _: &Caller,
+        _: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(CataloguePage::default()))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        _: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        Pending::ready(Err(ActionCallError::UnknownAction))
+    }
+
+    fn observe(&self, _: &Caller, _: &InvocationId) -> Option<InvocationState> {
+        None
+    }
+
+    fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Ok(()))
+    }
+
+    fn shown_actions(
+        &self,
+        _: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        let decisions = self.decisions(&ask.actions);
+        let revision = tilo_actions::shown::decisions_revision(&decisions);
+        self.asked.lock().unwrap().push(ask.clone());
+        if ask.wait_ms.is_some() && ask.after.as_deref() == Some(revision.as_str()) {
+            let (answer, held) = tilo_actions::remote::pending();
+            self.held.lock().unwrap().push((ask, answer));
+            return held;
+        }
+        Pending::ready(Ok(decisions))
+    }
+}
+
+/// The dispatcher of a provider in this process, as far as a window's shown actions go: the one
+/// a runner installs answers them the same way.
+fn serve_shown(
+    provider: &Arc<dyn ActionProvider + Send + Sync>,
+    caller: &Caller,
+    message: RemoteActionMessage,
+) -> Option<Pending<RemoteActionMessage>> {
+    let RemoteActionMessage::ShownActionsRequest {
+        correlation,
+        actions,
+        after,
+        wait_ms,
+    } = message
+    else {
+        return None;
+    };
+    let ask = tilo_actions::shown::ShownAsk {
+        actions,
+        after,
+        wait_ms,
+    };
+    Some(provider.shown_actions(caller, ask).map(move |result| {
+        RemoteActionMessage::ShownActionsResponse {
+            correlation,
+            result,
+        }
+    }))
+}
+
+/// The verdict the window shows of its first action.
+fn shown_verdict(shown: &ShownCall) -> Option<tilo_actions::shown::ActionVerdict> {
+    shown.call().with(|arrival| {
+        arrival
+            .ready()
+            .and_then(|decisions| decisions.first().map(|decision| decision.verdict.clone()))
+    })
+}
+
+tilo_test_env::scenario! {
+    fn the_actions_a_window_shows_change_without_its_asking_again;
+
+    phase a_window_asks_once_and_the_device_answers_the_ask_it_holds_when_the_grants_change;
+    {
+        install_serve(serve_shown);
+        let host = Arc::new(ShownDevice::default());
+        let actions = RemoteActions::with_provider(
+            Arc::clone(&host) as Arc<dyn ActionProvider + Send + Sync>,
+            Caller::local_person("ada").in_workspace("workspace"),
+        );
+        let need = tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable);
+        let shown = actions.shown(vec![tilo_actions::shown::ShownAction::new(
+            Some("workspace"),
+            "so.tilo.notes",
+            ("test.playback", "person:test.playback", "mute"),
+            &need,
+        )]);
+        assert_eq!(
+            shown_verdict(&shown),
+            Some(tilo_actions::shown::ActionVerdict::Refused("no".into()))
+        );
+        assert_eq!(
+            host.asked().len(),
+            2,
+            "one answer now, and one ask waiting past what is shown: {:?}",
+            host.asked()
+        );
+        assert_eq!(
+            host.asked()[1].1,
+            Some(FOLLOW_WAIT_MS),
+            "the ask waits for the grants to change"
+        );
+        host.granted();
+        assert_eq!(
+            shown_verdict(&shown),
+            Some(tilo_actions::shown::ActionVerdict::Allowed),
+            "the change reaches the window without its asking again"
+        );
+        assert_eq!(
+            host.asked().len(),
+            3,
+            "the answer asks again, still from the window's own follow: {:?}",
+            host.asked()
+        );
+    }
+}

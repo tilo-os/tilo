@@ -109,10 +109,7 @@ fn launch_with_grants(
                 .through(PACKAGE)
         })
         .collect();
-    let grants = LaunchGrants {
-        author: false,
-        sandbox,
-    };
+    let grants = LaunchGrants { sandbox };
     std::fs::write(
         &caps_file,
         serde_json::to_vec(&grants).expect("encode grants"),

@@ -1588,6 +1588,20 @@ pub trait ActionProvider {
         None
     }
 
+    /// What this provider says of the actions a window shows ([`crate::shown::ShownAction`]),
+    /// each decided with the ordinary answer in the workspace that keeps its record, and answered
+    /// again on `ask.after`'s wait when the grants change. A provider that decides none refuses.
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: crate::shown::ShownAsk,
+    ) -> Pending<Result<Vec<crate::shown::ActionDecision>, ActionCallError>> {
+        let _ = (caller, ask);
+        Pending::ready(Err(ActionCallError::Unavailable {
+            reason: crate::shown::UNAVAILABLE.into(),
+        }))
+    }
+
     /// Every change to the records of a caller's workspace, as this provider
     /// keeps them ([`ChangeFeed`]): what a watch of the whole workspace
     /// reads. `None` for a provider that keeps no records.
@@ -1851,6 +1865,26 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<(), ActionCallError>,
     },
+    /// Ask what the device says of the actions a window shows ([`ActionProvider::shown_actions`]):
+    /// each decided with the ordinary answer in the workspace that keeps its record, and answered
+    /// again once the grants change when `after` names the decisions shown now.
+    ShownActionsRequest {
+        correlation: u64,
+        /// The actions the window shows.
+        actions: Vec<crate::shown::ShownAction>,
+        /// The [`crate::shown::decisions_revision`] of the decisions the window shows now: the
+        /// device keeps the answer past it while `wait_ms` names a wait.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u32>,
+    },
+    /// Answer to [`Self::ShownActionsRequest`], same correlation: one decision per action asked
+    /// about, in their order.
+    ShownActionsResponse {
+        correlation: u64,
+        result: Result<Vec<crate::shown::ActionDecision>, ActionCallError>,
+    },
     /// Ask the device to carry an outside service's call into a workspace call from now on, or,
     /// with no pair, to let go of the one it carries ([`call`]). Decided by the app's grants and
     /// held to the call's rule; a device that carries no call for this app refuses.
@@ -2068,6 +2102,10 @@ impl RemoteActionMessage {
                     },
                     ..
                 }
+                | Self::ShownActionsRequest {
+                    wait_ms: Some(_),
+                    ..
+                }
         )
     }
 
@@ -2089,6 +2127,7 @@ impl RemoteActionMessage {
                 | Self::ContentLinkRequest { .. }
                 | Self::ChangesRequest { .. }
                 | Self::ChangedRequest { .. }
+                | Self::ShownActionsRequest { .. }
                 | Self::SurfaceRequest { .. }
                 | Self::AudioOutputRequest { .. }
                 | Self::StoreRequest { .. }
@@ -2282,6 +2321,12 @@ pub fn refuse(
         }
         RemoteActionMessage::ChangedRequest { correlation, .. } => {
             RemoteActionMessage::ChangedResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::ShownActionsRequest { correlation, .. } => {
+            RemoteActionMessage::ShownActionsResponse {
                 correlation: *correlation,
                 result: Err(error),
             }

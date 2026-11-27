@@ -377,6 +377,13 @@ impl ApiError {
         }
     }
 
+    /// Whether the window refused the call only because its device has not said yet whether the
+    /// caller may ([`crate::shown::CHECKING`]): asked again once it has, the call is decided.
+    #[must_use]
+    pub fn undecided(&self) -> bool {
+        self.to_string().ends_with(crate::shown::CHECKING)
+    }
+
     /// Stable machine-readable code, distinguishing "I addressed this
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &str {

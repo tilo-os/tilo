@@ -2192,6 +2192,33 @@ impl Runtime {
         ))
     }
 
+    /// Whether `entry` may go on to the sink. What the workspace does not let the app carry out
+    /// is settled as refused here, and never reaches the sink: a queued effect is no grant of the
+    /// capability it names. One the device has not answered yet stays queued.
+    fn may_go(
+        &self,
+        entry: &EffectEntry,
+        settle: &ChangeNote,
+        report: &mut SettleReport,
+    ) -> Result<bool, RuntimeError> {
+        let Some(reaches) = self.core.authority.may_reach(&entry.app, &entry.capability) else {
+            return Ok(false);
+        };
+        if !reaches {
+            let reason = format!(
+                "this workspace does not let {} use {}, so nothing went out",
+                entry.app, entry.capability
+            );
+            self.core.store.borrow_mut().settle_effect(
+                entry,
+                &crate::store::Settled::Rejected(reason.clone()),
+                settle,
+            )?;
+            report.failed.push((entry.id.clone(), reason));
+        }
+        Ok(reaches)
+    }
+
     /// Carry the queued outside effects out (convergence.md, "What people see"). An entry is
     /// first marked as being handed over, as a change of its own; the next settle, once that
     /// mark is in the record, hands it to the sink, so a process that stops in between leaves
@@ -2226,19 +2253,7 @@ impl Runtime {
             return Err(RuntimeError::Package("no outside sink is set".into()));
         }
         for entry in pending {
-            // What the workspace does not let the app carry out is settled as refused here, and
-            // never reaches the sink: a queued effect is no grant of the capability it names.
-            if !self.core.authority.may_reach(&entry.app, &entry.capability) {
-                let reason = format!(
-                    "this workspace does not let {} use {}, so nothing went out",
-                    entry.app, entry.capability
-                );
-                self.core.store.borrow_mut().settle_effect(
-                    &entry,
-                    &Settled::Rejected(reason.clone()),
-                    &note(&entry, "$settle"),
-                )?;
-                report.failed.push((entry.id.clone(), reason));
+            if !self.may_go(&entry, &note(&entry, "$settle"), &mut report)? {
                 continue;
             }
             match &entry.state {

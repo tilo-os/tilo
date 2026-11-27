@@ -2056,6 +2056,7 @@ impl ViewInstance {
                 own: view_module == pkg.hash,
                 module: pkg.hash.clone(),
                 target: None,
+                admitted: false,
             },
         );
         match decision {

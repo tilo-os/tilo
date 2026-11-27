@@ -297,7 +297,8 @@ struct Asked<'a> {
     arguments: &'a Map<String, serde_json::Value>,
     workspace_policy: &'a tilo_desktop_model::Workspace,
     decider: &'a tilo_broker_core::BrokerActor,
-    permissions: &'a tilo_permissions::PermissionContext,
+    /// What this device itself may do in the workspace: it bounds every call it carries.
+    device: &'a tilo_action_policy::MemberAccess,
     unix_time: u64,
     ambient: &'a tilo_actions::ActionContext,
     actor: &'a [u8],
@@ -318,23 +319,35 @@ impl Asked<'_> {
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))
             .map_err(Box::new)?;
         let app = declared.kind.declaring_app();
+        let need = action.need_for(Some(self.arguments), None);
         let (verdict, _) = self.decider.action_verdict_in(
             self.workspace_policy,
             app,
             (&resource.kind, resource.id.as_str(), &action.id),
-            &action.need_for(Some(self.arguments), None),
+            &need,
             self.unix_time,
         );
-        let device =
-            self.permissions
-                .invocation_answer(app, resource, action, Some(self.arguments), None);
+        let node = tilo_actions::action_node(
+            &tilo_action_policy::TreePath::root(),
+            app,
+            &resource.kind,
+            resource.id.as_str(),
+            need.field.as_deref(),
+            &action.id,
+        );
+        let (device, _) = tilo_action_policy::answer_at(
+            &self.device.authority(),
+            (&self.device.node(&node), need.kind, need.privileged),
+            None,
+            &tilo_action_policy::Context::at_secs(self.unix_time),
+        );
         match verdict.min(device) {
-            tilo_permissions::Answer::Deny => {
+            tilo_action_policy::Answer::Deny => {
                 return Err(Box::new(rejected(ActionCallError::NotPermitted)));
             }
             // Only the person's approve of the asked record this call was kept as answers an ask:
             // a confirmation the call writes itself is none.
-            tilo_permissions::Answer::Ask if self.request.approval().is_none() => {
+            tilo_action_policy::Answer::Ask if self.request.approval().is_none() => {
                 return Err(Box::new(rejected(ActionCallError::confirmation_required())));
             }
             _ => {}
@@ -429,13 +442,6 @@ impl ResourceActions {
         .ok_or_else(|| rejected(ActionCallError::NotPermitted))?;
         let workspace_policy = under_policy(&workspace, &policy.access.policy)
             .ok_or_else(|| invalid("that is not a workspace"))?;
-        // What this device itself may do here bounds every call it carries.
-        let permissions = tilo_permissions::PermissionContext::new(
-            tilo_permissions::Acting::person(person),
-            policy.sandbox.clone(),
-            policy.access.clone(),
-        )
-        .at_unix_time(policy.unix_time);
         // Who asked: the person, or whoever the shell says acts for them (an agent it admitted),
         // which the change's history names.
         let mut ambient = request.context.clone().unwrap_or_default();
@@ -455,7 +461,7 @@ impl ResourceActions {
             arguments: &arguments,
             workspace_policy: &workspace_policy,
             decider: &decider,
-            permissions: &permissions,
+            device: &policy.access,
             unix_time: policy.unix_time,
             ambient: &ambient,
             actor: &actor,

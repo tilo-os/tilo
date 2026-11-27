@@ -161,13 +161,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         request_id: u64,
         result: Result<Vec<u8>, String>,
     },
-    /// What the host says of the actions the window last named
-    /// (`CollabRequest::DecideShownActions`) now, replacing what it said before. Sent again
-    /// whenever grants change one. They decide how the window shows its controls only; the host
-    /// admits each invocation itself when it is called.
-    ActionVerdicts {
-        verdicts: Vec<tilo_permissions::shown_actions::ActionDecision>,
-    },
 }
 
 impl<C: EndpointOwnership> CollabEvent<C> {

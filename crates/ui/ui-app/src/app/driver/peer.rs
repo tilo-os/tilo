@@ -212,15 +212,14 @@ impl Peer {
     /// device keeps its asked record, accepted and not run ([`Driver::asking`]); the same call
     /// sent again with the person's approve ([`Driver::confirm_asked`]) answers whatever the
     /// action asks, as the broker takes it, and its handler reads the approve from the call's
-    /// context. A call the
-    /// person's `grants` leave to them (a guest's effect that reaches outside) is kept the same
-    /// way, as the workspace decides it by the caller's grants; one the grants refuse is refused.
+    /// context. A call the person's verdicts (`grants`, what the device said) leave to them is
+    /// kept the same way; one they refuse is refused.
     fn admit_own(
         &mut self,
         resources: &[tilo_actions::ResourceSpec],
         request: tilo_actions::remote::InvokeRequest,
         actor: tilo_actions::Actor,
-        grants: Option<&tilo_permissions::PermissionContext>,
+        grants: Option<&tilo_ui_base::permissions::Verdicts>,
     ) {
         use tilo_actions::ConfirmationPolicy;
         use tilo_actions::remote::{
@@ -271,21 +270,11 @@ impl Peer {
         let granted = match (request.approval(), &continued, grants) {
             (None, None, Some(grants)) => {
                 tilo_actions::api::locate(resources, address).map_or(Ok(()), |(resource, spec)| {
-                    // A record another workspace holds is decided there, never by this
-                    // window's grants; a settings section is the person's own, decided by its
-                    // model and the settings store.
-                    if resource.workspace.is_some() || resource.kind.starts_with("settings.") {
-                        return Ok(());
-                    }
-                    let typed = match &request.argument {
-                        InvokeArgument::Json(arguments) => Some(arguments),
-                        _ => None,
-                    };
-                    crate::bound_dispatch::admit_local_action(
-                        grants,
-                        (&::collaboration::local_app_id(), resource, spec),
-                        typed,
-                        slot.as_deref(),
+                    grants.admit(
+                        &::collaboration::local_app_id(),
+                        resource,
+                        spec,
+                        super::workspace_side::carried(&request.argument),
                     )
                 })
             }
@@ -504,7 +493,7 @@ pub(super) struct Peer {
         crate::remote_actions::InvocationCall,
     )>,
     /// The providers the caller serves, and what decides the window's shown actions.
-    served_by_caller: super::workspace_side::Served,
+    pub(super) served_by_caller: super::workspace_side::Served,
     /// The app's own call that waits for the person's yes.
     asked: Option<AskedCall>,
     /// Who each call it delivered runs for, by invocation, with the wire id it went under.
@@ -622,6 +611,58 @@ impl Driver {
         self.resolve_asked(approval)
     }
 
+    /// The resources the app's call of `address` acts on where its publication lists only what it
+    /// shows (an item its view builds when asked for): resolved in the tree, under the address
+    /// the component publishes it by, as the app hands the call under the alias its publication
+    /// binds. An effect of the app's names another of its own actions by the record's own id, not
+    /// the alias the transport binds it under: the record is admitted by that name too, as it is
+    /// delivered back by it.
+    fn resources_on_demand(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        let Ok(Some(target)) = self.app.actions.bound_publication.target(address) else {
+            return Vec::new();
+        };
+        let Some(resource) = crate::bound_dispatch::local_target::resolve_on_demand(
+            self.app.root_widget.as_ref(),
+            &self.app.state.doc,
+            &target.address.address,
+        ) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        if !address
+            .resource
+            .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+        {
+            found.push(resource.clone());
+        }
+        found.extend(
+            self.app
+                .actions
+                .bound_publication
+                .project(&target.binding, resource)
+                .ok(),
+        );
+        found
+    }
+
+    /// Allow `invocation` with `approval` when it is the call that waits for the person's yes: what
+    /// a caller that confirmed the call has the person answer on its card. Whether it waited.
+    pub(super) fn allow_asked(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        approval: &tilo_actions::remote::asked::Approval,
+    ) -> bool {
+        let waits = self
+            .peer
+            .as_ref()
+            .and_then(|peer| peer.asked.as_ref())
+            .is_some_and(|asked| asked.request.invocation == invocation);
+        waits && self.resolve_asked(approval.clone()).is_some()
+    }
+
     /// [`Self::confirm_asked`] with what the person typed into the ask's one field: the phrase a
     /// destructive action has them type, carried with their approve.
     pub fn confirm_asked_typing(
@@ -642,7 +683,14 @@ impl Driver {
         let address = asked.request.target.address.clone();
         let mut request = asked.request;
         request.confirmation = Some(tilo_actions::remote::Confirmation::Asked(approval));
-        let resources = self.app.publication_resources();
+        let mut resources = self.app.publication_resources();
+        if tilo_actions::api::resolve(&resources, &address).is_none() {
+            for resource in self.resources_on_demand(&address) {
+                if !resources.iter().any(|known| known.id == resource.id) {
+                    resources.push(resource);
+                }
+            }
+        }
         self.peer_mut()
             .admit_own(&resources, request, asked.actor, None);
         self.run_frame();
@@ -877,9 +925,10 @@ impl Driver {
                         request,
                         CollabRequest::RemoteAction {
                             message: RemoteActionMessage::Invoke(_)
-                                | RemoteActionMessage::ResourceRead { .. },
+                                | RemoteActionMessage::ResourceRead { .. }
+                                | RemoteActionMessage::ShownActionsRequest { .. },
                             ..
-                        } | CollabRequest::DecideShownActions { .. }
+                        }
                     )
                 })
                 // Where each stands among what the app sent: what it continues must still
@@ -910,63 +959,16 @@ impl Driver {
             else {
                 continue;
             };
-            // The app hands the call under the alias its publication binds; the tree knows the
-            // address the component publishes it by.
-            let Ok(Some(target)) = self
-                .app
-                .actions
-                .bound_publication
-                .target(&request.target.address)
-            else {
-                continue;
-            };
-            let address = &target.address.address;
             if tilo_actions::api::resolve(&resources, &request.target.address).is_some() {
                 continue;
             }
-            let Some(resource) = crate::bound_dispatch::local_target::resolve_on_demand(
-                self.app.root_widget.as_ref(),
-                &self.app.state.doc,
-                address,
-            ) else {
-                continue;
-            };
-            let Some(resource) = self
-                .app
-                .permission_ctx
-                .permitted_resource(&::collaboration::local_app_id(), resource)
-            else {
-                continue;
-            };
-            // An effect of the app's names another of its own actions by the record's own id,
-            // not the alias the transport binds it under: the record is admitted by that name,
-            // as it is delivered back by it.
-            let named = !request
-                .target
-                .address
-                .resource
-                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX);
-            if named
-                && !resources
-                    .iter()
-                    .any(|known| known.id.as_str() == resource.id.as_str())
-            {
-                resources.push(resource.clone());
-            }
-            let Ok(resource) = self
-                .app
-                .actions
-                .bound_publication
-                .project(&target.binding, resource)
-            else {
-                continue;
-            };
-            if !resources.iter().any(|known| known.id == resource.id) {
-                resources.push(resource);
+            for resource in self.resources_on_demand(&request.target.address) {
+                if !resources.iter().any(|known| known.id == resource.id) {
+                    resources.push(resource);
+                }
             }
         }
         let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
-        let grants = self.app.permission_ctx.clone();
         let peer = self.peer_mut();
         for (at, request) in asked {
             let request = match request {
@@ -986,9 +988,11 @@ impl Driver {
                     continue;
                 }
                 asked => {
-                    if let Some(verdicts) = peer.served_by_caller.asked(&asked) {
-                        peer.exchange.borrow_mut().inbound.push_back(verdicts);
-                    }
+                    let CollabRequest::RemoteAction { message, .. } = asked else {
+                        continue;
+                    };
+                    let answer = peer.served_by_caller.asked(&message);
+                    peer.answer(answer);
                     continue;
                 }
             };
@@ -1009,7 +1013,17 @@ impl Driver {
                 continue;
             }
             if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
-                peer.admit_own(&resources, request, actor.clone(), Some(&grants));
+                // Admitted again where it lands, by what the device says of it, whatever the
+                // window decided.
+                let grants = tilo_actions::api::locate(&resources, &request.target.address)
+                    .and_then(|(resource, spec)| {
+                        peer.served_by_caller.verdicts_of(
+                            &::collaboration::local_app_id(),
+                            (resource, spec),
+                            &request.argument,
+                        )
+                    });
+                peer.admit_own(&resources, request, actor.clone(), grants.as_ref());
                 continue;
             }
             if peer.served_by_caller.serves(&request) {
@@ -1081,9 +1095,8 @@ impl Driver {
         for receipt in answered {
             peer.provide(RemoteActionMessage::Receipt(receipt));
         }
-        if let Some(verdicts) = peer.served_by_caller.unasked() {
-            peer.exchange.borrow_mut().inbound.push_back(verdicts);
-        }
+        let unasked = peer.served_by_caller.unasked();
+        peer.answer(unasked);
         !peer.exchange.borrow().inbound.is_empty()
     }
 

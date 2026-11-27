@@ -42,12 +42,14 @@ impl Driver {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(arguments.clone())
         );
-        let started = self.app.invoke_resource_action(
-            crate::app_core::ResourceInvocation::new(address, &actor)
-                .argument(Some(&argument))
-                .approval(approval)
-                .ambient_context(Some(ambient)),
-        );
+        let started = self.decided(|driver| {
+            driver.app.invoke_resource_action(
+                crate::app_core::ResourceInvocation::new(address, &actor)
+                    .argument(Some(&argument))
+                    .approval(approval)
+                    .ambient_context(Some(ambient)),
+            )
+        });
         self.run_frame();
         started
     }
@@ -84,11 +86,33 @@ impl Driver {
     /// [`Self::start_bound_job_within`] or [`Self::start_bound_job_for`]: `instance` scopes the
     /// resources the call is admitted against to the component that publishes them, when one does.
     #[cfg(feature = "model")]
+    pub(super) fn start_job_within(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        ambient: Option<&tilo_actions::ActionContext>,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
+        instance: Option<crate::application::InstanceId>,
+    ) -> Result<(InvocationId, ResourceOperationStart), ApiError> {
+        self.decided(|driver| {
+            driver.start_job_once(
+                invoker.clone(),
+                ambient,
+                address,
+                arguments,
+                approval,
+                instance,
+            )
+        })
+    }
+
+    #[cfg(feature = "model")]
     #[allow(
         clippy::too_many_lines,
         reason = "the admission, the delivered call and its answer are one host call"
     )]
-    pub(super) fn start_job_within(
+    fn start_job_once(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
         ambient: Option<&tilo_actions::ActionContext>,

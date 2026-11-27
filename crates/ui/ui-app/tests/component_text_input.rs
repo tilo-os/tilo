@@ -10,7 +10,8 @@ use tilo_ui_app::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 use tilo_ui_app::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 use tilo_ui_base::widget::Widget;
 
-use crate::support::application::{ProbeHarness, definition, editor_permissions, runner_inputs};
+use crate::support::application::{ProbeHarness, definition, runner_inputs};
+use tilo_ui_base::permissions::Role;
 
 struct Page(tilo_ui_base::widget::Element);
 
@@ -237,6 +238,22 @@ fn tab_reaches_a_components_text_input() {
     );
 }
 
+/// What the device said of the locus's edit: the author is an Editor of the workspace.
+fn as_editor(
+    definition: &tilo_ui::application::ApplicationDefinition,
+) -> tilo_ui_base::permissions::SharedPermissions {
+    crate::support::application::decided(
+        &definition.app_id,
+        &[tilo_ui::widget::resource_actions::resource(
+            "locus",
+            "Exact locus",
+            "edit",
+            "Edit",
+        )],
+        &crate::support::application::device(Role::Editor),
+    )
+}
+
 const CREATE_LOCUS: tilo_ui_app::application::ComponentFactory =
     |context, target, _| locus_component(context, &target, 1);
 
@@ -326,7 +343,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
         let host = ProbeHarness::new();
         let definition = definition(factory);
         let context = host
-            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, as_editor(&definition))
             .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -385,7 +402,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     let host = ProbeHarness::new();
     let definition = definition(CREATE_LOCUS);
     let context = host
-        .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+        .prepare_with_permissions(&definition, 12, &LaunchTarget::New, as_editor(&definition))
         .unwrap();
     let component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -495,7 +512,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
         let host = ProbeHarness::new();
         let definition = definition(factory);
         let context = host
-            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, as_editor(&definition))
             .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -519,7 +536,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
         frame.close_components();
         let target = crate::support::application::existing(&checkout);
         let context = host
-            .prepare_with_permissions(&definition, 12, &target, editor_permissions())
+            .prepare_with_permissions(&definition, 12, &target, as_editor(&definition))
             .unwrap();
         let replacement = definition
             .instantiate(context, target, RestoreInput::None)
@@ -617,7 +634,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
     let mut owners = Vec::new();
     for _ in 0..2 {
         let mut context = host
-            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, editor_permissions())
+            .prepare_with_permissions(&definition, 12, &LaunchTarget::New, as_editor(&definition))
             .unwrap();
         context.initialize_new_resource(|_| Ok(())).unwrap();
         let published = Arc::new(AtomicBool::new(true));

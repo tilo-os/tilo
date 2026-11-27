@@ -25,14 +25,12 @@ tilo-action-services = { version = "0.1.0", path = "../../core/action-services" 
 desktop-entry = { version = "0.1.0", package = "tilo-desktop-entry", path = "../desktop-entry", features = ["appimage"] }
 # An installed app read through the signed manifest it was admitted with.
 app-catalogue = { path = "../../core/app-catalogue" }
-# The workspace's grants, as the launcher's capability file carries them, and
-# the policy the person's authority in it is projected from.
+# The workspace's grants, as the launcher's capability file carries them.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
-# Publishing the projection the launcher binds, and holding it for as long as
-# the session vouches for it.
+# The control sockets of the apps it keeps, and the watch on the trees they
+# write.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
-blake3.workspace = true
 # A record's id: what one is, and the URI that asks an app to open it.
 # The extended attributes a workspace mount answers a record's path on.
 host-fs = { path = "../../core/host-fs" }

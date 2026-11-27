@@ -9,9 +9,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use tilo_actions::ActionBinding;
 /// Where a press lands on the control a person finds by its name.
-use tilo_permissions::MemberId;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::Role;
+use tilo_permissions::{LOCAL_WORKSPACE, MemberId, Role};
 use tilo_ui_app::app::driver::Driver;
 use tilo_ui_base::widget::Element;
 use vello::kurbo::{Point, Rect};
@@ -38,10 +36,14 @@ fn before_a_viewer<I: 'static>(
         tilo_ui_base::theme::Theme::dark(),
     );
     driver.connect_peer();
-    driver.set_permission_ctx(PermissionContext::member(
-        &MemberId::person("ada"),
-        Role::Viewer,
-    ));
+    driver.decide_shown_actions(
+        tilo_ui::harness_device::HarnessDevice::member_of(
+            LOCAL_WORKSPACE,
+            &MemberId::person("ada"),
+            Role::Viewer,
+        )
+        .host(),
+    );
     driver.relayout();
     (driver, ran)
 }
@@ -491,10 +493,14 @@ fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
         tilo_ui_base::theme::Theme::dark(),
     );
     driver.connect_peer();
-    driver.set_permission_ctx(PermissionContext::member(
-        &MemberId::person("ada"),
-        Role::Editor,
-    ));
+    driver.decide_shown_actions(
+        tilo_ui::harness_device::HarnessDevice::member_of(
+            LOCAL_WORKSPACE,
+            &MemberId::person("ada"),
+            Role::Editor,
+        )
+        .host(),
+    );
     driver.relayout();
     let send = tilo_actions::ActionAddress::new("fixture:outbox", "send");
     let agent = tilo_actions::Actor::Member(MemberId::agent("scribe", "ada"));

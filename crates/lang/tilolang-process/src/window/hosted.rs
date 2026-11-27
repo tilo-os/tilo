@@ -518,29 +518,15 @@ struct InProcess {
     woken: Arc<Woken>,
     /// What a search hit or an agent's `open` asked the window to show, for its instance.
     reveals: Rc<RefCell<Vec<String>>>,
-    /// The person's access in the workspace as the window's host keeps it, read each turn,
-    /// and what the instance was last told of it: it offers and invokes by that.
-    access: Option<AccessSource>,
-    told_access: Option<tilo_permissions::MemberAccess>,
     /// The identity connection the instance signs on, when it joined its workspace: it outlives
     /// the host, which is dropped first.
     _identity: Option<runtime_portal::process_link::Descriptor>,
 }
 
-/// Where a window running its instance in this process reads the person's access from.
-type AccessSource = Box<dyn Fn() -> Option<tilo_permissions::MemberAccess>>;
-
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
         let _phase = ui::tilo_resource::profiling::Phase::start("instance.turn");
-        if let Some(source) = &self.access {
-            let access = source();
-            if access != self.told_access {
-                self.host.set_access(&self.app, access.as_ref());
-                self.told_access = access;
-            }
-        }
         for anchor in self.reveals.borrow_mut().drain(..) {
             if let Some(hosted) = self.host.instances_mut().next() {
                 hosted.reveal(anchor);
@@ -854,23 +840,9 @@ impl HostedWindow {
             app,
             woken,
             reveals: Rc::default(),
-            access: None,
-            told_access: None,
             _identity: identity,
         });
         window
-    }
-
-    /// Have the instance running in this process offer and invoke by the person's access in
-    /// the workspace, as `source` reads it when the window turns: what a session tells a hosted
-    /// window on its launch and whenever the workspace's policy changes.
-    pub fn follow_access(
-        &mut self,
-        source: impl Fn() -> Option<tilo_permissions::MemberAccess> + 'static,
-    ) {
-        if let Some(running) = &mut self.in_process {
-            running.access = Some(Box::new(source));
-        }
     }
 
     /// Where a search hit or an agent's `open` asks the window to show what it names: its
@@ -1144,6 +1116,15 @@ impl ui::framework::ResourceSurface<super::resource::Workspace> for HostedWindow
             STAGE_FAILED.with(|failed| *failed.borrow_mut() = Some(why));
         }
         running.settle();
+        // One staged before the device answered ran as the window settled.
+        if let Some(why) = running
+            .host
+            .instances_mut()
+            .next()
+            .and_then(Hosted::take_stage_failure)
+        {
+            STAGE_FAILED.with(|failed| *failed.borrow_mut() = Some(why));
+        }
     }
 }
 

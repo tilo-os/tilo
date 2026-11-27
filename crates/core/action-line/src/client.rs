@@ -559,6 +559,7 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         | RemoteActionMessage::PresenceSaidResult { correlation, .. }
         | RemoteActionMessage::ChangesResponse { correlation, .. }
         | RemoteActionMessage::ChangedResponse { correlation, .. }
+        | RemoteActionMessage::ShownActionsResponse { correlation, .. }
         | RemoteActionMessage::Update {
             correlation: Some(correlation),
             ..
@@ -761,6 +762,31 @@ impl ActionProvider for LineClient {
                 other => Err(unexpected(&other)),
             }),
         )
+    }
+
+    /// What the other end says of the actions a window shows, asked as this connection: the
+    /// device decides each with the ordinary answer in the workspace that keeps its record, and
+    /// answers again past `ask.after` when the grants change.
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Answered<Vec<tilo_actions::shown::ActionDecision>>> {
+        let correlation = self.correlation();
+        self.ask_in(
+            Key::Correlation(correlation),
+            RemoteActionMessage::ShownActionsRequest {
+                correlation,
+                actions: ask.actions,
+                after: ask.after,
+                wait_ms: ask.wait_ms,
+            },
+            caller.workspace(),
+        )
+        .map(|answer| match answer? {
+            RemoteActionMessage::ShownActionsResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        })
     }
 }
 

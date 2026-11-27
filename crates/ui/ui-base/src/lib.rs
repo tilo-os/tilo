@@ -101,6 +101,8 @@ pub mod chrome;
 pub mod clock;
 #[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
+#[cfg(feature = "model")]
+pub use tilo_actions::shown as shown_actions;
 pub mod collection_transition;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
 pub mod carry_out;
@@ -351,6 +353,8 @@ pub use animation::Lerp;
 pub use widget::ViewPresence;
 pub use {gesture::DragSelect, gesture::Granularity};
 pub use {permissions::Acting, permissions::ActionKind, permissions::MemberId};
+#[cfg(feature = "model")]
+pub use {permissions::Grantee, permissions::Role, permissions::Verdicts};
 pub use {
     presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,
     presence::human_label,

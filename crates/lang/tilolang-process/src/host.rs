@@ -241,13 +241,6 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::info!("the person's formats or language changed");
             }
         }
-        ToProcess::Access(access) => {
-            // A role was given or taken back: the app's windows offer what the person
-            // may do now.
-            if host.set_access(&access.app, access.access.as_ref()) {
-                tracing::info!(app = access.app, "what the person may do changed");
-            }
-        }
         ToProcess::Content(content) => {
             // A limit moved, or a host refused content or kept it once its limit was raised: the
             // windows reading `workspace.content` show the refusal or its going.
@@ -289,7 +282,8 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
         ToProcess::JobsUnder(under) => tilolang_process::engines::jobs_under(under),
         ToProcess::Engine(job) => tilolang_process::engines::run(&job),
         ToProcess::Daemon { line } => tilolang_process::daemon_line::keep(line),
-        ToProcess::Finish => {}
+        // The windows ask what their person may do of the device itself.
+        ToProcess::Access(_) | ToProcess::Finish => {}
         other @ (ToProcess::Window { .. }
         | ToProcess::Patch { .. }
         | ToProcess::Display { .. }

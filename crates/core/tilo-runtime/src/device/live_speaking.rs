@@ -576,4 +576,4 @@ fn descriptor(action: &str, label: &str, detail: &str) -> ActionDescriptor {
 
 #[cfg(test)]
 #[path = "live_speaking_tests.rs"]
-mod tests;
+pub(super) mod tests;

@@ -91,9 +91,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionContext;
-#[cfg(feature = "model")]
 use tilo_permissions::SharedPermissions;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::MemberId;
@@ -363,7 +360,7 @@ pub fn component_controls_allowed(
         (Some(only), None) => Some(only),
         _ => None,
     };
-    let permissions = binding.permissions.borrow().directory_observation().ok();
+    let permissions = Some(binding.permissions.borrow().clone());
     if let (Some(snapshot), Some(permissions)) = (only, permissions)
         && let Some(forest) = snapshot.shared_forest()
     {
@@ -397,7 +394,7 @@ impl ControlAvailability {
     fn derive(
         binding: &CallbackBinding,
         forest: &Rc<[SharedResource]>,
-        permissions: tilo_permissions::DirectoryPermissionObservation,
+        permissions: tilo_ui_base::permissions::Verdicts,
         addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> Self {
         let mut derived = Self {
@@ -476,10 +473,9 @@ fn count_addresses(
 ) {
     let head = node.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
     for action in &head.actions {
         if !(action.contract.availability.is_available()
-            && decider.permits(&head.kind, head.id.as_str(), action))
+            && permissions.permits_published(&binding.app_id, head, action))
         {
             continue;
         }
@@ -844,7 +840,7 @@ impl BoundResourceSnapshot {
 #[cfg(feature = "model")]
 pub struct ControlAvailability {
     forest: Rc<[SharedResource]>,
-    permissions: tilo_permissions::DirectoryPermissionObservation,
+    permissions: tilo_ui_base::permissions::Verdicts,
     addresses: std::collections::HashSet<tilo_actions::ActionAddress>,
     /// How many available, permitted actions of `forest` have each address.
     counts: HashMap<tilo_actions::ActionAddress, usize>,
@@ -1410,7 +1406,7 @@ pub fn activate_bound_search(
     if !binding
         .permissions
         .borrow()
-        .check(&tilo_permissions::PermissionScope::app(
+        .permits(&crate::shown_actions::ShownAction::app(
             &binding.app_id,
             tilo_ui_base::permissions::ActionKind::Read,
         ))
@@ -1448,7 +1444,7 @@ pub fn activate_bound_search(
 pub struct BoundDirectoryObservation {
     owner: uuid::Uuid,
     pub generation: Option<u64>,
-    permissions: tilo_permissions::DirectoryPermissionObservation,
+    permissions: tilo_ui_base::permissions::Verdicts,
     revisions: Vec<Option<String>>,
     domains: Vec<tilo_ui_base::widget::ActionDirectoryInvocationDomain>,
 }
@@ -1496,7 +1492,7 @@ pub fn directory_observation(
             .transpose()
             .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding {
-            let permissions = binding.permissions.borrow().directory_observation()?;
+            let permissions = binding.permissions.borrow().clone();
             let index = observations
                 .iter()
                 .position(|observation| observation.owner == binding.lifetime_id)
@@ -1571,7 +1567,7 @@ pub struct BoundOwnerMark {
 #[cfg(feature = "model")]
 #[derive(PartialEq)]
 pub(crate) struct OwnerInputs {
-    pub(crate) permissions: Result<tilo_permissions::DirectoryPermissionObservation, String>,
+    pub(crate) permissions: tilo_ui_base::permissions::Verdicts,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1668,7 +1664,7 @@ struct CachedBoundResources {
     /// ([`tilo_ui_base::component_inputs`]); the host's frame count for an owner without one.
     local: LocalInputs,
     locale: u64,
-    permissions: tilo_permissions::DirectoryPermissionObservation,
+    permissions: tilo_ui_base::permissions::Verdicts,
     revisions: Vec<Option<String>>,
     filter_token: u64,
 }
@@ -1788,16 +1784,7 @@ pub fn discover_cached_bound_resources(
                 .any(|snapshot| snapshot.binding.same_component(binding))
         {
             let generation = binding.generation().map_err(|error| format!("{error:?}"))?;
-            let permissions = match binding.permissions.borrow().directory_observation() {
-                Ok(permissions) => permissions,
-                Err(error) => {
-                    cache
-                        .0
-                        .borrow_mut()
-                        .retain(|entry| !entry.snapshot.binding.same_component(binding));
-                    return Err(error);
-                }
-            };
+            let permissions = binding.permissions.borrow().clone();
             let revisions = binding
                 .read_document(doc, |doc, _| {
                     let mut revisions = Vec::new();
@@ -1845,7 +1832,7 @@ pub fn discover_cached_bound_resources(
                     .map_or_else(
                         || (crate::published::fresh_token(), Rc::default(), None),
                         |entry| {
-                            let (token, last) = if entry.permissions == permissions {
+                            let (token, last) = if permissions.withhold_as(&entry.permissions) {
                                 (entry.filter_token, entry.snapshot.shared_forest().cloned())
                             } else {
                                 (crate::published::fresh_token(), None)
@@ -1881,9 +1868,6 @@ pub fn discover_cached_bound_resources(
                 });
                 let resources = resources.map_err(|error| format!("{error:?}"))?;
                 let revision = binding.lifetime.revision();
-                if binding.permissions.borrow().directory_observation()? != permissions {
-                    return Err("owner policy changed while filtering resources".into());
-                }
                 let snapshot = BoundResourceSnapshot::shared(binding.clone(), resources, controls);
                 let mut entries = cache.0.borrow_mut();
                 entries.retain(|entry| {
@@ -1918,28 +1902,6 @@ pub fn discover_cached_bound_resources(
     let mut snapshots = Vec::new();
     visit(widget, doc, cache, local_generation, &mut snapshots)?;
     Ok(snapshots)
-}
-
-/// Action-scoped authority the bound dispatch shares: the action `action` on
-/// `resource` runs when allowed, and is
-/// [`tilo_actions::ApiError::ConfirmationRequired`] where the workspace's grants
-/// leave it to the person: the window then sends it through the device's
-/// dispatch, which asks them. A plain quick control (a button's effect) gets
-/// no further than an action declaring its confirmation.
-#[cfg(feature = "model")]
-pub fn admit_local_action(
-    permissions: &PermissionContext,
-    (app_id, resource, action): (&str, &ResourceSpec, &tilo_actions::ActionSpec),
-    typed: Option<&serde_json::Map<String, serde_json::Value>>,
-    argument: Option<&str>,
-) -> Result<(), tilo_actions::ApiError> {
-    let answer = permissions.invocation_admission(app_id, resource, action, typed, argument);
-    tilo_permissions::admit_in_window(answer, action, permissions.asker()).map_err(|refused| {
-        match permissions.shown_refusal(resource, action) {
-            Some(held) if answer.answer == tilo_permissions::Answer::Deny => held,
-            _ => refused,
-        }
-    })
 }
 
 /// Whether the person's own call of `spec` with these arguments waits for their yes:
@@ -2057,9 +2019,6 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
-
-#[cfg(feature = "model")]
-pub(crate) use tilo_permissions::denied;
 
 /// The one resource `binding` publishes for the document's `request`ed history action, and that
 /// action's name: a keyboard undo or redo reaches a document that declares its history through the
@@ -3124,10 +3083,17 @@ fn perform_resource_action(
                         {
                             resources.push(resource);
                         }
-                        resources
-                            .into_iter()
-                            .filter_map(|resource| filter_resource(binding, resource))
-                            .collect::<Vec<_>>()
+                        // The person's own call is admitted below by what the device said of
+                        // it, which says why where it refuses: withheld here, it would only be
+                        // unknown.
+                        if broker_admitted {
+                            resources
+                                .into_iter()
+                                .filter_map(|resource| filter_resource(binding, resource))
+                                .collect::<Vec<_>>()
+                        } else {
+                            resources
+                        }
                     };
                     let (arguments, resource, spec) = resolve_resource_invocation(
                         &resources,
@@ -3148,8 +3114,8 @@ fn perform_resource_action(
                         return Err(BoundActionError::Rerouted { arguments });
                     }
                     // An invocation the workspace delivers was admitted there, the person's yes
-                    // included where it waited for one; what this window was told of its actions
-                    // only shows its controls.
+                    // included where it waited for one; the person's own call runs as the device
+                    // said of it.
                     if !broker_admitted {
                         press_asks(spec, arguments.as_ref(), argument, approval, pressed)?;
                     }
@@ -3161,35 +3127,16 @@ fn perform_resource_action(
                         && resource.workspace.is_none()
                         && !resource.kind.starts_with("settings.")
                     {
-                        let (answer, spent) = binding.permissions.borrow().invocation_verdict(
+                        match binding.permissions.borrow().admit(
                             &binding.app_id,
                             resource,
                             spec,
-                            arguments.as_ref(),
-                            argument,
-                        );
-                        let asker = binding.permissions.borrow().asker();
-                        match tilo_permissions::admit_in_window(answer, spec, asker) {
+                            (arguments.as_ref(), argument),
+                        ) {
                             Err(tilo_actions::ApiError::ConfirmationRequired)
                                 if approval.is_some() => {}
-                            admitted => admitted.map_err(|refused| {
-                                match binding.permissions.borrow().shown_refusal(resource, spec) {
-                                    Some(held)
-                                        if answer.answer == tilo_permissions::Answer::Deny =>
-                                    {
-                                        held
-                                    }
-                                    _ => refused,
-                                }
-                            })?,
+                            admitted => admitted?,
                         }
-                        // A grant given once is spent by admitting this call,
-                        // before it runs: the host revokes it, and this API never
-                        // relies on it again.
-                        binding
-                            .permissions
-                            .update(|permissions| permissions.spend_once(&spent))
-                            .map_err(|_| denied(spec))?;
                     }
                     crate::invocation_scope::check_continuation(
                         spec,
@@ -3479,6 +3426,12 @@ impl CallbackBinding {
     #[doc(hidden)]
     pub fn author_for_test(&self) -> &MemberId {
         &self.author
+    }
+
+    /// The verdicts the component's controls are shown by.
+    #[doc(hidden)]
+    pub fn permissions_for_test(&self) -> &SharedPermissions {
+        &self.permissions
     }
 }
 

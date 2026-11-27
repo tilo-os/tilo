@@ -252,32 +252,6 @@ impl App {
         }
     }
 
-    pub fn permission_ctx(&self) -> &PermissionContext {
-        &self.permission_ctx
-    }
-
-    pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
-        let _entry = self.enter_wake_scope();
-        self.permission_ctx = ctx;
-        self.mark_semantic_tree_stale();
-        // See `invalidate_widget_resource_cache`: once the numeric namespace
-        // is exhausted, dropping the projection is the collision-free way to
-        // make the changed permissions visible without reusing a live cache.
-        if let Some(next) = self.actions.permission_generation.get().checked_add(1) {
-            self.actions.permission_generation.set(next);
-        }
-        self.actions.action_directory_snapshot = None;
-        self.actions.action_directory_stamp = None;
-        self.actions.action_directory_cursors.clear();
-        self.actions.action_directory_retired = None;
-        self.actions.action_directory_borrowed = None;
-        self.actions.local_resource_cache.get_mut().take();
-        self.actions.open_resource_search_cache.get_mut().take();
-        self.actions.last_control_availability = None;
-        self.refresh_control_action_availability();
-        self.layout.layout_dirty = true;
-    }
-
     /// The server attributes the broadcast to this user's id automatically,
     /// so callers only specify what changed.
     pub fn broadcast_presence(
@@ -629,7 +603,25 @@ impl App {
             ::collaboration::CollaborationState::Connecting
         );
         let mut held = std::collections::VecDeque::new();
+        let mut answered = Vec::new();
+        if let Some(stand_in) = &mut collaboration.stand_in {
+            answered.extend(stand_in.unasked());
+        }
         for request in collaboration.held_requests.drain(..) {
+            if let (
+                Some(stand_in),
+                ::collaboration::CollabRequest::RemoteAction {
+                    message:
+                        message @ tilo_actions::remote::RemoteActionMessage::ShownActionsRequest {
+                            ..
+                        },
+                    ..
+                },
+            ) = (&mut collaboration.stand_in, &request)
+            {
+                answered.extend(stand_in.asked(message));
+                continue;
+            }
             let action = matches!(request, ::collaboration::CollabRequest::RemoteAction { .. });
             if action && connecting {
                 held.push_back(request);
@@ -638,7 +630,17 @@ impl App {
             }
         }
         collaboration.held_requests = held;
-        if collaboration.members_waiting {
+        // What its device answered is taken up by the window's next frame, as an answer the
+        // connection delivers is: the window is not at rest until it has.
+        if !answered.is_empty() {
+            self.needs_sync = true;
+        }
+        for answer in answered {
+            self.apply_collab_event_for_test(::collaboration::CollabEvent::RemoteAction {
+                message: answer,
+            });
+        }
+        if self.collaboration.members_waiting {
             self.request_workspace_members();
         }
     }
@@ -988,7 +990,7 @@ impl App {
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
-            CollabEvent::WorkspaceControl { .. } | CollabEvent::ActionVerdicts { .. } => {}
+            CollabEvent::WorkspaceControl { .. } => {}
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
             // re-reads the records named. The members' resource is one of them: it is not a

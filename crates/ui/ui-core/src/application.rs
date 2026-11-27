@@ -16,10 +16,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::SharedPermissions;
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::MemberId, permissions::SharedPermissions, permissions::Verdicts};
 
 mod component_inputs;
 mod open_file;
@@ -28,8 +25,6 @@ mod runner;
 mod surface;
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSPACE};
-#[cfg(any(test, feature = "test-support"))]
-pub use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
 pub use collab_types::history::InstanceId;
@@ -43,8 +38,6 @@ pub struct ApplicationDefinition {
     pub title: Cow<'static, str>,
     pub icon: IconDescriptor,
     pub resource_type: ResourceType,
-    pub required: Vec<PermissionScope>,
-    pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host hands it a file
     /// ([`ProcessContext::take_open_file`]); [`ANY_MEDIA_TYPE`] for a component that opens every file (a
     /// hex editor).
@@ -140,6 +133,10 @@ pub struct ProcessContext {
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
     capture: Option<Capture>,
+    /// What answers the window's questions in place of its device, in a harness that runs none
+    /// ([`Self::provide_harness_device`]).
+    #[cfg(feature = "model")]
+    harness_device: Option<ShownDevice>,
     settings: crate::storage::SettingsDocument,
     /// Where the app opens the records every app of the workspace opens, when the host keeps them
     /// ([`Self::provide_workspace_resources`]).
@@ -231,6 +228,13 @@ pub struct ComponentRunnerInputs {
     /// The single owned renderer supplies the requested text factor and font locale.
     pub text_renderer: tilo_ui_base::TextRenderer,
 }
+
+/// What decides a window's questions for its person: a stand-in device a harness hands the
+/// window it opens ([`ProcessContext::provide_harness_device`]).
+#[cfg(feature = "model")]
+pub type ShownDevice = std::rc::Rc<
+    dyn Fn(&[crate::shown_actions::ShownAction]) -> Vec<crate::shown_actions::ActionDecision>,
+>;
 
 /// The runner inputs every application test draws with: the pinned font catalogue and the dark
 /// theme a capture is usually taken in.
@@ -588,11 +592,6 @@ impl ProcessContext {
         if package != definition.app_id() || !views.matches(&package, &device_id, &workspace) {
             return Err(mismatch("the record store and the views are kept apart"));
         }
-        for required in &definition.required {
-            if !permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
-        }
         let (record, reservation) = match target {
             LaunchTarget::New => {
                 let checkout = DocumentCheckout::new(
@@ -671,6 +670,8 @@ impl ProcessContext {
             content: None,
             open_file: None,
             capture: None,
+            #[cfg(feature = "model")]
+            harness_device: None,
             settings: crate::storage::SettingsDocument::Session,
             workspace: None,
             files: None,
@@ -716,6 +717,13 @@ impl ProcessContext {
     /// Prepare the instance for a screenshot of `capture` instead of a window someone uses.
     pub fn provide_capture(&mut self, capture: Capture) {
         self.capture = Some(capture);
+    }
+    /// Answer what the window asks its device with `device`, in a harness that runs no device (a
+    /// capture, a headless drive, a profile on its own): the driver serving the window answers
+    /// with it, as the device's daemon would.
+    #[cfg(feature = "model")]
+    pub fn provide_harness_device(&mut self, device: ShownDevice) {
+        self.harness_device = Some(device);
     }
     /// The screenshot this instance is prepared for, if it is one.
     pub fn capture(&self) -> Option<&Capture> {
@@ -820,14 +828,14 @@ impl ProcessContext {
         &self.local_person
     }
     /// A snapshot of the member's permissions at this moment.
-    pub fn permissions(&self) -> PermissionContext {
+    pub fn permissions(&self) -> Verdicts {
         self.permissions.borrow().clone()
     }
     /// The member's permissions as they change while the component runs (a role change, a revoked
     /// share).
     pub fn restrict_to_reading(&mut self) {
-        let reading = self.permissions.borrow().read_only();
-        self.permissions = tilo_permissions::SharedPermissions::new(reading);
+        let reading = self.permissions.borrow().reading();
+        self.permissions = tilo_ui_base::permissions::SharedPermissions::new(reading);
     }
     pub fn live_permissions(&self) -> tilo_permissions::LivePermissions {
         tilo_permissions::LivePermissions::shared(self.permissions.clone())
@@ -1115,11 +1123,6 @@ impl ApplicationDefinition {
             }
             _ => {}
         }
-        for required in &self.required {
-            if !context.permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
-        }
         if let Some(file) = &context.open_file
             && !self.opens_media_type(file.media_type())
         {
@@ -1270,6 +1273,13 @@ pub struct AppComponent {
 }
 
 impl AppComponent {
+    /// What answers the window's questions in place of its device, when its harness runs none.
+    #[cfg(feature = "model")]
+    #[must_use]
+    pub fn harness_device(&self) -> Option<ShownDevice> {
+        self.context.harness_device.clone()
+    }
+
     /// The settings document the app was given; a capture stores the look it draws in there.
     pub fn settings_document(&self) -> crate::storage::SettingsDocument {
         self.context.settings.clone()
@@ -2463,8 +2473,6 @@ mod bound_lifetime_tests {
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: ResourceType::new("probe"),
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -2480,9 +2488,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
-                        ),
+                        permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                         author: MemberId::person(&person),
                         action_context: tilo_actions::ActionContext::default(),
                     },
@@ -2514,8 +2520,6 @@ mod bound_lifetime_tests {
                 title: "Mount probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: ResourceType::new("probe"),
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -2529,9 +2533,7 @@ mod bound_lifetime_tests {
                         views: views.clone(),
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
-                        ),
+                        permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                         author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
                     },
@@ -2576,8 +2578,6 @@ mod bound_lifetime_tests {
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
                     resource_type: ResourceType::new("probe"),
-                    required: vec![],
-                    optional: vec![],
                     opens: &[],
                     workspace_resource: false,
                     opens_before_resource: false,
@@ -2591,9 +2591,7 @@ mod bound_lifetime_tests {
                             views: views.clone(),
                             device_id: "D".into(),
                             instance_id: 7,
-                            permissions: tilo_permissions::SharedPermissions::new(
-                                PermissionContext::permissive(),
-                            ),
+                            permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                             author: MemberId::person("probe-author"),
                             action_context: tilo_actions::ActionContext::default(),
                         },
@@ -2665,8 +2663,6 @@ mod bound_lifetime_tests {
                     title: "Mount probe".into(),
                     icon: IconDescriptor::Glyph("P"),
                     resource_type: ResourceType::new("probe"),
-                    required: vec![],
-                    optional: vec![],
                     opens: &[],
                     workspace_resource: false,
                     opens_before_resource: false,
@@ -2679,9 +2675,7 @@ mod bound_lifetime_tests {
                         views,
                         device_id: "D".into(),
                         instance_id: 7,
-                        permissions: tilo_permissions::SharedPermissions::new(
-                            PermissionContext::permissive(),
-                        ),
+                        permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                         author: MemberId::person("probe-author"),
                         action_context: tilo_actions::ActionContext::default(),
                     },
@@ -2936,24 +2930,6 @@ mod host_tests {
                     .is_ok(),
                 "the record the window closed on is in the workspace"
             );
-            let mut denied = probe::definition(probe::probe_factory);
-            denied.required.push(probe::denied_scope());
-            assert!(matches!(
-                ProcessContext::prepare(
-                    &denied,
-                    ProcessContextInputs {
-                        records,
-                        views,
-                        device_id: probe::DEVICE.into(),
-                        instance_id: 8,
-                        permissions: probe::permissions(),
-                        author: probe::author(),
-                        action_context: probe::provenance()
-                    },
-                    &LaunchTarget::New,
-                ),
-                Err(LaunchError::CapabilityDenied(_))
-            ));
         }
     }
 }

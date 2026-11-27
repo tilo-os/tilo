@@ -362,7 +362,6 @@ fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of
         Some(WorkspaceSync {
             state,
             workspace: "Lounge".into(),
-            writable: None,
             unsynced_writes: 0,
             cannot_keep_writes: false,
         })
@@ -418,7 +417,6 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
         Some(WorkspaceSync {
             state,
             workspace: "Lounge".into(),
-            writable: None,
             unsynced_writes: 0,
             cannot_keep_writes: false,
         })

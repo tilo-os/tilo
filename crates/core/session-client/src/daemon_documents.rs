@@ -533,6 +533,25 @@ impl DaemonShell {
         self.dispatch(None, &read_message(read)).await
     }
 
+    /// What the device says the person may do of `ask`'s actions: now, or, once `ask` names the
+    /// verdicts shown and a wait, when the grants change or the wait passes.
+    ///
+    /// # Errors
+    /// As [`Self::dispatch`].
+    pub async fn shown(
+        &self,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Result<Vec<tilo_actions::shown::ActionDecision>, String> {
+        let message = RemoteActionMessage::ShownActionsRequest {
+            correlation: 0,
+            actions: ask.actions,
+            after: ask.after,
+            wait_ms: ask.wait_ms,
+        };
+        serde_json::from_value(self.dispatch(None, &message).await?)
+            .map_err(|error| format!("the device's verdicts do not read: {error}"))
+    }
+
     /// [`Self::read`] from a thread that is not the runtime's.
     ///
     /// # Errors
@@ -636,6 +655,10 @@ fn answered(reply: ShellReply) -> Result<serde_json::Value, String> {
     match message {
         RemoteActionMessage::ResourceReading { result, .. } => {
             serde_json::from_str(&result.map_err(|error| error.to_string())?)
+                .map_err(|error| format!("the dispatch's answer does not read: {error}"))
+        }
+        RemoteActionMessage::ShownActionsResponse { result, .. } => {
+            serde_json::to_value(result.map_err(|error| error.to_string())?)
                 .map_err(|error| format!("the dispatch's answer does not read: {error}"))
         }
         RemoteActionMessage::Receipt(receipt) => match receipt.status {

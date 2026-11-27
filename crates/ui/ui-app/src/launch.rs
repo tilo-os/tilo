@@ -33,8 +33,8 @@ pub(crate) use window_join::{WindowBuild, dispatch_window, dispatch_window_arriv
 /// runs the device's daemon in the app's own process, once a person's identity has the device.
 /// The window then joins the workspace over it and keeps its records there, as the window of a
 /// launched app does, even an app that otherwise attaches to no runtime beside it
-/// ([`LaunchSpec::attaches_runtime`] with [`connection_handed`]). The workspace it is in and that
-/// it takes part there as an author are installed as the launcher's.
+/// ([`LaunchSpec::attaches_runtime`] with [`connection_handed`]). The workspace it is in is
+/// installed as the launcher's.
 ///
 /// `Err` hands the window why no connection could be made: it does not open, rather than open on
 /// records of this device alone.
@@ -63,7 +63,6 @@ fn install_handed(handed: Option<&::collaboration::HandedConnection>) {
     if let Some(handed) = handed {
         let mut launched = (*crate::process::environment()).clone();
         launched.identity.workspace_id = Some(handed.workspace.to_string());
-        launched.identity.participation = Some("author".to_owned());
         crate::process::install_environment(launched);
     }
 }
@@ -446,7 +445,6 @@ const fn is_model_failure(error: &LaunchError) -> bool {
         LaunchError::Record(_)
             | LaunchError::ComponentSetup { .. }
             | LaunchError::ComponentCapture { .. }
-            | LaunchError::CapabilityDenied(_)
     )
 }
 
@@ -2950,44 +2948,24 @@ mod prepared_launch_tests {
             assert_eq!(body(&records, &checkout), "edited");
         }
         {
-            static DENIED: std::sync::OnceLock<crate::application::ApplicationDefinition> =
-                std::sync::OnceLock::new();
-            let denied = DENIED.get_or_init(|| {
-                let mut value = definition(action_probe_factory);
-                value.required.push(denied_scope());
-                value
-            });
-            for (definition, preparer, expect_denied) in [
-                (denied, denied_preparer as ComponentHostPreparer, true),
-                (
-                    runner_probe_definition(),
-                    invalid_preparer as ComponentHostPreparer,
-                    false,
-                ),
-            ] {
-                let temp = tempfile::tempdir().unwrap();
-                let spec = LaunchSpec::from_definition(definition)
-                    .component_host(preparer)
-                    .allowed_live_options(&["--fixture-root"]);
-                for mode in ["native", "headless"] {
-                    let mut values = vec![
-                        "app".into(),
-                        "--fixture-root".into(),
-                        temp.path().join(mode).to_string_lossy().into_owned(),
-                    ];
-                    if mode == "headless" {
-                        values.extend(["--headless-drive".into(), "{}".into()]);
-                    }
-                    let args = parsed(&spec, &values);
-                    let before = calls();
-                    let result = dispatch_definition(&spec, &args);
-                    assert_eq!(
-                        matches!(result, Err(LaunchError::CapabilityDenied(_))),
-                        expect_denied
-                    );
-                    assert!(expect_denied || matches!(result, Err(LaunchError::BindingMismatch)));
-                    assert_eq!(calls(), before);
+            let temp = tempfile::tempdir().unwrap();
+            let spec = LaunchSpec::from_definition(runner_probe_definition())
+                .component_host(invalid_preparer as ComponentHostPreparer)
+                .allowed_live_options(&["--fixture-root"]);
+            for mode in ["native", "headless"] {
+                let mut values = vec![
+                    "app".into(),
+                    "--fixture-root".into(),
+                    temp.path().join(mode).to_string_lossy().into_owned(),
+                ];
+                if mode == "headless" {
+                    values.extend(["--headless-drive".into(), "{}".into()]);
                 }
+                let args = parsed(&spec, &values);
+                let before = calls();
+                let result = dispatch_definition(&spec, &args);
+                assert!(matches!(result, Err(LaunchError::BindingMismatch)));
+                assert_eq!(calls(), before);
             }
         }
 
@@ -3096,12 +3074,6 @@ mod prepared_launch_tests {
             definition.resource_type.clone(),
         ));
         Ok(prepared)
-    }
-    fn denied_preparer(
-        definition: &crate::application::ApplicationDefinition,
-        args: &LaunchArgs,
-    ) -> Result<PreparedComponentInputs, LaunchError> {
-        prepare_target(definition, args, LaunchTarget::New, permissions())
     }
     fn corrupt_checkout() -> crate::resource::DocumentCheckout {
         crate::resource::DocumentCheckout::new(

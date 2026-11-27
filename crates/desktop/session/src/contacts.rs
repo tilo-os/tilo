@@ -16,7 +16,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
-use tilo_action_policy::WorkspacePolicy;
 use tilo_actions::{ActionAddress, ActionInvoker, ApiError, ResourceSpec};
 use tilo_contact_directory::ContactDirectory;
 use tilo_resource::{Resource as _, SharedResource as _};
@@ -44,7 +43,7 @@ pub(crate) struct Contacts {
     wake: tilo_service::Wake,
     /// Each workspace's directory, followed from the first read and kept at the grants it was
     /// followed with: a workspace whose grants changed has it followed again.
-    open: RefCell<BTreeMap<String, (WorkspacePolicy, FollowedResource<ContactDirectory>)>>,
+    open: RefCell<BTreeMap<String, FollowedResource<ContactDirectory>>>,
     /// The resource published last, and the reading it was built at.
     published: RefCell<Option<(u64, ResourceSpec)>>,
     /// The reading last published, so a move is told once.
@@ -71,35 +70,24 @@ impl Contacts {
         }
     }
 
-    /// The workspace the person is in, and its grants.
-    fn workspace(&self) -> Option<(String, WorkspacePolicy)> {
-        self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| (held.id().to_string(), held.policy.clone()))
-        })
+    /// The workspace the person is in.
+    fn workspace(&self) -> Option<String> {
+        self.handle
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
     }
 
-    /// The directory of the workspace the person is in, followed where it is not, at that
-    /// workspace's grants. `None` where the workspace keeps none or it was not read yet.
+    /// The directory of the workspace the person is in, followed where it is not. `None` where the workspace keeps none or it was not read yet.
     fn directory(&self) -> Option<FollowedResource<ContactDirectory>> {
-        let (workspace, policy) = self.workspace()?;
+        let workspace = self.workspace()?;
         let mut open = self.open.borrow_mut();
-        if open
-            .get(&workspace)
-            .is_some_and(|(followed, _)| *followed != policy)
-        {
-            open.remove(&workspace);
-        }
-        let (_, followed) = open.entry(workspace.clone()).or_insert_with(|| {
+        let followed = open.entry(workspace.clone()).or_insert_with(|| {
             let id = collab_types::workspace_document_id(ContactDirectory::KIND);
-            let followed = FollowedResource::follow(
+            FollowedResource::follow(
                 &self.daemon,
                 (&workspace, ContactDirectory::OWNER, &id),
                 &self.person,
-                Some(policy.clone()),
                 std::sync::Arc::clone(&self.wake),
-            );
-            (policy, followed)
+            )
         });
         (followed.held() == Some(true)).then(|| followed.clone())
     }

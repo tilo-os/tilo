@@ -1,5 +1,5 @@
-//! The permission filter over published resources: what the member may invoke stays, the rest is
-//! withheld.
+//! The permission filter over published resources: what the device refuses the person is
+//! withheld, the rest stays (what it has not answered yet, shown as not yet decided).
 
 use super::{CallbackBinding, ResourceSpec, SharedResource, same_offer};
 
@@ -65,11 +65,10 @@ fn filter_shared_node(
     let _phase = tilo_actions::profiling::Phase::start("ui.filtered_resource");
     let head = resource.head();
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
     let every_action = head
         .actions
         .iter()
-        .all(|action| decider.permits(&head.kind, head.id.as_str(), action));
+        .all(|action| permissions.shows_published(&binding.app_id, head, action));
     let children = filter_shared_children(binding, token, resource.children());
     if every_action
         && matches!(children, Filtered::Same)
@@ -84,7 +83,7 @@ fn filter_shared_node(
     };
     let mut head = head.clone();
     head.retain_actions(|action| {
-        decider.permits(&resource.head().kind, resource.head().id.as_str(), action)
+        permissions.shows_published(&binding.app_id, resource.head(), action)
     });
     if head.actions.is_empty() && children.is_empty() {
         Filtered::Pruned
@@ -136,19 +135,19 @@ pub fn insert_available_permitted(
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     let permissions = binding.permissions.borrow();
-    let decider = permissions.action_decider(&binding.app_id);
-    insert_available(&decider, resources, allowed);
+    insert_available(&permissions, &binding.app_id, resources, allowed);
 }
 
 fn insert_available(
-    decider: &tilo_permissions::ActionDecider<'_>,
+    permissions: &tilo_ui_base::permissions::Verdicts,
+    app: &str,
     resources: &[ResourceSpec],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {
     for resource in resources {
         for action in &resource.actions {
             if action.contract.availability.is_available()
-                && decider.permits(&resource.kind, resource.id.as_str(), action)
+                && permissions.permits_published(app, resource, action)
             {
                 allowed.insert(tilo_actions::ActionAddress::new(
                     resource.id.as_str(),
@@ -156,6 +155,6 @@ fn insert_available(
                 ));
             }
         }
-        insert_available(decider, &resource.children, allowed);
+        insert_available(permissions, app, &resource.children, allowed);
     }
 }

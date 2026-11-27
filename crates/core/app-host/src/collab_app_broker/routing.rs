@@ -75,6 +75,17 @@ impl Drop for OwnerWait<'_> {
 // second reader wait its turn — the two calls serialize instead of racing.
 
 impl AppBrokerState {
+    /// The workspace holding the resource `resource` the connection `peer` publishes, when its
+    /// surface names one other than the window's.
+    pub(super) fn keeping_workspace(&self, peer: u64, resource: &str) -> Option<String> {
+        self.surface_tables
+            .lock()
+            .ok()?
+            .get(&peer)?
+            .workspace_of(resource)
+            .map(str::to_owned)
+    }
+
     /// What a window with no native endpoint on `channel_id` is told, as `peer_id`.
     #[cfg(test)]
     pub(crate) fn watch_context(
@@ -136,7 +147,6 @@ impl AppBrokerState {
             | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::ResourceCommandResult { .. }
-            | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::DocumentContent { .. }
             | CollabEvent::DocumentContentState { .. }
             | CollabEvent::RemoteAction { .. }
@@ -686,8 +696,6 @@ impl AppBrokerState {
     /// the next re-check must come on the one-second clock instead of on an
     /// announcement: an input nothing announces, or a check that failed.
     pub(super) fn refresh_policy_surfaces(self: &Arc<Self>) -> bool {
-        // Read only the workspaces' grants: decided again whatever else this host serves.
-        self.refresh_shown_actions();
         if self.services.workspace_memberships.is_none() || self.membership.is_none() {
             // No native context subscriber can be admitted: nothing here changes with policy.
             return false;

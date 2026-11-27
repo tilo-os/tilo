@@ -235,7 +235,8 @@ impl People {
         actor
     }
 
-    /// Whether another person is in the workspace with this window now.
+    /// Whether the workspace has a person besides this window's, here now or not: what it keeps
+    /// is shared with them.
     pub fn others_here(&self) -> bool {
         tilo_resource::members::named()
             .iter()

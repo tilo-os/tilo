@@ -12,11 +12,8 @@ use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
 use tilo_lock::MutexRecover as _;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::Role;
-use tilo_permissions::SharedPermissions;
 use tilo_resource::{Effect, Invoke, Resource};
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::MemberId, permissions::Role, permissions::SharedPermissions};
 use ui_core::application::{
     ApplicationOwner, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
     PreparedComponentInputs, ProcessContext,
@@ -29,9 +26,7 @@ use ui_core::resource::{
     DocumentCheckout, DocumentId, DocumentPort, MemoryWorkspace, ResourceStore,
 };
 
-use super::app::{
-    ResourceApp, definition, hand_launch, prepare_on, role_permissions, settle_launch,
-};
+use super::app::{ResourceApp, definition, hand_launch, prepare_on, settle_launch};
 use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
@@ -426,17 +421,17 @@ pub trait Host {
     /// its own document. Another window on the same profile finds them as the first left them.
     fn keeps_settings(_root: &std::path::Path) {}
 
-    /// Take up the window `driver` opened for `author`, before its first frame.
-    fn opened(driver: &mut Driver, author: &str);
+    /// Take up the window `driver` opened for `author`, before its first frame. `device` answers
+    /// what the window asks about its own workspace; a host deciding more answers the rest.
+    fn opened(driver: &mut Driver, author: &str, device: &super::harness_device::HarnessDevice);
 }
 
 /// No host beside the window, as in a capture or a fixture seeder run on its own: the actions
-/// of records another workspace holds stay undecided, so their controls say they are being
-/// checked.
+/// of records another workspace keeps are decided by nothing here.
 pub struct Alone;
 
 impl Host for Alone {
-    fn opened(_: &mut Driver, _: &str) {}
+    fn opened(_: &mut Driver, _: &str, _: &super::harness_device::HarnessDevice) {}
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -466,9 +461,12 @@ pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
     /// What a host replicating the record to a workspace published of it
     /// ([`Self::shared_in_workspace`]); `None` while nobody replicates it.
     workspace: Option<ui_core::state::DocumentFrontier>,
-    /// Shared with the host: changing it is a role change the running app
-    /// sees, as when the record's owner changes someone's access.
+    /// The verdicts the window keeps, as its stand-in device sent them.
     permissions: SharedPermissions,
+    /// What answers the window's questions in place of its device: changing
+    /// what it decides by is a role change the running app sees, as when the
+    /// record's owner changes someone's access.
+    device: super::harness_device::HarnessDevice,
     /// The window is a capture: every motion in it reads arrived while this
     /// is held, so what it photographs is the window at rest.
     _settled: Option<tilo_ui_base::motion::testing::Settled>,
@@ -623,7 +621,7 @@ fn answer_where_kept<A: ResourceApp>(
     let resources = served.borrow_mut().harness().resources();
     let (resource, spec) = tilo_actions::api::locate(&resources, invocation.address)
         .ok_or_else(|| tilo_actions::ApiError::Unknown(invocation.address.clone()))?;
-    invocation.admit(&tilo_permissions::shown_actions::ShownAction::new(
+    invocation.admit(&tilo_actions::shown::ShownAction::new(
         Some(own),
         A::ID,
         (&resource.kind, resource.id.as_str(), &spec.id),
@@ -819,9 +817,12 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         &mut self,
         owner: &'static str,
     ) -> Option<super::WorkspaceResource<P>> {
-        self.harness()
+        let opened = self
+            .harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_workspace::<P>(owner))
-            .flatten()
+            .flatten();
+        self.until_decided();
+        opened
     }
 
     /// The record `id` that `owner` keeps, as the app's views open it.
@@ -830,9 +831,12 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         owner: &'static str,
         id: &str,
     ) -> Option<super::WorkspaceResource<P>> {
-        self.harness()
+        let opened = self
+            .harness()
             .with_widget_mut(|root: &mut ResourceRoot| root.storage.shared_resource::<P>(owner, id))
-            .flatten()
+            .flatten();
+        self.until_decided();
+        opened
     }
 
     /// The app's profile record of `P`, as its views open it.
@@ -1164,8 +1168,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let mut driver = opened.driver;
         serve_kept::<A>(&mut driver, &opened.profile.settings(), author);
         let persons_own = serve_persons_own::<A>(&mut driver, &opened.profile, author)?;
-        H::opened(&mut driver, author);
-        Ok(Self {
+        H::opened(&mut driver, author, &opened.device);
+        let mut app = Self {
             driver,
             owner: opened.owner,
             closed: false,
@@ -1179,10 +1183,33 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             last_effect: None,
             workspace: None,
             permissions: opened.permissions,
+            device: opened.device,
             _settled: settled,
             persons_own,
             marker: std::marker::PhantomData,
-        })
+        };
+        app.until_decided();
+        Ok(app)
+    }
+
+    /// Run frames until the window's device said all the window read or asked, as a person sees
+    /// a control decided before they press it: what was submitted meanwhile runs then.
+    pub fn until_decided(&mut self) {
+        for _ in 0..32 {
+            let told = {
+                let verdicts = self.permissions.borrow();
+                let own: Vec<_> = verdicts
+                    .asked()
+                    .into_iter()
+                    .filter(|action| action.workspace.is_none())
+                    .collect();
+                !verdicts.undecided() && verdicts.agrees(&self.device.decide(&own))
+            };
+            if told {
+                return;
+            }
+            self.settle_frames();
+        }
     }
 
     /// Hand the records the app declares kept by other providers
@@ -1221,38 +1248,43 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     }
 
     /// Change the member's role while the app runs, as the record's
-    /// owner changing their access does. Takes effect on the next frame,
-    /// which this runs.
+    /// owner changing their access does. The window follows once its device
+    /// told it, which this waits for.
     pub fn set_role(&mut self, role: Role) {
-        self.permissions.set(PermissionContext::member(
-            &tilo_ui_base::permissions::MemberId::person(self.author.as_str()),
-            role,
-        ));
+        self.device
+            .set_role(&MemberId::person(self.author.as_str()), role);
         self.role = role;
         self.harness().relayout();
+        self.until_decided();
     }
 
-    /// The member's permissions in force now.
+    /// What the device last told the window the member may do.
     #[must_use]
-    pub fn permissions(&self) -> PermissionContext {
+    pub fn permissions(&self) -> tilo_ui_base::permissions::Verdicts {
         self.permissions.borrow().clone()
     }
 
-    /// Change the member's permissions while the app runs, as the host
-    /// does when the workspace's grants change. Takes effect on the next frame,
-    /// which this runs.
-    pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        self.permissions.set(permissions);
+    /// Decide what the member may do by `access` while the app runs, as the
+    /// device does when the workspace's grants change. The window follows once
+    /// its device told it, which this waits for.
+    pub fn set_access(&mut self, access: tilo_ui_base::permissions::policy::MemberAccess) {
+        self.device.set_access(access);
         self.harness().relayout();
+        self.until_decided();
+    }
+
+    /// The member's access the window's device decides by now.
+    #[must_use]
+    pub fn access(&self) -> tilo_ui_base::permissions::policy::MemberAccess {
+        self.device.access()
     }
 
     /// Take the member out of the workspace while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_workspace(&mut self) {
-        self.permissions.set(PermissionContext::stranger(
-            &tilo_ui_base::permissions::MemberId::person(self.author.as_str()),
-        ));
+        self.device.remove(&MemberId::person(self.author.as_str()));
         self.harness().relayout();
+        self.until_decided();
     }
 
     /// Close the app (flushing its record) and open it again on the same
@@ -2201,18 +2233,29 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// test may have changed what its views read past the framework
     /// ([`tilo_ui_base::component_inputs`]).
     pub fn settle(&mut self) {
+        let waited = self.settle_frames();
+        // What the window waited on its device for runs once it answered.
+        if waited {
+            self.until_decided();
+            self.settle_frames();
+        }
+    }
+
+    /// The frames [`Self::settle`] runs: the frame takes up what the event brought, the record's
+    /// writer is offered what it changed, and the frame after takes up what that answered.
+    /// Whether the window then waits for its device to say something it read or asked.
+    fn settle_frames(&mut self) -> bool {
         // The app in the person's own workspace keeps their records: settle it first, so what
         // this window's call changed there is committed, and the readings this window takes
         // below see it.
         if let Some(persons_own) = &self.persons_own {
             persons_own.borrow_mut().driver.persist_tick();
         }
-        // The frame takes up what the event brought, the record's writer is offered what it
-        // changed, and the frame after takes up what that answered.
         let driver = self.harness();
         driver.relayout();
         driver.persist_tick();
         driver.relayout();
+        self.permissions.borrow().undecided()
     }
 
     /// What the live window does once input stops, and no more: what its
@@ -2425,6 +2468,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             ));
         };
         let address = tilo_actions::ActionAddress::new(resource, id);
+        // A caller of the window acts once its device said what it may.
+        self.until_decided();
         let driver = self.harness();
         // A confirmed call is sent again with the person's approve, as the device's ask sends it.
         let approval = confirmed.then(|| driver.approval());
@@ -2450,10 +2495,13 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         }
         let Invoke { id, arguments, .. } = invoke;
         let address = tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id);
+        // A caller of the window acts once its device said what it may.
+        self.until_decided();
         let driver = self.harness();
         let approval = confirmed.then(|| driver.approval());
-        driver.invoke_action(&address, &arguments, approval.as_ref())?;
-        Ok(())
+        driver
+            .invoke_action(&address, &arguments, approval.as_ref())
+            .map(|_| ())
     }
 
     /// The parts of the chain of `P` the app's store holds, oldest first,
@@ -2861,6 +2909,8 @@ struct Opened {
     instance: u64,
     profile: Profile,
     permissions: SharedPermissions,
+    /// What answers the window's questions in place of its device.
+    device: super::harness_device::HarnessDevice,
 }
 
 /// The application owner `profile` opens in, and the instance its window
@@ -2923,6 +2973,23 @@ fn opening_owner_of_profile(
     })
 }
 
+/// Refuse an app whose action surface the live host would withdraw for breaking its contract.
+fn keeps_its_contract(driver: &mut Driver, app: &str) -> Result<(), LaunchError> {
+    let _phase = tilo_resource::profiling::Phase::start("start.contract_check");
+    let violations = driver.component_contract_violations();
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(LaunchError::Operation(format!(
+        "{app} publishes an action surface the host would refuse: {}",
+        violations
+            .iter()
+            .map(|violation| format!("{}: {}", violation.address, violation.reason))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )))
+}
+
 /// Open the app `opening` describes as `launch` says, `configure` given its
 /// host context before it is instantiated.
 fn open_app(
@@ -2938,8 +3005,10 @@ fn open_app(
         split_command_line(&private_arguments, opening.options, opening.flags);
     let arguments = arguments.as_slice();
     let person = launch.author.to_owned();
-    let author = MemberId::person(person.clone());
-    let permissions = role_permissions(profile.workspace(), &person, launch.role);
+    let author = MemberId::person(person);
+    let permissions = SharedPermissions::default();
+    let device =
+        super::harness_device::HarnessDevice::member_of(profile.workspace(), &author, launch.role);
     let host_phase = tilo_resource::profiling::Phase::start("start.host");
     let (mut owner, instance) = opening_owner(&profile, opening.id, author, &permissions, beside)?;
     host_phase.end();
@@ -2984,6 +3053,7 @@ fn open_app(
         None => (opening.shot_viewport)(None),
     };
     prepared.context.provide_content(profile.content());
+    prepared.context.provide_harness_device(device.shown());
     let mut prepared = in_profile(prepared, &profile.root(), opening.id);
     configure(&mut prepared.context);
     prepare_phase.end();
@@ -3010,22 +3080,8 @@ fn open_app(
     // palette's, agents', scripts') when any of its actions breaks its
     // contract. Every test that opens the app proves it would not.
     // A capture stages fixtures, not the app someone uses.
-    let violations = if captured {
-        Vec::new()
-    } else {
-        let _phase = tilo_resource::profiling::Phase::start("start.contract_check");
-        driver.component_contract_violations()
-    };
-    if !violations.is_empty() {
-        return Err(LaunchError::Operation(format!(
-            "{} publishes an action surface the host would refuse: {}",
-            definition.app_id(),
-            violations
-                .iter()
-                .map(|violation| format!("{}: {}", violation.address, violation.reason))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )));
+    if !captured {
+        keeps_its_contract(&mut driver, definition.app_id())?;
     }
     Ok(Opened {
         driver,
@@ -3035,6 +3091,7 @@ fn open_app(
         instance,
         profile,
         permissions,
+        device,
     })
 }
 

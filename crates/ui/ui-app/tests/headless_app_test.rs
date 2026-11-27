@@ -16,7 +16,7 @@ use tilo_ui_app::application::{LaunchTarget, RestoreInput};
 use tilo_ui_app::headless::{Action, Driver, Invocation, Outcome, Step};
 
 use crate::support::application::{
-    ProbeHarness, body, operation_observations, owner_permissions, runner_probe_definition,
+    ProbeHarness, body, operation_observations, runner_probe_definition,
 };
 
 /// A step that invokes one action of the probe's shared resource with no
@@ -40,11 +40,11 @@ fn mounted_probe() -> (ProbeHarness, Driver) {
     let host = ProbeHarness::new();
     let component = runner_probe_definition()
         .instantiate(
-            host.prepare_with_permissions(
+            host.prepare_as(
                 runner_probe_definition(),
                 11,
                 &LaunchTarget::New,
-                owner_permissions(),
+                tilo_ui_base::permissions::Role::Owner,
             )
             .unwrap(),
             LaunchTarget::New,

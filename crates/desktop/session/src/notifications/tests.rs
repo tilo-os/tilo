@@ -1199,7 +1199,6 @@ impl PersonsWorkspace {
             &self.daemon.shell(),
             (&self.workspace, DEVICES.0, DEVICES.1),
             member.as_str(),
-            None,
             Arc::new(|| {}),
         )
     }

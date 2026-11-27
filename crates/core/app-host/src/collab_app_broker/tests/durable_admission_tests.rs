@@ -404,20 +404,24 @@ async fn a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said() 
                 .insert(71, table);
 
             let actor = caller.admitted.broker_actor();
-            let record = tilo_permissions::shown_actions::ShownAction::new(
+            let record = tilo_actions::shown::ShownAction::new(
                 Some(&holding.to_string()),
                 &fixture.route.app_id,
                 (&action.resource_kind, &action.resource, &action.action),
                 &action.contract.need(),
             );
-            let mut verdicts = fixture.state.subscribe_shown_actions(
-                actor.clone(),
-                fixture.route.cluster_id.clone(),
-                vec![record],
-            );
+            // What a window shows is the actor's ordinary answer in the record's workspace: an
+            // editor there may run it, though they only read the board.
+            let now = tilo_clock::unix_now();
+            let verdict = membership
+                .read()
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id() == holding)
+                .map(|workspace| actor.shown_verdict(Some(workspace), &record, now));
             assert_eq!(
-                verdicts.next().await.unwrap().unwrap()[0].verdict,
-                tilo_permissions::shown_actions::ActionVerdict::Allowed,
+                verdict,
+                Some(tilo_actions::shown::ActionVerdict::Allowed),
                 "an editor of the holding workspace may run it, though they only read the board"
             );
             admit(&mut fixture, &caller);

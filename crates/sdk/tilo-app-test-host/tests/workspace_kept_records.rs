@@ -366,7 +366,11 @@ fn page_of_reads_once() -> tilo_app::framework::AttachedView {
         ),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person("ada"),
-        tilo_permissions::PermissionContext::permissive(),
+        tilo_app::framework::harness_device::HarnessDevice::member_of(
+            tilo_app::framework::testing::TEST_WORKSPACE,
+            &MemberId::person("ada"),
+            tilo_app::Role::Owner,
+        ),
         false,
     )
     .unwrap()

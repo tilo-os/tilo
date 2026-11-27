@@ -40,6 +40,8 @@ pub use crate::app::driver::{
     Driver, DriverInputs, FrameOptions, Framed, OwedSettle, WINDOW_PARTS, WindowBarNotice,
     WindowBarNoticeButton,
 };
+#[cfg(feature = "model")]
+pub use crate::app::driver::{ShownDevice, ShownHost};
 
 pub use crate::app::driver::chrome::SidebarShown;
 

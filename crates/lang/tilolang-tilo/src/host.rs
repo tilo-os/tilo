@@ -250,6 +250,9 @@ pub(crate) struct HostInner {
     /// Whether this host has asked its store for the workspace's members while no reading had
     /// arrived: it asks once, and then waits for the store's notice that the record moved.
     pub(crate) members_asked: Cell<bool>,
+    /// Whether this host is a window's ([`Host::as_window`]): it keeps no policy, since its device
+    /// decides, yet it is in that device's workspace, so its members are known only once read.
+    pub(crate) window: Cell<bool>,
     /// Whether the workspace's members come to this host as a reading its embedder publishes
     /// ([`Host::let_members_be_read_elsewhere`](crate::members::Host::let_members_be_read_elsewhere)):
     /// a window whose store is not the workspace whose people it shows, as the shell's is.
@@ -1450,6 +1453,7 @@ impl Host {
             member_rows: RefCell::new(Rc::new(std::collections::HashMap::new())),
             members_known: Cell::new(false),
             members_asked: Cell::new(false),
+            window: Cell::new(false),
             members_elsewhere: Cell::new(false),
             content_source: RefCell::new(None),
         });
@@ -1609,6 +1613,19 @@ impl Host {
     #[must_use]
     pub fn store(&self) -> &ResourceStore {
         &self.inner.store
+    }
+
+    /// Host a window: the person's own part of what it invokes is what their device says
+    /// (`verdicts`), and what the device synced here is theirs to read and to place as theirs.
+    pub fn as_window(&self, verdicts: Rc<crate::authority::VerdictSource>) {
+        self.inner.authority.set_verdicts(verdicts);
+        self.inner.record_reads.as_window(&self.inner.viewer);
+        self.inner.window.set(true);
+        // Members taken as known while this host decided by no policy are known only once read.
+        if !self.inner.members_elsewhere.get() {
+            self.inner.members_known.set(false);
+            self.inner.members_stale.set(true);
+        }
     }
 
     #[must_use]

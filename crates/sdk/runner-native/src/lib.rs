@@ -54,6 +54,7 @@ fn install_from_launcher() {
         return;
     };
     audio_output::install(Arc::clone(&handed.line));
+    ui_core::install_window_line(Arc::clone(&handed.line) as _, handed.workspace.clone());
     ui_core::presence_line::install(Arc::new(Presence(handed.line)));
 }
 

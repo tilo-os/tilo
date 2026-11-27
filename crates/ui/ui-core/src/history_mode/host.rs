@@ -103,7 +103,6 @@ pub struct HistoryHost {
     review: Option<review::ReviewPanel>,
     review_request: Option<review::ReviewCommand>,
     review_node: Option<NodeId>,
-    clock: fn() -> Option<u64>,
     controller: Option<HistoryController>,
     /// The folder revision whose changes the timeline lists: the folder is read again
     /// only when its tree record moved.
@@ -385,7 +384,6 @@ impl HistoryHost {
             review: None,
             review_request: None,
             review_node: None,
-            clock: crate::time::try_unix_now,
             controller,
             observed_folder_revision: None,
             folder_selected: None,

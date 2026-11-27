@@ -29,7 +29,6 @@ fn process_identity() -> super::ProcessIdentity {
         account_name: text("USER"),
         continuity_resume,
         continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
-        participation: text("TILO_PARTICIPATION").map(|value| value.trim().to_owned()),
         collab_service_configured: std::env::var_os("TILO_SVC_COLLAB_FD").is_some(),
         managed_agent_context: std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some(),
     }

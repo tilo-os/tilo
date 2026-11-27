@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@56"
-tilo-fs = "optional@56"
+collab = "optional@58"
+tilo-fs = "optional@58"
 
 [entrypoint]
 bin = "bin/poker"

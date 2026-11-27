@@ -1,9 +1,7 @@
 //! Genuine registered History refresh checks; constructors and full refreshes stay outside probes.
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, RestoreInput};
-use crate::application_test_support::{
-    APP, ProbeHarness, runner_permissions, runner_probe_definition,
-};
+use crate::application_test_support::{APP, ProbeHarness, runner_probe_definition};
 use crate::bound_dispatch::CallbackBinding;
 use crate::history_mode::owner::{HistoryOwner, OWNED_DOCUMENT_CLONES, ResourceOwnerLifetime};
 use crate::history_mode::{HistoryDefinition, HistoryResource, HistoryScopeDefinition};
@@ -42,7 +40,12 @@ impl BoundFixture {
         let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let context = host
-            .prepare_with_permissions(definition, 940, &LaunchTarget::New, runner_permissions())
+            .prepare_as(
+                definition,
+                940,
+                &LaunchTarget::New,
+                tilo_ui_base::permissions::Role::Owner,
+            )
             .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)

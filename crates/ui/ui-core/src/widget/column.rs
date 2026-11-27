@@ -176,8 +176,6 @@ impl Column {
 impl Widget for Column {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
         dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 

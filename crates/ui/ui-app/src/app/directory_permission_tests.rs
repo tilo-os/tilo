@@ -1,25 +1,4 @@
 // Actual bound owners and cached directory resolution, not a DTO equality test.
-fn directory_sampled_permission(
-    time: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> tilo_permissions::PermissionContext {
-    let now = time.load(std::sync::atomic::Ordering::Acquire);
-    tilo_permissions::PermissionContext::granted(
-        &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-        &tilo_permissions::TreePath::root(),
-        tilo_action_types::KindSet::ALL,
-        Some(110),
-    )
-    .at_unix_time(now)
-    .with_policy_time_sampler(std::sync::Arc::new(move || {
-        if fail.load(std::sync::atomic::Ordering::Acquire) {
-            Err("actual retained clock retired".into())
-        } else {
-            Ok(time.load(std::sync::atomic::Ordering::Acquire))
-        }
-    }))
-}
-
 fn republish_directory(fixture: &mut ActionFixture) -> (String, Vec<tilo_actions::ResourceSpec>) {
     let resources = fixture.app.publication_resources();
     let descriptors = tilo_actions::api::survey(&resources);
@@ -32,184 +11,21 @@ fn republish_directory(fixture: &mut ActionFixture) -> (String, Vec<tilo_actions
 tilo_test_env::scenario! {
     fn directory_permissions_invalidate_the_revision_resolved_under_them;
 
-    phase directory_permission_fresh_sampler_and_seconds_preserve_actual_bound_revision;
+    phase directory_permission_verdict_change_invalidates_revision;
     {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        let time = Arc::new(AtomicU64::new(100));
-        let fail = Arc::new(AtomicBool::new(false));
         let mut fixture = ActionFixture::broker();
-        fixture
-            .permissions
-            .set(directory_sampled_permission(time.clone(), fail.clone()));
         let revision = capture_bound_directory(&mut fixture);
-        time.store(101, Ordering::Release);
+        // The device decides the person's actions anew: they are a viewer now.
         fixture
-            .permissions
-            .set(directory_sampled_permission(time, fail));
-        assert_eq!(
-            fixture.app.action_directory_revision(),
-            revision,
-            "fresh host sampler with unchanged live policy must not invalidate revision"
-        );
-        let alias = fixture
-            .app
-            .actions
-            .bound_publication
-            .alias(&fixture.bindings[1], "bound:probe")
-            .unwrap();
-        assert!(matches!(
-            fixture
-                .app
-                .resolve_action_directory(&revision, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found { .. }
-        ));
+            .device
+            .set_role(&ActionFixture::user(), tilo_ui_base::permissions::Role::Viewer);
+        crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
+        assert_ne!(fixture.app.action_directory_revision(), revision);
     }
 
-    phase directory_permission_retained_clock_expiry_invalidates_actual_bound_revision;
+    phase directory_revoked_access_cannot_republish_old_rows;
     {
-        use tilo_permissions::Answer;
-        use tilo_permissions::KindSet;
-        use tilo_permissions::TreePath;
-        use tilo_permissions::policy;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        for restrict in [false, true] {
-            let time = Arc::new(AtomicU64::new(100));
-            let fail = Arc::new(AtomicBool::new(false));
-            let mut fixture = ActionFixture::broker();
-            let grant = policy::Grant::new(
-                "other",
-                policy::Grantee::person("fixture-user"),
-                TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE).app("other"),
-                KindSet::UNDOABLE,
-                if restrict {
-                    Answer::Deny
-                } else {
-                    Answer::Allow
-                },
-                policy::Grantee::person("owner"),
-            )
-            .with_lifetime(tilo_action_types::Lifetime::Until(105_000));
-            fixture
-                .permissions
-                .set(directory_sampled_permission(time.clone(), fail).with_grant(grant));
-            let revision = capture_bound_directory(&mut fixture);
-            time.store(105, Ordering::Release);
-            assert_ne!(
-                fixture.app.action_directory_revision(),
-                revision,
-                "retained clock must invalidate at Grant/Restrict expiry"
-            );
-        }
-    }
-
-    phase directory_permission_clock_failure_refuses_cached_resolution;
-    {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        let time = Arc::new(AtomicU64::new(100));
-        let fail = Arc::new(AtomicBool::new(false));
         let mut fixture = ActionFixture::broker();
-        fixture
-            .permissions
-            .set(directory_sampled_permission(time, fail.clone()));
-        let revision = capture_bound_directory(&mut fixture);
-        let alias = fixture
-            .app
-            .actions
-            .bound_publication
-            .alias(&fixture.bindings[1], "bound:probe")
-            .unwrap();
-        fail.store(true, Ordering::Release);
-        assert!(
-            matches!(
-                fixture
-                    .app
-                    .resolve_action_directory(&revision, &alias, "follow-up"),
-                runtime_collab::ActionDirectoryResolution::Unavailable
-            ),
-            "failed current sampler must refuse, never reuse cached Found"
-        );
-        assert!(fixture.app.actions.action_directory_snapshot.is_none());
-        let page = fixture
-            .app
-            .action_directory_page(runtime_collab::ActionDirectoryQuery {
-                peer_id: 0,
-                revision: revision.clone(),
-                cursor: vec![],
-                needle: String::new(),
-                parent_resource: String::new(),
-                max_results: 1,
-                max_bytes: 8192,
-                max_work: 10,
-                max_depth: 1,
-                resource_name: String::new(),
-            });
-        assert!(page.rows.is_empty() && page.revision.is_empty() && page.budget_exhausted);
-        fail.store(false, Ordering::Release);
-        let recovered = capture_bound_directory(&mut fixture);
-        assert_ne!(
-            recovered, revision,
-            "retirement cannot reuse the old snapshot identity"
-        );
-        assert!(matches!(
-            fixture
-                .app
-                .resolve_action_directory(&recovered, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found { .. }
-        ));
-    }
-
-    phase directory_permission_actor_and_capability_semantics_invalidate_revision;
-    {
-        use tilo_permissions::Access;
-        use tilo_ui_base::permissions::Acting;
-        use tilo_permissions::CapOverride;
-        use tilo_permissions::Grantee;
-        use tilo_permissions::PermissionContext;
-        use tilo_permissions::Scope;
-        use tilo_permissions::MemberAccess;
-        for actor_change in [false, true] {
-            let mut fixture = ActionFixture::broker();
-            let revision = capture_bound_directory(&mut fixture);
-            let old = fixture.permissions.borrow().clone();
-            fixture.permissions.set(if actor_change {
-                PermissionContext::new(
-                    Acting::person("other-user"),
-                    old.capabilities().to_vec(),
-                    MemberAccess::person(old.access().policy.clone(), "other-user"),
-                )
-                .at_unix_time(100)
-            } else {
-                old.granting(CapOverride::grant(
-                    Grantee::person("fixture-user"),
-                    Scope::FsPath("/new".into()),
-                    Access::Read,
-                ))
-            });
-            assert_ne!(fixture.app.action_directory_revision(), revision);
-        }
-    }
-
-    phase directory_filtered_cache_expired_sole_grant_cannot_republish_old_rows;
-    {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        let time = Arc::new(AtomicU64::new(100));
-        let mut fixture = ActionFixture::broker();
-        fixture.permissions.set(directory_sampled_permission(
-            time.clone(),
-            Arc::new(AtomicBool::new(false)),
-        ));
         let old = capture_bound_directory(&mut fixture);
         let alias = fixture
             .app
@@ -218,12 +34,27 @@ tilo_test_env::scenario! {
             .alias(&fixture.bindings[1], "bound:probe")
             .unwrap();
         let address = tilo_actions::ActionAddress::new(&alias, "follow-up");
-        time.store(110, Ordering::Release);
+        assert!(matches!(
+            fixture
+                .app
+                .resolve_action_directory(&old, &alias, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::Found { .. }
+        ));
+        // The device takes the person's access back, and the window hears it before any walk.
+        fixture.device.remove(&ActionFixture::user());
+        crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
+        assert!(matches!(
+            fixture
+                .app
+                .resolve_action_directory(&old, &alias, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+        assert!(fixture.app.actions.action_directory_snapshot.is_none());
         assert_ne!(fixture.app.action_directory_revision(), old);
         let (revision, resources) = republish_directory(&mut fixture);
         assert!(
             tilo_actions::api::resolve(&resources, &address).is_none(),
-            "normal publication reused rows filtered under the expired sole grant"
+            "normal publication reused rows filtered under the revoked access"
         );
         assert!(!matches!(
             fixture
@@ -233,31 +64,10 @@ tilo_test_env::scenario! {
         ));
     }
 
-    phase directory_filtered_cache_expired_restriction_restores_republished_action;
+    phase directory_restored_access_republishes_the_action;
     {
-        use tilo_permissions::Answer;
-        use tilo_permissions::KindSet;
-        use tilo_permissions::TreePath;
-        use tilo_permissions::policy;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        let time = Arc::new(AtomicU64::new(100));
-        let restriction = policy::Grant::new(
-            "restriction",
-            policy::Grantee::person("fixture-user"),
-            TreePath::workspace(tilo_permissions::LOCAL_WORKSPACE),
-            KindSet::ALL,
-            Answer::Deny,
-            policy::Grantee::person("owner"),
-        )
-        .with_lifetime(tilo_action_types::Lifetime::Until(105_000));
         let mut fixture = ActionFixture::broker();
-        fixture.permissions.set(
-            directory_sampled_permission(time.clone(), Arc::new(AtomicBool::new(false)))
-                .with_grant(restriction),
-        );
+        fixture.set_role(None);
         let (old, resources) = republish_directory(&mut fixture);
         let alias = fixture
             .app
@@ -267,12 +77,12 @@ tilo_test_env::scenario! {
             .unwrap();
         let address = tilo_actions::ActionAddress::new(&alias, "follow-up");
         assert!(tilo_actions::api::resolve(&resources, &address).is_none());
-        time.store(105, Ordering::Release);
+        fixture.set_role(Some(tilo_ui_base::permissions::Role::Owner));
         assert_ne!(fixture.app.action_directory_revision(), old);
         let (revision, resources) = republish_directory(&mut fixture);
         assert!(
             tilo_actions::api::resolve(&resources, &address).is_some(),
-            "expired restriction must regenerate filtered rows, not permanently hide the action"
+            "restored access must regenerate filtered rows, not permanently hide the action"
         );
         assert!(matches!(
             fixture
@@ -299,19 +109,10 @@ tilo_test_env::scenario! {
         assert_ne!(fixture.app.action_directory_revision(), old);
     }
 
-    phase hosted_directory_expiry_failure_and_owner_close_never_restore_old_revision;
+    phase hosted_directory_revocation_and_owner_close_never_restore_old_revision;
     {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU64, Ordering},
-        };
-        for case in 0..3 {
-            let time = Arc::new(AtomicU64::new(100));
-            let fail = Arc::new(AtomicBool::new(false));
+        for revoke in [true, false] {
             let mut fixture = ActionFixture::broker();
-            fixture
-                .permissions
-                .set(directory_sampled_permission(time.clone(), fail.clone()));
             let old = capture_bound_directory(&mut fixture);
             let alias = fixture
                 .app
@@ -319,12 +120,11 @@ tilo_test_env::scenario! {
                 .bound_publication
                 .alias(&fixture.bindings[1], "bound:probe")
                 .unwrap();
-            match case {
-                0 => time.store(110, Ordering::Release),
-                1 => fail.store(true, Ordering::Release),
-                _ => {
-                    fixture.app.close_components();
-                }
+            if revoke {
+                fixture.device.remove(&ActionFixture::user());
+                crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
+            } else {
+                fixture.app.close_components();
             }
             fixture.app.pump_hosted_model();
             assert_ne!(fixture.app.action_directory_revision(), old);
@@ -335,48 +135,5 @@ tilo_test_env::scenario! {
                 runtime_collab::ActionDirectoryResolution::Found { .. }
             ));
         }
-    }
-
-    phase directory_permission_action_authority_revoke_invalidates_actual_bound_revision;
-    {
-        use tilo_permissions::PermissionContext;
-        use tilo_permissions::Role;
-        use std::sync::{Arc, Mutex};
-        let current = Arc::new(Mutex::new(Some(Role::Owner)));
-        let source = current.clone();
-        let mut fixture = ActionFixture::broker();
-        fixture.permissions.set(
-            tilo_permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
-                .with_action_authority(
-                    "so.tilo.binding-probe".into(),
-                    Arc::new(move || {
-                        Ok(match *source.lock().unwrap() {
-                            Some(role) => PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), role),
-                            None => PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("fixture-user")),
-                        })
-                    }),
-                ),
-        );
-        let revision = capture_bound_directory(&mut fixture);
-        let alias = fixture
-            .app
-            .actions
-            .bound_publication
-            .alias(&fixture.bindings[1], "bound:probe")
-            .unwrap();
-        assert!(matches!(
-            fixture
-                .app
-                .resolve_action_directory(&revision, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::Found { .. }
-        ));
-        *current.lock().unwrap() = None;
-        assert!(matches!(
-            fixture
-                .app
-                .resolve_action_directory(&revision, &alias, "follow-up"),
-            runtime_collab::ActionDirectoryResolution::StaleRevision
-        ));
-        assert!(fixture.app.actions.action_directory_snapshot.is_none());
     }
 }

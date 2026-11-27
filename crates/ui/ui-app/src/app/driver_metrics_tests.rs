@@ -93,11 +93,11 @@ fn mounted_list() -> (crate::application_test_support::ProbeHarness, Driver) {
     let definition = crate::application_test_support::definition(list_factory);
     let target = crate::application::LaunchTarget::New;
     let context = host
-        .prepare_with_permissions(
+        .prepare_as(
             &definition,
             73,
             &target,
-            crate::application_test_support::runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     let component = definition
@@ -597,11 +597,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         why: "chooses when input's frame runs; the input still runs the frame it asks for.",
     },
     QuietEntry {
-        file: "app/driver/uicore.rs",
-        entry: "set_history_clock",
-        why: "sets the clock History reads; nothing a frame reads now.",
-    },
-    QuietEntry {
         file: "app/driver/jobs.rs",
         entry: "set_invocation_result_bytes",
         why: "sets the retention bound a later invocation record hits; reads nothing.",
@@ -610,11 +605,6 @@ const QUIET_ENTRY_POINTS: &[QuietEntry] = &[
         file: "app/driver/session.rs",
         entry: "set_keyboard_held",
         why: "releases the scene caches of the caret; a caller redraws the frames it changed.",
-    },
-    QuietEntry {
-        file: "app/driver.rs",
-        entry: "set_permission_ctx",
-        why: "marks the tree stale inside the app, which the next frame takes up.",
     },
     QuietEntry {
         file: "app/driver.rs",

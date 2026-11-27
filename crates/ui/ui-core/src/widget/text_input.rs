@@ -5156,7 +5156,7 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_permission_scrim(&mut tilo_ui_base::draw::DrawCtx::new(
+            self.draw_peers(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -5261,7 +5261,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_permission_scrim(&mut tilo_ui_base::draw::DrawCtx::new(
+        self.draw_peers(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -6144,17 +6144,7 @@ impl TextInput {
     /// selection, what they are typing): what a host that keeps the drawing
     /// it made of the field asks before keeping it.
 
-    fn draw_peers_and_permission_scrim(&self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
-        if !ctx.env.permits_widget(self) {
-            let r = self.rect;
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                Self::PERMISSION_DENIED_OVERLAY,
-                None,
-                &r,
-            );
-        }
+    fn draw_peers(&self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         if let Some(overlay) = ctx.env.overlay {
             overlay.paint_over(self, ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
         }
@@ -6200,11 +6190,6 @@ impl TextInput {
             }]
         }
     }
-}
-
-impl TextInput {
-    pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        tilo_ui_base::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
 #[cfg(test)]

@@ -113,6 +113,14 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).change_feed()
     }
 
+    fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: crate::shown::ShownAsk,
+    ) -> Pending<Result<Vec<crate::shown::ActionDecision>, ActionCallError>> {
+        (**self).shown_actions(caller, ask)
+    }
+
     fn here(&self, caller: &Caller) -> Option<Vec<super::Here>> {
         (**self).here(caller)
     }

@@ -18,7 +18,6 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.state.doc,
             )?;
-            let permissions = self.permission_ctx.directory_observation()?;
             let reusable = owners.iter().all(|owner| owner.generation.is_some());
             // Described, not made: making a provider can build its index,
             // and this runs on every frame that publishes the surface.
@@ -36,7 +35,6 @@ impl App {
                 ),
                 provider_domains,
                 key: self.resource_cache_key(),
-                permissions,
                 permission_generation: self.actions.permission_generation.get(),
                 route: self.bound_broker_route().cloned(),
                 owners,

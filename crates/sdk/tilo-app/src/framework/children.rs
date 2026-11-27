@@ -36,10 +36,9 @@ use tilo_actions::{
     ActionContext, ActionError, ActionInvoker, ActionParam, ActionSpec, EncodedAction,
     ExecutionLocus, OperationKind, ParamType,
 };
-use tilo_permissions::PermissionScope;
-use tilo_permissions::TreePath;
 use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Children as Container};
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
+use tilo_ui_base::permissions::TreePath;
 use tilo_ui_base::widget::Edits;
 use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 use ui_core::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType};
@@ -279,6 +278,16 @@ impl<C: ChildResource> ChildrenState<C> {
             parent_api: RefCell::new(None),
         };
         state.refresh();
+        // What the device says of each step of the children's lifecycle is asked with the
+        // window's next questions, before the person takes one.
+        for verb in [
+            lifecycle::CREATE,
+            lifecycle::DELETE,
+            lifecycle::RESTORE,
+            lifecycle::MOVE,
+        ] {
+            let _ = state.may(verb, tilo_actions::ActionKind::Undoable);
+        }
         Some(state)
     }
 
@@ -516,8 +525,8 @@ impl<C: ChildResource> ChildrenState<C> {
             .permissions
             .as_ref()
             .is_none_or(|permissions| {
-                permissions.check(&PermissionScope::Action {
-                    node: tilo_actions::action_node(
+                permissions.permits(&ui_core::shown_actions::ShownAction::at(
+                    tilo_actions::action_node(
                         &TreePath::root(),
                         self.workspace.app_id,
                         C::KIND,
@@ -526,7 +535,7 @@ impl<C: ChildResource> ChildrenState<C> {
                         verb,
                     ),
                     kind,
-                })
+                ))
             })
     }
 
@@ -813,14 +822,11 @@ impl<C: ChildResource> ChildrenState<C> {
                 .kind(C::KIND)
                 .resource(self.id.clone())
                 .field(need.field.as_deref().unwrap_or_default());
-            if !permissions.check(&PermissionScope::Action {
-                node,
-                kind: need.kind,
-            }) {
-                return Err(ActionError::Refused(format!(
+            if !permissions.permits(&ui_core::shown_actions::ShownAction::at(node, need.kind)) {
+                return Err(ActionError::Refused(permissions.refused(format!(
                     "you may not do this to these {}",
                     C::LABEL.to_lowercase()
-                )));
+                ))));
             }
         }
         self.hold(child).map_err(|unheld| {

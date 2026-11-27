@@ -1,13 +1,11 @@
 //! The workspace an app is launched into.
 //!
 //! A workspace is a collaboration workspace: its id is the cluster id every
-//! change an app makes is addressed to, what the person granted apps in it is
-//! what the launcher lets them reach, and its policy is what the person may do
-//! in the app there. Both travel with the launch — the id as
-//! `--workspace-id`, the grants as a JSON file under the per-user runtime
-//! directory that the launcher reads and the app never sees
-//! ([`Workspace::write_grants`]), and the authority as a projection of the
-//! policy the launcher binds into the app ([`crate::authority`]).
+//! change an app makes is addressed to, and what the person granted apps in it
+//! is what the launcher lets them reach. Both travel with the launch — the id
+//! as `--workspace-id`, and the grants as a JSON file under the per-user
+//! runtime directory that the launcher reads and the app never sees
+//! ([`Workspace::write_grants`]).
 //!
 //! An app launched with no workspace gets the manifest's sandbox and nothing
 //! else; that is the safe default, so a workspace is only ever passed when the
@@ -16,7 +14,6 @@
 use std::path::{Path, PathBuf};
 
 use tilo_action_policy::Grantee;
-use tilo_action_policy::WorkspacePolicy;
 use tilo_permissions::caps::CapOverride;
 use tilo_permissions::caps::DeviceCap;
 use tilo_permissions::caps::Effect;
@@ -30,12 +27,8 @@ pub struct Workspace {
     pub id: String,
     /// What the person granted apps in this workspace.
     pub grants: LaunchGrants,
-    /// The workspace's policy as the shell holds it, or `None` when the session
-    /// holds none for it: what the person at this device may do in the app
-    /// ([`crate::authority`]).
-    pub policy: Option<WorkspacePolicy>,
     /// The person at this device, by the id the workspace's governance names
-    /// them by: whose authority in it the app is handed.
+    /// them by: whose grants are minted here.
     pub person: String,
     /// Where the session keeps a launch's private files, under the per-user
     /// runtime directory.
@@ -62,7 +55,6 @@ impl Workspace {
         Self {
             id: id.into(),
             grants: LaunchGrants::default(),
-            policy: None,
             person: String::new(),
             directory: directory.into(),
             devices: Vec::new(),
@@ -93,7 +85,6 @@ impl Workspace {
     #[must_use]
     pub fn grants_for_launch(&self, app: &str) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
-        grants.author = self.may_change(app);
         // A workspace only ever refuses the person's devices; their own answers allow them.
         grants.sandbox.retain(|cap| {
             !(cap.effect == Effect::Grant
@@ -144,24 +135,6 @@ impl Workspace {
         self.grants.sandbox.iter().any(|cap| {
             cap.names_app(app) && matches!(cap.scope, Scope::NetHost(_) | Scope::NetCalls)
         })
-    }
-
-    /// Whether `person` may change this workspace through `app`: what its
-    /// answer in the workspace's policy says, and nothing where the session
-    /// holds no policy for the workspace.
-    fn may_change(&self, app: &str) -> bool {
-        let Some(policy) = &self.policy else {
-            return false;
-        };
-        policy
-            .person_on_device(&self.person, false)
-            .decide(
-                &policy.node().app(app),
-                tilo_action_types::ActionKind::Undoable,
-                &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
-            )
-            .answer
-            == tilo_action_policy::Answer::Allow
     }
 
     /// Write the grants where `tilo-launcher --capabilities` reads them, and
@@ -346,8 +319,7 @@ mod tests {
         );
 
         // A launch reads back only what this app was granted, not the
-        // workspace's other grants, and whether it may change the workspace.
-        workspace.policy = Some(WorkspacePolicy::new("workspace-7", "person-7"));
+        // workspace's other grants.
         workspace.grants = {
             let mut grants = workspace.grants.clone();
             grants.sandbox.push(
@@ -371,10 +343,6 @@ mod tests {
             "the launcher reads what was granted to this app, not the workspace's other grants"
         );
         assert_eq!(filtered.sandbox.len(), 1);
-        assert!(
-            filtered.author,
-            "the person may change the workspace through the app"
-        );
 
         // An app id that could leave the launch's directory is refused, and a
         // launch outside a workspace names none.

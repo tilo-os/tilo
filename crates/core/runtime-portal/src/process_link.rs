@@ -14,7 +14,7 @@
 //! - A tilolang process runs one workspace and author's tilolang app instances. It has no app
 //!   identity of its own: every instance ([`ToProcess::Instance`]), agent task
 //!   ([`ToProcess::Task`]), later build ([`ToProcess::Build`]) and change of the person's formats
-//!   or access arrives on its link, and it says when an instance ended
+//!   arrives on its link, and it says when an instance ended
 //!   ([`FromProcess::Ended`]) and, last, why it exits ([`FromProcess::Exiting`]).
 //!
 //! The Linux session and the device on Linux, macOS and Windows start processes this way
@@ -24,7 +24,6 @@
 use std::io;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::MemberAccess;
 use tilo_formats::RegionFormats;
 
 #[cfg(any(unix, windows))]
@@ -132,8 +131,9 @@ pub enum ToProcess {
     Task { request: TaskRequest, fds: TaskFds },
     /// The person's formats or language changed.
     Locale(Locale),
-    /// What the person may do in one app changed.
-    Access(AppAccess),
+    /// What the person may do in one app, which a window now asks its device instead: read so a
+    /// session that still sends it is not refused, and let go. Nothing here sends it.
+    Access(RetiredAccess),
     /// A later build of an app the process runs, with its module in a sealed memfd.
     Build {
         build: AppBuild,
@@ -430,14 +430,12 @@ pub struct Locale {
     pub zone: Option<String>,
 }
 
-/// What the person may do in one app of the process's workspace, said again when it changes
-/// ([`ToProcess::Access`]): a role given or taken back reaches the windows already open.
+/// What [`ToProcess::Access`] and `ToDevice::Access` carried: an app, and its workspace's policy
+/// as JSON text, kept as text since nothing reads it any more.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppAccess {
+pub struct RetiredAccess {
     pub app: String,
-    /// `None` once the session holds no policy for the workspace: the broker alone decides.
-    #[serde(with = "policy_text")]
-    pub access: Option<MemberAccess>,
+    pub access: Option<String>,
 }
 
 /// The workspace's content as the device reads it, said again when it changes
@@ -537,11 +535,6 @@ pub struct InstanceRequest {
     /// from that app's own document and whose changes it asks of that app's link. A package it uses
     /// that is not installed as an app keeps its documents in the app's own.
     pub installed: std::collections::BTreeMap<String, String>,
-    /// What the person may do in the app, as the workspace's policy says it: the instance's views
-    /// offer what it denies them disabled, and refuse it before it reaches the broker. `None`
-    /// where the session holds no policy for the workspace; the broker decides either way.
-    #[serde(with = "policy_text")]
-    pub access: Option<MemberAccess>,
     /// The workspace's content as this window reads it (`tilolang_tilo::content::WorkspaceContent`
     /// as JSON): its owners' limits on what members post there and the content a limit refused, so
     /// a view shows why a file is missing. Empty where no device service reads one, and then the
@@ -560,6 +553,8 @@ pub struct InstanceRequest {
     /// (`tilo_actions::remote::ProvidedPackage`, as a JSON list; empty for none): a package the
     /// app uses that is one of them is called at the addresses its provider registered.
     pub provided: String,
+    /// How long the device's answers in [`InstanceFds::verdicts`] are, in bytes.
+    pub verdicts_len: u64,
 }
 
 /// Declares the connections a packet of one shape carries, once: its fields, which the packet
@@ -618,6 +613,13 @@ connections! {
         /// `File.open` asks which app opens a file and starts it. `None` on a session that serves
         /// none.
         tools: Option<Descriptor> [with = "crate::packet::optional_fd"],
+        /// What the person's device says of the actions the app and the packages it uses declare,
+        /// at the app's root (`tilo_actions::shown::ActionDecision`, as a JSON list), sealed: the
+        /// window shows and acts on them from its first frame, and the device answers each node
+        /// below whose grants differ once the window asks it. They travel beside the packet, as
+        /// the module does, since a shell that uses many packages declares more than one packet
+        /// holds. `None` when the device decides none.
+        verdicts: Option<Descriptor> [with = "crate::packet::optional_fd"],
     }
 }
 
@@ -668,6 +670,11 @@ impl InstanceFds {
                 .map(Descriptor::try_clone)
                 .transpose()?,
             tools: self.tools.as_ref().map(Descriptor::try_clone).transpose()?,
+            verdicts: self
+                .verdicts
+                .as_ref()
+                .map(Descriptor::try_clone)
+                .transpose()?,
         })
     }
 }
@@ -831,41 +838,6 @@ mod byte_lists {
             .into_iter()
             .map(serde_bytes::ByteBuf::into_vec)
             .collect())
-    }
-}
-
-/// A workspace's policy as its JSON text: the policy types leave out empty fields when they are
-/// written, which a positional encoding cannot read back, and the session already bounds that
-/// text.
-pub(crate) mod policy_text {
-    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
-    use tilo_action_policy::MemberAccess;
-
-    #[allow(
-        clippy::ref_option,
-        reason = "serde's `with` hands the field by reference"
-    )]
-    pub fn serialize<S: Serializer>(
-        access: &Option<MemberAccess>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        use serde::ser::Error as _;
-        access
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(S::Error::custom)?
-            .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<MemberAccess>, D::Error> {
-        use serde::de::Error as _;
-        Option::<String>::deserialize(deserializer)?
-            .map(|text| serde_json::from_str(&text))
-            .transpose()
-            .map_err(D::Error::custom)
     }
 }
 
@@ -1117,14 +1089,8 @@ mod tests {
             installed: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
             link_home: None,
             provided: String::new(),
-            access: Some(MemberAccess::person(
-                tilo_action_policy::WorkspacePolicy::new(
-                    "7a110d00-0000-4000-8000-000000000001",
-                    "bob",
-                ),
-                "ada",
-            )),
             content: String::new(),
+            verdicts_len: 0,
         }
     }
 
@@ -1199,6 +1165,7 @@ mod tests {
                 (nothing, None, (None, None, None, None)),
             ] {
                 let clipboard = chooser.is_some().then(connection);
+                let verdicts = origin.is_some().then(connection);
                 let had = (
                     origin.is_some(),
                     content.is_some(),
@@ -1217,6 +1184,7 @@ mod tests {
                         chooser,
                         clipboard,
                         tools,
+                        verdicts,
                     },
                 }
                 .send(&session)
@@ -1247,31 +1215,17 @@ mod tests {
                     had.2,
                     "the instance's clipboard connection crosses with it"
                 );
+                assert_eq!(
+                    fds.verdicts.is_some(),
+                    had.0,
+                    "the device's answers cross with the instance"
+                );
             }
         }
 
-        phase what_the_person_may_do_in_an_app_crosses_the_link_whole;
+        phase the_persons_formats_cross_the_link_whole;
         {
             let (session, process) = pair().unwrap();
-            // A workspace of many members: the policy is far over a page.
-            let mut policy = tilo_action_policy::WorkspacePolicy::new(
-                "7a110d00-0000-4000-8000-000000000001",
-                "bob",
-            );
-            for member in 0..400 {
-                policy
-                    .members
-                    .insert(format!("member-{member}"), tilo_action_policy::Role::Viewer.into());
-            }
-            let access = AppAccess {
-                app: "so.tilo.notes".into(),
-                access: Some(MemberAccess::person(policy, "member-7")),
-            };
-            ToProcess::Access(access.clone()).send(&session).unwrap();
-            assert!(matches!(
-                ToProcess::receive(&process).unwrap(),
-                Some(ToProcess::Access(received)) if received == access
-            ));
             let locale = Locale {
                 formats: RegionFormats {
                     date: tilo_formats::DateStyle::Iso,
@@ -1366,6 +1320,7 @@ mod tests {
                     chooser: None,
                     clipboard: None,
                     tools: None,
+                    verdicts: None,
                 },
             }
             .send(&session)

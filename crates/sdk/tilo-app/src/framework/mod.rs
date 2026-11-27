@@ -368,6 +368,9 @@ mod section;
 mod settings;
 mod share_link;
 mod stage;
+// The harnesses that stand in for a device run where the native presentation does.
+#[cfg(not(target_arch = "wasm32"))]
+pub use ui_core::harness_device;
 mod surface;
 mod switch;
 // The test hosts discover native presentation, which the browser has not got.

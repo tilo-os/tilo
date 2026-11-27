@@ -532,12 +532,6 @@ pub enum CollabRequest {
         request_id: u64,
         command: Vec<u8>,
     },
-    /// Ask the host what it says of the actions the window shows, replacing what was asked
-    /// before: answered with [`CollabEvent::ActionVerdicts`] now and again whenever grants change
-    /// one. Empty asks nothing more.
-    DecideShownActions {
-        actions: Vec<tilo_permissions::shown_actions::ShownAction>,
-    },
 }
 
 impl CollabRequest {

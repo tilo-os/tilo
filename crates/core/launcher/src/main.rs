@@ -121,8 +121,6 @@ enum Cmd {
         grants: Option<PathBuf>,
         #[command(flatten)]
         file_locations: Box<FileLocationArgs>,
-        #[command(flatten)]
-        action_authority: Box<ActionAuthorityArgs>,
         /// App id the caller launched; must equal the manifest's package id.
         #[arg(long)]
         app_id: Option<String>,
@@ -731,7 +729,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         capabilities,
         grants,
         file_locations,
-        action_authority,
         app_id,
         render_node,
         open,
@@ -761,7 +758,6 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         capabilities,
         grants,
         trusted_identities: file_locations.trusted_identities,
-        action_authority: action_authority.action_authority,
         app_id,
         render_node,
         open,
@@ -949,13 +945,6 @@ struct FileLocationArgs {
     trusted_identities: Option<PathBuf>,
 }
 
-#[derive(Debug, clap::Args)]
-struct ActionAuthorityArgs {
-    /// Host-staged, app-scoped action authority; mounted read-only.
-    #[arg(long)]
-    action_authority: Option<PathBuf>,
-}
-
 /// Every field of [`Cmd::Run`], bundled so [`run_gui_command`] doesn't count against clippy's argument
 /// limit — this is argv plumbing, not a sandbox policy struct (see [`ExecArgs`] below for the same
 /// pattern).
@@ -980,7 +969,6 @@ struct RunCliArgs {
     /// sandbox at each reference.
     grants: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
-    action_authority: Option<PathBuf>,
     app_id: Option<String>,
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
@@ -1045,7 +1033,6 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
         trusted_identities_host_path: args.trusted_identities,
-        action_authority_host_path: args.action_authority,
         app_id: args.app_id,
         render_node: args.render_node,
         open_document: args.open,
@@ -1499,7 +1486,6 @@ fn run_installed(
             .filter(|s| !s.is_empty()),
         data_home: None,
         trusted_identities_host_path: None,
-        action_authority_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and therefore no compositor whose
         // GPU choice they have to match.
         wayland_socket: None,
@@ -1675,39 +1661,5 @@ mod host_launch_tests {
             args.command,
             ["/usr/bin/bwrap", "--unshare-all", "--", "/usr/bin/wine"]
         );
-    }
-}
-
-#[cfg(test)]
-mod action_authority_tests {
-    use super::*;
-    #[test]
-    fn action_authority_cli_keeps_host_selected_path_and_workspace() {
-        let parsed = Cli::try_parse_from([
-            "tilo-launcher",
-            "run",
-            "--manifest",
-            "/manifest.toml",
-            "--payload-root",
-            "/payload",
-            "--workspace-id",
-            "workspace-a",
-            "--action-authority",
-            "/private/current.json",
-        ])
-        .unwrap();
-        let Cmd::Run {
-            action_authority,
-            workspace_id,
-            ..
-        } = parsed.cmd
-        else {
-            panic!("run subcommand did not parse");
-        };
-        assert_eq!(
-            action_authority.action_authority,
-            Some(PathBuf::from("/private/current.json"))
-        );
-        assert_eq!(workspace_id.as_deref(), Some("workspace-a"));
     }
 }

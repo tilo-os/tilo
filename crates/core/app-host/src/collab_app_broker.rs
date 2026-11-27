@@ -20,7 +20,6 @@ pub(super) use directory::*;
 mod authority;
 mod catalogue;
 mod routing;
-mod shown_actions;
 use tilo_actions::remote::argument_digest;
 mod invocation;
 use authority::*;
@@ -420,9 +419,6 @@ pub struct AppBrokerState {
     /// `channel_id`: a write fanned out on a channel's route changes what
     /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
     committed_waits: Mutex<HashMap<String, Vec<committed_document::LandedWake>>>,
-    /// Each window's shown actions, decided again on every policy change
-    /// ([`shown_actions`]).
-    shown_actions: Mutex<Vec<shown_actions::ShownSubscription>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// This broker while it runs: the registration an app's calls reach it through holds this,
@@ -703,6 +699,14 @@ impl AppBrokerState {
             current,
         );
         Some(CallMediaConnection::new(service, context))
+    }
+
+    /// The providers registered on this device, the ones that answer a window's shown actions
+    /// among them ([`tilo_workspace_service::workspaces::providers::Providers`]).
+    pub(crate) fn providers(
+        &self,
+    ) -> Option<&tilo_workspace_service::workspaces::providers::Providers> {
+        self.services.providers.as_ref()
     }
 
     /// Drop the journal now: its writer finishes what it was handed and the

@@ -899,7 +899,7 @@ The copies:
 | tilolang hosts | `apps/tilolang` (21,346, one process per installed app, toolkit linked in); `tilolang-process` (14,358, one process per workspace and author) |
 | Rust model logic | each app's own code, and again as `apps/*-model` with `tilo-model-guest` |
 | Launch paths | a Rust app binary through `app-launch` and the `launcher` sandbox; `apps/tilolang`; `tilolang-process`; in-process written views and the session's own layers; `app-keeper` for non-Tilo programs; Rust models as WebAssembly |
-| Permission checks | `action-policy` (12,437); tilolang's own `tl:host` commit; the SDK's `PermissionContext` |
+| Permission checks | `action-policy` (12,437); tilolang's own `tl:host` commit |
 | Shell | `apps/tl/shell` (6,990), over the desktop session-core holds |
 | App models compiled into hosts | `tilo-server` links Chat and Tasks; `tilo-agent-session` links most models natively; the WebAssembly `tilo-model-engine` is the third |
 | Apps in both languages | Chat (68k Rust, 963 tilolang), Tasks, Notes and Word Processor, Mail and Messages |
@@ -966,7 +966,7 @@ The copies:
 | `apps/tilolang` (folded into `tilolang-process`) | ~21,000 |
 | `apps/*-model`, `tilo-model-guest`, as each app's types move into `.tl` | ~35,000 and 2 crates |
 | Native model links in `tilo-server` and `tilo-agent-session` | to be measured |
-| `tl:host` commit, the SDK `PermissionContext` | to be measured |
+| `tl:host` commit | to be measured |
 | ui-core `bound_dispatch`, `RootDispatch` and the widget callbacks (`on_change`, `on_view`, `take_action`) | ~15,000 |
 | `tilo-app` `framework/` (`ResourceApp`, `Dispatcher<R>`, `ViewCx`, `ResourceSurface`) after the Rust apps port | ~62,000 |
 | The Rust apps, each replaced by its tilolang port in the same push | ~900k of 1.28M; the rest becomes engine crates |

@@ -160,13 +160,9 @@ impl Windows {
     }
 }
 
-/// Where the workspace the window `instance` names stands with its peers, and whether that
-/// window may write it: the same answer that opened the app writable.
-///
-/// The window's own workspace answers, never another window's: an app may have a window in a
-/// workspace its person writes and another in one they only read, and being told the other's
-/// answer shows "View only" over a record they may edit. `None` falls back to `app`, for a
-/// connection that has not named its window yet.
+/// Where the workspace the window `instance` names stands with its peers: the window's own
+/// workspace, never another window's. `None` falls back to `app`, for a connection that has not
+/// named its window yet.
 fn workspace_sync(
     tree: &Layout,
     app: &str,
@@ -182,14 +178,7 @@ fn workspace_sync(
         .entry(workspace_id)
         .or_insert_with(|| crate::identity::person_in(&workspace_id.to_string(), person))
         .clone();
-    let writable = workspace.policy.role_of(&person).map(|_| {
-        workspace.policy.answer_at(
-            &person,
-            &workspace.policy.node().app(app),
-            tilo_action_types::ActionKind::Undoable,
-            tilo_clock::unix_now(),
-        ) == tilo_action_policy::Answer::Allow
-    });
+    let member = workspace.policy.role_of(&person).is_some();
     let entry = sync.and_then(|sync| sync.get(&workspace_id.to_string()));
     let state = match entry.map(|entry| entry.status) {
         Some(tilo_workspace_service::workspaces::sync::Status::Connecting) => {
@@ -203,15 +192,12 @@ fn workspace_sync(
         }
         // A workspace this device hosts, or one it keeps but not as a member, has no state of its
         // own: an app in it is told it is synced as far as it goes, as it always was.
-        None => match writable {
-            Some(_) => WorkspaceSyncState::Synced,
-            None => return None,
-        },
+        None if member => WorkspaceSyncState::Synced,
+        None => return None,
     };
     Some(WorkspaceSync {
         state,
         workspace: workspace.name.clone(),
-        writable,
         unsynced_writes: entry.map_or(0, |entry| entry.unsynced_writes),
         cannot_keep_writes: false,
     })
@@ -397,16 +383,14 @@ mod tests {
         assert!(!told.before_first_sync(), "the workspace synced");
     }
 
-    /// Two windows of one app: the person writes in their own workspace and only reads in a
-    /// shared one. Each window hears what its own workspace says — an agent that opened the app
-    /// in the shared workspace is no reason for the person's own window to read "View only".
+    /// Two windows of one app, one in the person's own workspace and one in a shared one. Each
+    /// window hears where its own workspace stands, never the other window's.
     #[test]
-    fn a_window_is_told_its_own_workspaces_answer_never_another_windows() {
+    fn a_window_is_told_its_workspace_never_another_windows() {
         let shared = workspace(2, "Shared", 200, Role::Viewer);
         let mine = workspace(1, "Mine", 100, Role::Owner);
         // The shared workspace stands first, as an app's other window does when the answer was
-        // read from the app alone: the person's own window reads "View only" over what they may
-        // edit.
+        // read from the app alone.
         let tree = Layout {
             workspaces: vec![shared, mine],
             ..Layout::default()
@@ -415,23 +399,23 @@ mod tests {
             (WorkspaceId::from_u128(1), PERSON.to_owned()),
             (WorkspaceId::from_u128(2), PERSON.to_owned()),
         ]));
-        let writes = |instance| {
+        let told = |instance| {
             workspace_sync(&tree, APP, Some(instance), PERSON, &persons, None)
-                .map(|told| told.writable)
+                .map(|told| told.workspace)
         };
         assert_eq!(
-            writes(100),
-            Some(Some(true)),
-            "the person's own window writes where they do"
+            told(100).as_deref(),
+            Some("Mine"),
+            "the person's own window"
         );
         assert_eq!(
-            writes(200),
-            Some(Some(false)),
-            "the shared workspace's window is told it may only read"
+            told(200).as_deref(),
+            Some("Shared"),
+            "the shared workspace's window"
         );
         assert_eq!(
-            writes(999),
-            Some(Some(false)),
+            told(999).as_deref(),
+            Some("Shared"),
             "a connection that named no window falls back to the first workspace holding the app"
         );
     }

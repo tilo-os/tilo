@@ -90,8 +90,7 @@ fn shown(
     }
     let can_react = me.is_some() && input.dispatch.may_react();
     // Shared with whoever belongs to the workspace, here now or not.
-    let shared =
-        !input.private && (input.dispatch.workspace_has_others() || input.people.others_here());
+    let shared = !input.private && input.people.others_here();
     let groups = reactions.groups();
     if groups.is_empty() && !(shared && can_react) {
         return None;

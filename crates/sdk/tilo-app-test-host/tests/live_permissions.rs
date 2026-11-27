@@ -1,4 +1,4 @@
-//! A role change while the app runs reaches views, surfaces and the
+//! A role or grant change while the app runs reaches views, surfaces, controls and the
 //! dispatcher without reopening the app.
 
 use std::cell::RefCell;
@@ -6,12 +6,10 @@ use std::rc::Rc;
 use tilo_app::widget::TaffyTreeExt;
 use tilo_app_test_host::TestApp;
 
+use tilo_app::framework::harness_device::HarnessDevice;
 use tilo_app::framework::testing::TEST_WORKSPACE;
+use tilo_app::permissions::{KindSet, LOCAL_USER, TreePath, policy};
 use tilo_app::prelude::*;
-use tilo_permissions::KindSet;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::TreePath;
-use tilo_permissions::policy;
 
 use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -92,6 +90,9 @@ impl ResourceApp for MemoApp {
         Box::new(
             Column::new()
                 .push(owner_panel)
+                .push(Box::new(
+                    cx.button("add-line", Memo::ADD_LINE.with("from the button")),
+                ))
                 .push(Box::new(cx.control_with(
                     |shown| TextInput::from_state(shown).with_id("title"),
                     |memo| memo.title.clone(),
@@ -110,6 +111,55 @@ impl ResourceApp for MemoApp {
 
 tilo_test_env::scenario! {
     fn a_role_is_followed_live_by_panes_actions_and_edits;
+
+    phase a_granted_control_acts_at_once_a_refused_one_says_why_and_a_revoked_grant_flips_it;
+    // What the device decided stands at each control the moment the window shows it: a control
+    // the person may use acts on the press, a refused one says why at the control, and a grant
+    // the owner takes back while the window is open refuses the next press without reopening.
+    {
+        use policy::{Answer, Grant, Grantee};
+        let mut app = TestApp::<MemoApp>::with_role(tilo_app::Role::Viewer).unwrap();
+        // Said where the person reads it: at the control they pressed, or in the window's bar
+        // where nothing marks the control.
+        let refused_at_the_control = |app: &mut TestApp<MemoApp>| {
+            let notice = app
+                .harness()
+                .control_notice()
+                .map(|notice| notice.text.clone())
+                .or_else(|| tilo_app::window_toolbar::notice().map(|notice| notice.text))
+                .expect("the refusal is said");
+            assert_ne!(notice, tilo_actions::shown::CHECKING, "the device has answered");
+            assert!(!notice.is_empty());
+        };
+
+        app.harness().click_named("add-line").unwrap();
+        refused_at_the_control(&mut app);
+        assert!(app.state().lines.is_empty(), "a viewer's press writes nothing");
+
+        let viewing = app.access();
+        let mut granted = viewing.clone();
+        let workspace = TreePath::workspace(&granted.policy.workspace);
+        let person = Grantee::person(granted.person_id().unwrap_or_default());
+        std::sync::Arc::make_mut(&mut granted.policy)
+            .grants
+            .push(Grant::new(
+                "lines",
+                person,
+                workspace.app(MemoApp::ID),
+                KindSet::UNDOABLE,
+                Answer::Allow,
+                Grantee::person("owner"),
+            ));
+        app.set_access(granted);
+        app.harness().click_named("add-line").unwrap();
+        assert_eq!(app.state().lines.len(), 1, "the granted press acts at once");
+        assert_eq!(app.harness().control_notice(), None);
+
+        app.set_access(viewing);
+        app.harness().click_named("add-line").unwrap();
+        refused_at_the_control(&mut app);
+        assert_eq!(app.state().lines.len(), 1, "the revoked grant writes nothing");
+    }
 
     phase permission_bound_panes_follow_revocation_without_document_or_write_changes;
     {
@@ -304,12 +354,14 @@ tilo_test_env::scenario! {
         // Through the app's view for an agent without a window, by the same
         // rule.
         let definition = tilo_app::framework::definition::<MemoApp>();
-        let commenting = PermissionContext::agent_granted(
+        let commenting = HarnessDevice::agent_granted(
+            TEST_WORKSPACE,
+            &tilo_app::tilo_resource::MemberId::person(LOCAL_USER),
             "scribe",
-            &TreePath::root()
+            std::slice::from_ref(&TreePath::root()
                 .app(MemoApp::ID)
                 .rest()
-                .field(policy::roles::COMMENTS_FIELD),
+                .field(policy::roles::COMMENTS_FIELD)),
             KindSet::READ_UNDOABLE,
         );
         let mut view = tilo_app::framework::AttachedView::open(
@@ -337,7 +389,7 @@ tilo_test_env::scenario! {
         assert!(memo.lines.is_empty());
     }
 
-    phase a_carrier_writes_only_what_its_member_may_write;
+    phase an_agents_view_writes_only_what_its_grant_lets_it_write;
     {
         // An agent its person let write one field is offered the typed edit and
         // the group, and each one it sends is decided by the value it carries:
@@ -345,9 +397,11 @@ tilo_test_env::scenario! {
         // nowhere.
         let app = TestApp::<MemoApp>::new().unwrap();
         let definition = tilo_app::framework::definition::<MemoApp>();
-        let titled = PermissionContext::agent_granted(
+        let titled = HarnessDevice::agent_granted(
+            TEST_WORKSPACE,
+            &tilo_app::tilo_resource::MemberId::person(LOCAL_USER),
             "scribe",
-            &TreePath::root().app(MemoApp::ID).rest().field("title"),
+            std::slice::from_ref(&TreePath::root().app(MemoApp::ID).rest().field("title")),
             KindSet::READ_UNDOABLE,
         );
         let mut view = tilo_app::framework::AttachedView::open(
@@ -419,11 +473,13 @@ tilo_test_env::scenario! {
             ),
             app.read_document(|doc| doc.clone().save()),
             &tilo_app::tilo_resource::MemberId::person("writer"),
-            PermissionContext::agent_granted(
-                "writer",
-                &TreePath::root().app(MemoApp::ID),
-                KindSet::READ_UNDOABLE,
-            ),
+            HarnessDevice::agent_granted(
+            TEST_WORKSPACE,
+            &tilo_app::tilo_resource::MemberId::person(LOCAL_USER),
+            "writer",
+            std::slice::from_ref(&TreePath::root().app(MemoApp::ID)),
+            KindSet::READ_UNDOABLE,
+        ),
             false,
         )
         .unwrap();

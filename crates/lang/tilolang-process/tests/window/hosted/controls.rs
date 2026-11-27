@@ -778,15 +778,18 @@ fn asked(update: &ui::tilo_actions::InvocationUpdate) -> bool {
     )
 }
 
-/// What the person may do in the app, as the session hands it with the launch and says again when
-/// it changes: a viewer's window offers no change as if they could make it, and the instance
-/// refuses one before it reaches the workspace.
+/// What the person may do in the app, as their device says it and says again when it changes: a
+/// viewer's window offers no change as if they could make it, and the instance refuses one before
+/// it reaches the workspace.
 mod access {
     use collaboration::RouteSpec;
     use tilo_permissions::policy::MemberAccess;
     use tilo_permissions::policy::Role;
     use tilo_permissions::policy::WorkspacePolicy;
     use tilolang_process::hosted::Spec;
+
+    use std::rc::Rc;
+    use tilolang_process::testing::Bus;
 
     use super::super::{Session, TASKS, Window, find, task_in_workspace};
 
@@ -797,16 +800,16 @@ mod access {
         MemberAccess::person(policy, "ada")
     }
 
-    /// Ada at a Tasks window of Bob's workspace, as `role`.
-    fn tasks_as(role: Role) -> (Session, String) {
+    /// Ada at a Tasks window of Bob's workspace, as `role`, and the bus her device answers on.
+    fn tasks_as(role: Role) -> (Session, RouteSpec, Rc<Bus>) {
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
         let workspace = route.cluster_id.to_string();
-        let spec = Spec::new(TASKS, workspace.clone(), 1, "ada")
-            .in_language("en-US")
-            .access(ada_as(&workspace, role));
-        let mut session = Session::brokered_as(&route, spec, Window::in_harness);
+        let bus = Rc::new(Bus::default());
+        bus.set_access(&route, "ada", ada_as(&workspace, role));
+        let spec = Spec::new(TASKS, workspace, 1, "ada").in_language("en-US");
+        let mut session = Session::on_bus_window(&bus, &route, spec, Window::in_harness);
         session.settle();
-        (session, workspace)
+        (session, route, bus)
     }
 
     /// The window bar's New task button, as the window draws it.
@@ -821,13 +824,13 @@ mod access {
         .clone()
     }
 
-    /// Ada views Bob's workspace: New task stands disabled and says why, and invoked anyway it makes
-    /// nothing. Bob makes her an editor while her window is open: New task is offered at once, and
-    /// it makes the task.
+    /// Ada views Bob's workspace: New task stands disabled and says why. Bob makes her an editor
+    /// while her window is open: New task is offered at once, and it makes the task.
     #[test]
     fn a_viewer_is_offered_no_change_and_one_made_an_editor_is_while_the_window_is_open() {
         let _settled = ui::motion::testing::settled();
-        let (mut session, workspace) = tasks_as(Role::Viewer);
+        let (mut session, route, bus) = tasks_as(Role::Viewer);
+        let workspace = route.cluster_id.to_string();
         let button = new_task_button(&mut session);
         assert_eq!(
             button.props.get("enabled"),
@@ -841,29 +844,13 @@ mod access {
             )),
             "and it says why"
         );
+        // Called through the API anyway, a viewer's change is refused where the call is admitted,
+        // on the device (`tilo-app-host`'s
+        // `a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said`).
         let new_task = session.identity_doing("Tasks", "new_task");
-        let answered = session.invoke_doing(
-            &new_task,
-            &serde_json::json!({ "title": "Water the plants" }),
-        );
-        assert!(
-            !matches!(
-                answered,
-                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
-            ),
-            "the instance refuses a viewer's change: {answered:?}"
-        );
-        assert!(
-            !task_in_workspace(&session, "Water the plants", false),
-            "and nothing is written"
-        );
 
-        // Bob makes Ada an editor; the session says so on the host's api.
-        assert!(
-            session
-                .host
-                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor)))
-        );
+        // Bob makes Ada an editor; her device says so to the window already open.
+        bus.set_access(&route, "ada", ada_as(&workspace, Role::Editor));
         session.settle();
         let button = new_task_button(&mut session);
         assert_ne!(
@@ -883,11 +870,93 @@ mod access {
             "an editor's change runs: {answered:?}"
         );
         assert!(task_in_workspace(&session, "Water the plants", false));
-        assert!(
-            !session
-                .host
-                .set_access(TASKS, Some(&ada_as(&workspace, Role::Editor))),
-            "the same access said again is nothing to do"
+    }
+
+    /// Ada edits Bob's workspace, but Bob keeps its tasks from her changes: New task is hers, as
+    /// the app is. Bob makes a task while her window is open, a record her device was never asked
+    /// about: it takes the answer of the node above it, so Complete in its menu stands disabled
+    /// in her window and says why rather than taking the app's answer, and pressed anyway it
+    /// marks nothing.
+    #[test]
+    fn a_task_made_under_a_node_kept_from_its_person_refuses_its_commands_and_says_why() {
+        use tilo_action_policy::{Answer, Grant, Grantee};
+        use tilo_action_types::KindSet;
+        let _settled = ui::motion::testing::settled();
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let workspace = route.cluster_id.to_string();
+        let mut policy = WorkspacePolicy::new(&workspace, "bob");
+        policy.members.insert("ada".to_owned(), Role::Editor.into());
+        let tasks = policy.node().app(TASKS).kind(format!("tl.{TASKS}.Task"));
+        policy.grants.push(Grant::new(
+            "keep-tasks",
+            Grantee::person("ada"),
+            tasks,
+            KindSet::UNDOABLE,
+            Answer::Deny,
+            Grantee::person("bob"),
+        ));
+        let bus = Rc::new(Bus::default());
+        bus.set_access(&route, "ada", MemberAccess::person(policy.clone(), "ada"));
+        bus.set_access(&route, "bob", MemberAccess::person(policy, "bob"));
+        let spec = Spec::new(TASKS, workspace.clone(), 1, "ada").in_language("en-US");
+        let mut ada = Session::on_bus_window(&bus, &route, spec, Window::live);
+        let button = new_task_button(&mut ada);
+        assert_ne!(
+            button.props.get("enabled"),
+            Some(&tilo_app_window::Value::Bool(false)),
+            "New task is Ada's, as the app is: {button:?}"
         );
+
+        // Bob makes a task while Ada's window is open.
+        let spec = Spec::new(TASKS, workspace, 2, "bob").in_language("en-US");
+        let mut bob = Session::on_bus_window(&bus, &route, spec, Window::in_harness);
+        let new_task = bob.identity_doing("Tasks", "new_task");
+        let answered = bob.invoke_as(
+            &ui::tilo_actions::MemberId::person("bob").into(),
+            &new_task,
+            &serde_json::json!({ "title": "Water the plants" }),
+        );
+        assert!(
+            matches!(
+                answered,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "Bob makes the task: {answered:?}"
+        );
+        bob.settle();
+        ada.settle();
+        // A task with no day is the inbox's.
+        ada.window.press_named("Inbox");
+        ada.settle();
+        assert!(
+            super::super::menus::row_menu(&mut ada, "Water the plants")
+                .contains(&"Complete".to_owned()),
+            "the task's menu names Complete"
+        );
+        let (_, shown) = ada
+            .window
+            .menu_item("Complete")
+            .expect("Complete in the task's menu");
+        assert!(
+            shown.is_disabled(),
+            "Complete of a task under the node kept from Ada is refused: {shown:?}"
+        );
+        assert!(
+            shown
+                .description()
+                .is_some_and(|why| !why.trim().is_empty()),
+            "and it says why: {shown:?}"
+        );
+        let rect = shown.bounds().expect("the command is laid out");
+        ada.window.click_at(
+            f64::midpoint(rect.x0, rect.x1),
+            f64::midpoint(rect.y0, rect.y1),
+        );
+        ada.settle();
+        assert!(
+            !task_in_workspace(&ada, "Water the plants", true),
+            "pressed anyway, it marks nothing"
+        );
+        assert!(task_in_workspace(&ada, "Water the plants", false));
     }
 }

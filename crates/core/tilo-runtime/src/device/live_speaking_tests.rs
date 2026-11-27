@@ -720,7 +720,10 @@ fn dana_is_carried_into_the_call(
 
 /// The connection the daemon serves an app it started at `at`, as the line wire's client the
 /// app's SDK holds.
-fn app_connection(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> tilo_action_line::LineClient {
+pub(crate) fn app_connection(
+    daemon: &Arc<Daemon>,
+    at: &crate::seats::AppAt,
+) -> tilo_action_line::LineClient {
     use std::io::{BufRead as _, Read as _};
     let (served, held) = std::os::unix::net::UnixStream::pair().unwrap();
     let frames = crate::device::local::Frames::of_an_app(daemon, at);

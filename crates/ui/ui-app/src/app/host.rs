@@ -189,27 +189,13 @@ fn draw_frame_content_owning(
             }
             None => &mut *scene,
         };
-        let draw = || {
-            app.root_widget.draw_child(
-                widgets,
-                transform,
-                &mut app.text_renderer,
-                &app.theme,
-                &app.presence_ctx.draw_env(),
-            );
-        };
-        // Guarded widgets paint what the workspace's permissions let this window show; a
-        // standalone window shows all of it.
-        #[cfg(feature = "model")]
-        {
-            app.presence_ctx
-                .with_permissions(app.permission_ctx.clone(), draw);
-        }
-        #[cfg(not(feature = "model"))]
-        {
-            let mut draw = draw;
-            draw();
-        }
+        app.root_widget.draw_child(
+            widgets,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx.draw_env(),
+        );
         tilo_ui_base::draw_cull::unbind();
     }
     // Culled, what is painted over the widgets is drawn apart from them.
@@ -431,25 +417,13 @@ fn redraw_culled_widgets(
     tilo_ui_base::part_paint::backdrop::nest_scene(widgets);
     let prev_vp = app.presence_ctx.push_viewport(drawn.window_rect);
     let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
-    let draw = || {
-        app.root_widget.draw_child(
-            widgets,
-            drawn.transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx.draw_env(),
-        );
-    };
-    #[cfg(feature = "model")]
-    {
-        app.presence_ctx
-            .with_permissions(app.permission_ctx.clone(), draw);
-    }
-    #[cfg(not(feature = "model"))]
-    {
-        let mut draw = draw;
-        draw();
-    }
+    app.root_widget.draw_child(
+        widgets,
+        drawn.transform,
+        &mut app.text_renderer,
+        &app.theme,
+        &app.presence_ctx.draw_env(),
+    );
     app.presence_ctx.pop_viewport(prev_vp);
     if secrets.finish() {
         app.set_secret_on_screen(true);
@@ -1235,23 +1209,6 @@ mod pointer_broadcast_tests;
 #[cfg(test)]
 #[path = "rebuild_focus_tests.rs"]
 mod rebuild_focus_tests;
-
-#[cfg(feature = "model")]
-/// Mutating events should route through this so denied interactions
-/// short-circuit before the widget ever observes them.
-pub fn dispatch_guarded_event<W: tilo_ui_base::widget::Widget + ?Sized>(
-    ctx: &tilo_permissions::PermissionContext,
-    widget: &W,
-    dispatch: impl FnOnce(),
-) -> bool {
-    if let Some(scope) = tilo_ui_base::widget::permission::permission_scope(widget)
-        && !ctx.check(&scope)
-    {
-        return false;
-    }
-    dispatch();
-    true
-}
 
 /// The focus-narration path (`set_focused_node`) is private, so these tests
 /// drive it through the public `init_layout` (autofocus) + the a11y action

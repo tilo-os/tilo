@@ -593,7 +593,7 @@ fn instance_with_store(
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let hosted = Hosted::new(
-        attributes,
+        bus.launched(route, attributes, &bundle),
         connection,
         (store, tilolang_process::hosted::memory_content()),
         Arc::new(bundle),

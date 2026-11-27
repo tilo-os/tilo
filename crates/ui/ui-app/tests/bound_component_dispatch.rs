@@ -374,7 +374,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             "measure",
             "apply",
             "draw",
-            "draw-permissions",
+            "root-draw",
             "focus-order",
             "focus",
             "accessibility",
@@ -509,7 +509,6 @@ thread_local! {
     static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
     static LEGACY_START_CALLS: Cell<usize> = const { Cell::new(0) };
-    static EXPECTED_WRITE: Cell<bool> = const { Cell::new(false) };
     static COMMAND_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 thread_local! { static CANCELLED: Cell<usize> = const { Cell::new(0) }; static CLOSED_DROPS: Cell<usize> = const { Cell::new(0) }; }
@@ -794,16 +793,7 @@ impl Widget for Root {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, renderer, theme, mut env) = ctx.parts();
-        let guarded = tilo_ui_base::widget::Spacer::new().with_permission_scope(
-            tilo_permissions::PermissionScope::workspace(
-                tilo_ui_base::permissions::ActionKind::Undoable,
-            ),
-        );
-        assert!(
-            env.permits_widget(&guarded) == EXPECTED_WRITE.get(),
-            "draw received outer authority"
-        );
-        self.mark("draw-permissions");
+        self.mark("root-draw");
         self.0.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
@@ -1258,7 +1248,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
 fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
     {
         enum Callback {
-            DrawPermissions,
+            Draw,
             Providers,
             Search,
             External,
@@ -1293,7 +1283,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         TASKS.with_borrow_mut(Vec::clear);
         let invocation = tilo_actions::InvocationId::new();
         for (callback, label) in [
-            (Callback::DrawPermissions, "draw-permissions"),
+            (Callback::Draw, "root-draw"),
             (Callback::Providers, "provider-create"),
             (Callback::Search, "search-activate"),
             (Callback::External, "external"),
@@ -1307,23 +1297,18 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             CAPTURES.with_borrow_mut(Vec::clear);
             TASKS.with_borrow_mut(Vec::clear);
             match callback {
-                Callback::DrawPermissions => {
+                Callback::Draw => {
                     let catalog = tilo_ui_base::font_catalog::fixture_catalog();
                     let mut renderer =
                         tilo_ui_base::TextRenderer::with_font_catalog(&catalog).unwrap();
                     let presence = tilo_ui_base::PresenceCtx::empty();
-                    presence.with_permissions(
-                        tilo_permissions::PermissionContext::permissive(),
-                        || {
-                            tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
-                                &mut vello::Scene::new(),
-                                vello::kurbo::Affine::IDENTITY,
-                                &mut renderer,
-                                &tilo_ui_base::Theme::dark(),
-                                presence.draw_env(),
-                            ));
-                        },
-                    );
+                    tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
+                        &mut vello::Scene::new(),
+                        vello::kurbo::Affine::IDENTITY,
+                        &mut renderer,
+                        &tilo_ui_base::Theme::dark(),
+                        presence.draw_env(),
+                    ));
                 }
 
                 Callback::Start => {
@@ -1420,7 +1405,6 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
     {
         let host = ProbeHarness::new();
         let definition = definition(factory);
-        let permissions = crate::support::application::permissions();
         let context = ProcessContext::prepare(
             &definition,
             ProcessContextInputs {
@@ -1428,7 +1412,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 views: host.views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: permissions.clone(),
+                permissions: crate::support::application::permissions(),
                 author: crate::support::application::author(),
                 action_context: crate::support::application::provenance(),
             },
@@ -1439,23 +1423,14 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
         CAPTURES.with_borrow_mut(Vec::clear);
-        let mut driver = controlled_driver(
+        let _driver = controlled_driver(
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
         );
         assert!(
-            CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary Driver paint did not reach the permission-aware root"
+            CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "root-draw")),
+            "ordinary Driver paint did not reach the component's root"
         );
-        permissions.set(tilo_permissions::PermissionContext::permissive());
-        EXPECTED_WRITE.set(true);
-        CAPTURES.with_borrow_mut(Vec::clear);
-        driver.relayout();
-        assert!(
-            CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "later paint did not read the current permission snapshot"
-        );
-        EXPECTED_WRITE.set(false);
     }
 
     {
@@ -1473,8 +1448,6 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
                 viewport,
             );
-            // A bare root draws under the driver's own permissive authority.
-            EXPECTED_WRITE.set(true);
             let legacy = controlled_driver(
                 Box::new(Column::new().push(Box::new(TileHost::new(
                     tilo_ui_app::widget::TileContent::App(Box::new(Root(
@@ -1485,7 +1458,6 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 )))),
                 viewport,
             );
-            EXPECTED_WRITE.set(false);
             let actual = canonical.targets()["dispatch-root"];
             let expected = legacy.targets()["dispatch-root"];
             assert!(expected.width() > f64::from(viewport.0) / 2.0);
@@ -1840,7 +1812,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         );
         let live = CAPTURES.with_borrow(|c| {
             c.iter()
-                .find(|(_, label, _)| *label == "draw-permissions")
+                .find(|(_, label, _)| *label == "root-draw")
                 .unwrap()
                 .2
                 .clone()
@@ -2076,20 +2048,12 @@ fn fill_factory(
 #[test]
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
-    use tilo_permissions::PermissionContext;
-    use tilo_permissions::Role;
+    use tilo_ui_base::permissions::Role;
     let host = ProbeHarness::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
-        let permissions = tilo_permissions::SharedPermissions::new(
-            PermissionContext::member(
-                &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                role,
-            )
-            .at_unix_time(100),
-        );
         let context = host
-            .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
+            .prepare_as(&definition, instance, &LaunchTarget::New, role)
             .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -2148,13 +2112,8 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         use crate::support::application::{action_probe_factory, existing, operation_observations};
         let host = ProbeHarness::new();
         let definition = definition(action_probe_factory);
-        let permissions = tilo_permissions::SharedPermissions::new(
-            tilo_permissions::PermissionContext::member(
-                &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                tilo_permissions::Role::Owner,
-            )
-            .at_unix_time(100),
-        );
+        let permissions = crate::support::application::permissions();
+        let device = crate::support::application::device(tilo_ui_base::permissions::Role::Owner);
         let first = definition
             .instantiate(
                 host.prepare_with_permissions(
@@ -2172,7 +2131,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         let target = existing(&checkout);
         let second = definition
             .instantiate(
-                host.prepare_with_permissions(&definition, 12, &target, permissions)
+                host.prepare_with_permissions(&definition, 12, &target, permissions.clone())
                     .unwrap(),
                 target,
                 RestoreInput::None,
@@ -2182,6 +2141,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             .push(Box::new(TileHost::from_component(first)))
             .push(Box::new(TileHost::from_component(second)));
         let mut driver = controlled_driver(Box::new(column), (200, 100));
+        crate::support::application::answer_read(&permissions, &device);
         let outer = driver.state_mut().doc.get_heads();
         let address = |instance_id, action| tilo_ui_app::bound_dispatch::BoundActionAddress {
             instance_id,
@@ -2240,21 +2200,18 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             let definition = definition(action_probe_factory);
             let mut column = tilo_ui_app::widget::Column::new();
             let mut records = Vec::new();
+            let mut answering = Vec::new();
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
-                let permissions = tilo_permissions::SharedPermissions::new(
+                let permissions = crate::support::application::permissions();
+                answering.push((
+                    permissions.clone(),
                     if allowed {
-                        tilo_permissions::PermissionContext::member(
-                            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                            tilo_permissions::Role::Owner,
-                        )
+                        crate::support::application::device(tilo_ui_base::permissions::Role::Owner)
                     } else {
-                        tilo_permissions::PermissionContext::stranger(
-                            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                        )
-                    }
-                    .at_unix_time(100),
-                );
+                        crate::support::application::stranger_device()
+                    },
+                ));
                 let component = definition
                     .instantiate(
                         host.prepare_with_permissions(
@@ -2285,6 +2242,9 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap());
             column = column.push(Box::new(button));
             let mut driver = controlled_driver(Box::new(column), (300, 200));
+            for (permissions, device) in &answering {
+                crate::support::application::answer_read(permissions, device);
+            }
             if authorized == 0 {
                 driver
                     .action_registry_mut()

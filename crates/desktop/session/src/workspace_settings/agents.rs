@@ -537,7 +537,6 @@ impl Agents {
                 &collab_types::workspace_document_id(KIND),
             ),
             person,
-            Some(workspace.policy.clone()),
             std::sync::Arc::clone(&self.wake),
         );
         *self.open.borrow_mut() = Some(Open {

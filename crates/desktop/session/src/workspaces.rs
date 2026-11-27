@@ -289,14 +289,12 @@ impl Personal {
                 tilo_user_identity::workspace_list::RESOURCE,
             ),
             member.as_str(),
-            None,
             std::sync::Arc::clone(&wake),
         ));
         self.devices = Some(FollowedResource::follow(
             daemon,
             (&own, DEVICES.0, DEVICES.1),
             member.as_str(),
-            None,
             wake,
         ));
     }

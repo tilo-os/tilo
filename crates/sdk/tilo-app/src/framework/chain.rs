@@ -64,10 +64,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker};
-use tilo_permissions::LivePermissions;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::TreePath;
 use tilo_resource::{Invoke, Refusal, Resource};
+use tilo_ui_base::{permissions::LivePermissions, permissions::TreePath};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::resource::{
@@ -791,14 +789,11 @@ impl ChainCore {
                 .field(need.field.as_deref().unwrap_or_default())
                 .action(tilo_resource::FIELD_EDIT)
         };
-        if !permissions.check(&PermissionScope::Action {
-            node,
-            kind: need.kind,
-        }) {
-            return Err(ActionError::Refused(format!(
+        if !permissions.permits(&ui_core::shown_actions::ShownAction::at(node, need.kind)) {
+            return Err(ActionError::Refused(permissions.refused(format!(
                 "you may not do this to these {}",
                 self.part.label.to_lowercase()
-            )));
+            ))));
         }
         Ok(())
     }
@@ -993,8 +988,8 @@ impl ChainCore {
         invoker: &ActionInvoker,
     ) -> Result<serde_json::Value, ActionError> {
         if let Some(permissions) = &self.workspace.permissions
-            && !permissions.check(&PermissionScope::Action {
-                node: tilo_actions::action_node(
+            && !permissions.permits(&ui_core::shown_actions::ShownAction::at(
+                tilo_actions::action_node(
                     &TreePath::root(),
                     self.workspace.app_id,
                     self.part.kind,
@@ -1002,13 +997,13 @@ impl ChainCore {
                     None,
                     edit.verb(),
                 ),
-                kind: tilo_actions::ActionKind::Undoable,
-            })
+                tilo_actions::ActionKind::Undoable,
+            ))
         {
-            return Err(ActionError::Refused(format!(
+            return Err(ActionError::Refused(permissions.refused(format!(
                 "you may not change the history of these {}",
                 self.part.label.to_lowercase()
-            )));
+            ))));
         }
         self.hold_kept(edit.part)
             .map_err(|error| self.refused(error))?;

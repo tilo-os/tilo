@@ -170,6 +170,11 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     let mut app =
         App::from_managed_root_with_controlled_inputs(State::new(), guard.managed(root)).unwrap();
     layout(&mut app);
+    // The device answers what the window read: its author owns the workspace.
+    crate::application_test_support::answer_read(
+        &binding.permissions,
+        &crate::application_test_support::device(tilo_ui_base::permissions::Role::Owner),
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,

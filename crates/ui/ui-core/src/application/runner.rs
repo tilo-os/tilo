@@ -1,30 +1,16 @@
 //! Explicit process-host services shared by standalone application runners. Apps supply their
 //! definition and migration; this owner supplies storage, identity, authority and local presentation.
-use super::ApplicationDefinition;
-use super::ApplicationLocalView;
-use super::ComponentRunnerInputs;
-use super::DocumentCheckout;
-use super::DocumentId;
-use super::InstanceId;
-use super::InstanceViewStore;
-use super::LaunchError;
-use super::LaunchTarget;
-use super::MemberId;
-use super::PreparedComponentInputs;
-use super::ProcessContext;
-use super::ProcessContextInputs;
-use super::ResourceOpenError;
-use super::ResourceStore;
-use super::RestoreInput;
-use super::SavedInstanceView;
-use super::View;
-use super::validate_identity;
+use super::{
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, DocumentCheckout,
+    DocumentId, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, MemberId,
+    PreparedComponentInputs, ProcessContext, ProcessContextInputs, ResourceOpenError,
+    ResourceStore, RestoreInput, SavedInstanceView, View, validate_identity,
+};
 use crate::resource::ResourceOwners;
 use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use tilo_permissions::PermissionContext;
 
 /// The workspace a launch outside every workspace keeps its records in: this
 /// device's own. A workspace is named by an id, so the records kept in it have
@@ -96,11 +82,8 @@ impl NativeProcess {
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
         let launched_workspace = environment.workspace_id.clone();
-        let resolved = environment.resolve(definition.app_id(), &author)?;
-        let permissions = tilo_permissions::SharedPermissions::new(resolved.permissions);
-        if resolved.workspace_scoped {
-            tilo_ui_base::workspace_sync::follow_participation(&permissions);
-        }
+        let resolved = environment.resolve(definition.app_id())?;
+        let permissions = tilo_ui_base::permissions::SharedPermissions::default();
         // The window's records are the workspace's: read over the connection the window joins,
         // and what it changes published on the records' routes. Without one nothing it does
         // would be kept, which the person is told rather than finding out later.
@@ -303,7 +286,6 @@ struct NativeProcessEnvironment {
     surface_hash: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
-    participation: Option<String>,
     continuity_instance: Option<String>,
     /// Where the window's records are read, and whether it writes them back itself; the
     /// workspace's store over the window's connection when `None`, its routes publishing what it
@@ -313,22 +295,7 @@ struct NativeProcessEnvironment {
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
     home: Option<PathBuf>,
-    action_authority: Option<HostAuthority>,
 }
-
-#[derive(Clone)]
-struct HostAuthority {
-    read: tilo_process_services::action_authority::AuthoritySource,
-    watch: AuthorityWatcher,
-}
-
-type AuthorityWatcher = std::sync::Arc<
-    dyn Fn(
-            Box<dyn Fn() + Send>,
-        ) -> Result<tilo_process_services::action_authority::AuthorityWatch, String>
-        + Send
-        + Sync,
->;
 
 struct ResolvedNativeProcessHost {
     package_id: String,
@@ -336,7 +303,6 @@ struct ResolvedNativeProcessHost {
     workspace_id: String,
     workspace_scoped: bool,
     instance_id: InstanceId,
-    permissions: PermissionContext,
     documents: Option<(Rc<dyn crate::resource::DocumentPort>, bool)>,
 }
 
@@ -353,44 +319,23 @@ impl NativeProcessEnvironment {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         }
-        // The workspace a window is in, and how it takes part there, are the launcher's: one in
-        // another process writes them to the environment, and a process that is its own launcher
-        // installs them with the connection it hands its window
-        // (the launcher's `hand_connection`).
-        let launched = crate::process::environment();
+        // The workspace a window is in is the launcher's ([`launched_workspace`]).
         Self {
             package_id: string("TILO_PACKAGE_ID"),
             surface: path(crate::app_surface::SURFACE_FILE_ENV),
             surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: launched_workspace(),
-            participation: trimmed(launched.identity.participation.as_ref()),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             documents: None,
             xdg_data_home: path("XDG_DATA_HOME"),
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
             home: path("HOME"),
-            action_authority: Some(HostAuthority {
-                read: tilo_process_services::action_authority::source(
-                    collab_types::action_authority::PROJECTION_PATH.into(),
-                    collab_types::action_authority::MAX_PROJECTION_BYTES,
-                ),
-                watch: std::sync::Arc::new(|changed| {
-                    tilo_process_services::action_authority::watch(
-                        Path::new(collab_types::action_authority::PROJECTION_PATH),
-                        changed,
-                    )
-                }),
-            }),
         }
     }
 
-    fn resolve(
-        self,
-        app_id: &str,
-        author: &MemberId,
-    ) -> Result<ResolvedNativeProcessHost, LaunchError> {
+    fn resolve(self, app_id: &str) -> Result<ResolvedNativeProcessHost, LaunchError> {
         let package_id = self
             .package_id
             .as_deref()
@@ -417,28 +362,6 @@ impl NativeProcessEnvironment {
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
         let (workspace_id, workspace_scoped) = launcher_workspace(self.workspace_id.as_deref())?;
-        let mut permissions = permissions_for_participation(
-            author,
-            &workspace_id,
-            workspace_scoped,
-            self.participation.as_deref(),
-        )?;
-        if workspace_scoped
-            && let Some(authority) = self.action_authority
-            && (authority.read)().ok().flatten().is_some()
-        {
-            match FollowedAuthority::follow(authority, &workspace_id, app_id, author) {
-                Ok(followed) => {
-                    permissions = permissions.with_action_authority(
-                        app_id.to_owned(),
-                        std::sync::Arc::new(move || followed.current()),
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "the host's action authority is not followed");
-                }
-            }
-        }
         let instance_id = self.continuity_instance.map_or_else(
             || Ok(stable_instance_id(&package_id)),
             |value| {
@@ -453,7 +376,6 @@ impl NativeProcessEnvironment {
             workspace_id,
             workspace_scoped,
             instance_id,
-            permissions,
             documents: self.documents,
         })
     }
@@ -602,203 +524,6 @@ impl NativeProfile {
         };
         self.views.save(&adopted).map_err(LaunchError::Restore)
     }
-}
-
-fn permissions_for_participation(
-    author: &MemberId,
-    workspace: &str,
-    workspace_scoped: bool,
-    participation: Option<&str>,
-) -> Result<PermissionContext, LaunchError> {
-    let role = match participation {
-        Some("read-only") => tilo_permissions::Role::Viewer,
-        Some("author") => tilo_permissions::Role::Editor,
-        None if workspace_scoped => tilo_permissions::Role::Viewer,
-        None => tilo_permissions::Role::Owner,
-        Some(_) => {
-            return Err(LaunchError::Operation(
-                "invalid launcher participation mode".into(),
-            ));
-        }
-    };
-    Ok(PermissionContext::member_of(workspace, author, role))
-}
-
-/// The host's view of the person's authority over one app's actions, read
-/// again only when the host changes it: what deciding reads is the last
-/// read, never the file. Where its changes cannot be heard (the process has
-/// no watch left), it is read again at each decision instead, so a missing
-/// watch costs reads, never the person's authority.
-struct FollowedAuthority {
-    state: std::sync::Arc<FollowedState>,
-    /// What hears the host change it; `None` when it cannot be heard.
-    watch: Option<std::sync::Mutex<tilo_process_services::action_authority::AuthorityWatch>>,
-}
-
-struct FollowedState {
-    authority: HostAuthority,
-    workspace: String,
-    app: String,
-    person: MemberId,
-    /// Held across a read and the store of what it read, so a read never
-    /// replaces a later one.
-    reading: std::sync::Mutex<()>,
-    current: std::sync::RwLock<Result<PermissionContext, String>>,
-}
-
-impl FollowedState {
-    fn read(&self) {
-        let _reading = self
-            .reading
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let read = action_authority_context(
-            &self.authority.read,
-            &self.workspace,
-            &self.app,
-            &self.person,
-        );
-        *self
-            .current
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = read;
-    }
-}
-
-impl FollowedAuthority {
-    /// Read the host's view now and again on each change of it.
-    ///
-    /// # Errors
-    /// When it cannot be read now.
-    fn follow(
-        authority: HostAuthority,
-        workspace: &str,
-        app: &str,
-        person: &MemberId,
-    ) -> Result<Self, String> {
-        let state = std::sync::Arc::new(FollowedState {
-            authority: authority.clone(),
-            workspace: workspace.to_owned(),
-            app: app.to_owned(),
-            person: person.clone(),
-            reading: std::sync::Mutex::new(()),
-            current: std::sync::RwLock::new(Err("process action policy is unread".into())),
-        });
-        let changed = std::sync::Arc::downgrade(&state);
-        let watch = (authority.watch)(Box::new(move || {
-            if let Some(state) = changed.upgrade() {
-                state.read();
-                tilo_permissions::outside_changed();
-            }
-        }))
-        .map_err(
-            |error| tracing::warn!(%error, "the host's action authority is read at each decision"),
-        )
-        .ok();
-        state.read();
-        if let Err(error) = &*state
-            .current
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
-            return Err(error.clone());
-        }
-        Ok(Self {
-            state,
-            watch: watch.map(std::sync::Mutex::new),
-        })
-    }
-
-    fn current(&self) -> Result<PermissionContext, String> {
-        if self.watch.is_none() {
-            self.state.read();
-        }
-        let current = self
-            .state
-            .current
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()?;
-        let now_ms =
-            crate::time::try_unix_now_ms().ok_or("process action policy time is unavailable")?;
-        Ok(current.at_unix_time(now_ms / 1000))
-    }
-}
-
-/// `context` deciding `app`'s actions by the host's view `read` gives of its person's authority in
-/// `workspace`, read again whenever `watch` reports a change.
-#[cfg(any(test, feature = "test-support"))]
-pub fn follow_process_authority(
-    context: PermissionContext,
-    read: tilo_process_services::action_authority::AuthoritySource,
-    watch: AuthorityWatcher,
-    workspace: &str,
-    app: &str,
-) -> Result<PermissionContext, String> {
-    let person = context.user().clone();
-    let followed =
-        FollowedAuthority::follow(HostAuthority { read, watch }, workspace, app, &person)?;
-    Ok(context.with_action_authority(
-        app.to_owned(),
-        std::sync::Arc::new(move || followed.current()),
-    ))
-}
-
-/// A watch a test reports the host's changes through, as the kernel would.
-#[cfg(any(test, feature = "test-support"))]
-pub fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>) {
-    type Listener = Box<dyn Fn() + Send>;
-    let listener: std::sync::Arc<std::sync::Mutex<Option<Listener>>> = std::sync::Arc::default();
-    let installed = listener.clone();
-    let watch: AuthorityWatcher = std::sync::Arc::new(move |changed| {
-        *installed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(changed);
-        Ok(Box::new(()))
-    });
-    let changed = std::sync::Arc::new(move || {
-        if let Some(changed) = &*listener
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-        {
-            changed();
-        }
-    });
-    (watch, changed)
-}
-
-fn action_authority_context(
-    source: &tilo_process_services::action_authority::AuthoritySource,
-    workspace: &str,
-    app: &str,
-    person: &MemberId,
-) -> Result<PermissionContext, String> {
-    let projection = read_action_authority_projection(source, workspace, app, person)?;
-    Ok(PermissionContext::new(
-        tilo_ui_base::permissions::Acting::member(person.clone()),
-        Vec::new(),
-        projection.access(),
-    ))
-}
-
-fn read_action_authority_projection(
-    source: &tilo_process_services::action_authority::AuthoritySource,
-    workspace: &str,
-    app: &str,
-    person: &MemberId,
-) -> Result<collab_types::action_authority::AppActionAuthorityProjection, String> {
-    use collab_types::action_authority::AppActionAuthorityProjection;
-    let bytes = source()?.ok_or("process action policy is unavailable")?;
-    let projection: AppActionAuthorityProjection =
-        serde_json::from_slice(&bytes).map_err(|_| "process action policy is invalid")?;
-    projection.validate().map_err(str::to_owned)?;
-    if !person
-        .person_id()
-        .is_some_and(|person| projection.matches(workspace, app, person))
-    {
-        return Err("process action policy binding mismatch".into());
-    }
-    Ok(projection)
 }
 
 fn stable_instance_id(app_id: &str) -> InstanceId {
@@ -1031,11 +756,6 @@ impl ApplicationOwner {
         &mut self,
         definition: &ApplicationDefinition,
     ) -> Result<ResourceStore, LaunchError> {
-        for required in &definition.required {
-            if !self.permissions.borrow().check(required) {
-                return Err(LaunchError::CapabilityDenied(required.clone()));
-            }
-        }
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id());
         if package_id != definition.app_id() {
             return Err(LaunchError::BindingMismatch);
@@ -1329,8 +1049,6 @@ mod native_process_tests {
             title: "Host probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("H"),
             resource_type: crate::resource::ResourceType::new("host.probe"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -1375,7 +1093,6 @@ mod native_process_tests {
                 &definition,
                 NativeProcessEnvironment {
                     workspace_id: Some("3f2b1c00-0000-4000-8000-00000000005a".into()),
-                    participation: Some("author".into()),
                     continuity_instance: Some("51".into()),
                     ..environment(temp.path())
                 },
@@ -1430,7 +1147,6 @@ mod native_process_tests {
                     &definition,
                     NativeProcessEnvironment {
                         workspace_id: Some(workspace.into()),
-                        participation: Some("author".into()),
                         continuity_instance: Some(instance.to_string()),
                         ..environment(temp.path())
                     },
@@ -1537,7 +1253,6 @@ mod native_process_tests {
                     &definition,
                     NativeProcessEnvironment {
                         workspace_id: Some(workspace.into()),
-                        participation: Some("author".into()),
                         continuity_instance: Some("61".into()),
                         ..environment(temp.path())
                     },
@@ -1593,7 +1308,6 @@ mod native_process_tests {
                     &definition,
                     NativeProcessEnvironment {
                         workspace_id: Some(workspace.into()),
-                        participation: Some("author".into()),
                         continuity_instance: Some("51".into()),
                         ..environment(temp.path())
                     },
@@ -1658,7 +1372,6 @@ mod native_process_tests {
                     definition,
                     NativeProcessEnvironment {
                         workspace_id: Some(workspace.into()),
-                        participation: Some("author".into()),
                         continuity_instance: Some(instance.to_string()),
                         ..environment(temp.path())
                     },
@@ -1740,7 +1453,6 @@ mod native_process_tests {
                     definition,
                     NativeProcessEnvironment {
                         workspace_id: Some("3f2b1c00-0000-4000-8000-00000000000c".into()),
-                        participation: Some("author".into()),
                         continuity_instance: Some("61".into()),
                         ..environment(temp.path())
                     },
@@ -1918,7 +1630,6 @@ mod native_process_tests {
                 &definition(probe::APP),
                 NativeProcessEnvironment {
                     workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
                     continuity_instance: Some("52".into()),
                     ..environment(temp.path())
                 },
@@ -2019,7 +1730,6 @@ mod native_process_tests {
                 &definition,
                 NativeProcessEnvironment {
                     workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
                     continuity_instance: Some("72".into()),
                     ..environment(temp.path())
                 },
@@ -2136,7 +1846,6 @@ mod native_process_tests {
             &definition,
             NativeProcessEnvironment {
                 workspace_id: Some("3f2b1c00-0000-4000-8000-0000000000e1".into()),
-                participation: Some("author".into()),
                 continuity_instance: Some("71".into()),
                 documents: Some((down, false)),
                 ..environment(temp.path())
@@ -2185,7 +1894,6 @@ mod native_process_tests {
                 &definition,
                 NativeProcessEnvironment {
                     workspace_id: Some(workspace.into()),
-                    participation: Some("author".into()),
                     continuity_instance: Some(instance.to_string()),
                     ..environment(temp.path())
                 },
@@ -2236,138 +1944,6 @@ mod native_process_tests {
     tilo_test_env::scenario! {
         fn a_native_host_keeps_authority_and_identity_explicit;
 
-        phase native_host_action_authority_is_current_and_scoped_to_the_app;
-        {
-            use tilo_ui_base::permissions::ActionKind;
-            use tilo_permissions::Answer;
-            use tilo_permissions::TreePath;
-            use collab_types::action_authority::AppActionAuthorityProjection;
-            use std::sync::{Arc, Mutex};
-            let temp = tempfile::tempdir().unwrap();
-            let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-            let app = "so.tilo.store";
-            let author = MemberId::person("person-a");
-            let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.id()),
-                app,
-                author.id(),
-                false,
-            );
-            let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
-            let source: tilo_process_services::action_authority::AuthoritySource = {
-                let bytes = bytes.clone();
-                Arc::new(move || Ok(bytes.lock().unwrap().clone()))
-            };
-            let (watch, changed) = manual_authority_watch();
-            let environment = NativeProcessEnvironment {
-                workspace_id: Some(workspace.into()),
-                participation: Some("read-only".into()),
-                action_authority: Some(HostAuthority {
-                    read: source.clone(),
-                    watch,
-                }),
-                ..environment(temp.path())
-            };
-            let publish = |value: Option<Vec<u8>>| {
-                *bytes.lock().unwrap() = value;
-                changed();
-            };
-            let resolved = environment.resolve(app, &author).unwrap();
-            let permissions = resolved.permissions;
-            let own = TreePath::root().app(app).action("buy");
-            assert_eq!(permissions.role(), Some(tilo_permissions::Role::Viewer));
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
-            assert_eq!(
-                permissions.answer(
-                    &TreePath::root().app("so.tilo.settings").action("reset"),
-                    ActionKind::Outside
-                ),
-                Answer::Deny,
-                "another app's actions keep the launch participation"
-            );
-            let allowed = permissions.directory_observation().unwrap();
-            let mut revoked = original.clone();
-            revoked.policy.owner = None;
-            publish(Some(serde_json::to_vec(&revoked).unwrap()));
-            assert_ne!(permissions.directory_observation().unwrap(), allowed);
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-            {
-                let mut invalid = original.clone();
-                invalid.schema_version = 2;
-                publish(Some(serde_json::to_vec(&invalid).unwrap()));
-                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-            }
-            for (field, value) in [
-                ("workspace", "foreign-workspace"),
-                ("app_id", "so.tilo.other"),
-                ("person", "person-b"),
-            ] {
-                let mut invalid = serde_json::to_value(&original).unwrap();
-                invalid[field] = value.into();
-                publish(Some(serde_json::to_vec(&invalid).unwrap()));
-                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-                assert!(permissions.directory_observation().is_err());
-            }
-            for invalid in [None, Some(b"invalid".to_vec())] {
-                publish(invalid);
-                assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-                assert!(permissions.directory_observation().is_err());
-            }
-            publish(Some(serde_json::to_vec(&original).unwrap()));
-            assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
-            assert_eq!(permissions.directory_observation().unwrap(), allowed);
-        }
-
-        phase a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision;
-        {
-            use tilo_ui_base::permissions::ActionKind;
-            use tilo_permissions::Answer;
-            use tilo_permissions::TreePath;
-            use collab_types::action_authority::AppActionAuthorityProjection;
-            use std::sync::{Arc, Mutex};
-            let temp = tempfile::tempdir().unwrap();
-            let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-            let app = "so.tilo.store";
-            let author = MemberId::person("person-a");
-            let original = AppActionAuthorityProjection::project(
-                &tilo_action_policy::WorkspacePolicy::new(workspace, author.id()),
-                app,
-                author.id(),
-                false,
-            );
-            let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
-            let source: tilo_process_services::action_authority::AuthoritySource = {
-                let bytes = bytes.clone();
-                Arc::new(move || Ok(bytes.lock().unwrap().clone()))
-            };
-            let watch: AuthorityWatcher =
-                Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
-            let environment = NativeProcessEnvironment {
-                workspace_id: Some(workspace.into()),
-                participation: Some("read-only".into()),
-                action_authority: Some(HostAuthority {
-                    read: source,
-                    watch,
-                }),
-                ..environment(temp.path())
-            };
-            let permissions = environment.resolve(app, &author).unwrap().permissions;
-            let own = TreePath::root().app(app).action("buy");
-            assert_eq!(
-                permissions.answer(&own, ActionKind::Outside),
-                Answer::Allow,
-                "the person's authority holds without a watch"
-            );
-            let mut revoked = original.clone();
-            revoked.policy.owner = None;
-            *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
-            assert_eq!(
-                permissions.answer(&own, ActionKind::Outside),
-                Answer::Deny,
-                "and what the host holds now is what decides"
-            );
-        }
-
         phase native_host_identity_authority_and_inputs_are_explicit;
         {
             {
@@ -2382,11 +1958,6 @@ mod native_process_tests {
                 let device = first.host.device_id.clone();
                 assert!(!first.workspace_scoped());
                 assert_eq!(first.host.views.workspace_id(), PERSONAL_WORKSPACE);
-                assert_eq!(
-                    first.host.permissions.borrow().role(),
-                    Some(tilo_permissions::Role::Owner)
-                );
-                assert_eq!(first.host.permissions.borrow().user(), &author);
                 drop(first);
 
                 let reopened = NativeProcess::open_with(
@@ -2410,45 +1981,35 @@ mod native_process_tests {
             {
                 let temp = tempfile::tempdir().unwrap();
                 let workspace = "3f2b1c00-0000-4000-8000-000000000001";
-                let make = |participation: Option<&str>| NativeProcessEnvironment {
+                let resolved = NativeProcessEnvironment {
                     workspace_id: Some(workspace.into()),
-                    participation: participation.map(str::to_owned),
                     continuity_instance: Some("42".into()),
                     xdg_data_home: Some(temp.path().to_owned()),
                     ..NativeProcessEnvironment::default()
-                };
-                for (mode, role) in [
-                    (Some("read-only"), tilo_permissions::Role::Viewer),
-                    (Some("author"), tilo_permissions::Role::Editor),
-                    (None, tilo_permissions::Role::Viewer),
-                ] {
-                    let resolved = make(mode)
-                        .resolve("so.tilo.notes", &MemberId::person("person-a"))
-                        .unwrap();
-                    assert!(resolved.workspace_scoped);
-                    assert_eq!(resolved.workspace_id, workspace);
-                    assert_eq!(resolved.instance_id, 42);
-                    assert_eq!(resolved.permissions.role(), Some(role));
                 }
+                .resolve("so.tilo.notes")
+                .unwrap();
+                assert!(resolved.workspace_scoped);
+                assert_eq!(resolved.workspace_id, workspace);
+                assert_eq!(resolved.instance_id, 42);
             }
 
             {
                 let temp = tempfile::tempdir().unwrap();
-                let author = MemberId::person("person-a");
                 let mut mismatched = environment(temp.path());
                 mismatched.package_id = Some("so.tilo.other".into());
                 assert!(matches!(
-                    mismatched.resolve("so.tilo.notes", &author),
+                    mismatched.resolve("so.tilo.notes"),
                     Err(LaunchError::BindingMismatch)
                 ));
                 let relative = NativeProcessEnvironment {
                     xdg_data_home: Some(PathBuf::from("relative")),
                     ..NativeProcessEnvironment::default()
                 };
-                assert!(relative.resolve("so.tilo.notes", &author).is_err());
+                assert!(relative.resolve("so.tilo.notes").is_err());
                 assert!(
                     NativeProcessEnvironment::default()
-                        .resolve("so.tilo.notes", &author)
+                        .resolve("so.tilo.notes")
                         .is_err()
                 );
                 for invalid in [
@@ -2457,20 +2018,16 @@ mod native_process_tests {
                         ..environment(temp.path())
                     },
                     NativeProcessEnvironment {
-                        participation: Some("owner".into()),
-                        ..environment(temp.path())
-                    },
-                    NativeProcessEnvironment {
                         continuity_instance: Some("window".into()),
                         ..environment(temp.path())
                     },
                 ] {
-                    assert!(invalid.resolve("so.tilo.notes", &author).is_err());
+                    assert!(invalid.resolve("so.tilo.notes").is_err());
                 }
                 std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
                 assert!(
                     environment(temp.path())
-                        .resolve("so.tilo.notes", &author)
+                        .resolve("so.tilo.notes")
                         .is_err()
                 );
                 assert_eq!(
@@ -2483,17 +2040,16 @@ mod native_process_tests {
         phase signed_package_id_must_name_the_launched_definition;
         {
             let temp = tempfile::tempdir().unwrap();
-            let author = MemberId::person("person-a");
             let mut exact = environment(temp.path());
             exact.package_id = Some("so.tilo.notes".into());
-            let resolved = exact.resolve("so.tilo.notes", &author).unwrap();
+            let resolved = exact.resolve("so.tilo.notes").unwrap();
             assert_eq!(resolved.package_id, "so.tilo.notes");
             assert_eq!(resolved.instance_id, stable_instance_id("so.tilo.notes"));
 
             let mut foreign_package = environment(temp.path());
             foreign_package.package_id = Some("so.tilo.photos".into());
             assert!(matches!(
-                foreign_package.resolve("so.tilo.notes", &author),
+                foreign_package.resolve("so.tilo.notes"),
                 Err(LaunchError::BindingMismatch)
             ));
         }

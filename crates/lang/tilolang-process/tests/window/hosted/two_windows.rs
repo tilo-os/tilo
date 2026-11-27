@@ -34,7 +34,7 @@ impl Session {
             .expect("the window's connection is watched");
         let bundle = package(package_of(&spec.app));
         let mut hosted = Hosted::new(
-            spec,
+            bus.launched(route, spec, &bundle),
             connection,
             (store, tilolang_process::hosted::memory_content()),
             bundle,

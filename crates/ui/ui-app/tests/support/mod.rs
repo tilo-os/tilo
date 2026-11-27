@@ -157,7 +157,6 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ResourceLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
             | CollabRequest::ResourceCommand { .. }
-            | CollabRequest::DecideShownActions { .. }
             | CollabRequest::ExternalModeration { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel. A
@@ -219,7 +218,7 @@ pub fn document_mutation(event: &CollabEvent) -> Option<collab_types::DocumentMu
 /// The returned `App` is not driven by a real `winit` event loop; it has a
 /// minimal widget tree (`Column` with a single `Text`) and is primarily used
 /// to drive `apply_collab_event_for_test` / `poll_and_apply_collab_events`
-/// against `presence_ctx` and `permission_ctx`.
+/// against `presence_ctx`.
 ///
 /// The second `State` value is returned so the test can construct mutations
 /// independently when it needs to (e.g. to stage CRDT deltas).

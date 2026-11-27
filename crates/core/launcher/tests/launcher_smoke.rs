@@ -946,7 +946,6 @@ tilo_test_env::scenario! {
             std::fs::write(
                 &caps_file,
                 serde_json::to_vec(&tilo_permissions::caps::LaunchGrants {
-                    author: false,
                     sandbox: caps,
                 })
                 .unwrap(),

@@ -304,7 +304,7 @@ impl PendingOperation {
 /// None hides the row until its finite queued check completes.
 struct ProviderRowValidation {
     provider: usize,
-    permissions: Option<tilo_permissions::PermissionContext>,
+    permissions: Option<tilo_ui_base::permissions::Verdicts>,
 }
 
 struct HostStep {
@@ -1225,7 +1225,7 @@ impl ActionPalette {
             return binding
                 .permissions
                 .borrow()
-                .check(&tilo_permissions::PermissionScope::app(
+                .permits(&crate::shown_actions::ShownAction::app(
                     &binding.app_id,
                     tilo_ui_base::permissions::ActionKind::Read,
                 ));
@@ -1255,7 +1255,7 @@ impl ActionPalette {
         provider: &dyn SearchProvider,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         hits: Vec<SearchResult>,
-    ) -> Vec<(SearchResult, Option<tilo_permissions::PermissionContext>)> {
+    ) -> Vec<(SearchResult, Option<tilo_ui_base::permissions::Verdicts>)> {
         hits.into_iter()
             .filter_map(|hit| {
                 let Some(binding) = binding else {
@@ -1371,7 +1371,7 @@ impl ActionPalette {
 
     fn merge_provider_page(
         &mut self,
-        results: Vec<(SearchResult, Option<tilo_permissions::PermissionContext>)>,
+        results: Vec<(SearchResult, Option<tilo_ui_base::permissions::Verdicts>)>,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         provider: usize,
     ) -> usize {

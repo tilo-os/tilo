@@ -1,6 +1,6 @@
 //! Managed components bind the framework History to their own record's owner, and a reviewed
 //! restore rechecks authority and freshness before it writes.
-use crate::support::application::{APP, ProbeHarness, runner_permissions, runner_probe_definition};
+use crate::support::application::{APP, ProbeHarness, runner_probe_definition};
 use automerge::{ROOT, transaction::Transactable};
 use tilo_ui_app::application::{LaunchTarget, RestoreInput};
 use tilo_ui_app::history_mode::*;
@@ -25,7 +25,7 @@ tilo_test_env::scenario! {
         let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let context = host
-            .prepare_with_permissions(definition, 904, &LaunchTarget::New, runner_permissions())
+            .prepare_as(definition, 904, &LaunchTarget::New, tilo_ui_base::permissions::Role::Owner,)
             .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -193,36 +193,49 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase actual_confirmation_rechecks_unchanged_grant_expiry_replacement_and_actor_mapping;
+    phase confirmation_rechecks_what_the_device_says_of_a_component_restore;
     {
-        use tilo_permissions::*;
-        for case in ["expiry", "replacement", "actor"] {
-            let mut driver = review_driver();
-            driver.set_permission_ctx(grant(LOCAL_USER, RESTORABLE.app_id, Some(150)));
+        for revoked in [false, true] {
+            let (_host, binding, mut driver) = bound_review_driver();
+            // The device answers what restoring asks of the app: allowed while the person owns
+            // the workspace.
+            let restore = tilo_ui::shown_actions::ShownAction::app(
+                APP,
+                tilo_ui_base::permissions::ActionKind::Undoable,
+            );
+            assert!(!binding.permissions_for_test().borrow().permits(&restore), "not asked yet");
+            crate::support::application::answer_read(
+                binding.permissions_for_test(),
+                &crate::support::application::device(tilo_ui_base::permissions::Role::Owner),
+            );
+            assert!(binding.permissions_for_test().borrow().permits(&restore));
             driver.click_named("history-restore").unwrap();
-            let before = driver.state_mut().doc.base_heads();
-            match case {
-                "expiry" => NOW.set(200),
-                "replacement" => driver.set_permission_ctx(
-                    tilo_permissions::PermissionContext::stranger(&tilo_permissions::MemberId::person(LOCAL_USER)),
-                ),
-                _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
+            if revoked {
+                // The person's access is taken back while the review is open.
+                crate::support::application::answer_read(
+                    binding.permissions_for_test(),
+                    &crate::support::application::stranger_device(),
+                );
             }
+            let before = bound_body(&binding);
             let confirm = driver
                 .a11y_node_named("Restore version")
                 .expect("real modal footer exports AT action");
             driver
                 .perform_a11y_action(confirm, &tilo_ui_base::a11y::Action::Activate)
                 .unwrap();
-            assert_eq!(driver.state_mut().doc.base_heads(), before, "{case}");
-            assert!(
-                driver
-                    .inspection_json()
-                    .unwrap()
-                    .contains("no longer have permission"),
-                "{case}"
-            );
-            assert!(driver.a11y_node_named("Refresh review").is_some());
+            if revoked {
+                assert_eq!(bound_body(&binding), before, "a refused restore writes nothing");
+                assert!(
+                    driver
+                        .inspection_json()
+                        .unwrap()
+                        .contains("no longer have permission")
+                );
+                assert!(driver.a11y_node_named("Refresh review").is_some());
+            } else {
+                assert_eq!(bound_body(&binding), "bound first");
+            }
         }
     }
 
@@ -276,12 +289,95 @@ tilo_test_env::scenario! {
     }
 }
 
-thread_local! { static NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(100) }; }
-fn current_time() -> Option<u64> {
-    Some(NOW.get())
+/// A managed root over a component whose record has two versions, its history open on the older.
+fn bound_review_driver() -> (
+    ProbeHarness,
+    tilo_ui::bound_dispatch::CallbackBinding,
+    Driver,
+) {
+    let host = ProbeHarness::new();
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(
+            definition,
+            905,
+            &LaunchTarget::New,
+            crate::support::application::permissions(),
+        )
+        .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding_for_test();
+    let selected = binding
+        .records_for_test()
+        .with_history(&binding.checkout_for_test().id, |doc, history| {
+            doc.put(ROOT, "body", "bound first").unwrap();
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(binding.author_for_test().clone()),
+            );
+            let hash = doc.base_heads()[0];
+            doc.put(ROOT, "body", "bound latest").unwrap();
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(binding.author_for_test().clone()),
+            );
+            format!(
+                "timeline-entry:{}",
+                tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
+                    &hash.to_string()
+                ))
+            )
+        })
+        .unwrap();
+    let root = Box::new(tilo_ui::widget::BoundAppWidget::new(component));
+    let source = HistorySourceRegistration::owned(
+        "document",
+        APP,
+        tilo_ui::bound_dispatch::history_owner(&*root).unwrap(),
+    )
+    .unwrap();
+    let registration = HistoryRegistration::new(&BOUND, vec![source]).unwrap();
+    let mut driver = Driver::from_managed_root(
+        State::new(),
+        ManagedRoot::new(root, registration),
+        (900, 650),
+    )
+    .unwrap();
+    driver.click_named("history-open").unwrap();
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&selected),
+            &tilo_ui_base::a11y::Action::Activate,
+        )
+        .unwrap();
+    (host, binding, driver)
 }
+
+/// What the component's record keeps at `body`.
+fn bound_body(binding: &tilo_ui::bound_dispatch::CallbackBinding) -> String {
+    binding
+        .records_for_test()
+        .read(&binding.checkout_for_test().id, |doc| {
+            use automerge::ReadDoc as _;
+            doc.get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .unwrap()
+}
+
 fn review_driver() -> Driver {
-    NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
     state.commit_action(None, None);
@@ -304,7 +400,6 @@ fn review_driver() -> Driver {
         (900, 650),
     )
     .unwrap();
-    driver.set_history_clock(current_time);
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
@@ -327,7 +422,12 @@ fn component_with_history() -> (ProbeHarness, tilo_ui_app::application::AppCompo
     let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
-        .prepare_with_permissions(definition, 950, &LaunchTarget::New, runner_permissions())
+        .prepare_as(
+            definition,
+            950,
+            &LaunchTarget::New,
+            tilo_ui_base::permissions::Role::Owner,
+        )
         .unwrap();
     let mut component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -370,14 +470,4 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
         "retained preview was not current after closing review"
     );
     assert!(!driver.poll_frame().unwrap());
-}
-fn grant(actor: &str, app: &str, until: Option<u64>) -> tilo_permissions::PermissionContext {
-    use tilo_permissions::*;
-    PermissionContext::granted(
-        &tilo_permissions::MemberId::person(actor),
-        &TreePath::root().app(app),
-        tilo_action_types::KindSet::ALL,
-        until,
-    )
-    .at_unix_time(100)
 }

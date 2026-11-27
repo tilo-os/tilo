@@ -163,7 +163,7 @@ impl App {
     fn permitted_control(
         &self,
         controls: &std::collections::HashMap<String, u64>,
-        mut resource: tilo_actions::ResourceSpec,
+        resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
         let Some(binding) = controls.get(resource.id.as_str()).and_then(|node| {
             self.bindings
@@ -173,12 +173,7 @@ impl App {
             return Some(resource);
         };
         let permissions = binding.permissions.borrow();
-        let decider = permissions.action_decider(&binding.app_id);
-        let (kind, id) = (resource.kind.clone(), resource.id.clone());
-        resource
-            .actions
-            .retain(|action| decider.permits(&kind, id.as_str(), action));
-        (!resource.actions.is_empty()).then_some(resource)
+        permissions.permitted_resource(&binding.app_id, resource)
     }
 
     fn collect_declared_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
@@ -232,10 +227,7 @@ impl App {
             .filter(|cache| cache.key == key)
             .and_then(|cache| cache.complete.clone())
             .unwrap_or_default();
-        let resources = complete
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect();
+        let resources = complete.into_iter().collect();
         if let Some(cache) = self
             .actions
             .local_resource_cache
@@ -1632,6 +1624,26 @@ impl App {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        // Not yet decided while the device's answer to what the window asked is on its way: the
+        // window takes it up, as its next frames would, and the call is decided by it.
+        for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
+            match self.invoke_local_resource_action_once(actor, address, arguments) {
+                Err(error) if error.undecided() => {
+                    self.pump_collab_presence();
+                }
+                outcome => return outcome,
+            }
+        }
+        self.invoke_local_resource_action_once(actor, address, arguments)
+    }
+
+    #[cfg(feature = "model")]
+    fn invoke_local_resource_action_once(
+        &mut self,
+        actor: &tilo_actions::Actor,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let capture = self.begin_local_input_capture();
         let result = self.invoke_local_resource_action_captured(actor, address, arguments);
         drop(capture);
@@ -1830,22 +1842,13 @@ impl App {
             self.collect_local_resources()
         } else {
             let key = self.ensure_resource_cache();
-            let resources = self
-                .actions
+            self.actions
                 .resource_cache
                 .borrow()
                 .as_ref()
                 .filter(|cache| cache.key == key)
                 .and_then(|cache| cache.complete.clone())
-                .unwrap_or_default();
-            if actor.member_id() == Some(&self.local_author) {
-                resources
-                    .into_iter()
-                    .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-                    .collect()
-            } else {
-                resources
-            }
+                .unwrap_or_default()
         };
         if tilo_actions::api::resolve(&resources, address).is_none() {
             let fallback = crate::bound_dispatch::resolve_unbound_resource(
@@ -1853,11 +1856,6 @@ impl App {
                 &self.state.doc,
                 &address.resource,
             );
-            let fallback = if actor.member_id() == Some(&self.local_author) {
-                fallback.and_then(|resource| self.filter_resource_for_local_actor(resource))
-            } else {
-                fallback
-            };
             if let Some(resource) = fallback {
                 resources.push(resource);
             }
@@ -1887,26 +1885,6 @@ impl App {
             resolved,
             resolved.need_for(typed_arguments.as_ref(), argument).kind,
         )?;
-        // The local presence's tree offers an action under the least it
-        // needs; this invocation needs what its value asks.
-        // A record another workspace holds is decided there, by its grants and the person's
-        // answers about it: this window's view of them is its controls, not the call. A
-        // settings section is the person's own, decided by its model and kept by the settings
-        // store, not by the workspace grants of the app that shows it.
-        let decided_elsewhere =
-            resource.workspace.is_some() || resource.kind.starts_with("settings.");
-        if actor.member_id() == Some(&self.local_author) && !decided_elsewhere {
-            match crate::bound_dispatch::admit_local_action(
-                &self.permission_ctx,
-                (&::collaboration::local_app_id(), resource, resolved),
-                typed_arguments.as_ref(),
-                argument,
-            ) {
-                Err(tilo_actions::ApiError::ConfirmationRequired)
-                    if broker_admitted || approval.is_some() => {}
-                admitted => admitted?,
-            }
-        }
         let kind = resolved.kind;
         if resolved.contract.runs_on_invokers_device()
             && !crate::bound_dispatch::runs_own_device(
@@ -2967,20 +2945,6 @@ impl App {
     }
 
     #[cfg(feature = "model")]
-    fn filter_resource_for_local_actor(
-        &self,
-        resource: tilo_actions::ResourceSpec,
-    ) -> Option<tilo_actions::ResourceSpec> {
-        // A settings section is the person's own, filtered by its model and the settings store,
-        // not by the workspace grants of the app that shows it.
-        if resource.kind.starts_with("settings.") {
-            return Some(resource);
-        }
-        self.permission_ctx
-            .permitted_resource(&::collaboration::local_app_id(), resource)
-    }
-
-    #[cfg(feature = "model")]
     pub fn close_action_palette(&mut self) {
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3043,9 +3007,7 @@ impl App {
                 self.root_widget.as_ref(),
                 &self.state.doc,
                 &id,
-            )
-            .and_then(|resource| self.filter_resource_for_local_actor(resource))
-            {
+            ) {
                 resources.push(resource);
             }
         }

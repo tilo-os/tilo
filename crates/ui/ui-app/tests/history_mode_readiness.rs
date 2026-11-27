@@ -1,4 +1,4 @@
-use crate::support::application::{APP, ProbeHarness, runner_permissions, runner_probe_definition};
+use crate::support::application::{APP, ProbeHarness, runner_probe_definition};
 use automerge::{ROOT, transaction::Transactable};
 use std::cell::*;
 use std::collections::*;
@@ -181,7 +181,12 @@ fn component(
     let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
-        .prepare_with_permissions(definition, id, &LaunchTarget::New, runner_permissions())
+        .prepare_as(
+            definition,
+            id,
+            &LaunchTarget::New,
+            tilo_ui_base::permissions::Role::Owner,
+        )
         .unwrap();
     let mut component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -190,6 +195,20 @@ fn component(
     component
         .register_document_history(&COMPONENT_HISTORY)
         .unwrap();
+    // Restoring a component's record is bounded by the component's device: it owns the workspace
+    // here, so a whole-document restore is admitted rather than left waiting on a question.
+    tilo_ui::harness_device::answer_actions(
+        component.callback_binding_for_test().permissions_for_test(),
+        [tilo_ui::shown_actions::ShownAction::app(
+            APP,
+            tilo_ui_base::permissions::ActionKind::Undoable,
+        )],
+        &tilo_ui::harness_device::HarnessDevice::member_of(
+            tilo_ui_base::permissions::LOCAL_WORKSPACE,
+            &crate::support::application::author(),
+            tilo_ui_base::permissions::Role::Owner,
+        ),
+    );
     (host, component)
 }
 #[test]

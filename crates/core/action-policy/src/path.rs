@@ -205,6 +205,21 @@ impl TreePath {
         &self.0
     }
 
+    /// The path of `segments`, in their order.
+    #[must_use]
+    pub fn of_segments(segments: impl IntoIterator<Item = Segment>) -> Self {
+        segments
+            .into_iter()
+            .fold(Self::root(), |path, segment| match segment {
+                Segment::Rest => path.rest(),
+                segment => {
+                    let mut path = path;
+                    path.0.push(segment);
+                    path
+                }
+            })
+    }
+
     #[must_use]
     pub const fn is_root(&self) -> bool {
         self.0.is_empty()

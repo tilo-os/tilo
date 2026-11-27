@@ -294,20 +294,6 @@ pub struct WindowPublication {
     pub providers: Vec<Box<dyn crate::search::SearchProvider>>,
 }
 
-/// The draw environment a mounted component's root draws in: the outer one,
-/// lent the component's own authority over its widgets.
-#[cfg(feature = "model")]
-fn lent_permissions<'a>(
-    env: &tilo_ui_base::draw::DrawEnv<'a>,
-    binding: &crate::bound_dispatch::CallbackBinding,
-) -> tilo_ui_base::draw::DrawEnv<'a> {
-    let permissions = binding.permissions.borrow().clone();
-    let mut inner = env.clone();
-    inner.permissions = Some(std::rc::Rc::new(permissions));
-    inner.paint_permissions = tilo_permissions::shared_revision();
-    inner
-}
-
 #[cfg(feature = "model")]
 mod component_adapter {
     /// Everything a component's last pass read, as it stood once the pass ended.
@@ -453,7 +439,7 @@ mod component_adapter {
         ) -> PassInputs {
             PassInputs {
                 owner: crate::bound_dispatch::OwnerInputs {
-                    permissions: binding.permissions.borrow().directory_observation(),
+                    permissions: binding.permissions.borrow().clone(),
                     save: component.record_save_now().ok_or_else(String::new),
                 },
                 locale: tilo_ui_base::i18n::I18nManager::revision(),
@@ -1045,8 +1031,7 @@ mod component_adapter {
             {
                 return false;
             }
-            let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
-            root.draw_child(scene, transform, text_renderer, theme, &inner);
+            root.draw_child(scene, transform, text_renderer, theme, &env);
             let _ =
                 tilo_ui_base::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
@@ -1085,8 +1070,6 @@ mod component_adapter {
             dyn tilo_ui_base::widget::controls::ActionControls,
             dyn crate::widget::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
-            #[cfg(feature = "model")]
-            dyn tilo_ui_base::widget::permission::PermissionGuarded,
             dyn tilo_ui_base::presence::capability::PublishesPresence,
             #[cfg(feature = "model")]
             dyn crate::resource::capability::ResourceScoped,
@@ -1242,7 +1225,6 @@ mod component_adapter {
         ) -> bool {
             let (state, _) = tilo_ui_base::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            let permissions = binding.permissions.borrow().clone();
             let update = |component: &mut AppComponent| {
                 if binding.records.is_opening(&binding.checkout.id) {
                     return component
@@ -1260,12 +1242,8 @@ mod component_adapter {
                     .unwrap_or(false)
             };
             let component = &mut self.component;
-            let (changed, reads) = crate::resource::reads::reading(&binding.lifetime, || {
-                tilo_ui_base::presence::frame::frame(|presence| {
-                    presence.with_permissions(permissions.clone(), || update(component))
-                })
-                .unwrap_or_else(|| update(component))
-            });
+            let (changed, reads) =
+                crate::resource::reads::reading(&binding.lifetime, || update(component));
             self.update_reads = Some(match self.update_reads.take() {
                 Some(earlier) => earlier.join(reads),
                 None => reads,
@@ -1343,8 +1321,7 @@ mod component_adapter {
             if self.component.behaviour.capture_protected {
                 tilo_ui_base::secret_paint::note_secret_painted();
             }
-            let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
-            root.draw_child(scene, transform, text_renderer, theme, &inner);
+            root.draw_child(scene, transform, text_renderer, theme, &env);
         }
         fn handle_event(
             &mut self,
@@ -2010,14 +1987,6 @@ mod component_adapter {
         #[cfg(feature = "model")]
         fn presence_payload(&self) -> Option<(PresenceKey, ::collaboration::PresencePayload)> {
             self.in_root(|root| tilo_ui_base::presence::capability::presence_payload(root))
-                .flatten()
-        }
-    }
-
-    #[cfg(feature = "model")]
-    impl tilo_ui_base::widget::permission::PermissionGuarded for BoundAppWidget {
-        fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
-            self.in_root(|root| tilo_ui_base::widget::permission::permission_scope(root))
                 .flatten()
         }
     }

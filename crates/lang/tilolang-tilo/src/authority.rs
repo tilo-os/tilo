@@ -10,9 +10,10 @@
 //! far as its person admitted the agent; a stranger's code asks. Trusted code still asks before
 //! reaching outside, unless the workspace grants the person that.
 //!
-//! Where the host has no member access for the person (a window outside a host, a test), the person's
-//! own part is not decided here, as a native window's detached dispatcher does not decide it: the
-//! api decides what they commit. The agent and code bounds still are.
+//! A window keeps no member access: its person's own part is what their device says of each
+//! action ([`TiloAuthority::set_verdicts`]), refused until it said, and the device decides again
+//! whatever lands. Where there is neither (a test, a playground), the person's own part is not
+//! decided here: the api decides what they commit. The agent and code bounds still are.
 //!
 //! An Ask is rendered by the host as trusted chrome, never by wasm.
 
@@ -33,6 +34,10 @@ use crate::meta::{MetaExt as _, action_kind};
 
 /// Where the host reads the person's access in the workspace, each time it decides.
 pub type AccessSource = dyn Fn() -> Option<MemberAccess>;
+
+/// What the device of a window says its person may do of an action, by the action's node below
+/// the window's workspace and its kind: `None` until it said.
+pub type VerdictSource = dyn Fn(&TreePath, tilo_action_types::ActionKind) -> Option<Answer>;
 
 /// The workspace a host without an access decides in.
 const NO_WORKSPACE: &str = "local";
@@ -72,6 +77,7 @@ struct State {
 pub struct TiloAuthority {
     viewer: Actor,
     access: Rc<AccessSource>,
+    verdicts: Rc<RefCell<Option<Rc<VerdictSource>>>>,
     state: Rc<RefCell<State>>,
 }
 
@@ -82,8 +88,15 @@ impl TiloAuthority {
         Self {
             viewer,
             access: Rc::new(access),
+            verdicts: Rc::default(),
             state: Rc::default(),
         }
+    }
+
+    /// Decide the person's own part of what the viewer invokes by what their device says
+    /// (`source`), as a window does: it keeps no member access of its own.
+    pub fn set_verdicts(&self, source: Rc<VerdictSource>) {
+        *self.verdicts.borrow_mut() = Some(source);
     }
 
     /// The code of `module` is `meta`'s package, trusted: a built-in or installed package.
@@ -274,33 +287,43 @@ impl Authority for TiloAuthority {
     /// Whether `app` may carry out `capability`: its package here declares it, and no grant of
     /// the workspace naming the app denies it reaching outside. An app this host does not know,
     /// or a capability its package does not declare, is carried out nowhere; a member who revokes
-    /// the app's outside reach stops what it queued from going.
-    fn may_reach(&self, app: &str, capability: &str) -> bool {
+    /// the app's outside reach stops what it queued from going. A window keeps no grants: its
+    /// device says, and until it has, the effect waits.
+    fn may_reach(&self, app: &str, capability: &str) -> Option<bool> {
         let state = self.state.borrow();
         if !state
             .outside
             .get(app)
             .is_some_and(|declared| declared.contains(capability))
         {
-            return false;
+            return Some(false);
         }
         drop(state);
         let Some(access) = (self.access)() else {
-            return true;
+            return match &*self.verdicts.borrow() {
+                Some(verdicts) => verdicts(
+                    &tilo_actions::shown::ShownAction::reach(app, capability).node,
+                    tilo_action_types::ActionKind::Outside,
+                )
+                .map(|answer| answer == Answer::Allow),
+                None => Some(true),
+            };
         };
         let earlier = crate::schema::earlier_ids();
         let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
         let node = TreePath::workspace(access.workspace()).app(app.to_owned());
-        !access
-            .policy
-            .grants
-            .iter()
-            .chain(&access.granted)
-            .any(|grant| {
-                tilo_action_policy::roles::outside_denial_stops(grant, app, capability)
-                    && grant.is_live(&cx)
-                    && cx.covers(&grant.node, &node)
-            })
+        Some(
+            !access
+                .policy
+                .grants
+                .iter()
+                .chain(&access.granted)
+                .any(|grant| {
+                    tilo_action_policy::roles::outside_denial_stops(grant, app, capability)
+                        && grant.is_live(&cx)
+                        && cx.covers(&grant.node, &node)
+                }),
+        )
     }
 
     /// The decision on the invoker's own call, with no code between them and the action: what
@@ -309,12 +332,75 @@ impl Authority for TiloAuthority {
         self.decide(invoker, &[], action) == Decision::Ask
     }
 
+    fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+        let (answer, device) = self.judged(invoker, chain, action);
+        let decided = decision(answer.min(match device {
+            DeviceSays::Nothing => Answer::Allow,
+            DeviceSays::NotYet => Answer::Deny,
+            DeviceSays::Said(said) => said,
+        }));
+        if decided != Decision::Deny {
+            self.carry(invoker, action);
+        }
+        decided
+    }
+
+    fn undecided(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> bool {
+        matches!(self.judged(invoker, chain, action), (answer, DeviceSays::NotYet) if answer != Answer::Deny)
+    }
+}
+
+impl TiloAuthority {
+    /// A Shortcut's run that was let call `action`: what that action's own package code calls is
+    /// what allowing it allows, at any depth.
+    fn carry(&self, invoker: &Actor, action: &ActionInfo) {
+        let mut state = self.state.borrow_mut();
+        if state
+            .runs
+            .get(invoker)
+            .is_none_or(|run| run.grant.is_none())
+        {
+            return;
+        }
+        let reached = state
+            .reaches
+            .get(&action.action)
+            .cloned()
+            .unwrap_or_default();
+        state
+            .carried
+            .entry(invoker.clone())
+            .or_default()
+            .extend(reached);
+    }
+}
+
+/// What the person's device says of a call made in their window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceSays {
+    /// Nothing: the call is not one the device bounds here (no window, an agent's, the app's
+    /// own, a read, or one the dispatch already admitted).
+    Nothing,
+    /// It bounds the call and has not said yet.
+    NotYet,
+    /// What it said.
+    Said(Answer),
+}
+
+impl TiloAuthority {
+    /// What the window's own rules answer of `invoker`'s call of `action` through `chain`, and
+    /// what the person's device says of it.
     #[expect(
         clippy::too_many_lines,
         reason = "one decision read in order: the node acted on, the person and their delegation, \
                   then each author of the code that led here"
     )]
-    fn decide(&self, invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
+    fn judged(
+        &self,
+        invoker: &Actor,
+        chain: &[ModuleHash],
+        action: &ActionInfo,
+    ) -> (Answer, DeviceSays) {
         let access = (self.access)();
         let state = self.state.borrow();
         let workspace = access
@@ -346,32 +432,31 @@ impl Authority for TiloAuthority {
             },
             |target| target.kind.clone(),
         );
-        let node = TreePath::workspace(workspace)
-            .app(action.app.to_string())
-            .kind(kind);
-        let node = match &action.target {
-            // A resource stands where its own node stands: the document it is in, or, for an
-            // item of it, the item under the app's resources, which is the node a share of that
-            // item names. An action and the grant that lets a person write there read one node.
-            Some(target) => match &target.item {
-                Some(item) => node
-                    .any(tilo_action_policy::Level::Resource)
-                    .item(item.clone()),
-                None => node.resource(target.document.clone()),
-            },
-            None if access.is_some()
-                && collab_types::sealed_kind(action.app.as_str(), "").is_some() =>
-            {
-                node.resource("")
+        let sealed =
+            access.is_some() && collab_types::sealed_kind(action.app.as_str(), "").is_some();
+        let at = |base: TreePath| {
+            let node = base.app(action.app.to_string()).kind(kind.clone());
+            match &action.target {
+                // A resource stands where its own node stands: the document it is in, or, for an
+                // item of it, the item under the app's resources, which is the node a share of that
+                // item names. An action and the grant that lets a person write there read one node.
+                Some(target) => match &target.item {
+                    Some(item) => node
+                        .any(tilo_action_policy::Level::Resource)
+                        .item(item.clone()),
+                    None => node.resource(target.document.clone()),
+                },
+                None if sealed => node.resource(""),
+                None => node,
             }
-            None => node,
-        }
-        .action(
-            state
-                .names
-                .get(&action.action)
-                .map_or(action.action.as_str(), String::as_str),
-        );
+            .action(
+                state
+                    .names
+                    .get(&action.action)
+                    .map_or(action.action.as_str(), String::as_str),
+            )
+        };
+        let node = at(TreePath::workspace(workspace));
         let agent = state.agents.get(invoker);
         // Who the person is: the one an agent acts for, or the invoker; the person at the window
         // is the access's person.
@@ -427,14 +512,14 @@ impl Authority for TiloAuthority {
         // code nobody installed asks before everything but its own documents.
         // Code run by no one a grant names (an automation's) holds nothing.
         let Some(runner) = person.map(Grantee::person).or_else(|| grantee(invoker)) else {
-            return decision(Answer::Deny);
+            return (Answer::Deny, DeviceSays::Nothing);
         };
         let mut authors: Vec<(Author, Vec<Grant>)> = Vec::new();
         for module in chain {
             let trusted = state.trusted.contains(module);
             let (author, own) = if let Some(writer) = module.writer() {
                 let Some(writer_grantee) = grantee(&writer) else {
-                    return decision(Answer::Deny);
+                    return (Answer::Deny, DeviceSays::Nothing);
                 };
                 let own = authorship::code_grants(workspace, &writer_grantee, trusted);
                 (Author::Block(writer_grantee), own)
@@ -462,8 +547,11 @@ impl Authority for TiloAuthority {
         }
         // A grant written under an id the app had before (`previously:`) is the app's.
         let earlier = crate::schema::earlier_ids();
+        // A window's device decided an agent's call before it reached the window; elsewhere the
+        // workspace's grants to the agent bound it here.
+        let window = access.is_none() && self.verdicts.borrow().is_some();
         let delegate = delegate.and_then(|member| grantee(&Actor::Member(member.clone())));
-        if let (Some(delegation), Some(agent)) = (&delegation, delegate) {
+        if let (false, Some(delegation), Some(agent)) = (window, &delegation, delegate) {
             // An agent is the pair of its id and its person: the grants naming that pair reach
             // it, never one for another person's agent of the same id.
             policy = policy.bounded_by(
@@ -482,42 +570,47 @@ impl Authority for TiloAuthority {
         }
         let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
         let answer = policy.decide(&node, action_kind(action.class), &cx).answer;
-        let Some(rules) = run.and_then(|run| run.grant.as_deref()) else {
-            return decision(answer);
-        };
         // A Shortcut's run is decided within the rules its person saved with it, at any depth.
         // Its step itself (no code led to it) the runner decided within them, at the node the
         // catalogue names it by. What an action they allow calls through its own package code is
-        // what allowing it allows; any other call is decided by the rules themselves.
-        let carried = chain.is_empty()
-            || state
-                .carried
-                .get(invoker)
-                .is_some_and(|carried| carried.contains(&action.action));
-        let within_rules = if carried {
-            Answer::Allow
-        } else {
-            let grants = Rule::bound_grants(rules);
-            Party::new(vec![Rule::bound_grantee()], &grants)
-                .decide(&node, action_kind(action.class), &cx)
-                .answer
+        // what allowing it allows ([`Self::carry`]); any other call is decided by the rules
+        // themselves.
+        let answer = match run.and_then(|run| run.grant.as_deref()) {
+            None => answer,
+            Some(rules) => {
+                let carried = chain.is_empty()
+                    || state
+                        .carried
+                        .get(invoker)
+                        .is_some_and(|carried| carried.contains(&action.action));
+                let within_rules = if carried {
+                    Answer::Allow
+                } else {
+                    let grants = Rule::bound_grants(rules);
+                    Party::new(vec![Rule::bound_grantee()], &grants)
+                        .decide(&node, action_kind(action.class), &cx)
+                        .answer
+                };
+                answer.min(within_rules)
+            }
         };
-        let answer = answer.min(within_rules);
-        if answer != Answer::Deny {
-            let reached = state
-                .reaches
-                .get(&action.action)
-                .cloned()
-                .unwrap_or_default();
-            drop(state);
-            self.state
-                .borrow_mut()
-                .carried
-                .entry(invoker.clone())
-                .or_default()
-                .extend(reached);
-        }
-        decision(answer)
+        // A window's person: what their device says bounds what they change or reach outside from
+        // the window. A read touches only what the device synced here. A call the dispatch
+        // delivered was admitted on the caller's device, theirs or another member's.
+        let device = match &*self.verdicts.borrow() {
+            Some(verdicts)
+                if window
+                    && !alone
+                    && agent.is_none()
+                    && !action.admitted
+                    && action.class != tilolang_runtime::meta::EffectClass::Read =>
+            {
+                verdicts(&at(TreePath::root()), action_kind(action.class))
+                    .map_or(DeviceSays::NotYet, DeviceSays::Said)
+            }
+            _ => DeviceSays::Nothing,
+        };
+        (answer, device)
     }
 }
 
@@ -547,6 +640,7 @@ mod tests {
             own,
             module: module(),
             target: None,
+            admitted: false,
         }
     }
 
@@ -811,16 +905,21 @@ mod tests {
             authority
         };
         let one = with(vec![deny(&format!("outside:{APP}:smtp.send"))]);
-        assert!(!one.may_reach(APP, "smtp.send"), "the denied one stops");
-        assert!(
+        assert_eq!(
+            one.may_reach(APP, "smtp.send"),
+            Some(false),
+            "the denied one stops"
+        );
+        assert_eq!(
             one.may_reach(APP, "imap.search"),
+            Some(true),
             "the app's other capability still goes"
         );
         let whole = with(vec![deny("mail-denied")]);
-        assert!(!whole.may_reach(APP, "smtp.send"));
-        assert!(!whole.may_reach(APP, "imap.search"));
+        assert_eq!(whole.may_reach(APP, "smtp.send"), Some(false));
+        assert_eq!(whole.may_reach(APP, "imap.search"), Some(false));
         // A capability no package declared never goes, granted or not.
-        assert!(!with(Vec::new()).may_reach(APP, "music.stream"));
+        assert_eq!(with(Vec::new()).may_reach(APP, "music.stream"), Some(false));
     }
 
     #[test]
@@ -835,6 +934,7 @@ mod tests {
             own: true,
             module: tasks.clone(),
             target: None,
+            admitted: false,
         };
         let renamed = |grants: Vec<Grant>| {
             let authority = authority(grants);

@@ -1036,6 +1036,21 @@ impl Providers {
         Some(answer)
     }
 
+    /// What this device says of the actions a window shows, asked as `caller`: the provider it
+    /// registers for them, or why none decides them here.
+    pub fn shown_actions(
+        &self,
+        caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        match self.get(tilo_actions::shown::PROVIDER) {
+            Some(registered) => registered.answers.shown_actions(caller, ask),
+            None => Pending::ready(Err(ActionCallError::Unavailable {
+                reason: tilo_actions::shown::UNAVAILABLE.into(),
+            })),
+        }
+    }
+
     /// Hand `request`, another device's call, to the provider it names, or the one that published
     /// the address it calls, once the workspace `caller` asks in admits that device to the action
     /// by its grants, read from this device's copy of the workspaces `work` holds. A call the

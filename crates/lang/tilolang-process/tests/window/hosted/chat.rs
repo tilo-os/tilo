@@ -15,8 +15,7 @@ use std::rc::Rc;
 use collaboration::RouteSpec;
 use serde_json::{Map, json};
 use tilo_app_window::{UiNode, Value};
-use tilo_permissions::policy;
-use tilo_permissions::policy::MemberAccess;
+use tilo_permissions::policy::{self, MemberAccess};
 use tilolang_process::testing::Bus;
 use tilolang_tilo::runtime::{Invoked, ResourceRef, Value as RtValue};
 use ui::tilo_actions::MemberId;
@@ -46,7 +45,8 @@ fn chat_with_an_agent() -> (Session, String) {
         policy::Answer::Allow,
         policy::Grantee::person("ada"),
     ));
-    let spec = spec_of(&route, "ada").access(MemberAccess::person(policy, "ada"));
+    bus.set_access(&route, "ada", MemberAccess::person(policy, "ada"));
+    let spec = spec_of(&route, "ada");
     // A window tall enough to show a conversation's messages and the turn under them without
     // scrolling: what the test reads and presses is what the person sees.
     let mut session = Session::on_bus_window(&bus, &route, spec, |hosted| {

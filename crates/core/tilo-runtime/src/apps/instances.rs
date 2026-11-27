@@ -517,7 +517,6 @@ impl Instances {
         app: &str,
         workspace: &str,
         origin: Option<Descriptor>,
-        access: Option<tilo_action_policy::MemberAccess>,
         caller: Option<&Caller>,
     ) -> Result<WindowlessStart, String> {
         let instance = self.start(
@@ -526,7 +525,6 @@ impl Instances {
             Shows::Nothing(caller.map(|caller| Box::new(caller.clone()))),
             None,
             (None, None),
-            access,
         )?;
         self.no_view
             .lock_recover()
@@ -573,7 +571,6 @@ impl Instances {
             Shows::Window,
             None,
             (None, None),
-            None,
         )
         .map(drop)
     }
@@ -615,7 +612,6 @@ impl Instances {
             Shows::View(Box::new((caller.clone(), certificate.cloned()))),
             Some(patch),
             (record, reveal),
-            None,
         )?;
         Ok(OpenedView {
             patch: view,
@@ -647,7 +643,6 @@ impl Instances {
             Shows::Window,
             Some(patch),
             (None, None),
-            None,
         )?;
         Ok(HostedWindow {
             instance,
@@ -692,7 +687,6 @@ impl Instances {
         shows: Shows,
         patch: Option<Descriptor>,
         (document, reveal): (Option<String>, Option<String>),
-        access: Option<tilo_action_policy::MemberAccess>,
     ) -> Result<u64, String> {
         if !crate::device::package_runs::runs_in_process(app) {
             return Err(format!("{app} is no tilolang app installed here"));
@@ -722,7 +716,6 @@ impl Instances {
                 document,
                 reveal,
                 open: None,
-                access,
                 locale: self.locale.lock_recover().clone(),
                 link_home: self.link_home(workspace),
             })

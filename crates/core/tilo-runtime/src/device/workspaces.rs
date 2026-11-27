@@ -1089,10 +1089,7 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
         else {
             return tilo_permissions::caps::LaunchGrants::default();
         };
-        tilo_permissions::caps::LaunchGrants {
-            sandbox,
-            ..tilo_permissions::caps::LaunchGrants::default()
-        }
+        tilo_permissions::caps::LaunchGrants { sandbox }
     }
 
     /// Whether this device's person, the one every launch here is for, is a member of
@@ -1103,19 +1100,6 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
         WorkspaceId::parse(workspace)
             .and_then(|id| self.peer(id))
             .is_some_and(|peer| peer.is_member(&person))
-    }
-
-    /// What `app` may do in `workspace` for this device's person: the workspace's policy, as
-    /// this device holds it now, narrowed to the app as a session's push narrows it.
-    fn app_access(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess> {
-        let id = WorkspaceId::parse(workspace)?;
-        let policy = self.policy_of(id)()?;
-        let person = hex::encode(self.device_cert().user_public_key);
-        Some(
-            collab_types::action_authority::AppActionAuthorityProjection::access_for(
-                &policy, app, &person,
-            ),
-        )
     }
 
     /// Whether `workspace`, as this device holds its policy now, lets `app` keep its own records

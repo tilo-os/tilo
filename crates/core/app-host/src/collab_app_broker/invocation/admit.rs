@@ -225,7 +225,7 @@ impl AppBrokerState {
                 |workspace| {
                     let Some(workspace) = workspace else {
                         return Err(if held.is_some() {
-                            super::shown_actions::NOT_HERE.to_owned()
+                            tilo_actions::shown::NOT_HERE.to_owned()
                         } else {
                             "workspace no longer hosted".to_owned()
                         });

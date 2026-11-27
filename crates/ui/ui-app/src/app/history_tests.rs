@@ -796,8 +796,6 @@ impl RoutedPrimary {
             title: "Primary Probe".into(),
             icon: crate::widget::IconDescriptor::Glyph("P"),
             resource_type: crate::ResourceType::new("primary.probe"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
@@ -811,9 +809,7 @@ impl RoutedPrimary {
                 views,
                 device_id: "D".into(),
                 instance_id: 70,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    tilo_permissions::PermissionContext::permissive(),
-                ),
+                permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                 author: tilo_ui_base::permissions::MemberId::person("primary-author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -2849,14 +2845,14 @@ fn runner_component(
     instance: u64,
 ) -> crate::application::AppComponent {
     use crate::application::{LaunchTarget, RestoreInput};
-    use crate::application_test_support::{runner_permissions, runner_probe_definition};
+    use crate::application_test_support::runner_probe_definition;
     let definition = runner_probe_definition();
     let context = host
-        .prepare_with_permissions(
+        .prepare_as(
             definition,
             instance,
             &LaunchTarget::New,
-            runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     definition
@@ -2893,6 +2889,18 @@ fn bridge_component(
     live.entered = entered;
     let (starts, payloads) = (live.starts.clone(), live.payloads.clone());
     let resource = live.resource();
+    // The device answered the bridge's action before its control shows, so a press is admitted
+    // rather than refused as a question still on its way.
+    crate::harness_device::answer(
+        &component.callback_binding().permissions,
+        crate::application_test_support::APP,
+        std::slice::from_ref(&resource),
+        &crate::harness_device::HarnessDevice::member_of(
+            tilo_ui_base::permissions::LOCAL_WORKSPACE,
+            &crate::application_test_support::author(),
+            tilo_ui_base::permissions::Role::Owner,
+        ),
+    );
     let binding =
         tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| arguments)
             .unwrap();
@@ -3301,6 +3309,23 @@ fn component_control_root(
             .unwrap();
         let scope = crate::WakeScope::new();
         let registry_owner = Rc::new(());
+        let live = ComponentControlOwner::new(
+            id,
+            format!("fixture.component.{id}"),
+            id,
+            confirmation.clone(),
+        );
+        // The device answered what the component publishes before its controls show: its author
+        // owns the workspace, so a press is admitted rather than left waiting on a question.
+        let permissions = crate::harness_device::decided(
+            HISTORY.app_id,
+            &[live.resource()],
+            &crate::harness_device::HarnessDevice::member_of(
+                tilo_ui_base::permissions::LOCAL_WORKSPACE,
+                &tilo_ui_base::permissions::MemberId::person("component-control-author"),
+                tilo_ui_base::permissions::Role::Owner,
+            ),
+        );
         let binding = crate::bound_dispatch::CallbackBinding {
             lifetime: scope.handle(),
             closing: Rc::new(Cell::new(false)),
@@ -3315,19 +3340,11 @@ fn component_control_root(
             local_person: tilo_ui_base::permissions::MemberId::person("component-control-author"),
             records: records.clone(),
             checkout,
-            permissions: tilo_permissions::SharedPermissions::new(
-                tilo_permissions::PermissionContext::permissive(),
-            ),
+            permissions,
             author: tilo_ui_base::permissions::MemberId::person("component-control-author"),
             operation_context: Rc::default(),
             writes_as_author: false,
         };
-        let live = ComponentControlOwner::new(
-            id,
-            format!("fixture.component.{id}"),
-            id,
-            confirmation.clone(),
-        );
         handles.push(ComponentControlHandle {
             identity_supported: live.identity_supported.clone(),
             duplicate_depth: live.duplicate_depth.clone(),

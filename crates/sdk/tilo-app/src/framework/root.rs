@@ -11,11 +11,10 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::runner::{with_native_presentations, with_view_operations};
 use collab_types::app_actions::{AppOpen, OPEN_APP_OPERATION, OPEN_OPERATION};
 use collab_types::presence::PresencePayload;
-use tilo_permissions::LivePermissions;
-use tilo_permissions::PermissionScope;
 use tilo_resource::Effect as _;
 use tilo_resource::{Resource, SearchEntry};
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::permissions::LivePermissions;
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{LocalState, Theme};
 use tilo_ui_base::{widget::Element, widget::Widget};
@@ -26,6 +25,7 @@ use ui_core::application_view::{
 use ui_core::automerge::AutoCommit;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
+use ui_core::shown_actions::ShownAction;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
@@ -103,13 +103,21 @@ pub(crate) struct ResourceRoot {
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
     permissions: Option<LivePermissions>,
-    /// The records other workspaces hold that the window last asked its host about, and what the
-    /// records it publishes beside its own were then ([`super::settings::ViewStorage::resources_key`]).
+    /// The records other workspaces keep that the window last asked its device about, and what
+    /// the records it publishes beside its own were then
+    /// ([`super::settings::ViewStorage::resources_key`]).
     shown_asked: (
-        Vec<(String, u64)>,
-        Vec<tilo_permissions::shown_actions::ShownAction>,
+        Option<Vec<(String, u64)>>,
+        Vec<ui_core::shown_actions::ShownAction>,
     ),
-    write: Option<PermissionScope>,
+    /// This window's client for what its device says of the actions it shows, and the read it
+    /// keeps following.
+    shown_remote: ui_core::remote_actions::RemoteActions,
+    shown: Option<ui_core::remote_actions::ShownCall>,
+    /// The decisions shown so far, as the [`ui_core::remote_actions::ShownActionsCall`] revision
+    /// they were read at.
+    shown_decisions: Option<u64>,
+    write: Option<ShownAction>,
     stages: Stages,
     /// The item a view operation showed and its host laid out, which the
     /// operation, started again, reads without showing it anew.
@@ -583,6 +591,7 @@ impl ResourceRoot {
             native_presentation,
             share,
         } = parts;
+        let shown_remote = ui_core::remote_of_the_window(dispatch.app_id());
         Self {
             title,
             icon,
@@ -598,6 +607,9 @@ impl ResourceRoot {
             reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
             shown_asked: Default::default(),
+            shown_remote,
+            shown: None,
+            shown_decisions: None,
             write: None,
             stages,
             shown_first: None,
@@ -695,7 +707,7 @@ impl ResourceRoot {
     pub(crate) fn following(
         mut self,
         permissions: Option<LivePermissions>,
-        write: PermissionScope,
+        write: ShownAction,
     ) -> Self {
         if let Some(permissions) = &permissions {
             self.dispatch.follow(permissions.clone());
@@ -738,7 +750,13 @@ impl ResourceRoot {
     fn refresh_access(&self) {
         let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
-            let read_only = !permissions.check(write) && !self.may_change_shown_item(permissions);
+            // Only once the device refused it: until it answers, the window is not yet decided
+            // rather than view only, and a press waits for its answer.
+            let refused = permissions
+                .current()
+                .refusal(write)
+                .is_some_and(|why| why != tilo_actions::shown::CHECKING);
+            let read_only = refused && !self.may_change_shown_item(permissions);
             self.dispatch.set_read_only(read_only);
             // Its person sees, in the window's bar, that they may only look.
             ui_core::window_toolbar::show_view_only(read_only);
@@ -1951,9 +1969,12 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
-        if let Some(actions) = self.shown_to_ask() {
-            requests.push(::collaboration::CollabRequest::DecideShownActions { actions });
-        }
+        self.shown_to_ask();
+        self.apply_shown_decisions();
+        self.shown_remote.poll();
+        requests.extend(ui_core::widget::Collaborative::take_collab_requests(
+            &mut self.shown_remote,
+        ));
         if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(ui_core::widget::Collaborative::take_collab_requests(
                 &mut api,
@@ -1968,12 +1989,7 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     }
 
     fn handle_collab_event(&mut self, event: &::collaboration::CollabEvent) {
-        if let ::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
-            && let Some(permissions) = &self.permissions
-        {
-            permissions.decide_shown(verdicts);
-            self.dispatch.refresh_permission_states();
-        }
+        ui_core::widget::Collaborative::handle_collab_event(&mut self.shown_remote, event);
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
         if let Some(mut api) = self.dispatch.opener.api() {
             ui_core::widget::Collaborative::handle_collab_event(&mut api, event);
@@ -1987,47 +2003,74 @@ impl ui_core::widget::Collaborative for ResourceRoot {
 }
 
 impl ResourceRoot {
-    /// The actions of the records the window publishes beside its own that another workspace
-    /// holds (a person's profile record, held in their own workspace), when they changed since the
-    /// window last asked its host about them: what it asks now. They are refused here until the
-    /// host's verdicts arrive.
-    fn shown_to_ask(&mut self) -> Option<Vec<tilo_permissions::shown_actions::ShownAction>> {
-        let permissions = self.permissions.as_ref()?;
+    /// What the window asks its device about, when it changed: every action it publishes (as
+    /// published, before any verdict withholds one, so a refused action stays asked about and
+    /// shows again when it is allowed), and what it read and had not asked yet. The device answers
+    /// them as one read and sends a new one whenever a grant, a role or a declaration changes.
+    /// Until it answers, the window shows them as not yet decided and acts on none.
+    fn shown_to_ask(&mut self) {
+        let Some(permissions) = self.permissions.as_ref() else {
+            return;
+        };
         let key = self.storage.resources_key();
-        if key == self.shown_asked.0 {
-            return None;
+        let missed = permissions.take_missed();
+        if self.shown_asked.0.as_ref() != Some(&key) {
+            let mut actions = Vec::new();
+            for resource in &self.storage.resource_resources() {
+                shown_actions_of(self.dispatch.app_id(), resource, &mut actions);
+            }
+            // What its controls ask (whether the person may read what it keeps, change it, take
+            // each action it declares) and what its bar shows, asked with the rest.
+            actions.extend(self.dispatch.questions(&self.typed.needs()));
+            actions.extend(self.write.clone());
+            permissions.ask(actions);
+            self.shown_asked.0 = Some(key);
+        } else if !missed {
+            return;
         }
-        let mut actions = Vec::new();
-        for resource in &self.storage.resource_resources() {
-            shown_actions_of(self.dispatch.app_id(), resource, &mut actions);
+        let asked = permissions.current().asked();
+        if asked == self.shown_asked.1 {
+            return;
         }
-        self.shown_asked.0 = key;
-        if actions == self.shown_asked.1 {
-            return None;
+        self.shown = (!asked.is_empty()).then(|| self.shown_remote.shown(asked.clone()));
+        self.shown_asked.1 = asked;
+        self.shown_decisions = None;
+    }
+
+    /// Take the device's verdicts of what the window asked, as they arrive and each time they
+    /// change: what a control is shown as, and why it is refused.
+    fn apply_shown_decisions(&mut self) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let call = shown.call();
+        if self.shown_decisions == Some(call.revision()) {
+            return;
         }
-        permissions.ask_shown(&actions);
-        self.shown_asked.1.clone_from(&actions);
-        Some(actions)
+        let Some(decisions) = call.get().ready().cloned() else {
+            return;
+        };
+        let Some(permissions) = &self.permissions else {
+            return;
+        };
+        self.shown_decisions = Some(call.revision());
+        permissions.decide(&decisions);
+        self.refresh_access();
     }
 }
 
-/// Add to `actions` every action of `resource`, and of its children, that a workspace other than
-/// the window's holds.
+/// Add to `actions` every action of `resource` and of its children.
 fn shown_actions_of(
     app: &str,
     resource: &ResourceSpec,
-    actions: &mut Vec<tilo_permissions::shown_actions::ShownAction>,
+    actions: &mut Vec<tilo_actions::shown::ShownAction>,
 ) {
-    if let Some(workspace) = &resource.workspace {
-        actions.extend(resource.actions.iter().map(|action| {
-            tilo_permissions::shown_actions::ShownAction::new(
-                Some(workspace),
-                app,
-                (&resource.kind, resource.id.as_str(), &action.id),
-                &action.contract.need(),
-            )
-        }));
-    }
+    actions.extend(
+        resource
+            .actions
+            .iter()
+            .map(|action| ui_core::shown_actions::ShownAction::published(app, resource, action)),
+    );
     for child in &resource.children {
         shown_actions_of(app, child, actions);
     }

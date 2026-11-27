@@ -9,8 +9,7 @@
 //! app has one, and hands it to the process of its workspace and app. The session's own services
 //! reach an app's origin connector the same way ([`ToDevice::Origin`]): the daemon runs every
 //! connector of the device. What changed for the processes already running is said the
-//! same way: the person's formats and language ([`ToDevice::Locale`]) and what they may do in a
-//! workspace's apps ([`ToDevice::Access`]).
+//! same way: the person's formats and language ([`ToDevice::Locale`]).
 //!
 //! Each ask is one packet socket of its own: one [`ToDevice`] with the descriptors it carries, one
 //! [`FromDevice`] back. The session asks for it on the shell link the daemon started it with
@@ -23,12 +22,9 @@ use std::io;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::MemberAccess;
 
 use crate::packet::{Descriptor, Packet};
-use crate::process_link::{
-    AppAccess, Locale, MediaCommand, MediaView, OpenRequest, TaskFds, TaskRequest,
-};
+use crate::process_link::{Locale, MediaCommand, MediaView, OpenRequest, TaskFds, TaskRequest};
 
 /// What a session asks of the device's processes.
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,11 +36,11 @@ pub enum ToDevice {
     },
     /// The person's formats or language changed: every process running is told.
     Locale(Locale),
-    /// What the person may do in apps of `workspace` changed: each process running one of them
-    /// there is told.
+    /// What the person may do in apps of `workspace`, which a window now asks its device
+    /// instead: read so a caller that still sends it is not refused, and let go.
     Access {
         workspace: String,
-        apps: Vec<AppAccess>,
+        apps: Vec<crate::process_link::RetiredAccess>,
     },
     /// The processes running now.
     Running,
@@ -138,9 +134,6 @@ pub struct HandedInstance {
     pub reveal: Option<String>,
     /// What the window opens: a file of the content store, or a link.
     pub open: Option<OpenRequest>,
-    /// What the person may do in the app, projected from the workspace's policy.
-    #[serde(with = "crate::process_link::policy_text")]
-    pub access: Option<MemberAccess>,
     /// The person's formats and language, as the session resolved them.
     pub locale: Locale,
     /// Where the workspace's resources open on the web, as JSON, when the session knows it.
@@ -221,17 +214,6 @@ impl Device {
     /// The connection's error.
     pub fn locale_changed(&self, locale: Locale) -> io::Result<()> {
         self.told(&ToDevice::Locale(locale))
-    }
-
-    /// Tell the processes of `workspace` running an app of `apps` what the person may now do in it.
-    ///
-    /// # Errors
-    /// The connection's error.
-    pub fn access_changed(&self, workspace: &str, apps: Vec<AppAccess>) -> io::Result<()> {
-        self.told(&ToDevice::Access {
-            workspace: workspace.to_owned(),
-            apps,
-        })
     }
 
     /// The processes running now.

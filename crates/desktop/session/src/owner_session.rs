@@ -315,13 +315,8 @@ impl OwnerDevices {
         let person = cert.user_public_key;
         let own = tilo_server_protocol::servers::person_workspace_id(&person);
         let member = tilo_member_types::PersonId::from_root(person);
-        let record = FollowedResource::follow(
-            daemon,
-            (&own, DEVICES.0, DEVICES.1),
-            member.as_str(),
-            None,
-            wake,
-        );
+        let record =
+            FollowedResource::follow(daemon, (&own, DEVICES.0, DEVICES.1), member.as_str(), wake);
         let about = crate::platform::fabric::about(&cert.device_label);
         let about = postcard::to_allocvec(&about)
             .and_then(|about| Ok((about, postcard::to_allocvec(&cert)?)))

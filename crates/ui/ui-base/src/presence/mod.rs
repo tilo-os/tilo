@@ -501,17 +501,6 @@ pub struct PresenceCtx {
     /// chips — in scene coordinates: [`Self::presence_paint`]. It is the
     /// damage a presence change that only moves widgets' marks can name.
     presence_paint: std::cell::RefCell<Vec<vello::kurbo::Rect>>,
-    /// The authority the subtree being drawn holds, scoped by whoever hands
-    /// it one (a host, a bound component) through [`Self::with_permissions`]
-    /// and read by guarded widgets through [`Self::permits`]. `None` checks
-    /// nothing.
-    #[cfg(feature = "model")]
-    permissions: std::cell::RefCell<Option<tilo_permissions::PermissionContext>>,
-    /// [`tilo_permissions::shared_revision`] as the drawing in progress
-    /// sees it. A retained drawing made under another revision is stale:
-    /// what a guarded widget paints follows permissions that moved with
-    /// nothing in the tree marking it.
-    paint_permissions: std::cell::Cell<u64>,
     /// Each peer's last broadcast [`ViewSubset`](tilo_presence::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
@@ -584,67 +573,6 @@ impl PresenceCtx {
 
     pub fn pop_viewport(&self, prev: Option<vello::kurbo::Rect>) {
         self.viewport.set(prev);
-    }
-
-    /// Draw with `permissions` as the authority guarded widgets check, then
-    /// restore the outer one.
-    #[cfg(feature = "model")]
-    pub fn with_permissions<R>(
-        &self,
-        permissions: tilo_permissions::PermissionContext,
-        draw: impl FnOnce() -> R,
-    ) -> R {
-        let outer = self.permissions.replace(Some(permissions));
-        let outer_revision = self
-            .paint_permissions
-            .replace(tilo_permissions::shared_revision());
-        let out = draw();
-        self.paint_permissions.set(outer_revision);
-        self.permissions.replace(outer);
-        out
-    }
-
-    /// What [`tilo_permissions::shared_revision`] was when the drawing in
-    /// progress was lent its authority: a retained drawing from another
-    /// generation paints what the permissions no longer allow, or not what
-    /// they now do.
-    pub fn paint_permission_generation(&self) -> u64 {
-        self.paint_permissions.get()
-    }
-
-    /// Whether the authority of the subtree being drawn covers `scope`.
-    /// Outside any [`Self::with_permissions`] everything is allowed.
-    #[cfg(feature = "model")]
-    pub fn permits(&self, scope: &tilo_permissions::PermissionScope) -> bool {
-        self.permissions
-            .borrow()
-            .as_ref()
-            .is_none_or(|permissions| permissions.check(scope))
-    }
-
-    /// The authority of the subtree being drawn, if anyone scoped one.
-    #[cfg(feature = "model")]
-    pub fn permission_context(&self) -> Option<tilo_permissions::PermissionContext> {
-        self.permissions.borrow().clone()
-    }
-
-    /// Whether the person the drawing in progress is for may act on what `widget` guards: what
-    /// the authority lent through `with_permissions` answers, and yes outside any. Without
-    /// Tilo's model no authority is ever lent, so everything is allowed.
-    pub fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
-        #[cfg(feature = "model")]
-        {
-            use crate::permissions::WidgetAuthority as _;
-            self.permissions
-                .borrow()
-                .as_ref()
-                .is_none_or(|permissions| permissions.permits_widget(widget))
-        }
-        #[cfg(not(feature = "model"))]
-        {
-            let _ = widget;
-            true
-        }
     }
 
     /// Forget the caret name tags painted so far: a host calls it before a
@@ -1933,12 +1861,6 @@ impl PresenceCtx {
             }
             tilo_presence::StatusOrigin::Inferred { .. } => None,
         }
-    }
-}
-
-impl crate::permissions::WidgetAuthority for PresenceCtx {
-    fn permits_widget(&self, widget: &dyn crate::widget::Widget) -> bool {
-        PresenceCtx::permits_widget(self, widget)
     }
 }
 

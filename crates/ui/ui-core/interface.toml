@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 39
+version = 40
 version_const = "crates/ui/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -718,7 +718,6 @@ ActionRequest = "accesskit::ActionRequest: one assistive action a client takes o
 "WorkspaceSync.state" = "WorkspaceSyncState"
 "WorkspaceSync.unsynced_writes" = "u32 optional"
 "WorkspaceSync.workspace" = "String optional"
-"WorkspaceSync.writable" = "Option<bool> optional"
 "WorkspaceSyncState" = "enum external"
 "WorkspaceSyncState::connecting" = "unit"
 "WorkspaceSyncState::device_needs_update" = "unit"

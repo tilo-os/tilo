@@ -383,9 +383,6 @@ pub enum Topic {
     /// A workspace control session with `target_device`, open while the
     /// subscription lives; input goes in [`Operation::ControlInput`].
     WorkspaceControl { target_device: [u8; 32] },
-    /// What the host says of these actions a window shows, as the person at this endpoint would
-    /// run them: all of them, then all again whenever one changes.
-    ShownActions(Vec<tilo_permissions::shown_actions::ShownAction>),
 }
 
 /// The host's answer to a call that succeeded.
@@ -462,8 +459,6 @@ pub enum Event {
         revision: u64,
         reading: Option<Vec<u8>>,
     },
-    /// What the host says of the actions a [`Topic::ShownActions`] names.
-    ShownActions(Vec<tilo_permissions::shown_actions::ActionDecision>),
 }
 
 /// One change of a record's context.

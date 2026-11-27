@@ -28,9 +28,14 @@ pub(crate) struct WaitingControl {
     until: crate::time::Instant,
 }
 
-/// Whether `result` says what the press changes has not arrived yet, and to ask again.
+/// Whether `result` says what the press changes has not arrived yet, or the device has not yet
+/// said whether the person may make it, and to ask again.
 fn waits_for_arrival(result: &Started) -> bool {
-    matches!(result, Err(ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY)
+    match result {
+        Err(ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY => true,
+        Err(error) => error.undecided(),
+        Ok(_) => false,
+    }
 }
 
 /// When a press first refused at `first` (now, when `None`) stops waiting, or `None` once it has.

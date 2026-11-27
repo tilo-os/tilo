@@ -8,9 +8,7 @@ use super::{
 };
 use crate::application_view::InstanceViewStore;
 use crate::launch_error::LaunchError;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::SharedPermissions;
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::MemberId, permissions::SharedPermissions};
 
 /// Prepare `definition` as one of the shell surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its
@@ -43,16 +41,24 @@ pub fn prepare_private_surface(
             views,
             device_id: device.to_owned(),
             instance_id: instance,
-            permissions: SharedPermissions::new(PermissionContext::member(
-                &tilo_ui_base::permissions::MemberId::person(person),
-                tilo_permissions::Role::Owner,
-            )),
+            permissions: SharedPermissions::default(),
             author: MemberId::person(person),
             action_context: tilo_actions::ActionContext::default(),
         },
         &target,
     )?;
     context.provide_private();
+    // Its record is kept in this process alone, in a workspace no daemon keeps: the person owns
+    // it, and what they may do there is decided as their device decides an owner's actions.
+    #[cfg(feature = "model")]
+    context.provide_harness_device(
+        crate::harness_device::HarnessDevice::member_of(
+            workspace,
+            &MemberId::person(person),
+            tilo_ui_base::permissions::Role::Owner,
+        )
+        .shown(),
+    );
     lend(&mut context);
     definition.instantiate(context, target, RestoreInput::None)
 }

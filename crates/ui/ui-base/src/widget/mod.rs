@@ -621,21 +621,10 @@ macro_rules! draw_child_of_dyn {
 
 crate::draw_child_of_dyn!(Widget);
 
-/// What a widget draws over itself once drawn: the denied-permission scrim
-/// its authority forbids, then whatever the host paints over it — the focus
+/// What a widget draws over itself once drawn: whatever the host paints over it — the focus
 /// ring of whoever else is on it, their caret and selection where the widget
 /// publishes the geometry for them.
 pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
-    let rect = widget.get_rect();
-    if !ctx.env.permits_widget(widget) {
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            crate::tokens::colors::PERMISSION_DENIED_SCRIM,
-            None,
-            &rect,
-        );
-    }
     if let Some(overlay) = ctx.env.overlay {
         overlay.paint_over(
             widget,
@@ -1387,8 +1376,6 @@ pub type Element = Box<dyn Widget>;
 pub mod binding;
 pub mod capability;
 mod content_kind;
-#[cfg(feature = "model")]
-pub mod permission;
 #[cfg(feature = "model")]
 pub mod presence_topology;
 pub use content_kind::ContentKind;

@@ -11,7 +11,7 @@ use tilo_ui_app::resource::DocumentId;
 use tilo_ui_app::view::{FocusView, ThawError, View};
 
 #[test]
-fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
+fn instance_creation_enforces_namespaces_and_distinct_ids() {
     {
         let host = ProbeHarness::new();
         let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -32,60 +32,6 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             catalogue.resolve("unavailable"),
             Err(LaunchError::UnknownApplication(_))
         ));
-    }
-
-    {
-        let host = ProbeHarness::new();
-        let mut definition = definition(probe_factory);
-        definition.required.push(denied_scope());
-        assert!(matches!(
-            host.prepare(&definition, 11, &LaunchTarget::New),
-            Err(LaunchError::CapabilityDenied(_))
-        ));
-        assert_eq!(calls(), 0);
-        definition.required.clear();
-        definition.optional.push(denied_scope());
-        let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
-        assert!(!context.permissions().check(&definition.optional[0]));
-        definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        assert_eq!(calls(), 1);
-    }
-
-    {
-        let host = ProbeHarness::new();
-        let mut definition = definition(probe_factory);
-        definition.required.push(denied_scope());
-        let authority = permissions();
-        authority.set(tilo_permissions::PermissionContext::granted(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            &tilo_permissions::TreePath::root(),
-            tilo_action_types::KindSet::ALL,
-            None,
-        ));
-        let context = ProcessContext::prepare(
-            &definition,
-            ProcessContextInputs {
-                records: host.records.clone(),
-                views: host.views.clone(),
-                device_id: DEVICE.into(),
-                instance_id: 11,
-                permissions: authority.clone(),
-                author: author(),
-                action_context: provenance(),
-            },
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let checkout = context.record().clone();
-        authority.set(permissions().borrow().clone());
-        assert!(matches!(
-            definition.instantiate(context, LaunchTarget::New, RestoreInput::None),
-            Err(LaunchError::CapabilityDenied(_))
-        ));
-        assert_eq!(calls(), 0);
-        assert!(host.records.reserve_resource(&checkout).is_ok());
     }
 
     {
@@ -820,7 +766,7 @@ fn envelope(device: &str, workspace: &str, scroll: f64) -> SavedInstanceView {
     reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
-    for case in ["definition", "target", "foreign", "malformed", "revoked"] {
+    for case in ["definition", "target", "foreign", "malformed"] {
         let host = ProbeHarness::new();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -869,16 +815,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(before.0 > 0);
         assert_eq!(before.2, 1);
         let mut definition = definition(probe_factory);
-        let authority = permissions();
-        if case == "revoked" {
-            definition.required.push(denied_scope());
-            authority.set(tilo_permissions::PermissionContext::granted(
-                &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                &tilo_permissions::TreePath::root(),
-                tilo_action_types::KindSet::ALL,
-                None,
-            ));
-        }
         let target = existing(&checkout);
         let context = ProcessContext::prepare(
             &definition,
@@ -887,7 +823,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 views: host.views.clone(),
                 device_id: DEVICE.into(),
                 instance_id: 11,
-                permissions: authority.clone(),
+                permissions: permissions(),
                 author: author(),
                 action_context: provenance(),
             },
@@ -901,7 +837,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             "target" => {}
             "foreign" => bad.app_id = "foreign.app".into(),
             "malformed" => bad.view.viewport.height = f64::NAN,
-            "revoked" => authority.set(permissions().borrow().clone()),
             _ => unreachable!(),
         }
         let target = if case == "target" {
@@ -932,9 +867,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 *source,
                 LaunchError::Restore(ThawError::InvalidView(_))
             )),
-            "revoked" => assert!(
-                matches!(*source, LaunchError::CapabilityDenied(scope) if scope == denied_scope())
-            ),
             _ => unreachable!(),
         }
         assert_eq!(record.id, checkout.id);
@@ -943,12 +875,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP.into();
-        authority.set(tilo_permissions::PermissionContext::granted(
-            &tilo_ui_base::permissions::MemberId::person("probe-author"),
-            &tilo_permissions::TreePath::root(),
-            tilo_action_types::KindSet::ALL,
-            None,
-        ));
         let target = existing(&record);
         let context = ProcessContext::prepare(
             &definition,
@@ -957,7 +883,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 views: host.views,
                 device_id: DEVICE.into(),
                 instance_id: 11,
-                permissions: authority,
+                permissions: permissions(),
                 author: author(),
                 action_context: provenance(),
             },

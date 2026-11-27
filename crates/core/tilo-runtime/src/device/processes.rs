@@ -24,10 +24,7 @@
 //!
 //! The person's region formats and zone ride with the instance, and are said again on every
 //! process's socket when they change them in Settings ([`Processes::locale_changed`]): their
-//! windows' dates, clocks and weeks follow where they stand, without waiting for a restart. So
-//! does what the person may do in the app, said again on the sockets of the workspace's processes
-//! when its policy changes ([`Processes::policy_changed`]): a viewer's window offers no change
-//! they cannot make.
+//! windows' dates, clocks and weeks follow where they stand, without waiting for a restart.
 //!
 //! A process is started through the platform's launcher ([`spawn_host`]; on Linux the launch kind
 //! "tilolang process", `tilo-launcher tilolang-process`; on macOS the tilolang runtime's binary in a
@@ -53,8 +50,8 @@ use std::time::Instant;
 use runtime_portal::device_processes::{FromDevice, HandedFds, HandedInstance, ToDevice};
 use runtime_portal::device_processes::{MediaChange, Running};
 use runtime_portal::process_link::{
-    AppAccess, AppBuild, Descriptor, FromProcess, InstanceFds, InstanceRequest, MediaCommand,
-    MediaView, OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
+    AppBuild, Descriptor, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView,
+    OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -195,8 +192,6 @@ pub struct Instance {
     /// What the window opens: a file, as content the instance reads from the content store, or a
     /// link it hands its package's `open-link`.
     pub open: Option<OpenRequest>,
-    /// What the person may do in the app, projected from the workspace's policy.
-    pub access: Option<tilo_action_policy::MemberAccess>,
     /// The person's formats and language, as the session resolved them: what the instance writes
     /// its dates and clocks in, and the language its window reads every word in.
     pub locale: runtime_portal::process_link::Locale,
@@ -226,7 +221,6 @@ impl Instance {
             document: instance.document,
             reveal: instance.reveal,
             open: instance.open,
-            access: instance.access,
             locale: instance.locale,
             link_home: instance.link_home,
         }
@@ -302,6 +296,16 @@ pub(crate) trait ContentOf: Send + Sync {
     fn content(&self, workspace: &str) -> futures_util::future::BoxFuture<'static, Option<String>>;
 }
 
+/// What this device says of the actions an app declares, for the person at a window of it
+/// (`tilo_actions::shown::ActionDecision` JSON): handed with the window's launch, so its first
+/// frame shows its controls as decided. It reads only what the device keeps, so a launch does
+/// not wait on it.
+pub(crate) trait VerdictsOf: Send + Sync {
+    /// The decisions of `app`'s declared actions for `person` in `workspace` now, and of anything
+    /// of each app in `uses` (the packages it uses that are installed as apps).
+    fn declared(&self, workspace: &str, person: &str, app: &str, uses: &[&str]) -> String;
+}
+
 /// The tilolang processes this device runs, by workspace, app and runtimes.
 pub struct Processes {
     /// Where processes keep what their instances keep, and where windows kept it before.
@@ -324,6 +328,9 @@ pub struct Processes {
     /// ([`Self::read_content_from`]): what each window's process serves as `workspace.content`.
     #[cfg(target_os = "linux")]
     content_of: OnceLock<Arc<dyn ContentOf>>,
+    /// What each window is handed of its app's declared actions, once the daemon decides them
+    /// here ([`Self::decide_verdicts_with`]).
+    verdicts_of: OnceLock<Arc<dyn VerdictsOf>>,
     /// The content last handed to each workspace's processes, so a reading that did not move is
     /// said no second time.
     contents: Mutex<HashMap<String, String>>,
@@ -383,6 +390,7 @@ impl Processes {
             provided: OnceLock::new(),
             #[cfg(target_os = "linux")]
             content_of: OnceLock::new(),
+            verdicts_of: OnceLock::new(),
             contents: Mutex::new(HashMap::new()),
             attests: OnceLock::new(),
             jobs: OnceLock::new(),
@@ -577,6 +585,12 @@ impl Processes {
         let _ = self.content_of.set(content);
     }
 
+    /// Hand each window started from now on what `verdicts` says of its app's declared actions.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn decide_verdicts_with(&self, verdicts: Arc<dyn VerdictsOf>) {
+        let _ = self.verdicts_of.set(verdicts);
+    }
+
     /// The workspace's content as an instance is handed it: the reading its processes were last
     /// told, or empty where none was read yet. Reading it waits on the workspace's store, which a
     /// process starting never does: [`Self::content_changed`] tells the instance once it is read.
@@ -709,28 +723,6 @@ impl Processes {
         }
     }
 
-    /// Say on every process running an app of `apps` in `workspace` what the person may now do in
-    /// it, from the workspace's policy as the caller holds it now: a role given or taken back
-    /// enables or disables what the windows already open offer. A process started later is handed
-    /// it with each instance.
-    pub fn policy_changed(&self, workspace: &str, apps: &[AppAccess]) {
-        for (app, socket) in self.sockets(|key| key.workspace == workspace) {
-            let Some(access) = apps.iter().find(|access| access.app == app) else {
-                continue;
-            };
-            if let Err(error) = ToProcess::Access(access.clone()).send(&socket) {
-                // Its follow thread reads the end of the socket and forgets it: the next
-                // instance starts another.
-                tracing::warn!(
-                    %error,
-                    workspace,
-                    app,
-                    "a tilolang process was not told what the person may now do"
-                );
-            }
-        }
-    }
-
     /// What the daemon hands each connection the person's shell opened to these
     /// processes: a packet socket handed over on the native endpoint, admitted by the account the
     /// kernel names for it and a one-use secret the shell asked for on its own link
@@ -779,12 +771,8 @@ impl Processes {
                 self.locale_changed(&locale);
                 FromDevice::Told
             }
-            ToDevice::Access { workspace, apps } => {
-                if has(&workspace) {
-                    self.policy_changed(&workspace, &apps);
-                }
-                FromDevice::Told
-            }
+            // The windows ask what their person may do of the device itself.
+            ToDevice::Access { .. } => FromDevice::Told,
             ToDevice::Running => FromDevice::Running(self.instances()),
             ToDevice::Task { request, fds } => FromDevice::Started(if has(&request.workspace) {
                 super::package_runs::task_runtimes().and_then(|runs_on| {
@@ -919,6 +907,12 @@ impl Processes {
         let module = runtime_portal::process_link::descriptor_of_buffer(
             tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?,
         )?;
+        let installed = if uses_packages {
+            installed_apps()
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let (verdicts_len, verdicts) = self.launch_verdicts(&instance, &installed)?;
         let request = InstanceRequest {
             app: instance.app.clone(),
             workspace: instance.workspace.clone(),
@@ -942,15 +936,11 @@ impl Processes {
             document: instance.document,
             reveal: instance.reveal,
             open: instance.open,
-            installed: if uses_packages {
-                installed_apps()
-            } else {
-                std::collections::BTreeMap::new()
-            },
-            access: instance.access,
+            installed,
             content: self.content(&instance.workspace),
             link_home: instance.link_home.clone(),
             provided: self.provided()?,
+            verdicts_len,
         };
         let fds = InstanceFds {
             broker: instance.collaboration,
@@ -962,6 +952,7 @@ impl Processes {
             chooser: instance.chooser,
             clipboard: instance.clipboard,
             tools: instance.tools,
+            verdicts,
         };
         let started = self.send(&key, &request, &fds, build)?;
         // The workspace's content is read from its store, which waits: off this call, which may
@@ -983,6 +974,27 @@ impl Processes {
             "tilolang instance handed over"
         );
         Ok(started)
+    }
+
+    /// What this device says of the actions `instance`'s app and the `installed` packages it uses
+    /// declare, sealed beside the module so its first frame shows controls already decided: how
+    /// long it is, and the sealed answers (none when the device has none to give).
+    fn launch_verdicts(
+        &self,
+        instance: &Instance,
+        installed: &std::collections::BTreeMap<String, String>,
+    ) -> std::io::Result<(u64, Option<Descriptor>)> {
+        let verdicts = self.verdicts_of.get().map_or_else(String::new, |verdicts| {
+            let uses: Vec<&str> = installed.keys().map(String::as_str).collect();
+            verdicts.declared(&instance.workspace, &instance.person, &instance.app, &uses)
+        });
+        if verdicts.is_empty() {
+            return Ok((0, None));
+        }
+        let sealed = runtime_portal::process_link::descriptor_of_buffer(
+            tilo_render_protocol::shm::sealed_blob("tilo-verdicts", verdicts.as_bytes())?,
+        )?;
+        Ok((verdicts.len() as u64, Some(sealed)))
     }
 
     /// The module the process `key` runs `app` from, its verified `module`: the person's views get
@@ -2012,7 +2024,6 @@ mod tests {
                 document: None,
                 reveal: None,
                 open: None,
-                access: None,
                 locale: runtime_portal::process_link::Locale::default(),
                 link_home: None,
             };
@@ -2181,7 +2192,6 @@ mod tests {
                     document: None,
                     reveal: None,
                     open: None,
-                    access: None,
                     locale: runtime_portal::process_link::Locale::default(),
                     link_home: None,
                 })
@@ -2380,34 +2390,6 @@ mod tests {
         let mapping = tilo_render_protocol::shm::Mapping::map_sealed(&fd, true, len, len).unwrap();
         let handed = Module::decode(mapping.get(0, len).unwrap()).unwrap();
         assert_eq!(handed, module(b"new"), "the module that verified");
-
-        // When the workspace's policy changes, every process running in it is told what the
-        // person may now do in each app it runs, so the windows already open follow.
-        let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "bob");
-        policy
-            .members
-            .insert("ada".to_owned(), tilo_action_policy::Role::Viewer.into());
-        let policy = Arc::new(policy);
-        let access = |app: &str| {
-            (app == NOTES)
-                .then(|| tilo_action_policy::MemberAccess::person(Arc::clone(&policy), "ada"))
-        };
-        processes.policy_changed(
-            WORKSPACE,
-            &[AppAccess {
-                app: NOTES.to_owned(),
-                access: access(NOTES),
-            }],
-        );
-        let handed = ToProcess::receive(&theirs).unwrap();
-        let Some(ToProcess::Access(said)) = handed else {
-            panic!("the workspace's process is told the person's access: {handed:?}");
-        };
-        assert_eq!(said.app, NOTES);
-        // What a launched Notes reads of the person's authority, as it reads back off the socket.
-        let expected = access(NOTES).unwrap();
-        let expected = serde_json::from_slice(&serde_json::to_vec(&expected).unwrap()).unwrap();
-        assert_eq!(said.access, Some(expected));
 
         // Each was said once, however many of its windows are open, and a process of another
         // workspace or of no workspace heard none of it.

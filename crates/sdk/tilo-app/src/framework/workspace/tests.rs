@@ -1,8 +1,9 @@
 use super::*;
 use tilo_actions::policy::{MemberAccess, Role, WorkspacePolicy};
 use tilo_member_types::{Acting, Actor, MemberId};
-use tilo_permissions::PermissionContext;
 use tilo_resource::Model;
+use tilo_ui_base::permissions::Verdicts;
+use ui_core::harness_device::HarnessDevice;
 use ui_core::resource::ResourceOwners;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -29,21 +30,29 @@ fn a_known_reader_can_read_their_record_at_any_role() {
         let author = MemberId::person(person);
         let records =
             WorkspaceResources::in_workspace(owners.clone(), WORKSPACE.to_owned(), author.clone());
-        let actor = Acting::from(Actor::Member(author));
-        let permissions = LivePermissions::fixed(PermissionContext::new(
-            actor.clone(),
-            Vec::new(),
-            MemberAccess::new(policy.clone(), actor),
+        let device = HarnessDevice::member_of(WORKSPACE, &author, Role::Viewer);
+        device.set_access(MemberAccess::new(
+            policy.clone(),
+            Acting::from(Actor::Member(author)),
         ));
-        WorkspaceResource::<History>::open_at(
+        let permissions = LivePermissions::fixed(Verdicts::default());
+        let record = WorkspaceResource::<History>::open_at(
             &records,
             APP,
             id,
             (APP, "Messages"),
-            Some(permissions),
+            Some(permissions.clone()),
             None,
         )
-        .expect("the workspace record")
+        .expect("the workspace record");
+        // The window asks its device what it reads, and reads nothing until it answers.
+        assert!(
+            !record.may_read(),
+            "nothing is read before the device answers"
+        );
+        permissions.take_missed();
+        permissions.decide(&device.decide(&permissions.current().asked()));
+        record
     };
     assert!(open(&ada, &route).may_read(), "Ada is a Viewer");
     assert!(!open(&bob, &route).may_read(), "Bob owns the workspace");

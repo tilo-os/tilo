@@ -109,8 +109,9 @@ impl Host {
     }
 
     /// Give the runtime the workspace's content as this host serves it: the owners' limits,
-    /// and the refusals the person at this host reads — their own, their workspace's owners'
-    /// and, on the device that hosts it, the host's person's ([`crate::platform::workspace_content`]).
+    /// and the refusals the person at this host reads — their own and, on the device that hosts
+    /// it, every one its device kept for its person, an owner reading their workspace's
+    /// ([`crate::platform::workspace_content`]).
     pub fn give_content(&self, content: &WorkspaceContent) {
         let _ = self.serve_content(content);
     }
@@ -122,18 +123,11 @@ impl Host {
             .member_id()
             .and_then(|member| member.person_id())
             .map(str::to_owned);
-        let access = self.authority().access();
-        let owner = |person: &str| {
-            access
-                .as_ref()
-                .is_some_and(|held| held.policy.is_owner(person))
-        };
         let refusals: Vec<Value> = content
             .refusals
             .iter()
             .filter(|refusal| {
                 me.as_deref() == Some(refusal.member.as_str())
-                    || me.as_deref().is_some_and(owner)
                     || (content.host_person.as_deref() == me.as_deref() && me.is_some())
             })
             .map(WorkspaceContent::refusal_json)

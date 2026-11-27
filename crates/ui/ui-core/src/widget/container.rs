@@ -1,8 +1,6 @@
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;
@@ -36,8 +34,6 @@ pub struct Container {
     focus_trap: bool,
     fill_height: bool,
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
     no_padding: bool,
     padding_override: Option<f32>,
     /// `Some(px)` switches the taffy width to `length(px)` and disables
@@ -85,8 +81,6 @@ impl Container {
             focus_trap: false,
             fill_height: false,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             no_padding: false,
             padding_override: None,
             fixed_width: None,
@@ -399,20 +393,11 @@ impl Container {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Container {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
         dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
@@ -706,7 +691,7 @@ impl Widget for Container {
         // Bound containers paint their own hover and press surface. Preserve
         // its conservative bounds; a passive layout wrapper only carries
         // damage from its child, including any scrollbar animation.
-        if self.activation.is_bound() || self.guarded() || !self.presence_path.is_empty() {
+        if self.activation.is_bound() || !self.presence_path.is_empty() {
             if self.needs_redraw() || self.needs_animation_frame() {
                 regions.push(self.rect);
             }
@@ -768,31 +753,6 @@ crate::widget::activation::activation_controls!(Container, activation);
 impl tilo_ui_base::presence::capability::PublishesPresence for Container {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-impl Container {
-    /// Whether a permission scope guards this container, so its denial scrim covers all of it.
-    #[cfg(feature = "model")]
-    fn guarded(&self) -> bool {
-        self.permission_scope.is_some()
-    }
-
-    /// Without Tilo's model no permission scope guards a widget.
-    #[cfg(not(feature = "model"))]
-    #[allow(
-        clippy::unused_self,
-        reason = "the model build reads the container's scope"
-    )]
-    const fn guarded(&self) -> bool {
-        false
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for Container {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

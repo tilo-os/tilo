@@ -386,16 +386,16 @@ impl HistoryOwner {
 
     pub(crate) fn with_restore_authority<T>(
         &self,
-        fallback_authority: &tilo_permissions::PermissionContext,
+        fallback_authority: Option<&tilo_ui_base::permissions::Verdicts>,
         fallback_author: &tilo_ui_base::permissions::MemberId,
         operation: impl FnOnce(
-            &tilo_permissions::PermissionContext,
+            Option<&tilo_ui_base::permissions::Verdicts>,
             &tilo_ui_base::permissions::MemberId,
         ) -> T,
     ) -> T {
         match &self.0 {
             OwnerKind::Component(binding) => {
-                operation(&binding.permissions.borrow(), &binding.author)
+                operation(Some(&binding.permissions.borrow()), &binding.author)
             }
             OwnerKind::Record { .. } => operation(fallback_authority, fallback_author),
         }

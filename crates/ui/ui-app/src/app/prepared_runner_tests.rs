@@ -9,11 +9,11 @@ use winit::keyboard::{Key, NamedKey};
 fn editable_component(host: &ProbeHarness, instance: u64) -> AppComponent {
     runner_probe_definition()
         .instantiate(
-            host.prepare_with_permissions(
+            host.prepare_as(
                 runner_probe_definition(),
                 instance,
                 &LaunchTarget::New,
-                runner_permissions(),
+                tilo_ui_base::permissions::Role::Owner,
             )
             .unwrap(),
             LaunchTarget::New,
@@ -450,11 +450,11 @@ tilo_test_env::scenario! {
                 let host = ProbeHarness::new();
                 let component = runner_probe_definition()
                     .instantiate(
-                        host.prepare_with_permissions(
+                        host.prepare_as(
                             runner_probe_definition(),
                             11,
                             &LaunchTarget::New,
-                            runner_permissions(),
+                            tilo_ui_base::permissions::Role::Owner,
                         )
                         .unwrap(),
                         LaunchTarget::New,
@@ -473,11 +473,11 @@ tilo_test_env::scenario! {
                 let target = existing(&checkout);
                 let successor = runner_probe_definition()
                     .instantiate(
-                        host.prepare_with_permissions(
+                        host.prepare_as(
                             runner_probe_definition(),
                             11,
                             &target,
-                            runner_permissions(),
+                            tilo_ui_base::permissions::Role::Owner,
                         )
                         .unwrap(),
                         target,
@@ -650,6 +650,11 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                 })
                 .unwrap();
             let mut runner = Runner::new(mode, component);
+            // The device answers what the window read: the person owns the workspace.
+            crate::application_test_support::answer_read(
+                &permissions,
+                &crate::application_test_support::device(tilo_ui_base::permissions::Role::Owner),
+            );
             runner.invoke("view").unwrap();
             runner.invoke("effect").unwrap();
             assert_eq!(
@@ -663,11 +668,10 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                     assert!(history.next_undo_in(doc, &author(), 11).is_some());
                 })
                 .unwrap();
-            permissions.set(
-                tilo_permissions::PermissionContext::stranger(
-                    &tilo_ui_base::permissions::MemberId::person("probe-author"),
-                )
-                .at_unix_time(100),
+            // The device takes the person's access back.
+            crate::application_test_support::answer_read(
+                &permissions,
+                &crate::application_test_support::stranger_device(),
             );
             assert!(runner.invoke("edit").is_err());
             assert_eq!(body(&host.records, &checkout), "edited");
@@ -711,11 +715,11 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         let host = ProbeHarness::new();
         let component = runner_probe_definition()
             .instantiate(
-                host.prepare_with_permissions(
+                host.prepare_as(
                     runner_probe_definition(),
                     11,
                     &LaunchTarget::New,
-                    runner_permissions(),
+                    tilo_ui_base::permissions::Role::Owner,
                 )
                 .unwrap(),
                 LaunchTarget::New,
@@ -1189,11 +1193,11 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     let loaders: Rc<RefCell<Vec<(HostImageLoader, ServedWindow)>>> = Rc::default();
     let page = Rc::clone(&loaders);
     let mut first = host
-        .prepare_with_permissions(
+        .prepare_as(
             runner_probe_definition(),
             39,
             &LaunchTarget::New,
-            runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     let first_link = Arc::new(ContentLink::default());

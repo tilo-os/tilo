@@ -23,8 +23,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_action_policy::{Answer, Context};
-use tilo_action_types::ActionKind;
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
 use tilo_desktop_model::TileContent;
@@ -1314,11 +1312,9 @@ fn front_workspace(session: &Session) -> (String, Option<String>) {
     })
 }
 
-/// The person who made a workspace is handed their authority in it, so the notes they open there
-/// are theirs to add to: the app is started with the projection its window bar asks about, and it
-/// says the person may make a note in the workspace nobody else has joined.
+/// An app the person opens after making a workspace runs there, in the workspace they made.
 #[test]
-fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
+fn an_app_opened_after_making_a_workspace_runs_there() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (_identity, person) = this_computer(&mut home);
@@ -1357,37 +1353,7 @@ fn the_person_who_made_a_workspace_may_add_a_note_in_it() {
         "the app runs in the workspace the person made"
     );
 
-    let path = PathBuf::from(handed(&arguments, "--action-authority"));
-    assert_eq!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("current.json"),
-        "the launcher binds the projection only under the name it reads"
-    );
-    let bytes =
-        tilo_files::native::held::read(&path, collab_types::action_authority::MAX_PROJECTION_BYTES)
-            .expect("the projection is readable")
-            .expect("the session holds it for as long as it runs");
-    let projection: collab_types::action_authority::AppActionAuthorityProjection =
-        serde_json::from_slice(&bytes).expect("a projection");
-    projection
-        .validate()
-        .expect("a projection the launcher admits");
-    assert!(
-        projection.matches(&workspace, PROBE, &person),
-        "the projection is for this app, in this workspace, of this person: {projection:?}"
-    );
-    assert_eq!(
-        projection.policy.owner.as_deref(),
-        Some(person.as_str()),
-        "the workspace's own governance names them its owner"
-    );
-    assert_eq!(
-        may_make_a_note(&projection),
-        Answer::Allow,
-        "the notes window bar offers New note: the person may make a note in the workspace"
-    );
-
-    capture_to(&mut session, "fresh-workspace-new-note");
+    capture_to(&mut session, "fresh-workspace-app-opened");
 }
 
 /// A workspace this session joined, as a join leaves it: the id it is shared under, the slot derived
@@ -1557,21 +1523,6 @@ fn stand_in(session: &Session, workspace: &str) {
             },
         )
         .expect("the session takes the switch");
-}
-
-/// What the projection says about the app's own `new_note` action: the question a window bar asks to
-/// offer New note.
-fn may_make_a_note(
-    projection: &collab_types::action_authority::AppActionAuthorityProjection,
-) -> Answer {
-    projection
-        .authority()
-        .decide(
-            &projection.app_node().action("new_note"),
-            ActionKind::Undoable,
-            &Context::at_secs(tilo_clock::unix_now()),
-        )
-        .answer
 }
 
 /// The window groups of the workspace in front, each with its tabs' titles in order: the tabs a

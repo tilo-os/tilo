@@ -178,20 +178,6 @@ pub fn route_of(
     }
 }
 
-/// A restricted package closes its window when its read grant is removed.
-fn reads_protected_route(
-    route: &collaboration::RouteSpec,
-    access: Option<&tilo_action_policy::MemberAccess>,
-) -> bool {
-    collab_types::validator::reads_protected_document(
-        &route.cluster_id.to_string(),
-        &route.app_id,
-        route.document.as_deref().unwrap_or(""),
-        access,
-        tilo_clock::wall(),
-    )
-}
-
 /// Whether an instance joining `route` opens the document `asked`, as a launch names it: a member's
 /// own, by its id. The workspace's document of the app is no document a launch names.
 fn opens_document(route: &collaboration::RouteSpec, asked: &str) -> bool {
@@ -446,6 +432,8 @@ enum Stage {
         request: InstanceRequest,
         broker: Descriptor,
         decoded: Receiver<Result<Bundle, AdmitError>>,
+        /// What the device said of the app's declared actions, handed with the instance.
+        verdicts: Vec<tilo_actions::shown::ActionDecision>,
     },
     /// The connection joining the route, in the background of its manager.
     Joining {
@@ -644,43 +632,6 @@ impl TilolangProcess {
         changed
     }
 
-    /// What the person may do in `app` changed: its instances, running or opening, offer and
-    /// invoke by `access` from now on. Whether any of them changed.
-    pub fn set_access(
-        &mut self,
-        app: &str,
-        access: Option<&tilo_action_policy::MemberAccess>,
-    ) -> bool {
-        let mut changed = false;
-        let ended = &mut self.ended;
-        self.running.retain_mut(|running| {
-            if running.hosted.spec().app != app {
-                return true;
-            }
-            let route = running.hosted.connection().route();
-            if !reads_protected_route(route, access) {
-                running.hosted.flush();
-                ended.push(running.hosted.spec().instance);
-                changed = true;
-                return false;
-            }
-            changed |= running.hosted.set_access(access.cloned());
-            true
-        });
-        // An instance still opening runs with it from its first frame.
-        for opening in self.opening.iter_mut().filter(|opening| opening.app == app) {
-            match &mut opening.stage {
-                Stage::Module { request, .. } => request.access = access.cloned(),
-                Stage::Joining { spec, .. } => {
-                    spec.access = access.cloned();
-                }
-                Stage::Moved => {}
-            }
-            changed = true;
-        }
-        changed
-    }
-
     /// The workspace `workspace`'s content moved, as this device's person reads it: the windows
     /// already running there serve the new reading on their next frame, and those still opening
     /// run with it from theirs. Whether any running instance changed.
@@ -798,6 +749,10 @@ impl TilolangProcess {
         self.set_zone(request.zone.as_deref());
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
+        let verdicts = match &fds.verdicts {
+            None => Vec::new(),
+            Some(fd) => device_verdicts(fd, request.verdicts_len)?,
+        };
         let (app, instance) = (request.app.clone(), request.instance);
         let reveal = request.reveal.clone();
         let open = request.open.clone();
@@ -829,6 +784,7 @@ impl TilolangProcess {
                 request,
                 broker: fds.broker,
                 decoded,
+                verdicts,
             },
             window,
             identity: Some(fds.identity),
@@ -891,6 +847,7 @@ impl TilolangProcess {
                     request,
                     broker,
                     decoded,
+                    verdicts,
                 } => {
                     let bundle = match decoded.try_recv() {
                         Ok(bundle) => bundle?,
@@ -899,6 +856,7 @@ impl TilolangProcess {
                                 request,
                                 broker,
                                 decoded,
+                                verdicts,
                             };
                             return Ok(Step::Waiting);
                         }
@@ -908,7 +866,7 @@ impl TilolangProcess {
                     };
                     opening.reached("module");
                     opening.stage =
-                        self.join(request, broker, opening.identity.as_ref(), bundle)?;
+                        self.join(request, broker, opening.identity.as_ref(), bundle, verdicts)?;
                 }
                 Stage::Joining {
                     spec,
@@ -949,6 +907,7 @@ impl TilolangProcess {
         broker: Descriptor,
         identity: Option<&Descriptor>,
         bundle: Bundle,
+        verdicts: Vec<tilo_actions::shown::ActionDecision>,
     ) -> Result<Stage, AdmitError> {
         if bundle.meta.app != request.app {
             return Err(AdmitError::IdMismatch {
@@ -998,8 +957,9 @@ impl TilolangProcess {
                         AdmitError::Module(format!("the provided packages: {error}"))
                     })?
                 },
+                // The daemon made this JSON from its own decisions, as the provided packages.
+                verdicts,
                 language: request.language,
-                access: request.access,
                 content: if request.content.is_empty() {
                     None
                 } else {
@@ -1064,11 +1024,6 @@ impl TilolangProcess {
         let route = manager
             .primary_route()
             .map(collaboration::AcceptedRoute::route);
-        if route.is_some_and(|route| !reads_protected_route(route, spec.access.as_ref())) {
-            return Err(AdmitError::Join(
-                "the workspace role does not grant read access to this record".into(),
-            ));
-        }
         let records = route.map_or_else(|| spec.app.clone(), |route| route.app_id.clone());
         if records != bundle.meta.app {
             collab_types::app_surface::register_package(&records, &surface);
@@ -1440,6 +1395,24 @@ fn arrived_early(
 }
 
 /// The bundle the immutable shared buffer `fd` holds, `len` bytes of it.
+/// What the device said of the app's declared actions, read from the sealed blob it handed
+/// beside the instance. The daemon made this JSON from its own decisions.
+fn device_verdicts(
+    fd: &Descriptor,
+    len: u64,
+) -> Result<Vec<tilo_actions::shown::ActionDecision>, AdmitError> {
+    let verdicts_error = |error: &dyn std::fmt::Display| {
+        AdmitError::Module(format!("the device's verdicts: {error}"))
+    };
+    let len = usize::try_from(len).map_err(|error| verdicts_error(&error))?;
+    let mapping = tilo_shm::Mapping::map_sealed(fd, true, len, len)
+        .map_err(|error| verdicts_error(&error))?;
+    let bytes = mapping
+        .get(0, len)
+        .ok_or_else(|| verdicts_error(&"shorter than they say"))?;
+    serde_json::from_slice(bytes).map_err(|error| verdicts_error(&error))
+}
+
 fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;

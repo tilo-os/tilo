@@ -462,6 +462,27 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
     ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionCallError>> {
         self.0.action_cancel(caller, id)
     }
+
+    /// What this device says of the actions an app's window shows, as the app's own connection
+    /// asks: the device's provider for them, which decides each as the person at the window.
+    fn shown_actions(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> tilo_actions::remote::Pending<
+        Result<Vec<tilo_actions::shown::ActionDecision>, tilo_actions::remote::ActionCallError>,
+    > {
+        self.0.providers().map_or_else(
+            || {
+                tilo_actions::remote::Pending::ready(Err(
+                    tilo_actions::remote::ActionCallError::Unavailable {
+                        reason: tilo_actions::shown::UNAVAILABLE.into(),
+                    },
+                ))
+            },
+            |providers| providers.shown_actions(caller, ask),
+        )
+    }
 }
 
 /// Session-owned broker discovery, without retaining its mutex/journal/process graph.

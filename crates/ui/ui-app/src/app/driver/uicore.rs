@@ -57,14 +57,6 @@ impl Driver {
         settled
     }
 
-    /// Read History's review against `clock`, in Unix milliseconds, instead of the wall clock.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_history_clock(&mut self, clock: fn() -> Option<u64>) {
-        if let Some(history) = &mut self.app.history {
-            history.set_clock(clock);
-        }
-    }
-
     /// Invoke only the app's own local History API (the window's History, its search, its edit
     /// and unsaved-changes hosts), never an app destination, then run the frame that shows it.
     ///

@@ -12,11 +12,10 @@ use tilo_actions::remote::{
     ResourceReadRequest,
 };
 use tilo_lock::MutexRecover as _;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::TreePath;
 use tilo_resource::{Invoke, Resource};
 use tilo_session_client::daemon_documents::DaemonShell;
+use tilo_ui_base::permissions::TreePath;
+use tilo_ui_base::shown_actions::{ShownAction, ShownAsk, ShownVerdicts, decisions_revision};
 
 /// How long a change asked of the daemon is waited for: a linked daemon answers at once, and one
 /// that does not is not waited on forever.
@@ -116,9 +115,11 @@ impl<P: Resource> Clone for FollowedResource<P> {
 struct Shared<P: Resource> {
     core: Arc<Core>,
     me: tilo_resource::MemberId,
-    /// The grants it was followed at, where the session knows them: what decides whether the
-    /// person may invoke an action.
-    permissions: Option<PermissionContext>,
+    /// What the device says the person may do with each of its actions, as it last said: none is
+    /// allowed until it answers.
+    verdicts: Arc<Mutex<ShownVerdicts>>,
+    /// The read that keeps them, asked again whenever the grants change.
+    verdicts_follow: tokio::task::AbortHandle,
     /// Its state as of the reading it was made from.
     state: RefCell<Option<(u64, Rc<P::State>)>>,
 }
@@ -137,6 +138,12 @@ struct Core {
     /// A read asked for now ([`Core::refresh`]) is on its way: another is not asked until it
     /// answers.
     refreshing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<P: Resource> Drop for Shared<P> {
+    fn drop(&mut self) {
+        self.verdicts_follow.abort();
+    }
 }
 
 impl Drop for Core {
@@ -212,6 +219,24 @@ fn carried(answer: &serde_json::Value) -> bool {
         .is_some_and(|record| record.get("document").is_some() || record.get("value").is_some())
 }
 
+/// The question of whether the person may invoke `verb` of `P`'s `id`, published by `app`.
+fn question<P: Resource>(app: &str, id: &str, verb: &str) -> Option<ShownAction> {
+    let declared = P::declarations().into_iter().find(|decl| decl.id == verb)?;
+    let route = ui::resource::DocumentId::parse(id)
+        .map_or_else(|| id.to_owned(), |id| id.route().to_owned());
+    Some(ShownAction::at(
+        tilo_actions::action_node(
+            &TreePath::root(),
+            app,
+            P::KIND,
+            &route,
+            declared.field,
+            verb,
+        ),
+        declared.kind,
+    ))
+}
+
 /// A read of `app`'s `id` of `workspace`, whole, once it moved past `after`.
 fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> ResourceReadRequest {
     ResourceReadRequest {
@@ -228,13 +253,12 @@ fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> Resou
 }
 
 impl<P: Resource> FollowedResource<P> {
-    /// Follow `app`'s resource `id` of `workspace` from now on, as `person` at the grants
-    /// `policy` gives them where the session reads them, calling `wake` each time it moved.
+    /// Follow `app`'s resource `id` of `workspace` from now on, as `person`, calling `wake` each
+    /// time it, or what the device says they may do with it, moved.
     pub(crate) fn follow(
         daemon: &DaemonShell,
         (workspace, app, id): (&str, &'static str, &str),
         person: &str,
-        policy: Option<tilo_action_policy::WorkspacePolicy>,
         wake: tilo_service::Wake,
     ) -> Self {
         let readings = Arc::new(Readings {
@@ -278,13 +302,47 @@ impl<P: Resource> FollowedResource<P> {
                 }
             })
         };
-        let permissions = policy.map(|policy| {
-            PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
-                policy,
-                person.to_owned(),
-            ))
-            .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())))
-        });
+        // What the device says of every action the resource declares: one read, answered again
+        // whenever a grant, a role or a declaration changes.
+        let asked: Vec<ShownAction> = P::declarations()
+            .iter()
+            .filter_map(|declared| question::<P>(app, id, declared.id))
+            .collect();
+        let verdicts = Arc::new(Mutex::new(ShownVerdicts::default().asking(asked.clone())));
+        let verdicts_follow = {
+            let (daemon, verdicts, wake) = (
+                daemon.clone(),
+                Arc::clone(&verdicts),
+                Arc::clone(&readings.wake),
+            );
+            daemon.runtime().clone().spawn(async move {
+                let mut after = None;
+                loop {
+                    let ask = ShownAsk {
+                        actions: asked.clone(),
+                        wait_ms: after.is_some().then_some(tilo_actions::remote::MAX_REMOTE_WAIT_MS),
+                        after: after.clone(),
+                    };
+                    match daemon.shown(ask).await {
+                        Ok(decisions) => {
+                            let revision = decisions_revision(&decisions);
+                            if after.as_ref() != Some(&revision) {
+                                verdicts.lock_recover().decide(&decisions);
+                                wake();
+                            }
+                            after = Some(revision);
+                        }
+                        Err(error) => {
+                            tilo_failure::ignored!(
+                                "a follow asks again a moment later",
+                                tracing::debug!(%error, "what the device says of a resource's actions did not read")
+                            );
+                            tokio::time::sleep(ASK_AGAIN).await;
+                        }
+                    }
+                }
+            })
+        };
         Self {
             shared: Rc::new(Shared {
                 core: Arc::new(Core {
@@ -297,7 +355,8 @@ impl<P: Resource> FollowedResource<P> {
                     refreshing: Arc::default(),
                 }),
                 me: tilo_resource::MemberId::person(person.to_owned()),
-                permissions,
+                verdicts,
+                verdicts_follow: verdicts_follow.abort_handle(),
                 state: RefCell::default(),
             }),
         }
@@ -353,27 +412,13 @@ impl<P: Resource> FollowedResource<P> {
             .ok()
     }
 
-    /// Whether the workspace's grants let the person invoke the action `verb`.
+    /// Whether the device says the person may invoke the action `verb`: allowed, or once they
+    /// confirm it. Nothing is, until it answers.
     pub(crate) fn may(&self, verb: &str) -> bool {
-        let Some(declared) = P::declarations().into_iter().find(|decl| decl.id == verb) else {
-            return false;
-        };
         let core = &self.shared.core;
-        let route = ui::resource::DocumentId::parse(&core.id)
-            .map_or_else(|| core.id.clone(), |id| id.route().to_owned());
-        let node = tilo_actions::action_node(
-            &TreePath::root(),
-            core.app,
-            P::KIND,
-            &route,
-            declared.field,
-            verb,
-        );
-        self.shared.permissions.as_ref().is_some_and(|permissions| {
-            permissions.check(&PermissionScope::Action {
-                node,
-                kind: declared.kind,
-            })
+        question::<P>(core.app, &core.id, verb).is_some_and(|question| {
+            self.shared.verdicts.lock_recover().answer(&question)
+                != tilo_actions::policy::Answer::Deny
         })
     }
 

@@ -1,5 +1,3 @@
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
@@ -143,8 +141,6 @@ pub struct Slider {
     action: Option<ActionEmitter<f64>>,
     refused_press: tilo_ui_base::widget::action_emitter::RefusedPress,
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
     /// When `false` the slider is disabled: skipped by focus, rejects
     /// input (no drag, no value change, no hover feedback) and renders
     /// dimmed. Default `true`.
@@ -229,8 +225,6 @@ impl Slider {
             action: None,
             refused_press: tilo_ui_base::widget::action_emitter::RefusedPress::default(),
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             enabled: true,
             last_cursor: Point::ZERO,
             id_override: None,
@@ -559,13 +553,6 @@ impl Slider {
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id_override = Some(id.to_string());
-        self
-    }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
         self
     }
 
@@ -1104,8 +1091,6 @@ impl Widget for Slider {
 
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
         dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
@@ -1516,13 +1501,6 @@ impl Widget for Slider {
 impl tilo_ui_base::presence::capability::PublishesPresence for Slider {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for Slider {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

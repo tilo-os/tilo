@@ -253,15 +253,7 @@ impl EmbeddedApp {
         if self.deadline_known.get() {
             return self.deadline.get();
         }
-        // A bound component's permissions changing with time is a deadline
-        // too, as in a window of its own.
-        let deadline = self
-            .app
-            .root_widget
-            .next_wake_deadline()
-            .into_iter()
-            .chain(self.app.permissions_change_at())
-            .min();
+        let deadline = self.app.root_widget.next_wake_deadline();
         self.deadline.set(deadline);
         self.deadline_known.set(true);
         deadline
@@ -683,13 +675,13 @@ impl Widget for EmbeddedApp {
         let visible = presentation_changed
             || self.app.unsettled()
             // A deadline that came due may have taken up content the app draws — a video's next
-            // picture — as a wake from outside may have moved what it paints (a grant, a policy
-            // clock): that frame draws again.
+            // picture — as a wake from outside may have moved what it paints (a verdict its
+            // device sent): that frame draws again.
             || ((due || woken)
                 && (self.app.root_widget.needs_redraw()
                     || self.app.root_widget.needs_animation_frame()
                     || (woken && self.app.permissions_moved())))
-            || self.app.permissions_walk_due(crate::time::now())
+            || self.app.permissions_walk_due()
             || tilo_ui_base::motion::frames_wanted(crate::time::now());
         if visible {
             self.wants_frame.set(true);
@@ -1695,9 +1687,7 @@ mod saving_resource_wake_tests {
     use super::theme_repaint_tests::{layout, paint};
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
-    use crate::application_test_support::{
-        ProbeHarness, runner_inputs, runner_permissions, runner_probe_definition,
-    };
+    use crate::application_test_support::{ProbeHarness, runner_inputs, runner_probe_definition};
     use crate::resource::ResourceSaveStatus;
 
     fn bound(tile: &mut EmbeddedApp) -> &mut crate::application::AppComponent {
@@ -1749,11 +1739,11 @@ mod saving_resource_wake_tests {
         let host = ProbeHarness::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
-                host.prepare_with_permissions(
+                host.prepare_as(
                     runner_probe_definition(),
                     11,
                     &LaunchTarget::New,
-                    runner_permissions(),
+                    tilo_ui_base::permissions::Role::Owner,
                 )
                 .unwrap(),
                 LaunchTarget::New,

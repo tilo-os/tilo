@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 
 use desktop_entry::launch::{HostLaunch, LaunchEnv};
 
-use crate::authority::Authority;
 use crate::env::SessionEnvironment;
 use crate::instance::package_identities;
 use crate::launch::{Launch, Open};
@@ -93,15 +92,6 @@ pub enum PlanError {
         #[source]
         source: std::io::Error,
     },
-    /// The person's authority in the workspace could not be published, so the
-    /// app would start as a viewer of a workspace they may change: refuse
-    /// rather than launch it as someone they are not.
-    #[error("the person's authority for {app} could not be published: {source}")]
-    Authority {
-        app: String,
-        #[source]
-        source: std::io::Error,
-    },
     /// No Tilo launcher is installed, and every app starts through it.
     #[error("no tilo-launcher is installed, so no app can start here")]
     NoLauncher,
@@ -127,7 +117,6 @@ impl PlanError {
         match self {
             Self::NotInstalled(app)
             | Self::Grants { app, .. }
-            | Self::Authority { app, .. }
             | Self::NotARecord { app, .. }
             | Self::ContentUnavailable { app } => Some(app),
             Self::Host(_) | Self::NothingToStart(_) | Self::NoLauncher | Self::Refused(_) => None,
@@ -195,10 +184,6 @@ pub struct PlanContext<'a> {
     /// The identity record this workspace's apps are given, when the session
     /// resolved one.
     pub identity: Option<PathBuf>,
-    /// What publishes the person's authority in the workspace, for the app
-    /// this launch starts: what the launcher binds into it so it decides the
-    /// person's actions as the workspace's policy says ([`crate::authority`]).
-    pub authority: Option<&'a Authority>,
     /// The DRM render node the compositor renders on, so an app renders on
     /// the same GPU.
     pub render_node: Option<PathBuf>,
@@ -377,17 +362,9 @@ impl Planned {
             app: package.id.to_owned(),
             source,
         })?;
-        // What the person may do in this app here, published before the app
-        // starts: it decides every action against it from its first frame.
-        let authority = context
-            .authority
-            .map(|authority| authority.publish(context.workspace, package.id))
-            .transpose()
-            .map_err(|source| PlanError::Authority {
-                app: package.id.to_owned(),
-                source,
-            })?
-            .flatten();
+        // What the person may do in this app here is the device's to decide
+        // when the action reaches it, so the app is handed no policy to decide
+        // with.
         let mut args = vec![
             "run".to_owned(),
             "--manifest".to_owned(),
@@ -417,10 +394,6 @@ impl Planned {
         }
         if let Some(path) = &granted {
             args.push("--grants".to_owned());
-            args.push(path.display().to_string());
-        }
-        if let Some(path) = &authority {
-            args.push("--action-authority".to_owned());
             args.push(path.display().to_string());
         }
         if let Some(path) = &context.identity {
@@ -707,7 +680,6 @@ mod tests {
             workspace,
             launcher: Some(launcher()),
             identity: None,
-            authority: None,
             render_node: None,
             granted: &[],
             new_window: false,
@@ -819,53 +791,6 @@ mod tests {
             planned.window_identities,
             ["so.tilo.notes", "notes"],
             "a toolkit's own app_id is the trailing component"
-        );
-
-        // A package is handed the person's authority in its workspace.
-        let mut authority_workspace = workspace.clone();
-        authority_workspace.policy = Some(tilo_action_policy::WorkspacePolicy::new(
-            "workspace-9",
-            "person-3",
-        ));
-        authority_workspace.person = "person-3".to_owned();
-        let authority = Authority::new();
-        let handed = PlanContext {
-            authority: Some(&authority),
-            ..planning(&environment, &authority_workspace)
-        };
-        let planned =
-            Planned::planned_package(notes(), launcher(), None, false, &handed).expect("a plan");
-        let at = planned
-            .args
-            .iter()
-            .position(|arg| arg == "--action-authority")
-            .expect("the launcher is told the person's authority");
-        let file = Path::new(&planned.args[at + 1]);
-        assert_eq!(
-            file.file_name().and_then(|name| name.to_str()),
-            Some("current.json"),
-            "the file the launcher binds"
-        );
-        assert!(
-            tilo_files::native::held::read(file, 64 * 1024)
-                .expect("readable")
-                .is_some(),
-            "published and held before the app starts"
-        );
-        // A workspace whose policy the session does not hold hands none: the
-        // app takes the launcher's participation.
-        let mut unsupported = authority_workspace.clone();
-        unsupported.policy = None;
-        let blind = PlanContext {
-            authority: Some(&authority),
-            ..planning(&environment, &unsupported)
-        };
-        assert!(
-            !Planned::planned_package(notes(), launcher(), None, false, &blind)
-                .expect("a plan")
-                .args
-                .iter()
-                .any(|arg| arg == "--action-authority")
         );
 
         // A connector is the app's origin half, not a window: its launch carries the origin and

@@ -2,8 +2,6 @@ use crate::widget::ControlSize;
 use crate::widget::Interaction;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::component::Person;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::num::f32_of_f64;
@@ -111,8 +109,6 @@ pub struct Button {
     /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
     /// through the published action API.
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
     enabled: bool,
     enabled_binding: Option<tilo_ui_base::widget::binding::BoxedBinding<bool>>,
     /// While it waits to open ([`Self::opening_at`]): the moment it opens, in seconds since 1970,
@@ -233,8 +229,6 @@ impl Button {
             on_click: None,
             action: None,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             enabled: true,
             enabled_binding: None,
             opening: None,
@@ -258,13 +252,6 @@ impl Button {
     #[must_use]
     pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
         self.presence_path = path;
-        self
-    }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
         self
     }
 
@@ -2351,8 +2338,6 @@ impl Button {
 impl Widget for Button {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::controls::ActionControls,
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
         dyn tilo_ui_base::presence::capability::PublishesPresence,
     );
 
@@ -2989,13 +2974,6 @@ impl Widget for Button {
 impl tilo_ui_base::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for Button {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

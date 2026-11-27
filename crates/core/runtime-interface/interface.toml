@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 57
+version = 58
 version_const = "crates/core/runtime-interface/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-interface/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -19,7 +19,6 @@ sources = [
     "crates/core/runtime-collab/src/wire.rs",
     "crates/core/runtime-collab/src/wire/shell.rs",
     "crates/core/runtime-collab/src/lib.rs",
-    "crates/core/permissions/src/shown_actions.rs",
     "crates/core/runtime-collab/src/action_directory.rs",
     "crates/core/runtime-collab/src/browser_service_sessions.rs",
     "crates/core/runtime-collab/src/workspace_status.rs",
@@ -107,9 +106,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Acting.for" = "#6 Vec<Acting>"
 "Acting.foreign_device" = "#4 bool"
 "Acting.handed" = "#5 bool"
-"ActionDecision" = "struct"
-"ActionDecision.action" = "#0 ShownAction"
-"ActionDecision.verdict" = "#1 ActionVerdict"
 "ActionDirectoryQuery" = "struct"
 "ActionDirectoryQuery.cursor" = "#2 Vec<u8>"
 "ActionDirectoryQuery.max_bytes" = "#6 u32"
@@ -129,10 +125,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ActionKind::outside" = "#2 unit"
 "ActionKind::read" = "#0 unit"
 "ActionKind::undoable" = "#1 unit"
-"ActionVerdict" = "enum external"
-"ActionVerdict::Allowed" = "#0 unit"
-"ActionVerdict::AsksFirst" = "#1 unit"
-"ActionVerdict::Refused" = "#2 tuple(String)"
 "Actor" = "enum external"
 "Actor::app" = "#2 tuple(AppId)"
 "Actor::automation" = "#1 tuple(AutomationId)"
@@ -358,7 +350,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Event::Reading.reading" = "#2 Option<Vec<u8>>"
 "Event::Reading.resource" = "#0 String"
 "Event::Reading.revision" = "#1 u64"
-"Event::ShownActions" = "#5 tuple(Vec<ActionDecision>)"
 "Event::WorkspaceControl" = "#3 tuple(WorkspaceControlEvent)"
 "FirewallRoute" = "enum external"
 "FirewallRoute::overview" = "#0 unit"
@@ -1640,15 +1631,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellWord.status" = "#4 Option<(String, bool)>"
 "ShellWord.user" = "#2 Option<String>"
 "ShellWord.wave" = "#8 Option<ShownWave>"
-"ShownAction" = "struct"
-"ShownAction.action" = "#4 String"
-"ShownAction.app" = "#1 String"
-"ShownAction.field" = "#6 Option<String>"
-"ShownAction.kind" = "#2 String"
-"ShownAction.kind_needed" = "#5 ActionKind"
-"ShownAction.privileged" = "#7 bool"
-"ShownAction.resource" = "#3 String"
-"ShownAction.workspace" = "#0 Option<String>"
 "ShownWave" = "struct"
 "ShownWave.seq" = "#0 u32"
 "ShownWave.target" = "#1 String"
@@ -1709,7 +1691,6 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Topic::Context" = "#1 unit"
 "Topic::Invocations" = "#2 struct"
 "Topic::Invocations.stable_ids" = "#0 bool"
-"Topic::ShownActions" = "#4 tuple(Vec<ShownAction>)"
 "Topic::WorkspaceControl" = "#3 struct"
 "Topic::WorkspaceControl.target_device" = "#0 [u8; 32]"
 "Turn" = "struct"

@@ -50,8 +50,6 @@ use crate::state::State;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
 #[cfg(feature = "model")]
 pub use palette::FollowedView;
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionContext;
 use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
@@ -59,7 +57,9 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 pub use wake::OwedSettle;
 #[cfg(feature = "model")]
-pub use workspace_side::{ProvidedInvocation, ServedProvider, ServedReads, ShownHost};
+pub(in crate::app) use workspace_side::StandIn;
+#[cfg(feature = "model")]
+pub use workspace_side::{ProvidedInvocation, ServedProvider, ServedReads, ShownDevice, ShownHost};
 
 /// The surface a [`Driver`] shows its app on: a size and a scale, with
 /// nothing behind them. What the app asks of it (another frame, a pointer
@@ -422,6 +422,8 @@ impl Driver {
         viewport: (u32, u32),
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch_error::LaunchError> {
+        #[cfg(feature = "model")]
+        let stand_in = component.harness_device();
         let mut driver = Self::built(
             App::from_component_using(component, inputs, super::AppConstructionInputs::component)?,
             viewport,
@@ -430,6 +432,15 @@ impl Driver {
         // workspace is asked through the peer, and kept for whoever reads the window's requests.
         driver.app.needs_sync = true;
         driver.connect_peer();
+        // The driver's peer answers in its place.
+        #[cfg(feature = "model")]
+        {
+            driver.app.collaboration.stand_in = None;
+        }
+        #[cfg(feature = "model")]
+        if let Some(device) = stand_in {
+            driver.decide_shown_actions(Box::new(move |_, actions| device(actions)));
+        }
         Ok(driver)
     }
 
@@ -598,6 +609,10 @@ impl Driver {
         if let Some(serve) = self.peer.as_ref().map(|peer| peer.serve)
             && serve(self)
         {
+            return self.run_frame();
+        }
+        #[cfg(feature = "model")]
+        if self.decide_unasked() {
             return self.run_frame();
         }
         again
@@ -1590,12 +1605,6 @@ impl Driver {
             self.surface.redraw.set(true);
         }
         changed
-    }
-
-    /// Replace the permissions the app's own document is acted on under.
-    #[cfg(feature = "model")]
-    pub fn set_permission_ctx(&mut self, permissions: PermissionContext) {
-        self.app.set_permission_ctx(permissions);
     }
 
     /// How the person reaches the surface: pointer, touch, keyboard.
@@ -2800,21 +2809,23 @@ impl Driver {
         if let Some(approval) = approval {
             self.hand_approval(address, approval);
         }
-        // A view operation that shows an item first (the render of one, the lines of one) asks
-        // for the view to be laid out before it reads it: a frame lays it out, and the
-        // operation runs again, reading the item where the window shows it.
-        let started = tilo_ui_base::widget::resource_operation::laying_out_first(|| {
-            self.invoke_resource_as(actor, address, &argument, approval)
-        });
-        let started = match started {
-            Err(error)
-                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
-            {
-                self.relayout();
-                self.invoke_resource_as(actor, address, &argument, approval)
+        let started = self.decided(|driver| {
+            // A view operation that shows an item first (the render of one, the lines of one)
+            // asks for the view to be laid out before it reads it: a frame lays it out, and the
+            // operation runs again, reading the item where the window shows it.
+            let started = tilo_ui_base::widget::resource_operation::laying_out_first(|| {
+                driver.invoke_resource_as(actor, address, &argument, approval)
+            });
+            match started {
+                Err(error)
+                    if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+                {
+                    driver.relayout();
+                    driver.invoke_resource_as(actor, address, &argument, approval)
+                }
+                other => other,
             }
-            other => other,
-        };
+        });
         self.run_frame();
         // A call the app hands the workspace carries no yes: the workspace keeps it asked, and the
         // approve the caller brings is the person's answer to that ask, admitted again by the
@@ -2826,6 +2837,27 @@ impl Driver {
             self.resolve_asked(approval.clone());
         }
         started
+    }
+
+    #[cfg(feature = "model")]
+    /// `call`, once the window's device said whether its caller may: a call on something the
+    /// window had not asked about (an item past the page it published, a field a typed edit
+    /// names) is refused as not yet decided, the frames that ask the device and take its answer
+    /// run, and the call is made again.
+    pub(crate) fn decided<T>(
+        &mut self,
+        mut call: impl FnMut(&mut Self) -> Result<T, tilo_actions::ApiError>,
+    ) -> Result<T, tilo_actions::ApiError> {
+        for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
+            match call(self) {
+                Err(error) if error.undecided() => {
+                    self.relayout();
+                    self.run_frame();
+                }
+                outcome => return outcome,
+            }
+        }
+        call(self)
     }
 
     #[cfg(feature = "model")]
@@ -2873,6 +2905,13 @@ impl Driver {
         let Some(invocation) = self.invocation_sent_since(sent, address) else {
             return Ok(started);
         };
+        // A call its device keeps until the person says yes runs once they did, where the caller
+        // confirmed it: the device admits it again with their approve.
+        if let Some(approval) = approval
+            && self.allow_asked(invocation, approval)
+        {
+            self.idle();
+        }
         // A call the workspace would not admit never runs: its caller hears why.
         if let Some(refusal) = self.own_refusal(invocation) {
             return Err(refusal);

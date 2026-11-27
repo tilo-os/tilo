@@ -3,11 +3,8 @@ use ::collaboration::CollabEvent;
 use ::collaboration::CollabRequest;
 use ::collaboration::PresencePayload;
 use tilo_permissions::AppKind;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::PermissionScope;
 use tilo_permissions::Role;
 use tilo_ui_app::widget::TextInput;
-use tilo_ui_base::permissions::ActionKind;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
@@ -240,56 +237,5 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
             "alice must be cleared from tab A after switching to B"
         );
         assert_eq!(bob_app.presence_ctx().peers_on(&tab_b), &[alice]);
-    }
-}
-
-/// Roles carry base authority over the workspace and its apps, so a Viewer
-/// reads the terminal surface and an Editor writes it — no individual
-/// capabilities needed.
-fn member_ctx(user: &str, role: Role) -> PermissionContext {
-    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), role)
-}
-
-fn terminal_write() -> PermissionScope {
-    PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable)
-}
-
-#[test]
-fn roles_and_permission_changes_apply_across_the_session() {
-    {
-        let relay = MemoryRelay::new();
-        let alice_peer = relay.attach("alice");
-        let (mut alice_app, _) = headless_app("alice", alice_peer);
-
-        alice_app.set_permission_ctx(member_ctx("alice", Role::Viewer));
-
-        assert!(!alice_app.permission_ctx().check(&terminal_write()));
-        // The denial is specific, not blanket: reading is allowed.
-        assert!(alice_app.permission_ctx().check(&PermissionScope::app_kind(
-            AppKind::Terminal,
-            ActionKind::Read
-        )));
-    }
-
-    {
-        let relay = MemoryRelay::new();
-        let alice_peer = relay.attach("alice");
-        let bob_peer = relay.attach("bob");
-        let (mut alice_app, _) = headless_app("alice", alice_peer);
-        let (bob_app, _) = headless_app("bob", bob_peer);
-
-        alice_app.set_permission_ctx(member_ctx("alice", Role::Viewer));
-        assert!(!alice_app.permission_ctx().check(&terminal_write()));
-
-        alice_app.set_permission_ctx(member_ctx("alice", Role::Editor));
-        assert!(alice_app.permission_ctx().check(&terminal_write()));
-        assert_eq!(
-            alice_app.permission_ctx().user(),
-            &MemberId::person("alice")
-        );
-
-        // Confirms the two-App harness is exercised; bob's context is
-        // independent of alice's.
-        let _ = bob_app.permission_ctx();
     }
 }

@@ -251,17 +251,12 @@ impl Granted {
 impl LaunchGrantsSource for Granted {
     fn launch_grants(&self, _workspace: &str) -> tilo_permissions::caps::LaunchGrants {
         tilo_permissions::caps::LaunchGrants {
-            author: false,
             sandbox: self.caps.clone(),
         }
     }
 
     fn serves(&self, workspace: &str) -> bool {
         workspace == WORKSPACE
-    }
-
-    fn app_access(&self, _: &str, _: &str) -> Option<tilo_action_policy::MemberAccess> {
-        None
     }
 
     fn app_keeps_its_records(&self, workspace: &str, _: &str) -> bool {

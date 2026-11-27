@@ -4,8 +4,6 @@ use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{NodeId, Style, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use vello::kurbo::{Point, Rect};
 
 /// How a [`Spacer`] takes its size.
@@ -31,8 +29,6 @@ pub struct Spacer {
     extent: Extent,
     id: Option<String>,
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
 }
 
 impl Default for Spacer {
@@ -49,8 +45,6 @@ impl Spacer {
             extent: Extent::Flexible,
             id: None,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
         }
     }
 
@@ -86,21 +80,10 @@ impl Spacer {
         self.presence_path = path;
         self
     }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Widget for Spacer {
-    crate::provides!(
-        #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
-    );
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
     fn build_layout(
         &mut self,
@@ -176,12 +159,5 @@ impl Widget for Spacer {
 impl crate::presence::capability::PublishesPresence for Spacer {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-#[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Spacer {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }

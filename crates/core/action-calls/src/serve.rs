@@ -73,6 +73,22 @@ fn changed<H: ActionProvider>(
     })
 }
 
+/// What `provider` says of `ask`'s actions, answered for `correlation`
+/// ([`ActionProvider::shown_actions`]).
+fn shown_answered<H: ActionProvider>(
+    provider: &H,
+    caller: &Caller,
+    correlation: u64,
+    ask: tilo_actions::shown::ShownAsk,
+) -> Pending<RemoteActionMessage> {
+    provider.shown_actions(caller, ask).map(move |result| {
+        RemoteActionMessage::ShownActionsResponse {
+            correlation,
+            result,
+        }
+    })
+}
+
 /// A call media lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_call_media_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -188,6 +204,21 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         RemoteActionMessage::ChangedRequest { correlation, scope } => {
             noticed(provider, caller, correlation, scope)
         }
+        RemoteActionMessage::ShownActionsRequest {
+            correlation,
+            actions,
+            after,
+            wait_ms,
+        } => shown_answered(
+            provider,
+            caller,
+            correlation,
+            tilo_actions::shown::ShownAsk {
+                actions,
+                after,
+                wait_ms,
+            },
+        ),
         RemoteActionMessage::SurfaceRequest { correlation, app } => {
             surfaced(provider, correlation, &app)
         }

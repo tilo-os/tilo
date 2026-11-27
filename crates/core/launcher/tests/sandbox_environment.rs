@@ -129,7 +129,6 @@ tilo_test_env::scenario! {
                 "TILO_USER_HOME".to_string(),
                 "TILO_WORKSPACE_ID".to_string(),
                 "TILO_WORKSPACE_ROOTS".to_string(),
-                "TILO_PARTICIPATION".to_string(),
                 "TILO_CLI_COMMAND".to_string(),
                 // The shared font index's directory, set beside its bind (`appdir::push_font_index`).
                 tilo_process::environment::FONT_INDEX_ENV.to_string(),

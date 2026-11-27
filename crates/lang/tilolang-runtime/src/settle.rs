@@ -460,6 +460,7 @@ impl Core {
             own: true,
             module: pkg.hash.clone(),
             target: None,
+            admitted: false,
         })
     }
 

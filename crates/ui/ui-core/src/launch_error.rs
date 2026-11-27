@@ -9,8 +9,6 @@ pub enum LaunchError {
     Restore(crate::view::ThawError),
     DuplicateApplication(String),
     UnknownApplication(String),
-    #[cfg(feature = "model")]
-    CapabilityDenied(tilo_permissions::PermissionScope),
     BindingMismatch,
     MissingComponentHost,
     /// Setup failed after the record became Ready: `recovery` holds its store (and any close reports)
@@ -73,8 +71,6 @@ impl fmt::Display for LaunchError {
             Self::Restore(error) => write!(f, "view restore failed: {error}"),
             Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
             Self::UnknownApplication(id) => write!(f, "application {id:?} is not available"),
-            #[cfg(feature = "model")]
-            Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
             Self::MissingComponentHost => {
                 f.write_str("application definition requires an explicit component host")
             }
@@ -127,10 +123,6 @@ impl fmt::Debug for LaunchError {
             #[cfg(feature = "model")]
             Self::Record(error) => f.debug_tuple("Record").field(error).finish(),
             Self::Restore(error) => f.debug_tuple("Restore").field(error).finish(),
-            #[cfg(feature = "model")]
-            Self::CapabilityDenied(scope) => {
-                f.debug_tuple("CapabilityDenied").field(scope).finish()
-            }
             #[cfg(feature = "model")]
             Self::ComponentSetup {
                 source,

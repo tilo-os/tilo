@@ -518,6 +518,26 @@ pub struct Authority<'g> {
 }
 
 impl<'g> Authority<'g> {
+    /// Every node a grant of its parties names, or that a party owns: where its answer can differ
+    /// from the answer above it.
+    #[must_use]
+    pub fn nodes(&self) -> Vec<&TreePath> {
+        std::iter::once(&self.person)
+            .chain(&self.bounds)
+            .flat_map(|party| {
+                party
+                    .grants
+                    .iter()
+                    .chain(&party.held_off)
+                    .chain(&party.delegated)
+                    .chain(&party.narrowing)
+                    .map(|grant| &grant.node)
+                    .chain(&party.owns)
+                    .chain(party.own_records.iter().map(|(node, _)| node))
+            })
+            .collect()
+    }
+
     #[must_use]
     pub const fn person(person: Party<'g>) -> Self {
         Self {

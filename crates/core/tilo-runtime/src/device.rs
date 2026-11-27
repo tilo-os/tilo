@@ -142,10 +142,12 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
+pub(crate) mod shown;
+#[cfg(test)]
+mod shown_tests;
 pub mod speakers;
 #[cfg(target_os = "linux")]
 pub(crate) mod ush_line;
-
 /// How the person's workspaces stand, as the daemon publishes them to its person's shells.
 pub use shell::Standing;
 pub mod issuing;

@@ -28,8 +28,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@57"
-tilo-fs = "optional@57"
+collab = "optional@58"
+tilo-fs = "optional@58"
 
 [entrypoint]
 bin = "bin/example-shared-checklist"

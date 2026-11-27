@@ -3977,51 +3977,6 @@ fn a_view_ends_the_edit_the_keyboard_is_in() {
     );
 }
 
-/// [`action_shell`] whose app declares its `new` as `kind` of change.
-fn action_shell_declaring(kind: tilo_actions::ActionKind) -> Vec<ToUi> {
-    use tilo_actions::{ActionSpec, OperationKind, ResourceSpec};
-    let mut page = action_shell(false);
-    let mut spec = ActionSpec::operation(
-        "new",
-        "New note",
-        OperationKind::Effect,
-        "test.create",
-        &serde_json::json!({}),
-    )
-    .unwrap();
-    spec.type_mut().contract.kind = kind;
-    let resource = ResourceSpec::new("tasks:1", "test.tasks", "Tasks").with_action(spec);
-    let published = crate::catalogue::whole(&tilo_actions::api::survey(&[resource]));
-    page.retain(|message| !matches!(message, ToUi::Actions(_)));
-    page.push(ToUi::Actions(published));
-    page
-}
-
-/// An editor of the workspace presses the app's button for an undoable change of its records: the
-/// press reaches the app, as the owner's does. The window's check decides what the app declared
-/// the action does, not an outside effect, which would ask an editor first.
-#[test]
-fn an_editors_press_of_an_undoable_action_reaches_the_app() {
-    let (mut app, mut harness) = drawn(&action_shell_declaring(tilo_actions::ActionKind::Undoable));
-    harness.set_permission_ctx(tilo_permissions::PermissionContext::member(
-        &tilo_ui_base::permissions::MemberId::person("bo"),
-        tilo_permissions::policy::Role::Editor,
-    ));
-    harness.relayout();
-    let _ = sent(&mut app);
-    let action = named_node(&harness, "New note");
-    harness
-        .perform_a11y_action(action, &tilo_ui_base::a11y::Action::Activate)
-        .expect("the button presses");
-    drawn_window(&mut harness).flush();
-    let told = sent(&mut app);
-    assert!(
-        told.iter()
-            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
-        "the editor's press reaches the app: {told:?}"
-    );
-}
-
 /// A player in the view that holds a picture-in-picture request, as a view's declared player
 /// does when the person presses its control.
 #[derive(Default)]

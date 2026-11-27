@@ -218,11 +218,6 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
     /// Whether this device holds `workspace`, so an app may be launched into it here.
     fn serves(&self, workspace: &str) -> bool;
 
-    /// What `app` may do in `workspace` for this device's person: the workspace's policy,
-    /// narrowed to the app, that the daemon admits an app's process by when it starts one with
-    /// no session. `None` where this device does not hold the workspace's policy.
-    fn app_access(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess>;
-
     /// Whether `workspace` lets `app` keep its own records by itself: the grant installing it
     /// gave it, while it stands ([`tilo_action_policy::roles::app_keeps_its_records`]). An app's
     /// origin connector keeps exactly those records in step with its outside service, so the
@@ -1304,6 +1299,11 @@ impl Apps {
         // Only now may the launcher go on and connect: the broker attests it
         // once, against the record just made.
         if let Err(error) = launch.release_registration() {
+            // A launcher that already ended took its hold with it: the start answers what it
+            // said ([`Self::started`]), not the hold it could no longer be released by.
+            if matches!(launch.ended(), Ok(Some(_))) {
+                return Ok(launch);
+            }
             self.launched.forget(launch.pid);
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
@@ -1729,13 +1729,7 @@ impl LauncherServices for Apps {
             let origin = self.origin_connection(app, workspace)?;
             return self
                 .instances
-                .start_with_no_view(
-                    app,
-                    workspace,
-                    origin,
-                    self.access_for(workspace, app),
-                    caller,
-                )
+                .start_with_no_view(app, workspace, origin, caller)
                 .map(Some);
         }
         // The process that runs on that record already takes the call: nothing starts. One on
@@ -1823,55 +1817,6 @@ impl LauncherServices for Apps {
 }
 
 impl Apps {
-    /// The access `app`'s process is admitted with in `workspace`, from the workspace's policy as
-    /// this device holds it now: what a session's push hands an app's windows, for a process
-    /// started with no session open.
-    fn access_for(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess> {
-        self.grants
-            .get()
-            .and_then(|source| source.app_access(workspace, app))
-    }
-
-    /// Tell every process of `workspace` what this device's person may now do in its app, read
-    /// from the workspace's policy as the service holds it now: a role given or taken back
-    /// reaches the windows and connections a process already runs.
-    pub(crate) fn access_changed(&self, workspace: &str) {
-        let Ok(processes) = self.processes() else {
-            return;
-        };
-        let apps: Vec<runtime_portal::process_link::AppAccess> = processes
-            .instances()
-            .into_iter()
-            .filter(|running| running.workspace == workspace)
-            .filter_map(|running| {
-                self.access_for(workspace, &running.app).map(|access| {
-                    runtime_portal::process_link::AppAccess {
-                        app: running.app,
-                        access: Some(access),
-                    }
-                })
-            })
-            .collect();
-        if !apps.is_empty() {
-            processes.policy_changed(workspace, &apps);
-        }
-    }
-
-    /// [`Self::access_changed`] for every workspace a process of this device runs.
-    pub(crate) fn access_changed_everywhere(&self) {
-        let Ok(processes) = self.processes() else {
-            return;
-        };
-        let workspaces: std::collections::BTreeSet<String> = processes
-            .instances()
-            .into_iter()
-            .map(|running| running.workspace)
-            .collect();
-        for workspace in workspaces {
-            self.access_changed(&workspace);
-        }
-    }
-
     /// How many copies of `app` in `workspace` this device runs with no view now: what a test
     /// of the app's own code, or of a connection it keeps, observes.
     #[cfg(feature = "test-support")]

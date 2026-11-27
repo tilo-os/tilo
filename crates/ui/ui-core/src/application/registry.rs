@@ -221,8 +221,6 @@ mod tests {
             title: "Probe".into(),
             icon: IconDescriptor::Named("notes".into()),
             resource_type: ResourceType::new("probe.page"),
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,

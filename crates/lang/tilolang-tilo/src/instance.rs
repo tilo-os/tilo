@@ -383,6 +383,9 @@ pub struct Instance {
     store: ResourceStore,
     /// Where the host reads the person's access in the workspace, once its embedder has one.
     access: Rc<RefCell<Option<Rc<crate::authority::AccessSource>>>>,
+    /// What the window's device says its person may do, once its embedder asks it
+    /// ([`Self::set_verdicts`]).
+    verdicts: RefCell<Option<Rc<crate::authority::VerdictSource>>>,
     /// Where the host reads the workspace's content from, once its embedder has one.
     content: Rc<RefCell<Option<crate::content::ContentSource>>>,
     platform: Rc<dyn Platform>,
@@ -570,6 +573,7 @@ impl Instance {
             link_home: config.link_home,
             store: config.store,
             access: Rc::default(),
+            verdicts: RefCell::default(),
             content: Rc::default(),
             platform,
             names,
@@ -676,6 +680,17 @@ impl Instance {
     /// host gave it one).
     pub fn set_access(&self, source: Rc<crate::authority::AccessSource>) {
         *self.access.borrow_mut() = Some(source);
+    }
+
+    /// Decide what the person at the window may do by what their device says (`source`), as a
+    /// window keeping no member access does: what it does not say yet is refused. The records the
+    /// device synced here are the person's to read and to place as theirs; the device decides
+    /// again whatever lands. May come after the host started.
+    pub fn set_verdicts(&self, source: Rc<crate::authority::VerdictSource>) {
+        if let Some(host) = self.host.borrow().as_ref() {
+            host.as_window(Rc::clone(&source));
+        }
+        *self.verdicts.borrow_mut() = Some(source);
     }
 
     /// Read the workspace's content from `source`: its owners' limits and the content a limit
@@ -1364,6 +1379,17 @@ impl Instance {
         ))
     }
 
+    /// Hand a host built now what its embedder gave before it: the workspace's content, and what
+    /// the window's device says its person may do.
+    fn hand_sources(&self, host: &Host) {
+        if let Some(source) = self.content.borrow().as_ref() {
+            host.set_content_source(Rc::clone(source));
+        }
+        if let Some(source) = self.verdicts.borrow().as_ref() {
+            host.as_window(Rc::clone(source));
+        }
+    }
+
     /// The host over the store, built with the package the first time.
     fn host_for(&mut self) -> Option<Host> {
         if let Some(host) = self.host.borrow().as_ref() {
@@ -1403,9 +1429,7 @@ impl Instance {
                 return None;
             }
         };
-        if let Some(source) = self.content.borrow().as_ref() {
-            host.set_content_source(Rc::clone(source));
-        }
+        self.hand_sources(&host);
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let runtime = host.runtime();

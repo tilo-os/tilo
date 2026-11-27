@@ -2428,11 +2428,11 @@ mod tests {
         let definition = crate::application_test_support::definition(clicks_factory);
         let target = crate::application::LaunchTarget::New;
         let context = host
-            .prepare_with_permissions(
+            .prepare_as(
                 &definition,
                 71,
                 &target,
-                crate::application_test_support::runner_permissions(),
+                tilo_ui_base::permissions::Role::Owner,
             )
             .unwrap();
         let component = definition
@@ -2825,11 +2825,11 @@ mod tests {
         let definition = crate::application_test_support::definition(clicks_factory);
         let target = crate::application::LaunchTarget::New;
         let context = host
-            .prepare_with_permissions(
+            .prepare_as(
                 &definition,
                 72,
                 &target,
-                crate::application_test_support::runner_permissions(),
+                tilo_ui_base::permissions::Role::Owner,
             )
             .unwrap();
         let component = definition

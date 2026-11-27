@@ -49,9 +49,8 @@ tilo_test_env::scenario! {
             ));
             assert!(fixture.app.actions.action_directory_snapshot.is_none());
             let revision = capture_bound_directory(&mut fixture);
-            fixture
-                .permissions
-                .set(tilo_permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("fixture-user")).at_unix_time(100));
+            fixture.device.remove(&ActionFixture::user());
+            crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
             assert!(matches!(
                 fixture
                     .app
@@ -60,8 +59,9 @@ tilo_test_env::scenario! {
             ));
             assert!(fixture.app.actions.action_directory_snapshot.is_none());
             fixture
-                .permissions
-                .set(tilo_permissions::PermissionContext::permissive());
+                .device
+                .set_role(&ActionFixture::user(), tilo_ui_base::permissions::Role::Owner);
+            crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
             let revision = capture_bound_directory(&mut fixture);
             fixture.app.close_components();
             assert!(matches!(

@@ -721,7 +721,6 @@ impl AppBrokerState {
             Arc::new_cyclic(|state| Self {
                 channels: Mutex::new(HashMap::new()),
                 committed_waits: Mutex::new(HashMap::new()),
-                shown_actions: Mutex::new(Vec::new()),
                 lifecycle: RwLock::new(()),
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),

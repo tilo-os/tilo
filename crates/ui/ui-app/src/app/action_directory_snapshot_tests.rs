@@ -996,7 +996,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let (mut app, calls) = declared_directory(1);
+            let (mut app, _) = declared_directory(1);
             app.state_mut_for_test()
                 .doc
                 .put(ROOT, "pending", 1_i64)
@@ -1004,32 +1004,11 @@ tilo_test_env::scenario! {
             let pending = app.state.doc.pending_ops();
             assert!(pending > 0);
             publish_declared_directory(&mut app);
-            let revision = app.action_directory_revision();
             app.action_directory_page(directory_query("", "", 1, 8192, 1));
             assert_eq!(
                 app.state.doc.pending_ops(),
                 pending,
                 "discovery must not close the undo transaction"
-            );
-            app.actions.permission_generation.set(u64::MAX);
-            app.set_permission_ctx(tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("restricted"),
-            ));
-            assert_ne!(app.action_directory_revision(), revision);
-            assert!(
-                app.action_directory_page(directory_query("", "", 8, 8192, 8))
-                    .rows
-                    .is_empty()
-            );
-            assert_eq!(calls.get(), 1);
-            publish_declared_directory(&mut app);
-            let restricted = app.action_directory_revision();
-            app.set_permission_ctx(PermissionContext::permissive());
-            assert_ne!(app.action_directory_revision(), restricted);
-            assert!(
-                app.action_directory_page(directory_query("", "", 8, 8192, 8))
-                    .rows
-                    .is_empty()
             );
         }
 

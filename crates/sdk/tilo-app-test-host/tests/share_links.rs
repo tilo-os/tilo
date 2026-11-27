@@ -5,9 +5,11 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ResourceViewLocator,
 };
+use tilo_app::framework::harness_device::HarnessDevice;
+use tilo_app::framework::testing::TEST_WORKSPACE;
+use tilo_app::permissions::{MemberId, Role};
 use tilo_app::prelude::*;
 use tilo_app::{RemoteActions, RemoteActionsGuard};
-use tilo_permissions::Role;
 use tilo_reference::link::{
     AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
     Scope, WebEntries, WebEntry,
@@ -15,6 +17,8 @@ use tilo_reference::link::{
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
+/// Who the test's notebook belongs to.
+const PERSON: &str = "test-author";
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Page {
@@ -71,6 +75,7 @@ impl ResourceApp for NotebookApp {
 /// A workspace host answering view lookups with its locator, announcing `entry`.
 struct Host {
     entry: Option<String>,
+    role: Role,
     asked: Mutex<Vec<CatalogueQuery>>,
 }
 
@@ -118,13 +123,31 @@ impl ActionProvider for Host {
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         tilo_actions::remote::Pending::ready(Ok(()))
     }
+
+    /// What the window shows, decided as the device keeping the notebook's workspace decides it
+    /// for a person of `role` there.
+    fn shown_actions(
+        &self,
+        _caller: &Caller,
+        ask: tilo_actions::shown::ShownAsk,
+    ) -> Pending<Result<Vec<tilo_actions::shown::ActionDecision>, ActionCallError>> {
+        let device = HarnessDevice::member_of(TEST_WORKSPACE, &MemberId::person(PERSON), self.role);
+        Pending::ready(Ok(device.decide(&ask.actions)))
+    }
 }
 
 fn serve(entry: Option<&str>) -> (Arc<Host>, RemoteActionsGuard) {
+    serve_as(entry, Role::Owner)
+}
+
+/// [`serve`] for a person of `role` in the notebook's workspace.
+fn serve_as(entry: Option<&str>, role: Role) -> (Arc<Host>, RemoteActionsGuard) {
     let host = Arc::new(Host {
         entry: entry.map(str::to_owned),
+        role,
         asked: Mutex::default(),
     });
+    tilo_app_test_host::answer_calls_in_process();
     let guard = RemoteActions::enter(host.clone(), Caller::local_person("owner"));
     (host, guard)
 }
@@ -338,7 +361,7 @@ tilo_test_env::scenario! {
 
     phase share_invite_link_is_refused_without_the_invite_grant;
     {
-        let (_host, _guard) = serve(Some(ENTRY));
+        let (_host, _guard) = serve_as(Some(ENTRY), Role::Editor);
         let mut app = TestApp::<NotebookApp>::with_role(Role::Editor).unwrap();
         let page = page_of(&mut app, "Intro");
         let refused = app

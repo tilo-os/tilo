@@ -370,7 +370,6 @@ fn probe_manifest(package: &RuntimePackage, script_name: &str) -> launcher::mani
 /// [`ALLOWED`] names, and nothing else.
 fn workspace_grants(root: &Path) -> PathBuf {
     let granted = LaunchGrants {
-        author: false,
         sandbox: vec![
             CapOverride::grant(
                 Grantee::person("ada"),

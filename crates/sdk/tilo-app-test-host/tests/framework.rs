@@ -517,22 +517,15 @@ tilo_test_env::scenario! {
         assert!(app.state().items.is_empty());
     }
 
-    phase allowing_once_in_app_admits_one_call_and_the_next_asks_again;
-    // A grant given once is spent by the in-app call it admits: the host
-    // revokes it as part of admitting the call, and the next call asks again.
-    // Where nothing can revoke it, it is never relied on at all.
+    phase a_grant_given_once_is_spent_by_the_device_so_the_window_asks;
+    // A grant given once is spent where the call lands, on the device, never in the window:
+    // the window shows the call as one that asks, and changes nothing until it is confirmed.
     {
-        use std::sync::{Arc, Mutex};
         use tilo_action_types::{KindSet, Lifetime};
-        use tilo_permissions::policy::Answer;
-        use tilo_permissions::policy::Grant;
-        use tilo_permissions::policy::GrantId;
-        use tilo_permissions::policy::Grantee;
-        use tilo_permissions::policy::TreePath;
+        use tilo_app::permissions::policy::{Answer, Grant, Grantee, TreePath};
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        app.set_role(tilo_permissions::Role::Viewer);
-        let viewer = app.permissions();
-        let mut access = viewer.access().clone();
+        app.set_role(tilo_app::permissions::Role::Viewer);
+        let mut access = app.access();
         let workspace = TreePath::workspace(&access.policy.workspace);
         let person = Grantee::person(access.person_id().unwrap_or_default());
         std::sync::Arc::make_mut(&mut access.policy)
@@ -556,37 +549,14 @@ tilo_test_env::scenario! {
                 )
                 .with_lifetime(Lifetime::Once),
             ]);
-        let granted = viewer.with_access(access);
-
-        // Nothing here can revoke it: the grant given once is not relied on.
-        app.set_permissions(granted.clone());
-        let without_host = app.invoke(Checklist::RENAME.with("Without a host"));
+        app.set_access(access);
+        let before = app.state().title;
+        let renamed = app.invoke(Checklist::RENAME.with("Once"));
         assert!(
-            matches!(
-                without_host,
-                Err(tilo_actions::ApiError::ConfirmationRequired)
-            ),
-            "{without_host:?}"
+            matches!(renamed, Err(tilo_actions::ApiError::ConfirmationRequired)),
+            "{renamed:?}"
         );
-
-        let revoked: Arc<Mutex<Vec<GrantId>>> = Arc::default();
-        let host = Arc::clone(&revoked);
-        app.set_permissions(granted.with_once_spender(Arc::new(move |spent| {
-            host.lock().unwrap().extend_from_slice(spent);
-            Ok(())
-        })));
-        app.invoke(Checklist::RENAME.with("Once")).unwrap();
-        assert_eq!(app.state().title, "Once");
-        assert_eq!(
-            *revoked.lock().unwrap(),
-            vec![GrantId::new("once")],
-            "admitting the call handed the spent grant to the host"
-        );
-        assert!(matches!(
-            app.invoke(Checklist::RENAME.with("Twice")),
-            Err(tilo_actions::ApiError::ConfirmationRequired)
-        ));
-        assert_eq!(app.state().title, "Once", "the second call changed nothing");
+        assert_eq!(app.state().title, before, "the call changed nothing");
     }
 }
 

@@ -83,7 +83,6 @@ history-review-body = Version: { $version }
     Die Wiederherstellung bringt das Dokument als eine neue Änderung genau auf diese Version zurück. Spätere Änderungen bleiben im Verlauf, und Rückgängig macht die Wiederherstellung rückgängig.
 history-review-selected-version = Ausgewählte Version
 history-review-not-content = Diese Aktivität enthält keinen wiederherstellbaren Dokumentinhalt.
-history-review-no-clock = Die Uhr dieses Computers ist nicht verfügbar, daher kann die Wiederherstellung keine Berechtigungen prüfen.
 history-restore-unsupported = Diese App kann diese Version nicht sicher wiederherstellen.
 history-preview-description = { $resource } in dieser Version
 

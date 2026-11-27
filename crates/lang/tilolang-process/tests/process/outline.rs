@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
     phase an_instance_that_shows_nothing;
     {
         let (app, bundle) = shipped(&shipped_dir().join("counter"));
-        let (mut host, sent, inbox, _workspace) = running_with_no_view("ada", &app, bundle, None);
+        let (mut host, sent, inbox, _workspace) = running_with_no_view("ada", &app, bundle);
         settle_with_no_view(&mut host);
         reads_calls_and_reads_the_change(&app, &mut host, &mut settle_with_no_view, &sent, &inbox);
     }
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         let compiled = compile(META_ROW, &tilolang::IdsLock::new(), &[])
             .unwrap_or_else(|diagnostics| panic!("the package compiles: {diagnostics:?}"));
         let (mut host, sent, inbox, _workspace) =
-            running_with_no_view("ada", app, Bundle::new(&compiled, []), None);
+            running_with_no_view("ada", app, Bundle::new(&compiled, []));
         let h24 = tilo_formats::RegionFormats {
             time: tilo_formats::TimeStyle::H24,
             ..tilo_formats::RegionFormats::default()

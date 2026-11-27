@@ -4,8 +4,6 @@
 //! replays a stable subtree as one append.
 
 use taffy::{NodeId, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::presence::PathSegment;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
@@ -28,15 +26,12 @@ pub(super) struct Flow {
     /// Overflow extent used for culling independently of an exact allocation.
     pub paint_rect: Rect,
     pub presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    pub permission_scope: Option<PermissionScope>,
     pub gap_override: Option<f32>,
     pub rhythm: Option<Rhythm>,
     pub padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
     subtree_cache: Scene,
     cache_rect: Rect,
     cache_theme: Option<Box<DrawnTheme>>,
-    cache_permissions: u64,
     /// The cache holds a write's mark on text ([`tilo_ui_base::presence::PresenceCtx::shows_writes`]).
     cache_writes: bool,
     /// What writes were held when the cache was drawn
@@ -113,15 +108,12 @@ impl Flow {
             rect: Rect::ZERO,
             paint_rect: Rect::ZERO,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             gap_override: None,
             rhythm: None,
             padding_rhythm: None,
             subtree_cache: Scene::new(),
             cache_rect: Rect::ZERO,
             cache_theme: None,
-            cache_permissions: 0,
             cache_writes: false,
             cache_written: 0,
             cache_input: 0,
@@ -465,7 +457,6 @@ impl Flow {
             .as_deref()
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = tilo_ui_base::scene_parts::is_tracked(scene);
-        let permissions_moved = self.cache_permissions != env.paint_permissions;
         // A write's mark arrives on the text it landed in and then rests or goes: while one
         // changes, on the frame after, and once one comes or goes, the drawing is made again.
         let writes = env.marks_changing;
@@ -475,7 +466,6 @@ impl Flow {
         let needs_rebuild = !self.cache_present
             || size_changed
             || theme_changed
-            || permissions_moved
             || writes
             || self.cache_writes
             || self.cache_written != written
@@ -589,7 +579,6 @@ impl Flow {
             if theme_changed {
                 self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
             }
-            self.cache_permissions = env.paint_permissions;
             self.cache_writes = writes;
             self.cache_written = written;
             self.cache_input = tilo_ui_base::input_generation::generation();
@@ -763,14 +752,6 @@ macro_rules! flow_builders {
         #[must_use]
         pub fn with_presence(mut self, path: Vec<::tilo_ui_base::presence::PathSegment>) -> Self {
             self.flow.presence_path = path;
-            self
-        }
-
-        /// Check this layout behind a permission scope.
-        #[must_use]
-        #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: tilo_permissions::PermissionScope) -> Self {
-            self.flow.permission_scope = Some(scope);
             self
         }
     };
@@ -956,13 +937,6 @@ macro_rules! flow_capabilities {
         impl ::tilo_ui_base::presence::capability::PublishesPresence for $ty {
             fn presence_key(&self) -> Option<::tilo_ui_base::presence::PresenceKey> {
                 ::tilo_ui_base::presence::PresenceKey::widget(&self.flow.presence_path)
-            }
-        }
-
-        #[cfg(feature = "model")]
-        impl ::tilo_ui_base::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
-                self.flow.permission_scope.clone()
             }
         }
     };

@@ -23,11 +23,11 @@
 system = 1
 
 # App ↔ shell: the shell-ui connection (crates/ui/ui-core/interface.toml).
-shell-ui = 39
+shell-ui = 40
 
 # App ↔ runtime: every service under [runtime] below
 # (crates/core/runtime-interface/interface.toml).
-runtime = 57
+runtime = 58
 
 # App ↔ messaging service: the person's messaging accounts for Messages, on
 # the messaging service only that app is handed
@@ -56,4 +56,4 @@ services = [
 # The oldest runtime interface version still served
 # (runtime_interface::OLDEST_RUNTIME_INTERFACE_VERSION), set by hand only when a
 # change stops this build reading the wire of the version before it.
-oldest = 56
+oldest = 58

@@ -339,14 +339,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.permission_state(need)
     }
 
-    /// This member's access in the workspace as the host keeps it when
-    /// called (who they are, the workspace's policy, what bounds them), for a
-    /// runtime that decides its own invocations by the policy the API
-    /// decides by. `None` outside a host.
-    pub fn access(&self) -> impl Fn() -> Option<tilo_permissions::MemberAccess> + 'static {
-        self.dispatch.access_source()
-    }
-
     /// Whether this member may govern the workspace, observed: for an
     /// owner-only pane with [`Self::switch`].
     pub fn govern_state(&self) -> LocalState<bool> {

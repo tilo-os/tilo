@@ -278,8 +278,6 @@ use ::collaboration::CollaborationManager;
 #[cfg(feature = "model")]
 use ::collaboration::PresencePayload;
 use taffy::{NodeId, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionContext;
 use tilo_ui_base::ime::ImeWindowState;
 use tilo_ui_base::presence::PresenceCtx;
 #[cfg(feature = "model")]
@@ -611,9 +609,7 @@ pub struct App {
     /// The person this window acts for: who its actions are made by.
     local_author: tilo_actions::MemberId,
     #[cfg(feature = "model")]
-    pub permission_ctx: PermissionContext,
-    #[cfg(feature = "model")]
-    /// [`tilo_permissions::shared_revision`] as the last frame painted with it: what widgets paint
+    /// [`tilo_ui_base::permissions::shared_revision`] as the last frame painted with it: what widgets paint
     /// follows permissions that can change with nothing in the tree marking it, so a frame draws again
     /// from cleared drawings after it moves.
     painted_permissions: u64,
@@ -1017,6 +1013,8 @@ impl App {
             return Err(component.setup_error(crate::launch_error::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
+        #[cfg(feature = "model")]
+        let stand_in = component.harness_device();
         let behaviour = component.behaviour;
         let input_surface_id = (behaviour.window == crate::application::WindowRole::InputSurface)
             .then(|| component.app_id().to_owned());
@@ -1054,6 +1052,12 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        #[cfg(feature = "model")]
+        {
+            let person = tilo_actions::Acting::member(app.local_author.clone());
+            app.collaboration.stand_in =
+                stand_in.map(|device| driver::StandIn::new(device, person));
+        }
         app.floating.window_record = Some((
             binding.checkout.id.route().to_owned(),
             binding.checkout.kind.as_str().to_owned(),
@@ -1490,10 +1494,6 @@ impl App {
         app.accessibility.ui_scale = ui_scale;
         app.accessibility.a11y.reduce_motion = reduce_motion;
         app.rebuild_theme();
-        #[cfg(feature = "model")]
-        {
-            app.set_permission_ctx(PermissionContext::permissive());
-        }
         app
     }
 
@@ -1784,10 +1784,7 @@ impl App {
             .as_ref()
             .filter(|cache| cache.key == key)
             .map_or_else(Vec::new, |cache| cache.declared.clone());
-        let allowed_resources = declared
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
+        let allowed_resources = declared.into_iter().collect::<Vec<_>>();
         let mut allowed = std::collections::HashSet::new();
         collect_addresses(&allowed_resources, &mut allowed);
         *self.actions.local_resource_cache.borrow_mut() = Some(LocalResourceCache {
@@ -3404,8 +3401,13 @@ pub(crate) mod control_fixture_tests {
         let target = crate::application::LaunchTarget::New;
         let mut instance = definition
             .instantiate(
-                host.prepare_with_permissions(definition, 991, &target, runner_permissions())
-                    .unwrap(),
+                host.prepare_as(
+                    definition,
+                    991,
+                    &target,
+                    tilo_ui_base::permissions::Role::Owner,
+                )
+                .unwrap(),
                 target,
                 crate::application::RestoreInput::None,
             )

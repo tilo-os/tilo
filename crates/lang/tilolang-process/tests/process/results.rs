@@ -179,42 +179,9 @@ tilo_test_env::scenario! {
         assert!(output.resources.is_empty(), "{output:?}");
     }
 
-    phase a_refused_invocation_is_denied_with_no_value;
-    // A person the workspace's policy holds nothing for is refused before the action runs, and
-    // the answer carries no value: what never ran returns nothing.
-    {
-        let (app, bundle) = shipped(&shipped_dir().join("tasks"));
-        let workspace = uuid::Uuid::new_v4();
-        let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace.to_string(), ADA);
-        policy
-            .members
-            .insert(BO.to_owned(), tilo_action_policy::Role::Viewer.into());
-        let access = tilo_action_policy::MemberAccess::person(policy, ADA);
-        let (mut host, sent, inbox, _workspace) =
-            running_with_no_view("ada", &app, bundle, Some(access));
-        settle_with_no_view(&mut host);
-        let new_task = published_as(&host, "New task");
-        let (actor, context) = (
-            tilo_actions::Actor::Member(tilo_actions::MemberId::person(BO)),
-            None,
-        );
-        deliver_as(
-            &inbox,
-            1,
-            tilo_actions::InvocationId::new(),
-            &new_task,
-            actor,
-            context,
-        );
-        settle_with_no_view(&mut host);
-        match answered(&sent, 1) {
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
-                assert!(!error.message.is_empty(), "a refusal says why");
-            }
-            other => panic!("a person holding nothing is refused: {other:?}"),
-        }
-    }
-
+    // A person the workspace refuses is refused where the call is admitted, on the device,
+    // before it reaches an instance: `tilo-app-host`'s
+    // `a_held_record_is_admitted_by_its_workspace_whatever_its_verdict_said`.
     phase a_value_that_says_nothing_does_not_inherit_the_last_one;
     // Each invocation ends with its own plan, and one that returns nothing carries no
     // value — never the note the previous invocation made.

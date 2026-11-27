@@ -22,15 +22,11 @@ fn hosted_pump_timing() -> bool {
 }
 
 #[cfg(feature = "model")]
-/// Policy meaning observed by the previous hosted pump: the App's own context
-/// and the root component owner's host-supplied context (the `Rc` replaced by
-/// `HostWorker::pump`). Directory observations include per-capability liveness at
-/// a fresh policy-time sample, so expiry is a change even when the context
-/// value is identical.
+/// The verdicts the previous hosted pump saw for the root component, as its
+/// device last sent them.
 #[derive(PartialEq, Eq)]
 struct HostedAuthorityObservation {
-    app: tilo_permissions::DirectoryPermissionObservation,
-    owner: Option<tilo_permissions::DirectoryPermissionObservation>,
+    owner: Option<tilo_ui_base::permissions::Verdicts>,
 }
 
 #[cfg(feature = "model")]
@@ -301,19 +297,11 @@ impl super::App {
     fn refresh_workspace_authority(&mut self) -> bool {
         let owner =
             if let Some(binding) = crate::bound_dispatch::callback_binding(&*self.root_widget) {
-                let Ok(observation) = binding.permissions.borrow().directory_observation() else {
-                    self.actions.hosted.authority = None;
-                    return true;
-                };
-                Some(observation)
+                Some(binding.permissions.borrow().clone())
             } else {
                 None
             };
-        let Ok(app) = self.permission_ctx.directory_observation() else {
-            self.actions.hosted.authority = None;
-            return true;
-        };
-        let current = HostedAuthorityObservation { app, owner };
+        let current = HostedAuthorityObservation { owner };
         let changed = self.actions.hosted.authority.as_ref() != Some(&current);
         self.actions.hosted.authority = Some(current);
         changed
@@ -375,23 +363,14 @@ impl super::App {
 
     pub(super) fn update_model(&mut self) -> bool {
         let _phase = tilo_actions::profiling::Phase::start("ui.frame_update");
-        // The workspace's presence is state of the frame, lent under the window's
-        // authority, as the draw sees it.
+        // The workspace's presence is state of the frame, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
         // What this update moved, not what a widget updated outside an app
         // noted before it: that stays noted for its own host (an app hosted
         // in a tile updates in the middle of its host's update).
         let outer = tilo_ui_base::widget::take_layout_moved();
-        let update = || {
-            tilo_ui_base::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
-        };
-        #[cfg(feature = "model")]
-        let updated = presence.with_permissions(self.permission_ctx.clone(), update);
-        #[cfg(not(feature = "model"))]
-        let updated = {
-            let mut update = update;
-            update()
-        };
+        let updated =
+            tilo_ui_base::presence::frame::lend(presence, || root.update(&state.doc, &state.root));
         // An animation moved what its widget lays out: the window is laid
         // out again. Any other animation frame is only drawn.
         self.layout.layout_dirty |= tilo_ui_base::widget::take_layout_moved();

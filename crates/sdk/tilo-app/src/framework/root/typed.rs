@@ -248,6 +248,9 @@ pub(crate) trait TypedRoot {
     /// The operation types of the effects the views registered.
     fn effect_operations(&self) -> Vec<&'static str>;
 
+    /// What each action the resource declares needs: what its controls ask the device.
+    fn needs(&self) -> Vec<tilo_actions::ActionNeed>;
+
     /// Whether a view drains effects causally.
     fn has_causal_drains(&self) -> bool;
 
@@ -637,6 +640,29 @@ impl<R: Resource> TypedRoot for Typed<R> {
 
     fn effect_operations(&self) -> Vec<&'static str> {
         self.effects.operations()
+    }
+
+    fn needs(&self) -> Vec<tilo_actions::ActionNeed> {
+        tilo_resource::vocabulary::<R>()
+            .declarations()
+            .iter()
+            .map(|decl| tilo_actions::ActionNeed {
+                kind: decl.kind,
+                field: decl.field.map(str::to_owned),
+                privileged: false,
+            })
+            // And each effect its views registered: whether the person's own gesture runs it.
+            .chain(
+                self.effects
+                    .specs()
+                    .iter()
+                    .map(|spec| tilo_actions::ActionNeed {
+                        kind: spec.contract.kind,
+                        field: None,
+                        privileged: false,
+                    }),
+            )
+            .collect()
     }
 
     fn has_causal_drains(&self) -> bool {

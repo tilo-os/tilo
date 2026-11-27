@@ -125,7 +125,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(delta_json);
         }
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
-        CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }
@@ -508,10 +507,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 Err(error) => meter.string_capacity(error),
             }
             "ResourceCommandResult"
-        }
-        CollabEvent::ActionVerdicts { verdicts } => {
-            serialized_bytes(verdicts, &mut meter);
-            "ActionVerdicts"
         }
     };
     (kind, meter.finish())

@@ -13,6 +13,7 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget, ResourceReadRequest, UpdateMark, WatchScope,
 };
+use tilo_actions::shown::{ActionDecision, ShownAction, decisions_revision};
 
 use crate::widget::Collaborative;
 use ::collaboration::CollabEvent;
@@ -127,6 +128,8 @@ pub type CancellationCall = Arriving<(), ActionCallError>;
 /// A record read: the readings as every reader is answered them (`{"revision", "records": [{"record",
 /// "value" | "absent" | "arriving"}]}`).
 pub type ResourceReadCall = Arriving<serde_json::Value, ActionCallError>;
+/// What the device says of the actions a window shows, each time the grants change one.
+pub type ShownActionsCall = Arriving<Vec<ActionDecision>, ActionCallError>;
 /// A wait for a change of the workspace: `Ready(())` once what the watch follows may have changed,
 /// or why the provider cannot tell when it does.
 pub type ChangedCall = Arriving<(), ActionCallError>;
@@ -261,6 +264,53 @@ enum Reading {
     Followed(u64),
 }
 
+/// The actions a window shows, as the device decided them last: [`RemoteActions::shown`] keeps
+/// asking, so a change of the grants reaches the window without its asking again.
+pub struct ShownCall {
+    remote: RemoteActions,
+    shown: u64,
+    answer: ShownActionsCall,
+}
+
+impl ShownCall {
+    /// The decisions as the device last sent them.
+    #[must_use]
+    pub const fn call(&self) -> &ShownActionsCall {
+        &self.answer
+    }
+}
+
+impl Drop for ShownCall {
+    fn drop(&mut self) {
+        self.remote.lock().shown.remove(&self.shown);
+    }
+}
+
+impl std::fmt::Debug for ShownCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShownCall")
+            .field("shown", &self.shown)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A window's shown actions, read and re-read.
+struct ShownFollow {
+    actions: Vec<ShownAction>,
+    answer: ArrivalWriter<Vec<ActionDecision>, ActionCallError>,
+    /// The [`decisions_revision`] shown; `None` until the first answer.
+    revision: Option<String>,
+    /// Whether the call says why nothing was decided yet.
+    unread: bool,
+    /// When the ask in flight was sent waiting, and when.
+    waiting: Option<Instant>,
+    /// When the shown actions are asked for again: after an ask its device could not answer, and
+    /// on the interval for a device that keeps no ask.
+    ask_at: Option<Instant>,
+    /// How long it is left after the next ask its device cannot answer.
+    retry: Duration,
+}
+
 /// A record [`RemoteActions::follow_resource`] keeps current.
 struct Following {
     on_behalf_of: Option<InvocationId>,
@@ -298,6 +348,10 @@ struct Inner {
     reads: HashMap<u64, Reading>,
     following: HashMap<u64, Following>,
     next_follow: u64,
+    shown: HashMap<u64, ShownFollow>,
+    /// The shown actions each ask in flight is for, by its correlation.
+    shown_asks: HashMap<u64, u64>,
+    next_shown: u64,
     changes: HashMap<u64, ArrivalWriter<(), ActionCallError>>,
     /// Whether the provider holds a waiting observe until something changes; cleared the first time it
     /// answers one at once with nothing new.
@@ -305,6 +359,9 @@ struct Inner {
     /// Whether the provider holds a waiting read until a write lands; cleared the first time it answers
     /// one at once with the revision it was told.
     host_holds_reads: bool,
+    /// Whether the device keeps a waiting read for the shown actions until the grants change;
+    /// cleared the first time it answers one at once with the decisions it was told.
+    host_holds_shown: bool,
     wake: WakeHandle,
 }
 
@@ -411,9 +468,13 @@ impl RemoteActions {
                 reads: HashMap::new(),
                 following: HashMap::new(),
                 next_follow: 1,
+                shown: HashMap::new(),
+                shown_asks: HashMap::new(),
+                next_shown: 1,
                 changes: HashMap::new(),
                 host_waits: true,
                 host_holds_reads: true,
+                host_holds_shown: true,
                 wake: WakeHandle::new(),
             })),
         }
@@ -668,6 +729,39 @@ impl RemoteActions {
         }
     }
 
+    /// The actions a window shows, as its device decides them: each with the ordinary answer of
+    /// the workspace that keeps its record, shown and asked again whenever those grants change.
+    #[must_use]
+    pub fn shown(&self, actions: Vec<ShownAction>) -> ShownCall {
+        let answer = Arriving::pending(self.source());
+        let (shown, first) = {
+            let mut inner = self.lock();
+            let shown = inner.next_shown;
+            inner.next_shown = inner.next_shown.wrapping_add(1);
+            inner.shown.insert(
+                shown,
+                ShownFollow {
+                    actions,
+                    answer: answer.writer(),
+                    revision: None,
+                    unread: false,
+                    waiting: None,
+                    ask_at: None,
+                    retry: FOLLOW_INTERVAL,
+                },
+            );
+            (shown, next_shown_ask(&mut inner, shown, false))
+        };
+        if let Some(first) = first {
+            self.send(first);
+        }
+        ShownCall {
+            remote: self.clone(),
+            shown,
+            answer,
+        }
+    }
+
     /// Ask the provider to answer when what a watch of the workspace follows under `scope` may have
     /// changed: a write landed in its records, or who is in it moved. A provider that cannot tell
     /// says so at once.
@@ -784,8 +878,12 @@ impl RemoteActions {
 
     /// Ask after invocations a provider that does not wait is still running, once each is due.
     pub fn poll(&self) {
-        let now = tilo_ui_base::background::Background::current().now();
-        let (due, reads): (Vec<InvocationId>, Vec<RemoteActionMessage>) = {
+        let now = crate::background::Background::current().now();
+        let (due, reads, asks): (
+            Vec<InvocationId>,
+            Vec<RemoteActionMessage>,
+            Vec<RemoteActionMessage>,
+        ) = {
             let mut inner = self.lock();
             inner.catalogue.retain(|_, walk| {
                 if walk.due > now {
@@ -816,13 +914,27 @@ impl RemoteActions {
                 .into_iter()
                 .filter_map(|follow| next_read(&mut inner, follow, hold, now))
                 .collect();
-            (due, reads)
+            let showns: Vec<u64> = inner
+                .shown
+                .iter()
+                .filter(|(_, shown)| shown.ask_at.is_some_and(|at| at <= now))
+                .map(|(shown, _)| *shown)
+                .collect();
+            let shown_hold = inner.host_holds_shown;
+            let asks = showns
+                .into_iter()
+                .filter_map(|shown| next_shown_ask(&mut inner, shown, shown_hold))
+                .collect();
+            (due, reads, asks)
         };
         for invocation in due {
             self.send(RemoteActionMessage::observe(invocation));
         }
         for read in reads {
             self.send(read);
+        }
+        for ask in asks {
+            self.send(ask);
         }
     }
 
@@ -909,6 +1021,13 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             inner.changes.remove(&correlation)?.finish(result);
             None
         }
+        RemoteActionMessage::ShownActionsResponse {
+            correlation,
+            result,
+        } => {
+            let shown = inner.shown_asks.remove(&correlation)?;
+            shown_answered(inner, shown, result)
+        }
         RemoteActionMessage::CatalogueRequest { .. }
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
@@ -927,6 +1046,7 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::ChangesRequest { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedRequest { .. }
+        | RemoteActionMessage::ShownActionsRequest { .. }
         | RemoteActionMessage::SurfaceRequest { .. }
         | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. }
@@ -996,6 +1116,84 @@ fn next_read(
         on_behalf_of,
         read,
     })
+}
+
+/// The next ask of the shown actions `shown`: waiting for the grants to change past the decisions
+/// shown when `wait` and some are shown, else answered with the decisions as they are now.
+fn next_shown_ask(inner: &mut Inner, shown: u64, wait: bool) -> Option<RemoteActionMessage> {
+    let follow = inner.shown.get_mut(&shown)?;
+    let wait = wait && follow.revision.is_some();
+    follow.ask_at = None;
+    follow.waiting = wait.then(|| crate::background::Background::current().now());
+    let correlation = inner.next_correlation;
+    inner.next_correlation = inner.next_correlation.wrapping_add(1);
+    inner.shown_asks.insert(correlation, shown);
+    Some(RemoteActionMessage::ShownActionsRequest {
+        correlation,
+        actions: follow.actions.clone(),
+        after: follow.revision.clone().filter(|_| wait),
+        wait_ms: wait.then_some(FOLLOW_WAIT_MS),
+    })
+}
+
+/// Show what the device said of the shown actions `shown`, and ask again: waiting for the grants to
+/// change where it keeps an ask, after a wait where it does not or could not answer. A refusal
+/// ends the reading: what was shown is no longer this window's to show.
+fn shown_answered(
+    inner: &mut Inner,
+    shown: u64,
+    result: Result<Vec<ActionDecision>, ActionCallError>,
+) -> Option<RemoteActionMessage> {
+    let background = crate::background::Background::current();
+    let now = background.now();
+    let again = |inner: &mut Inner, after: Duration| {
+        if let Some(follow) = inner.shown.get_mut(&shown) {
+            follow.ask_at = Some(now + after);
+        }
+        background.wake_after(after, inner.wake.clone());
+        None
+    };
+    let follow = inner.shown.get_mut(&shown)?;
+    let sent = follow.waiting.take();
+    match result {
+        Ok(decisions) => {
+            let revision = decisions_revision(&decisions);
+            follow.retry = FOLLOW_INTERVAL;
+            if follow.revision.as_deref() != Some(revision.as_str()) {
+                follow.revision = Some(revision);
+                follow.unread = false;
+                follow.answer.ready(decisions);
+            } else if sent.is_some_and(|sent| {
+                now.saturating_duration_since(sent)
+                    < Duration::from_millis(u64::from(FOLLOW_WAIT_MS / 2))
+            }) {
+                // A device that keeps an ask answers early only with something new.
+                inner.host_holds_shown = false;
+            }
+            if inner.host_holds_shown {
+                next_shown_ask(inner, shown, true)
+            } else {
+                again(inner, FOLLOW_INTERVAL)
+            }
+        }
+        Err(
+            error @ (ActionCallError::Unavailable { .. }
+            | ActionCallError::NotReady
+            | ActionCallError::Unanswered),
+        ) => {
+            if follow.revision.is_none() && !follow.unread {
+                follow.unread = true;
+                follow.answer.fail(error);
+            }
+            let wait = follow.retry;
+            follow.retry = wait.saturating_mul(2).min(FOLLOW_RETRY_MAX);
+            again(inner, wait)
+        }
+        Err(error) => {
+            inner.shown.remove(&shown)?.answer.fail(error);
+            None
+        }
+    }
 }
 
 /// Show what a read of the followed record `follow` answered, and read it again: held for the next

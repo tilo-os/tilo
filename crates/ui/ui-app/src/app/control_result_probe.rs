@@ -220,16 +220,17 @@ pub(crate) fn component(
     accepted: bool,
 ) -> (crate::application::AppComponent, Observed) {
     let (probe, observed) = Probe::new(accepted);
+    // The device answered what the probe publishes: its author owns the workspace.
+    let permissions = crate::application_test_support::decided(
+        crate::application_test_support::APP,
+        &crate::widget::resources::PublishesResources::resources(&probe, &AutoCommit::new()),
+        &crate::application_test_support::device(tilo_ui_base::permissions::Role::Owner),
+    );
     NEXT.with_borrow_mut(|next| *next = Some(probe));
     let definition = crate::application_test_support::definition(factory);
     let target = crate::application::LaunchTarget::New;
     let context = host
-        .prepare_with_permissions(
-            &definition,
-            instance,
-            &target,
-            crate::application_test_support::runner_permissions(),
-        )
+        .prepare_with_permissions(&definition, instance, &target, permissions)
         .unwrap();
     let component = definition
         .instantiate(context, target, crate::application::RestoreInput::None)

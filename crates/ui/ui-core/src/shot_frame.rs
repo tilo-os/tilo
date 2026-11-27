@@ -12,8 +12,6 @@ use vello::kurbo::{Affine, Point};
 
 use crate::State;
 use crate::floating_surface::FloatingSurfaceWidgetExt;
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionContext;
 use tilo_ui_base::Theme;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_ui_base::offscreen::OffscreenRenderer;
@@ -31,9 +29,6 @@ pub struct ShotFrame {
     pub text: TextRenderer,
     /// Presence passed to the draw passes; empty unless a shot stages peers.
     pub presence: PresenceCtx,
-    /// Permission context scoped around the root `draw`.
-    #[cfg(feature = "model")]
-    pub permission: PermissionContext,
     viewport: (u32, u32),
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -56,8 +51,6 @@ impl ShotFrame {
             theme,
             text,
             presence: PresenceCtx::empty(),
-            #[cfg(feature = "model")]
-            permission: PermissionContext::permissive(),
             viewport,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -162,17 +155,6 @@ impl ShotFrame {
         let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
         tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
-        #[cfg(feature = "model")]
-        self.presence.with_permissions(self.permission.clone(), || {
-            widget.draw_child(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence.draw_env(),
-            )
-        });
-        #[cfg(not(feature = "model"))]
         widget.draw_child(
             &mut scene,
             Affine::IDENTITY,

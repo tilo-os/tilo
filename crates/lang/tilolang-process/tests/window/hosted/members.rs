@@ -3,9 +3,8 @@
 
 use super::*;
 use crate::interaction::{composer, send_button};
-use tilo_permissions::policy;
-use tilo_permissions::policy::Grantee;
 use tilo_permissions::policy::Role;
+use tilo_permissions::policy::{self, Grantee};
 use tilolang_process::testing::Bus;
 use ui::headless::Driver;
 use ui::tilo_actions::MemberId;
@@ -33,9 +32,16 @@ fn in_a_conversation(
     }
     let route = RouteSpec::app(INTERACTION, uuid::Uuid::new_v4());
     let workspace = route.cluster_id.to_string();
-    let mut spec = spec_of(&route, "ada");
-    if let Some(policy) = policy(&workspace) {
-        spec = spec.access(policy::MemberAccess::person(policy, "ada"));
+    let spec = spec_of(&route, "ada");
+    if let Some(mut policy) = policy(&workspace) {
+        // The conversation's speakers are the workspace's people: its policy gives them a role.
+        for speaker in ["Mia", "Leo"] {
+            policy
+                .members
+                .entry(speaker.to_owned())
+                .or_insert_with(|| Role::Editor.into());
+        }
+        bus.set_access(&route, "ada", policy::MemberAccess::person(policy, "ada"));
     }
     let mut session = Session::on_bus(&bus, &route, spec);
     session.stage("a conversation");

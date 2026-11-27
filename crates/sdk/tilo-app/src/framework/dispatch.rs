@@ -16,14 +16,14 @@ use tilo_actions::{
 };
 
 use super::controls::Actions;
-use tilo_permissions::LivePermissions;
-use tilo_permissions::PermissionScope;
-use tilo_permissions::TreePath;
-use tilo_permissions::policy;
 use tilo_resource::{Edit, Effect, Invoke, MemberId, Resource};
 use tilo_ui_base::LocalState;
-use tilo_ui_base::permissions::ActionKind;
+use tilo_ui_base::{
+    permissions::ActionKind, permissions::LivePermissions, permissions::TreePath,
+    permissions::policy,
+};
 use ui_core::automerge::ChangeHash;
+use ui_core::shown_actions::ShownAction;
 
 /// What a view asks whether its member may do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -597,14 +597,16 @@ impl DispatchCore {
     }
 
     fn may(&self, need: &ActionNeed) -> bool {
+        self.may_ask(&self.question(need))
+    }
+
+    /// What [`Self::may`] asks the device of `need`.
+    pub(crate) fn question(&self, need: &ActionNeed) -> ShownAction {
         let mut node = self.node();
         if let Some(field) = &need.field {
             node = node.field(field);
         }
-        self.may_scope(&PermissionScope::Action {
-            node,
-            kind: need.kind,
-        })
+        ShownAction::at(node, need.kind)
     }
 
     /// The node below the workspace where the workspace decides this resource's
@@ -652,14 +654,26 @@ impl DispatchCore {
         self.may(&ActionNeed::of(ActionKind::Read))
     }
 
-    /// Whether the workspace this record is in has anyone besides this window's
-    /// person: its owner or a member, here now or not: what it holds is
-    /// shared with them.
-    pub(crate) fn workspace_has_others(&self) -> bool {
-        self.permissions
-            .borrow()
-            .as_ref()
-            .is_some_and(tilo_permissions::LivePermissions::workspace_has_others)
+    /// What the window's controls ask the device as it opens, beside the actions it publishes:
+    /// whether the person may read what it keeps, change it, comment and react, and take each
+    /// action `needs` names, so a press is decided the moment it comes.
+    pub(crate) fn questions(&self, needs: &[ActionNeed]) -> Vec<ShownAction> {
+        [
+            ActionNeed::of(ActionKind::Read),
+            ActionNeed::of(ActionKind::Undoable),
+            ActionNeed::comments(),
+            reaction_need(),
+        ]
+        .iter()
+        .chain(needs)
+        .map(|need| self.question(need))
+        // Whether the person may change the workspace's settings, and invite people to it: what
+        // its share and settings controls offer.
+        .chain([
+            ShownAction::workspace_action(policy::roles::governance::SETTINGS),
+            ShownAction::workspace_action(policy::roles::governance::ADD_MEMBER),
+        ])
+        .collect()
     }
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
@@ -690,21 +704,30 @@ impl DispatchCore {
     }
 
     fn may_govern(&self) -> bool {
-        self.may_scope(&PermissionScope::governance(
+        self.may_ask(&ShownAction::workspace_action(
             policy::roles::governance::SETTINGS,
         ))
     }
 
     /// Whether the member may invite people to the workspace.
     pub(crate) fn may_invite(&self) -> bool {
-        self.may_scope(&PermissionScope::governance(
+        self.may_ask(&ShownAction::workspace_action(
             policy::roles::governance::ADD_MEMBER,
         ))
     }
 
-    fn may_scope(&self, scope: &PermissionScope) -> bool {
+    /// Whether the window waits for its device to say something it read or asked: it acts on
+    /// nothing until then.
+    pub(crate) fn waits_for_device(&self) -> bool {
+        self.permissions
+            .borrow()
+            .as_ref()
+            .is_some_and(|permissions| permissions.current().undecided())
+    }
+
+    fn may_ask(&self, question: &ShownAction) -> bool {
         match self.permissions.borrow().as_ref() {
-            Some(permissions) => permissions.check(scope),
+            Some(permissions) => permissions.permits(question),
             // A detached dispatcher may what writing allows; a past version
             // nothing.
             None => !self.read_only.get(),
@@ -714,7 +737,7 @@ impl DispatchCore {
     #[cfg(any(test, feature = "test-support"))]
     fn refresh_read_only(&self) -> bool {
         let writes = self.permissions.borrow().as_ref().map(|permissions| {
-            permissions.check(&PermissionScope::app(self.app_id, ActionKind::Undoable))
+            permissions.permits(&ShownAction::app(self.app_id, ActionKind::Undoable))
         });
         match writes {
             Some(writes) => self.set_read_only(!writes),
@@ -922,7 +945,12 @@ impl DispatchCore {
 
     /// The next queued invocation, with the effect invocation it continues.
     /// The host draining it hears who asked for it.
+    /// Nothing is taken while the window waits for its device to say what it asked: what was
+    /// submitted before then runs once it said, decided by what it said.
     pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
+        if self.waits_for_device() {
+            return None;
+        }
         let (taken, origin) = self.queue.borrow_mut().pop_front()?;
         tilo_ui_base::widget::controls::note_drained_origin(origin);
         Some(taken)
@@ -1121,20 +1149,6 @@ impl<R: Resource> Dispatcher<R> {
         self.core.asked_state(Asked::Need(need))
     }
 
-    /// The member's access in the workspace as the host keeps it when
-    /// called: who they are, the workspace's policy and what bounds them. For a
-    /// runtime that decides its own invocations (a tilolang program's) by
-    /// the policy the API decides by. `None` outside a host.
-    pub fn access_source(&self) -> impl Fn() -> Option<policy::MemberAccess> + 'static {
-        let permissions = Rc::clone(&self.core.permissions);
-        move || {
-            permissions
-                .borrow()
-                .as_ref()
-                .map(|live| live.current().access().clone())
-        }
-    }
-
     /// Whether the member may govern the workspace (invite, grant, change
     /// its settings), as observable view state: for an owner's pane.
     pub fn govern_state(&self) -> LocalState<bool> {
@@ -1175,7 +1189,7 @@ impl<R: Resource> Dispatcher<R> {
     /// Whether the record is shared: someone else belongs to its workspace, or
     /// is in it with `people` now. Where it is, reactions are offered.
     pub fn is_shared(&self, people: &super::People) -> bool {
-        self.core.workspace_has_others() || people.others_here()
+        people.others_here()
     }
 
     /// Whether the member may apply `action`
@@ -1372,7 +1386,8 @@ impl<R: Resource> Dispatcher<R> {
             self.queue(invoke);
             return;
         }
-        if !self.may_invoke(&invoke) {
+        // One the device has not said of yet waits in the queue, which runs once it said.
+        if !self.may_invoke(&invoke) && !self.core.waits_for_device() {
             self.core.refuse(invoke.id, self.core.view_only());
             return;
         }

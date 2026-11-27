@@ -473,7 +473,6 @@ impl TestDaemon {
                 DEVICES.1,
             ),
             member.as_str(),
-            None,
             std::sync::Arc::new(|| {}),
         )
     }

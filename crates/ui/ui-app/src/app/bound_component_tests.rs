@@ -704,14 +704,12 @@ fn bound_components_keep_child_binding() {
             title: "Probe".into(),
             icon: IconDescriptor::Glyph("P"),
             resource_type: crate::resource::ResourceType::new("probe"),
-
-            required: vec![],
-            optional: vec![],
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
             create: factory,
         };
+        let permissions = tilo_ui_base::permissions::SharedPermissions::default();
         let context = ProcessContext::prepare(
             &definition,
             ProcessContextInputs {
@@ -719,14 +717,18 @@ fn bound_components_keep_child_binding() {
                 views,
                 device_id: "D".into(),
                 instance_id: 1,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    tilo_permissions::PermissionContext::permissive(),
-                ),
+                permissions: permissions.clone(),
                 author: tilo_ui_base::permissions::MemberId::person("probe-author"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
         )
+        .map(|context| {
+            crate::application_test_support::answered_as(
+                context,
+                tilo_ui_base::permissions::Role::Owner,
+            )
+        })
         .unwrap();
         let mut component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -779,6 +781,11 @@ fn bound_components_keep_child_binding() {
             )
             .is_some(),
             "fixture must publish its operation before admission"
+        );
+        // The device answers what the window read: the author owns the workspace.
+        crate::application_test_support::answer_read(
+            &permissions,
+            &crate::application_test_support::device(tilo_ui_base::permissions::Role::Owner),
         );
         let actor = tilo_actions::Actor::Member(app.local_author.clone());
         assert!(matches!(
@@ -862,7 +869,16 @@ struct ActionFixture {
     app: App,
     records: crate::resource::ResourceStore,
     bindings: Vec<crate::bound_dispatch::CallbackBinding>,
-    permissions: tilo_permissions::SharedPermissions,
+    permissions: tilo_ui_base::permissions::SharedPermissions,
+    /// Instance 12's own verdicts, and the device deciding them, when the fixture keeps them apart
+    /// from instance 11's.
+    separate: Option<(
+        tilo_ui_base::permissions::SharedPermissions,
+        crate::harness_device::HarnessDevice,
+    )>,
+    /// The device deciding what the fixture's user may do: the workspace's owner, unless a test
+    /// changes their access.
+    device: crate::harness_device::HarnessDevice,
 }
 
 impl ActionFixture {
@@ -881,10 +897,6 @@ impl ActionFixture {
         queue: Option<&crate::owner_wake::OwnerWakeQueue>,
     ) -> Self {
         Self::assemble(shared, separate, queue, None, true)
-    }
-    /// The fixture's app woken through `scope`, as a running app is.
-    fn scoped(scope: crate::wake::WakeScope) -> Self {
-        Self::assemble(false, false, None, Some(scope), true)
     }
     fn assemble(
         shared: bool,
@@ -915,15 +927,21 @@ impl ActionFixture {
             )
             .unwrap(),
         );
-        let permissions = tilo_permissions::SharedPermissions::new(
-            tilo_permissions::PermissionContext::granted(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                &tilo_permissions::TreePath::root(),
-                tilo_action_types::KindSet::ALL,
-                Some(110),
+        let permissions = tilo_ui_base::permissions::SharedPermissions::default();
+        let owner = || {
+            crate::harness_device::HarnessDevice::member_of(
+                tilo_ui_base::permissions::LOCAL_WORKSPACE,
+                &ActionFixture::user(),
+                tilo_ui_base::permissions::Role::Owner,
             )
-            .at_unix_time(100),
-        );
+        };
+        let device = owner();
+        let separate_permissions = separate.then(|| {
+            (
+                tilo_ui_base::permissions::SharedPermissions::default(),
+                owner(),
+            )
+        });
         let mut column = Column::new();
         let mut bindings: Vec<crate::bound_dispatch::CallbackBinding> = Vec::new();
         for (instance, create) in [
@@ -935,9 +953,6 @@ impl ActionFixture {
                 title: "Probe".into(),
                 icon: IconDescriptor::Glyph("P"),
                 resource_type: crate::resource::ResourceType::new("probe"),
-
-                required: vec![],
-                optional: vec![],
                 opens: &[],
                 workspace_resource: false,
                 opens_before_resource: false,
@@ -958,12 +973,11 @@ impl ActionFixture {
                     views: views.clone(),
                     device_id: "D".into(),
                     instance_id: instance,
-                    permissions: if separate && instance == 12 {
-                        tilo_permissions::SharedPermissions::new(permissions.borrow().clone())
-                    } else {
-                        permissions.clone()
+                    permissions: match (&separate_permissions, instance) {
+                        (Some((separate, _)), 12) => separate.clone(),
+                        _ => permissions.clone(),
                     },
-                    author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
+                    author: ActionFixture::user(),
                     action_context: tilo_actions::ActionContext::default(),
                 },
                 &target,
@@ -985,12 +999,49 @@ impl ActionFixture {
             None => App::new_with_controlled_inputs(State::new(), Box::new(column)),
         };
         app.init_layout();
-        Self {
+        let mut fixture = Self {
             app,
             records,
             bindings,
             permissions,
+            separate: separate_permissions,
+            device,
+        };
+        fixture.answer();
+        fixture
+    }
+    fn user() -> tilo_ui_base::permissions::MemberId {
+        tilo_ui_base::permissions::MemberId::person("fixture-user")
+    }
+    /// Answer what the window asks of its device, as the device decides it now: what its
+    /// publication walk reads, and anything it read before.
+    fn answer(&mut self) {
+        for _ in 0..4 {
+            let _ = self.app.publication_resources();
+            let mut asked = false;
+            let separate = self
+                .separate
+                .iter()
+                .map(|(shared, device)| (shared, device));
+            for (shared, device) in
+                std::iter::once((&self.permissions, &self.device)).chain(separate)
+            {
+                asked |= shared.update(|verdicts| verdicts.take_missed());
+                crate::application_test_support::answer_read(shared, device);
+            }
+            if !asked {
+                return;
+            }
         }
+    }
+    /// The fixture's user now has `role`, or none, where instance 11 asks (and instance 12, unless
+    /// it asks apart), and the window hears the device's new verdicts.
+    fn set_role(&mut self, role: Option<tilo_ui_base::permissions::Role>) {
+        match role {
+            Some(role) => self.device.set_role(&Self::user(), role),
+            None => self.device.remove(&Self::user()),
+        }
+        self.answer();
     }
     fn broker() -> Self {
         Self::admitted(Self::with_same_resource(true))
@@ -1208,8 +1259,8 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
         let first = DISCOVERY_COUNT.get();
         let _ = fixture.app.collect_resources();
         assert_eq!(DISCOVERY_COUNT.get(), first);
-        let expired = fixture.permissions.borrow().clone().at_unix_time(120);
-        fixture.permissions.set(expired);
+        // The device takes the user's access back: the follow-up control goes with it.
+        fixture.set_role(None);
         let resources = fixture.app.collect_resources();
         assert!(
             tilo_actions::api::resolve(
@@ -1219,8 +1270,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             .is_none()
         );
         assert!(DISCOVERY_COUNT.get() > first);
-        let expired = fixture.permissions.borrow().clone();
-        fixture.permissions.set(expired.at_unix_time(100));
+        fixture.set_role(Some(tilo_ui_base::permissions::Role::Owner));
         fixture
             .records
             .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
@@ -1355,13 +1405,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             );
         }
         let alias = second.rows[0].resource.clone();
-        let previous_permissions = fixture.permissions.borrow().clone();
-        fixture.permissions.set(
-            tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            )
-            .at_unix_time(100),
-        );
+        fixture.set_role(None);
         let stale = fixture
             .app
             .action_directory_page(runtime_collab::ActionDirectoryQuery {
@@ -1390,7 +1434,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 )
                 .is_err()
         );
-        fixture.permissions.set(previous_permissions);
+        fixture.set_role(Some(tilo_ui_base::permissions::Role::Owner));
         for malformed in [
             format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
             format!("{alias}:extra"),
@@ -1507,12 +1551,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             CONTROL_AUTHORITY.with_borrow(Clone::clone),
             vec![(false, true), (true, true)]
         );
-        fixture.permissions.set(
-            tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            )
-            .at_unix_time(100),
-        );
+        fixture.set_role(None);
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         fixture.app.refresh_control_action_availability();
         assert_eq!(
@@ -1522,51 +1561,11 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
     }
 }
 
-/// The host's view of the person's authority over a bound component's
-/// actions is read when the host changes it, never by a frame.
+/// What the device decides of a bound component's actions is read when the device changes it,
+/// never by a frame.
 #[test]
-fn bound_controls_read_the_host_authority_only_when_it_changes() {
-    use collab_types::action_authority::AppActionAuthorityProjection;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    const WORKSPACE: &str = "00000000-0000-0000-0000-000000000004";
-    const APP: &str = "so.tilo.binding-probe";
-    let owner = AppActionAuthorityProjection::project(
-        &tilo_actions::policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
-        APP,
-        "fixture-user",
-        false,
-    );
-    let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let read = {
-        let (held, reads) = (held.clone(), reads.clone());
-        Arc::new(move || {
-            reads.fetch_add(1, Ordering::SeqCst);
-            Ok::<_, String>(Some(held.lock().unwrap().clone()))
-        })
-    };
-    let (watch, changed) = crate::application::manual_authority_watch();
+fn bound_controls_read_the_device_verdicts_only_when_they_change() {
     let mut fixture = ActionFixture::new();
-    fixture.permissions.set(
-        crate::application::follow_process_authority(
-            tilo_permissions::PermissionContext::member_of(
-                WORKSPACE,
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-                tilo_permissions::Role::Viewer,
-            ),
-            read,
-            watch,
-            WORKSPACE,
-            APP,
-        )
-        .unwrap(),
-    );
-    assert_eq!(
-        reads.load(Ordering::SeqCst),
-        1,
-        "read once as it is followed"
-    );
     CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
     fixture.app.refresh_control_action_availability();
     assert_eq!(
@@ -1578,26 +1577,19 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     for _ in 0..120 {
         fixture.app.refresh_control_action_availability();
     }
-    assert_eq!(reads.load(Ordering::SeqCst), 1, "a frame reads no file");
     assert!(
         CONTROL_AUTHORITY.with_borrow(Vec::is_empty),
         "a frame walks no control"
     );
-    assert_eq!(fixture.app.permissions_change_at(), None);
-    // The host withdraws the person's ownership.
-    let mut revoked = owner.clone();
-    revoked.policy.owner = None;
-    *held.lock().unwrap() = serde_json::to_vec(&revoked).unwrap();
-    let revision = tilo_permissions::shared_revision();
-    changed();
-    assert_eq!(reads.load(Ordering::SeqCst), 2);
-    assert_ne!(tilo_permissions::shared_revision(), revision);
+    // The device withdraws the person's access.
+    let revision = tilo_ui_base::permissions::shared_revision();
+    fixture.set_role(None);
+    assert_ne!(tilo_ui_base::permissions::shared_revision(), revision);
     fixture.app.refresh_control_action_availability();
     assert_eq!(
         CONTROL_AUTHORITY.with_borrow(Clone::clone),
         vec![(false, false), (true, false)]
     );
-    assert_eq!(reads.load(Ordering::SeqCst), 2);
 }
 
 #[test]
@@ -1963,12 +1955,8 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         for initially_allowed in [false, true] {
             let mut fixture = ActionFixture::with_authority(false, true);
-            let denied = tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            )
-            .at_unix_time(100);
             if !initially_allowed {
-                fixture.permissions.set(denied.clone());
+                fixture.set_role(None);
             }
             fixture.app.open_action_palette();
             fixture
@@ -1985,6 +1973,17 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .as_deref_mut()
                 .unwrap()
                 .advance_search_page();
+            // The device answers what the search read, as it answers any question the window
+            // asks, and the palette shows its rows as decided.
+            fixture.answer();
+            fixture.app.refresh_action_palette_resources();
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .advance_search_page();
             if initially_allowed {
                 assert!(
                     fixture
@@ -1994,7 +1993,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                         .result_labels()
                         .contains(&"Hidden sealed write title".to_owned())
                 );
-                fixture.permissions.set(denied);
+                fixture.set_role(None);
                 fixture.app.refresh_action_palette_resources();
                 fixture
                     .app
@@ -2038,6 +2037,16 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .as_deref_mut()
                 .unwrap()
                 .set_query("sealedopaque");
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .advance_search_page();
+            // The device answers what this search read.
+            fixture.answer();
+            fixture.app.refresh_action_palette_resources();
             fixture
                 .app
                 .actions
@@ -2120,12 +2129,9 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             ticks += 1;
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
-        fixture.permissions.set(
-            tilo_permissions::PermissionContext::stranger(
-                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
-            )
-            .at_unix_time(100),
-        );
+        // The device takes the user's access back while the palette pages.
+        fixture.device.remove(&ActionFixture::user());
+        crate::application_test_support::answer_read(&fixture.permissions, &fixture.device);
         ticks = 0;
         loop {
             progress = step(palette);
@@ -2215,6 +2221,8 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .binding
                 .same_component(&target.binding)
         );
+        // The device answers what activating the row read.
+        fixture.answer();
         fixture
             .app
             .invoke_bound_target(
@@ -2229,6 +2237,11 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
         fixture.app.open_action_palette();
         let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         palette.set_query("opaque");
+        palette.advance_search_page();
+        // The device answers what the search read.
+        fixture.answer();
+        fixture.app.refresh_action_palette_resources();
+        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         for _ in 0..4 {
             palette.advance_search_page();
         }
@@ -2602,11 +2615,11 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
     let definition = crate::application_test_support::definition(collaboration_probe_factory);
     let target = LaunchTarget::New;
     let context = host
-        .prepare_with_permissions(
+        .prepare_as(
             &definition,
             91,
             &target,
-            crate::application_test_support::runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     let component = definition
@@ -2670,11 +2683,11 @@ fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
     let definition = crate::application_test_support::definition(create);
     let target = LaunchTarget::New;
     let context = host
-        .prepare_with_permissions(
+        .prepare_as(
             &definition,
             92,
             &target,
-            crate::application_test_support::runner_permissions(),
+            tilo_ui_base::permissions::Role::Owner,
         )
         .unwrap();
     let component = definition
@@ -2783,8 +2796,6 @@ tilo_test_env::scenario! {
             resource_type: crate::resource::ResourceType::new("probe"),
             workspace_resource: true,
             opens_before_resource: false,
-            required: vec![],
-            optional: vec![],
             opens: &[],
             create: factory,
         };
@@ -2795,14 +2806,18 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 21,
-                permissions: tilo_permissions::SharedPermissions::new(
-                    tilo_permissions::PermissionContext::permissive(),
-                ),
+                permissions: tilo_ui_base::permissions::SharedPermissions::default(),
                 author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
         )
+        .map(|context| {
+            crate::application_test_support::answered_as(
+                context,
+                tilo_ui_base::permissions::Role::Owner,
+            )
+        })
         .unwrap();
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
@@ -2984,9 +2999,8 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
     let mut fixture = ActionFixture::new();
     // What constructing the fixture pushed is owed again.
     fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
-    let at = |fixture: &ActionFixture, time| {
-        let moved = fixture.permissions.borrow().clone().at_unix_time(time);
-        fixture.permissions.set(moved);
+    let granted = |fixture: &mut ActionFixture, granted: bool| {
+        fixture.set_role(granted.then_some(tilo_ui_base::permissions::Role::Owner));
     };
     let availability = |fixture: &mut ActionFixture| {
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
@@ -3009,13 +3023,13 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
         vec![(false, true), (true, true)],
         "a reused derivation answers as the first did"
     );
-    at(&fixture, 120);
+    granted(&mut fixture, false);
     assert_eq!(
         availability(&mut fixture),
         vec![(false, false), (true, false)],
-        "an expired grant withdraws the controls"
+        "a withdrawn grant withdraws the controls"
     );
-    at(&fixture, 100);
+    granted(&mut fixture, true);
     assert_eq!(
         availability(&mut fixture),
         vec![(false, true), (true, true)]
@@ -3055,7 +3069,7 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
         "an unchanged snapshot keeps its nodes rather than rebuilding them"
     );
 
-    at(&fixture, 120);
+    granted(&mut fixture, false);
     assert!(
         !fixture.app.refresh_semantic_tree().is_empty(),
         "withdrawn actions change the tree"
@@ -3168,9 +3182,6 @@ fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolut
         Err(tilo_actions::ApiError::InvalidArguments(_))
     ));
 }
-
-#[path = "bound_policy_clock_tests.rs"]
-mod policy_clock;
 
 thread_local! {
     static HEARD_ELSEWHERE: RefCell<Vec<crate::component_lifecycle::Heard>> = const { RefCell::new(Vec::new()) };

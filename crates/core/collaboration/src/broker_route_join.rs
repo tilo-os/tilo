@@ -164,7 +164,6 @@ pub(super) async fn join_route(
                 )),
             },
             workspace_controls: std::collections::HashMap::new(),
-            shown_actions: None,
             _record: None,
         });
     }
@@ -283,7 +282,6 @@ pub(super) async fn join_route(
             encryption,
         },
         workspace_controls: std::collections::HashMap::new(),
-        shown_actions: None,
         _record: record,
     })
 }

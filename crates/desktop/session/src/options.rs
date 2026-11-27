@@ -445,7 +445,6 @@ pub(crate) fn answers_record(
             DEVICE_ANSWERS.1,
         ),
         tilo_member_types::PersonId::from_root(person).as_str(),
-        None,
         wake,
     )
     .shared();

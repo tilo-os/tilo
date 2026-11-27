@@ -2,8 +2,6 @@
 //! click or an assistive action flips it, and how it reports itself to presence, permissions and the
 //! action broker.
 
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::{
     widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
@@ -108,8 +106,6 @@ pub(super) struct BoolControl {
     /// the click as one of its own.
     pub holds_press: bool,
     pub presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    pub permission_scope: Option<PermissionScope>,
     pub enabled: bool,
     /// Override for `Widget::test_id()`, which otherwise reports the
     /// control's kind.
@@ -159,8 +155,6 @@ impl BoolControl {
             pressed_into_focus: false,
             holds_press: false,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             enabled: true,
             id_override: None,
             accessible_name,
@@ -408,13 +402,6 @@ macro_rules! bool_control_api {
         }
 
         #[must_use]
-        #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: tilo_permissions::PermissionScope) -> Self {
-            self.control.permission_scope = Some(scope);
-            self
-        }
-
-        #[must_use]
         pub fn with_id(mut self, id: &str) -> Self {
             self.control.id_override = Some(id.to_string());
             self
@@ -461,11 +448,6 @@ pub(super) use bool_control_api;
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
         fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
-            #[cfg(feature = "model")]
-            if request.wants::<dyn tilo_ui_base::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn tilo_ui_base::widget::permission::PermissionGuarded>(self);
-                return;
-            }
             if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
                 request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             } else if request.wants::<dyn tilo_ui_base::presence::capability::PublishesPresence>() {
@@ -477,11 +459,6 @@ macro_rules! bool_control_widget_methods {
             &'a mut self,
             request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
         ) {
-            #[cfg(feature = "model")]
-            if request.wants::<dyn tilo_ui_base::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn tilo_ui_base::widget::permission::PermissionGuarded>(self);
-                return;
-            }
             if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
                 request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             } else if request.wants::<dyn tilo_ui_base::presence::capability::PublishesPresence>() {
@@ -546,13 +523,6 @@ macro_rules! bool_control_capabilities {
         impl tilo_ui_base::presence::capability::PublishesPresence for $ty {
             fn presence_key(&self) -> Option<tilo_ui_base::presence::PresenceKey> {
                 self.control.presence_key()
-            }
-        }
-
-        #[cfg(feature = "model")]
-        impl tilo_ui_base::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<tilo_permissions::PermissionScope> {
-                self.control.permission_scope.clone()
             }
         }
 

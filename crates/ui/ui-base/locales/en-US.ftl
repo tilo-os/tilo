@@ -83,7 +83,6 @@ history-review-body = Version: { $version }
     Restoring returns the document to exactly this version as one new change. Later changes stay in history, and Undo reverses the restore.
 history-review-selected-version = Selected version
 history-review-not-content = This activity does not contain restorable document content.
-history-review-no-clock = This computer's clock is unavailable, so Restore can't check permissions.
 history-restore-unsupported = This app can't restore this version safely.
 history-preview-description = { $resource } as of this version
 

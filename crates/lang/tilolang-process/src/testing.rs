@@ -4,11 +4,17 @@
 //! device's live presence for it (a word one connection's person says is heard by the others,
 //! as the device hands the workspace's words to its other apps), hands each connection the
 //! workspace's member list, and answers reads of a device's records (its engine jobs) as the
-//! record API does, a held read once the record moves, as the broker does.
+//! record API does, a waiting read once the record moves, as the device does. It answers what each
+//! person's window asks of the actions it shows as their device does: as the workspace's owner
+//! unless the test gave them another access ([`Bus::set_access`]), an ask waiting until that moves.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
+
+use tilolang_tilo::bundle::Bundle;
+
+use crate::hosted::Spec;
 
 use collab_types::document::ResourceType;
 use collab_types::store::wire::{Command, Reply, Turn};
@@ -335,6 +341,32 @@ pub struct Bus {
     /// What the device's live presence heard for the connections joined here: the words the
     /// other connections' people said, each with the connection it waits for.
     presence: RefCell<Vec<(Inbox, collab_types::presence::Heard)>>,
+    /// Each person's device, by person: what it says of what their windows show.
+    devices: RefCell<BTreeMap<String, ui_core::harness_device::HarnessDevice>>,
+    /// The asks of what a window shows, waiting until its device says something else: the person,
+    /// where it is answered, its correlation and what it asked.
+    waiting_shown: RefCell<Vec<WaitingShown>>,
+    /// The workspace's policy, once a test set one ([`Self::set_access`]): the members' reading
+    /// then names only the people it gives a role and the software it admitted, as a device's does.
+    policy: RefCell<Option<tilo_action_policy::WorkspacePolicy>>,
+}
+
+/// An ask of what a window shows, waiting for its device to say something else: the person,
+/// where it is answered, its correlation and what it asked.
+type WaitingShown = (String, Inbox, u64, Vec<tilo_actions::shown::ShownAction>);
+
+/// Whether `policy` makes `who` a member: a person it gives a role and has not blocked, an agent
+/// a grant admitted (`agent-member:…`), or other software, which acts on the grants it was given.
+fn member_of(policy: &tilo_action_policy::WorkspacePolicy, who: &collaboration::MemberId) -> bool {
+    if let Some(person) = who.as_person() {
+        return policy.role_of(person.as_str()).is_some() && !policy.is_blocked(person.as_str());
+    }
+    match who.agent_id() {
+        Some(agent) => policy.grants.iter().any(|grant| {
+            grant.id.0.starts_with("agent-member:") && grant.grantee.agent_id() == Some(agent)
+        }),
+        None => true,
+    }
 }
 
 /// One member of a test's workspace: who, what they are called, and the picture they set.
@@ -497,6 +529,96 @@ impl Bus {
         }
     }
 
+    /// `person`'s device decides what their windows show by `access` from now on, as when the
+    /// workspace's grants change: each ask waiting on them is answered.
+    pub fn set_access(
+        &self,
+        route: &RouteSpec,
+        person: &str,
+        access: tilo_action_policy::MemberAccess,
+    ) {
+        *self.policy.borrow_mut() = Some((*access.policy).clone());
+        self.device(route, person).set_access(access);
+        let waiting: Vec<_> = {
+            let mut asks = self.waiting_shown.borrow_mut();
+            let (theirs, others) = asks.drain(..).partition(|(of, ..)| of == person);
+            *asks = others;
+            theirs
+        };
+        for (_, inbox, correlation, actions) in waiting {
+            let decisions = self.device(route, person).decide(&actions);
+            inbox.borrow_mut().push_back(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::ShownActionsResponse {
+                    correlation,
+                    result: Ok(decisions),
+                },
+            });
+        }
+        if let Some(wake) = &*self.answered.borrow() {
+            wake();
+        }
+    }
+
+    /// `person`'s device in the workspace of `route`: its owner until the test says otherwise.
+    fn device(&self, route: &RouteSpec, person: &str) -> ui_core::harness_device::HarnessDevice {
+        self.devices
+            .borrow_mut()
+            .entry(person.to_owned())
+            .or_insert_with(|| {
+                ui_core::harness_device::HarnessDevice::member_of(
+                    &route.cluster_id.to_string(),
+                    &collaboration::MemberId::person(person),
+                    tilo_action_policy::Role::Owner,
+                )
+            })
+            .clone()
+    }
+
+    /// `spec` as `spec`'s person's device hands it to a window of `bundle`'s app of `route`: with
+    /// what it says of the actions the app declares, and of anything of each app it uses, so the
+    /// window's first frame acts on them.
+    #[must_use]
+    pub fn launched(&self, route: &RouteSpec, mut spec: Spec, bundle: &Bundle) -> Spec {
+        let resources = tilolang_tilo::surface::package_surfaces(
+            &bundle.meta,
+            &tilolang_tilo::runtime::SourceWords,
+        );
+        let mut actions = tilo_actions::shown::declared_by(&bundle.meta.app, &resources);
+        for import in &bundle.imports {
+            actions.extend(tilo_actions::shown::declared_by(&import.meta.app, &[]));
+        }
+        spec.verdicts = self.device(route, &spec.person).decide(&actions);
+        spec
+    }
+
+    /// Answer what `person`'s window asked of the actions it shows, as their device does: at
+    /// once, unless it says what the window was last told and the window waits for a change.
+    fn shown(
+        &self,
+        route: &RouteSpec,
+        person: &str,
+        inbox: &Inbox,
+        asked: (u64, &[tilo_actions::shown::ShownAction], Option<&str>, bool),
+    ) {
+        let (correlation, actions, after, waits) = asked;
+        let decisions = self.device(route, person).decide(actions);
+        if waits && after == Some(tilo_actions::shown::decisions_revision(&decisions).as_str()) {
+            self.waiting_shown.borrow_mut().push((
+                person.to_owned(),
+                Rc::clone(inbox),
+                correlation,
+                actions.to_vec(),
+            ));
+            return;
+        }
+        inbox.borrow_mut().push_back(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::ShownActionsResponse {
+                correlation,
+                result: Ok(decisions),
+            },
+        });
+    }
+
     /// Hands the connection of `person` at `inbox` the workspace's members, as its store answers
     /// them now, and tells it the members' resource moved: a workspace with no members is one
     /// whose record publishes an empty list, as its governance answers it.
@@ -505,8 +627,14 @@ impl Bus {
             return;
         }
         let members = self.members.borrow();
+        let policy = self.policy.borrow();
         let rows: Vec<serde_json::Value> = members
             .iter()
+            .filter(|row| {
+                policy
+                    .as_ref()
+                    .is_none_or(|policy| member_of(policy, &row.who))
+            })
             .map(|row| {
                 let actor = tilo_actions::Actor::Member(row.who.clone());
                 let mut named = serde_json::json!({
@@ -620,6 +748,13 @@ impl Broker {
             routes: Rc::default(),
             joined: None,
         }
+    }
+
+    /// `spec` as the person's device hands it to a window of `bundle`'s app on this connection's
+    /// route ([`Bus::launched`]).
+    #[must_use]
+    pub fn launched(&self, spec: Spec, bundle: &Bundle) -> Spec {
+        self.bus.launched(&self.route, spec, bundle)
     }
 
     /// Offers and takes the action directory's requests through `directory`, as the test holds
@@ -772,6 +907,21 @@ impl PeerTransport for Broker {
             } if read.workspace.starts_with("devices/") => {
                 self.bus.read_device_record(&self.inbox, *correlation, read);
             }
+            CollabRequest::RemoteAction {
+                message:
+                    tilo_actions::remote::RemoteActionMessage::ShownActionsRequest {
+                        correlation,
+                        actions,
+                        after,
+                        wait_ms,
+                    },
+                ..
+            } => self.bus.shown(
+                &self.route,
+                &self.person,
+                &self.inbox,
+                (*correlation, actions, after.as_deref(), wait_ms.is_some()),
+            ),
             _ => {}
         }
         self.sent.borrow_mut().push(request);

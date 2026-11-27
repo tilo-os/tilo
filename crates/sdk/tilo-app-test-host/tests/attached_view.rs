@@ -2,27 +2,22 @@
 //! record, never drawn, every operation through the API a click takes, and
 //! the change it made flowing back to the person's window.
 
-use ::collaboration::DocumentMutation;
+use tilo_app::collaboration::DocumentMutation;
+use tilo_app::framework::harness_device::HarnessDevice;
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
+use tilo_app::permissions::{KindSet, LOCAL_USER, TreePath};
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
-use tilo_permissions::KindSet;
-use tilo_permissions::PermissionContext;
-use tilo_permissions::TreePath;
 
 use crate::kinds::{Tally, TallyApp};
 
 const AGENT: &str = "scribe";
 
-fn writer() -> PermissionContext {
-    PermissionContext::agent_granted(
-        AGENT,
-        &TreePath::root().app(TallyApp::ID),
-        KindSet::READ_UNDOABLE,
-    )
+fn writer() -> HarnessDevice {
+    granted(&TreePath::root().app(TallyApp::ID), KindSet::READ_UNDOABLE)
 }
 
 /// The store's answer to the asked record a call was kept as, as its resend carries it: these
@@ -38,7 +33,7 @@ fn approval() -> tilo_actions::remote::asked::Approval {
     )
 }
 
-fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> AttachedView {
+fn attached(app: &TestApp<TallyApp>, device: HarnessDevice) -> AttachedView {
     let definition = definition::<TallyApp>();
     AttachedView::open(
         definition,
@@ -46,10 +41,22 @@ fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> Attached
         DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
         app.read_document(|doc| doc.clone().save()),
         &MemberId::person(AGENT),
-        permissions,
+        device,
         false,
     )
     .unwrap()
+}
+
+/// The device of the workspace's owner acting through the agent, granted exactly `kinds` at
+/// `node`.
+fn granted(node: &TreePath, kinds: KindSet) -> HarnessDevice {
+    HarnessDevice::agent_granted(
+        TEST_WORKSPACE,
+        &MemberId::person(LOCAL_USER),
+        AGENT,
+        std::slice::from_ref(node),
+        kinds,
+    )
 }
 
 tilo_test_env::scenario! {
@@ -204,7 +211,7 @@ tilo_test_env::scenario! {
     {
         let app = TestApp::<TallyApp>::new().unwrap();
         let reader =
-            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+            granted(&TreePath::root().app(TallyApp::ID), KindSet::READ);
         let mut view = attached(&app, reader);
         let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
         assert!(view.invoke(&bump, &serde_json::Map::new(), None).is_err());
@@ -215,7 +222,7 @@ tilo_test_env::scenario! {
     {
         let app = TestApp::<TallyApp>::new().unwrap();
         let reader =
-            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+            granted(&TreePath::root().app(TallyApp::ID), KindSet::READ);
         let mut view = attached(&app, reader);
         assert!(view.operations().is_empty());
         // Refused as an edit the agent may not make, never as one the app
@@ -236,15 +243,11 @@ tilo_test_env::scenario! {
     {
         use tilo_permissions::policy::Level;
         let app = TestApp::<TallyApp>::new().unwrap();
-        let only_bump = PermissionContext::agent_granted(
-            AGENT,
-            &TreePath::root()
+        let only_bump = granted(&TreePath::root()
                 .app(TallyApp::ID)
                 .any(Level::Kind)
                 .resource("test.tally")
-                .action("bump"),
-            KindSet::READ_UNDOABLE,
-        );
+                .action("bump"), KindSet::READ_UNDOABLE);
         let mut view = attached(&app, only_bump);
         let actions: Vec<String> = view
             .operations()
@@ -277,7 +280,7 @@ tilo_test_env::scenario! {
                 DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
                 app.read_document(|doc| doc.clone().save()),
                 &MemberId::person(AGENT),
-                PermissionContext::permissive(),
+                HarnessDevice::member_of(TEST_WORKSPACE, &MemberId::person(AGENT), tilo_app::Role::Owner),
                 created,
             )
         };
@@ -332,7 +335,7 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<TallyApp>::new().unwrap();
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         let reader =
-            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
+            granted(&TreePath::root().app(TallyApp::ID), KindSet::READ);
         let mut view = attached(&app, reader);
         let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
         answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
@@ -353,15 +356,11 @@ tilo_test_env::scenario! {
         use tilo_permissions::policy::Level;
         let mut app = TestApp::<TallyApp>::new().unwrap();
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
-        let only_bump = PermissionContext::agent_granted(
-            AGENT,
-            &TreePath::root()
+        let only_bump = granted(&TreePath::root()
                 .app(TallyApp::ID)
                 .any(Level::Kind)
                 .resource("test.tally")
-                .action("bump"),
-            KindSet::READ_UNDOABLE,
-        );
+                .action("bump"), KindSet::READ_UNDOABLE);
         let mut view = attached(&app, only_bump);
         view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         all_refused(
@@ -381,7 +380,7 @@ tilo_test_env::scenario! {
         app.invoke(Tally::RENAME.with("visitors")).unwrap();
         // The view's member as a person of the workspace who only views.
         let viewer =
-            PermissionContext::member(&MemberId::person(AGENT), tilo_permissions::Role::Viewer);
+            HarnessDevice::member_of(TEST_WORKSPACE, &MemberId::person(AGENT), tilo_app::Role::Viewer);
         let mut view = attached(&app, viewer);
         assert!(
             !view
@@ -489,7 +488,7 @@ tilo_test_env::scenario! {
             DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
             app.read_document(|doc| doc.clone().save()),
             &MemberId::person(AGENT),
-            PermissionContext::permissive(),
+            HarnessDevice::member_of(TEST_WORKSPACE, &MemberId::person(AGENT), tilo_app::Role::Owner),
             false,
         )
         .unwrap();

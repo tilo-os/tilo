@@ -470,7 +470,6 @@ mod tests {
             &daemon.shell(),
             (&workspace, DEVICES.0, DEVICES.1),
             member.as_str(),
-            None,
             wake.clone(),
         );
         let mut other = DeviceCert {
@@ -578,7 +577,6 @@ mod tests {
             &daemon.shell(),
             (&workspace, DEVICES.0, DEVICES.1),
             member.as_str(),
-            None,
             wake,
         );
         let mut other = DeviceCert {

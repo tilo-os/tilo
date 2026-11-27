@@ -4,8 +4,6 @@ use crate::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
@@ -182,8 +180,6 @@ pub struct ProgressBar {
     drawn_step: Option<u64>,
     stepped: bool,
     presence_path: Vec<PathSegment>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading").
     label: Option<String>,
     /// Whether the label also shows over the track, as a gauge's name does: a bar that says
@@ -221,8 +217,6 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             label: None,
             label_shown: false,
             label_style: None,
@@ -247,8 +241,6 @@ impl ProgressBar {
             drawn_step: None,
             stepped: false,
             presence_path: Vec::new(),
-            #[cfg(feature = "model")]
-            permission_scope: None,
             label: None,
             label_shown: false,
             label_style: None,
@@ -350,13 +342,6 @@ impl ProgressBar {
         self
     }
 
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
-
     /// Current clamped progress value. `0.0` while the bar is in
     /// indeterminate mode, regardless of any prior `set_progress` call.
     pub fn progress(&self) -> f32 {
@@ -381,11 +366,7 @@ fn pct_to_i64(pct: f32) -> i64 {
 impl Widget for ProgressBar {
     tilo_ui_base::described!();
 
-    tilo_ui_base::provides!(
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
-        dyn tilo_ui_base::presence::capability::PublishesPresence
-    );
+    tilo_ui_base::provides!(dyn tilo_ui_base::presence::capability::PublishesPresence);
 
     fn build_layout(
         &mut self,
@@ -569,13 +550,6 @@ impl Widget for ProgressBar {
 impl tilo_ui_base::presence::capability::PublishesPresence for ProgressBar {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for ProgressBar {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

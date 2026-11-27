@@ -1,7 +1,5 @@
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
-#[cfg(feature = "model")]
-use tilo_permissions::PermissionScope;
 use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::theme::Theme;
@@ -165,8 +163,6 @@ pub struct Text {
     presence_path: Vec<PathSegment>,
     /// The field and the item whose text it shows ([`Self::edits`]).
     edits: Option<(String, String)>,
-    #[cfg(feature = "model")]
-    permission_scope: Option<PermissionScope>,
     face: tilo_ui_base::widget::CachedPaint,
     drawn_color: Option<vello::peniko::Color>,
     /// Whether the label needs drawing again, flipped on when the *size*
@@ -223,8 +219,6 @@ impl Text {
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             edits: None,
-            #[cfg(feature = "model")]
-            permission_scope: None,
             face: tilo_ui_base::widget::CachedPaint::default(),
             drawn_color: None,
             dirty: true,
@@ -866,13 +860,6 @@ impl Text {
         self.edits = Some((field.into(), item.into()));
         self
     }
-
-    #[must_use]
-    #[cfg(feature = "model")]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
 }
 
 impl Text {}
@@ -886,11 +873,7 @@ impl Widget for Text {
         Some(self)
     }
 
-    tilo_ui_base::provides!(
-        #[cfg(feature = "model")]
-        dyn tilo_ui_base::widget::permission::PermissionGuarded,
-        dyn tilo_ui_base::presence::capability::PublishesPresence
-    );
+    tilo_ui_base::provides!(dyn tilo_ui_base::presence::capability::PublishesPresence);
 
     fn own_page_title(&self) -> Option<String> {
         (self.accessible_heading_level() == Some(1))
@@ -1309,13 +1292,6 @@ impl tilo_ui_base::presence::capability::PublishesPresence for Text {
                 (bands, Some(caret))
             }),
         })
-    }
-}
-
-#[cfg(feature = "model")]
-impl tilo_ui_base::widget::permission::PermissionGuarded for Text {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 }
 

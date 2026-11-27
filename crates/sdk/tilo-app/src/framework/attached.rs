@@ -23,12 +23,11 @@
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 
+use super::harness_device::HarnessDevice;
 use ::collaboration::DocumentMutation;
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
-use tilo_permissions::PermissionContext;
-use tilo_permissions::SharedPermissions;
-use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{permissions::MemberId, permissions::Role, permissions::SharedPermissions};
 use ui_core::application::{
     ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContextInputs, RestoreInput,
 };
@@ -216,7 +215,9 @@ pub struct OpenView<'a> {
     checkout: DocumentCheckout,
     document: Vec<u8>,
     invoker: tilo_actions::ActionInvoker,
-    permissions: PermissionContext,
+    /// What decides what the invoker may do through the view, in place of the device that
+    /// keeps it; by default one where they own the workspace.
+    device: Option<HarnessDevice>,
     created: bool,
     content: Option<tilo_content::ContentStore>,
     /// The view's store asks its workspace for each document it opens and does not hold
@@ -233,10 +234,11 @@ impl OpenView<'_> {
         self
     }
 
-    /// What the invoker may do through it (by default anything).
+    /// Decide what the invoker may do through it with `device` (by default as the workspace's
+    /// owner).
     #[must_use]
-    pub fn with_permissions(mut self, permissions: PermissionContext) -> Self {
-        self.permissions = permissions;
+    pub fn with_device(mut self, device: HarnessDevice) -> Self {
+        self.device = Some(device);
         self
     }
 
@@ -277,7 +279,7 @@ impl OpenView<'_> {
 
 impl AttachedView {
     /// Mount `definition`'s view over the record `document` holds in
-    /// `workspace`, for `me` with `permissions`. `created` when `me` just created
+    /// `workspace`, for `me` as `device` decides. `created` when `me` just created
     /// the record, so the first [`Self::take_changes`] sends it whole.
     pub fn open(
         definition: &'static ApplicationDefinition,
@@ -285,7 +287,7 @@ impl AttachedView {
         checkout: DocumentCheckout,
         document: Vec<u8>,
         me: &MemberId,
-        permissions: PermissionContext,
+        device: HarnessDevice,
         created: bool,
     ) -> Result<Self, String> {
         Self::open_for(
@@ -294,7 +296,7 @@ impl AttachedView {
             checkout,
             document,
             &tilo_actions::ActionInvoker::member(me.clone()),
-            permissions,
+            device,
             created,
         )
     }
@@ -311,12 +313,12 @@ impl AttachedView {
         checkout: DocumentCheckout,
         document: Vec<u8>,
         invoker: &tilo_actions::ActionInvoker,
-        permissions: PermissionContext,
+        device: HarnessDevice,
         created: bool,
     ) -> Result<Self, String> {
         Self::opening(definition, workspace, checkout, document)
             .for_invoker(invoker)
-            .with_permissions(permissions)
+            .with_device(device)
             .created(created)
             .open()
     }
@@ -337,7 +339,7 @@ impl AttachedView {
             checkout,
             document,
             invoker: tilo_actions::ActionInvoker::person("owner"),
-            permissions: PermissionContext::permissive(),
+            device: None,
             created: false,
             content: None,
             asks_workspace: false,
@@ -410,7 +412,7 @@ impl AttachedView {
             checkout,
             document,
             invoker,
-            permissions,
+            device,
             created,
             content,
             asks_workspace,
@@ -441,7 +443,8 @@ impl AttachedView {
             InstanceViewStore::in_memory(definition.app_id(), DEVICE, workspace)
                 .map_err(|error| error.to_string())?,
         );
-        let permissions = SharedPermissions::new(permissions);
+        let device = device.unwrap_or_else(|| HarnessDevice::member_of(workspace, me, Role::Owner));
+        let permissions = SharedPermissions::default();
         let target = LaunchTarget::Record {
             checkout: checkout.clone(),
             reveal: None,
@@ -474,6 +477,7 @@ impl AttachedView {
             me,
             asks_workspace,
         );
+        context.provide_harness_device(device.shown());
         let component = definition
             .instantiate(context, target, RestoreInput::None)
             .map_err(|error| error.to_string())?;
@@ -490,6 +494,16 @@ impl AttachedView {
         // those controls, as the second frame of a window's opening does. A record a member
         // joined is asked what its view wrote before that write could reach a host, and a write
         // that is the creator's runs here, on the record as the app publishes it.
+        frame.relayout();
+        // The view acts on nothing until its device said what its member may: the frames that
+        // ask it and take its answer run here, and the one after them runs what the view queued
+        // as it opened, so that is done before it is checked below.
+        for _ in 0..4 {
+            if !permissions.borrow().undecided() {
+                break;
+            }
+            frame.relayout();
+        }
         frame.relayout();
         let landed = Landed::default();
         frame.set_action_transport(Box::new(landed.clone()))?;
@@ -546,9 +560,9 @@ impl AttachedView {
         &self.me
     }
 
-    /// The member's permissions changed: a role granted or taken away.
-    pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        self.permissions.set(permissions);
+    /// What decides what the member may do changed (a role granted or taken away, on the
+    /// device the view was opened with): the view asks again.
+    pub fn permissions_changed(&mut self) {
         self.unsettle_merged();
     }
 
@@ -563,7 +577,7 @@ impl AttachedView {
         if self.unsettled.replace(false) {
             self.merged.set(false);
             self.moved();
-            lay_out(&mut self.frame.borrow_mut());
+            lay_out(&mut self.frame.borrow_mut(), &self.permissions);
         }
         Ref::map(self.frame.borrow(), |frame| &**frame)
     }
@@ -926,14 +940,16 @@ impl AttachedView {
         self.found(|frame| self.permitted(frame.resource(id)?))
     }
 
-    /// `resource` as the member may reach it.
+    /// `resource` as the member may reach it: an action of it they may not take is listed as
+    /// not allowed, saying why, so a caller addressing it hears that rather than that there is
+    /// no such action.
     fn permitted(
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
         self.permissions
             .borrow()
-            .permitted_resource(self.definition.app_id(), resource)
+            .listed_resource(self.definition.app_id(), resource)
     }
 
     /// The resource `id` with its own actions, as the member may reach
@@ -1735,13 +1751,25 @@ impl AttachedView {
 /// the read laid the whole view out again to admit it. Laid out as a still
 /// frame ([`tilo_ui_base::arriving::still_frames`]): a view no window shows has
 /// no later frame.
-fn lay_out(frame: &mut Driver) {
+fn lay_out(frame: &mut Driver, permissions: &SharedPermissions) {
     let _still = tilo_ui_base::arriving::still_frames();
     // One frame, its pump taking up what the changes it took left (the invocations they
     // submitted, the owner models a worker woke) and showing all of it, as a live window's frame
     // does. `relayout` would sync the model and then the frame's pump sync it again: two frame
     // syncs for one read.
     frame.settle();
+    // A call the frame queued that its device has not said of yet (one at a node the view had
+    // not asked about) runs once it has: the frames that ask it and take its answer run here,
+    // and the one after them runs the call, so the reader reads that too.
+    if permissions.borrow().undecided() {
+        for _ in 0..4 {
+            frame.settle();
+            if !permissions.borrow().undecided() {
+                break;
+            }
+        }
+        frame.settle();
+    }
 }
 
 /// What to publish next of `record` as `sync` stands: the record whole the

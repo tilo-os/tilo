@@ -297,10 +297,6 @@ pub(super) struct AvailabilityWalk {
     /// The bound components' resources could not be read: their controls
     /// are refreshed again on the next frame.
     pub(super) unread: bool,
-    /// When a bound component's permissions next change with time alone
-    /// (`PermissionContext::next_change_in`): the walk is taken again then,
-    /// and the loop wakes for it.
-    pub(super) changes_at: Option<crate::time::Instant>,
 }
 
 /// Every input of reconciling the document routes with the tree.
@@ -915,6 +911,9 @@ pub(super) struct CollaborationRuntime {
     /// Whether the members' read is still to be asked: the connection was joining its primary
     /// route when the context named it, and the window asks again.
     pub(super) members_waiting: bool,
+    /// What answers the window's questions in place of its device, in a harness that runs none
+    /// ([`crate::application::ProcessContext::provide_harness_device`]).
+    pub(super) stand_in: Option<super::driver::StandIn>,
 }
 
 #[cfg(feature = "model")]
@@ -934,6 +933,7 @@ impl CollaborationRuntime {
             members_request: None,
             next_members_request: 1,
             members_waiting: false,
+            stand_in: None,
         }
     }
 }
