@@ -53,7 +53,7 @@ const MAX_PENDING_CHALLENGES: usize = 4096;
 /// How long a join or membership challenge may be answered.
 pub const CHALLENGE_LIFETIME_NS: u64 = 60_000_000_000;
 /// The longest an invitation may stay redeemable.
-const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+pub const MAX_INVITATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 
 /// Why the host refused or failed a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -615,12 +615,18 @@ impl JoinLog {
         now: u64,
     ) -> Result<IssuedInvitation, JoinError> {
         let Signer { key, nonce } = signer;
+        // An owner invitation hands the workspace over: its grant names the owner's place, it is
+        // signed in the layout a member's invitation takes, and only a device of the workspace's
+        // owner issues one.
+        let makes_owner = request.role == Role::Owner;
         if makes_administrator && request.role != Role::Editor {
             return Err(JoinError::new("an administrator joins as an Editor"));
         }
         let at = system_time(now);
         workspace.peer.require_member_writer(key, at)?;
-        if makes_administrator {
+        if makes_owner {
+            workspace.peer.require_ownership_invitation(key, at)?;
+        } else if makes_administrator {
             workspace.peer.require_administrator_invitation(key, at)?;
         } else {
             workspace
@@ -764,11 +770,12 @@ impl JoinLog {
             })
             .map(|record| PendingInvitation {
                 invite_id: record.issued.invite_id,
-                role: record.grant.role,
+                role: record.grant.member_role(),
                 recipient_user_public_key: record.grant.recipient_user_public_key,
                 invitee_name: record.grant.invitee_name.clone(),
                 expires_at_ns: record.grant.expires_at_ns,
                 administrator: crate::join::makes_administrator(&record.issued.signed_invitation),
+                owner: record.grant.makes_owner(),
             })
             .collect::<Vec<_>>();
         invitations.sort_by_key(|invitation| invitation.invite_id);
@@ -1174,7 +1181,7 @@ impl JoinLog {
             let admitted = workspace.admission(
                 invite_id,
                 join.redemption.certificate().clone(),
-                join.redemption.join().grant().role,
+                join.redemption.join().grant().member_role(),
             );
             self.join_completions.push(JoinCompletionRecord::receipt(
                 join.remote_endpoint,

@@ -1791,15 +1791,15 @@ impl Args {
     }
 }
 
-/// An open invitation as the workspace lists it; `owner` when redeeming it makes an owner
-/// ([`super::Workspaces::owner_invitation`]), which only this server knows.
-fn pending_json(invitation: &super::PendingInvitation, owner: bool) -> Value {
+/// An open invitation as the workspace lists it; `owner` when its grant hands the workspace over
+/// to whoever redeems it ([`super::PendingInvitation::owner`]).
+fn pending_json(invitation: &super::PendingInvitation) -> Value {
     json!({
         "invite": hex::encode(invitation.invite_id),
         "role": invitation.role.key(),
         "administrator": invitation.administrator,
-        "owner": owner,
-        "place": place(owner, invitation.administrator, Some(invitation.role.key())),
+        "owner": invitation.owner,
+        "place": place(invitation.owner, invitation.administrator, Some(invitation.role.key())),
         "recipient": invitation.recipient_user_public_key.map(hex::encode),
         "invitee_name": invitation.invitee_name,
         "expires_at_ns": invitation.expires_at_ns,
@@ -3424,11 +3424,10 @@ impl Workspaces {
             expires_at_ns,
             inviter_name: args.text("inviter_name")?.map(str::to_owned),
         };
-        let issued = if place == super::MemberPlace::Owner {
-            self.issue_owner_invitation(workspace, device, request, wait_list_entry)
-                .await
-        } else {
-            self.issue_for(
+        // The invitation's grant names the place it gives: an owner's, which only the
+        // workspace's owner issues, and which hands it over as its holder joins.
+        let issued = self
+            .issue_for(
                 workspace,
                 device,
                 request,
@@ -3436,8 +3435,7 @@ impl Workspaces {
                 wait_list_entry,
             )
             .await
-        }
-        .map_err(|error| ActionCallError::refused(error.to_string()))?;
+            .map_err(|error| ActionCallError::refused(error.to_string()))?;
         let native_link = tilo_peer_state::join_transport::retained_invitation_link(
             &issued.signed_invitation,
             now,
@@ -3456,7 +3454,8 @@ impl Workspaces {
             "short_link": short_link.clone(),
             "native_link": native_link,
             "role": args.required_text("role")?,
-            "administrator": makes_administrator,
+            // An owner is an administrator as well: the answer says what it makes.
+            "administrator": makes_administrator || place == super::MemberPlace::Owner,
             "owner": place == super::MemberPlace::Owner,
             "expires_at_ns": expires_at_ns,
         });
@@ -3503,15 +3502,7 @@ impl Workspaces {
                     .pending(workspace, device)
                     .await
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                Ok(pending
-                    .iter()
-                    .map(|invitation| {
-                        pending_json(
-                            invitation,
-                            self.owner_invitation(invitation.invite_id, workspace),
-                        )
-                    })
-                    .collect())
+                Ok(pending.iter().map(pending_json).collect())
             }
             NAME => {
                 self.name_self(

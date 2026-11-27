@@ -56,9 +56,10 @@ pub fn invited_server(invitation: &[u8]) -> Result<String, JsError> {
     };
     let offer = serde_json::json!({
         "kind": "invitation", "workspace": grant.workspace_id.to_string(),
-        "workspaceId": grant.workspace_id.to_string(), "name": null, "role": grant.role,
+        "workspaceId": grant.workspace_id.to_string(), "name": null, "role": grant.member_role(),
         "expiresAtNs": grant.expires_at_ns.to_string(), "members": null,
-        "administrator": tilo_workspace_join::makes_administrator(invitation), "owner": false, "waitList": false,
+        "administrator": tilo_workspace_join::makes_administrator(invitation) || grant.makes_owner(),
+        "owner": grant.makes_owner(), "waitList": false,
         "inviter": verified.inviter().map(|inviter| serde_json::json!({
             "name": inviter.name, "userPublicKey": hex::encode(inviter.user_public_key),
         })),

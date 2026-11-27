@@ -165,6 +165,26 @@ pub struct InviteGrant {
     pub transport: Vec<TransportHint>,
 }
 
+impl InviteGrant {
+    /// Whether the grant hands the workspace over: an owner invitation, which only a device of
+    /// its owner signs, and which its redeemer takes by joining.
+    #[must_use]
+    pub fn makes_owner(&self) -> bool {
+        self.role == Role::Owner
+    }
+
+    /// The role a member joining under this grant holds: an owner invitation's holder joins as an
+    /// Editor, so no member holds [`Role::Owner`] by invitation.
+    #[must_use]
+    pub fn member_role(&self) -> Role {
+        if self.makes_owner() {
+            Role::Editor
+        } else {
+            self.role
+        }
+    }
+}
+
 /// The person who sent an invitation, as the issuer recorded them under its
 /// signature: the user root of the device that asked for it and the name
 /// they go by there, empty when the workspace knows none.
@@ -263,6 +283,14 @@ impl VerifiedJoin {
     /// names ([`Self::granted_by`]) may make administrators.
     pub const fn administrator(&self) -> bool {
         self.administrator
+    }
+
+    /// Whether the invitation hands the workspace to its holder: an owner invitation
+    /// ([`InviteGrant::makes_owner`]), which whoever admits them checks against the workspace's
+    /// owner.
+    #[must_use]
+    pub fn owner(&self) -> bool {
+        self.grant.makes_owner()
     }
 
     /// The people whose authority the invitation carries, by user root: its

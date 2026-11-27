@@ -82,9 +82,12 @@ pub(super) enum WorkspaceOp<'a> {
 }
 
 impl WorkspaceOp<'_> {
-    /// Letting someone in by an invitation: at `role`, or as an administrator.
+    /// Letting someone in by an invitation: at `role`, as an administrator, or, when its grant
+    /// names the owner's place, handing the workspace over.
     pub(super) const fn admit(role: Role, administrator: bool) -> Self {
-        if administrator {
+        if matches!(role, Role::Owner) {
+            Self::MakeOwner
+        } else if administrator {
             Self::AdmitAdministrator
         } else {
             Self::Admit(role)

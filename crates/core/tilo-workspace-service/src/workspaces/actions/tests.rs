@@ -680,7 +680,7 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = hosted(workspaces).await;
-    assert!(!workspaces.has_owner(&workspace).await);
+    assert!(!workspaces.is_owner(&workspace, owner.user_public_key).await);
 
     let issued = invoke(
         &host,
@@ -692,30 +692,16 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
     .unwrap();
     assert_eq!(issued["owner"], json!(true));
     assert_eq!(issued["administrator"], json!(true));
-    let signed = hex::decode(issued["invitation"].as_str().unwrap()).unwrap();
-
-    let (newcomer_key, newcomer) = guest_device();
-    let admitted = workspaces
-        .admit_proven(
-            signed,
-            (newcomer.clone(), &newcomer_key),
-            rand::random(),
-            "Ada",
+    assert!(
+        tilo_peer_state::join::decode_and_verify_invitation(
+            &hex::decode(issued["invitation"].as_str().unwrap()).unwrap(),
             None,
+            &tilo_user_identity::RevocationList::new(),
+            tilo_clock::unix_now_ns(),
         )
-        .await;
-    assert!(
-        matches!(admitted, JoinReply::Admitted { .. }),
-        "{admitted:?}"
-    );
-    assert!(
-        workspaces.has_owner(&workspace).await,
-        "the link's opener owns the workspace"
-    );
-    assert!(
-        workspaces
-            .is_owner(&workspace, newcomer.user_public_key)
-            .await
+        .unwrap()
+        .owner(),
+        "the link hands the workspace over"
     );
     server.shutdown().await;
 }

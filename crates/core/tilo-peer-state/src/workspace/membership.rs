@@ -902,10 +902,12 @@ pub fn invitation_admits(
 
 /// What an invitation admits its joiner as: its grant, and, for an
 /// administrator's invitation, the person whose making of an administrator
-/// it carries (the inviter it names, else its issuer's person).
+/// it carries (the inviter it names, else its issuer's person); for an owner
+/// invitation, the person whose handing over of the workspace it carries.
 pub struct Admitted {
     pub grant: crate::join::InviteGrant,
     pub administrator_by: Option<String>,
+    pub owner_by: Option<String>,
 }
 
 /// [`invitation_admits`], with whether the invitation makes its joiner an
@@ -969,13 +971,30 @@ fn admission_of(
     let foreign = grant.issuer.capabilities.foreign && !policy.is_owner(&issuer);
     let cx = Context::at_secs(at_ns / 1_000_000_000);
     let authority = policy.person_on_device(&issuer, foreign);
+    // An owner invitation names the owner's place, which no admission hands out: its holder
+    // joins at the role a member takes, and the owner's authority hands the place over.
     policy
-        .check_admission(&authority, grant.role, &cx, false)
+        .check_admission(&authority, grant.member_role(), &cx, false)
         .map_err(|refusal| refused(format!("its issuer may not invite: {refusal}")))?;
+    // An owner invitation carries the owner's own authority and nobody else's: one an
+    // administrator's device signed is no owner's, however it is named.
+    let mut owner_by = grant.makes_owner().then(|| issuer.clone());
+    if grant.makes_owner() {
+        for person in join.granted_by() {
+            let person = hex::encode(person);
+            if !policy.is_owner(&person) {
+                return Err(refused(format!(
+                    "it hands the workspace over for {person}, who is not its owner"
+                )));
+            }
+            owner_by = Some(person);
+        }
+    }
     if !join.administrator() {
         return Ok(Admitted {
             grant,
             administrator_by: None,
+            owner_by,
         });
     }
     let mut administrator_by = issuer.clone();
@@ -1000,6 +1019,7 @@ fn admission_of(
     Ok(Admitted {
         grant,
         administrator_by: Some(administrator_by),
+        owner_by,
     })
 }
 
@@ -1025,6 +1045,18 @@ fn admitted_at(
         )));
     }
     Ok(at_ns)
+}
+
+/// Whether `signed`, held for `joiner`, is an owner's invitation: its grant names the owner's
+/// place, its issuer's signature checked, its expiry aside, before the invitation is judged whole.
+fn makes_owner(signed: &[u8], joiner: [u8; 32], now_ns: u64) -> bool {
+    crate::join::decode_and_verify_invitation_past_expiry(
+        signed,
+        Some(joiner),
+        &tilo_user_identity::RevocationList::new(),
+        now_ns,
+    )
+    .is_ok_and(|join| join.grant().makes_owner())
 }
 
 /// The people the batch admits through invitations, each with the role
@@ -1092,18 +1124,31 @@ fn redemptions(
             // certificate admits them, however long after the invitation was
             // issued the change that records it was written.
             let owner = held.is_owner(&person) && wanted.is_owner(&person);
-            let at_ns = admitted_at(wanted, &person, owner, (written_ns, now_ns))?;
-            let grant = admission_of(
+            let owner_invitation = makes_owner(&signed, receipt.user_public_key, now_ns);
+            let at_ns = admitted_at(
+                wanted,
+                &person,
+                owner || owner_invitation,
+                (written_ns, now_ns),
+            )?;
+            let admitted = admission_of(
                 held,
                 workspace,
                 &signed,
                 receipt.user_public_key,
                 at_ns,
                 !owner,
-            )?
-            .grant;
-            let role: Role = grant.role;
-            if !owner && (grant.role != receipt.role || wanted.role_of(&person) != Some(role)) {
+            )?;
+            let grant = admitted.grant;
+            let role: Role = grant.member_role();
+            // An owner's invitation leaves its redeemer the workspace's owner, which the change
+            // admitting them hands over: they take that place, not the role the grant names.
+            let place = if admitted.owner_by.is_some() {
+                Role::Owner
+            } else {
+                role
+            };
+            if !owner && (role != receipt.role || wanted.role_of(&person) != Some(place)) {
                 return Err(MembershipRefusal::Refused(format!(
                     "{person} does not take the role their invitation gives"
                 )));

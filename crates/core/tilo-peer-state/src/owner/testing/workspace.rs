@@ -479,7 +479,7 @@ impl TestWorkspace {
             version: 1,
             invite_id: redemption.join().invite_id(),
             device_cert: cert,
-            role: redemption.join().grant().role,
+            role: redemption.join().grant().member_role(),
             workspace_id: self.workspace_id,
             host: self.cert.clone(),
             certified_roster: self.peer.certificates(),

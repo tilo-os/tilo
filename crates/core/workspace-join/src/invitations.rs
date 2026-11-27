@@ -59,4 +59,9 @@ pub struct PendingInvitation {
     /// It also makes whoever redeems it an administrator.
     #[serde(default)]
     pub administrator: bool,
+    /// It hands the workspace to whoever redeems it: they become its owner as they join, and
+    /// its owner until then serves it as one of its administrators
+    /// ([`crate::InviteGrant::makes_owner`]).
+    #[serde(default)]
+    pub owner: bool,
 }

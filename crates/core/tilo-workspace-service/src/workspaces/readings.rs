@@ -84,6 +84,9 @@ pub(super) struct Issued {
     pub(super) redeemed: BTreeSet<[u8; 32]>,
     /// The invitations sent to an address at its entry.
     pub(super) mailed: BTreeSet<[u8; 32]>,
+    /// The owner invitations still redeemable, by the person each names, with the name each gives
+    /// them.
+    pub(super) owner_invitations: BTreeMap<[u8; 32], Option<String>>,
 }
 
 impl Issued {

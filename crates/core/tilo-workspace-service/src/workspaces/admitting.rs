@@ -31,8 +31,8 @@ use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
 use super::collaboration::{
-    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, Redeeming, actor_of,
-    request_digest, stamped,
+    AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, MemberPlace,
+    Redeeming, actor_of, request_digest, stamped,
 };
 use super::pages::Presented;
 use super::{HostedWorkspace, Workspaces, system_time};
@@ -172,6 +172,10 @@ impl Workspaces {
     /// entry lets them in from then on, and a key of theirs reaches the
     /// workspace before any device of theirs has joined.
     ///
+    /// The owner's place is given by an owner invitation, which records the place the person takes
+    /// as they join: handing it to a person no device of theirs has joined would leave the
+    /// workspace with an owner who cannot act.
+    ///
     /// # Errors
     ///
     /// Why `administrator`'s person may not give that place, a name that is not
@@ -184,12 +188,37 @@ impl Workspaces {
         request: AddMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
         let person = request.user_public_key;
         let place = request.place;
-        let op = WorkspaceOp::Place(person, place);
-        let by = self.authorize(administrator, Some(&workspace), op, now)?;
+        let owner_to_come = place == MemberPlace::Owner
+            && self
+                .policy_of(workspace)
+                .await
+                .is_none_or(|policy| policy.joined_at(&hex::encode(person)).is_none());
+        if owner_to_come {
+            let request = tilo_server_protocol::workspaces::IssueInvitationRequest {
+                request_id: request.request_id,
+                role: Role::Owner,
+                recipient_user_public_key: Some(person),
+                invitee_name: request.name.clone(),
+                expires_at_ns: now
+                    .saturating_add(tilo_peer_state::join_log::MAX_INVITATION_LIFETIME_NS),
+                inviter_name: None,
+            };
+            self.issue_for(workspace, administrator, request, false, None)
+                .await?;
+            return Ok(GovernanceCompletion {
+                generation: self.summary(workspace).await?.generation,
+            });
+        }
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        let by = self.authorize(
+            administrator,
+            Some(&workspace),
+            WorkspaceOp::Place(person, place),
+            now,
+        )?;
         let key = self.inner.host.key.clone();
         let name = request.name.as_deref();
         let done = self
@@ -507,7 +536,7 @@ impl Workspaces {
             self.authorize(
                 &grant.issuer,
                 Some(workspace),
-                WorkspaceOp::Admit(grant.role),
+                WorkspaceOp::Admit(grant.member_role()),
                 now,
             )
             .map_err(|_| {

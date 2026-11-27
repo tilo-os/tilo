@@ -101,7 +101,7 @@ pub(crate) fn admit_invited_member(
         user_public_key: cert.user_public_key,
         device_public_key: cert.device_public_key,
         request_id: redemption.request_id(),
-        role: grant.role,
+        role: grant.member_role(),
     };
     // The receipts of this invitation: the log's under its key, and the
     // ones device rows keep ([`crate::cached_document::CachedDocument::redemptions`]).

@@ -1471,7 +1471,11 @@ impl WorkspacePolicy {
     /// owner. Whoever owned the workspace stays as an Editor and an
     /// administrator, granted by themselves as its owner when they handed it
     /// over.
-    fn hand_over(&mut self, person: &str, cx: &Context<'_>) {
+    ///
+    /// A change hands the workspace over through its grants
+    /// ([`Change::TransferOwnership`]); an owner's invitation hands it over as its holder joins,
+    /// through the workspace's membership replay. This is the effect both take.
+    pub fn hand_over(&mut self, person: &str, cx: &Context<'_>) {
         let previous = self.owner.replace(person.to_owned());
         self.members.remove(person);
         self.joined.remove(person);

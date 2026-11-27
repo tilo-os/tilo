@@ -194,7 +194,7 @@ impl Workspaces {
         administrator: &DeviceCert,
         request: IssueInvitationRequest,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        self.issue_at(workspace, administrator, request, false, None)
+        self.issue_as(workspace, administrator, request, false)
             .await
     }
 
@@ -211,33 +211,20 @@ impl Workspaces {
         request: IssueInvitationRequest,
         makes_administrator: bool,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        self.issue_at(workspace, administrator, request, makes_administrator, None)
-            .await
-    }
-
-    /// [`Self::issue_as`] of an invitation issued for the wait-list entry
-    /// `wait_list_entry`, where one is named: the entry records the
-    /// invitation, so what the entry mails to it carries this link, and it
-    /// leaves the list by itself once someone joins with it.
-    pub async fn issue_at(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: IssueInvitationRequest,
-        makes_administrator: bool,
-        wait_list_entry: Option<[u8; 32]>,
-    ) -> Result<IssuedInvitation, CollaborationError> {
         self.issue_from(
             workspace,
             administrator,
             request,
             makes_administrator,
-            wait_list_entry,
+            None,
             InvitedAt::Here(self.invitation_addr().await),
         )
         .await
     }
 
+    /// [`Self::issue_as`] of an invitation issued for the wait-list entry `wait_list_entry`, where
+    /// one is named: the entry records the invitation, so what it mails carries this link, and it
+    /// leaves the list once someone joins with it.
     pub(super) async fn issue_from(
         &self,
         workspace: &str,

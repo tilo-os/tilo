@@ -2118,4 +2118,18 @@ impl super::StatePeer {
             )
             .map_err(|refusal| format!("the writer may not invite an administrator: {refusal}"))
     }
+
+    /// Whether `key`'s device may hand the workspace over: only a device of its owner does.
+    pub(crate) fn require_ownership_invitation(
+        &self,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self.inviter(key, now)?;
+        if member.policy.is_owner(person_of(&member)?) {
+            Ok(())
+        } else {
+            Err("only the workspace's owner hands it over".into())
+        }
+    }
 }

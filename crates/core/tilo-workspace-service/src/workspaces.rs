@@ -669,6 +669,7 @@ impl HostedWorkspace {
     /// ([`readings::Invitations`]): the log's word on each invitation it
     /// keeps, and which of them someone redeemed.
     fn publish_invitations(&self) {
+        let now = tilo_clock::unix_now_ns();
         let log = self.collaboration();
         let offered = log
             .invitations
@@ -680,9 +681,21 @@ impl HostedWorkspace {
             .iter()
             .map(|completion| completion.bootstrap.invite_id)
             .collect();
+        // An owner invitation carries the owner's place: the member list shows its person by it.
+        let owner_invitations = log
+            .pending(now)
+            .into_iter()
+            .filter(|invitation| invitation.owner)
+            .filter_map(|invitation| {
+                invitation
+                    .recipient_user_public_key
+                    .map(|root| (root, invitation.invitee_name))
+            })
+            .collect();
         self.invitations.change(|issued| {
             issued.offered = offered;
             issued.redeemed = redeemed;
+            issued.owner_invitations = owner_invitations;
         });
     }
 
@@ -1335,9 +1348,6 @@ struct WorkspacesInner {
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
     memberships: Arc<memberships::Memberships>,
-    /// The owner invitations the host handed out and nobody accepted yet
-    /// ([`host_invitations`]).
-    owner_invitations: host_invitations::OwnerInvitations,
     /// Each person's devices as their own workspace lists them, by device key:
     /// the name each reads by and whether a revocation here refuses it. Kept
     /// beside the resource so the host answers a pairing synchronously.
@@ -1849,7 +1859,6 @@ impl Workspaces {
                 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
                 puts: std::sync::OnceLock::new(),
                 memberships,
-                owner_invitations: host_invitations::OwnerInvitations::open(&dir),
                 device_names: std::sync::Mutex::default(),
                 mcp_server: mcp_server::McpServer::default(),
                 own_address: std::sync::OnceLock::new(),

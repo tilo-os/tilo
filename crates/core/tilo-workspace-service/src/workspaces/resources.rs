@@ -1968,7 +1968,13 @@ impl Workspaces {
             .await
             .ok_or_else(|| "this device does not have that workspace".to_owned())?;
         let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
-        workspace_members(self, workspace, &peer, &agents_named(&reading, workspace))
+        workspace_members(
+            self,
+            workspace,
+            &peer,
+            &agents_named(&reading, workspace),
+            &reading.invitations.now().owner_invitations,
+        )
     }
 
     /// Answer `command`, a read of `workspace`'s record as `reader` reads it, from the store the
@@ -2143,12 +2149,14 @@ fn is_workspace_members_read(command: &collab_types::store::wire::Command) -> bo
 /// role, whether they own or administer it, when they joined and the picture they set — so every
 /// surface that shows people reads them here, through the store. `workspace` is the one whose people it lists: this host's own
 /// person is left out where it serves the workspace without being one of its people
-/// ([`Workspaces::member_list_without`]).
+/// ([`Workspaces::member_list_without`]). `owners_to_be` names the people owner invitations give
+/// the owner's place as they join, by the name each gives them.
 fn workspace_members(
     workspaces: &Workspaces,
     workspace: &str,
     peer: &tilo_peer_state::StatePeer,
     agents: &[AgentRow],
+    owners_to_be: &std::collections::BTreeMap<[u8; 32], Option<String>>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let policy = peer.governance().member_policy()?;
@@ -2178,6 +2186,33 @@ fn workspace_members(
         {
             let scope: Vec<String> = scope.iter().map(ToString::to_string).collect();
             fields.insert("scope".into(), serde_json::json!(scope));
+        }
+        if owners_to_be.contains_key(&root)
+            && let Some(fields) = row.as_object_mut()
+        {
+            fields.insert("owner_when_joined".into(), serde_json::json!(true));
+        }
+        rows.push(row);
+    }
+    // A person an owner invitation names is listed by the place they take as they join.
+    for (root, name) in owners_to_be {
+        let person = hex::encode(root);
+        if without.as_deref() == Some(person.as_str())
+            || listed
+                .members
+                .iter()
+                .any(|member| member.root() == Some(*root))
+        {
+            continue;
+        }
+        let mut pending = collab_types::member::Member::of_person(
+            &tilo_peer_state::join::Person::new(person, name.clone().unwrap_or_default()),
+            Some(tilo_peer_state::join::Role::Editor),
+        );
+        pending.administrator = true;
+        let mut row = pending.members_row(false);
+        if let Some(fields) = row.as_object_mut() {
+            fields.insert("owner_when_joined".into(), serde_json::json!(true));
         }
         rows.push(row);
     }

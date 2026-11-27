@@ -331,12 +331,14 @@ impl DeviceWorkspaces {
             .role(&enrollment.local_device().device_public_key, now)
             .map_err(|error| error.to_string())?;
         // A device of the governing person is the workspace's owner whatever its
-        // invitation granted: the owner holds its workspace like any member.
+        // invitation granted: the owner holds its workspace like any member. An
+        // owner link's grant names the owner's place, which the device's own
+        // admission handed over in the same change.
         let expected =
             if enrollment.local_device().user_public_key == bootstrap.host.user_public_key {
                 collab_types::Role::Owner
             } else {
-                enrollment.verified_join().grant().role
+                enrollment.verified_join().grant().member_role()
             };
         if role != expected {
             return Err("actual admitted role differs from signed enrollment role".into());

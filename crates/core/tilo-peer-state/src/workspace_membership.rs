@@ -358,12 +358,14 @@ pub enum MemberPlace {
 impl MemberPlace {
     /// The role an invitation for this place holds, and whether its grant makes the person an
     /// administrator: an administrator joins as an Editor and is made one by the invitation's
-    /// own grant, never by a role above the inviter's; an owner is an administrator as well.
+    /// own grant, never a role above the inviter's; an owner's invitation names the owner's
+    /// place, which its redeemer takes as they join.
     #[must_use]
     pub fn invited_as(self) -> (crate::join::Role, bool) {
         match self {
             Self::Role(role) => (role, false),
-            Self::Administrator | Self::Owner => (crate::join::Role::Editor, true),
+            Self::Administrator => (crate::join::Role::Editor, true),
+            Self::Owner => (crate::join::Role::Owner, false),
         }
     }
 

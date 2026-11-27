@@ -257,7 +257,7 @@ impl VerifiedNativeEnrollment {
             || bootstrap.invite_id != intent.verified_join().invite_id()
             || (bootstrap.device_cert != *intent.local_device()
                 && !crate::owner::renewal::renews(&bootstrap.device_cert, intent.local_device()))
-            || bootstrap.role != grant.role
+            || bootstrap.role != grant.member_role()
             || bootstrap.workspace_id != grant.workspace_id
             || bootstrap.host != grant.issuer
             || bootstrap.generation == 0

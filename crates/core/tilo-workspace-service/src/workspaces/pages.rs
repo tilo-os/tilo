@@ -1128,10 +1128,10 @@ impl Workspaces {
         )?;
         let showing = self.showing(&reading);
         Ok(JoinReply::Invitation {
-            workspace: reading.workspace.clone(),
+            workspace: reading.workspace,
             workspace_id,
             name: showing.name,
-            role: join.grant().role,
+            role: join.grant().member_role(),
             expires_at_ns: join.grant().expires_at_ns,
             inviter: join.inviter().map(|inviter| Inviter {
                 user_public_key: inviter.user_public_key,
@@ -1150,8 +1150,10 @@ impl Workspaces {
                 },
             }),
             members: showing.members,
-            administrator: join.administrator(),
-            owner: self.owner_invitation(join.invite_id(), &reading.workspace),
+            // An owner is an administrator as well: the card says what opening the invitation
+            // makes the person.
+            administrator: join.administrator() || join.owner(),
+            owner: join.owner(),
             wait_list: issued.mailed(invite_id),
         })
     }
@@ -1211,22 +1213,14 @@ impl Workspaces {
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
-        let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let joined = joined_name(name)?;
-        let reply = match token {
+        match token {
             Some(token) => {
                 self.prove_pre_admitted(presented, admission, &joined, token, now)
-                    .await?
+                    .await
             }
-            None => {
-                self.enter_invited(presented, admission, &joined, now)
-                    .await?
-            }
-        };
-        if let JoinReply::Admitted { workspace, .. } = &reply {
-            self.accepted(workspace, &invitation, person).await;
+            None => self.enter_invited(presented, admission, &joined, now).await,
         }
-        Ok(reply)
     }
 
     /// Admit the device `presented` names with its invitation, shown to the workspace's people

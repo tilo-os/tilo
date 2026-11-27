@@ -652,6 +652,11 @@ impl<'a> Log<'a> {
         if policy.is_owner(&person) || policy.is_banned(&person) {
             return false;
         }
+        let crate::workspace::membership::Admitted {
+            grant,
+            administrator_by,
+            owner_by,
+        } = admitted;
         policy
             .joined
             .entry(person.clone())
@@ -660,12 +665,12 @@ impl<'a> Log<'a> {
         policy
             .members
             .entry(person.clone())
-            .or_insert_with(|| admitted.grant.role.into());
+            .or_insert_with(|| grant.member_role().into());
         // An administrator's invitation makes its holder one as they enter,
         // given by whom it carries the making of: every device replays the
         // same admission to the same grants. Someone already a member keeps
         // what they hold, as with their role.
-        if let Some(by) = admitted.administrator_by.filter(|_| newcomer) {
+        if let Some(by) = administrator_by.filter(|_| newcomer) {
             let workspace = self.workspace;
             for grant in [
                 roles::administrator_grant(workspace, &person, Grantee::person(by.clone())),
@@ -675,6 +680,12 @@ impl<'a> Log<'a> {
                     policy.grants.push(grant);
                 }
             }
+        }
+        // An owner's invitation hands the workspace to its redeemer as they join: its issuer
+        // signed the authority, and every device replays the same hand-over.
+        if owner_by.is_some() {
+            let cx = Context::at(at_ns / 1_000_000);
+            policy.hand_over(&person, &cx);
         }
         true
     }

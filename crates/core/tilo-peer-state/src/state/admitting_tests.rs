@@ -748,3 +748,53 @@ fn a_batch_of_several_devices_own_rows_is_taken_in_and_a_forged_one_is_not() {
     assert!(receiver.permissions(second.device_public_key, now).is_err());
     assert!(receiver.permissions(first.device_public_key, now).is_err());
 }
+
+/// An owner invitation's grant hands out the owner's place: only a device of the workspace's
+/// owner admits one, and a build that predates them reads the same bytes as an invitation at a
+/// role no admission hands out, refusing it from every issuer.
+#[test]
+fn only_an_owners_device_hands_the_workspace_over() {
+    let (mut owner_copy, owner_key, _, _, now) = crate::admission_tests::seeded();
+    let workspace = owner_copy.workspace_id().to_owned();
+    let (admin_key, _, admin) =
+        crate::admission_tests::add_member_with(&mut owner_copy, &owner_key, now, 51, 52);
+    owner_copy
+        .governance_mut()
+        .set_member_administrator(admin, None, &owner_key, now)
+        .unwrap();
+    let stranger = device(53, 54);
+    let admin_cert = crate::fixture::certificate_of(&owner_copy, &admin_key);
+    let redemption = redemption(
+        &owner_copy,
+        &admin_cert,
+        &admin_key,
+        &stranger,
+        Role::Owner,
+        55,
+        now,
+    );
+    let governance = vec![postcard::to_stdvec(&owner_copy.workspace_message()).unwrap()];
+    let refused = crate::own_admission::own_admission(
+        &workspace,
+        &governance,
+        &redemption,
+        None,
+        &stranger.0,
+        now,
+    )
+    .expect_err("an administrator's device admits nobody as the workspace's owner");
+    assert!(
+        refused.contains("who is not its owner"),
+        "an owner invitation is only the owner's: {refused}"
+    );
+    let policy = owner_copy.governance().member_policy().unwrap();
+    let at = tilo_action_policy::Context::at_time(now);
+    for issuer in [admin, owner_copy.owner()] {
+        let authority = policy.person_on_device(&hex::encode(issuer), false);
+        assert_eq!(
+            policy.check_admission(&authority, Role::Owner, &at, false),
+            Err(tilo_action_policy::Refusal::OwnerRole),
+            "an owner-role grant admits nobody as a member"
+        );
+    }
+}
