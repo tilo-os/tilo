@@ -399,6 +399,7 @@ impl AppBrokerState {
         admitted
             .wait_blocking()
             .map_err(ActionCallError::unavailable)?;
+        self.mark_untrusted(id, descriptor)?;
         self.record_completion(
             id,
             owner.clone(),
@@ -412,6 +413,22 @@ impl AppBrokerState {
             owner,
             key,
         })
+    }
+
+    /// Mark job `id` as answering words from outside the person's data where `descriptor` says
+    /// its action carries them, so whoever observes it is told, as with an app's answer.
+    fn mark_untrusted(
+        &self,
+        id: u64,
+        descriptor: &ActionDescriptor,
+    ) -> Result<(), ActionCallError> {
+        if descriptor.contract.carries_untrusted_content() {
+            self.untrusted_jobs
+                .lock()
+                .map_err(|_| ActionCallError::unavailable("untrusted job registry unavailable"))?
+                .insert(id);
+        }
+        Ok(())
     }
 
     /// Recover an observation, never a service dispatch permit. Ownership uses

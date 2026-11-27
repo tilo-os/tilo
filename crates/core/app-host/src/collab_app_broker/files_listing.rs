@@ -103,9 +103,12 @@ fn read(resource: String, kind: &str, label: &str, action: &str) -> ActionDescri
             kind: tilo_actions::ActionKind::Read,
             confirmation: tilo_actions::ConfirmationPolicy::None,
             // A folder's entries and a file's text are what the workspace's own records hold:
-            // a caller's read of the row takes this as its read, and its words may come from
-            // outside.
-            tags: vec![tilo_actions::DOCUMENT_READ_TAG.to_owned()],
+            // a caller's read of the row takes this as its read. A name and what a file says are
+            // whoever wrote them's words, which reach a model labelled as content from outside.
+            tags: vec![
+                tilo_actions::DOCUMENT_READ_TAG.to_owned(),
+                tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned(),
+            ],
             result: tilo_actions::ResultSpec::Json {
                 schema: serde_json::json!({"type": "object"}),
             },

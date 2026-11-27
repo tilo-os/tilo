@@ -259,6 +259,13 @@ async fn what_the_listing_offers_on_the_folder_is_answered_as_offered() {
             json!({"read": action}),
             "the folder's answer is the call's"
         );
+        assert!(
+            fixture
+                .state
+                .action_observe(&caller, &request.invocation)
+                .is_some_and(|seen| seen.untrusted),
+            "names and what a file says are content from outside, and its observer is told"
+        );
         let reads = fixture.recorder.0.lock().unwrap();
         assert_eq!(reads.len(), at + 1, "one read reached the folder");
         assert_eq!(reads[at].0, *action);
