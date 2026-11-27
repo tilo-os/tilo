@@ -837,7 +837,6 @@ pub fn adopt_login_certificate(
     cert: &tilo_user_identity::DeviceCert,
     now_ns: u64,
 ) -> io::Result<()> {
-    let previous_cert = paths.owner_cert().ok().flatten();
     let install = || {
         persist::install_device_cert(paths, cert, now_ns)
             .map_err(|error| io::Error::other(error.to_string()))
@@ -845,15 +844,11 @@ pub fn adopt_login_certificate(
     match persist::install_device_cert(paths, cert, now_ns) {
         Err(persist::PersistError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
             tracing::info!(person = %hex::encode(cert.user_public_key), "this computer logged in as another person than it was enrolled for: it is theirs now");
-            // The person it belonged to before is replaced: their claim and certificate go, so
-            // nothing here still presents them.
-            let mut replaced = vec![&paths.user_pubkey];
-            replaced.extend(previous_cert.as_ref());
-            for path in replaced {
-                match fs::remove_file(path) {
-                    Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-                    _ => {}
-                }
+            // The claim moves to the new person. The one before keeps their own certificate for
+            // this device key, filed under them: each person certifies the key separately.
+            match fs::remove_file(&paths.user_pubkey) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
             }
             install()?;
         }
