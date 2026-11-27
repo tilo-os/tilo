@@ -706,10 +706,7 @@ launchpad-invite-detail-private = Work on this with someone
 launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-viewing = Viewing { $title }
 people-panel-in-app = In { $app }
-# Someone nobody named: the one fact that tells them apart from every other unnamed person here.
-people-panel-joined = Joined { $time }
 
 a11y-people-overlay = Who is here
 a11y-people-follow = Follow { $name }

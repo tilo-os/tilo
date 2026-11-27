@@ -740,10 +740,7 @@ launchpad-invite-detail-private = Gemeinsam mit jemandem daran arbeiten
 launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
 
 # Moved from the shell catalogue with the code that uses them
-people-panel-viewing = Sieht sich { $title } an
 people-panel-in-app = In { $app }
-# Jemand ohne Namen: die eine Angabe, die sie von jeder anderen namenlosen Person unterscheidet.
-people-panel-joined = Beigetreten um { $time }
 
 a11y-people-overlay = Wer hier ist
 a11y-people-follow = { $name } folgen

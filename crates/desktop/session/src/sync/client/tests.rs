@@ -365,17 +365,18 @@ tilo_test_env::scenario! {
         let people = sync.show(&mut tree, &no_records(), &|_| None);
         assert_eq!(people[0].availability, ui::Availability::Away);
         assert!(people[0].availability.dims());
-        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
+        let rows = crate::people_device::people_in(&tree, None, false);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].availability, ui::Availability::Away);
+        assert_eq!(rows[0].availability, "away");
 
         // Back at their machine, and heads down: the face lightens, and says what they chose.
         heard(&sync, 1, WORKSPACE, away("focusing"));
         let mut tree = shell(WORKSPACE);
-        sync.show(&mut tree, &no_records(), &|_| None);
-        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
-        assert_eq!(rows[0].availability, ui::Availability::Focusing);
-        assert!(!rows[0].availability.dims());
+        let people = sync.show(&mut tree, &no_records(), &|_| None);
+        assert_eq!(people[0].availability, ui::Availability::Focusing);
+        assert!(!people[0].availability.dims());
+        let rows = crate::people_device::people_in(&tree, None, false);
+        assert_eq!(rows[0].availability, "focusing");
     }
 
     phase a_call_this_device_joins_reaches_a_peer_s_roster;
@@ -440,8 +441,8 @@ tilo_test_env::scenario! {
             [(true, false)],
             "the camera this device turned on is what the peer reads"
         );
-        let rows = tilo_session_core::desktop::people::roster_rows(&tree);
-        assert_eq!(rows[0].call.as_deref(), Some("Voice"));
+        let rows = crate::people_device::people_in(&tree, None, false);
+        assert_eq!(rows[0].call, "Voice");
 
         // Out of the call, the peer's roster says nothing of a channel.
         while said.try_recv().is_ok() {}

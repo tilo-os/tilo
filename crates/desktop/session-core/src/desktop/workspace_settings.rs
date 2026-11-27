@@ -1065,7 +1065,7 @@ mod members_tests {
 
         phase people_are_named_as_the_roster_names_them;
         {
-            use crate::desktop::people::{PeopleNames, roster_rows};
+            use crate::desktop::people::PeopleNames;
             let owner_key = "fa4834147f".repeat(6) + "0123";
             let mut ws = Workspace::new(WorkspaceId::from_u128(9), "Studio");
             ws.policy.set_owner(owner_key.as_str());
@@ -1082,15 +1082,10 @@ mod members_tests {
                 ..tilo_desktop_model::Layout::default()
             };
             let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
-            let roster = roster_rows(&desktop);
-            let roster_ada = roster
-                .iter()
-                .find(|row| row.id == "ada")
-                .map(|row| row.label.clone());
             assert_eq!(
-                Some(member_row_name(&names, &ws, &owner_key, &MemberId::person("ada"))),
-                roster_ada,
-                "the same name, cased the same, as the roster"
+                member_row_name(&names, &ws, &owner_key, &MemberId::person("ada")),
+                "Ada",
+                "the name the workspace lists, cased as it lists it"
             );
             let owner_name =
                 member_row_name(&names, &ws, &owner_key, &MemberId::person(owner_key.clone()));

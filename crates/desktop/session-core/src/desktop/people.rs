@@ -1,51 +1,48 @@
-//! Who is here, as the roster reads them: one row per person and agent in the workspace, what
-//! they are doing and who follows whom. The shell draws it.
+//! Who is here, as every surface that names people reads them: what each member of the workspace
+//! is called, where someone is when no window here shows their record, and who wrote the line
+//! about them. The shell draws it.
 
-use ui::peniko::Color;
+use std::collections::HashMap;
 
-mod roster;
-pub use roster::{PeopleNames, in_app, roster_rows};
+use collab_types::MemberId;
+use tilo_desktop_model::Layout;
 
-/// One row of the roster.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RosterRow {
-    pub id: String,
-    pub label: String,
-    pub initial: char,
-    pub color: Color,
-    /// Who they are: a person or an agent.
-    pub member: tilo_action_policy::MemberId,
-    pub role: Option<String>,
-    /// Where they are: the app or document in front of them.
-    pub activity: Option<String>,
-    /// The window of this workspace a piece of software is working in: its tab, and what that tab is
-    /// called here. Software has no screen to mirror, so its row shows this instead, and pressing it
-    /// brings that window forward.
-    pub working_in: Option<(u64, String)>,
-    /// The app that window runs, by its id (what names the place software works in beside its
-    /// line, without naming the app it already sits in).
-    pub working_app: Option<String>,
-    /// Short member intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
-    pub status: Option<RosterStatus>,
-    pub followable: bool,
-    /// How available they say they are (idle and away come on their own).
-    pub availability: ui::Availability,
-    /// When the workspace admitted them, Unix milliseconds: for someone nobody named, the one
-    /// fact that tells their row from every other unnamed person's.
-    pub joined: Option<u64>,
-    /// The joined line their row shows, once the roster's unnamed rows are known: the clock they
-    /// joined by, with milliseconds where two of them would otherwise read alike.
-    pub joined_line: Option<String>,
-    /// The voice channel they are in, if any.
-    pub call: Option<String>,
+/// What each member in the active workspace is called, with this person by their own name: the one
+/// source every surface that names people reads, so a name is spelt and cased the same in People,
+/// the roster and settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeopleNames(HashMap<MemberId, String>);
+
+impl PeopleNames {
+    /// The roster's names for the active workspace of `desktop`, as `local_user` (named
+    /// `own_name`) sees it.
+    #[must_use]
+    pub fn of(desktop: &Layout, local_user: &str, own_name: Option<&str>) -> Self {
+        let Some(workspace) = desktop.active_workspace() else {
+            return Self::default();
+        };
+        let mut names: HashMap<MemberId, String> = workspace
+            .members
+            .iter()
+            .filter(|member| !member.name.trim().is_empty())
+            .map(|member| (member.id.clone(), member.name.clone()))
+            .collect();
+        if let Some(own) = own_name.map(str::trim).filter(|own| !own.is_empty()) {
+            names.insert(MemberId::person(local_user), own.to_owned());
+        }
+        Self(names)
+    }
+
+    /// What the member `id` is called, when the roster names them.
+    #[must_use]
+    pub fn get(&self, id: &MemberId) -> Option<&str> {
+        self.0.get(id).map(String::as_str)
+    }
 }
 
-impl RosterRow {
-    /// Software, not a person: an agent.
-    #[must_use]
-    pub fn is_agent(&self) -> bool {
-        !self.member.is_person()
-    }
+/// Where someone is when no window here shows it: "In Notes".
+pub fn in_app(app: &str) -> String {
+    crate::desktop::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

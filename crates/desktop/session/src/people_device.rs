@@ -406,81 +406,20 @@ impl PeopleDevice {
     fn rows(&self) -> Vec<Person> {
         let mut tree = self.handle.read(Clone::clone);
         (self.place_here)(&mut tree);
-        let Some(workspace) = tree.active_workspace() else {
-            return Vec::new();
-        };
-        // Who of the workspace's members is here, by the member presence names: one pass, so a
-        // workspace of thousands reads in the time a workspace of three does.
-        let present: std::collections::HashMap<&collab_types::MemberId, _> = workspace
-            .present
-            .iter()
-            .map(|here| (&here.member, here))
-            .collect();
         // The live session's own reading of the people, where their other devices, their accounts
         // elsewhere and the key a conversation with them is kept on are.
         let live = self.sync.as_ref().map(|sync| sync.here());
         let live = live.as_ref().map(|live| live.borrow());
-        let mut raw: Vec<(Person, Option<u64>)> = workspace
-            .members
-            .iter()
-            .filter_map(|member| {
-                let present = *present.get(&member.id)?;
-                let mut person = person_of(workspace, member, present);
-                let agent = person.agent;
-                person.agent_client = if agent {
-                    tilo_ui_base::presence::agent_client(&member.name).to_owned()
-                } else {
-                    String::new()
-                };
-                if let Some(live) = live.as_deref() {
-                    let user = live.user_of(&person.key).map(str::to_owned);
-                    person.user_key = user.clone().unwrap_or_default();
-                    // Chat holds the conversation each pair of people shares, on the record that
-                    // person's root key names: someone whose key is not known here (a guest,
-                    // before the host's own line arrives) has none to open.
-                    person.can_message = !agent && user.is_some() && (self.chat)();
-                    if !agent {
-                        person.devices = live
-                            .devices_of(&person.key)
-                            .into_iter()
-                            .map(device_of)
-                            .collect();
-                    }
-                    person.linked = user
-                        .as_deref()
-                        .map(|user| {
-                            live.linked_of(user)
-                                .iter()
-                                .map(|link| PersonLinked {
-                                    service: link.service.clone(),
-                                    handle: link.handle.clone(),
-                                    icon: tilo_app::linked_accounts::service_name_icon(
-                                        &link.service,
-                                    )
-                                    .name()
-                                    .to_owned(),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                }
-                Some((
-                    person,
-                    member
-                        .id
-                        .person_id()
-                        .and_then(|person| workspace.policy.joined_at(person)),
-                ))
-            })
-            .collect();
-        // Someone nobody named is told apart by when they joined: their name and face are every
-        // unnamed person's.
-        name_the_unnamed(&mut raw);
-        let mut rows: Vec<Person> = raw.into_iter().map(|(person, _)| person).collect();
+        // A conversation is Chat's, where this device has it: a card offers one only then.
+        let chat = tree.active_workspace().is_some() && self.sync.is_some() && (self.chat)();
+        let mut rows = people_in(&tree, live.as_deref(), chat);
         // The person at this device stands in the roster's own "You" row, never among the others.
         if let Some(own) = self.sync.as_ref().map(|sync| sync.publisher().to_string()) {
             rows.retain(|person| person.key != own);
         }
+        let Some(workspace) = tree.active_workspace() else {
+            return rows;
+        };
         // Whom each person here follows, as their presence says: "Following Ada" on the row of
         // someone following Ada, "Following you" on the row of someone following this person.
         if let Some(sync) = &self.sync {
@@ -506,8 +445,6 @@ impl PeopleDevice {
                 .and_then(|member| member.layout.as_ref())
                 .and_then(|layout| screen_of(layout, &titled));
         }
-        // People first, software after, each in the order the workspace lists them.
-        rows.sort_by_key(|person| person.agent);
         rows
     }
 
@@ -1167,6 +1104,86 @@ impl PeopleDevice {
     }
 }
 
+/// Everyone here in `tree`'s workspace in front, as the roster lists them: each member presence
+/// says is here, with what their row says of them. `tree` has who is here placed into it already;
+/// `live` is this session's reading of the people, where their other devices, their accounts
+/// elsewhere and the key a conversation with them is kept on are. `chat` says whether this device
+/// has Chat, which is what a card offers a conversation with.
+pub(crate) fn people_in(
+    tree: &Layout,
+    live: Option<&tilo_session_core::desktop::here::HereState>,
+    chat: bool,
+) -> Vec<Person> {
+    let Some(workspace) = tree.active_workspace() else {
+        return Vec::new();
+    };
+    // Who of the workspace's members is here, by the member presence names: one pass, so a
+    // workspace of thousands reads in the time a workspace of three does.
+    let present: std::collections::HashMap<&collab_types::MemberId, _> = workspace
+        .present
+        .iter()
+        .map(|here| (&here.member, here))
+        .collect();
+    let mut raw: Vec<(Person, Option<u64>)> = workspace
+        .members
+        .iter()
+        .filter_map(|member| {
+            let present = *present.get(&member.id)?;
+            let mut person = person_of(workspace, member, present);
+            let agent = person.agent;
+            person.agent_client = if agent {
+                tilo_ui_base::presence::agent_client(&member.name).to_owned()
+            } else {
+                String::new()
+            };
+            if let Some(live) = live {
+                let user = live.user_of(&person.key).map(str::to_owned);
+                person.user_key = user.clone().unwrap_or_default();
+                // Chat holds the conversation each pair of people shares, on the record that
+                // person's root key names: someone whose key is not known here (a guest,
+                // before the host's own line arrives) has none to open.
+                person.can_message = !agent && user.is_some() && chat;
+                if !agent {
+                    person.devices = live
+                        .devices_of(&person.key)
+                        .into_iter()
+                        .map(device_of)
+                        .collect();
+                }
+                person.linked = user
+                    .as_deref()
+                    .map(|user| {
+                        live.linked_of(user)
+                            .iter()
+                            .map(|link| PersonLinked {
+                                service: link.service.clone(),
+                                handle: link.handle.clone(),
+                                icon: tilo_app::linked_accounts::service_name_icon(&link.service)
+                                    .name()
+                                    .to_owned(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            Some((
+                person,
+                member
+                    .id
+                    .person_id()
+                    .and_then(|person| workspace.policy.joined_at(person)),
+            ))
+        })
+        .collect();
+    // Someone nobody named is told apart by when they joined: their name and face are every
+    // unnamed person's.
+    name_the_unnamed(&mut raw);
+    let mut rows: Vec<Person> = raw.into_iter().map(|(person, _)| person).collect();
+    // People first, software after, each in the order the workspace lists them.
+    rows.sort_by_key(|person| person.agent);
+    rows
+}
+
 /// What the row of `member`, here through `here` in `workspace`, says of them.
 fn person_of(
     workspace: &tilo_desktop_model::Workspace,
@@ -1664,6 +1681,216 @@ mod tests {
         assert_eq!(
             rows[0].0.joined, "",
             "a named person says when they joined by name"
+        );
+    }
+
+    /// The People list draws an agent's face in the colour its own session published, which the
+    /// member row it is placed under wears here.
+    #[test]
+    fn an_agents_row_wears_the_colour_its_session_announced() {
+        use tilo_session_core::desktop::here::{HereState, LiveMember, place_here};
+        let helper = "agent:helper@host";
+        let (red, green, blue) = tilo_ui_base::presence::member_color(
+            &tilo_ui_base::permissions::MemberId::agent(helper, "bo-root"),
+        );
+        let announced = format!("#{red:02x}{green:02x}{blue:02x}");
+        let agent = LiveMember {
+            publisher: helper.to_owned(),
+            kind: "agent".to_owned(),
+            label: "Helper #1".to_owned(),
+            user: Some("helper-root".to_owned()),
+            colour: announced,
+            ..LiveMember::default()
+        };
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![agent]));
+        let people = here.people(&Layout::default(), &[], &|_| None);
+        let mut tree = Layout {
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "Shell")],
+            ..Layout::default()
+        };
+        tree.active = tree.workspaces[0].id();
+        place_here(&mut tree, &people, None);
+        let rows = people_in(&tree, None, false);
+        let row = rows
+            .iter()
+            .find(|row| row.key == helper)
+            .expect("the agent has a row in the People list");
+        assert_eq!(
+            row.colour,
+            format!("{red:02x}{green:02x}{blue:02x}"),
+            "the People list"
+        );
+    }
+
+    /// Two people going by one name are both called it in the People list: their faces and colours
+    /// tell them apart, never a number joined to the name.
+    #[test]
+    fn people_sharing_a_name_both_go_by_it_in_the_people_list() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Studio");
+        for (person, admitted) in [("person-z", 10_u64), ("person-a", 20)] {
+            workspace
+                .policy
+                .members
+                .insert(person.into(), tilo_action_policy::Role::Editor);
+            workspace.policy.joined.insert(person.into(), admitted);
+            workspace.member_here(Member::named(MemberId::person(person), "Alex"));
+        }
+        let tree = Layout {
+            active: workspace.id(),
+            workspaces: vec![workspace],
+            ..Layout::default()
+        };
+        let roster: std::collections::HashMap<String, String> = people_in(&tree, None, false)
+            .into_iter()
+            .map(|row| (row.key, row.name))
+            .collect();
+        assert_eq!(roster["person-z"], "Alex");
+        assert_eq!(roster["person-a"], "Alex");
+    }
+
+    /// An agent presence names is software on its People-list row from the first frame: its member
+    /// key says so, never a marker a later frame has to correct.
+    #[test]
+    fn an_agents_row_from_presence_is_software() {
+        use tilo_session_core::desktop::here::{Person as HerePerson, place_here};
+        let mut tree = Layout::default();
+        let workspace_id = WorkspaceId::nil();
+        tree.workspaces.push(Workspace::new(workspace_id, "Design"));
+        tree.active = workspace_id;
+        let people = vec![HerePerson {
+            id: "bot".to_owned(),
+            user: None,
+            member: Some(MemberId::agent("scribe", "bo-root")),
+            label: "Scribe".to_owned(),
+            devices: Vec::new(),
+            rgb: (1, 2, 3),
+            agent: true,
+            tab: None,
+            focus_app: None,
+            place: None,
+            status: None,
+            availability: ui::Availability::Available,
+            call: None,
+        }];
+        place_here(&mut tree, &people, None);
+        let rows = people_in(&tree, None, false);
+        assert!(rows[0].agent, "the agent's face is software's");
+    }
+
+    /// One member, one colour: the faces the People list draws wear the colours the apps paint them
+    /// in. The agent here is kept by the person whose page this is, and what it is lands on that
+    /// person's own hue.
+    #[test]
+    fn the_people_list_wears_the_colour_the_apps_paint() {
+        use tilo_session_core::desktop::here::{HereState, LiveMember, place_here};
+        let agent = MemberId::agent("helper", "bo-root");
+        let keeper = (0..1000)
+            .map(|n| format!("person-{n}"))
+            .find(|id| {
+                tilo_ui_base::tokens::PresenceHue::of_identity(id)
+                    == tilo_ui_base::tokens::PresenceHue::of_agent("helper")
+            })
+            .expect("a person whose hue what the agent is lands on");
+        let member = |publisher: &str, kind: &str, label: &str| LiveMember {
+            publisher: publisher.to_owned(),
+            kind: kind.to_owned(),
+            label: label.to_owned(),
+            ..LiveMember::default()
+        };
+        let me = LiveMember {
+            user: Some(keeper.clone()),
+            ..member("me", "person", "Pat")
+        };
+        let bo = LiveMember {
+            user: Some("bo-root".to_owned()),
+            ..member("bo-device", "person", "Bo")
+        };
+        let helper = LiveMember {
+            user: Some(keeper.clone()),
+            member: Some(agent.clone()),
+            ..member("5a3f00stand-in", "agent", "Helper")
+        };
+        let mut here = HereState::default();
+        here.set_members(Some(me), Some(vec![bo, helper]));
+        let people = here.people(&Layout::default(), &[], &|_| None);
+
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Shell");
+        workspace.policy.set_owner(&keeper);
+        let node = workspace.policy.node();
+        workspace.policy.grant(tilo_action_policy::Grant::new(
+            "agent-member:helper",
+            tilo_action_policy::Grantee::agent("helper", &keeper),
+            node,
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(&keeper),
+        ));
+        let mut tree = Layout {
+            active: workspace.id(),
+            workspaces: vec![workspace],
+            ..Layout::default()
+        };
+        place_here(&mut tree, &people, None);
+        // The faces the People list shows are the colours the apps paint the same people in.
+        let rows = people_in(&tree, None, false);
+        let mut listed = tilo_ui_base::presence::PresenceCtx::empty();
+        listed.apply_members(vec![
+            Member::named(MemberId::person("bo-root"), "Bo"),
+            Member::named(agent.clone(), "Helper"),
+        ]);
+        let unlisted = tilo_ui_base::presence::PresenceCtx::empty();
+        let hex = |(red, green, blue): (u8, u8, u8)| format!("{red:02x}{green:02x}{blue:02x}");
+        let mut faces: Vec<String> = ["Bo", "Helper"]
+            .iter()
+            .map(|name| {
+                rows.iter()
+                    .find(|row| row.name == *name)
+                    .unwrap_or_else(|| panic!("{name} has a row"))
+                    .colour
+                    .clone()
+            })
+            .collect();
+        faces.sort_unstable();
+        for app in [&listed, &unlisted] {
+            let mut painted = vec![
+                hex(app.color_for(&MemberId::person("bo-root"))),
+                hex(app.color_for(&agent)),
+            ];
+            painted.sort_unstable();
+            assert_eq!(
+                faces, painted,
+                "the People list's faces wear the colours the apps paint"
+            );
+        }
+    }
+
+    /// The People list names a member as the workspace's settings pane does, cased the same: both
+    /// read the one member row the workspace lists.
+    #[test]
+    fn a_member_is_named_as_the_workspace_lists_them() {
+        use tilo_session_core::desktop::people::PeopleNames;
+        use tilo_session_core::desktop::workspace_settings::member_row_name;
+        let owner_key = "fa4834147f".repeat(6) + "0123";
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Studio");
+        workspace.policy.set_owner(owner_key.as_str());
+        // The People list knows Ada from presence; the workspace's own record of her has no name.
+        let mut listed = workspace.clone();
+        listed.member_here(Member::named(MemberId::person("ada"), "Ada"));
+        let desktop = Layout {
+            active: listed.id(),
+            workspaces: vec![listed],
+            ..Layout::default()
+        };
+        let names = PeopleNames::of(&desktop, &owner_key, Some("Robin"));
+        let row = people_in(&desktop, None, false)
+            .into_iter()
+            .find(|row| row.key == "ada")
+            .expect("ada is here");
+        assert_eq!(
+            row.name,
+            member_row_name(&names, &workspace, &owner_key, &MemberId::person("ada")),
+            "the same name, cased the same, as the settings pane"
         );
     }
 

@@ -230,25 +230,6 @@ tilo_test_env::scenario! {
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"
         );
-
-        // The bar and the People list read the workspace's rows, which this page fills from its
-        // board: the same colour again.
-        let mut tree = Layout {
-            workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Shell")],
-            ..Layout::default()
-        };
-        tree.active = tree.workspaces[0].id();
-        place_here(&mut tree, &people, None);
-        let rows = crate::desktop::people::roster_rows(&tree);
-        let row = rows
-            .iter()
-            .find(|row| row.id == helper)
-            .expect("the agent has a row in the People list");
-        assert_eq!(
-            row.color,
-            ui::vello::peniko::Color::from_rgb8(r, g, b),
-            "the People list"
-        );
     }
 
     phase a_person_wears_the_colour_they_chose;
@@ -706,12 +687,6 @@ tilo_test_env::scenario! {
             user: Some(person.into()),
             ..member(publisher, "person", "Alex")
         };
-        let roster: HashMap<String, String> = crate::desktop::people::roster_rows(&tree)
-            .into_iter()
-            .map(|row| (row.id, row.label))
-            .collect();
-        assert_eq!(roster["person-z"], "Alex");
-        assert_eq!(roster["person-a"], "Alex");
         let mut mine = HereState::default();
         mine.set_members(Some(alex("dev-a", "person-a")), Some(vec![alex("dev-z", "person-z")]));
         let seen: HashMap<String, String> = mine
@@ -719,7 +694,7 @@ tilo_test_env::scenario! {
             .into_iter()
             .map(|person| (person.user.expect("certified"), person.label))
             .collect();
-        assert_eq!(seen["person-z"], "Alex", "as the roster has them");
+        assert_eq!(seen["person-z"], "Alex", "as everyone here calls them");
         assert_eq!(mine.own_shown().as_deref(), Some("Alex"));
     }
 
@@ -979,8 +954,6 @@ tilo_test_env::scenario! {
             .find(|member| member.id == collab_types::MemberId::agent("scribe", "bo-root"))
             .expect("the agent is on the member list");
         assert!(!agent.id.is_person(), "an agent's row is software's");
-        let rows = crate::desktop::people::roster_rows(&tree);
-        assert!(rows[0].is_agent(), "the agent's face is software's");
     }
 }
 
@@ -1015,94 +988,4 @@ fn a_persons_devices_and_name_resolve_as_presence_shows_them() {
         ui::history_source::UNKNOWN_AUTHOR_NAME,
         "someone not here is nobody presence can name"
     );
-}
-
-/// One member, one colour: the face the bar draws for a person and for an agent at work is the
-/// colour an app's presence paints them in, keyed by who they are and nothing else. The agent here
-/// is kept by the person whose page this is, and what it is lands on that person's own hue: the
-/// bar knows its keeper from the workspace's grants, an app may not, and neither may change its
-/// colour. Its session speaks from a stand-in key of its own, which may not either.
-#[test]
-fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
-    let agent = MemberId::agent("helper", "bo-root");
-    let keeper = (0..1000)
-        .map(|n| format!("person-{n}"))
-        .find(|id| {
-            tilo_ui_base::tokens::PresenceHue::of_identity(id)
-                == tilo_ui_base::tokens::PresenceHue::of_agent("helper")
-        })
-        .expect("a person whose hue what the agent is lands on");
-    let me = LiveMember {
-        user: Some(keeper.clone()),
-        ..member("me", "person", "Pat")
-    };
-    let bo = LiveMember {
-        user: Some("bo-root".into()),
-        ..member("bo-device", "person", "Bo")
-    };
-    let helper = LiveMember {
-        user: Some(keeper.clone()),
-        member: Some(agent.clone()),
-        ..member("5a3f00stand-in", "agent", "Helper")
-    };
-    let mut here = HereState::default();
-    here.set_members(Some(me), Some(vec![bo, helper]));
-    let people = here.people(&Layout::default(), &[], &|_| None);
-
-    let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Shell");
-    workspace.policy.set_owner(&keeper);
-    let node = workspace.policy.node();
-    workspace.policy.grant(tilo_action_policy::Grant::new(
-        "agent-member:helper",
-        tilo_action_policy::Grantee::agent("helper", &keeper),
-        node,
-        tilo_action_policy::KindSet::READ,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(&keeper),
-    ));
-    let mut tree = Layout {
-        active: workspace.id(),
-        workspaces: vec![workspace],
-        ..Layout::default()
-    };
-    place_here(&mut tree, &people, None);
-    // The faces the bar shows are the People list's rows of the others here.
-    let rows = crate::desktop::people::roster_rows(&tree);
-
-    // What an app is told of the workspace's members, and what it paints someone it was told
-    // nothing of.
-    let mut listed = PresenceCtx::empty();
-    listed.apply_members(vec![
-        Member::named(MemberId::person("bo-root"), "Bo"),
-        Member::named(agent.clone(), "Helper"),
-    ]);
-    let unlisted = PresenceCtx::empty();
-    let rgba = |(r, g, b): (u8, u8, u8)| {
-        ui::vello::peniko::Color::from_rgb8(r, g, b)
-            .to_rgba8()
-            .to_u8_array()
-    };
-    let mut faces: Vec<[u8; 4]> = ["Bo", "Helper"]
-        .iter()
-        .map(|name| {
-            rows.iter()
-                .find(|row| row.label == *name)
-                .unwrap_or_else(|| panic!("{name} has a row"))
-                .color
-                .to_rgba8()
-                .to_u8_array()
-        })
-        .collect();
-    faces.sort_unstable();
-    for app in [&listed, &unlisted] {
-        let mut painted = vec![
-            rgba(app.color_for(&MemberId::person("bo-root"))),
-            rgba(app.color_for(&agent)),
-        ];
-        painted.sort_unstable();
-        assert_eq!(
-            faces, painted,
-            "the bar's faces wear the colours the apps paint"
-        );
-    }
 }
