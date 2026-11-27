@@ -440,6 +440,11 @@ d-z5ai6zk5 = Bedienelemente
     .w-only-the-page-s-owner-changes = Nur wem die Seite gehört, ändert, wer sie öffnen kann
     .w-keys = Tasten
     .w-on-screen-keyboard = Bildschirmtastatur
+    .w-find-in-a-page = Im Text suchen
+    .w-the-window-bar-s-find-over = Die Suche der Fensterleiste über der Notiz dieser Seite: Tippen grenzt die Treffer ein, die Pfeile gehen sie durch, eine Option ändert, was passt, und Ersetzen schreibt die Notiz.
+    .w-find-in-the-note = In der Notiz suchen
+    .w-document = Dokument
+    .w-the-note = Die Notiz
 
 d-wxq3apea = Daten
     .w-tables-trees-conversations-cards-and-history = Tabellen, Bäume, Gespräche, Karten und Verlauf, jede aus einer Sammlung der App gelesen.

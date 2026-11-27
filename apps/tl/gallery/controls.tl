@@ -12,6 +12,29 @@ enum Urgency {
     high (icon: .flag, tone: .warning)
 }
 
+/// How many times `query` stands in `note`, in the case the find matches in: what the bar's count
+/// says, as a document's own find would.
+fn matches_in(note: Text, query: Text, match_case: Bool) -> Int {
+    if query.trim() == "" {
+        return 0
+    }
+    let hay = if match_case { note } else { note.lower() }
+    let needle = if match_case { query } else { query.lower() }
+    hay.split(needle).len() - 1
+}
+
+/// The find's case, after choosing `chosen` among its options: matching case, or as it was for an
+/// option that leaves the case alone.
+fn toggled_case(chosen: Text, current: Bool) -> Bool {
+    if chosen == "case" { not current } else { current }
+}
+
+/// `note` with every `query` replaced by `with`: what the bar's replace writes, and the note as
+/// it stands when there is nothing to find.
+fn replaced(note: Text, query: Text, with: Text) -> Text {
+    if query == "" { note } else { note.replace(query, with) }
+}
+
 /// The controls' page: each kind in a section of its own, each in the states a person meets it
 /// in. Every value is the document's or the page's own, so each control can be played with.
 view controls(g: Gallery) {
@@ -22,6 +45,13 @@ view controls(g: Gallery) {
     state swatch: Int = 0
     state text_size: Int = 1
     state delivery: Int = 0
+    // The find's own: the note it works through, what is typed, the match it stands on, and
+    // whether its case matters.
+    state find_note: Text = "The ship sails at dawn. The Ship returns at dusk. One ship waits."
+    state find_query: Text = "ship"
+    state find_at: Int = 0
+    state find_case: Bool = false
+    let found = matches_in(find_note, find_query, find_case)
     ui.Text(
         "Fields, switches, sliders, pickers, dates and colours, each bound to the document's own.",
         role: .caption,
@@ -105,6 +135,40 @@ view controls(g: Gallery) {
                 ui.Segment("History")
                 on change(i): set(showing, i)
             }
+        }
+        ui.Section("Find in a page") {
+            ui.Text(
+                "The window bar's find over the page's own note: typing narrows the count, the arrows step through the matches, an option changes what matches, and replacing writes the note.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.FindControls(
+                bind: find_query,
+                placeholder: "Find in the note",
+                acts_on: "document",
+                current: if found == 0 { 0 } else { find_at % found + 1 },
+                total: found,
+                replaces: true,
+                regex: false,
+                hex: false,
+                match_case: find_case,
+                match_whole_word: false,
+                match_regex: false,
+                match_hex: false,
+                window: "The note",
+                app: "Gallery",
+            ) {
+                on changed(text): set(find_query, text).then(set(find_at, 0))
+                on step(forward): set(
+                    find_at,
+                    if forward { find_at + 1 } else { find_at + found - 1 },
+                )
+                on option(chosen): set(find_case, toggled_case(chosen, find_case))
+                on replace(text): set(find_note, replaced(find_note, find_query, text))
+                on replace_all(text): set(find_note, replaced(find_note, find_query, text))
+                on close: set(find_query, "")
+            }
+            ui.Text(find_note)
         }
         ui.Section("People") {
             form {
