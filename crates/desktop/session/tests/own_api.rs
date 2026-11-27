@@ -86,6 +86,19 @@ fn held_workspace(session: &mut tilo_session::Session, api: &std::path::Path) ->
         .to_owned()
 }
 
+/// Once the API finds the section at `address`: the session publishes its sections to its
+/// daemon, and a program reaches one once the daemon offers it. A section has no read action, so
+/// the read answers that; only a section not offered yet is not found.
+fn found_at_the_api(session: &mut tilo_session::Session, api: &crate::common::Api, address: &str) {
+    crate::common::wait_for(session, "the section at the API", |session| {
+        session.settle_services();
+        let found = api
+            .send(&format!("resources/{address}"), None)
+            .answer(session);
+        (!found.is_err_and(|why| why.ends_with("(not_found)"))).then_some(())
+    });
+}
+
 /// A setter of a settings section, called through the API as a generated SDK calls it, is typed
 /// by the sections' own surface whichever app shows the section: the person's and the device's
 /// sections are both set, as the session reads them. A value of the wrong type is refused, and so are types
@@ -127,13 +140,8 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
         )
         .answer(session)
     };
-    // The sections reach the workspace once the session publishes them to its daemon: the
-    // program sets one once the session holds it.
     for address in [&appearance, &power] {
-        crate::common::wait_for(&mut session, "the section in the session", |session| {
-            session.settle_services();
-            session.read(address)
-        });
+        found_at_the_api(&mut session, &api, address);
     }
     for (address, setter, value) in [
         (&appearance, "set-mode", json!("light")),
@@ -196,6 +204,7 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
         session.read(&power)?.get("lock_minutes").cloned()
     });
     assert_ne!(before, json!(0), "the device locks to begin with");
+    found_at_the_api(&mut session, &api, &power);
 
     // Never locking weakens the lock: the call waits for the person, on the system's question.
     let never = api.send(
