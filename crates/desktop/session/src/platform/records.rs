@@ -66,13 +66,18 @@ impl Changes {
     /// Whether this device holds `workspace`, as [`Self::holding`] says: true where the session
     /// told the stream nothing, as a page's does, which notes only what it keeps.
     fn holds(&self, workspace: &str) -> bool {
+        self.told_holds(workspace).unwrap_or(true)
+    }
+
+    /// Whether this device holds `workspace`, as [`Self::holding`] told: `None` where nothing did.
+    fn told_holds(&self, workspace: &str) -> Option<bool> {
         let asked = self
             .0
             .holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        asked.is_none_or(|asked| asked(workspace))
+        asked.map(|asked| asked(workspace))
     }
 
     /// Note that `record` of `app` changed in `workspace` (an empty route: the workspace's list
@@ -513,13 +518,19 @@ impl Held {
     /// What `app`'s document at `route` in `workspace` holds since `heads`: all of it without
     /// heads. Nothing while its keys are not here yet, and nothing of a workspace this device's
     /// service does not hold: this device's own, where an app launched outside every workspace
-    /// keeps what it writes, stays with that app.
+    /// keeps what it writes, stays with that app. Whether it holds the workspace is what the
+    /// session already knows, where the stream was told it; only otherwise is the service asked,
+    /// a round trip a reader making many reads would pay on every one.
     fn read(
         &self,
         (app, workspace, route): (&str, &str, &str),
         heads: Option<&[automerge::ChangeHash]>,
     ) -> Option<tilo_peer_state::workspace_documents::DocumentRead> {
-        if !self.reads.workspaces().iter().any(|held| held == workspace) {
+        let held = self
+            .changes
+            .told_holds(workspace)
+            .unwrap_or_else(|| self.reads.workspaces().iter().any(|held| held == workspace));
+        if !held {
             return None;
         }
         let heads: Option<Vec<[u8; 32]>> =
@@ -634,6 +645,82 @@ mod tests {
                 .ok()
                 .as_deref(),
             Some("held")
+        );
+    }
+
+    /// A service that holds every workspace's records as absent, and counts how often it is asked
+    /// which workspaces it holds and how often a record is read.
+    #[cfg(target_os = "linux")]
+    #[derive(Default)]
+    struct Asked {
+        workspaces: std::sync::atomic::AtomicUsize,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl tilo_peer_state::workspace_documents::DeviceDocuments for Asked {
+        fn read(
+            &self,
+            _workspace: &str,
+            _app: &str,
+            _resource: &str,
+            _since: Option<&[[u8; 32]]>,
+        ) -> Result<tilo_peer_state::workspace_documents::DocumentRead, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(tilo_peer_state::workspace_documents::DocumentRead::Absent)
+        }
+
+        fn listing(
+            &self,
+            _workspace: &str,
+        ) -> Result<Vec<tilo_actions::remote::ListedResource>, String> {
+            Ok(Vec::new())
+        }
+
+        fn holds(&self, _workspace: &str, _app: &str, _resource: &str) -> bool {
+            false
+        }
+
+        fn workspaces(&self) -> Vec<String> {
+            self.workspaces.fetch_add(1, Ordering::SeqCst);
+            vec!["held".to_owned()]
+        }
+    }
+
+    /// A reader reading many records asks the service only for them: whether the device holds
+    /// their workspace is what the session told the stream, and where nothing did, the service.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_record_read_asks_the_service_for_the_record_alone() {
+        let service = Arc::new(Asked::default());
+        let changes = Changes::default();
+        let held = Held::over(Arc::clone(&service) as _, changes.clone());
+
+        assert!(held.document("so.tilo.chat", "held", "messages").is_none());
+        assert_eq!(service.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            service.workspaces.load(Ordering::SeqCst),
+            1,
+            "a session that told the stream nothing asks the service what it holds"
+        );
+
+        changes.holding(Arc::new(|workspace: &str| workspace == "held"));
+        for _ in 0..100 {
+            assert!(held.document("so.tilo.chat", "held", "messages").is_none());
+        }
+        assert!(
+            held.document("so.tilo.chat", "unheld", "messages")
+                .is_none()
+        );
+        assert_eq!(
+            service.reads.load(Ordering::SeqCst),
+            101,
+            "an unheld workspace is not read"
+        );
+        assert_eq!(
+            service.workspaces.load(Ordering::SeqCst),
+            1,
+            "what the session knows it holds is not asked of the service again"
         );
     }
 }
