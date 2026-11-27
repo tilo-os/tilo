@@ -110,10 +110,11 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # aarch64 run measures them there. libtilo_remote_engine.so (2869448 bytes),
 # Remote's SSH and VNC clients, was measured on x86_64 at its introduction; its
 # budget is the one that run printed, on both architectures until an aarch64 run
-# measures it there. libtilo_video_editor_engine.so, Video Editor's decoders,
-# mixer and renderer (which link GStreamer and GLib, so tilolang-process loads
-# neither at exec), is an estimate on both architectures until the first run
-# prints what to lower it to.
+# measures it there. libtilo_video_editor_engine.so (898616 bytes), Video Editor's
+# decoders, mixer and renderer (which link GStreamer and GLib, so tilolang-process
+# loads neither at exec), was measured on x86_64 at its introduction; its x86_64
+# budget is the one that run printed, and aarch64 holds it to 1 MiB until an
+# aarch64 run measures it there.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: a native app links it, so the loader
@@ -160,7 +161,7 @@ symbol_relocations = 6592
 "libtilo_theme_painter_engine.so" = 65536
 "libtilo_totp_engine.so" = 524288
 "libtilo_typst_engine.so" = 34406400
-"libtilo_video_editor_engine.so" = 8388608
+"libtilo_video_editor_engine.so" = 917504
 "libtilo_wasm_engine.so" = 65536
 "libtilo_youtube_engine.so" = 4554752
 
@@ -179,6 +180,6 @@ symbol_relocations = 6592
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 41418752
-"libtilo_video_editor_engine.so" = 8388608
+"libtilo_video_editor_engine.so" = 1048576
 "libtilo_wasm_engine.so" = 2621440
 "libtilo_youtube_engine.so" = 4554752

@@ -21,7 +21,6 @@ fn main() {
         ("avf_microphone", mac && feature("MICROPHONE")),
         ("avf_screen", mac && feature("SCREEN")),
         ("portal_screen", os == "linux" && feature("SCREEN")),
-        ("sane_scanner", os == "linux" && feature("SCANNER")),
         (
             "codes",
             !matches!(

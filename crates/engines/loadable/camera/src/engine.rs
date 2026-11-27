@@ -243,11 +243,12 @@ impl Job {
     }
 
     fn fail(&self, error: String) {
+        let detail = serde_json::json!({ "why": &error });
         if let Ok(mut slot) = self.error.lock() {
-            *slot = Some(error.clone());
+            *slot = Some(error);
         }
         self.finished.store(true, Ordering::Relaxed);
-        self.end("failed", &serde_json::json!({ "why": error }));
+        self.end("failed", &detail);
     }
 
     /// Tell the job's last move, unless one was told already.
@@ -602,17 +603,17 @@ fn scan(told: Told, job: &str, input: &str) -> Result<(), String> {
         name: String,
     }
     let ask: Ask = reads(input)?;
-    let settings = tilo_capture::scanner::ScanSettings {
+    let settings = tilo_scanner::ScanSettings {
         resolution_dpi: ask.resolution,
         color: match ask.colour.as_str() {
-            "grayscale" => tilo_capture::scanner::ScanColor::Grayscale,
-            "lineart" => tilo_capture::scanner::ScanColor::LineArt,
-            _ => tilo_capture::scanner::ScanColor::Color,
+            "grayscale" => tilo_scanner::ScanColor::Grayscale,
+            "lineart" => tilo_scanner::ScanColor::LineArt,
+            _ => tilo_scanner::ScanColor::Color,
         },
         source: match ask.source.as_str() {
-            "feeder" => tilo_capture::scanner::ScanSource::Feeder,
-            "feeder-duplex" => tilo_capture::scanner::ScanSource::FeederDuplex,
-            _ => tilo_capture::scanner::ScanSource::Flatbed,
+            "feeder" => tilo_scanner::ScanSource::Feeder,
+            "feeder-duplex" => tilo_scanner::ScanSource::FeederDuplex,
+            _ => tilo_scanner::ScanSource::Flatbed,
         },
     };
     if ask.scanner.is_empty() {
@@ -633,14 +634,12 @@ fn scan(told: Told, job: &str, input: &str) -> Result<(), String> {
     let scanner = ask.scanner;
     std::thread::Builder::new()
         .name("camera-scan".to_owned())
-        .spawn(
-            move || match tilo_capture::scanner::scan_page(&scanner, settings) {
-                // A scan stopped part way keeps nothing: the job told it ended when it was stopped.
-                Ok(_) if worker.stopped.load(Ordering::Relaxed) => {}
-                Ok(png) => worker.keep(&name, "image/png", &png),
-                Err(error) => worker.fail(error),
-            },
-        )
+        .spawn(move || match tilo_scanner::scan_page(&scanner, settings) {
+            // A scan stopped part way keeps nothing: the job told it ended when it was stopped.
+            Ok(_) if worker.stopped.load(Ordering::Relaxed) => {}
+            Ok(png) => worker.keep(&name, "image/png", &png),
+            Err(error) => worker.fail(error),
+        })
         .map_err(|error| format!("could not start the scan: {error}"))?;
     Ok(())
 }
@@ -903,7 +902,7 @@ static API: EngineApi = EngineApi {
 
 /// The entry the process opens this library for.
 #[unsafe(no_mangle)]
-pub fn tilo_engine_entry() -> &'static EngineApi {
+pub extern "Rust" fn tilo_engine_entry() -> &'static EngineApi {
     &API
 }
 

@@ -34,6 +34,7 @@ required-features = ["thin"]
 thin = [
     "dep:runtime-dylib",
     "dep:tilo-capture",
+    "dep:tilo-scanner",
     "dep:tilo-image-codec",
     "dep:tilo-ocr",
     "dep:tilo-doc-pdf",
@@ -45,8 +46,10 @@ thin = [
 
 [dependencies]
 runtime-dylib = { path = "../../../sdk/runtime-dylib", optional = true }
-# The cameras, the scanner and the codes a picture holds on this device.
-tilo-capture = { path = "../../tilo-capture", features = ["scanner", "camera", "codes"], optional = true }
+# The cameras and the codes a picture holds on this device.
+tilo-capture = { path = "../../tilo-capture", features = ["camera", "codes"], optional = true }
+# The document scanners on this device.
+tilo-scanner = { path = "../../../platform/tilo-scanner", optional = true }
 # A picture and a clip encoded and decoded through the one image codec.
 tilo-image-codec = { version = "0.1.0", path = "../../../platform/image-codec", optional = true }
 # The text a page shows, and the PDF a scanned document is written as.

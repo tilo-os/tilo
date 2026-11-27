@@ -1,12 +1,11 @@
-//! `tilo-capture`: cameras, microphones, the screen and document scanners, with
-//! one API on Linux and macOS.
+//! `tilo-capture`: cameras, microphones and the screen, with one API on Linux and
+//! macOS. Document scanners are `tilo-scanner`'s.
 //!
 //! | Capability | Linux | macOS |
 //! |---|---|---|
 //! | camera (`camera`) | `GStreamer` `v4l2src` | `AVFoundation` |
 //! | microphone (`microphone`) | `GStreamer` `autoaudiosrc` | `AVFoundation` |
 //! | screen (`screen`) | `ScreenCast` portal + `pipewiresrc` | `AVFoundation` |
-//! | scanner (`scanner`) | `SANE` | `Unsupported` |
 //!
 //! Every capture is request based and poll driven, because macOS and the
 //! `ScreenCast` portal ask the user first: `open_*` returns at once in [`CaptureState::Starting`], and
@@ -20,7 +19,6 @@
 //! the process that launched it ([`broker`]).
 
 pub mod codes;
-pub mod scanner;
 
 #[cfg(avf)]
 mod avf_backend;
@@ -36,22 +34,18 @@ pub enum Feature {
     Camera,
     Microphone,
     Screen,
-    Scanner,
 }
 
 pub use tilo_platform_caps::{Availability, availability, available};
-
-const NO_SCANNER: &str = "document scanners are reached through SANE, on Linux only";
 
 impl tilo_platform_caps::Feature for Feature {
     /// The feature's availability on Linux, macOS and the web, in that order, for a
     /// build with every capability feature enabled.
     fn targets(self) -> [Availability; 3] {
-        use Availability::{Available, Prompt, Unsupported};
+        use Availability::{Available, Prompt};
         match self {
             Self::Camera | Self::Microphone => [Available, Prompt, Prompt],
             Self::Screen => [Prompt, Prompt, Prompt],
-            Self::Scanner => [Available, Unsupported(NO_SCANNER), Unsupported(NO_SCANNER)],
         }
     }
 
@@ -60,7 +54,6 @@ impl tilo_platform_caps::Feature for Feature {
             Self::Camera => cfg!(native_camera),
             Self::Microphone => cfg!(native_microphone),
             Self::Screen => cfg!(native_screen),
-            Self::Scanner => cfg!(sane_scanner) || tilo_platform_caps::COLUMN != 0,
         };
         if built {
             self.targets()[tilo_platform_caps::COLUMN]

@@ -1,7 +1,10 @@
 //! Document scanners: one page at a time, as PNG.
 //!
-//! Linux reaches scanners through SANE; macOS reports none. The controls
+//! Linux reaches scanners through SANE; elsewhere there are none. The controls
 //! are a small typed set, so no caller can pass scanner options through a string.
+//!
+//! A crate of its own, apart from camera and microphone capture, so what scans a
+//! page links no media framework.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Scanner {
@@ -30,17 +33,28 @@ pub enum ScanSource {
     FeederDuplex,
 }
 
+/// The scanners SANE finds; none off Linux.
 pub fn scanners() -> Result<Vec<Scanner>, String> {
-    imp::scanners()
+    #[cfg(target_os = "linux")]
+    return imp::scanners();
+    #[cfg(not(target_os = "linux"))]
+    Ok(Vec::new())
 }
 
+/// One page from `device`, as PNG.
 pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String> {
-    imp::scan_page(device, settings)
+    #[cfg(target_os = "linux")]
+    return imp::scan_page(device, settings);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (device, settings);
+        Err("document scanners are reached through SANE, on Linux only".into())
+    }
 }
 
 // SANE through `scanimage`: the device is one argv value and every option comes
 // from the typed set, so no caller reaches a free-form argument.
-#[cfg(sane_scanner)]
+#[cfg(target_os = "linux")]
 mod imp {
     use std::process::Command;
     use std::time::Duration;
@@ -179,22 +193,5 @@ mod imp {
             assert!(scan_command("scanner\n--batch", valid).is_err());
             assert!(scan_command("scanner", valid).is_ok());
         }
-    }
-}
-
-#[cfg(not(sane_scanner))]
-mod imp {
-    use super::{ScanSettings, Scanner};
-
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "the same signature as the SANE backend's"
-    )]
-    pub(super) fn scanners() -> Result<Vec<Scanner>, String> {
-        Ok(Vec::new())
-    }
-
-    pub(super) fn scan_page(_device: &str, _settings: ScanSettings) -> Result<Vec<u8>, String> {
-        Err(crate::NO_SCANNER.into())
     }
 }

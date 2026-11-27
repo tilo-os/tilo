@@ -1057,7 +1057,7 @@ doc = false
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-canvas-engine" = { path = "../../crates/engines/canvas-engine", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["codes", "default", "scanner"] }
+"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["codes", "default"] }
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chip-design-engine" = { path = "../../crates/engines/tilo-chip-design-engine", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
@@ -1240,6 +1240,7 @@ doc = false
 "tilo-runtime-portal" = { path = "../../crates/core/runtime-portal", default-features = false, features = [] }
 "tilo-sandbox" = { path = "../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../crates/platform/sandbox-core", default-features = false, features = ["test-support"] }
+"tilo-scanner" = { path = "../../crates/platform/tilo-scanner", default-features = false, features = [] }
 "tilo-seal" = { path = "../../crates/core/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../crates/platform/search", default-features = false, features = ["disk"] }
 "tilo-secret-service" = { path = "../../crates/desktop/secret-service", default-features = false, features = [] }
@@ -3524,7 +3525,7 @@ doc = false
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-canvas-engine" = { path = "../../crates/engines/canvas-engine", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["codes", "default", "scanner"] }
+"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["codes", "default"] }
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chip-design-engine" = { path = "../../crates/engines/tilo-chip-design-engine", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
@@ -3705,6 +3706,7 @@ doc = false
 "tilo-runtime-portal" = { path = "../../crates/core/runtime-portal", default-features = false, features = [] }
 "tilo-sandbox" = { path = "../../crates/platform/tilo-sandbox", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../crates/platform/sandbox-core", default-features = false, features = ["test-support"] }
+"tilo-scanner" = { path = "../../crates/platform/tilo-scanner", default-features = false, features = [] }
 "tilo-seal" = { path = "../../crates/core/tilo-seal", default-features = false, features = [] }
 "tilo-search" = { path = "../../crates/platform/search", default-features = false, features = ["disk"] }
 "tilo-secret-service" = { path = "../../crates/desktop/secret-service", default-features = false, features = [] }

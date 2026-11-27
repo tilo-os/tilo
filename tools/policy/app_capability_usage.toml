@@ -77,8 +77,7 @@ paths = ["ui::mpris"]
 # `VideoPlayer::enable_mpris` registers the widget's player.
 methods = ["enable_mpris"]
 
-# tilo-capture also scans documents (`tilo_capture::scanner`), which is not
-# the camera: only its capture backends and devices are evidence.
+# Only tilo-capture's capture backends and devices are evidence of the camera.
 [uses.camera]
 features = ["tilo-capture/camera"]
 paths = ["tilo_capture::devices", "tilo_capture::broker"]

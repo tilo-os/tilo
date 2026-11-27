@@ -200,17 +200,17 @@ fn scan(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<
         name: Option<String>,
     }
     let ask: Ask = reads(input)?;
-    let settings = tilo_capture::scanner::ScanSettings {
+    let settings = tilo_scanner::ScanSettings {
         resolution_dpi: ask.resolution.unwrap_or(300).clamp(50, 2400),
         color: match ask.colour.as_deref() {
-            Some("grayscale") => tilo_capture::scanner::ScanColor::Grayscale,
-            Some("lineart") => tilo_capture::scanner::ScanColor::LineArt,
-            _ => tilo_capture::scanner::ScanColor::Color,
+            Some("grayscale") => tilo_scanner::ScanColor::Grayscale,
+            Some("lineart") => tilo_scanner::ScanColor::LineArt,
+            _ => tilo_scanner::ScanColor::Color,
         },
         source: match ask.source.as_deref() {
-            Some("feeder") => tilo_capture::scanner::ScanSource::Feeder,
-            Some("feeder-duplex") => tilo_capture::scanner::ScanSource::FeederDuplex,
-            _ => tilo_capture::scanner::ScanSource::Flatbed,
+            Some("feeder") => tilo_scanner::ScanSource::Feeder,
+            Some("feeder-duplex") => tilo_scanner::ScanSource::FeederDuplex,
+            _ => tilo_scanner::ScanSource::Flatbed,
         },
     };
     let name = ask
@@ -219,7 +219,7 @@ fn scan(store: &ContentStore, job: &str, input: &str, moved: JobSink) -> Result<
     let scanner = ask.scanner;
     let store = store.clone();
     run(job, moved, "print-centre-scan", move || {
-        let png = tilo_capture::scanner::scan_page(&scanner, settings)?;
+        let png = tilo_scanner::scan_page(&scanner, settings)?;
         let kept = crate::files::keep(&store, &name, "image/png", &png)?;
         Ok(format!("tilo-blob://{}", kept.hash))
     })

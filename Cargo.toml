@@ -479,6 +479,7 @@ members = [
     "crates/os/boot-order",
     "crates/os/boot-signin",
     "crates/platform/bounded-command",
+    "crates/platform/tilo-scanner",
     "crates/integrations/cloud-source",
     "crates/integrations/cloud-source-dav",
     "crates/integrations/cloud-source-gdrive",

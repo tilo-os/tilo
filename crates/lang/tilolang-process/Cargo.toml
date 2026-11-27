@@ -161,7 +161,7 @@ tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
 # The scanner the Print Centre's engine runs, and the text and PDF a scanned page becomes.
-tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner"] }
+tilo-scanner = { path = "../../platform/tilo-scanner" }
 # A picture's size and kind, read without decoding it, for Photos.
 tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }
 tilo-ocr = { path = "../../engines/ocr" }

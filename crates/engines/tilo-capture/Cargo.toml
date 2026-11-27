@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Camera, microphone, screen and document-scanner capture with one API on Linux and macOS: GStreamer and the ScreenCast portal on Linux, AVFoundation on macOS."
+description = "Camera, microphone and screen capture with one API on Linux and macOS: GStreamer and the ScreenCast portal on Linux, AVFoundation on macOS."
 build = "build.rs"
 
 [lib]
@@ -20,7 +20,6 @@ screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashp
 # The macOS backend's frameworks, which the capabilities above select;
 # nothing on other targets.
 avfoundation = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2-core-graphics", "dep:block2", "dep:dispatch2"]
-scanner = ["dep:bounded-command"]
 # QR and barcode detection over a picture's pixels: what the Camera app scans with.
 codes = ["dep:rqrr"]
 # Synthetic devices (`broker::synthetic`), for dependents' tests.
@@ -56,10 +55,9 @@ dispatch2 = { version = "0.3", optional = true, default-features = false, featur
 libc.workspace = true
 rustix = { workspace = true, features = ["net", "std"] }
 
-# The ScreenCast portal picks the monitor or window; SANE scans documents.
+# The ScreenCast portal picks the monitor or window.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
-bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command", optional = true }
 
 # The detector a build with `codes` links.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

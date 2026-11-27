@@ -15914,6 +15914,7 @@ dependencies = [
  "tilo-image-codec",
  "tilo-media",
  "tilo-ocr",
+ "tilo-scanner",
  "workspace-hack",
 ]
 
@@ -15986,7 +15987,6 @@ dependencies = [
  "rqrr",
  "rustix 1.1.6",
  "thiserror 2.0.21",
- "tilo-bounded-command",
  "tilo-lock",
  "tilo-platform-caps",
  "tilo-rt",
@@ -20176,6 +20176,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-scanner"
+version = "0.1.0"
+dependencies = [
+ "tilo-bounded-command",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sdk-node-native"
 version = "0.1.0"
 dependencies = [
@@ -22824,7 +22832,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-backups-engine",
  "tilo-canvas-engine",
- "tilo-capture",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
@@ -22862,6 +22869,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime-interface",
  "tilo-runtime-portal",
+ "tilo-scanner",
  "tilo-server-protocol",
  "tilo-shm",
  "tilo-socket",
@@ -28212,6 +28220,7 @@ dependencies = [
  "tilo-runtime-portal",
  "tilo-sandbox",
  "tilo-sandbox-core",
+ "tilo-scanner",
  "tilo-seal",
  "tilo-search",
  "tilo-secret-service",
