@@ -2223,6 +2223,27 @@ impl Compositor {
         if self.keys.take_alert() {
             self.flash();
         }
+        self.after_input()
+    }
+
+    /// A key the on-screen keyboard pressed (`keycode`, down or up): the field hears it as it
+    /// hears the person's own keyboard, so Return submits and Backspace deletes there. It was typed
+    /// on the glass, so it is not the person turning to a keyboard they hold, which would send the
+    /// on-screen one away mid-word, and the assists for a held keyboard (slow and bounce keys)
+    /// do not hold back a tap.
+    ///
+    /// # Errors
+    /// A client could not be told.
+    pub fn press_on_screen_key(&mut self, keycode: u32, pressed: bool) -> Result<(), Error> {
+        self.data
+            .state
+            .handle_input_at(InputEvent::Key { keycode, pressed }, tilo_clock::now());
+        self.after_input()
+    }
+
+    /// What follows any input: the drags it asked for start, the text fields follow the
+    /// keyboard's focus, blanked panels wake and the clients hear what changed.
+    fn after_input(&mut self) -> Result<(), Error> {
         self.start_asked_drags();
         self.sync_text_input();
         // Input wakes blanked panels at once.

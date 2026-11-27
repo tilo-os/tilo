@@ -16,7 +16,7 @@ use tilo_accessibility_settings::OnScreenKeyboard;
 use tilo_session::AppSocket;
 use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
-use super::lock::{CLOSE, apart, pictures, private_home};
+use super::lock::{CLOSE, apart, pictures};
 
 /// The resource the session publishes the keyboard as.
 const KEYBOARD: &str = "keyboard";
@@ -29,9 +29,11 @@ const SECOND: &str = "HEADLESS-2";
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// A session on two displays that starts its on-screen keyboard as the person's choice says,
-/// serving its services on `socket` .
+/// serving its services on `socket` . It starts with the person's settings and that choice, and the
+/// choice is kept in their settings, as Settings keeps it: the session follows those, so a change
+/// it reads back on the way is the one it started with, and nothing on screen moves for it.
 fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
-    crate::common::headless_on(
+    let session = crate::common::headless_on(
         &[
             OutputConfig::new(FIRST, WIDTH, HEIGHT),
             OutputConfig::new(SECOND, 1024, 768).at(WIDTH, 0),
@@ -40,13 +42,47 @@ fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
             user: "ada".to_owned(),
             collab: false,
             app_socket: AppSocket::At(socket.to_path_buf()),
+            // What the keyboard keeps of the person's typing, which it keeps in their settings.
+            services: vec![Box::new(settings_sections::service::SettingsService::new())],
             config: tilo_session::SessionConfig {
                 on_screen_keyboard: choice,
-                ..tilo_session::SessionConfig::default()
+                ..tilo_session::SessionConfig::load()
             },
             ..Options::default()
         },
+    );
+    choose(choice);
+    // The person knows the shell's controls: no hint comes up on a display while these tests
+    // compare what it shows before and after the keyboard.
+    let learned = serde_json::Map::from_iter([("enabled".to_owned(), false.into())]);
+    settings_store::update_section(
+        "control_hints",
+        serde_json::Map::from_iter([("learned".to_owned(), learned.into())]),
     )
+    .expect("the person's hints choice is kept");
+    session
+}
+
+/// The person chooses when their on-screen keyboard comes up, as Settings keeps the choice: in
+/// their settings, which a running session follows.
+fn choose(choice: OnScreenKeyboard) {
+    let stored = match choice {
+        OnScreenKeyboard::Auto => "automatic",
+        OnScreenKeyboard::Always => "always",
+        OnScreenKeyboard::Never => "never",
+    };
+    settings_store::update_section(
+        tilo_accessibility_settings::SECTION,
+        serde_json::Map::from_iter([("on_screen_keyboard".to_owned(), stored.into())]),
+    )
+    .expect("the person's keyboard choice is kept");
+}
+
+/// A home of the test's own: the person's settings, which their keyboard keeps what typing taught
+/// in, and the directory its app wire is served in. A session follows its person's settings, so
+/// two sessions sharing one would each take the other's keyboard choice and words as their own.
+fn own_home() -> tilo_test_env::TestHome {
+    tilo_test_env::TestHome::new().expect("a home of the test's own")
 }
 
 /// The middle of `rect` : where a finger landing on a window touches it.
@@ -177,9 +213,10 @@ fn resting_window(session: &mut Session, app: &str) -> (u64, (i32, i32, i32, i32
 }
 
 /// Move the focused window to the display beside the one it stands on, and answer the display it
-/// stands on then.
+/// stands on then. Its `client` draws the window at the size the display beside gives it, as a
+/// toolkit does.
 #[track_caller]
-fn move_beside(session: &mut Session, app: &str) -> String {
+fn move_beside(session: &mut Session, client: &mut TestClient, app: &str) -> String {
     let (_, before) = window(session.compositor(), app).expect("the window");
     let was = display_of(session, before);
     let here = display_rect(session, &was);
@@ -198,7 +235,15 @@ fn move_beside(session: &mut Session, app: &str) -> String {
         "move-to-display",
         &serde_json::json!({ "steps": steps }),
     );
-    pump(session, &mut [], |session, _| {
+    let mut drawn = client.seen.size;
+    pump(session, &mut [client], |session, clients| {
+        let asked = clients[0].seen.size;
+        if asked != drawn {
+            if let Some((width, height)) = asked.filter(|(w, h)| *w > 0 && *h > 0) {
+                clients[0].show(width, height, [200, 40, 40, 255]);
+            }
+            drawn = asked;
+        }
         window(session.compositor(), app).is_some_and(|(_, rect)| display_of(session, rect) != was)
     });
     let (_, rect) = window(session.compositor(), app).expect("the window");
@@ -294,16 +339,14 @@ fn displays(session: &mut Session) -> Vec<String> {
 fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
     const APP: &str = "org.example.Notes";
     let _settled = tilo_ui_base::motion::testing::settled();
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
     let mut client = mapped(&mut session, APP);
     let (_, opened) = resting_window(&mut session, APP);
     let opened_on = display_of(&mut session, opened);
     // The person works on the other display, under the hands they type with: their window goes with
     // them.
-    let typing_on = move_beside(&mut session, APP);
+    let typing_on = move_beside(&mut session, &mut client, APP);
     let (_, rect) = resting_window(&mut session, APP);
     assert_ne!(
         typing_on, opened_on,
@@ -369,20 +412,24 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
     );
 }
 
-/// The always-on choice: the keyboard stands on a display with no field and nothing touched at all.
+/// The always-on choice: the person turns it on, and the keyboard stands on a display with no
+/// field and nothing touched at all.
 #[test]
 fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Always);
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
     let displays = displays(&mut session);
     assert_eq!(displays.len(), 2, "two displays: {displays:?}");
-    // The shell as it stands with no keyboard drawn over it: starting the keyboard's app takes a
-    // whole app's launch, seconds after the shell.
+    // The shell as it stands with no keyboard drawn over it: nothing asked for typing yet.
     let shell = still(&mut session, &[&displays[0], &displays[1]]);
+    assert_eq!(
+        reading(&session)["visible"],
+        false,
+        "nothing has asked for typing"
+    );
 
+    choose(OnScreenKeyboard::Always);
     pump(&mut session, &mut [], |session, _| {
         session.keyboard_runs() && reading(session)["visible"] == true
     });
@@ -417,15 +464,13 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     const NOTES: &str = "org.example.Notes";
     const MAIL: &str = "org.example.Mail";
     let _settled = tilo_ui_base::motion::testing::settled();
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
     let mut notes = mapped(&mut session, NOTES);
     let (_, opened) = resting_window(&mut session, NOTES);
     let opened_on = display_of(&mut session, opened);
     // The person works on the display beside it: their window goes with them.
-    let working_on = move_beside(&mut session, NOTES);
+    let working_on = move_beside(&mut session, &mut notes, NOTES);
     assert_ne!(
         working_on, opened_on,
         "the window moved to the display beside it"
@@ -502,10 +547,11 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
 #[test]
 fn the_keyboard_shows_and_hides_by_its_published_action() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Always);
+    let home = own_home();
+    let mut session = keyboard_session(
+        &home.runtime().join("collab.sock"),
+        OnScreenKeyboard::Always,
+    );
     pump(&mut session, &mut [], |session, _| {
         session.keyboard_runs() && reading(session)["visible"] == true
     });
@@ -574,10 +620,8 @@ fn controls(session: &Session) -> Vec<Control> {
 fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
     const APP: &str = "org.example.Notes";
     let _settled = tilo_ui_base::motion::testing::settled();
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
     let mut client = mapped(&mut session, APP);
     let (_, rect) = resting_window(&mut session, APP);
     let on = display_of(&mut session, rect);
@@ -671,17 +715,10 @@ fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
 fn typing_for(
     hint: zwp_text_input_v3::ContentHint,
     purpose: zwp_text_input_v3::ContentPurpose,
-) -> (
-    tempfile::TempDir,
-    tilo_test_env::ScopedEnv,
-    Session,
-    TestClient,
-) {
+) -> (tilo_test_env::TestHome, Session, TestClient) {
     const APP: &str = "org.example.Notes";
-    let home = private_home();
-    let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set("XDG_RUNTIME_DIR", home.path());
-    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let home = own_home();
+    let mut session = keyboard_session(&home.runtime().join("collab.sock"), OnScreenKeyboard::Auto);
     let mut client = mapped(&mut session, APP);
     let (_, rect) = resting_window(&mut session, APP);
     finger(&mut session, middle(rect));
@@ -702,7 +739,7 @@ fn typing_for(
     pump(&mut session, &mut [&mut client], |session, _| {
         !controls_in(session, display).is_empty()
     });
-    (home, environment, session, client)
+    (home, session, client)
 }
 
 /// The session's name for a field's purpose, as its keyboard reads it.
@@ -736,7 +773,12 @@ fn controls_in(session: &Session, band: (i32, i32, i32, i32)) -> Vec<Control> {
 fn press(session: &mut Session, client: &mut TestClient, name: &str) {
     session
         .press_action(name, ui::window_targets::TargetAction::Activate)
-        .unwrap_or_else(|error| panic!("the keyboard's {name} is pressed: {error}"));
+        .unwrap_or_else(|error| {
+            panic!(
+                "the keyboard's {name} is pressed: {error}; its controls: {:?}",
+                controls(session)
+            )
+        });
     for _ in 0..6 {
         client.exchange();
         session.step(REFRESH).expect("a turn of the session");
@@ -770,8 +812,7 @@ const BACKSPACE: u32 = 14;
 fn typed_words_compose_correct_and_take_a_correction_back() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     let _settled = tilo_ui_base::motion::testing::settled();
-    let (_home, _environment, mut session, mut client) =
-        typing_for(ContentHint::empty(), ContentPurpose::Normal);
+    let (_home, mut session, mut client) = typing_for(ContentHint::empty(), ContentPurpose::Normal);
 
     tap_word(&mut session, &mut client, "teh");
     until_typed(&mut session, &mut client, |committed, composed| {
@@ -813,8 +854,7 @@ fn return_and_marks_end_the_word() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     const RETURN: u32 = 28;
     let _settled = tilo_ui_base::motion::testing::settled();
-    let (_home, _environment, mut session, mut client) =
-        typing_for(ContentHint::empty(), ContentPurpose::Normal);
+    let (_home, mut session, mut client) = typing_for(ContentHint::empty(), ContentPurpose::Normal);
 
     tap_word(&mut session, &mut client, "ok");
     press(&mut session, &mut client, "Numbers and symbols");
@@ -838,7 +878,7 @@ fn return_and_marks_end_the_word() {
 fn a_secret_field_is_typed_as_it_is() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     let _settled = tilo_ui_base::motion::testing::settled();
-    let (_home, _environment, mut session, mut client) =
+    let (_home, mut session, mut client) =
         typing_for(ContentHint::SensitiveData, ContentPurpose::Password);
     assert_eq!(reading(&session)["secret"], true, "{}", reading(&session));
 
@@ -864,7 +904,7 @@ fn ctrl_holds_for_the_next_key_only() {
     const CTRL: u32 = 29;
     const C: u32 = 46;
     let _settled = tilo_ui_base::motion::testing::settled();
-    let (_home, _environment, mut session, mut client) =
+    let (_home, mut session, mut client) =
         typing_for(ContentHint::empty(), ContentPurpose::Terminal);
     for name in ["Esc", "Tab", "Ctrl", "Alt", "Left", "Down", "Up", "Right"] {
         assert!(
@@ -905,8 +945,7 @@ fn ctrl_holds_for_the_next_key_only() {
 fn a_number_field_gets_the_number_pad() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     let _settled = tilo_ui_base::motion::testing::settled();
-    let (_home, _environment, mut session, mut client) =
-        typing_for(ContentHint::empty(), ContentPurpose::Number);
+    let (_home, mut session, mut client) = typing_for(ContentHint::empty(), ContentPurpose::Number);
     let names: Vec<String> = controls(&session)
         .into_iter()
         .map(|(name, _)| name)

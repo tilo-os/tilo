@@ -322,10 +322,22 @@ impl KeyPad {
     pub fn set_keys(&mut self, keys: Vec<PadKey>) {
         if keys != self.keys {
             self.cancel_contacts();
+            let rows = self.rows();
             self.keys = keys;
             self.dirty = true;
-            self.placed = false;
+            self.replace(rows == self.rows());
         }
+    }
+
+    /// Place the keys again in the box the pad holds, so the keys a press brought (Shift's
+    /// capitals, the symbols, a modifier's row) are where a screen reader and the next touch
+    /// look for them at once. Unless `same_height`, the pad asks for a layout too: its height
+    /// follows its rows.
+    fn replace(&mut self, same_height: bool) {
+        if self.rect.area() > 0.0 && self.wanted_row > 0.0 {
+            self.place_rows();
+        }
+        self.placed = same_height && self.rect.area() > 0.0 && self.wanted_row > 0.0;
     }
 
     /// Take `size`: the keys are placed again at its row height.
@@ -333,7 +345,7 @@ impl KeyPad {
         if size != self.size {
             self.size = size;
             self.dirty = true;
-            self.placed = false;
+            self.replace(false);
         }
     }
 

@@ -261,6 +261,27 @@ d-mqwxb4w2-filter-dy = Dy
 
 d-mqwxb4w2-filter-samples = Messwerte
 
+d-53fmcr73 = Abstand
+    .doc = Wo die Tipps der Person auf einem Buchstaben landen, so wie das Gerät es aufbewahrt: Die Anfrage trägt es als Wert, denn die Abstände, die die Tastatur liest, sind Datensätze der Tastatur, und JSON schreibt keine.
+    .noun = { $count ->
+        [one] Abstand
+       *[other] Abstände
+    }
+
+d-csporeet = Buchstabe
+
+d-thxqur5l = Dx
+
+d-znzjq3d6 = Dy
+
+d-o67uh4lp = Messwerte
+
+d-53fmcr73-filter-dx = Dx
+
+d-53fmcr73-filter-dy = Dy
+
+d-53fmcr73-filter-samples = Messwerte
+
 d-26sgcc3w = Berührt
     .noun = { $count ->
         [one] Berührtes

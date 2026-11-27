@@ -1326,9 +1326,6 @@ fn services(
     tilo_store_engine::register();
     // Maps' device work: the areas a person keeps for offline use, listed and removed here.
     tilo_maps_engine::register();
-    // The keyboard the session draws: the layouts it shows, the words a swipe could be and the
-    // tap a finger meant, which its view asks as `engine.call` and only it asks.
-    tilo_keyboard_engine::register();
     // The database engine the Database Client asks by name: its drivers stay off the app's side,
     // and the app reads the JSON answers into its own records.
     tilolang_engine::register(

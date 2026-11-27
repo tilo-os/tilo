@@ -802,10 +802,7 @@ impl crate::Session {
 
     fn send_key(&mut self, keycode: u32, pressed: bool) {
         // The compositor refuses a key only while no field takes typing: the key had nowhere to go.
-        if let Err(error) = self
-            .compositor
-            .input(tilo_compositor::InputEvent::Key { keycode, pressed })
-        {
+        if let Err(error) = self.compositor.press_on_screen_key(keycode, pressed) {
             tracing::warn!(%error, "a key the keyboard pressed reached no field");
         }
     }

@@ -123,8 +123,17 @@ type TouchAsk {
     previous: Text
     word: Text
     language: Text
-    offsets: List<session.TapOffset>
+    offsets: List<Offset>
     personalization: Bool
+}
+
+/// Where the person's taps land on one letter, as the device keeps it: the ask carries it as a
+/// value, since the reading's own offsets are records of the keyboard's, which JSON does not write.
+type Offset {
+    letter: Text
+    dx: Float
+    dy: Float
+    samples: Int
 }
 
 /// Where the person's taps land on one letter, as the device learned it from this tap.
@@ -545,7 +554,9 @@ action meant(k: session.Keyboard, t: Typing, key: Text, at: List<Float>) -> Text
             previous: t.previous,
             word: t.word.lower(),
             language: language_of(k),
-            offsets: k.touch,
+            offsets: k.touch.map(
+                o -> Offset(letter: o.letter, dx: o.dx, dy: o.dy, samples: o.samples),
+            ),
             personalization: k.personalization,
         ),
     )

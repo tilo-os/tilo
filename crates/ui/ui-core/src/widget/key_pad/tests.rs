@@ -439,8 +439,21 @@ fn a_laid_out_pad_names_its_keys_before_it_is_drawn() {
     assert_eq!(named(&pad), ["q", "w", "e"], "the keys stand once laid out");
 
     pad.set_keys(keys("123"));
-    assert!(pad.is_layout_dirty(), "new keys ask for a layout");
+    assert_eq!(
+        named(&pad),
+        ["1", "2", "3"],
+        "keys of the same rows stand at once, before the next layout"
+    );
+    assert!(
+        !pad.is_layout_dirty(),
+        "the same rows keep the pad's height"
+    );
+
+    let mut two_rows = keys("ab");
+    two_rows.extend(keys("cd").into_iter().map(|key| PadKey { row: 1, ..key }));
+    pad.set_keys(two_rows);
+    assert!(pad.is_layout_dirty(), "another row asks for a layout");
     tilo_ui_base::widget::layout::lay_out_detached(&mut pad, rect, &theme, &mut text)
         .expect("the pad lays out");
-    assert_eq!(named(&pad), ["1", "2", "3"], "the new keys stand");
+    assert_eq!(named(&pad), ["a", "b", "c", "d"], "the new rows stand");
 }

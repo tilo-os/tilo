@@ -111,6 +111,10 @@ impl Session {
         // language, are read now: the loop that shows them reads no file.
         crate::i18n::ensure();
         tilo_startup_metrics::mark("session-i18n-done");
+        // The keyboard the session draws: the layouts it shows, the words a swipe could be, the
+        // tap a finger meant and the correction a word takes, which its view asks as
+        // `engine.call`. The view runs in every session, so every session answers it.
+        tilo_keyboard_engine::register();
         // Startup frees its scratch at no single moment: one trim collects it
         // once startup is over, and the log says where the heap stood at the
         // start.
