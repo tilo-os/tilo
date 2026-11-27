@@ -185,7 +185,7 @@ impl Rig {
 
     /// A rig whose app is launched by the desktop entry `entry`: its windows say they are `APP`.
     fn launched_by(titles: &[&str], x11: bool, entry: &str) -> Self {
-        let home = tilo_test_env::TestHome::new().expect("a home");
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
         let workspaces = [(1, "Home"), (2, "Two"), (3, "Three")].map(|(n, name)| {
             let mut workspace = Workspace::new(WorkspaceId::from_u128(n), name);
             workspace.strips = vec![Strip::new(StripId(u64::try_from(n).unwrap()), name)];
@@ -197,6 +197,9 @@ impl Rig {
             ..Layout::default()
         };
         let (device, workspaces) = Device::with_layout(&tree);
+        // The session is this device's person; its app's entry, keeper and displays are this
+        // test's own.
+        crate::common::its_own_home(&mut home);
         let app = home.home().join("app");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("titles"), titles.join("\n")).unwrap();
@@ -248,7 +251,10 @@ impl Rig {
         ));
         let ending = Rc::new(Cell::new(Teardown::Logout));
         let asked = Rc::clone(&ending);
-        let mut session = crate::common::headless(Options {
+        let mut session = self.device.session_with(Options {
+            // A laptop that boots with no peer network: what this desktop shows is its own
+            // store's, and what it waits for is never a relay.
+            collab: false,
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             state: Some(self.device.state.clone()),
@@ -267,7 +273,31 @@ impl Rig {
             desktop: Arc::new(move |pid| connector.connect_for(pid)),
         });
         apps.take_up_kept(following);
-        session.step(Duration::from_millis(1)).expect("step");
+        // The layout the rig left is the workspaces the desktop shows, and what each window is
+        // kept in: a session that read none of it shows the one it started with.
+        let shown =
+            crate::common::wait_for(&mut session, "the workspaces the layout left", |session| {
+                let shown: Vec<(WorkspaceId, String)> = session.handle().read(|tree| {
+                    tree.workspaces
+                        .iter()
+                        .map(|held| (held.id(), held.name.clone()))
+                        .collect()
+                });
+                (shown.len() == 3).then_some(shown)
+            });
+        assert_eq!(
+            shown.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            self.workspaces,
+            "the desktop shows the workspaces the layout left"
+        );
+        assert_eq!(
+            shown[1..]
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["Two", "Three"],
+            "with the names the layout gave them"
+        );
         Pass {
             session,
             apps,
@@ -721,10 +751,16 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
     let mut first = rig.desktop(false);
     rig.launch(&first);
     let stand_in = rig.home.home().join("tilo-launcher");
-    until(&mut first.session, "the launcher was started", |_| {
-        !testing::launcher_handed(&stand_in).is_empty()
-    });
-    let handed = testing::launcher_handed(&stand_in);
+    // The session starts its spare tilolang windows through the same launcher: the line this
+    // test plans with the real launcher is the app's, the one that names a desktop entry.
+    let handed =
+        crate::common::wait_for(&mut first.session, "the app's launcher was started", |_| {
+            let handed = testing::launcher_handed(&stand_in);
+            handed
+                .first()
+                .is_some_and(|argument| argument != tilo_app_launch::plan::SPARE_WINDOW)
+                .then_some(handed)
+        });
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let nowhere = rig.home.home().join("no-other-applications");
     fs::create_dir_all(&nowhere).unwrap();

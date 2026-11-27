@@ -134,6 +134,12 @@ impl Device {
         })
     }
 
+    /// A session on this device, started with `options`: the person's, on the link this device's
+    /// daemon makes for it, as [`crate::common::Device::session_with`] starts one.
+    pub(crate) fn session_with(&self, options: Options) -> Session {
+        self.computer.session_with(options)
+    }
+
     /// What this device numbers `n` as.
     fn id(&self, n: u64) -> u64 {
         tilo_desktop_model::compose_id(self.salt, n)
