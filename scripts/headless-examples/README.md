@@ -102,11 +102,13 @@ later step), `serve` (a stand-in, and test pages on this machine's loopback),
 for naming the control that is really there.
 
 **Several devices of one person.** A walk naming `"devices": ["laptop", "phone"]` runs a
-headless session per device on the same host, each on its own state and device key. The first
-device is the walk's own session; each further one is added the way a person adds a device:
-the first shows Add a device, the new device's requester takes the link and prints its code,
-the code is approved on the first device, and the new device starts as that person and is
-shown the first device's workspace. They find each other on the host's loopback. Every op
+headless session per device on the same host, each on its own state, device key and daemon.
+The first device is the walk's own session; each further one is added the way a person adds a
+device: the first prints the one-use code (Add a device does, through the device's daemon), and
+the new device's daemon spends it as its `tilo.ticket` credential at its first start, so the
+session starts as that person and is shown the first device's workspace. A device on a machine
+whose daemon is the system's serves its own profile from the account's runtime directory. They
+find each other on the host's loopback. Every op
 runs on the first device unless it says `{"on": "phone", "must": [...]}` or its step says
 `"on": "phone"`, and every step is shot on each device. An entry such as `{"name": "laptop",
 "session_args": ["--output", "B=1280x720"]}` starts that device differently. `use` runs an
