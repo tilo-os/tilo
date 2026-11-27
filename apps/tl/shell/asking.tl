@@ -240,20 +240,37 @@ fn skips_with_shift(a: invocations.Asked) -> Bool {
     return false
 }
 
-/// The questions that stand with the banners: the newest two no window here stands for. They are
-/// banners, so a question is a banner's width in the corner (`roomy`, as `banners_over` reads it):
-/// a card left to size itself there came out as wide as its own padding, and every line in it
-/// wrapped to nothing.
+/// The questions that stand with the banners: the newest two no window here stands for, and one
+/// where the display is a phone's, too short to hold two across it. They are banners, so a
+/// question is the floating card a notice rises as in the corner (`roomy`, as `banners_over`
+/// reads it): a card left to size itself there came out as wide as its own padding, and every
+/// line in it wrapped to nothing.
 view asked_banners(roomy: Bool) {
     let asked = asked_elsewhere()
     if not asked.is_empty() {
-        stack(gap: .related, min: if roomy { 360dp } else { 0dp }) {
-            for q in asked.take(2) {
-                asked_card(q)
+        let shown = if roomy { 2 } else { 1 }
+        stack(gap: .related) {
+            for q in asked.take(shown) {
+                asked_banner(q, roomy: roomy)
             }
-            if asked.len() > 2 {
-                more_asked(asked.len() - 2)
+            if asked.len() > shown {
+                more_asked(asked.len() - shown)
             }
+        }
+    }
+}
+
+/// One question standing with the banners: a banner's width in the corner, or across a display
+/// too narrow to keep it there, and rising from the edge it stands by as a notice does.
+view asked_banner(q: invocations.Invocation, roomy: Bool) {
+    if let a = q.asked {
+        ui.FloatingPanel(width: if roomy { 360.0 }, fill: not roomy, slide: true) {
+            question_body(
+                key_of(q),
+                answered_here(q),
+                a,
+                if a.words != "" { a.words } else { a.name },
+            )
         }
     }
 }
@@ -627,7 +644,7 @@ view asker(a: invocations.Asked) {
                 } else if a.by.program != .none { .terminal } else { .app_window },
             )
         }
-        stack(gap: .tight) {
+        stack(gap: .tight, min: 6rem) {
             ui.Text(asker_name(a), role: .caption)
             if let author = a.by.app?.author {
                 ui.Text(author.name, role: .caption, secondary: true)
