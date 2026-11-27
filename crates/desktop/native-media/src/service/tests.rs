@@ -604,7 +604,7 @@ async fn a_camera_chosen_is_the_one_the_call_sends_and_the_status_says_so() {
         &service,
         &who,
         request(
-            0,
+            2,
             Command::SelectCamera {
                 camera_id: "video2".to_owned(),
             },
@@ -622,7 +622,7 @@ async fn a_camera_chosen_is_the_one_the_call_sends_and_the_status_says_so() {
         &service,
         &who,
         request(
-            0,
+            3,
             Command::SelectCamera {
                 camera_id: "video7".to_owned(),
             },
