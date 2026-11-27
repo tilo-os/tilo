@@ -114,7 +114,6 @@ impl TurnUses {
             invocation: request.invocation,
             element: wanted.element.clone(),
             item: wanted.item.to_string(),
-            reason: wanted.reason.trim().to_owned(),
         };
         let asks: Arc<Mutex<Option<AskedFacts>>> = Arc::default();
         let (this, by, asked, waits) = (

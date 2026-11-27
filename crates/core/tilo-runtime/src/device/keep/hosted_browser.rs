@@ -80,7 +80,7 @@ mod placement;
 mod turn_fills;
 
 pub use placement::{NOT_ALLOWED_TO_PLACE, TAKEN_BACK};
-pub use turn_fills::FILL_PAGE_ITEM;
+pub use turn_fills::FILL_PAGE_SECRET;
 
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
@@ -757,11 +757,6 @@ impl HostedBrowsers {
             && let Some(answered) = self.environment_asked(workspace_id, caller, request)
         {
             return Some(answered);
-        }
-        // What a window says of a fill this server handed it for one of its own turns is
-        // taken here: nobody on a connection asked for it.
-        if let Some(taken) = self.fill_answered(workspace_id, caller, message) {
-            return Some(taken);
         }
         // What the window offers is read from the window: a listing of its
         // provider is handed to the device holding it, as its page actions

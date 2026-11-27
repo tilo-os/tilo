@@ -39,8 +39,8 @@ use collab_types::CommitNamed as _;
 use crate::keep::common::{
     Linked, TestDevice, TestServer, TestUser, spawn_server, spawn_server_serving_apps,
 };
-use tilo_app_host::agents::windows::PageWindow;
-use tilo_runtime::device::keep::hosted_browser::{APP, LET_LEAVE};
+use tilo_app_host::agents::windows::{PageWindow, Release, Releasing, TurnFill};
+use tilo_runtime::device::keep::hosted_browser::{APP, FILL_PAGE_SECRET, LET_LEAVE};
 use tilo_workspace_service::environment::vm_placed_records;
 use tilo_workspace_service::workspaces::person_workspace::devices;
 
@@ -519,6 +519,8 @@ struct WindowActions {
     /// The host that placed this window: the only device whose word for the
     /// person a page action of this window carries.
     placement: tilo_action_services::browser::Placement,
+    /// The fills it was handed, each waiting for its machine to be lent the item.
+    fills: Arc<HeldFills>,
 }
 
 /// The page actions of the Browser's `Page` (`apps/tl/browser/app.tl`) a window here answers,
@@ -556,9 +558,51 @@ const PAGE_ACTIONS: &[(&str, &[&str])] = &[
     ("let_leave", &["id", "origin", "method", "leaving"]),
 ];
 
-/// The page action the host hands a window that its page does not publish: a fill from a vault
-/// item.
-const SESSION_ACTIONS: [&str; 1] = [tilo_runtime::device::keep::hosted_browser::FILL_PAGE_ITEM];
+/// What a window's page answers once the fill it was handed ends.
+type FillAnswer = tilo_actions::remote::Completer<Result<InvocationReceipt, ActionCallError>>;
+
+/// The fills a window was handed and has not ended: its page fills a field once its machine
+/// was lent the item's text, which a test asks for while the fill waits.
+#[derive(Default)]
+struct HeldFills {
+    held: Mutex<Vec<(InvokeRequest, FillAnswer)>>,
+    told: tokio::sync::Notify,
+    /// How each fill that ended ended, as the window answers whoever observes it.
+    ended: Mutex<std::collections::HashMap<InvocationId, InvocationState>>,
+}
+
+impl HeldFills {
+    /// The fill `invocation`, whose page answers through `answer`, ended as `update`.
+    fn end(
+        &self,
+        answer: FillAnswer,
+        invocation: InvocationId,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        let state = InvocationState::new(invocation, update);
+        answer.complete(Ok(state.receipt()));
+        self.ended.lock().unwrap().insert(invocation, state);
+    }
+
+    fn hold(&self, request: InvokeRequest, answer: FillAnswer) {
+        self.held.lock().unwrap().push((request, answer));
+        self.told.notify_one();
+    }
+
+    /// The next fill the window was handed, once it was handed one.
+    async fn next(&self) -> (InvokeRequest, FillAnswer) {
+        loop {
+            let next = {
+                let mut held = self.held.lock().unwrap();
+                (!held.is_empty()).then(|| held.remove(0))
+            };
+            if let Some(next) = next {
+                return next;
+            }
+            self.told.notified().await;
+        }
+    }
+}
 
 /// The window's page as its listing declares it: each of [`PAGE_ACTIONS`] on the page record.
 fn declared_page() -> Vec<tilo_actions::remote::CatalogueRow> {
@@ -622,8 +666,7 @@ impl ActionProvider for WindowActions {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // The window answers what its page declares, on its page, and nothing else.
         let action = request.target.address.action.as_str();
-        let declared = PAGE_ACTIONS.iter().any(|(named, _)| *named == action)
-            || SESSION_ACTIONS.contains(&action);
+        let declared = PAGE_ACTIONS.iter().any(|(named, _)| *named == action);
         if !the_page().names(&request.target) || !declared {
             return Pending::ready(Err(ActionCallError::UnknownAction));
         }
@@ -647,6 +690,11 @@ impl ActionProvider for WindowActions {
                 .expect("a page action names the device that asked it"),
             approved,
         });
+        if action == FILL_PAGE_SECRET {
+            let (answer, answered) = tilo_actions::remote::pending();
+            self.fills.hold(request, answer);
+            return answered;
+        }
         let status = if self.asks.asks(&request.target.address.action) && !approved {
             // What the person is shown: the departure the call itself states where it states
             // one, the window's own otherwise, and the page it acts on when it states neither.
@@ -679,8 +727,8 @@ impl ActionProvider for WindowActions {
         }))
     }
 
-    fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
-        None
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.fills.ended.lock().unwrap().get(id).cloned()
     }
 
     fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
@@ -715,6 +763,24 @@ async fn window_served(
     material: &Joined,
     asks: Asks,
 ) -> (Arc<Mutex<Vec<Handed>>>, ActionService, RemoteDevice) {
+    window_served_with(server, material, asks, Arc::default()).await
+}
+
+/// [`window_session`], and the fills its page was handed, each waiting for the item.
+async fn window_filling(server: &Server, material: &Joined) -> (Arc<HeldFills>, RemoteDevice) {
+    let fills = Arc::new(HeldFills::default());
+    let (_, _, remote) =
+        window_served_with(server, material, Asks::Never, Arc::clone(&fills)).await;
+    (fills, remote)
+}
+
+/// [`window_served`], keeping the fills it is handed in `fills`.
+async fn window_served_with(
+    server: &Server,
+    material: &Joined,
+    asks: Asks,
+    fills: Arc<HeldFills>,
+) -> (Arc<Mutex<Vec<Handed>>>, ActionService, RemoteDevice) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let device = DeviceIdentity::of(material);
     let host = server
@@ -731,6 +797,7 @@ async fn window_served(
                 host,
                 workspace: material.workspace.clone(),
             },
+            fills,
         }),
     );
     // What a window holds of the workspace, as the host holds it: who asks a
@@ -1860,6 +1927,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
                     host: [0; 32],
                     workspace: String::new(),
                 },
+                fills: Arc::default(),
             }),
         );
         let (forwarder_end, window_end) = duplex(Some(window_device), None);
@@ -3676,4 +3744,297 @@ async fn the_vm_is_certified_again_before_it_ends_and_no_more_once_stopped() {
         1,
         "nothing is handed to a stopped placement's VM"
     );
+}
+
+/// The login a turn fills, and the site it belongs to.
+const LOGIN: &str = "vault.item:0123456789abcdef0123456789abcdef";
+const LOGIN_SITE: &str = "https://login.example.test";
+
+/// What the window's machine (`asker`, asking as `caller` over `window`) is answered when it asks
+/// the host for the item of the fill `fill` at `origin`.
+async fn item_use(
+    window: &RemoteDevice,
+    (asker, caller): (&TestDevice, &Caller),
+    fill: InvocationId,
+    (item, origin): (&str, &str),
+) -> Result<InvocationReceipt, ActionCallError> {
+    let serde_json::Value::Object(used) =
+        serde_json::to_value(tilo_action_services::environment_device::ItemUse {
+            invocation: fill,
+            item: item.to_owned(),
+            origin: origin.to_owned(),
+        })
+        .unwrap()
+    else {
+        unreachable!("an item's use is an object");
+    };
+    ActionProvider::invoke(
+        window,
+        caller,
+        asks_about_itself(
+            asker,
+            InvocationId::new(),
+            tilo_action_services::environment_device::USE_ITEM,
+            InvokeArgument::Json(used),
+        ),
+    )
+    .await
+    .expect("the host answers")
+}
+
+/// What decides a turn's fill, as the vault does for the login it names: released for the
+/// login's own site, refused for any other. Each origin it is asked about is kept in `asked`.
+fn deciding(asked: &Arc<Mutex<Vec<String>>>) -> Releasing {
+    let asked = Arc::clone(asked);
+    Box::new(move |origin: String| {
+        let decided: std::pin::Pin<Box<dyn std::future::Future<Output = Release> + Send>> =
+            Box::pin(async move {
+                asked.lock().unwrap().push(origin.clone());
+                if origin == LOGIN_SITE {
+                    Release::Text {
+                        text: zeroize::Zeroizing::new("correct horse".to_owned()),
+                        into: "password",
+                    }
+                } else {
+                    Release::Refused("This login belongs to another site.".to_owned())
+                }
+            });
+        decided
+    })
+}
+
+/// A fill of `LOGIN` into the field `e7`, as a turn names it.
+fn turn_fill(invocation: InvocationId) -> TurnFill {
+    TurnFill {
+        invocation,
+        element: "e7".to_owned(),
+        item: LOGIN.to_owned(),
+    }
+}
+
+/// A turn's fill reaches the window as the Browser's own `fill_page_secret` of its page, with the
+/// parameters the Browser declares, and the window's machine is lent the login only for that
+/// fill: sealed to its key for the site it names, and once. Another member's agent is lent
+/// nothing, neither of the turn's fill nor of a fill it hands the window itself; a site the
+/// login does not belong to is refused with the vault's reason, and nothing is sealed for it.
+#[tokio::test]
+async fn a_turns_fill_reaches_the_window_as_fill_page_secret_and_lends_its_login_once() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let window_device = DeviceIdentity::of(&material);
+    let (fills, window) = window_filling(&fixture.server.server, &material).await;
+    let window_caller = Caller::authenticated(fixture.user.user_pk, window_device.device_pubkey());
+    let asked = Arc::new(Mutex::new(Vec::new()));
+
+    let turn = InvocationId::new();
+    let browsers = Arc::clone(&fixture.browsers);
+    let releasing = deciding(&asked);
+    let filled =
+        tokio::spawn(async move { browsers.fill_for_turn(WS, turn_fill(turn), releasing).await });
+    let (handed, fill_ends) = fills.next().await;
+    assert_eq!(handed.invocation, turn);
+    assert_eq!(handed.target, the_page().target(FILL_PAGE_SECRET));
+    let serde_json::Value::Object(named) = serde_json::json!({"element": "e7", "item": LOGIN})
+    else {
+        unreachable!("an object");
+    };
+    assert_eq!(
+        handed.argument,
+        InvokeArgument::Json(named.clone()),
+        "the fill names what the Browser's fill_page_secret declares, and nothing else"
+    );
+
+    // Another member's agent, on a device of theirs, is lent nothing of the turn's fill.
+    let bea = TestUser::fresh("Bea");
+    let beas_agent = bea.enrol("agent", DeviceCapabilities::member());
+    let workspaces = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let issued = crate::keep::common::invitation(
+        workspaces,
+        &fixture.host_device,
+        WS_NAME,
+        tilo_peer_state::join::Role::Editor,
+        &beas_agent,
+    )
+    .await;
+    crate::keep::common::redeem(&beas_agent, &issued)
+        .await
+        .expect("Bea joins the workspace");
+    let theirs = member_link(&fixture.server.server, &beas_agent).await;
+    let their_remote = asking(&theirs, WS_NAME).await;
+    let their_caller = theirs.caller(bea.user_pk);
+    assert_eq!(
+        item_use(
+            &their_remote,
+            (&beas_agent, &their_caller),
+            turn,
+            (LOGIN, LOGIN_SITE)
+        )
+        .await,
+        Err(ActionCallError::NotPermitted),
+        "only the window's own machine is lent an item"
+    );
+
+    // Nor is a fill of another login, nor one the host never handed, lent anything.
+    for (fill, item) in [
+        (turn, "vault.item:fedcba9876543210fedcba9876543210"),
+        (InvocationId::new(), LOGIN),
+    ] {
+        let refused = item_use(
+            &window,
+            (&window_device, &window_caller),
+            fill,
+            (item, LOGIN_SITE),
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(ActionCallError::Refused { .. })),
+            "{refused:?}"
+        );
+    }
+    assert!(asked.lock().unwrap().is_empty(), "nothing was decided yet");
+
+    // The window's machine names the site its engine committed: the login is sealed to its key
+    // for this fill at that site, and opens for no other site.
+    let lent = item_use(
+        &window,
+        (&window_device, &window_caller),
+        turn,
+        (LOGIN, LOGIN_SITE),
+    )
+    .await
+    .expect("the host lends the window its fill's login");
+    let ReceiptStatus::Completed { output } = lent.status else {
+        panic!("the login is lent: {lent:?}");
+    };
+    let used: tilo_action_services::environment_device::ItemUsed =
+        serde_json::from_value(output.value.unwrap()).unwrap();
+    let tilo_action_services::environment_device::ItemUsed::Released { sealed, into } = used else {
+        panic!("the login is released");
+    };
+    assert_eq!(into, "password");
+    let sealed = hex::decode(sealed).unwrap();
+    let bound = |origin| key_group::ReleasedFor {
+        workspace: WS_NAME,
+        invocation: *turn.0.as_bytes(),
+        origin,
+    };
+    let opened = key_group::open_released_text(&window_device.sk, &bound(LOGIN_SITE), &sealed)
+        .expect("the window's machine opens what was sealed to it");
+    assert_eq!(opened.as_str(), "correct horse");
+    assert!(
+        key_group::open_released_text(&window_device.sk, &bound("https://elsewhere.test"), &sealed)
+            .is_err(),
+        "what was lent for one site opens for no other"
+    );
+    assert_eq!(*asked.lock().unwrap(), [LOGIN_SITE]);
+
+    // A fill is lent its login once.
+    let again = item_use(
+        &window,
+        (&window_device, &window_caller),
+        turn,
+        (LOGIN, LOGIN_SITE),
+    )
+    .await;
+    assert!(
+        matches!(&again, Err(ActionCallError::Refused { .. })),
+        "{again:?}"
+    );
+    fills.end(
+        fill_ends,
+        turn,
+        tilo_actions::InvocationUpdate::Succeeded {
+            invocation: turn,
+            output: tilo_actions::ActionOutput::default(),
+        },
+    );
+    let ended = filled
+        .await
+        .unwrap()
+        .expect("the turn hears how the fill ended");
+    assert!(
+        matches!(ended, tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "{ended:?}"
+    );
+
+    // A page at a site the login does not belong to is filled nothing: the vault's reason is
+    // what the window's machine is told.
+    let elsewhere = InvocationId::new();
+    let browsers = Arc::clone(&fixture.browsers);
+    let releasing = deciding(&asked);
+    let filled = tokio::spawn(async move {
+        browsers
+            .fill_for_turn(WS, turn_fill(elsewhere), releasing)
+            .await
+    });
+    let (_, fill_ends) = fills.next().await;
+    assert_eq!(
+        item_use(
+            &window,
+            (&window_device, &window_caller),
+            elsewhere,
+            (LOGIN, "https://phish.example.test"),
+        )
+        .await,
+        Err(ActionCallError::Refused {
+            reason: "This login belongs to another site.".to_owned()
+        })
+    );
+    fills.end(
+        fill_ends,
+        elsewhere,
+        tilo_actions::InvocationUpdate::Cancelled {
+            invocation: elsewhere,
+            message: None,
+        },
+    );
+    drop(filled.await.unwrap());
+
+    // Bea's agent asking the window itself for a fill is lent nothing either: the host lends
+    // only for a fill it handed for a turn it carries out.
+    let hers = InvocationId::new();
+    let request = as_asked(
+        &beas_agent,
+        InvokeRequest {
+            argument: InvokeArgument::Json(named),
+            ..page(&beas_agent, hers, FILL_PAGE_SECRET)
+        },
+    );
+    let asking_window =
+        tokio::spawn(
+            async move { ActionProvider::invoke(&their_remote, &their_caller, request).await },
+        );
+    tokio::select! {
+        answered = asking_window => {
+            // Refused before it reached the window: nothing was handed, so nothing is lent.
+            let answered = answered.unwrap().expect("the host answers");
+            assert!(
+                !matches!(
+                    &answered,
+                    Ok(InvocationReceipt { status: ReceiptStatus::Completed { .. }, .. })
+                ),
+                "{answered:?}"
+            );
+        }
+        (handed, her_fill) = fills.next() => {
+            assert_eq!(handed.invocation, hers);
+            let refused = item_use(
+                &window,
+                (&window_device, &window_caller),
+                hers,
+                (LOGIN, LOGIN_SITE),
+            )
+            .await;
+            assert!(
+                matches!(&refused, Err(ActionCallError::Refused { .. })),
+                "{refused:?}"
+            );
+            drop(her_fill);
+        }
+    }
+    assert_eq!(asked.lock().unwrap().len(), 2, "nothing decided Bea's fill");
 }

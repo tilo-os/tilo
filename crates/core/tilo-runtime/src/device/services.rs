@@ -113,6 +113,9 @@ pub struct Daemon {
     /// The device's live session: the one place this device is in each workspace's call and
     /// presence, which an app's call lane joins through ([`Self::app_call_setup`]).
     live: std::sync::OnceLock<Arc<super::live_relay::Live>>,
+    /// How a workspace VM's daemon asks the host that placed it, where this daemon is one
+    /// ([`super::vm_environment`]): its Browser's page logins come from the host's vault.
+    host_asks: std::sync::OnceLock<super::vm_environment::HostAsks>,
     /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
     /// the workspace is held, so an app launch costs no keyring read after the first.
     pub(crate) old_secrets: std::sync::atomic::AtomicBool,
@@ -192,6 +195,16 @@ impl Daemon {
     /// The device's live session, once the daemon runs it.
     pub(crate) fn live_session(&self) -> Option<&Arc<super::live_relay::Live>> {
         self.live.get()
+    }
+
+    /// How this daemon asks the host that placed it, where it is a workspace VM's.
+    pub(crate) fn host_asks(&self) -> Option<&super::vm_environment::HostAsks> {
+        self.host_asks.get()
+    }
+
+    /// This daemon is a workspace VM's, and asks the host that placed it through `asks`.
+    pub(crate) fn asks_its_host(&self, asks: super::vm_environment::HostAsks) {
+        let _ = self.host_asks.set(asks);
     }
 
     /// [`Self::live_session`], under the name those tests know it by.
@@ -3208,6 +3221,7 @@ impl Daemon {
             apps,
             workspaces,
             live: std::sync::OnceLock::new(),
+            host_asks: std::sync::OnceLock::new(),
             old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,
             workspace: workspace_id,

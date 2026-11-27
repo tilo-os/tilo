@@ -539,13 +539,19 @@ impl HostAsks {
     /// that its person is asked first, or why nothing was released: always an answer, which the
     /// session hands Browser.
     fn use_item(&self, workspace: &str, used: ItemUse) -> Pending<Outcome> {
+        self.lend(workspace, used).map(|lent| output(&lent))
+    }
+
+    /// The text of the vault item `used` names for its fill, opened with this device's key, or
+    /// that its person is asked first, or why nothing was released.
+    pub(crate) fn lend(&self, workspace: &str, used: ItemUse) -> Pending<ItemLent> {
         let (key, workspace_id) = (self.key.clone(), workspace.to_owned());
         self.ask(
             workspace,
             environment_device::USE_ITEM,
             wire::argument(&used),
         )
-        .map(move |answered| output(&item_lent(&workspace_id, &key, &used, answered)))
+        .map(move |answered| item_lent(&workspace_id, &key, &used, answered))
     }
 
     /// Have the host share one of this device's windows, or end its share.
@@ -615,6 +621,7 @@ fn item_lent(
 /// workspace, the sessions' for this device's shells alone.
 pub(crate) fn provide(daemon: &super::services::Daemon, environment: &Arc<VmEnvironment>) {
     daemon.provide(wire::PROVIDER, Arc::new(Hosted(Arc::clone(environment))));
+    daemon.asks_its_host(HostAsks::of(daemon));
     daemon.workspaces().providers().provide(
         wire::SESSIONS,
         tilo_app_id::apps::SHELL,

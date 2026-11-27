@@ -7,12 +7,12 @@
 //! person's vault, by reference.
 //!
 //! - **Hand** ([`HostedBrowsers::fill_for_turn`]): the window is handed the Browser's own
-//!   [`FILL_PAGE_ITEM`], as this server's own device, and this server keeps what decides the
-//!   fill under the page action's id. The window answers this server, the device that asked it,
-//!   and that answer is taken here ([`HostedBrowsers::fill_answered`]): nobody on a connection
+//!   [`FILL_PAGE_SECRET`] of its page, as this server's own device, and this server keeps what
+//!   decides the fill under the page action's id. The window answers over the link it was
+//!   handed the fill on, and this server follows that answer itself: nobody on a connection
 //!   waits for it.
-//! - **Release** ([`HostedBrowsers::item_asked`]): the window names the site its engine says
-//!   the page is at and asks for the item's text
+//! - **Release** ([`HostedBrowsers::item_asked`]): the window's daemon names the site its
+//!   engine says the page is at and asks for the item's text
 //!   ([`tilo_action_services::environment_device::USE_ITEM`]). Only the device this server
 //!   placed for that workspace's Browser is answered, only for a fill this server handed it,
 //!   naming that same item, and once. What decides is whoever carries out the turn
@@ -30,8 +30,8 @@ use std::time::Duration;
 use serde_json::{Map, json};
 use tilo_action_services::environment_device::{ItemUse, ItemUsed};
 use tilo_actions::remote::{
-    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionMessage, pending,
+    ActionCallError, Caller, InvocationReceipt, InvokeArgument, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_app_host::agents::windows::{PageWindow, Release, Releasing, TurnFill};
@@ -40,8 +40,9 @@ use tilo_lock::MutexRecover as _;
 use super::HostedBrowsers;
 use tilo_server_protocol::WorkspaceId;
 
-/// The Browser's page action that fills a field from a vault item by reference.
-pub const FILL_PAGE_ITEM: &str = "fill-page-item";
+/// The Browser's page action that fills a field from a vault item by reference, with the
+/// parameters it declares: `element` and `item`.
+pub const FILL_PAGE_SECRET: &str = "fill_page_secret";
 /// How long a window has to say how a fill it was handed ended.
 const FILL_WAIT: Duration = Duration::from_secs(60);
 /// How long a window is asked to hold an answer back for the fill to end, in milliseconds.
@@ -60,8 +61,6 @@ struct Waiting {
     item: String,
     /// What decides it, until the window asked: a fill is decided once.
     releasing: Option<Releasing>,
-    /// What the window says of it, for whoever waits for its end.
-    said: Arc<Said>,
 }
 
 /// What a window said of one fill, in the order it said it, for whoever waits for its end.
@@ -76,6 +75,12 @@ impl Said {
     fn say(&self, status: ReceiptStatus) {
         self.statuses.lock_recover().push_back(status);
         self.told.notify_one();
+    }
+
+    /// Have what the window answers (`answer`) said here once it comes.
+    fn follow(self: &Arc<Self>, answer: Pending<Option<RemoteActionMessage>>) {
+        let said = Arc::clone(self);
+        answer.then(move |reply| said.say(status_of(reply.flatten())));
     }
 
     /// The next thing the window said, once it has said one.
@@ -100,7 +105,7 @@ pub(super) struct TurnFills(Mutex<HashMap<InvocationId, Waiting>>);
 )]
 impl HostedBrowsers {
     /// Have `workspace_id`'s Browser window fill what `fill` names, for a turn this server
-    /// carries out: the window is handed [`FILL_PAGE_ITEM`], asks for the item's text for the
+    /// carries out: the window is handed [`FILL_PAGE_SECRET`], asks for the item's text for the
     /// site its page is at, and `releasing` decides that once. Answers how the fill ended, as
     /// the window said it. A fill the window carried out is counted like any page action.
     ///
@@ -148,18 +153,17 @@ impl HostedBrowsers {
                     window: window.device,
                     item: fill.item.clone(),
                     releasing: Some(releasing),
-                    said: Arc::clone(&said),
                 },
             );
         }
-        hand.hand(
+        said.follow(hand.frame(
             workspace_id,
             own,
             window.device,
             RemoteActionMessage::Invoke(fill_request(&page, &fill)),
-        );
+        ));
         let ask_again = || {
-            hand.hand(
+            said.follow(hand.frame(
                 workspace_id,
                 own,
                 window.device,
@@ -169,7 +173,7 @@ impl HostedBrowsers {
                     wait_ms: Some(ANSWER_HOLD_MS),
                     seen: None,
                 },
-            );
+            ));
         };
         let ended = tokio::time::timeout(FILL_WAIT, ended(&said, ask_again)).await;
         self.turn_fills.0.lock_recover().remove(&invocation);
@@ -207,48 +211,6 @@ impl HostedBrowsers {
         let authority = self.authority.lock_recover();
         let authority = authority.as_ref()?;
         Some((*authority.server.id.as_bytes(), authority.user_public_key))
-    }
-
-    /// What `workspace_id`'s window says of a fill this server handed it for a turn: taken
-    /// here, since nobody on a connection asked. `None` for any other message, which is served
-    /// as it always was.
-    pub(super) fn fill_answered(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        message: &RemoteActionMessage,
-    ) -> Option<tilo_workspace_service::app_serving::Routing> {
-        let (invocation, status) = match message {
-            RemoteActionMessage::Receipt(receipt) => (receipt.invocation, receipt.status.clone()),
-            RemoteActionMessage::Update {
-                invocation, state, ..
-            } => (
-                *invocation,
-                state.as_ref().map_or_else(
-                    || ReceiptStatus::Rejected {
-                        error: ActionCallError::Unavailable {
-                            reason: "the Browser window no longer knows the fill".to_owned(),
-                        },
-                    },
-                    |state| state.receipt().status,
-                ),
-            ),
-            _ => return None,
-        };
-        let device = *caller.device_public_key()?;
-        {
-            let fills = self.turn_fills.0.lock_recover();
-            let waiting = fills.get(&invocation)?;
-            if waiting.workspace_id != workspace_id || waiting.window != device {
-                return None;
-            }
-            // Whoever waited for it may have stopped waiting: then nobody hears.
-            waiting.said.say(status);
-        }
-        // An answer needs no answer: one that is given up writes nothing to the window.
-        let (unanswered, answer) = pending();
-        drop(unanswered);
-        Some(tilo_workspace_service::app_serving::Routing::Answer(answer))
     }
 
     /// `caller` asks for the text of the item a fill names
@@ -336,12 +298,9 @@ fn fill_request(page: &PageWindow, fill: &TurnFill) -> InvokeRequest {
     let mut arguments = Map::new();
     arguments.insert("element".into(), json!(fill.element));
     arguments.insert("item".into(), json!(fill.item));
-    if !fill.reason.is_empty() {
-        arguments.insert("reason".into(), json!(fill.reason));
-    }
     InvokeRequest {
         invocation: fill.invocation,
-        target: page.target(FILL_PAGE_ITEM),
+        target: page.target(FILL_PAGE_SECRET),
         argument: InvokeArgument::Json(arguments),
         context: None,
         confirmation: None,
@@ -350,6 +309,26 @@ fn fill_request(page: &PageWindow, fill: &TurnFill) -> InvokeRequest {
         wait_ms: Some(ANSWER_HOLD_MS),
         appearance: None,
         signed: None,
+    }
+}
+
+/// What the window answered (`reply`) says of the fill: none, it never answered.
+fn status_of(reply: Option<RemoteActionMessage>) -> ReceiptStatus {
+    let unknown = |reason: &str| ReceiptStatus::Rejected {
+        error: ActionCallError::Unavailable {
+            reason: reason.to_owned(),
+        },
+    };
+    match reply {
+        Some(RemoteActionMessage::Receipt(receipt)) => receipt.status,
+        Some(RemoteActionMessage::Update {
+            state: Some(state), ..
+        }) => state.receipt().status,
+        Some(RemoteActionMessage::Update { state: None, .. }) => {
+            unknown("the Browser window no longer knows the fill")
+        }
+        Some(_) => unknown("the Browser window answered something that is no fill's end"),
+        None => unknown("the Browser window did not answer"),
     }
 }
 

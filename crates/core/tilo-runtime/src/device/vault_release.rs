@@ -11,15 +11,18 @@
 use std::sync::{Arc, Weak};
 use tilo_person_services::PersonServices;
 
+use tilo_action_services::environment_device::ItemUse;
+use tilo_action_services::environment_window::ItemLent;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, ReceiptStatus, pending,
+    InvocationState, InvokeArgument, InvokeRequest, ItemRef, Pending, ReceiptStatus, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId};
 use tilo_person_services::vault_release::AppProcess;
 use tilo_workspace_records::vault as workspace_vault;
 
 use super::services::Daemon;
+use super::vm_environment::HostAsks;
 use crate::apps::ProcessOf;
 
 /// `answered` as the value the call is answered with.
@@ -127,6 +130,13 @@ impl ActionProvider for OwnProcess {
                 .inspect_err(|why| tracing::info!(app = %self.app, %why, "a page login step continues no running call"))
                 .ok()
         });
+        // A workspace VM keeps no vault of its own: its Browser's page is filled from the host
+        // that placed it, which releases only for a fill it handed this machine.
+        if asked == Some(workspace_vault::PAGE_FILL)
+            && let Some(host) = daemon.host_asks()
+        {
+            return from_the_host(host, &self.workspace, &request, asked_by.is_some());
+        }
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
@@ -181,6 +191,59 @@ impl ActionProvider for OwnProcess {
             Err(gone) => Arc::new(super::store_lane::Refused(gone)),
         })
     }
+}
+
+/// A page fill (`request`) a workspace VM's Browser asks for in `workspace`, asked of the host
+/// that placed the VM ([`HostAsks::lend`]): for the running call it continues (`continues`), the
+/// item it names and the site its engine says the page is at. The host decides whether it hands
+/// the text; this machine only opens what the host sealed to it for that one fill and site.
+fn from_the_host(
+    host: &HostAsks,
+    workspace: &str,
+    request: &InvokeRequest,
+    continues: bool,
+) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+    let (Some(running), true) = (request.on_behalf_of, continues) else {
+        return Pending::ready(Err(ActionCallError::refused(
+            tilo_person_services::page_logins::ASKED_BY_NOBODY,
+        )));
+    };
+    let Some(item) = ItemRef::addressed(&request.target, workspace_vault::PAGE_FILL) else {
+        return Pending::ready(Err(ActionCallError::refused(
+            "That is no login of the vault's",
+        )));
+    };
+    let site = match &request.argument {
+        InvokeArgument::Json(arguments) => arguments
+            .get("site")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        _ => None,
+    };
+    let Some(origin) = site else {
+        return Pending::ready(Err(ActionCallError::InvalidRequest {
+            reason: "a page's fill names the site its page is at".to_owned(),
+        }));
+    };
+    let invocation = request.invocation;
+    let used = ItemUse {
+        invocation: running,
+        item: item.to_string(),
+        origin,
+    };
+    host.lend(workspace, used).map(move |lent| match lent {
+        ItemLent::Text { text, .. } => Ok(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value: Some(serde_json::json!({"username": "", "secret": text})),
+                    resources: Vec::new(),
+                },
+            },
+        }),
+        ItemLent::Asked { words } => Err(ActionCallError::refused(words)),
+        ItemLent::Refused { reason } => Err(ActionCallError::refused(reason)),
+    })
 }
 
 /// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own

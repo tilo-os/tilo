@@ -125,8 +125,6 @@ pub struct TurnFill {
     pub element: String,
     /// The item, by its reference.
     pub item: String,
-    /// Why the agent says it needs the item; empty when it gave none.
-    pub reason: String,
 }
 
 /// What comes of the vault item, for the site a window says its page is at.
