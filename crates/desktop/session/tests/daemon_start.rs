@@ -122,43 +122,84 @@ fn the_persons_listing_offers_the_settings_the_session_serves() {
     }
 }
 
-/// The person's listing names each setting once: the settings' sections, the person's and the
-/// device's, are the settings provider's to publish, at the addresses it answers on, by words
-/// that say what each does. No second copy stands beside them, and no two settings read alike.
+/// The person's listing names each action once: every action the device's dispatch lists the
+/// person stands at one address, offered by the one provider that answers it, by words that say
+/// what it does and that no other row reads. The settings are the settings provider's, the
+/// session's services are its services provider's, nearby send is the device's, and the workspace
+/// activity the shell shows is the seat's.
 #[test]
-fn the_persons_listing_names_each_setting_once() {
+fn the_persons_listing_names_each_action_once() {
     use std::collections::BTreeMap;
 
-    /// Whether `row` offers an action of a section of the settings.
-    fn setting(row: &tilo_actions::remote::CatalogueRow) -> bool {
-        row.action.as_ref().is_some_and(|action| {
-            settings_sections::service::keeps(action.address.resource.as_str())
-        })
+    /// The provider the session's services are served under on the device's dispatch.
+    const SERVICES: &str = "session.services";
+
+    /// What one row reads as: its action's words for the resource it acts on, as a person's list
+    /// and `tilo do` name a row.
+    fn words(row: &tilo_actions::remote::CatalogueRow) -> String {
+        let Some(action) = &row.action else {
+            return String::new();
+        };
+        let place = row.resource.label.trim();
+        let place = if place.is_empty() {
+            action.resource_label.trim()
+        } else {
+            place
+        };
+        format!("{} on {place}", action.action_label)
+    }
+
+    /// What one row stands at, and where: `resource#action` at the provider that offers it, by
+    /// the words it reads as.
+    fn shown(row: &tilo_actions::remote::CatalogueRow) -> String {
+        let Some(action) = &row.action else {
+            return String::new();
+        };
+        format!(
+            "{}#{} at {}: {:?}",
+            action.address.resource,
+            action.address.action,
+            row.provider,
+            words(row)
+        )
     }
 
     let mut fixture = crate::common::linked::Builder::without_an_app()
         .service(Box::new(settings_sections::service::SettingsService::new()))
         .start();
-    // The settings provider is served on the device's dispatch beside the session's services:
-    // what the person reads is whole once a section of the settings is listed.
+    // Every provider the device's dispatch lists is served as the session starts: what the
+    // person reads is whole once a row of each stands in it.
+    let wanted = [
+        tilo_actions::remote::settings_resources::PROVIDER,
+        SERVICES,
+        tilo_actions::remote::session_actions::PROVIDER,
+        tilo_actions::remote::workspace_activity::PROVIDER,
+        tilo_runtime::device::nearby::PROVIDER,
+    ];
     let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
     let rows = loop {
         let rows = fixture.catalogue("", None).unwrap_or_default();
-        if rows.iter().any(setting) {
+        if wanted
+            .iter()
+            .all(|provider| rows.iter().any(|row| row.provider.as_str() == *provider))
+        {
             break rows;
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the person's listing carries the settings the session serves: {:?}",
-            fixture.catalogue("", None).map(|rows| rows.len())
-        );
+        if std::time::Instant::now() >= deadline {
+            let mut listed: Vec<String> = rows.iter().map(shown).collect();
+            listed.sort();
+            panic!(
+                "the person's listing is served by {wanted:?}; it lists:\n{}",
+                listed.join("\n")
+            );
+        }
         fixture.pass(Duration::from_millis(100));
     };
-    // Each setting's address stands once, at the settings provider's rows, and each reading of a
-    // section's words names one setting: two rows a person reads alike are a copy or a muddle.
-    let mut by_address: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    // Each address stands once, from one provider; each row reads as its own words; and the
+    // settings are the settings provider's, as they were before the rest was held to this.
+    let mut by_address: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut by_words: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for row in rows.iter().filter(|row| setting(row)) {
+    for row in &rows {
         let Some(action) = &row.action else {
             continue;
         };
@@ -166,22 +207,9 @@ fn the_persons_listing_names_each_setting_once() {
         by_address
             .entry(address.clone())
             .or_default()
-            .push(row.provider.as_str());
-        by_words
-            .entry(format!(
-                "{} on {}",
-                action.action_label, action.resource_kind
-            ))
-            .or_default()
-            .push(address);
+            .push(row.provider.clone());
+        by_words.entry(words(row)).or_default().push(shown(row));
     }
-    assert!(
-        by_address
-            .keys()
-            .any(|address| address.starts_with("settings/")),
-        "the listing carries the person's settings: {:?}",
-        by_address.keys().collect::<Vec<_>>()
-    );
     let twice: Vec<String> = by_address
         .iter()
         .filter(|(_, providers)| providers.len() > 1)
@@ -189,15 +217,16 @@ fn the_persons_listing_names_each_setting_once() {
         .collect();
     assert!(
         twice.is_empty(),
-        "each setting is listed once:\n{}",
+        "each address is listed once:\n{}",
         twice.join("\n")
     );
     let elsewhere: Vec<String> = by_address
         .iter()
-        .filter(|(_, providers)| {
-            providers
-                .iter()
-                .any(|provider| *provider != tilo_actions::remote::settings_resources::PROVIDER)
+        .filter(|(address, providers)| {
+            address.starts_with("settings/")
+                && providers
+                    .iter()
+                    .any(|provider| provider != tilo_actions::remote::settings_resources::PROVIDER)
         })
         .map(|(address, providers)| format!("{address}: {providers:?}"))
         .collect();
@@ -213,7 +242,33 @@ fn the_persons_listing_names_each_setting_once() {
         .collect();
     assert!(
         alike.is_empty(),
-        "each setting reads as its own:\n{}",
+        "each row reads as its own:\n{}",
         alike.join("\n")
     );
+    // Each provider that answers a group the session's listing once doubled still offers it:
+    // the one-row rule above must not be kept by offering none.
+    for (resource, provider) in [
+        ("session:invite", SERVICES),
+        (
+            "session:nearby-send",
+            tilo_runtime::device::nearby::PROVIDER,
+        ),
+        (
+            "workspace.activity",
+            tilo_actions::remote::workspace_activity::PROVIDER,
+        ),
+    ] {
+        assert!(
+            by_address.keys().any(|address| {
+                address.starts_with(&format!("{resource}#"))
+                    && by_address[address] == [provider.to_owned()]
+            }),
+            "{resource} is offered by {provider}: {:?}",
+            by_address
+                .iter()
+                .filter(|(address, _)| address.starts_with(resource))
+                .map(|(address, providers)| format!("{address}: {providers:?}"))
+                .collect::<Vec<_>>()
+        );
+    }
 }

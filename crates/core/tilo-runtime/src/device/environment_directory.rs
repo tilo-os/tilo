@@ -28,6 +28,8 @@ use tilo_actions::remote::{
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionOutput, InvocationId};
+use tilo_environment::Environment;
+use tilo_resource::Resource as _;
 
 use super::shell_runtime::{ShellRuntime, shell_runtime};
 
@@ -83,10 +85,20 @@ impl ActionProvider for Environments {
             ),
             list,
         ];
+        // Each verb is named by the record's own words for it: twenty actions reading alike are
+        // twenty rows a person cannot tell apart.
+        let named = Environment::declarations();
         for action in environment_commands::APP_ACTIONS {
+            let label = named
+                .iter()
+                .find(|declaration| declaration.id == *action)
+                .map_or_else(
+                    || "Change one of the workspace's environments".to_owned(),
+                    |declaration| declaration.shown_label(),
+                );
             actions.push(descriptor(
                 action,
-                "Change one of the workspace's environments",
+                &label,
                 ActionKind::Undoable,
                 vec![ActionParam::required(
                     RECORD,

@@ -1556,14 +1556,6 @@ impl Session {
             }),
         );
         let services = mount_services(&mut published, started, &served_services);
-        crate::services::app_wire::serve_services(
-            std::sync::Arc::clone(&served_services),
-            &services.borrow(),
-            &daemon_link,
-            // The seat's settings provider is served beside these wherever the app wire stands,
-            // and it publishes the settings' sections: the services must not list them again.
-            app_wire.is_some(),
-        );
         // The workspace's activity as an app of this session reads it: the model's own reads and
         // writes, published as `so.tilo.activity`, so a tilolang app shows the history through the
         // same model the shell's pane does.
@@ -1868,6 +1860,9 @@ impl Session {
             let (record, local) = devices.record();
             activity.follow_devices(record, local);
         }
+        // The link the session's services are served on, kept while `shared` takes it: what the
+        // dispatch answers a press through, offered once every service is in.
+        let services_link = daemon_link.clone();
         let mut shared = Shared {
             handle,
             desktop,
@@ -2141,6 +2136,20 @@ impl Session {
                     std::rc::Rc::clone(&shared.continuity),
                 )));
         }
+        // The device's dispatch asks the services as the person: a press of one of their actions,
+        // and the person's answer to the question it asked. Every service this session runs is in
+        // by now, so the one listing of them is whole: taken before the mounts, it left out each
+        // service added after it. A session no daemon started reaches no dispatch, and its presses
+        // run as before.
+        crate::services::app_wire::serve_services(
+            std::sync::Arc::clone(&shared.served_services),
+            &shared.services.borrow(),
+            &services_link,
+            // The seat's settings and activity providers are served beside these wherever the app
+            // wire stands: they publish the settings' sections and the workspace's activity, and
+            // the services must not list them again.
+            app_wire.is_some(),
+        );
         // What the portal brings comes from any thread, and wakes the loop
         // instead of waiting for its next turn.
         // This device's input goes first to the person's device it drives, then to an app's input
@@ -3155,14 +3164,21 @@ impl Session {
         {
             return;
         }
+        // What the session's services publish stands on the device's dispatch under their own
+        // provider ([`crate::services::app_wire::SERVICES_PROVIDER`]): the session's own actions
+        // offer the surfaces it draws — the layout, its windows, its sheets — and not their
+        // second copy, so one address has one entry. A call of a service's action made at an
+        // address still runs it where a turn or a shortcut names it here; only the listing goes.
+        let served: std::collections::BTreeSet<String> = self
+            .shared
+            .services
+            .borrow()
+            .resources()
+            .into_iter()
+            .map(|resource| resource.id.as_str().to_owned())
+            .collect();
         let mut resources = self.shared.published.resources();
-        // The settings are published by the session's settings service, and offered under
-        // their own provider ([`crate::settings_steps::SettingsSteps`]) wherever the session
-        // serves its seat's providers. The session's own provider must not offer a second copy
-        // of them: one address has one entry.
-        if self.seat().is_some() && self.settings_steps.is_some() {
-            crate::settings_steps::SettingsSteps::leave_out(&mut resources);
-        }
+        resources.retain(|resource| !served.contains(resource.id.as_str()));
         // What the session offers moved is handed to the daemon by the provider itself
         // ([`crate::session_actions::SessionActions::serve_on`]).
         actions.offer(tilo_actions::api::survey_placed(&resources));

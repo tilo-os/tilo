@@ -1302,7 +1302,7 @@ pub enum ActivityAction {
     #[effect(kind = "read", view, label = "activity-detail-open", returns = Option<Focus>)]
     Focus,
     /// Live: every agent session the history holds, each as the timeline of the actions it took.
-    #[effect(kind = "read", view, label = "activity-title-explore", returns = Sessions)]
+    #[effect(kind = "read", view, label = "activity-title-sessions", returns = Sessions)]
     Sessions {
         /// Which workspaces' sessions are shown.
         scope: Scope,
@@ -1312,7 +1312,7 @@ pub enum ActivityAction {
         changes: usize,
     },
     /// Every line a command an agent ran printed.
-    #[effect(kind = "read", view, label = "activity-pane-details", returns = SessionOutput)]
+    #[effect(kind = "read", view, label = "activity-pane-output", returns = SessionOutput)]
     SessionOutput {
         /// The workspace the session's record is in; absent for this one.
         workspace: Option<String>,

@@ -767,15 +767,17 @@ impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
 /// shell's press of one of their actions reaches it and a call that waits for the person is kept
 /// as their asked record. Without a link nothing here can be asked, and the press runs as before.
 ///
-/// What `settings_published` says the session's own provider offers is left out: the settings'
-/// sections are published by the settings provider, served beside this one on the same link
-/// ([`crate::settings_steps::SettingsSteps`]), and this device's dispatch lists each address
-/// once. A press of theirs still reaches the settings service through here, as every press does.
+/// What another provider of this device answers is left out, and this one lists the rest: the
+/// device's dispatch lists each address once. `seat_served` says the seat's providers are served
+/// beside this one on the same link — the settings' sections ([`crate::settings_steps`]) and the
+/// workspace's activity ([`crate::activity_provider`]) — and the device's nearby send is answered
+/// by its daemon under `so.tilo.nearby` wherever there is a link at all. A press of any of theirs
+/// still reaches the service through here, as every press does.
 pub(crate) fn serve_services(
     served: std::sync::Arc<ServedServices>,
     services: &Services,
     daemon: &Result<runtime_collab::ShellClient, String>,
-    settings_published: bool,
+    seat_served: bool,
 ) {
     let Ok(link) = daemon else {
         // The press path is not taken without a link either, so nothing waits for one.
@@ -787,9 +789,11 @@ pub(crate) fn serve_services(
         return;
     };
     let mut resources = services.resources();
-    if settings_published {
+    if seat_served {
         crate::settings_steps::SettingsSteps::leave_out(&mut resources);
+        resources.retain(|resource| resource.id.as_str() != crate::activity_service::RESOURCE);
     }
+    resources.retain(|resource| resource.id.as_str() != tilo_app_host::nearby_send::RESOURCE);
     let placed = tilo_actions::api::survey_placed(&resources);
     let page = tilo_actions::remote::CataloguePage {
         revision: services.revision().to_string(),
