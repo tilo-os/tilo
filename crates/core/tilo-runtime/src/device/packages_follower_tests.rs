@@ -15,6 +15,7 @@ use registry_types::{
 };
 use tilo_app_package::pack::SigningIdentity;
 use tilo_peer_state::workspace_membership::{AppPayload, AppRelease};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::{PackageCache, TrustLists};
 use crate::device::control::DeviceContent;
@@ -907,7 +908,7 @@ fn an_app_whose_runtime_a_registry_offers_is_installed_with_it() {
                 "--nocapture",
             ])
             .env("TILO_FOLLOWER_RUNTIME_FETCH_CHILD", "1")
-            .status()
+            .status_locked()
             .expect("the child runs this test");
         assert!(
             status.success(),
