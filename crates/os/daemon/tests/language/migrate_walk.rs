@@ -221,6 +221,10 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         // A workspace the device is a member of takes the run: its address book lands there as
         // the migration's agent in it, and the device's own workspace has none of it.
         let lab = made(host.as_ref(), "Lab").await;
+        // Contacts is installed in the lab as a member installs an app in the workspace they
+        // keep things in: an app not installed there holds no grant over its own records, and
+        // its records it then lands are refused.
+        host.install_app_into(&lab, "so.tilo.contacts").await;
         let into_lab = steps_in(&lab);
         let reviewed = step(
             &into_lab,

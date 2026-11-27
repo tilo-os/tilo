@@ -544,9 +544,12 @@ async fn offered(host: &host::Host, title: &str) -> String {
 #[test]
 fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
     host::run_with(&["migrate", "contacts"], |host| async move {
-        // Migrate keeps its own state in the workspace it is installed in, as a person who
-        // installs it there does.
-        host.install_app(MIGRATE).await;
+        // The apps are installed in the workspace as a person installs them there: Migrate keeps
+        // its own state where it is installed, and Contacts keeps the address book the run lands
+        // in the workspace that installed it.
+        for app in [MIGRATE, "so.tilo.contacts"] {
+            host.install_app(app).await;
+        }
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         host.daemon().serve_migrations();
