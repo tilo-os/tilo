@@ -269,6 +269,12 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .map(|_| store.versions(kind, id))
                 .unwrap_or_default(),
         ),
+        // Read as its history is: a removed resource's kind is still its reader's.
+        Command::KindOf { id } => Reply::Kind(store.kind_of_any(id).filter(|kind| {
+            store
+                .readers_of(kind, id)
+                .is_some_and(|readers| may_read(&readers))
+        })),
         Command::VersionEnd { kind, id, last } => Reply::Versions(
             store
                 .readers_of(kind, id)

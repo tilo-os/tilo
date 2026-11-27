@@ -1854,8 +1854,9 @@ impl ResourceStore {
     /// alone is read as, a published address or a reference in a text. `None` when the store
     /// holds no such resource of a loaded type.
     ///
-    /// Asked of each kind in turn where nothing was read of it yet. A kind that holds no such
-    /// resource is not remembered as its answer, so a later read of the right kind still finds it.
+    /// Asked of the store once, by the id alone, where nothing was read of it yet: the store's
+    /// index says which kind holds it (or held it last, when it was removed), however many kinds
+    /// the app knows, so a read of an id the store holds none of costs one round trip.
     #[must_use]
     pub fn type_of_id(&self, id: &str) -> Option<TypeId> {
         // What was written here is what it is, removed included.
@@ -1867,46 +1868,11 @@ impl ResourceStore {
         if let Some(Some(held)) = self.inner.cache.borrow().get(id) {
             return self.type_of_kind(&held.kind);
         }
-        let kinds: Vec<String> = self
-            .inner
-            .kinds
-            .borrow()
-            .types()
-            .flat_map(TypeEntry::kinds)
-            .cloned()
-            .collect();
-        for kind in kinds {
-            let Ok(Reply::Resource(Some(indexed))) = self.command(Command::Get {
-                kind: kind.clone(),
-                id: id.to_owned(),
-            }) else {
-                continue;
-            };
-            self.inner
-                .cache
-                .borrow_mut()
-                .insert(id.to_owned(), Some(Held::of(&kind, indexed)));
-            return self.type_of_kind(&kind);
-        }
-        // A removed resource is of the kind whose history holds it.
-        let kinds = self
-            .inner
-            .kinds
-            .borrow()
-            .types()
-            .flat_map(TypeEntry::kinds)
-            .cloned()
-            .collect::<Vec<String>>();
-        for kind in &kinds {
-            let read = self.command(Command::Versions {
-                kind: kind.clone(),
-                id: id.to_owned(),
-            });
-            if matches!(read, Ok(Reply::Versions(versions)) if !versions.is_empty()) {
-                return self.type_of_kind(kind);
-            }
-        }
-        None
+        let Ok(Reply::Kind(Some(kind))) = self.command(Command::KindOf { id: id.to_owned() })
+        else {
+            return None;
+        };
+        self.type_of_kind(&kind)
     }
 
     /// The type of the resource `at` when the store holds it now: one removed is not its

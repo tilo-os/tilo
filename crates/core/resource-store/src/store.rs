@@ -2425,13 +2425,7 @@ impl Store {
             let Some(parent) = parent else {
                 continue;
             };
-            let parent_kind = self.index.kind_anywhere(&parent).or_else(|| {
-                self.removed
-                    .keys()
-                    .find(|(_, held)| *held == parent)
-                    .map(|(kind, _)| kind.clone())
-            });
-            let Some(parent_kind) = parent_kind else {
+            let Some(parent_kind) = self.kind_of_any(&parent) else {
                 continue;
             };
             let nested = collab_types::history::Nested {

@@ -4836,7 +4836,7 @@ mod store {
 
     /// Every way a member reads the store, of the draft `id` with `subject`: whether any of them
     /// tells `reader` the draft is there. A get, its content, a listing, a search of its subject,
-    /// a count, the subject's values, its history, and the newest changes.
+    /// a count, the subject's values, its history, the newest changes, and its kind by its id.
     fn sees_draft(store: &Store, reader: &str, id: &str, subject: &str) -> Vec<&'static str> {
         use collab_types::store::wire::{Command, Reply};
         let mut seen = Vec::new();
@@ -4897,14 +4897,18 @@ mod store {
         {
             seen.push("newest changes");
         }
+        let kind = Command::KindOf { id: id.to_owned() };
+        if matches!(read_as(store, reader, &kind), Reply::Kind(Some(held)) if held == DRAFT) {
+            seen.push("kind");
+        }
         seen
     }
 
     /// A draft is its author's until it is sent: placed by its own rule though it is nested in a
     /// mailbox every member reads, so another member finds it by no read at all (a get, a
-    /// listing, a search, a count, a field's values, its history or the newest changes), while
-    /// its author finds it by every one. Once sent, every member reads it, and it is not taken
-    /// back.
+    /// listing, a search, a count, a field's values, its history, the newest changes or its kind
+    /// by its id alone), while its author finds it by every one. Once sent, every member reads
+    /// it, and it is not taken back.
     #[test]
     fn a_draft_is_read_by_its_author_alone_until_it_is_sent() {
         use collab_types::store::wire::Command;
@@ -4956,6 +4960,7 @@ mod store {
             "values",
             "history",
             "newest changes",
+            "kind",
         ];
         assert_eq!(
             sees_draft(&store, "bo", "d1", "Quarterly"),
@@ -5040,7 +5045,8 @@ mod store {
                 "count",
                 "values",
                 "history",
-                "newest changes"
+                "newest changes",
+                "kind"
             ],
             "its author reads it every way"
         );
@@ -5066,9 +5072,14 @@ mod store {
             Vec::<&str>::new(),
             "nor reads its history once it is gone"
         );
+        let seen = sees_draft(&store, "ada", "d1", "Quarterly");
         assert!(
-            sees_draft(&store, "ada", "d1", "Quarterly").contains(&"history"),
+            seen.contains(&"history"),
             "its author still reads its history"
+        );
+        assert!(
+            seen.contains(&"kind"),
+            "and what kind it was, by its id alone"
         );
     }
 }

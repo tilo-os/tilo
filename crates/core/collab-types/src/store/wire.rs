@@ -221,6 +221,10 @@ pub enum Command {
         invocations: Vec<String>,
         stamp: Stamp,
     },
+    /// The kind of the resource `id`, held now or removed, as the store's index files it:
+    /// what a reader holding an id alone (a published address, a reference in a text) reads it
+    /// by, in one read however many kinds it knows. Answered as [`Reply::Kind`].
+    KindOf { id: String },
 }
 
 /// One edit of a resource's content.
@@ -318,6 +322,9 @@ pub enum Reply {
     /// the order asked: one list per asked resource, each as [`Self::RetiredResources`] answered
     /// one.
     MadeFrom(Vec<Vec<(String, String)>>),
+    /// The kind of a resource ([`Command::KindOf`]), `None` where the store holds none the
+    /// person may read, now or in its history.
+    Kind(Option<String>),
 }
 
 impl Reply {

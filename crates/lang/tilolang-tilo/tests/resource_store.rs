@@ -804,3 +804,125 @@ fn a_lists_first_version_is_asked_for_once_until_the_list_is_written() {
         "an item was written into the list: its last version is asked again, once"
     );
 }
+
+/// The ticks app with as many kinds as Messages has, 84, and an action that removes a tick.
+fn ticks_with_many_kinds() -> tilolang::Compiled {
+    let mut source = TICKS.to_owned();
+    source.push_str("\naction drop(list: Ticks, item: Tick) {\n    list.items.remove(item)\n}\n");
+    for at in 0..82 {
+        use std::fmt::Write as _;
+        write!(source, "\ntype Other{at} {{\n    note: Text\n}}\n").unwrap();
+    }
+    let compiled = tilolang::compile_package(&source, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    assert_eq!(
+        compiled.meta.types.len(),
+        84,
+        "the app has as many kinds as Messages"
+    );
+    compiled
+}
+
+/// What a resource is, read from its id alone, is one question to the store however many kinds
+/// the app has: a read of a record the store holds none of (a window's state nobody wrote yet)
+/// costs one round trip, not one for each of the app's 84 kinds, and still fails, naming the
+/// record. One held now, and one removed, are found by the same one question.
+#[test]
+fn a_record_the_store_holds_none_of_is_one_question_however_many_kinds_the_app_has() {
+    use tilolang_runtime::store::Store as _;
+    let compiled = ticks_with_many_kinds();
+    let port = std::rc::Rc::new(Asked(
+        tilo_resource_store::LocalPort::in_memory(),
+        std::cell::Cell::new(0),
+    ));
+    let store = ResourceStore::new(port.clone());
+    store.declare(&compiled.meta);
+    let rt = Runtime::new(store, solo()).unwrap();
+    rt.load_compiled(&compiled).unwrap();
+    let call = |action: &str, args: Vec<Value>| {
+        let id = &compiled
+            .meta
+            .actions
+            .iter()
+            .find(|held| held.name == action)
+            .unwrap()
+            .id;
+        match rt.invoke_action(&me(), (id.as_str(), args)).unwrap() {
+            InvokeOutcome::Done(value) => value,
+            other => panic!("{action} answered {other:?}"),
+        }
+    };
+    let list = rt.create("Ticks").unwrap();
+    let kept = made(&call(
+        "add",
+        vec![Value::resource(&list), Value::text("kept")],
+    ));
+    let dropped = made(&call(
+        "add",
+        vec![Value::resource(&list), Value::text("dropped")],
+    ));
+    call(
+        "drop",
+        vec![Value::resource(&list), Value::resource(&dropped)],
+    );
+    let type_named = |name: &str| {
+        compiled
+            .meta
+            .types
+            .iter()
+            .find(|held| held.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    // Read as a reader that wrote none of them reads them: a process of its own over the store.
+    let reader = ResourceStore::new(port.clone());
+    reader.declare(&compiled.meta);
+    let asked = |read: &dyn Fn()| {
+        let before = port.1.get();
+        read();
+        port.1.get() - before
+    };
+
+    let missing = "root-nobody-wrote-this";
+    let questions = asked(&|| assert_eq!(reader.type_of_id(missing), None));
+    assert_eq!(
+        questions, 1,
+        "what a record the store holds none of is asked of the store once, not of each kind"
+    );
+    let untyped = ResourceRef::root(missing, tilolang_runtime::ids::TypeId::default());
+    let title = tilolang_runtime::store::FieldSpec {
+        id: "title".into(),
+        kind: tilolang_runtime::meta::FieldKind::Text,
+    };
+    let failure = std::cell::RefCell::new(None);
+    let questions = asked(&|| *failure.borrow_mut() = Some(reader.read(&untyped, &title)));
+    assert!(
+        questions <= 2,
+        "reading a field of a record the store holds none of asked the store {questions} times"
+    );
+    let failure = failure
+        .into_inner()
+        .unwrap()
+        .expect_err("a record nobody wrote has no title");
+    assert!(
+        failure.to_string().contains(missing),
+        "the failure names the record it could not read: {failure}"
+    );
+
+    let questions = asked(&|| {
+        assert_eq!(
+            reader.type_of_id(&kept.id_string()),
+            Some(type_named("Tick"))
+        );
+    });
+    assert_eq!(questions, 1, "a held record's type is one question too");
+    let questions = asked(&|| {
+        assert_eq!(
+            reader.type_of_id(&dropped.id_string()),
+            Some(type_named("Tick")),
+            "a removed record is still of the kind its history holds"
+        );
+    });
+    assert_eq!(questions, 1, "a removed record's type is one question too");
+}

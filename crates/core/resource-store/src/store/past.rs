@@ -204,7 +204,8 @@ impl Store {
     }
 
     /// The kind of the resource `id`, held now or removed.
-    fn kind_of_any(&self, id: &str) -> Option<String> {
+    #[must_use]
+    pub fn kind_of_any(&self, id: &str) -> Option<String> {
         self.index.kind_anywhere(id).or_else(|| {
             self.removed
                 .keys()
