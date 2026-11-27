@@ -1669,15 +1669,22 @@ impl Instance {
     }
 
     /// Run a scenario (its hidden action `action`) of the package `app` over its root: the
-    /// resource it returned, when it returns one, or why it did not run whole.
+    /// resource it returned, when it returns one, or why it did not run whole. A part draws over
+    /// another app's state and has no root of its own: its scenario writes what it can without
+    /// one.
     fn run_scenario(
         &self,
         host: &Host,
         app: &str,
         action: &str,
     ) -> Result<Option<ResourceRef>, String> {
-        host.root_of(app)
-            .map_err(|error| format!("the package has no root to stage: {error}"))?;
+        let rootless = host
+            .package(app)
+            .is_some_and(|package| package.meta.roots.is_empty());
+        if !rootless {
+            host.root_of(app)
+                .map_err(|error| format!("the package has no root to stage: {error}"))?;
+        }
         match host
             .runtime()
             .invoke_action(&self.me_actor(), (action, Vec::new()))

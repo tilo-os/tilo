@@ -1,3 +1,13 @@
 # What `tilo-layout-check` finds in the shipped apps today, one finding id per line: these
 # are known and do not fail the `layout-check` checks; a finding not named here does. Take a line
 # out once its problem is fixed (the check says when one no longer shows).
+
+# A setting names the look-alike glyphs it sets apart; the language's code-identifier rule reads
+# a lone "l" or "O" as a binding name.
+coded-name settings › settings_window › appearance_pane [ListRow]
+
+# The setup card at a phone's width: its body overflows the card, its intro's words meet the
+# icon, and the card keeps 8 px where a 320 px window keeps 16.
+overflow onboarding › setup › stack [Container]
+overlap onboarding › intro_page › ui.Text [Text]
+cramped-gutter onboarding › setup › setup_card [ListRow]
