@@ -6,9 +6,9 @@
 # from the programs and images t hands it (TILO_SH_*); the page is the visa test form, served
 # where a VM may reach it — the server endpoint's address as the VM dials it.
 #
-# The examples come from tools/docs/doc_examples.py, the runner the docs-examples check runs the
-# book's other examples with: `--host stack` selects exactly the blocks that name `host=stack`,
-# and leaves it to this check to have exported TILO_API_URL and TILO_API_KEY.
+# The examples come from tools/docs/doc_examples.py: `--host stack` selects exactly the blocks
+# that name `host=stack`, and leaves it to this check to have exported TILO_API_URL and
+# TILO_API_KEY.
 #
 # usage: test-docs-browser.sh WORK
 set -euo pipefail
@@ -20,8 +20,8 @@ base=${TILO_SH_PORT_BASE:-24100}
 mkdir -p "$work"
 find "$work" -mindepth 1 -delete
 
-# The Python SDK and TypeScript SDK as the docs-examples check runs them: the ci-sdk image's
-# uv environment, bun cache and locked packages, copied because a job's image is read-only.
+# The Python SDK and TypeScript SDK as the examples run them: the ci-sdk image's uv
+# environment, bun cache and locked packages, copied because a job's image is read-only.
 sdk=$work/sdk
 mkdir -p "$sdk"
 export UV_OFFLINE=1 UV_PYTHON_DOWNLOADS=never

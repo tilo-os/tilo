@@ -4,7 +4,7 @@
 A reference page is one `# Title`, a lead paragraph, then `##` sections of
 `###` items and `####` of a class's members. Signatures and command lines are
 fenced blocks; their info string names the language and carries `fragment`,
-which tells the docs-examples check they are not a whole program to run.
+which tells the examples' runner they are not a whole program to run.
 
 Every generator writes its page through here, so the pages cannot drift apart
 in shape. Each generator is a command of its own:

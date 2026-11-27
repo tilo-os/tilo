@@ -9,10 +9,9 @@
 # (`source`): a reference is generated, never copied by hand. A link to that
 # source from any page opens the reference.
 #
-# Every fenced block marked `example=<id>` is a whole program, run against a
-# local Tilo by the docs-examples check; the blocks of one example are its
-# tabs, one per language, and `[examples].languages` says which languages each
-# example must have.
+# Every fenced block marked `example=<id>` is a whole program run against a
+# local Tilo; the blocks of one example are its tabs, one per language, and
+# `[examples].languages` says which languages each example must have.
 
 base = "/docs/"
 origin = "https://tilo.sh"
