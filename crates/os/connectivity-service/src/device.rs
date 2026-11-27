@@ -219,29 +219,43 @@ pub trait Device: Send + Sync {
     /// Why the device did not make it.
     fn change(&self, change: &Change) -> Result<(), String>;
 
-    /// The operators the modem at `modem` can reach now.
+    /// The operators the modem at `modem` can reach now. A device without a
+    /// modem answers that.
     ///
     /// # Errors
     /// Why the modem could not be asked.
-    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String>;
+    fn scan_operators(&self, _modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        Err(no_modem())
+    }
 
     /// Send `command` to the network, as `*100#` asks, and read what it answers.
     ///
     /// # Errors
     /// Why the network could not be asked.
-    fn send_code(&self, modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String>;
+    fn send_code(&self, _modem: &str, _command: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err(no_modem())
+    }
 
     /// Answer the question the network asked.
     ///
     /// # Errors
     /// Why the network could not be answered.
-    fn answer_code(&self, modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String>;
+    fn answer_code(&self, _modem: &str, _response: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err(no_modem())
+    }
 
     /// End the code's session with the network.
     ///
     /// # Errors
     /// Why the session could not be ended.
-    fn cancel_code(&self, modem: &str) -> Result<(), String>;
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        Err(no_modem())
+    }
+}
+
+/// Why a device that has no modem cannot be asked anything of one.
+fn no_modem() -> String {
+    "this device has no modem".to_string()
 }
 
 /// The device as `NetworkManager` and `BlueZ` report it.
@@ -367,6 +381,15 @@ impl Device for OsDevice {
             .map(|wired| Wired::from(&wired));
         let connectivity = read_or_log("connectivity", os_actions::get_connectivity())
             .map_or(Connectivity::Unknown, Connectivity::from);
+        // A portal's sign-in page is part of the portal: read it while there is one.
+        let (portal_uri, portal_problem) = if connectivity == Connectivity::Portal {
+            match os_actions::captive_portal_uri() {
+                Ok(uri) => (Some(uri), None),
+                Err(problem) => (None, Some(problem)),
+            }
+        } else {
+            (None, None)
+        };
         let link = read_or_log("link", os_actions::get_link_status()).map(|link| Link::from(&link));
         let profiles = read_or_log("vpn profiles", os_actions::list_vpn_connections())
             .unwrap_or_default()
@@ -409,6 +432,8 @@ impl Device for OsDevice {
                 airplane_mode: radios.airplane_mode,
                 link,
                 connectivity,
+                portal_uri,
+                portal_problem,
                 saved: saved_networks(),
                 ..Network::default()
             },
@@ -460,7 +485,14 @@ impl Device for OsDevice {
                 password: password.clone(),
                 band: (*band).into(),
             }),
-            Change::Scan => os_actions::scan_wifi(),
+            Change::Scan => {
+                os_actions::scan_wifi()?;
+                // A search is a deliberate look: ask the daemon to check the
+                // internet again too, so the reading says what it answers now
+                // rather than what it said before.
+                let _ = os_actions::check_connectivity_now();
+                Ok(())
+            }
             Change::Join {
                 network,
                 password,

@@ -37,7 +37,10 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
-use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading, unavailable};
+// A host that drives this service itself reads its actions and takes in what
+// landed through the same trait and wake the session hosts it with.
+use tilo_service::{Jobs, Started, Worker, decode, offer, reading, unavailable};
+pub use tilo_service::{Service, Wake};
 
 use device::{Change, Device, Readings};
 use effects::{
@@ -140,6 +143,21 @@ impl Preferences for SettingsPreferences {
     }
 }
 
+/// No policy of a person's, before there is a person or a settings document
+/// to keep it in: a saved network joins as its own setting says.
+#[derive(Clone, Copy, Debug, Default)]
+struct NoPolicy;
+
+impl Preferences for NoPolicy {
+    fn ask_before_open_networks(&self) -> bool {
+        false
+    }
+
+    fn set_ask_before_open_networks(&self, _on: bool) -> Result<(), String> {
+        Err("this device keeps no network settings yet".into())
+    }
+}
+
 /// The connectivity service.
 pub struct Connectivity {
     readings: Readings,
@@ -160,6 +178,16 @@ impl Connectivity {
     /// The worker's thread did not start.
     pub fn new(device: Arc<dyn Device>, wake: Option<Wake>) -> std::io::Result<Self> {
         Self::over(device, wake, Arc::new(SettingsPreferences))
+    }
+
+    /// The service where no person's settings apply yet, as the installer on
+    /// the live medium runs it: it reads and changes this device, and keeps no
+    /// network policy of its own.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn unmanaged(device: Arc<dyn Device>, wake: Option<Wake>) -> std::io::Result<Self> {
+        Self::over(device, wake, Arc::new(NoPolicy))
     }
 
     /// [`Connectivity::new`] over the policy `preferences` holds, as a test
@@ -185,6 +213,25 @@ impl Connectivity {
     /// Read the device again.
     pub fn refresh(&self) {
         refresh(&self.worker.jobs());
+    }
+
+    /// Look for Wi-Fi networks now, as the `scan-wifi` action does, for a host
+    /// that drives this service itself and hears from the device why it cannot.
+    pub fn scan(&mut self) -> Started {
+        self.start(Part::Network, "scan-wifi", Change::Scan)
+    }
+
+    /// Join the Wi-Fi network `network` with `password`, when it asks for one.
+    pub fn join(&mut self, network: &str, password: Option<&str>) -> Started {
+        self.start(
+            Part::Network,
+            "connect-wifi",
+            Change::Join {
+                network: network.to_owned(),
+                password: password.map(str::to_owned),
+                hidden: false,
+            },
+        )
     }
 
     /// Read the device again whenever `NetworkManager` or `BlueZ` report a

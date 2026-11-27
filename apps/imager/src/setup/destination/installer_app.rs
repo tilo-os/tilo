@@ -46,9 +46,7 @@ use imager_backend::destination::backend::{InstallBackend, SystemBackend};
 use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
 use imager_backend::destination::install::{InstallOptions, PowerAction, SERVER_PURPOSE};
 use imager_backend::destination::layouts;
-use imager_backend::destination::network::{
-    Connection, ConnectivityState, InstallerNetwork, NetworkPhase,
-};
+use imager_backend::destination::network_step::{Connectivity, NetworkPhase, NetworkStep, Wake};
 use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
 use imager_backend::destination::probes;
 
@@ -285,29 +283,32 @@ fn captions(keys: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn network_summary(network: &InstallerNetwork) -> String {
-    match network.connection() {
-        Connection::Via(ssid) => {
-            CATALOG.t_args("installer-network-via", &[("ssid", ArgValue::Text(ssid))])
+fn network_summary(network: &NetworkStep) -> String {
+    if network.connectivity == Connectivity::Full {
+        if let Some(row) = network.networks.iter().find(|row| row.connected) {
+            return CATALOG.t_args(
+                "installer-network-via",
+                &[("ssid", ArgValue::Text(row.name.clone()))],
+            );
         }
-        Connection::Available => CATALOG.t("installer-network-available"),
-        Connection::Partial(state) => CATALOG.t_args(
-            "installer-network-offline-available",
-            &[(
-                "connectivity",
-                ArgValue::Text(CATALOG.t(connectivity_message(state))),
-            )],
-        ),
+        return CATALOG.t("installer-network-available");
     }
+    CATALOG.t_args(
+        "installer-network-offline-available",
+        &[(
+            "connectivity",
+            ArgValue::Text(CATALOG.t(connectivity_message(network.connectivity))),
+        )],
+    )
 }
 
-fn connectivity_message(state: ConnectivityState) -> &'static str {
+fn connectivity_message(state: Connectivity) -> &'static str {
     match state {
-        ConnectivityState::Full => "installer-connectivity-full",
-        ConnectivityState::Portal => "installer-connectivity-portal",
-        ConnectivityState::Limited => "installer-connectivity-limited",
-        ConnectivityState::Offline => "installer-connectivity-offline",
-        ConnectivityState::Unknown => "installer-connectivity-unknown",
+        Connectivity::Full => "installer-connectivity-full",
+        Connectivity::Portal => "installer-connectivity-portal",
+        Connectivity::Limited => "installer-connectivity-limited",
+        Connectivity::Offline => "installer-connectivity-offline",
+        Connectivity::Unknown => "installer-connectivity-unknown",
     }
 }
 
@@ -453,7 +454,7 @@ impl Mailbox {
     reason = "each bool is an independent wizard-state flag (encryption/FIDO2 opt-in, TPM presence, shot/dirty/focus one-shots), not a combinatorial state machine"
 )]
 pub struct InstallerApp {
-    network: InstallerNetwork,
+    network: NetworkStep,
     disks: Vec<Disk>,
     selected_disk: Option<usize>,
     selected_guided_extent: Option<usize>,
@@ -633,7 +634,7 @@ impl InstallerApp {
     pub fn with_disks(disks: Vec<Disk>) -> Self {
         Self {
             dirty: true,
-            network: InstallerNetwork::default(),
+            network: NetworkStep::default(),
             disks,
             selected_disk: None,
             selected_guided_extent: None,
@@ -1993,7 +1994,7 @@ impl InstallerApp {
             ));
         }
 
-        if let Some(uri) = self.network.snapshot.portal_uri.as_deref() {
+        if let Some(uri) = self.network.portal_uri.as_deref() {
             children.push(Box::new(
                 Text::new(&CATALOG.t_args(
                     "installer-network-signin-address",
@@ -2007,7 +2008,7 @@ impl InstallerApp {
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
-        } else if let Some(error) = self.network.snapshot.portal_error.as_deref() {
+        } else if let Some(error) = self.network.portal_error.as_deref() {
             children.push(Box::new(
                 Text::new(&CATALOG.t_args(
                     "installer-network-signin-unavailable",
@@ -2030,9 +2031,7 @@ impl InstallerApp {
             )
             .disabled(self.network.is_busy()),
         ));
-        let continue_key = if self.network.snapshot.connectivity
-            == imager_backend::destination::network::ConnectivityState::Full
-        {
+        let continue_key = if self.network.connectivity == Connectivity::Full {
             "imager-installer-continue"
         } else {
             "imager-installer-continue-offline"
@@ -2047,7 +2046,7 @@ impl InstallerApp {
     fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
 
-        if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
+        if let Some(error) = self.network.wifi_error.as_deref() {
             children.push(Box::new(
                 Text::new(&CATALOG.t_args(
                     "installer-wifi-unavailable",
@@ -2057,7 +2056,7 @@ impl InstallerApp {
                 .with_color(dim),
             ));
         } else {
-            for (i, network) in self.network.snapshot.networks.iter().take(5).enumerate() {
+            for (i, network) in self.network.networks.iter().take(5).enumerate() {
                 let state = CATALOG.t(if network.connected {
                     "imager-network-connected"
                 } else if network.secure {
@@ -2065,13 +2064,13 @@ impl InstallerApp {
                 } else {
                     "imager-network-open"
                 });
-                let selected = self.network.selected_ssid.as_deref() == Some(network.ssid.as_str());
+                let selected = self.network.selected_ssid.as_deref() == Some(network.name.as_str());
                 let control = self.control(DestinationEffect::SelectNetwork {
-                    ssid: network.ssid.clone(),
+                    ssid: network.name.clone(),
                 });
                 let fire = control.clone();
                 let id = format!("wifi_network_{i}");
-                let row = ListRow::new(id.as_str(), network.ssid.as_str())
+                let row = ListRow::new(id.as_str(), network.name.as_str())
                     .icon(if network.secure {
                         tilo_ui_base::icons::Icon::Lock
                     } else {
@@ -3423,7 +3422,7 @@ impl InstallerApp {
         }
     }
 
-    fn network_wake(&self) -> Option<imager_backend::destination::network::Wake> {
+    fn network_wake(&self) -> Option<Wake> {
         let mailbox = self.mailbox.clone()?;
         Some(Arc::new(move || mailbox.post(NETWORK_WAKE.to_owned())))
     }

@@ -13,7 +13,7 @@ flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # (`destination`): disks, the privileged install, network, power and the
 # medium's profile. imager's `destination` feature enables it.
 destination = [
-    "dep:os-actions",
+    "dep:tilo-connectivity-service",
     "dep:tilo-power-mgmt",
     "dep:console-control",
     "dep:tilo-install-helpers",
@@ -43,7 +43,9 @@ uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../install-profile-model", features = ["model"] }
 # The destination side (`destination`).
-os-actions = { path = "../os-actions", optional = true }
+# The device's connectivity, as the network step reads and changes it: the
+# system's service, before there is a person whose settings it could keep.
+tilo-connectivity-service = { path = "../connectivity-service", optional = true }
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 console-control = { path = "../console-control", optional = true }
 tilo-lock = { path = "../../platform/tilo-lock", optional = true }

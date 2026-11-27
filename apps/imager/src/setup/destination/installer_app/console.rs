@@ -129,8 +129,8 @@ impl InstallerApp {
                 "notice": self.network.notice,
                 "busy": self.network.is_busy(),
                 "selected": self.network.selected_ssid,
-                "networks": self.network.snapshot.networks.iter().map(|n| json!({
-                    "ssid": n.ssid, "secure": n.secure, "connected": n.connected, "signal": n.signal,
+                "networks": self.network.networks.iter().map(|n| json!({
+                    "ssid": n.name, "secure": n.secure, "connected": n.connected, "signal": n.signal,
                 })).collect::<Vec<_>>(),
             },
             "storage": {

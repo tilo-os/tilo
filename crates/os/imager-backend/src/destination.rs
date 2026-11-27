@@ -9,7 +9,8 @@
 //!   helpers, behind the boundary host tests replace.
 //! * [`internal_handoff`]: the staged (USB-free) installation's handoff.
 //! * [`media_profile`]: the profile the host side prepared on the medium.
-//! * [`network`]: connectivity, Wi-Fi and captive portals, off the UI thread.
+//! * [`network_step`]: the wizard's network step, over the session's
+//!   connectivity service before a session exists.
 //! * [`power_readiness`]: the battery rule before installing.
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.
@@ -21,7 +22,7 @@ pub mod install;
 pub mod internal_handoff;
 pub mod layouts;
 pub mod media_profile;
-pub mod network;
+pub mod network_step;
 pub mod power_readiness;
 pub mod private_io;
 pub mod probes;

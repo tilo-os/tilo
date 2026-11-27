@@ -17,6 +17,12 @@ pub struct Network {
     pub airplane_mode: bool,
     /// What `NetworkManager` found when it last checked the internet.
     pub connectivity: Connectivity,
+    /// The page a captive portal asks the person to sign in at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_uri: Option<String>,
+    /// Why the sign-in page could not be read, until the next reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub portal_problem: Option<String>,
     /// The connection this machine's traffic leaves on: what the top bar
     /// draws in its network glyph. `None` when the device could not be read,
     /// which is not the same as offline.
@@ -1117,6 +1123,24 @@ pub fn ordered(mut networks: Vec<WifiNetwork>) -> Vec<WifiNetwork> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_networks_in_reach_are_connected_first_then_strongest() {
+        let networks = [("Weak", 0_u8), ("Connected", 1), ("Strong", 2)]
+            .into_iter()
+            .map(|(name, signal)| WifiNetwork {
+                name: name.into(),
+                signal,
+                connected: name == "Connected",
+                ..WifiNetwork::default()
+            })
+            .collect();
+        let names: Vec<String> = ordered(networks)
+            .into_iter()
+            .map(|network| network.name)
+            .collect();
+        assert_eq!(names, ["Connected", "Strong", "Weak"]);
+    }
 
     #[test]
     fn the_link_says_which_connection_the_traffic_leaves_on() {

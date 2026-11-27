@@ -374,8 +374,8 @@ impl InstallerApp {
     fn next_check(&self) -> Check {
         let label = match self.step {
             Step::Network
-                if self.network.snapshot.connectivity
-                    == imager_backend::destination::network::ConnectivityState::Full =>
+                if self.network.connectivity
+                    == imager_backend::destination::network_step::Connectivity::Full =>
             {
                 crate::resource::CATALOG.t("imager-installer-continue")
             }
@@ -434,11 +434,10 @@ impl InstallerApp {
             .is_busy()
             .then(|| ("network_busy", t("installer-blocked-network-busy")));
         let select = on_step.clone().or_else(|| busy.clone()).or_else(|| {
-            self.network.snapshot.networks.is_empty().then(|| {
+            self.network.networks.is_empty().then(|| {
                 (
                     "no_networks",
                     self.network
-                        .snapshot
                         .wifi_error
                         .clone()
                         .unwrap_or_else(|| t("installer-blocked-no-networks")),
@@ -513,8 +512,8 @@ impl InstallerApp {
 
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
-        for network in self.network.snapshot.networks.iter().take(5) {
-            let ssid = network.ssid.clone();
+        for network in self.network.networks.iter().take(5) {
+            let ssid = network.name.clone();
             items.push(Item {
                 id: format!("installer.network:{ssid}"),
                 kind: ItemKind::Network,
@@ -529,7 +528,7 @@ impl InstallerApp {
                     bound: vec![("ssid", serde_json::Value::from(ssid.clone()))],
                     prefill: Vec::new(),
                     blocked: self.blocked(&DestinationEffect::SelectNetwork {
-                        ssid: network.ssid.clone(),
+                        ssid: network.name.clone(),
                     }),
                     description: None,
                 }),
@@ -851,20 +850,14 @@ impl InstallerApp {
             }
             DestinationEffect::SelectNetwork { ssid } => {
                 self.require_step(Step::Network)?;
-                if !self
-                    .network
-                    .snapshot
-                    .networks
-                    .iter()
-                    .any(|n| n.ssid == ssid)
-                {
+                if !self.network.networks.iter().any(|n| n.name == ssid) {
                     return Err("That Wi-Fi network is no longer visible; refresh the list".into());
                 }
                 if self.network.selected_ssid.as_deref() != Some(ssid.as_str()) {
                     self.network.selected_ssid = Some(ssid);
                     clear_secret_buffer(&self.wifi_password);
                 }
-                self.network.notice = self.network.snapshot.guidance().to_string();
+                self.network.notice = self.network.guidance().to_string();
                 self.dirty_structure = true;
                 done()
             }
@@ -878,10 +871,10 @@ impl InstallerApp {
                 };
                 let result = self.network.start_connect(password, wake);
                 self.dirty_structure = true;
-                result.map_err(|message| {
-                    self.network.notice = message.to_string();
-                    message.to_string()
-                })?;
+                if let Err(message) = result {
+                    self.network.notice.clone_from(&message);
+                    return Err(message);
+                }
                 done()
             }
             DestinationEffect::SetMethod { method } => {

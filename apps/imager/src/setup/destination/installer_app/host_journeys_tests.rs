@@ -21,7 +21,9 @@ use super::surface_tests::{FakeBackend, KEY};
 use super::*;
 use crate::hosting::testing::TestHost;
 use crate::setup::destination::effects::{REVIEW, STORAGE};
-use imager_backend::destination::network::{NetworkBackend, WifiNetworkInfo, WifiSecurity};
+use imager_backend::destination::network_step::{
+    Change, Connectivity, Device, Network, NetworkStep, Readings, Wifi, WifiNetwork,
+};
 
 type App = TestHost;
 
@@ -63,93 +65,121 @@ pub(crate) fn armed_window() -> Option<InstallerApp> {
     )
 }
 
-/// A Wi-Fi backend that answers a test instead of `NetworkManager`: the
-/// networks it offers, and the password each secured one accepts.
+/// The device a test lends the step instead of this machine's radio.
 struct RecordedNetwork {
     state: Mutex<NetworkState>,
 }
 
 struct NetworkState {
-    connectivity: ConnectivityState,
-    networks: Vec<WifiNetworkInfo>,
+    network: Network,
+    /// Why every change is refused, as a machine without `NetworkManager`.
+    refusal: Option<String>,
     keys: HashMap<String, String>,
     attempts: Vec<(String, Option<String>)>,
 }
 
 impl RecordedNetwork {
-    fn new(connectivity: ConnectivityState) -> Arc<Self> {
+    fn new(connectivity: Connectivity) -> Arc<Self> {
+        Self::over(connectivity, true, Vec::new())
+    }
+
+    fn offering(connectivity: Connectivity, networks: Vec<WifiNetwork>) -> Arc<Self> {
+        Self::over(connectivity, true, networks)
+    }
+
+    /// A machine whose `NetworkManager` does not answer, so no Wi-Fi is had.
+    fn refusing(why: &str) -> Arc<Self> {
+        let recorded = Self::over(Connectivity::Unknown, false, Vec::new());
+        recorded.state().refusal = Some(why.to_owned());
+        recorded
+    }
+
+    /// The machine again: its radio answers, and it is offline.
+    fn now_offline(&self) {
+        let mut state = self.state();
+        state.refusal = None;
+        state.network.connectivity = Connectivity::Offline;
+    }
+
+    fn portal(uri: &str) -> Arc<Self> {
+        let recorded = Self::new(Connectivity::Portal);
+        recorded.state().network.portal_uri = Some(uri.to_owned());
+        recorded
+    }
+
+    fn over(connectivity: Connectivity, wifi: bool, networks: Vec<WifiNetwork>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(NetworkState {
-                connectivity,
-                networks: Vec::new(),
+                network: Network {
+                    wifi: Wifi {
+                        available: wifi,
+                        on: wifi,
+                        networks,
+                        ..Wifi::default()
+                    },
+                    connectivity,
+                    ..Network::default()
+                },
+                refusal: None,
                 keys: HashMap::new(),
                 attempts: Vec::new(),
             }),
         })
     }
 
-    fn offering(connectivity: ConnectivityState, networks: Vec<WifiNetworkInfo>) -> Arc<Self> {
-        let recorded = Self::new(connectivity);
-        recorded.state.lock().unwrap().networks = networks;
-        recorded
+    fn state(&self) -> std::sync::MutexGuard<'_, NetworkState> {
+        self.state.lock().unwrap()
     }
 
     fn accepting(&self, ssid: &str, key: &str) {
-        self.state
-            .lock()
-            .unwrap()
-            .keys
-            .insert(ssid.to_owned(), key.to_owned());
+        self.state().keys.insert(ssid.to_owned(), key.to_owned());
     }
 
     fn attempts(&self) -> Vec<(String, Option<String>)> {
-        self.state.lock().unwrap().attempts.clone()
+        self.state().attempts.clone()
     }
 }
 
-impl NetworkBackend for RecordedNetwork {
-    fn connectivity(&self) -> Result<ConnectivityState, String> {
-        Ok(self.state.lock().unwrap().connectivity)
+impl Device for RecordedNetwork {
+    fn read(&self) -> Readings {
+        Readings {
+            network: self.state().network.clone(),
+            ..Readings::default()
+        }
     }
 
-    fn wifi_networks(&self) -> Result<Vec<WifiNetworkInfo>, String> {
-        Ok(self.state.lock().unwrap().networks.clone())
-    }
-
-    fn captive_portal_uri(&self) -> Result<String, String> {
-        Err("no captive portal".to_owned())
-    }
-
-    fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-        let mut state = self.state.lock().unwrap();
-        state
-            .attempts
-            .push((ssid.to_owned(), password.map(str::to_owned)));
-        if let Some(wanted) = state.keys.get(ssid)
-            && password != Some(wanted.as_str())
+    fn change(&self, change: &Change) -> Result<(), String> {
+        let mut state = self.state();
+        if let Some(refusal) = &state.refusal {
+            return Err(refusal.clone());
+        }
+        if let Change::Join {
+            network, password, ..
+        } = change
         {
-            return Err("Connection activation failed: the password was not accepted".to_owned());
+            state.attempts.push((network.clone(), password.clone()));
+            if let Some(wanted) = state.keys.get(network)
+                && password.as_deref() != Some(wanted.as_str())
+            {
+                return Err(
+                    "Connection activation failed: the password was not accepted".to_owned(),
+                );
+            }
+            for row in &mut state.network.wifi.networks {
+                row.connected = &row.name == network;
+            }
+            state.network.connectivity = Connectivity::Full;
         }
-        for network in &mut state.networks {
-            network.connected = network.ssid == ssid;
-        }
-        state.connectivity = ConnectivityState::Full;
         Ok(())
     }
 }
 
-fn wifi(ssid: &str, secure: bool, signal: u8) -> WifiNetworkInfo {
-    WifiNetworkInfo {
-        ssid: ssid.to_owned(),
+fn wifi(ssid: &str, secure: bool, signal: u8) -> WifiNetwork {
+    WifiNetwork {
+        name: ssid.to_owned(),
         signal,
         secure,
-        security: if secure {
-            WifiSecurity::Wpa2
-        } else {
-            WifiSecurity::Open
-        },
-        connected: false,
-        known: false,
+        ..WifiNetwork::default()
     }
 }
 
@@ -157,10 +187,10 @@ fn wifi(ssid: &str, secure: bool, signal: u8) -> WifiNetworkInfo {
 /// disks and install helpers, and `network` in place of its radio.
 fn installer(backend: Arc<FakeBackend>, network: Arc<RecordedNetwork>) -> InstallerApp {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend);
-    app.network = InstallerNetwork::for_test(network);
     // The network worker and the install helper report through this mailbox;
     // the test's frames take what it holds.
     app.mailbox = Some(Mailbox::new(|| {}));
+    app.network = NetworkStep::for_test(network, app.network_wake());
     // No TPM here, so the secrets are passphrases the test can type.
     app.tpm2 = false;
     app.secure_boot = false;
@@ -308,8 +338,8 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
     let (services, recorder) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&services);
     let backend = FakeBackend::new();
-    let network = RecordedNetwork::new(ConnectivityState::Offline);
-    let mut app = opened(installer(backend.clone(), network));
+    let network = RecordedNetwork::refusing("NetworkManager is not running");
+    let mut app = opened(installer(backend.clone(), network.clone()));
 
     assert_eq!(step(&mut app), "keyboard");
     // A step's own effects are refused before the installer reaches it.
@@ -335,7 +365,14 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
 
     app.effect(&DestinationEffect::Next).unwrap();
     assert_eq!(step(&mut app), "network");
-    // The step scans as it opens; a refresh is offered once that answer is in.
+    // No `NetworkManager` here: the step says why there is no Wi-Fi, and the
+    // install goes on without one.
+    wait_for_text(&mut app, "NetworkManager is not running");
+    wait_for_text(&mut app, "You can still install Tilo offline");
+    assert_eq!(status(&mut app)["network"]["networks"], json!([]));
+    // The machine comes back, offline: the radio answers, nothing is in reach.
+    network.now_offline();
+    app.effect(&DestinationEffect::RefreshNetworks).unwrap();
     wait_for_text(&mut app, "install completely offline");
     app.effect(&DestinationEffect::RefreshNetworks).unwrap();
     wait_until_gone(
@@ -528,6 +565,28 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
 }
 
 #[test]
+fn a_captive_portal_says_where_to_sign_in() {
+    let backend = FakeBackend::new();
+    let network = RecordedNetwork::portal("http://nm-check.example/");
+    let mut app = opened(installer(backend, network));
+
+    app.effect(&DestinationEffect::SetLayout {
+        layout: "English (US)".into(),
+    })
+    .unwrap();
+    app.effect(&DestinationEffect::Next).unwrap();
+    assert_eq!(step(&mut app), "network");
+    wait_for_text(&mut app, "http://nm-check.example/");
+    wait_for_text(&mut app, "sign-in page");
+    assert!(
+        status(&mut app)["network"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Sign-in required")
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one person's install, read as the steps they take"
@@ -535,7 +594,7 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
 fn an_online_install_joins_wifi() {
     let backend = FakeBackend::new();
     let network = RecordedNetwork::offering(
-        ConnectivityState::Full,
+        Connectivity::Full,
         vec![wifi("Cafe", true, 4), wifi("Library", false, 2)],
     );
     network.accepting("Cafe", "darjeeling-and-biscuits");
@@ -635,7 +694,7 @@ fn an_install_beside_an_existing_system_takes_the_reviewed_free_space() {
     let disk = super::tests::disk_with_two_guided_extents();
     let device = disk.name.clone();
     let backend = FakeBackend::with_disks(vec![disk]);
-    let network = RecordedNetwork::new(ConnectivityState::Offline);
+    let network = RecordedNetwork::new(Connectivity::Offline);
     let mut app = opened(installer(backend.clone(), network));
 
     app.effect(&DestinationEffect::SetLayout {

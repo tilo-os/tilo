@@ -1685,6 +1685,30 @@ fn a_scan_that_fails_says_why_and_a_retry_clears_it() {
     );
 }
 
+/// The service as the installer on the live medium runs it, before any person
+/// or workspace exists: it drives the device, and keeps no policy there is no
+/// settings document for.
+#[test]
+fn an_installer_drives_the_service_without_a_persons_settings() {
+    let fake = Fake::laptop();
+    let mut service = Connectivity::unmanaged(fake, None).expect("the worker starts");
+    service.settle();
+    assert_eq!(
+        read(&service, NETWORK)["ask-before-open-networks"],
+        json!(false)
+    );
+    assert!(matches!(
+        service
+            .invoke(
+                NETWORK,
+                "set-ask-before-open-networks",
+                &arguments(json!({ "on": true }))
+            )
+            .expect_err("there is no settings document to write"),
+        ApiError::Failed(_)
+    ));
+}
+
 /// A wrong password is said on the row of the network it was typed for, and typing the right one
 /// joins: no other network carries the refusal.
 #[test]
