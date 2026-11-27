@@ -14720,6 +14720,7 @@ dependencies = [
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-test-env",
+ "tilo-workspace-records",
  "tracing",
  "url",
  "uuid",
@@ -19721,7 +19722,6 @@ dependencies = [
  "tempfile",
  "test-server",
  "thiserror 2.0.21",
- "tilo-accounts",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -22151,8 +22151,11 @@ dependencies = [
  "tilo-action-policy",
  "tilo-actions",
  "tilo-app-id",
+ "tilo-clock",
  "tilo-resource",
  "tilo-surface-compile",
+ "url",
+ "uuid",
  "workspace-hack",
 ]
 

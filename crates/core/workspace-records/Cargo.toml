@@ -20,6 +20,11 @@ serde.workspace = true
 serde_json.workspace = true
 # A search's moments: a day or an offset moment, read and written back.
 jiff.workspace = true
+# A vault entry's own id is random, and the places it belongs to are URLs.
+uuid.workspace = true
+url.workspace = true
+# When an entry was added, changed and last used.
+tilo-clock = { path = "../../platform/tilo-clock" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

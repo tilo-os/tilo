@@ -40,7 +40,6 @@ pub const MAX_SECRET_BYTES: usize = 16 * 1024;
 /// The most places one item belongs to: a mail sign-in names two servers.
 pub const MAX_PLACES: usize = 8;
 const MAX_USERNAME_BYTES: usize = 320;
-const MAX_PLACE_BYTES: usize = 2_048;
 /// The shortest seed a code generator is given: 80 bits in base32.
 const MIN_SEED_CHARS: usize = 16;
 
@@ -74,187 +73,9 @@ pub enum ItemKind {
     Wifi,
 }
 
-/// Why an item was not kept, listed or used.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ItemError {
-    /// No item is kept under that id. Another person's item is the same
-    /// answer: their vault is not this one.
-    NotFound,
-    /// The item belongs somewhere else than where it was asked for.
-    WrongPlace,
-    /// The item is not the kind of thing the use needs.
-    WrongKind,
-    /// A code generator's seed was asked for: it never leaves the vault.
-    NeverReleased,
-    /// The text names no place an item can belong to.
-    InvalidPlace,
-    /// The item is not one to keep, for the reason given.
-    Invalid(&'static str),
-    /// The kept item does not read.
-    Damaged,
-    /// The vault could not be read or written.
-    Storage(String),
-}
-
-impl std::fmt::Display for ItemError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => formatter.write_str("That item is not kept here"),
-            Self::WrongPlace => formatter.write_str("That item belongs somewhere else"),
-            Self::WrongKind => {
-                formatter.write_str("That item is not the kind of thing this needs")
-            }
-            Self::NeverReleased => {
-                formatter.write_str("A code generator gives codes, never its seed")
-            }
-            Self::InvalidPlace => formatter.write_str(
-                "Where an item belongs is a web address such as https://example.com, or a server such as imap://mail.example.com:993",
-            ),
-            Self::Invalid(reason) => formatter.write_str(reason),
-            Self::Damaged => formatter.write_str("That item is damaged and cannot be used"),
-            Self::Storage(reason) => write!(formatter, "The vault is unavailable: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for ItemError {}
-
-/// Where an item belongs, in the one spelling places are compared in: a
-/// site's or a service's origin (`https://example.com`), or a server by
-/// scheme, host and port (`imap://mail.example.com:993`,
-/// `ssh://git.example.com:22`).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Place(String);
-
-impl Place {
-    /// The place `input` names. A web address is cut to its origin, so the
-    /// address of a sign-in page names its site. A mail server names its
-    /// port; an ssh server without one is on port 22.
-    pub fn parse(input: &str) -> Result<Self, ItemError> {
-        let text = input.trim();
-        if text.is_empty()
-            || text.len() > MAX_PLACE_BYTES
-            || text
-                .chars()
-                .any(|character| character.is_control() || character.is_whitespace())
-        {
-            return Err(ItemError::InvalidPlace);
-        }
-        let (scheme, rest) = text.split_once("://").ok_or(ItemError::InvalidPlace)?;
-        let scheme = scheme.to_ascii_lowercase();
-        match scheme.as_str() {
-            "https" | "http" => Self::origin(text),
-            "imap" | "smtp" => Self::server_named(&scheme, rest, None),
-            "ssh" => Self::server_named(&scheme, rest, Some(22)),
-            _ => Err(ItemError::InvalidPlace),
-        }
-    }
-
-    /// The server `host` answers at on `port`, spoken to as `scheme`
-    /// (`imap`, `smtp`, `ssh`).
-    pub fn server(scheme: &str, host: &str, port: u16) -> Result<Self, ItemError> {
-        let host = host.trim();
-        if host.contains(':') && !host.starts_with('[') {
-            Self::parse(&format!("{scheme}://[{host}]:{port}"))
-        } else {
-            Self::parse(&format!("{scheme}://{host}:{port}"))
-        }
-    }
-
-    fn origin(text: &str) -> Result<Self, ItemError> {
-        let parsed = url::Url::parse(text).map_err(|_| ItemError::InvalidPlace)?;
-        if parsed.host_str().is_none_or(str::is_empty)
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-        {
-            return Err(ItemError::InvalidPlace);
-        }
-        Ok(Self(parsed.origin().ascii_serialization()))
-    }
-
-    fn server_named(
-        scheme: &str,
-        rest: &str,
-        default_port: Option<u16>,
-    ) -> Result<Self, ItemError> {
-        let rest = rest.strip_suffix('/').unwrap_or(rest);
-        if rest.contains(['/', '@', '?', '#']) {
-            return Err(ItemError::InvalidPlace);
-        }
-        let (host, port) = split_host_port(rest).ok_or(ItemError::InvalidPlace)?;
-        if host.is_empty() {
-            return Err(ItemError::InvalidPlace);
-        }
-        let host = url::Host::parse(&host).map_err(|_| ItemError::InvalidPlace)?;
-        let port = match port {
-            Some(port) if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) => {
-                port.parse::<u16>()
-                    .ok()
-                    .filter(|port| *port != 0)
-                    .ok_or(ItemError::InvalidPlace)?
-            }
-            Some(_) => return Err(ItemError::InvalidPlace),
-            None => default_port.ok_or(ItemError::InvalidPlace)?,
-        };
-        Ok(Self(format!("{scheme}://{host}:{port}")))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// `https`, `http`, `imap`, `smtp` or `ssh`.
-    #[must_use]
-    pub fn scheme(&self) -> &str {
-        self.0.split_once("://").map_or("", |(scheme, _)| scheme)
-    }
-
-    /// Whether this is a site's or a service's origin, not a server's.
-    #[must_use]
-    pub fn is_web(&self) -> bool {
-        matches!(self.scheme(), "https" | "http")
-    }
-}
-
-impl std::fmt::Display for Place {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for Place {
-    type Error = ItemError;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        Self::parse(&text)
-    }
-}
-
-impl From<Place> for String {
-    fn from(place: Place) -> Self {
-        place.0
-    }
-}
-
-/// The host of `rest` and the port it names, when it names one. An IPv6
-/// address is in brackets, as in a URL.
-fn split_host_port(rest: &str) -> Option<(String, Option<&str>)> {
-    if let Some(after) = rest.strip_prefix('[') {
-        let (inside, tail) = after.split_once(']')?;
-        let port = if tail.is_empty() {
-            None
-        } else {
-            Some(tail.strip_prefix(':')?)
-        };
-        Some((format!("[{inside}]"), port))
-    } else if let Some((host, port)) = rest.rsplit_once(':') {
-        Some((host.to_owned(), Some(port)))
-    } else {
-        Some((rest.to_owned(), None))
-    }
-}
+pub use tilo_workspace_records::vault_items::{
+    Allowance, ItemError, Place, UseRecord, VaultChange,
+};
 
 /// The name of one item: what a reference to it carries. It is random, so
 /// holding one says the holder was handed it, and it is not the secret.
@@ -488,52 +309,6 @@ impl std::fmt::Debug for Released {
             .debug_struct("Released")
             .field("kind", &self.kind)
             .finish_non_exhaustive()
-    }
-}
-
-/// One time an item was handed to something that signs in: when, where and
-/// for whom. Never what was handed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UseRecord {
-    /// When, in seconds since the Unix epoch.
-    pub at_unix: u64,
-    /// The places it was used at.
-    pub places: Vec<Place>,
-    /// Who it was handed out for: the agent that named it, by the name its
-    /// person knows it under, or empty for the person themselves.
-    pub by: String,
-    /// What it was used for: the use's own word, as a leave names it
-    /// (the word a grant to always use it names). Empty where whoever took it said none.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub using: String,
-    /// What was done with it there, in one line: a web call's method and
-    /// path. Never the item's secret, never what was sent, and nothing that
-    /// follows a `?` or a `#` in an address.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub what: String,
-    /// How its person allowed it, where whoever took it said so.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed: Option<Allowance>,
-}
-
-/// How a use came to be allowed by the item's person.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Allowance {
-    /// They were asked and allowed this one use.
-    Once,
-    /// A grant of theirs to always allow it covered it.
-    Always,
-}
-
-impl Allowance {
-    /// The word a person reads it by.
-    #[must_use]
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Once => "once",
-            Self::Always => "always",
-        }
     }
 }
 
@@ -906,30 +681,6 @@ fn canonical_seed(text: &str) -> Option<String> {
             .chars()
             .all(|character| matches!(character, 'A'..='Z' | '2'..='7')))
     .then(|| seed.to_owned())
-}
-
-/// A change [`VaultItems`] made to the vault's entries, for whoever keeps the vault to write:
-/// the entry kept, the entry forgotten, or the uses of an entry. A use changes only an entry's
-/// uses, never the entry, so a use written while a member edits the entry loses neither.
-#[derive(Clone, PartialEq, Eq)]
-pub enum VaultChange {
-    Keep(SecretItem),
-    Forget(crate::SecretId),
-    Uses(crate::SecretId, Vec<UseRecord>),
-}
-
-impl std::fmt::Debug for VaultChange {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Keep(item) => formatter.debug_tuple("Keep").field(&item.id).finish(),
-            Self::Forget(id) => formatter.debug_tuple("Forget").field(id).finish(),
-            Self::Uses(id, uses) => formatter
-                .debug_tuple("Uses")
-                .field(id)
-                .field(&uses.len())
-                .finish(),
-        }
-    }
 }
 
 /// The items of a workspace's vault: its entries, each with the uses kept beside it, read as

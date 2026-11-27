@@ -50,7 +50,6 @@ test = true
 required-features = ["test-support"]
 
 [dependencies]
-accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 futures = { workspace = true, default-features = true }
 if-addrs = { version = "0.15.0", default-features = false }
 iroh-base.workspace = true

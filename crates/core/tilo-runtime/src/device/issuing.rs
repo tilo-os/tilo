@@ -29,8 +29,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, Weak};
 
-use accounts::vault_items::VaultChange;
-use accounts::{SecretId, SecretItem, SecretItemKind};
 use collab_types::signer::DeviceSigner;
 use futures::future::BoxFuture;
 use tilo_device_identity::login::{
@@ -41,6 +39,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::new_device::{Keeping, ServedTicket};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, StatementSigner};
+use tilo_workspace_records::vault_items::{SecretId, SecretItem, SecretItemKind, VaultChange};
 
 use tilo_workspace_service::workspaces::{Workspaces, person_workspace, servers};
 

@@ -9,132 +9,15 @@
     reason = "cryptographic sampling and expiry arithmetic are bounded; public errors are represented by BrokerError"
 )]
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use getrandom::{SysRng, rand_core::TryRng as _};
-use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use zeroize::Zeroizing;
 
 use crate::{AccountId, Saved, Secret, SecretVault, VaultBackend};
 
 const ITEM_PREFIX: &str = "tilo-secret-item:";
-const MAX_ORIGIN_BYTES: usize = 2_048;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretId(pub String);
-
-impl SecretId {
-    /// A new entry's id: random, and spelled as a reference to a vault item names it
-    /// ([`is_entry_id`]).
-    pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4().simple().to_string())
-    }
-}
-
-/// Whether `text` is an entry's id: 32 lowercase hexadecimal digits, or an older entry's, the
-/// same spelled as a UUID with its four hyphens. What names a vault entry from outside it (a
-/// reference to a vault item) names it by this id.
-#[must_use]
-pub fn is_entry_id(text: &str) -> bool {
-    let hex = |part: &str| {
-        part.bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    };
-    match text.len() {
-        32 => hex(text),
-        36 => {
-            let parts: Vec<&str> = text.split('-').collect();
-            parts.iter().map(|part| part.len()).eq([8, 4, 4, 4, 12])
-                && parts.iter().all(|part| hex(part))
-        }
-        _ => false,
-    }
-}
-
-impl Default for SecretId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SecretItemKind {
-    #[default]
-    Login,
-    ApiKey,
-    SecureNote,
-    Wifi,
-    Other,
-}
-
-/// One encrypted vault item. Even title, username, URLs and tags stay inside
-/// the authenticated ciphertext because this metadata is often sensitive.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SecretItem {
-    pub id: SecretId,
-    pub kind: SecretItemKind,
-    pub title: String,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub origins: BTreeSet<String>,
-    #[serde(default)]
-    pub notes: String,
-    #[serde(default)]
-    pub fields: BTreeMap<String, String>,
-    #[serde(default)]
-    pub tags: BTreeSet<String>,
-    pub created_unix: u64,
-    pub updated_unix: u64,
-}
-
-impl std::fmt::Debug for SecretItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretItem")
-            .field("id", &self.id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl SecretItem {
-    /// A list of items from its JSON form (a backup's), read by code the
-    /// runtime holds once rather than every app that reads such a list.
-    #[inline(never)]
-    pub fn list_from_json(bytes: &[u8]) -> serde_json::Result<Vec<Self>> {
-        serde_json::from_slice(bytes)
-    }
-
-    pub fn login(
-        title: impl Into<String>,
-        username: impl Into<String>,
-        password: impl Into<String>,
-    ) -> Self {
-        let now = unix_now();
-        Self {
-            id: SecretId::new(),
-            kind: SecretItemKind::Login,
-            title: title.into(),
-            username: username.into(),
-            password: password.into(),
-            origins: BTreeSet::new(),
-            notes: String::new(),
-            fields: BTreeMap::new(),
-            tags: BTreeSet::new(),
-            created_unix: now,
-            updated_unix: now,
-        }
-    }
-
-    pub fn add_origin(&mut self, origin: &str) -> Result<(), BrokerError> {
-        self.origins.insert(canonical_origin(origin)?);
-        Ok(())
-    }
-}
+pub use tilo_workspace_records::vault_items::{SecretId, SecretItem, SecretItemKind};
 
 pub struct SecretStore {
     vault: SecretVault,
@@ -365,25 +248,6 @@ fn random_index(bound: usize) -> Result<usize, BrokerError> {
     }
 }
 
-pub(crate) fn canonical_origin(input: &str) -> Result<String, BrokerError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty()
-        || trimmed.len() > MAX_ORIGIN_BYTES
-        || trimmed.chars().any(char::is_control)
-    {
-        return Err(BrokerError::InvalidOrigin);
-    }
-    let parsed = url::Url::parse(trimmed).map_err(|_| BrokerError::InvalidOrigin)?;
-    if !matches!(parsed.scheme(), "https" | "http")
-        || parsed.host_str().is_none()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-    {
-        return Err(BrokerError::InvalidOrigin);
-    }
-    Ok(parsed.origin().ascii_serialization())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,26 +332,6 @@ mod tests {
             "ada"
         );
         std::fs::remove_dir_all(root).ok();
-    }
-
-    #[test]
-    fn only_canonical_origins_are_kept() {
-        assert_eq!(
-            canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
-            "https://xn--bcher-kva.example"
-        );
-        assert_eq!(
-            canonical_origin("http://example.com:8080/a").unwrap(),
-            "http://example.com:8080"
-        );
-        for invalid in [
-            "https://user:password@example.com",
-            "https://example.com\nspoofed",
-            "file:///etc/passwd",
-            "https://",
-        ] {
-            assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
-        }
     }
 
     #[test]

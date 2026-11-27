@@ -68,8 +68,8 @@ pub mod secrets;
 pub mod typed_for;
 pub use secrets::{
     BrokerError, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind, SecretStore,
-    is_entry_id,
 };
+pub use tilo_workspace_records::vault_items::is_entry_id;
 #[cfg(feature = "person")]
 pub mod calendar;
 #[cfg(feature = "person")]

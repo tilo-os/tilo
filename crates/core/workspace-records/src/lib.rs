@@ -17,3 +17,5 @@ pub mod models;
 pub mod search;
 /// The workspace's vault: its actions, declared once, and what they read as.
 pub mod vault;
+/// The vault's entries, the places each belongs to and the changes its keeper writes.
+pub mod vault_items;
