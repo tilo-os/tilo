@@ -1378,39 +1378,49 @@ class Devices:
         # The device's own daemon, as a device's service is: it serves the profile named in its
         # environment, under this login's runtime directory, and spends the ticket at its start.
         account = real_apps.session_account()
-        real_apps.hand_over(state, account)
-        daemon_env = {**os.environ, **real_apps.account_env(account, state),
-                      "TILO_RUNTIME_PROFILE": str(state / "profile"),
-                      "CREDENTIALS_DIRECTORY": str(credentials),
-                      "TILO_APPS_DATA_DIR": str(state / "apps"),
-                      "TILO_APPS_SYSTEM_DIR": str(state / "system"),
-                      "TILO_RUNTIME_BUNDLE_DIR": str(state / "apps/runtimes"),
-                      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
-                          str(state / "keys/runtime-publishers.txt"),
-                      "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
-        daemon_log = (logs / f"device-daemon-{tag}.log").open("w")
-        daemon = subprocess.Popen(
-            [*as_account(account), str(BUILD / "bin/tilo-runtime")],
-            stdout=daemon_log, stderr=subprocess.STDOUT, env=daemon_env,
-            start_new_session=True)
-        self.daemons.append(daemon)
-        socket = profile_socket(daemon_env["XDG_RUNTIME_DIR"], state / "profile")
+        session_env = {**(env or {}),
+                       "TILO_SESSION_MACHINE_DAEMON": "1",
+                       "TILO_RUNTIME_PROFILE": str(state / "profile")}
+        if account is None:
+            # No account of its own to run a daemon as: the session starts the daemon it would
+            # start on a developer's machine, over its own state.
+            session_env.pop("TILO_SESSION_MACHINE_DAEMON")
+            session_env.pop("TILO_RUNTIME_PROFILE")
+        else:
+            real_apps.hand_over(state, account)
+        if account is not None:
+            daemon_env = {**os.environ, **(env or {}),
+                          **real_apps.account_env(account, state),
+                          "TILO_RUNTIME_PROFILE": str(state / "profile"),
+                          "CREDENTIALS_DIRECTORY": str(credentials),
+                          "TILO_APPS_DATA_DIR": str(state / "apps"),
+                          "TILO_APPS_SYSTEM_DIR": str(state / "system"),
+                          "TILO_RUNTIME_BUNDLE_DIR": str(state / "apps/runtimes"),
+                          "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
+                              str(state / "keys/runtime-publishers.txt"),
+                          "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+            daemon_log = (logs / f"device-daemon-{tag}.log").open("w")
+            daemon = subprocess.Popen(
+                [*as_account(account), str(BUILD / "bin/tilo-runtime")],
+                stdout=daemon_log, stderr=subprocess.STDOUT, env=daemon_env,
+                start_new_session=True)
+            self.daemons.append(daemon)
+            socket = profile_socket(daemon_env["XDG_RUNTIME_DIR"], state / "profile")
 
-        def daemon_died():
-            said = ""
-            with contextlib.suppress(OSError):
-                said = (logs / f"device-daemon-{tag}.log").read_text(errors="replace")[-1200:]
-            raise Failed(f"the {name}'s device daemon ended ({daemon.returncode}): {said}")
+            def daemon_died():
+                said = ""
+                with contextlib.suppress(OSError):
+                    said = (logs / f"device-daemon-{tag}.log").read_text(
+                        errors="replace")[-1200:]
+                raise Failed(
+                    f"the {name}'s device daemon ended ({daemon.returncode}): {said}")
 
-        until(f"the {name}'s device daemon",
-              lambda: socket.exists()
-              or (daemon.poll() is not None and daemon_died()), 120, 0.1)
+            until(f"the {name}'s device daemon",
+                  lambda: socket.exists()
+                  or (daemon.poll() is not None and daemon_died()), 120, 0.1)
         session = Session(state)
         session.start(apps=apps, fresh=True, out=logs, tag=tag, tapps=tapps,
-                      session_args=session_args,
-                      env={**(env or {}),
-                           "TILO_SESSION_MACHINE_DAEMON": "1",
-                           "TILO_RUNTIME_PROFILE": str(state / "profile")})
+                      session_args=session_args, env=session_env)
         began = self.lap(name, "start", began)
         root = "identity/user-identity/pubkey.bin"
         if (state / root).read_bytes() != (first.state / root).read_bytes():
