@@ -82,6 +82,96 @@ use web_time::SystemTime;
 /// answers the other's writes ([`Answered`]).
 pub use tilo_server_protocol::transport::DIRECT_ALPN;
 
+/// The frame bytes a device's links carried, each way, as
+/// [`DirectSync::traffic`] answers them: what a test reads to measure what a
+/// link sends on a reconnect, control frames and content included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traffic {
+    /// The bytes its links wrote.
+    pub sent: u64,
+    /// The bytes its links read.
+    pub received: u64,
+}
+
+/// Where a device's links count the bytes they write and read ([`Traffic`]).
+#[derive(Clone, Default)]
+struct Counters {
+    sent: Arc<std::sync::atomic::AtomicU64>,
+    received: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Counters {
+    fn adding(&self, sent: bool, bytes: usize) {
+        let counter = if sent { &self.sent } else { &self.received };
+        counter.fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn traffic(&self) -> Traffic {
+        let read = |counter: &std::sync::atomic::AtomicU64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        Traffic {
+            sent: read(&self.sent),
+            received: read(&self.received),
+        }
+    }
+}
+
+/// A stream that counts the bytes written through it into [`Counters`].
+struct CountedWrite<W> {
+    inner: W,
+    counters: Counters,
+}
+
+impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for CountedWrite<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let poll = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(written)) = &poll {
+            self.counters.adding(true, *written);
+        }
+        poll
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// A stream that counts the bytes read through it into [`Counters`].
+struct CountedRead<R> {
+    inner: R,
+    counters: Counters,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountedRead<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &poll {
+            self.counters.adding(false, buf.filled().len() - before);
+        }
+        poll
+    }
+}
+
 /// What the device at a link's other end made of one of this device's own
 /// writes, named by the hash of the write's frame as the writer sent it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1065,6 +1155,7 @@ impl Dialed {
 async fn answering(
     transport: &dyn Transport,
     answers: bool,
+    traffic: Counters,
 ) -> Result<
     (
         Option<tokio::sync::mpsc::UnboundedSender<Answered>>,
@@ -1077,6 +1168,10 @@ async fn answering(
         return Ok((None, Box::pin(answer_all(None, answered))));
     }
     let stream = open_stream(transport, ANSWERS_STREAM).await?;
+    let stream: StreamSend = Box::new(CountedWrite {
+        inner: stream,
+        counters: traffic,
+    });
     Ok((
         Some(answering),
         Box::pin(answer_all(Some(stream), answered)),
@@ -1191,6 +1286,8 @@ struct Inner {
     /// The records this device asks the one it dialled to open
     /// ([`DirectSync::open_record`]), while the link runs.
     opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
+    /// The frame bytes this device's links carried, each way ([`Traffic`]).
+    traffic: Counters,
     /// Answers a test loses, as a link that ended before they came
     /// ([`DirectSync::lose_answers`]).
     #[cfg(feature = "test-support")]
@@ -1281,6 +1378,7 @@ impl DirectSync {
             opens: false,
             certificate: None,
             opening: Arc::default(),
+            traffic: Counters::default(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::default(),
         }))
@@ -1317,6 +1415,7 @@ impl DirectSync {
             opens: self.0.opens,
             certificate: self.0.certificate.clone(),
             opening: Arc::clone(&self.0.opening),
+            traffic: self.0.traffic.clone(),
             #[cfg(feature = "test-support")]
             lost_answers: Arc::clone(&self.0.lost_answers),
         }
@@ -2566,6 +2665,15 @@ impl DirectSync {
         self.0.signer.device_public_key()
     }
 
+    /// The frame bytes this device's links carried so far, each way
+    /// ([`Traffic`]): what they wrote and what they read. Summed over every
+    /// link this device ran since it started, a test reads the difference
+    /// across one link's life to measure what it cost.
+    #[must_use]
+    pub fn traffic(&self) -> Traffic {
+        self.0.traffic.traffic()
+    }
+
     /// Serve the link a device dialled this one: its first frame names the
     /// workspace.
     ///
@@ -2665,7 +2773,20 @@ impl DirectSync {
     ) -> Result<(), String> {
         let dialing = dialled.is_some();
         let remote = dialled.unwrap_or_else(|| transport.remote());
-        let mut control = control;
+        // What this link writes and reads is counted as it goes, for
+        // [`DirectSync::traffic`]: both of its control stream's ways, and each
+        // one-way stream it opens or takes.
+        let traffic = self.0.traffic.clone();
+        let mut control = Control {
+            send: Box::new(CountedWrite {
+                inner: control.send,
+                counters: traffic.clone(),
+            }),
+            recv: Box::new(CountedRead {
+                inner: control.recv,
+                counters: traffic.clone(),
+            }),
+        };
         // Counted while it runs: of two links between this device and `remote`, the one the
         // greater device key dialled ends once the other is up ([`PairLinks`]).
         let _pair = PairLink::new(&self.0.pair_links, remote, dialing);
@@ -2746,14 +2867,23 @@ impl DirectSync {
             "a direct link starts"
         );
         let send = open_stream(transport, FRAMES_STREAM).await?;
+        let send: StreamSend = Box::new(CountedWrite {
+            inner: send,
+            counters: traffic.clone(),
+        });
         // Both ends answer each other's writes, except a device that takes the
         // records only as it opens them: it keeps no copy of the workspace, so
         // its taking a write in is no write reaching the workspace.
-        let (answering, answer_all) = answering(transport, !(dialing && self.0.opens)).await?;
+        let (answering, answer_all) =
+            answering(transport, !(dialing && self.0.opens), traffic.clone()).await?;
         // Content goes on a stream of its own, from a queue that waits when
         // full: what a bulk transfer sends never holds back a record's write,
         // and none of it is dropped.
         let content_send = open_stream(transport, CONTENT_STREAM).await?;
+        let content_send: StreamSend = Box::new(CountedWrite {
+            inner: content_send,
+            counters: traffic.clone(),
+        });
         let (content_link, content_queue) = ContentLink::new(remote);
         let _content_link = ContentLinked::new(self, content_link);
         let content_out = Box::pin(write_content(self, content_send, remote, content_queue));
@@ -3663,6 +3793,7 @@ impl DirectSync {
         let sorting = Box::pin(sort_streams(
             transport,
             [frames_stream, answers_stream, content_stream],
+            self.0.traffic.clone(),
         ));
         // Frames are taken off the stream as they are admitted; only the
         // app writes held for the history pile up while it is read.
@@ -4837,6 +4968,7 @@ async fn open_stream(transport: &dyn Transport, kind: u8) -> Result<StreamSend, 
 async fn sort_streams(
     transport: &dyn Transport,
     slots: [tokio::sync::oneshot::Sender<StreamRecv>; 3],
+    traffic: Counters,
 ) -> Result<(), String> {
     use tokio::io::AsyncReadExt as _;
     let mut slots = slots.map(Some);
@@ -4850,6 +4982,10 @@ async fn sort_streams(
             .get_mut(usize::from(kind[0]))
             .and_then(Option::take)
             .ok_or("the other device opened a stream the link does not carry")?;
+        let recv: StreamRecv = Box::new(CountedRead {
+            inner: recv,
+            counters: traffic.clone(),
+        });
         let _ = slot.send(recv);
     }
     std::future::pending().await
