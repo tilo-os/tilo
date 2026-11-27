@@ -144,25 +144,8 @@ impl SessionAdmission {
     }
 
     /// Compare the ownership this run was admitted with to the workspace's now.
-    ///
-    /// Only a comparison that was actually made can end the run: material
-    /// that could not be read (a full disk, a busy identity store) says
-    /// nothing about ownership, so that call is refused as retryable and the
-    /// run keeps its lease. Ending it there would kill the person's whole
-    /// agent session over one transient failure.
     fn check_original_ownership(&self, workspaces: &Workspaces) -> Result<(), Refusal> {
-        let pinned = match self.current(workspaces) {
-            Ok(pinned) => pinned,
-            Err(reason) => {
-                tracing::warn!(
-                    workspace = %self.workspace,
-                    %reason,
-                    "an admitted run's ownership could not be read; refusing this call, keeping the run"
-                );
-                return Err(Refusal::Unavailable { reason });
-            }
-        };
-        if pinned != self.pinned {
+        if self.current(workspaces) != self.pinned {
             tracing::warn!(
                 workspace = %self.workspace,
                 "an admitted run's workspace or device identity changed; ending the run"
@@ -174,18 +157,16 @@ impl SessionAdmission {
     }
 
     /// What `workspace`'s ownership is now: the member copy's material, or a
-    /// workspace hosted here.
-    fn current(&self, workspaces: &Workspaces) -> Result<Pinned, String> {
-        Ok(match workspaces.member_material(self.workspace) {
-            Some(material) => Pinned::Member {
+    /// workspace hosted here. A run admitted to a member copy whose copy is gone
+    /// (this device holds the workspace itself now, or no longer has it) is
+    /// ended, and the next run is admitted to what this device has now.
+    fn current(&self, workspaces: &Workspaces) -> Pinned {
+        workspaces
+            .member_material(self.workspace)
+            .map_or(Pinned::Own, |material| Pinned::Member {
                 hint: material.hint,
                 continuity: material.continuity,
-            },
-            // A run admitted to a member copy whose copy is gone is ended:
-            // its material is never an owned workspace's.
-            None if matches!(self.pinned, Pinned::Own) => Pinned::Own,
-            None => return Err("the member copy this run was admitted to is gone".into()),
-        })
+            })
     }
 }
 
@@ -369,9 +350,7 @@ impl Workspaces {
         for admission in admissions {
             // An execution may end normally after the snapshot. Its lifetime
             // says nothing about the workspace's ownership, so only the pinned
-            // material is compared; a retired run stays retired. Ownership
-            // that could not be read is retried by the next pass, as the
-            // announced change stays pending.
+            // material is compared; a retired run stays retired.
             if admission.check_original_ownership(self) == Err(Refusal::Ended) {
                 result = Err(Refusal::Ended.message());
             }
