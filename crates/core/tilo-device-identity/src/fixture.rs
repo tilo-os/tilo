@@ -5,22 +5,64 @@
 //! through it ([`DeviceActions::here`]): nothing else opens the key. A test whose machine has no
 //! real daemon starts this one: it takes the machine's key, and answers the device actions that
 //! need nothing but the key, at the endpoint the machine's programs resolve.
+//!
+//! Setup asks a daemon more than that: who the account is to it (`account#who`), founding a person
+//! on a computer that has none, and logging it in with a ticket; [`DeviceDaemon::logging_in`]
+//! answers those as a daemon does.
 
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::Value;
+use tilo_user_identity::cert::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::IdentityPaths;
-use crate::login::daemon::DeviceActions;
+use crate::login::daemon::{DeviceActions, home_answer};
+use crate::login::{Device, Place, file_certificate};
 use crate::persist::{self, DeviceKeyLock};
 use tilo_files::native::socket::{self, Listener};
 
 /// The action [`DeviceActions::device_key`] asks: what this device is.
 const INFO: &str = "info";
+
+/// What the native endpoint is asked for who the asking account is.
+const WHO: &str = "account#who";
+
+/// The workspace of the person a fixture login enters, as its device names it.
+const WORKSPACE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+/// The person a fixture login's computer belonged to before the login, as `devices#found` makes
+/// one: a person of the computer's own, whom the login replaces.
+const FOUNDED: [u8; 32] = [0x17; 32];
+/// The person whose root a fixture login's device printed the code: it certifies the computer.
+const PRINTED: [u8; 32] = [0x42; 32];
+
+/// How a daemon answers the `devices#logIn` setup makes.
+#[derive(Clone, Copy, Debug)]
+pub enum Login {
+    /// Certify this computer, as the device that printed the code does.
+    Certify,
+    /// Refuse it with the message, as the device of a spent code does.
+    Refuse(&'static str),
+    /// Wait before certifying it, as a device a person has to approve by hand does.
+    Wait,
+}
+
+/// What the daemon answers besides its key.
+struct Answers {
+    /// The login a ticket's certificate is filed in, made on the caller's thread: a daemon's own
+    /// thread reads none of the test's environment.
+    place: Option<Place>,
+    /// How it answers a login, or `None` for a machine whose setup asks none.
+    login: Option<Login>,
+    /// Whether this computer keeps the person's root, which `account#who` says.
+    holds_root: bool,
+    /// The device this computer is as it enters its person's workspaces, once a login made it.
+    home: Mutex<Option<Device>>,
+}
 
 /// The device's daemon of a test's machine, for as long as it lives: it holds the machine's
 /// device key, and answers its programs' device actions at the endpoint they resolve.
@@ -42,6 +84,36 @@ impl DeviceDaemon {
     /// # Errors
     /// The key cannot be made or is taken by another process, or the endpoint cannot be bound.
     pub fn start(paths: &IdentityPaths) -> std::io::Result<Self> {
+        Self::answering(paths, None, false)
+    }
+
+    /// [`start`](Self::start) for a computer this account's person was made on: `account#who`
+    /// says it keeps the person's root, which a backup is made of.
+    ///
+    /// # Errors
+    /// As [`start`](Self::start).
+    pub fn holding_the_root(paths: &IdentityPaths) -> std::io::Result<Self> {
+        Self::answering(paths, None, true)
+    }
+
+    /// [`start`](Self::start) for the daemon of a computer setup adds to the person's devices:
+    /// it answers a ticket's login with `login`, and says whether it keeps the person's root.
+    ///
+    /// # Errors
+    /// As [`start`](Self::start).
+    pub fn logging_in(
+        paths: &IdentityPaths,
+        login: Login,
+        holds_root: bool,
+    ) -> std::io::Result<Self> {
+        Self::answering(paths, Some(login), holds_root)
+    }
+
+    fn answering(
+        paths: &IdentityPaths,
+        login: Option<Login>,
+        holds_root: bool,
+    ) -> std::io::Result<Self> {
         let refused = |error: persist::PersistError| std::io::Error::other(error.to_string());
         persist::load_or_create_device_key(paths).map_err(refused)?;
         let native = DeviceActions::here(paths.clone())
@@ -51,11 +123,26 @@ impl DeviceDaemon {
         // Bound before the key is taken: a machine whose endpoint a live daemon holds refuses
         // here, rather than this process holding the key of a daemon that is not here.
         let listener = socket::bind(&native)?;
+        // Looked at, not blocked on: the daemon's thread sees the test's stop within milliseconds.
+        #[cfg(unix)]
+        listener.set_nonblocking(true)?;
         let key = persist::take_device_key(paths).map_err(refused)?;
         let signing = key.key().clone();
+        let place = login
+            .map(|_| {
+                Place::here(paths.clone())
+                    .map_err(|error| std::io::Error::other(format!("{error:#}")))
+            })
+            .transpose()?;
+        let answers = Arc::new(Answers {
+            place,
+            login,
+            holds_root,
+            home: Mutex::new(None),
+        });
         let stopping = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stopping);
-        let thread = std::thread::spawn(move || serve(&listener, &signing, &stopped));
+        let thread = std::thread::spawn(move || serve(&listener, &answers, &signing, &stopped));
         Ok(Self {
             key,
             native,
@@ -80,7 +167,7 @@ impl DeviceDaemon {
 impl Drop for DeviceDaemon {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);
-        // The accept that waits is woken by a connection, which the loop then sees is the stop.
+        #[cfg(not(unix))]
         let _ = socket::connect(&self.native);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -91,28 +178,45 @@ impl Drop for DeviceDaemon {
     }
 }
 
-/// Answer this daemon's questions with `key` until `stopping` says the test is done.
-fn serve(listener: &Listener, key: &SigningKey, stopping: &AtomicBool) {
+/// Answer this daemon's questions with `key` until `stopping` says the test is done. Each
+/// connection is answered on a thread of its own, as a daemon serves its programs.
+fn serve(listener: &Listener, answers: &Arc<Answers>, key: &SigningKey, stopping: &AtomicBool) {
     for stream in listener.incoming() {
         if stopping.load(Ordering::Relaxed) {
             return;
         }
-        let Ok(stream) = stream else { return };
-        let mut request = String::new();
-        if std::io::BufReader::new(&stream)
-            .read_line(&mut request)
-            .is_err()
-        {
-            continue;
-        }
-        let _ = writeln!(&stream, "{}", answer(&request, key));
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            Err(_) => return,
+        };
+        let answers = Arc::clone(answers);
+        let key = key.clone();
+        let _spawned = std::thread::Builder::new()
+            .name("fixture-device-daemon".into())
+            .spawn(move || {
+                // A call is followed on its connection, so a followed call is asked again.
+                let mut lines = std::io::BufReader::new(&stream);
+                let mut request = String::new();
+                while lines.read_line(&mut request).is_ok_and(|read| read > 0) {
+                    let _ = writeln!(&stream, "{}", answer(&answers, &request, &key));
+                    request.clear();
+                }
+            });
     }
 }
 
 /// The daemon's answer, as the device action service writes it ([`crate::login::daemon`]), to the
 /// request line `request`.
-fn answer(request: &str, key: &SigningKey) -> Value {
+fn answer(answers: &Answers, request: &str, key: &SigningKey) -> Value {
     let asked: Value = serde_json::from_str(request).unwrap_or_default();
+    let id = asked.get("id").cloned().unwrap_or(Value::Null);
+    if asked.get("native").and_then(Value::as_str) == Some(WHO) {
+        return who(answers, key);
+    }
     let path = asked
         .pointer("/params/arguments/path")
         .and_then(Value::as_str)
@@ -122,21 +226,24 @@ fn answer(request: &str, key: &SigningKey) -> Value {
         .cloned()
         .unwrap_or_default();
     // `devices#info`: the resource is the person's devices, the action the part after the `#`.
-    let action = path.rsplit('#').next().unwrap_or_default();
-    match act(action, &args, key) {
+    match act(
+        answers,
+        path.rsplit('#').next().unwrap_or_default(),
+        &args,
+        key,
+    ) {
         Ok(result) => serde_json::json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": id,
             "result": {
                 "content": [{"type": "text", "text": ""}],
                 "structuredContent": {"status": "ok", "result": result},
             },
         }),
         Err(message) => {
-            let message = message.to_string();
             serde_json::json!({
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": id,
                 "result": {
                     "content": [{"type": "text", "text": message}],
                     "isError": true,
@@ -150,8 +257,35 @@ fn answer(request: &str, key: &SigningKey) -> Value {
     }
 }
 
+/// Who the asking account is to this daemon, as its native endpoint answers without a call.
+fn who(answers: &Answers, key: &SigningKey) -> Value {
+    let home = {
+        let held = lock(&answers.home);
+        held.as_ref().map(|device| {
+            (
+                hex::encode(device.cert.user_public_key),
+                home_answer(device),
+            )
+        })
+    };
+    let mut answer = serde_json::Map::new();
+    answer.insert(
+        "device".into(),
+        serde_json::json!(hex::encode(key.verifying_key().to_bytes())),
+    );
+    answer.insert("claimed".into(), serde_json::json!(home.is_some()));
+    if answers.holds_root {
+        answer.insert("holds_root".into(), serde_json::json!(true));
+    }
+    if let Some((person, home)) = home {
+        answer.insert("person".into(), Value::String(person));
+        answer.insert("home".into(), home);
+    }
+    Value::Object(answer)
+}
+
 /// What the device action `action` answers with `key`, or why this daemon does not answer it.
-fn act(action: &str, args: &Value, key: &SigningKey) -> Result<Value, &'static str> {
+fn act(answers: &Answers, action: &str, args: &Value, key: &SigningKey) -> Result<Value, String> {
     match action {
         INFO => Ok(serde_json::json!({
             "device": hex::encode(key.verifying_key().to_bytes()),
@@ -161,13 +295,107 @@ fn act(action: &str, args: &Value, key: &SigningKey) -> Result<Value, &'static s
                 .get("message")
                 .and_then(Value::as_str)
                 .ok_or("the sign action asks no message")?;
-            let message = hex::decode(message).map_err(|_| "the message is not hex")?;
+            let message = hex::decode(message).map_err(|_| "the message is not hex".to_owned())?;
             Ok(serde_json::json!({
                 "signature": hex::encode(key.sign(&message).to_bytes()),
             }))
         }
-        _ => Err("this machine's daemon answers no such device action"),
+        crate::login::FOUND if answers.login.is_some() => found(answers, key),
+        crate::login::LOG_IN if answers.login.is_some() => log_in(answers, args, key),
+        _ => Err("this machine's daemon answers no such device action".to_owned()),
     }
+}
+
+/// What a real daemon makes of a computer that is nobody's device yet: a person of its own, whose
+/// root certifies its key. It is not filed: the login that follows files the certificate this
+/// computer keeps.
+fn found(answers: &Answers, key: &SigningKey) -> Result<Value, String> {
+    let root = SigningKey::from_bytes(&FOUNDED);
+    let device = Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://tilo.test/".into(),
+        workspace: "a5b4c3d2-e1f0-4b5a-8796-0f1e2d3c6978".into(),
+        workspace_name: None,
+        agent: "Tilo".into(),
+        cert: cert_for(&root, key, "this computer")?,
+        server_cert: cert_for(&root, &root, "this computer's person")?,
+        server_address: None,
+    };
+    *lock(&answers.home) = Some(device);
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// What a real daemon makes of the computer that asked for a login: the certificate the person's
+/// root signs for its key, filed, and the device it enters as.
+fn log_in(answers: &Answers, args: &Value, key: &SigningKey) -> Result<Value, String> {
+    let ticket = args.get("ticket").and_then(Value::as_str);
+    if ticket.is_none_or(|ticket| !ticket.starts_with("tilo1")) {
+        return Err("failed: device-action: the login carries no code".into());
+    }
+    let agent = args.get("agent").and_then(Value::as_str);
+    if agent.is_none_or(str::is_empty) {
+        return Err("failed: device-action: the login names no agent".into());
+    }
+    let Some(answer) = answers.login else {
+        return Err("this machine's daemon answers no such device action".into());
+    };
+    if let Login::Refuse(message) = answer {
+        return Err(format!("failed: device-action: {message}"));
+    }
+    if matches!(answer, Login::Wait) {
+        std::thread::sleep(std::time::Duration::from_millis(750));
+    }
+    let root = SigningKey::from_bytes(&PRINTED);
+    let label = args
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|label| !label.is_empty())
+        .unwrap_or("the kitchen computer");
+    let cert = cert_for(&root, key, label)?;
+    let server_cert = cert_for(&root, &root, "the server")?;
+    let Some(place) = &answers.place else {
+        return Err("this machine's daemon keeps no login".into());
+    };
+    file_certificate(place, &cert).map_err(|error| error.to_string())?;
+    *lock(&answers.home) = Some(Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://eu1.tilo.test".into(),
+        workspace: WORKSPACE.into(),
+        workspace_name: Some("Studio".into()),
+        agent: "Tilo".into(),
+        cert,
+        server_cert,
+        server_address: None,
+    });
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// A member certificate `root` signs for `key`, issued a minute before now.
+fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> Result<DeviceCert, String> {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_nanos()).ok())
+        .unwrap_or_default();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now_ns.saturating_sub(60_000_000_000),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).map_err(|error| error.to_string())?;
+    Ok(cert)
+}
+
+/// The device this computer is as it enters its person's workspaces, kept even after a panic
+/// elsewhere poisoned the lock.
+fn lock(home: &Mutex<Option<Device>>) -> std::sync::MutexGuard<'_, Option<Device>> {
+    home.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// What this daemon answers, as the daemon's clients read its answers.

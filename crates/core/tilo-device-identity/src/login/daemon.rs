@@ -156,6 +156,29 @@ pub fn native_in(sockets: &Path) -> PathBuf {
     sockets.join(NATIVE)
 }
 
+/// The `home` of an `account#who` answer: where this device enters, as `device` the daemon serves.
+#[must_use]
+pub fn home_answer(device: &super::Device) -> Value {
+    serde_json::json!({
+        "site": device.site,
+        "host_origin": device.host_origin,
+        "workspace": device.workspace,
+        "workspace_name": device.workspace_name,
+        "agent": device.agent,
+        "cert": canonical_hex(&device.cert),
+        "server_cert": canonical_hex(&device.server_cert),
+        "server_address": device.server_address,
+    })
+}
+
+/// A certificate as the daemon writes it in a JSON answer: its canonical bytes, hex.
+#[must_use]
+pub fn canonical_hex(cert: &tilo_user_identity::DeviceCert) -> Option<String> {
+    tilo_user_identity::canonical::canonical_bytes(cert)
+        .ok()
+        .map(hex::encode)
+}
+
 /// Whether a socket's address fits `path`: one it does not is refused, naming it, never cut
 /// short.
 ///

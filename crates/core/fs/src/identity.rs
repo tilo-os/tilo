@@ -126,12 +126,8 @@ pub fn load_certified_mount_identity(
     device_public_key: [u8; 32],
     now_ns: u64,
 ) -> Result<PeerCredentials, CertifiedIdentityError> {
-    let cert = tilo_device_identity::persist::read_owner_cert(paths)?.ok_or_else(|| {
-        PersistError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "this device holds no certificate of its person",
-        ))
-    })?;
+    let cert = tilo_device_identity::persist::read_owner_cert(paths)?
+        .ok_or_else(PersistError::no_owner_cert)?;
     PeerCredentials::certified(cert, device_public_key, now_ns)
 }
 
@@ -154,12 +150,7 @@ pub async fn load_certified_mount_identity_once_valid(
             loaded => return loaded,
         };
         let valid_from_ns = tilo_device_identity::persist::read_owner_cert(paths)?
-            .ok_or_else(|| {
-                PersistError::Io(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "this device holds no certificate of its person",
-                ))
-            })?
+            .ok_or_else(PersistError::no_owner_cert)?
             .issued_at_ns;
         if valid_from_ns <= now_ns {
             // Written anew between the two reads: check it again.

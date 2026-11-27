@@ -48,26 +48,9 @@ pub struct Who {
     pub certify_person: Option<[u8; 32]>,
 }
 
+use tilo_device_identity::login::daemon::canonical_hex;
 /// The `home` of an `account#who` answer: where this device enters, as `device` the daemon serves.
-#[must_use]
-pub fn home_answer(device: &Device) -> Value {
-    json!({
-        "site": device.site,
-        "host_origin": device.host_origin,
-        "workspace": device.workspace,
-        "workspace_name": device.workspace_name,
-        "agent": device.agent,
-        "cert": canonical_hex(&device.cert),
-        "server_cert": canonical_hex(&device.server_cert),
-        "server_address": device.server_address,
-    })
-}
-
-fn canonical_hex(cert: &tilo_user_identity::DeviceCert) -> Option<String> {
-    tilo_user_identity::canonical::canonical_bytes(cert)
-        .ok()
-        .map(hex::encode)
-}
+pub use tilo_device_identity::login::daemon::home_answer;
 
 /// The device a `home` answer names.
 fn home_of(home: &Value) -> Option<Device> {

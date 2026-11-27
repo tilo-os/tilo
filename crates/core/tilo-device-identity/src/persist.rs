@@ -373,12 +373,22 @@ impl IdentityPaths {
     ///
     /// Returns an error when the owner's key or certificate is present but cannot be read.
     pub fn owner_cert(&self) -> Result<Option<std::path::PathBuf>, PersistError> {
+        let Some((_, path)) = self.owner_and_cert()? else {
+            return Ok(None);
+        };
+        Ok(path.is_file().then_some(path))
+    }
+
+    /// The person this device belongs to, named in `user-identity/pubkey.bin`, and where their
+    /// certificate is filed ([`Self::owner_cert`]); `None` when no person is claimed here, and an
+    /// error when the owner's key is present but cannot be read.
+    pub fn owner_and_cert(&self) -> Result<Option<([u8; 32], std::path::PathBuf)>, PersistError> {
         if !self.user_pubkey.is_file() {
             return Ok(None);
         }
         let owner = read_public_key(&self.user_pubkey)?;
         let path = self.device_cert_for_user(&owner);
-        Ok(path.is_file().then_some(path))
+        Ok(Some((owner, path)))
     }
 
     /// Where a build before one certificate per person kept the owner's certificate,
@@ -397,11 +407,20 @@ impl IdentityPaths {
 ///
 /// Returns an error when the owner's key or certificate is present but cannot be read.
 pub fn read_owner_cert(paths: &IdentityPaths) -> Result<Option<DeviceCert>, PersistError> {
-    let Some(path) = paths.owner_cert()? else {
+    Ok(read_owner_cert_and_person(paths)?.map(|(_, cert)| cert))
+}
+
+/// Read the person this device belongs to and the certificate it holds for them
+/// ([`IdentityPaths::owner_cert`]); an error when the owner's key or certificate is present but
+/// cannot be read.
+pub fn read_owner_cert_and_person(
+    paths: &IdentityPaths,
+) -> Result<Option<([u8; 32], DeviceCert)>, PersistError> {
+    let Some((owner, path)) = paths.owner_and_cert()? else {
         return Ok(None);
     };
     match read_device_cert(&path) {
-        Ok(cert) => Ok(Some(cert)),
+        Ok(cert) => Ok(Some((owner, cert))),
         Err(PersistError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -426,15 +445,9 @@ pub fn settle_device_certificate(paths: &IdentityPaths) -> Result<bool, PersistE
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     }
-    let owner = match read_public_key(&paths.user_pubkey) {
-        Ok(owner) => owner,
-        // No person is claimed here, so there is nothing to settle the certificate beside.
-        Err(PersistError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(false);
-        }
-        Err(error) => return Err(error),
+    let Some((_, filed)) = paths.owner_and_cert()? else {
+        return Ok(false);
     };
-    let filed = paths.device_cert_for_user(&owner);
     if filed.exists() {
         fs::remove_file(&system_cert)?;
     } else {
@@ -520,6 +533,16 @@ impl PersistError {
             | Self::KeyInUse { .. }
             | Self::NotTheDaemon => None,
         }
+    }
+
+    /// The refusal for a device that holds no certificate of its person:
+    /// [`io::ErrorKind::NotFound`], in the words a person reads.
+    #[must_use]
+    pub fn no_owner_cert() -> Self {
+        Self::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "this device holds no certificate of its person",
+        ))
     }
 }
 
@@ -1548,7 +1571,7 @@ pub fn install_device_cert(
 /// Returns [`PersistError`] when a present identity file cannot be read, the
 /// device key is not accessible, or the certificate does not match its keys.
 pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistError> {
-    let Some(cert_path) = paths.owner_cert()? else {
+    let Some((pubkey, cert)) = read_owner_cert_and_person(paths)? else {
         return Ok(false);
     };
     // The key is where `paths` keeps it: a phone's is in the platform store, never in the file.
@@ -1576,9 +1599,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
     if !held {
         return Ok(false);
     }
-    let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = device_public_key(paths)?;
-    let cert = read_device_cert(&cert_path)?;
     // A primary device can admit further devices. That is an ordinary
     // machine, not one the imager already enrolled, so first-boot
     // provisioning must still run
@@ -1619,10 +1640,9 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     if !joined_device_is_enrolled(paths)? {
         return Ok(false);
     }
-    let Some(cert_path) = paths.owner_cert()? else {
+    let Some(cert) = read_owner_cert(paths)? else {
         return Ok(false);
     };
-    let cert = read_device_cert(&cert_path)?;
     verify_device_cert_at(&cert, now_ns).map_err(|error| {
         // Refused for the clock's reading alone, the certificate still
         // proves the enrolment: say so in a form callers can tell apart.

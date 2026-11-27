@@ -62,6 +62,7 @@ tilo_test_env::scenario! {
         let tmp = tempfile::tempdir().unwrap();
         let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
+        let _taken = device_key_taken_as_daemon(&paths).expect("this process signs as the device");
         ensure_collaboration_identity(&personal, &paths, FILES).expect("identity");
         assert_eq!(next_device_certificate_renewal(&personal, &paths), None);
         let clock = TestClock::at(0, 1);

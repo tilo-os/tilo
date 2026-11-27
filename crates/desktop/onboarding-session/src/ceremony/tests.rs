@@ -6,11 +6,11 @@
 mod person_made_elsewhere;
 
 use super::*;
-use crate::nearby::testing::{Answer, FakeDaemon};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus};
 use std::sync::atomic::AtomicUsize;
 use tempfile::TempDir;
 use tilo_actions::remote::asked::FilesMode;
+use tilo_device_identity::fixture::{DeviceDaemon, Login};
 use tilo_identity::store::{IdentityRecord, SerializableIdentity};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use zeroize::Zeroizing;
@@ -134,7 +134,7 @@ struct Device {
     paths: tilo_device_identity::IdentityPaths,
     _settings: settings_store::SourceScope,
     /// The daemon this device's programs ask, answering the device's public key, until it stops.
-    daemon: Option<crate::nearby::testing::FakeDaemon>,
+    daemon: Option<DeviceDaemon>,
 }
 
 impl Device {
@@ -153,7 +153,7 @@ impl Device {
         let paths = tilo_device_identity::IdentityPaths::under(&root);
         tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32])
             .expect("this device's key");
-        let daemon = FakeDaemon::keeping_the_person(&paths, Answer::Certify);
+        let daemon = DeviceDaemon::holding_the_root(&paths).expect("this device's daemon");
         Self {
             _env: env,
             _home: home,
@@ -377,12 +377,14 @@ tilo_test_env::scenario! {
     phase a_used_code_says_to_make_a_new_one_and_offers_join_again;
     {
         let account = crate::nearby::tests::Account::new();
-        let _daemon = FakeDaemon::start(
+        let _daemon = DeviceDaemon::logging_in(
             &account.paths,
-            Answer::Refuse(
+            Login::Refuse(
                 "Your device didn't take this ticket: this ticket was used already: ask for a new one.",
             ),
-        );
+            false,
+        )
+        .expect("the daemon's socket");
         let (mut ceremony, identity_dir) = joining(&account);
         act(&mut ceremony, OnboardingEffect::choose("existing"));
         act(&mut ceremony, OnboardingEffect::choose("nearby"));
@@ -429,8 +431,8 @@ tilo_test_env::scenario! {
     phase cancelling_a_join_stops_setup_waiting;
     {
         let account = crate::nearby::tests::Account::new();
-        let _daemon =
-            FakeDaemon::start(&account.paths, Answer::Wait);
+        let _daemon = DeviceDaemon::logging_in(&account.paths, Login::Wait, false)
+            .expect("the daemon's socket");
         let (mut ceremony, _) = joining(&account);
         act(&mut ceremony, OnboardingEffect::choose("existing"));
         act(&mut ceremony, OnboardingEffect::choose("nearby"));
@@ -464,10 +466,12 @@ tilo_test_env::scenario! {
     phase a_good_code_ends_first_use_on_the_ready_screen;
     {
         let account = crate::nearby::tests::Account::new();
-        let _daemon = FakeDaemon::start(
+        let _daemon = DeviceDaemon::logging_in(
             &account.paths,
-            Answer::Certify,
-        );
+            Login::Certify,
+            false,
+        )
+        .expect("the daemon's socket");
         let (mut ceremony, identity_dir) = joining(&account);
         act(&mut ceremony, OnboardingEffect::choose("existing"));
         act(&mut ceremony, OnboardingEffect::choose("nearby"));
@@ -1510,10 +1514,9 @@ fn identity_ready_does_not_complete_visible_first_use() {
         assert!(status.success());
         return;
     }
-    // The person is made by the device's daemon, which holds the device key: this test runs no
-    // daemon, so it takes the key in its place, for this device's root as the ceremony reads it.
+    // The person is made by the device's daemon, which holds the device key: this device's daemon
+    // took it, so the person is made here as the daemon would make it.
     let device = Device::new();
-    let _taken = tilo_device_identity::persist::take_device_key(&device.paths).unwrap();
     let paths = device.paths.clone();
     let directory = tilo_identity::store::account_identity_dir_from_env().unwrap();
     tilo_identity::provisioning::create_person(

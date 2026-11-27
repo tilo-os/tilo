@@ -280,8 +280,8 @@ fn join(
     let ticket = Ticket::parse(ticket).map_err(|_| NearbyFailure::new(NearbyCause::Wrong))?;
     // The daemon makes this computer's device key as it starts and keeps it: the login below is
     // the daemon's, and it certifies the key the daemon made.
-    let place = Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
-    make_login_dir(place.dir())?;
+    // The login directory, made private when this computer has none yet.
+    Place::here(paths.clone()).map_err(NearbyFailure::unavailable)?;
     // The daemon logs this computer in whether a person's certificate names it already or not,
     // as `tilo login` has it do.
     ensure_daemon()?;
@@ -322,17 +322,6 @@ fn taken_up(
     })
 }
 
-/// The login directory the device's daemon and login live in, made private
-/// here when this computer has none yet.
-fn make_login_dir(dir: &Path) -> Result<(), NearbyFailure> {
-    use std::os::unix::fs::DirBuilderExt as _;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(NearbyFailure::storage)
-}
-
 /// Wait for this computer's daemon to answer at its native endpoint, its service
 /// started when none does ([`tilo_api::daemon::service::start`]).
 fn ensure_daemon() -> Result<(), NearbyFailure> {
@@ -342,261 +331,9 @@ fn ensure_daemon() -> Result<(), NearbyFailure> {
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
-    //! A stand-in for this computer's daemon at the one place setup reaches
-    //! it: its native endpoint. It answers who this account is to it
-    //! (`account#who`), the `devices#found` a person's own computer that no
-    //! person's certificate names yet asks first, and the `devices#logIn` call
-    //! `tilo login` makes, and files the certificate a real daemon would.
-
-    use std::io::{BufRead as _, Write as _};
-    use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use ed25519_dalek::SigningKey;
-    use serde_json::{Value, json};
-    use tilo_device_identity::IdentityPaths;
-    use tilo_device_identity::login::{Device, Place};
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-    use super::make_login_dir;
-
-    pub(crate) const WORKSPACE: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
-
-    /// What the stand-in daemon answers the login with.
-    #[derive(Clone, Copy, Debug)]
-    pub(crate) enum Answer {
-        /// Certify this computer, as the device that printed the code does.
-        Certify,
-        /// Refuse it with `message`, as the device of a spent code does.
-        Refuse(&'static str),
-        /// Wait a while before certifying it, as a device a person has to
-        /// approve by hand does.
-        Wait,
-    }
-
-    /// The stand-in daemon, listening where this computer's own would.
-    pub(crate) struct FakeDaemon {
-        native: PathBuf,
-        stop: Arc<AtomicBool>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl FakeDaemon {
-        pub(crate) fn start(paths: &IdentityPaths, answer: Answer) -> Self {
-            Self::answering(paths, answer, false)
-        }
-
-        /// [`start`](Self::start) for the daemon of a computer this account's person was made on:
-        /// it keeps the person's root, which `account#who` says and a backup is made of.
-        pub(crate) fn keeping_the_person(paths: &IdentityPaths, answer: Answer) -> Self {
-            Self::answering(paths, answer, true)
-        }
-
-        fn answering(paths: &IdentityPaths, answer: Answer, holds_root: bool) -> Self {
-            let place = Place::here(paths.clone()).expect("this account's login place");
-            make_login_dir(place.dir()).expect("the login directory");
-            let daemon = tilo_api::daemon::this_computer().expect("the daemon's place");
-            let listener = UnixListener::bind(daemon.native()).expect("the daemon's socket");
-            listener
-                .set_nonblocking(true)
-                .expect("a socket that is looked at");
-            let stop = Arc::new(AtomicBool::new(false));
-            let running = Arc::clone(&stop);
-            let paths = paths.clone();
-            let home: Arc<std::sync::Mutex<Option<Device>>> = Arc::default();
-            let thread = std::thread::Builder::new()
-                .name("fake-tilo-daemon".into())
-                .spawn(move || {
-                    while !running.load(Ordering::Acquire) {
-                        match listener.accept() {
-                            Ok((stream, _)) => serve(&stream, &paths, answer, holds_root, &home),
-                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                                std::thread::sleep(std::time::Duration::from_millis(5));
-                            }
-                            Err(_) => return,
-                        }
-                    }
-                })
-                .expect("the stand-in's thread");
-            Self {
-                native: daemon.native(),
-                stop,
-                thread: Some(thread),
-            }
-        }
-    }
-
-    impl Drop for FakeDaemon {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-            let _ = std::fs::remove_file(&self.native);
-        }
-    }
-
-    /// The requests of one connection, each answered on a line of its own.
-    fn serve(
-        stream: &UnixStream,
-        paths: &IdentityPaths,
-        answer: Answer,
-        holds_root: bool,
-        home: &std::sync::Mutex<Option<Device>>,
-    ) {
-        let _ = stream.set_nonblocking(false);
-        let mut lines = std::io::BufReader::new(stream);
-        let mut line = String::new();
-        while lines.read_line(&mut line).is_ok_and(|read| read > 0) {
-            let asked: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-            line.clear();
-            let answered = if asked.get("native").and_then(Value::as_str) == Some("account#who") {
-                let key = tilo_device_identity::persist::load_device_key(paths).expect("a key");
-                let mut who = json!({
-                    "device": hex::encode(key.verifying_key().to_bytes()),
-                    "claimed": false,
-                });
-                if holds_root {
-                    who["holds_root"] = json!(true);
-                }
-                if let Some(device) = home.lock().expect("the home").as_ref() {
-                    who["person"] = json!(hex::encode(device.cert.user_public_key));
-                    who["claimed"] = json!(true);
-                    who["home"] = tilo_api::daemon::who::home_answer(device);
-                }
-                who
-            } else if asked
-                .pointer("/params/arguments/path")
-                .and_then(Value::as_str)
-                == Some("devices#found")
-            {
-                // The computer's own person, whom the login then replaces.
-                *home.lock().expect("the home") = Some(found(paths));
-                let id = asked.get("id").cloned().unwrap_or(Value::Null);
-                json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": "ok"}], "isError": false}})
-            } else if asked
-                .pointer("/params/arguments/path")
-                .and_then(Value::as_str)
-                == Some("devices#info")
-            {
-                // What this computer's device is, as a daemon answers a program that only needs
-                // its public key.
-                let key = tilo_device_identity::persist::load_device_key(paths).expect("a key");
-                let id = asked.get("id").cloned().unwrap_or(Value::Null);
-                json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": "ok"}],
-                    "structuredContent": {"status": "ok", "result": {
-                        "device": hex::encode(key.verifying_key().to_bytes()),
-                    }},
-                    "isError": false}})
-            } else {
-                let id = asked.get("id").cloned().unwrap_or(Value::Null);
-                let args = asked
-                    .pointer("/params/arguments/args")
-                    .cloned()
-                    .unwrap_or_default();
-                assert_eq!(
-                    asked
-                        .pointer("/params/arguments/path")
-                        .and_then(Value::as_str),
-                    Some("devices#logIn"),
-                    "the login is the daemon's action: {asked}"
-                );
-                let (text, failed) = match answer {
-                    Answer::Certify | Answer::Wait => {
-                        if matches!(answer, Answer::Wait) {
-                            std::thread::sleep(std::time::Duration::from_millis(750));
-                        }
-                        assert!(
-                            args.get("ticket")
-                                .and_then(Value::as_str)
-                                .is_some_and(|ticket| ticket.starts_with("tilo1")),
-                            "the login carries the code: {args}"
-                        );
-                        assert!(
-                            args.get("agent")
-                                .and_then(Value::as_str)
-                                .is_some_and(|agent| !agent.is_empty()),
-                            "the login names the agent here: {args}"
-                        );
-                        *home.lock().expect("the home") = Some(log_in(paths));
-                        ("ok".to_owned(), false)
-                    }
-                    Answer::Refuse(message) => (format!("failed: device-action: {message}"), true),
-                };
-                json!({"jsonrpc": "2.0", "id": id, "result": {
-                    "content": [{"type": "text", "text": text}], "isError": failed}})
-            };
-            if writeln!(&*stream, "{answered}").is_err() {
-                return;
-            }
-        }
-    }
-
-    /// What a real daemon makes of the computer that asked: the certificate the person's root
-    /// signs for its key, filed, and the device it enters as.
-    fn log_in(paths: &IdentityPaths) -> Device {
-        let root = SigningKey::from_bytes(&[0x42; 32]);
-        let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
-        let cert = cert_for(&root, &key, "the kitchen computer");
-        let server_cert = cert_for(&root, &root, "the server");
-        let place = Place::here(paths.clone()).expect("a place");
-        tilo_device_identity::login::file_certificate(&place, &cert)
-            .expect("the certificate filed");
-        Device {
-            site: "https://tilo.test/".into(),
-            host_origin: "https://eu1.tilo.test".into(),
-            workspace: WORKSPACE.into(),
-            workspace_name: Some("Studio".into()),
-            agent: "Tilo".into(),
-            cert,
-            server_cert,
-            server_address: None,
-        }
-    }
-
-    /// What a real daemon makes of a computer that is nobody's device yet: a person of its
-    /// own, whose root certifies its key. It is not filed: the login that follows files the
-    /// certificate this computer keeps.
-    fn found(paths: &IdentityPaths) -> Device {
-        let root = SigningKey::from_bytes(&[0x17; 32]);
-        let key = tilo_device_identity::persist::load_device_key(paths).expect("a device key");
-        Device {
-            site: "https://tilo.test/".into(),
-            host_origin: "https://tilo.test".into(),
-            workspace: "a5b4c3d2-e1f0-4b5a-8796-0f1e2d3c6978".into(),
-            workspace_name: None,
-            agent: "Tilo".into(),
-            cert: cert_for(&root, &key, "this computer"),
-            server_cert: cert_for(&root, &root, "this computer's person"),
-            server_address: None,
-        }
-    }
-
-    /// A member certificate `root` signs for `key`.
-    pub(crate) fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(60_000_000_000),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, root).expect("the person's signature");
-        cert
-    }
-}
-
-#[cfg(test)]
 pub(crate) mod tests {
-    use super::testing::{Answer, FakeDaemon};
+    use tilo_device_identity::fixture::{DeviceDaemon, Login};
+
     use super::*;
     use ed25519_dalek::SigningKey;
     use std::path::PathBuf;
@@ -605,10 +342,6 @@ pub(crate) mod tests {
     /// identity directories, and this computer's one device key, all under a
     /// temporary home so nothing here reads or writes the real one.
     pub(crate) struct Account {
-        /// The key this process took as the device's daemon, kept for the test's whole run: the
-        /// test makes this computer's key, logs it in and files its certificate, so it is the one
-        /// process that writes as the device.
-        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
         pub dir: tempfile::TempDir,
         pub paths: IdentityPaths,
         /// Held for the test's whole run: the environment above is the
@@ -645,10 +378,7 @@ pub(crate) mod tests {
             let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
             tilo_device_identity::persist::adopt_device_key(&paths, &key.to_bytes())
                 .expect("this computer's device key");
-            let taken_key = tilo_device_identity::persist::take_device_key(&paths)
-                .expect("this computer's daemon takes its key");
             Self {
-                _taken_key: taken_key,
                 dir,
                 paths,
                 _env: env,
@@ -695,7 +425,9 @@ pub(crate) mod tests {
         {
             let account = Account::new();
             let identity_dir = account.identity_dir();
-            let _daemon = FakeDaemon::start(&account.paths, Answer::Certify);
+            let _daemon =
+                DeviceDaemon::logging_in(&account.paths, Login::Certify, false)
+                    .expect("the daemon's socket");
             let mut join = NearbyJoin::start(
                 code(),
                 &identity_dir,
@@ -745,10 +477,12 @@ pub(crate) mod tests {
             let identity_dir = account.identity_dir();
             // The stand-in answers the action as a device that never heard of
             // the code does when the network cannot carry it.
-            let _daemon = FakeDaemon::start(
+            let _daemon = DeviceDaemon::logging_in(
                 &account.paths,
-                Answer::Refuse("The device that made this ticket can't be reached from here: it may be asleep."),
-            );
+                Login::Refuse("The device that made this ticket can't be reached from here: it may be asleep."),
+                false,
+            )
+            .expect("the daemon's socket");
             let mut join = NearbyJoin::start(
                 code(),
                 &identity_dir,

@@ -525,8 +525,11 @@ fn resume(
         persist::replace_device_key(paths, &to)?;
     }
     // Written by a root unit: give it to the account that owns the key's directory, the device's
-    // daemon, which is the one process that reads it.
-    persist::enforce_device_key_owner_and_mode(&paths.device_privkey)?;
+    // daemon, which is the one process that reads it. A key the platform's store keeps has no
+    // file of its own to give an owner and mode.
+    if paths.device_key_ownership == persist::DeviceKeyOwnership::File {
+        persist::enforce_device_key_owner_and_mode(&paths.device_privkey)?;
+    }
     (branch.after)(Stage::Key)?;
 
     let certification = certify(paths, journal, &from, &to, branch.now_ns)?;

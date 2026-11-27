@@ -254,12 +254,13 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
 
     // It starts as `tilo-server run` then does: the person's host, on the
     // identity it was installed with.
+    let cert = persist::read_owner_cert(&paths).unwrap().unwrap();
     let server = KeptServer::start(
         ServerConfig::loopback(state.clone()),
         ServerIdentity {
-            user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
+            user_public_key: cert.user_public_key,
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),
-            device_cert: persist::read_owner_cert(&paths).unwrap().unwrap(),
+            device_cert: cert,
             revocations: RevocationList::new(),
         },
     )
