@@ -272,3 +272,40 @@ fn the_persons_listing_names_each_action_once() {
         );
     }
 }
+
+/// The person's listing offers the shell's own actions: the verbs the session publishes under
+/// `so.tilo.session` on `desktop:chrome` (a new strip among them) are listed beside every app's,
+/// so a shortcut, a script or an agent can name one and the daemon knows where it runs.
+#[test]
+fn the_persons_listing_offers_the_shells_own_actions() {
+    let mut fixture = crate::common::linked::Builder::without_an_app().start();
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    loop {
+        let rows = fixture.catalogue("", None).unwrap_or_default();
+        let offered = |rows: &[tilo_actions::remote::CatalogueRow]| {
+            rows.iter().any(|row| {
+                row.app_id == "so.tilo.session"
+                    && row.action.as_ref().is_some_and(|action| {
+                        action.address.resource == "desktop:chrome"
+                            && action.address.action == "new-strip"
+                    })
+            })
+        };
+        if offered(&rows) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let session = rows
+                .iter()
+                .filter(|row| row.app_id == "so.tilo.session")
+                .filter_map(|row| row.action.as_ref())
+                .map(|action| format!("{}#{}", action.address.resource, action.address.action))
+                .collect::<Vec<_>>();
+            panic!(
+                "the person's listing never offered so.tilo.session desktop:chrome#new-strip; \
+                 the session's rows it lists: {session:?}"
+            );
+        }
+        fixture.pass(Duration::from_millis(100));
+    }
+}
