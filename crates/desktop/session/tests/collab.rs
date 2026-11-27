@@ -919,7 +919,7 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
     assert_ada_card(&session);
     shot(&mut session, "people-card-message");
 
-    // Message hands Chat the conversation with them: the app's own `open-direct-conversation` on
+    // Message hands Chat the conversation with them: the app's own `message_person` on
     // the row their two root keys name.
     press_message(&mut session, message);
     until(&mut session, "Chat is handed the conversation", |_| {

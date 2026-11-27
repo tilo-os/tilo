@@ -2692,7 +2692,7 @@ mod tests {
             panic!("a person's row opens something: {:?}", ben_rows[0].target);
         };
         let opened = (open.app.as_str(), open.address.action.as_str());
-        assert_eq!(opened, ("so.tilo.chat", "open-direct-conversation"));
+        assert_eq!(opened, ("so.tilo.chat", tilo_app_id::chat::MESSAGE_PERSON));
         assert!(
             people("Someone without a name yet").is_empty(),
             "nobody is offered to themselves"
