@@ -6,13 +6,13 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::bundle::BundleFacts;
 use super::handoff;
 use super::plan::{Basis, Plan};
 use super::record::{
     OriginalFirmware, OwnedBootEntry, Record, RecordStatus, RecordStore, RecordedBundle,
     RecordedComponent, ReleaseRef, Step, StepState,
 };
+use crate::setup::internal_bundle::BundleFacts;
 use imager_backend::efi;
 use imager_backend::platform::{Disk, NewPartition, Partition, Platform};
 use imager_backend::staging::fat::{self, Range};
@@ -204,7 +204,7 @@ impl ReleaseAuthority for CompiledCatalog {
             })
             .ok_or("the release is not in this Imager's catalog")?;
         let bundle = selected.verify_manifest(manifest)?;
-        let facts = super::bundle::facts(manifest)?;
+        let facts = crate::setup::internal_bundle::facts(manifest)?;
         if facts.release_id != bundle.release_id() || facts.architecture != bundle.architecture() {
             return Err("manifest does not match the selected release".into());
         }
@@ -716,7 +716,7 @@ impl Engine<'_> {
         }
         let plan = self.plan();
         let s = plan.basis.disk.sector_bytes;
-        let fits = |x: super::plan::Extent, c: &super::bundle::ComponentFacts| {
+        let fits = |x: super::plan::Extent, c: &crate::setup::internal_bundle::ComponentFacts| {
             x.lbas() * s >= c.minimum_partition_bytes.max(c.byte_size)
         };
         if !fits(plan.staging_esp.extent(), &facts.esp)
@@ -2258,7 +2258,7 @@ impl Engine<'_> {
                 "nothing complete is staged to arm",
             ));
         };
-        let component = |c: &RecordedComponent| super::bundle::ComponentFacts {
+        let component = |c: &RecordedComponent| crate::setup::internal_bundle::ComponentFacts {
             byte_size: c.byte_size,
             sha256: c.sha256.clone(),
             minimum_partition_bytes: c.byte_size,

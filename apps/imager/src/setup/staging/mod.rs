@@ -2,7 +2,6 @@
 //! plans, and only the elevated helper mutates disks or firmware, revalidating the plan
 //! against a fresh probe first.
 
-pub mod bundle;
 #[cfg(feature = "installation")]
 pub(crate) mod capacity_probe;
 pub mod cli;

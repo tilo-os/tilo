@@ -356,7 +356,6 @@ impl FakePlatform {
 
 #[cfg(test)]
 mod tests {
-    use super::super::bundle::{BundleFacts, ComponentFacts};
     use super::super::handoff::Handoff;
     use super::super::helper::{
         self, Action, ComponentPaths, Refusal, ReleaseAuthority, Request, codes,
@@ -364,6 +363,7 @@ mod tests {
     use super::super::plan::{self, Basis, Plan, Requirements};
     use super::super::record::{RecordStatus, RecordStore, ReleaseRef, Step, StepState};
     use super::*;
+    use crate::setup::internal_bundle::{BundleFacts, ComponentFacts};
     use imager_backend::{efi, staging::fat};
     use sha2::{Digest, Sha256};
 

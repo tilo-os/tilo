@@ -177,7 +177,7 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         .target_bytes
         .ok_or(other("--target-bytes is required".into()))?;
     let manifest = std::fs::read(&manifest_path).map_err(|e| other(e.to_string()))?;
-    let facts = super::bundle::facts(&manifest).map_err(other)?;
+    let facts = crate::setup::internal_bundle::facts(&manifest).map_err(other)?;
     let profile = match &args.profile {
         Some(p) => read_profile(p).map_err(other)?,
         None => serde_json::Map::new(),

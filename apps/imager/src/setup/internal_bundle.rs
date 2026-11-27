@@ -123,6 +123,58 @@ impl InternalBundle {
     }
 }
 
+/// The staging-relevant facts of a validated bundle: component sizes and digests,
+/// partition minimums and the loader path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComponentFacts {
+    pub byte_size: u64,
+    pub sha256: String,
+    pub minimum_partition_bytes: u64,
+    pub filesystem_uuid: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BundleFacts {
+    pub release_id: String,
+    pub architecture: String,
+    pub esp: ComponentFacts,
+    pub root: ComponentFacts,
+    pub efi_path: String,
+}
+
+impl BundleFacts {
+    pub fn requirements(&self, target_bytes: u64) -> super::staging::plan::Requirements {
+        super::staging::plan::Requirements {
+            staging_esp_bytes: self.esp.minimum_partition_bytes,
+            staging_root_bytes: self.root.minimum_partition_bytes,
+            target_bytes,
+        }
+    }
+}
+
+/// The staging facts of `manifest`, validated once and read from that same view.
+pub fn facts(manifest: &[u8]) -> Result<BundleFacts, String> {
+    let bundle = validate_internal_bundle(manifest)?;
+    let component = |role: &str| -> ComponentFacts {
+        let view = bundle
+            .component_by_role(role)
+            .expect("a validated bundle has exactly one component per role");
+        ComponentFacts {
+            byte_size: view.byte_size,
+            sha256: view.sha256.to_owned(),
+            minimum_partition_bytes: view.minimum_partition_bytes,
+            filesystem_uuid: view.filesystem_uuid.to_owned(),
+        }
+    };
+    Ok(BundleFacts {
+        release_id: bundle.release_id().to_owned(),
+        architecture: bundle.architecture().to_owned(),
+        esp: component("staging-esp"),
+        root: component("staging-root"),
+        efi_path: bundle.efi_path().to_owned(),
+    })
+}
+
 fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {
         Ok(())
