@@ -148,6 +148,14 @@ pub struct CatalogueQuery {
     /// those and not as many rows as it guessed they offer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_resources: Option<u32>,
+    /// Only the actions whose resource publishes them as unable to run now,
+    /// each with its [`crate::Availability::Unavailable`] contract: what a
+    /// view asks so its controls bound to them draw disabled, with the
+    /// reason, wherever the window cannot read the app's own catalogue. Every
+    /// level the answer holds is listed, whatever `parent_resource` says,
+    /// since what a window shows reaches into a record's items.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unavailable_only: bool,
 }
 
 impl Default for CatalogueQuery {
@@ -168,6 +176,7 @@ impl Default for CatalogueQuery {
             limits: None,
             by_resource: false,
             max_resources: None,
+            unavailable_only: false,
         }
     }
 }
@@ -780,9 +789,12 @@ impl CatalogueQuery {
     pub fn admits(&self, row: &CatalogueRow) -> bool {
         let named_parent = self.parent_resource.as_deref().unwrap_or("");
         let searched = self.parent_resource.is_none() && !self.needle.is_empty();
+        // What cannot run now is asked for wherever it stands: a control a window draws names
+        // the action on an item as readily as on a record's own resource.
         (self.target.is_some()
             || self.action.is_some()
             || searched
+            || self.unavailable_only
             || row.parent_resource == named_parent)
             && self.app_id.as_deref().is_none_or(|app| row.app_id == app)
             && self.view_resource.as_ref().is_none_or(|wanted| {
@@ -807,6 +819,13 @@ impl CatalogueQuery {
                     .as_ref()
                     .is_some_and(|action| action.address == *target)
             })
+            && (!self.unavailable_only
+                || row.action.as_ref().is_some_and(|action| {
+                    matches!(
+                        action.contract.availability,
+                        crate::Availability::Unavailable { .. }
+                    )
+                }))
     }
 
     /// How many of the rows it admits this query's cursor is past.
@@ -911,6 +930,72 @@ mod tests {
         let mut row = row(resource, Some("run"), "");
         row.app_id = app.into();
         row
+    }
+
+    /// What cannot run now is listed wherever it stands — on a record and on its item — and
+    /// nothing else is, so a window's controls bound to those actions can say why.
+    #[test]
+    fn a_query_for_what_cannot_run_lists_only_unavailable_actions_at_every_level() {
+        use crate::Availability;
+        let unavailable = |row: &mut CatalogueRow, reason: &str| {
+            row.action
+                .as_mut()
+                .expect("an action")
+                .contract
+                .availability = Availability::Unavailable {
+                code: "unmet".to_owned(),
+                reason: reason.to_owned(),
+            };
+        };
+        let mut record = row("note:b", Some("archive"), "");
+        unavailable(&mut record, "it is archived already");
+        let mut item = row("note:b", Some("open"), "note:b");
+        unavailable(&mut item, "the note is locked");
+        let rows = vec![
+            row("note:a", Some("open"), ""),
+            record,
+            item,
+            row("note:b", Some("rename"), "note:b"),
+        ];
+        let page = CataloguePage::from_rows(
+            "r1".into(),
+            rows.clone(),
+            &CatalogueQuery {
+                max_results: 64,
+                unavailable_only: true,
+                ..CatalogueQuery::default()
+            },
+        );
+        let listed: Vec<_> = page
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.resource.id.as_str(),
+                    row.action
+                        .as_ref()
+                        .map(|action| action.action_label.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [("note:b", Some("archive")), ("note:b", Some("open"))],
+            "only what cannot run, an item's included"
+        );
+        let every = CataloguePage::from_rows(
+            "r1".into(),
+            rows,
+            &CatalogueQuery {
+                max_results: 64,
+                ..CatalogueQuery::default()
+            },
+        );
+        assert_eq!(
+            every.rows.len(),
+            2,
+            "a listing without the filter is the level it names, the record's own rows"
+        );
     }
 
     tilo_test_env::scenario! {

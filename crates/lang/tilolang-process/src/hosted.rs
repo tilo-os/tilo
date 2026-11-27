@@ -1826,6 +1826,28 @@ enum MediaSaid {
     Playing(runtime_portal::process_link::MediaView),
 }
 
+/// How often a window asks the catalogue what cannot run now: a control bound to another app's
+/// action enables or disables within this of the app publishing it.
+const CATALOGUE_READ_AGAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The correlations a window's catalogue asks carry: apart from the shell page's own, which
+/// counts from one in the same instance, so each answer reaches the ask it answers.
+const CATALOGUE_CORRELATION_BASE: u64 = 1 << 62;
+
+/// How long a window waits on an answer before asking again: a catalogue that does not answer
+/// (a connection that went away mid-ask) costs a control its statement for no longer than this.
+const CATALOGUE_ANSWER_PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A window's ask of the catalogue: when it last asked, the correlation its answer comes under,
+/// and whether that answer is still due. One ask is outstanding at a time, so an answer the
+/// window takes up is always the statement it is currently drawing.
+#[derive(Default)]
+struct CatalogueRead {
+    asked_at: Option<std::time::Instant>,
+    correlation: u64,
+    waiting: bool,
+}
+
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
@@ -1845,6 +1867,9 @@ pub struct Hosted {
     /// The directory the instance answers its connection's directory requests from: what it
     /// last published, browsable by level and name, as the API and agents read it.
     directory: PublishedDirectory,
+    /// What the catalogue said cannot run now, and when it was last asked: the actions the
+    /// window's controls bind to apps it holds no resource of draw disabled with the reason.
+    catalogue: CatalogueRead,
     /// Whether the surface moved since [`Self::directory`] was built ([`Self::publish`],
     /// [`Self::relabel`]): it is built again when it is next asked, not on every change.
     directory_behind: bool,
@@ -2325,6 +2350,7 @@ impl Hosted {
             builds,
             published: None,
             directory: PublishedDirectory::default(),
+            catalogue: CatalogueRead::default(),
             directory_behind: false,
             directory_from: None,
             published_from: None,
@@ -2754,6 +2780,10 @@ impl Hosted {
         }
         // Who else is here and who is writing, before the views that show it run.
         changed |= self.take_events(&mut events);
+        // What the catalogue says cannot run now, asked again as it comes due: a control the
+        // views bind to another app's action draws disabled, with the reason, and enables when
+        // the app publishes it can run.
+        self.follow_catalogue();
         // The platform's roots are followed before the views run, so the first frame reads what
         // the session publishes rather than an app's waiting state.
         changed |= self.read_platform();
@@ -3777,6 +3807,54 @@ impl Hosted {
             .read(&host, |target| read_now.contains(target))
     }
 
+    /// Ask the catalogue what cannot run now, as often as [`CATALOGUE_READ_AGAIN`] allows, and
+    /// take the answer up when it comes ([`Self::answered`]): a control the views bind to another
+    /// app's action is drawn disabled, with the reason the app publishes, though this window
+    /// holds no resource of that app.
+    fn follow_catalogue(&mut self) {
+        let now = std::time::Instant::now();
+        // One ask at a time: an answer is applied as the statement the window draws, so a second
+        // ask must not leave the first's answer naming an ask the window no longer waits for.
+        if self.catalogue.waiting
+            && self
+                .catalogue
+                .asked_at
+                .is_some_and(|asked| now.duration_since(asked) < CATALOGUE_ANSWER_PATIENCE)
+        {
+            return;
+        }
+        if self
+            .catalogue
+            .asked_at
+            .is_some_and(|asked| now.duration_since(asked) < CATALOGUE_READ_AGAIN)
+        {
+            return;
+        }
+        self.catalogue.correlation = self.catalogue.correlation.wrapping_add(1);
+        self.catalogue.asked_at = Some(now);
+        let message = tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+            correlation: CATALOGUE_CORRELATION_BASE.wrapping_add(self.catalogue.correlation),
+            query: tilo_actions::remote::CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                unavailable_only: true,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        };
+        let sent = self
+            .connection
+            .manager()
+            .send(collaboration::CollabRequest::RemoteAction {
+                message,
+                press: None,
+            });
+        if sent {
+            self.catalogue.waiting = true;
+        } else {
+            // The connection could not take it: asked again on the next frame.
+            self.catalogue.asked_at = None;
+        }
+    }
+
     /// Bring the other apps' readings up to date: what their documents took in is read again, and
     /// the readings the views asked for since are answered. A reading that moved runs the views
     /// that read it again on the next frame. Whether any did.
@@ -3996,8 +4074,37 @@ impl Hosted {
         true
     }
 
+    /// What the catalogue answered of what cannot run now ([`Self::follow_catalogue`]): the
+    /// controls the views bind to those actions draw disabled, with their reasons, and run again
+    /// as it moves. Whether `message` was such an answer: one to an ask the window has moved past
+    /// says nothing new, and is taken up as it is.
+    fn answered_catalogue(&mut self, message: &tilo_actions::remote::RemoteActionMessage) -> bool {
+        let tilo_actions::remote::RemoteActionMessage::CatalogueResponse {
+            correlation,
+            result,
+        } = message
+        else {
+            return false;
+        };
+        if *correlation < CATALOGUE_CORRELATION_BASE {
+            return false;
+        }
+        if *correlation == CATALOGUE_CORRELATION_BASE.wrapping_add(self.catalogue.correlation) {
+            self.catalogue.waiting = false;
+            if let (Ok(page), Some(host)) = (result, self.instance.host()) {
+                host.runtime().set_unavailable_actions(
+                    tilolang_tilo::published::unavailable_from_catalogue(page),
+                );
+            }
+        }
+        true
+    }
+
     fn answered(&mut self, message: &tilo_actions::remote::RemoteActionMessage) -> bool {
         use tilo_actions::remote::{ActionCallError, ReceiptStatus, RemoteActionMessage};
+        if self.answered_catalogue(message) {
+            return true;
+        }
         if let RemoteActionMessage::Update {
             invocation,
             state: Some(state),

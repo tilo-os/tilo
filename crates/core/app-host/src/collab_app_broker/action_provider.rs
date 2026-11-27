@@ -51,8 +51,8 @@ mod readiness;
 mod shortcut_run;
 mod workspace_nodes;
 use app_admission::{
-    connect_request, invitation_request, own_history_request, own_view_lookup, programs_request,
-    reference_request,
+    availability_lookup, connect_request, invitation_request, own_history_request, own_view_lookup,
+    programs_request, reference_request,
 };
 use directory::bridge_error;
 
@@ -792,7 +792,8 @@ impl AppBrokerState {
         use tilo_actions::remote::RemoteActionMessage;
         match message {
             RemoteActionMessage::CatalogueRequest { query, .. } => {
-                (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
+                (access.query || own_view_lookup(app_id, query) || availability_lookup(query))
+                    .then(|| person.clone())
             }
             // Another of the person's devices is reached only for the app's
             // own actions there, as the person using it; never under the

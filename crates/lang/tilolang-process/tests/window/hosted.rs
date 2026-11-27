@@ -43,6 +43,9 @@ mod language;
 #[path = "hosted/menus.rs"]
 mod menus;
 
+#[path = "hosted/availability.rs"]
+mod availability;
+
 #[path = "hosted/packages.rs"]
 mod packages;
 
@@ -128,6 +131,9 @@ const FIELDBOX: &str = "so.tilo.lang.fieldbox";
 const OPENBY: &str = "so.tilo.lang.openby";
 /// The shelf, whose window its own view composes of the toolkit's components.
 const HANDMADE: &str = "so.tilo.lang.handmade";
+/// The card with one control over a device the app keeps no resource of: an action of another
+/// app, decided where that app publishes the device's catalogue.
+const SOUND: &str = "so.tilo.lang.sound";
 /// The authenticator whose view shows a rotating code: a capture or a stream leaves it out.
 const SECRET: &str = "t.totp";
 const VIEWPORT: (u32, u32) = (1280, 800);

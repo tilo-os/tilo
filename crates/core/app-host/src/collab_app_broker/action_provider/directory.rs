@@ -53,6 +53,7 @@ impl AppBrokerState {
             || query.revision.is_some()
             || !query.cursor.is_empty()
             || query.limits.is_some()
+            || query.unavailable_only
         {
             return Err(ActionCallError::InvalidRequest {
                 reason: "a canonical route lookup must request only its provider".into(),
@@ -142,10 +143,24 @@ impl AppBrokerState {
         };
         let root = root.clone();
         let caller = caller.clone();
+        let unavailable_only = query.unavailable_only;
         match reply {
             Ok(reply) => reply.map(move |reply| {
                 check_execution(&caller)?;
-                directory_page(&root, reply)
+                let mut page = directory_page(&root, reply)?;
+                // What cannot run now, as the directory answered it: a window's controls bound
+                // to an action of this app draw disabled with the reason.
+                if unavailable_only {
+                    page.rows.retain(|row| {
+                        row.action.as_ref().is_some_and(|action| {
+                            matches!(
+                                action.contract.availability,
+                                tilo_actions::Availability::Unavailable { .. }
+                            )
+                        })
+                    });
+                }
+                Ok(page)
             }),
             Err(error) => Pending::ready(Err(bridge_error(&root.app_id, error))),
         }

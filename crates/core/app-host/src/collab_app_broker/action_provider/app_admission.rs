@@ -31,6 +31,18 @@ pub(super) fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::Catalo
             .is_some_and(|(app, _)| app == app_id)
 }
 
+/// Whether `query` asks only what the person's catalogue says cannot run now, which a window's
+/// views draw their controls disabled with: no row's data, no action's arguments, and nothing
+/// an invocation would not already be refused with, so the person's own part decides it as it
+/// decides a view lookup; it names no provider, route or target, so it reaches no other device's
+/// directory.
+pub(super) fn availability_lookup(query: &tilo_actions::remote::CatalogueQuery) -> bool {
+    query.unavailable_only
+        && query.canonical_route.is_none()
+        && query.provider.is_none()
+        && query.target.is_none()
+}
+
 /// Whether `request` asks for the link to a resource or opens it:
 /// `share-link`, which the framework answers for every app and no app may
 /// publish itself, or the resource's `open` in its app

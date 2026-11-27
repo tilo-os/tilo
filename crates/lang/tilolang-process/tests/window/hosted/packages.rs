@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tilolang_tilo::bundle::Bundle;
 
-use super::{CHAT, FIELDBOX, HANDMADE, NOTES, OPENBY, RICHBODY, SIGNED, TASKS, TODAY};
+use super::{CHAT, FIELDBOX, HANDMADE, NOTES, OPENBY, RICHBODY, SIGNED, SOUND, TASKS, TODAY};
 
 /// The package in `dir` (from this crate's), built with the packages it uses.
 ///
@@ -74,6 +74,7 @@ pub(super) fn package_of(app: &str) -> &'static str {
         FIELDBOX => "tests/window/fieldbox",
         OPENBY => "tests/window/openby",
         HANDMADE => "tests/window/handmade",
+        SOUND => "tests/window/sound",
         TASKS => "../../../apps/tl/tasks",
         CHAT => "../../../apps/tl/chat",
         TODAY => "../../../apps/tl/today",
