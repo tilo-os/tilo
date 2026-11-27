@@ -142,17 +142,8 @@ impl Served {
                 let from = WorkFrom::named(&work).ok_or_else(|| {
                     ApiError::InvalidArguments(format!("{work} is no work this device can take"))
                 })?;
-                let was_taking = current.work.from != WorkFrom::Nobody;
                 current.set_work(from);
                 config.work.from = protocol_from(from);
-                // A device that takes no work runs no service for others, and one that does takes
-                // the workspace's traffic: what the person's own devices' work needs. The services
-                // they set one by one are left as they are.
-                let takes = from != WorkFrom::Nobody;
-                if takes != was_taking {
-                    config.services.workspace_replication = takes;
-                    config.services.inbound_server = takes;
-                }
             }
             ServerSettingsAction::SetWorkWhileCharging { on } => {
                 current.set_work_while_charging(on);
@@ -179,11 +170,7 @@ impl Served {
                     .map_err(ApiError::InvalidArguments)?;
                 current.services = services;
                 match service.as_str() {
-                    "workspace_replication" => config.services.workspace_replication = on,
-                    "inbound_server" => config.services.inbound_server = on,
-                    "remote_control_server" => config.services.remote_control_server = on,
-                    "app_serving" => config.services.app_serving = on,
-                    "compute" => config.services.compute = on,
+                    "app_serving" => config.app_serving = on,
                     _ => {
                         return Err(ApiError::InvalidArguments(format!(
                             "{service} is no service of this device"
@@ -232,11 +219,7 @@ fn settings_of(
             },
         },
         services: Services {
-            workspace_replication: config.services.workspace_replication,
-            inbound_server: config.services.inbound_server,
-            remote_control_server: config.services.remote_control_server,
-            app_serving: config.services.app_serving,
-            compute: config.services.compute,
+            app_serving: config.app_serving,
         },
     }
 }

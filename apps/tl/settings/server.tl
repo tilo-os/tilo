@@ -68,34 +68,10 @@ view device_server_pane() {
     }
     ui.Section("Services this device offers") {
         service_row(
-            s.services.workspace_replication,
-            "Replicate workspaces",
-            "Keep a copy of your workspaces so they are there when another device asks",
-            "workspace_replication",
-        )
-        service_row(
-            s.services.inbound_server,
-            "Accept connections",
-            "Let your other devices reach this one directly",
-            "inbound_server",
-        )
-        service_row(
-            s.services.remote_control_server,
-            "Remote control",
-            "Let your other devices show and act on this device's desktop",
-            "remote_control_server",
-        )
-        service_row(
             s.services.app_serving,
             "Serve apps",
             "Run the workspace's apps for devices that cannot",
             "app_serving",
-        )
-        service_row(
-            s.services.compute,
-            "Take compute",
-            "Run the work your other devices send",
-            "compute",
         )
     }
 }

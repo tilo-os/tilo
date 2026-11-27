@@ -16,7 +16,7 @@
 //! - [`operator`] — the wait-list mailbox and status an entry keeps, and the
 //!   JSON-lines protocol a server that ran each workspace as a child process
 //!   spoke with it before the daemon served them itself;
-//! - [`mesh`] — the services a server says it hosts;
+//! - [`mesh`] — the stable routing key of a certified device;
 //! - [`config`] and [`policy`] — the on-disk `server.toml` schema;
 //! - [`hosted`] — what a host hands the browser session in a workspace's VM when
 //!   it gives it the workspace, and the address such a machine reaches it at;
@@ -62,7 +62,7 @@ pub use tilo_workspace_join::delegation;
 pub use auth::{AuthError, AuthenticatedPeer};
 pub use config::{ConfigError, ServerConfig};
 pub use devices::valid_device_label;
-pub use mesh::{DeviceKey, ServiceCapabilities};
+pub use mesh::DeviceKey;
 pub use metrics::MetricsSnapshot;
 pub use policy::TrustPolicy;
 pub use transport::DocumentAnswer;

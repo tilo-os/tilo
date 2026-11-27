@@ -33,7 +33,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::mesh::ServiceCapabilities;
 use crate::policy::TrustPolicy;
 use crate::work::WorkSetting;
 
@@ -94,11 +93,11 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rented: bool,
 
-    /// Services requested by the operator. Runtime advertisement is clamped
-    /// to the protocols started by the composite home peer and its live residency
-    /// proof.
-    #[serde(default = "default_services")]
-    pub services: ServiceCapabilities,
+    /// Whether this device answers its workspaces' apps' actions for the devices that ask it to
+    /// run them. A device that keeps a workspace serves its apps, and one told not to answers none
+    /// of theirs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub app_serving: bool,
 
     /// Web entry base (ending in `/`) of the operator's versioned browser bundle,
     /// announced in catalogue locators so links are minted under it.
@@ -202,10 +201,6 @@ fn default_work() -> WorkSetting {
     WorkSetting::own_person()
 }
 
-fn default_services() -> ServiceCapabilities {
-    ServiceCapabilities::relay_only()
-}
-
 #[expect(
     clippy::unnecessary_wraps,
     reason = "serde names an optional field's default by function, and a deployment serves no web UI by naming none"
@@ -239,7 +234,7 @@ impl Default for ServerConfig {
             trust_policy: TrustPolicy::default(),
             work: default_work(),
             rented: false,
-            services: default_services(),
+            app_serving: false,
             web_entry: None,
             kept: Vec::new(),
             web_listen: default_web_listen(),
@@ -283,18 +278,30 @@ pub enum ConfigError {
     #[error("toml encode: {0}")]
     Encode(#[from] toml::ser::Error),
     /// The file names a setting this server no longer has.
-    #[error(
-        "`{0}` is no longer a server setting: this server keeps no full copy of a workspace's \
-         files, which sync through the workspace; remove `{0}` from the file"
-    )]
-    Retired(String),
+    #[error("`{setting}` is no longer a server setting: {why}; remove `{setting}` from the file")]
+    Retired {
+        /// The setting the file names.
+        setting: String,
+        /// Why this server has no such setting.
+        why: &'static str,
+    },
 }
 
-/// Settings an older server read, by section: a file naming one fails to load and says so.
-const RETIRED: [(Option<&str>, &str); 3] = [
-    (None, "full_replica_status"),
-    (None, "home_peer_bundle"),
-    (Some("services"), "full_content_replication"),
+/// Settings an older server read, each with why it is gone: a file naming one fails to load and
+/// says so.
+const RETIRED: [(&str, &str); 3] = [
+    (
+        "full_replica_status",
+        "this server keeps no full copy of a workspace's files, which sync through the workspace",
+    ),
+    (
+        "home_peer_bundle",
+        "this server keeps no full copy of a workspace's files, which sync through the workspace",
+    ),
+    (
+        "services",
+        "which of a workspace's work this device takes is the work setting",
+    ),
 ];
 
 impl ServerConfig {
@@ -334,15 +341,11 @@ impl ServerConfig {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let bytes = std::fs::read_to_string(path)?;
         let table: toml::Table = toml::from_str(&bytes)?;
-        let services = table.get("services").and_then(toml::Value::as_table);
-        if let Some(retired) = RETIRED.iter().find(|(section, key)| match section {
-            None => table.contains_key(*key),
-            Some(_) => services.is_some_and(|services| services.contains_key(*key)),
-        }) {
-            return Err(ConfigError::Retired(match retired {
-                (None, key) => (*key).to_owned(),
-                (Some(section), key) => format!("{section}.{key}"),
-            }));
+        if let Some((setting, why)) = RETIRED.iter().find(|(key, _)| table.contains_key(*key)) {
+            return Err(ConfigError::Retired {
+                setting: (*setting).to_owned(),
+                why,
+            });
         }
         Ok(table.try_into()?)
     }
@@ -385,11 +388,7 @@ mod tests {
             assert!(cfg.asks_router_for_port());
             assert!(!cfg.clone().on_loopback().asks_router_for_port());
             assert_eq!(cfg.work, WorkSetting::own_person());
-            assert!(cfg.services.workspace_replication);
-            assert!(cfg.services.inbound_server);
-            assert!(cfg.services.remote_control_server);
-            assert!(!cfg.services.app_serving);
-            assert!(!cfg.services.compute);
+            assert!(!cfg.app_serving);
 
             // A minimal file names only the two roots.
             let _: ServerConfig = toml::from_str(PRELUDE).unwrap();
@@ -416,15 +415,19 @@ mod tests {
                 let error = ServerConfig::load(&path).unwrap_err().to_string();
                 assert!(error.contains(retired) && error.contains("remove"), "{error}");
             }
+
+            // A file naming the services an older server advertised says which setting replaced
+            // them.
             std::fs::write(
                 &path,
-                toml::to_string_pretty(&cfg)
-                    .unwrap()
-                    .replace("[services]\n", "[services]\nfull_content_replication = true\n"),
+                format!(
+                    "{}[services]\napp_serving = true\n",
+                    toml::to_string_pretty(&cfg).unwrap()
+                ),
             )
             .unwrap();
             let error = ServerConfig::load(&path).unwrap_err().to_string();
-            assert!(error.contains("services.full_content_replication"), "{error}");
+            assert!(error.contains("services") && error.contains("remove"), "{error}");
         }
     }
 }

@@ -273,7 +273,7 @@ async fn spawn_server_with(
         device_cert: server_dev.cert.clone(),
         revocations: RevocationList::new(),
     };
-    cfg.services.app_serving = server.is_some();
+    cfg.app_serving = server.is_some();
     let server = start_server_serving(cfg, identity, server).await.unwrap();
     for id in workspaces {
         hold_workspace(&server, *id, members).await;

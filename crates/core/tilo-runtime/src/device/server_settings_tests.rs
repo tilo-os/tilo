@@ -81,16 +81,12 @@ tilo_test_env::scenario! {
         assert_eq!(shown.work.from, WorkFrom::OwnDevices);
         let config = saved(&path);
         assert_eq!(config.work.from, tilo_server_protocol::WorkFrom::OwnDevices);
-        assert!(
-            config.services.workspace_replication && config.services.inbound_server,
-            "a device that takes work takes its traffic"
-        );
 
         invoke(
             &published,
             &settings(),
             "set-service",
-            &serde_json::json!({ "service": "compute", "on": true }),
+            &serde_json::json!({ "service": "app_serving", "on": true }),
         );
         invoke(
             &published,
@@ -105,15 +101,15 @@ tilo_test_env::scenario! {
             &serde_json::json!({ "on": true }),
         );
         let shown = reading(&published);
-        assert!(shown.services.compute);
+        assert!(shown.services.app_serving);
         assert_eq!(shown.work.when.free_memory_percent, 50);
         assert!(shown.work.when.charging_only);
         let config = saved(&path);
-        assert!(config.services.compute);
+        assert!(config.app_serving);
         assert_eq!(config.work.when.free_memory_percent, 50);
         assert!(config.work.when.charging_only);
 
-        // Taking no work again runs no service for others.
+        // Taking no work again leaves the service the person set as it was.
         invoke(
             &published,
             &settings(),
@@ -121,10 +117,9 @@ tilo_test_env::scenario! {
             &serde_json::json!({ "work": "nobody" }),
         );
         let config = saved(&path);
-        assert!(!config.services.workspace_replication && !config.services.inbound_server);
         assert!(
-            config.services.compute,
-            "the services the person set one by one stay as they were"
+            config.app_serving,
+            "the service the person set stays as it was"
         );
     }
 

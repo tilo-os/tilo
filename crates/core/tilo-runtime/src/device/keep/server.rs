@@ -508,7 +508,7 @@ impl Server {
     )]
     pub async fn on_device(parts: OnDevice) -> Result<(Self, Protocols), ServerError> {
         let OnDevice {
-            mut cfg,
+            cfg,
             identity,
             service,
             keys,
@@ -529,12 +529,9 @@ impl Server {
             .as_ref()
             .and_then(|server| server.content())
             .unwrap_or_else(|| crate::device::keep::content::stores(&cfg.state_root));
-        // Live workspace control uses server's non-retained presence track, and app
-        // serving needs an app action server supplied by an embedding process.
-        let mut available_services = tilo_server_protocol::mesh::ServiceCapabilities::relay_only();
-        available_services.app_serving = app_serving.is_some();
-        cfg.services = cfg.services.limited_to(&available_services);
-        let app_serving = app_serving.filter(|_| cfg.services.app_serving);
+        // App serving needs an app action server an embedding process supplies, and the operator's
+        // consent to answer its workspaces' apps on this machine.
+        let app_serving = app_serving.filter(|_| cfg.app_serving);
         let sessions = service.sessions().clone();
         let hosted = service.workspaces().clone();
         // The links its invitations hand over open the server's web entry. A stack on this
@@ -1449,7 +1446,6 @@ mod tests {
                 ServerConfig {
                     state_root: temp.path().join("server"),
                     trust_policy: TrustPolicy::AllowMatchingUser,
-                    services: tilo_server_protocol::mesh::ServiceCapabilities::relay_only(),
                     // The relay runs its own packet relay on this machine's loopback, as the
                     // tests' hosts do: nothing here reaches number 0.
                     packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
@@ -1473,7 +1469,7 @@ mod tests {
             let primary = Server::start(
                 ServerConfig {
                     state_root: primary_state.path().to_path_buf(),
-                    services: tilo_server_protocol::mesh::ServiceCapabilities::personal_server(),
+                    app_serving: true,
                     ..ServerConfig::default()
                 }
                 .on_loopback(),
@@ -1629,7 +1625,7 @@ mod tests {
         let primary = Server::start(
             ServerConfig {
                 state_root: primary_state.path().to_path_buf(),
-                services: tilo_server_protocol::mesh::ServiceCapabilities::personal_server(),
+                app_serving: true,
                 ..ServerConfig::default()
             }
             .on_loopback(),
@@ -1651,7 +1647,6 @@ mod tests {
         let config = ServerConfig {
             state_root: temp.path().join("server"),
             trust_policy: TrustPolicy::AllowMatchingUser,
-            services: tilo_server_protocol::mesh::ServiceCapabilities::relay_only(),
             packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
             ..ServerConfig::default()
         }
@@ -1784,7 +1779,7 @@ mod tests {
             ServerConfig {
                 state_root: server_state.path().to_path_buf(),
                 trust_policy: TrustPolicy::AllowMatchingUser,
-                services: tilo_server_protocol::mesh::ServiceCapabilities::personal_server(),
+                app_serving: true,
                 packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
                 ..ServerConfig::default()
             }
@@ -1797,7 +1792,7 @@ mod tests {
         let desk = Server::start(
             ServerConfig {
                 state_root: desk_state.path().to_path_buf(),
-                services: tilo_server_protocol::mesh::ServiceCapabilities::personal_server(),
+                app_serving: true,
                 ..ServerConfig::default()
             }
             .on_loopback(),

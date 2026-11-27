@@ -23,13 +23,7 @@ pub const ROOM: [u8; 3] = [0, 20, 50];
 pub const ROOM_PARTS: [&str; 2] = ["processors", "memory"];
 
 /// The services of this device a person offers or withdraws.
-pub const SERVICES: [&str; 5] = [
-    "workspace_replication",
-    "inbound_server",
-    "remote_control_server",
-    "app_serving",
-    "compute",
-];
+pub const SERVICES: [&str; 1] = ["app_serving"];
 
 /// Whose work a device takes.
 #[derive(
@@ -102,20 +96,12 @@ pub struct Work {
 }
 
 /// The services this device offers the person's other devices.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each service is offered or withdrawn on its own"
-)]
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Services {
-    pub workspace_replication: bool,
-    pub inbound_server: bool,
-    pub remote_control_server: bool,
     pub app_serving: bool,
-    pub compute: bool,
 }
 
 impl Services {
@@ -125,11 +111,7 @@ impl Services {
     /// `name` names no service.
     pub fn set(&mut self, name: &str, on: bool) -> Result<(), String> {
         let field = match name {
-            "workspace_replication" => &mut self.workspace_replication,
-            "inbound_server" => &mut self.inbound_server,
-            "remote_control_server" => &mut self.remote_control_server,
             "app_serving" => &mut self.app_serving,
-            "compute" => &mut self.compute,
             _ => return Err(format!("{name} is no service of this device")),
         };
         *field = on;

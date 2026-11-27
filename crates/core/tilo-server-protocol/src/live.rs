@@ -165,59 +165,6 @@ pub struct LiveAnchor {
     pub cursor: Vec<u8>,
 }
 
-/// The editor a selection anchor names: its postcard scope key, or the key's
-/// 16-byte scope digest when the scoped form would not fit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AnchorScope<'a> {
-    Key(&'a [u8]),
-    /// The 16-byte digest of the editor's scope key.
-    Digest([u8; 16]),
-}
-
-/// A selection from `start` to `end` in the editor whose postcard scope key
-/// is `key`, as an anchor and a same-scope head. `digest` is asked for only
-/// when the scoped anchor exceeds [`MAX_OBJECT_ID_BYTES`]; `None` when even
-/// the digest form does not fit.
-pub fn selection_anchors(
-    key: &[u8],
-    digest: impl FnOnce() -> Option<[u8; 16]>,
-    start: u64,
-    end: u64,
-) -> Option<(LiveAnchor, LiveAnchor)> {
-    let mut anchor = vec![ANCHOR_TAG_SCOPED];
-    push_uvarint(&mut anchor, start);
-    anchor.extend_from_slice(key);
-    if anchor.len() > MAX_OBJECT_ID_BYTES {
-        anchor = vec![ANCHOR_TAG_DIGEST];
-        push_uvarint(&mut anchor, start);
-        anchor.extend_from_slice(&digest()?);
-    }
-    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
-    push_uvarint(&mut head, end);
-    (anchor.len() <= MAX_OBJECT_ID_BYTES)
-        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
-}
-
-/// The editor scope and range of a pair made by [`selection_anchors`].
-pub fn read_selection_anchors<'a>(
-    anchor: &'a LiveAnchor,
-    head: &LiveAnchor,
-) -> Option<(AnchorScope<'a>, u64, u64)> {
-    let (&tag, rest) = anchor.cursor.split_first()?;
-    let (start, key) = read_uvarint(rest)?;
-    let scope = match tag {
-        ANCHOR_TAG_SCOPED => AnchorScope::Key(key),
-        ANCHOR_TAG_DIGEST => AnchorScope::Digest(key.try_into().ok()?),
-        _ => return None,
-    };
-    let (&tag, rest) = head.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SAME_SCOPE {
-        return None;
-    }
-    let (end, _) = read_uvarint(rest)?;
-    Some((scope, start, end))
-}
-
 /// A caret (`start == end`) or selection in the editor `key`, as the live session's selection
 /// anchors. A key too long for the anchor (a framework resource key naming a long item id) travels
 /// as its scope digest, which the receiving editor resolves against its own keys
@@ -228,12 +175,20 @@ pub fn presence_anchors(
     start: usize,
     end: usize,
 ) -> Option<(LiveAnchor, LiveAnchor)> {
-    selection_anchors(
-        &postcard::to_stdvec(key).ok()?,
-        || key.scope_digest(),
-        u64::try_from(start).ok()?,
-        u64::try_from(end).ok()?,
-    )
+    let start = u64::try_from(start).ok()?;
+    let end = u64::try_from(end).ok()?;
+    let mut anchor = vec![ANCHOR_TAG_SCOPED];
+    push_uvarint(&mut anchor, start);
+    anchor.extend_from_slice(&postcard::to_stdvec(key).ok()?);
+    if anchor.len() > MAX_OBJECT_ID_BYTES {
+        anchor = vec![ANCHOR_TAG_DIGEST];
+        push_uvarint(&mut anchor, start);
+        anchor.extend_from_slice(&key.scope_digest()?);
+    }
+    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
+    push_uvarint(&mut head, end);
+    (anchor.len() <= MAX_OBJECT_ID_BYTES)
+        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
 }
 
 /// The editor key and range of anchors made by [`presence_anchors`].
@@ -242,13 +197,20 @@ pub fn read_presence_anchors(
     anchor: &LiveAnchor,
     head: &LiveAnchor,
 ) -> Option<(collab_types::presence::PresenceKey, usize, usize)> {
-    let (scope, start, end) = read_selection_anchors(anchor, head)?;
-    let key = match scope {
-        AnchorScope::Key(key) => postcard::from_bytes(key).ok()?,
-        AnchorScope::Digest(digest) => {
-            collab_types::presence::PresenceKey::from_scope_digest(digest)
+    let (&tag, rest) = anchor.cursor.split_first()?;
+    let (start, scope) = read_uvarint(rest)?;
+    let key = match tag {
+        ANCHOR_TAG_SCOPED => postcard::from_bytes(scope).ok()?,
+        ANCHOR_TAG_DIGEST => {
+            collab_types::presence::PresenceKey::from_scope_digest(scope.try_into().ok()?)
         }
+        _ => return None,
     };
+    let (&tag, rest) = head.cursor.split_first()?;
+    if tag != ANCHOR_TAG_SAME_SCOPE {
+        return None;
+    }
+    let (end, _) = read_uvarint(rest)?;
     Some((
         key,
         usize::try_from(start).ok()?,

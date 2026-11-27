@@ -1,9 +1,9 @@
 //! Encoded examples of every serialized server value type.
 //!
-//! These records are written to disk by one build and read by another, and
-//! the mesh types travel on the server wire, so their encodings may only change
-//! through an explicit compatibility decision. Each test pins the exact bytes
-//! or text produced today and decodes them back to the same value.
+//! These records are written to disk by one build and read by another, so
+//! their encodings may only change through an explicit compatibility decision.
+//! Each test pins the exact text produced today and decodes it back to the same
+//! value.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,17 +19,7 @@ use std::path::PathBuf;
 use collab_types::WorkspaceId;
 use tilo_server_protocol::config::{ApplePushKey, WebTls};
 use tilo_server_protocol::metrics::WorkspaceEgress;
-use tilo_server_protocol::{
-    MetricsSnapshot, ServerConfig, ServiceCapabilities, TrustPolicy, WorkSetting,
-};
-
-fn postcard_hex<T: serde::Serialize>(value: &T) -> String {
-    hex::encode(postcard::to_stdvec(value).unwrap())
-}
-
-fn from_postcard_hex<T: serde::de::DeserializeOwned>(encoded: &str) -> T {
-    postcard::from_bytes(&hex::decode(encoded).unwrap()).unwrap()
-}
+use tilo_server_protocol::{MetricsSnapshot, ServerConfig, TrustPolicy, WorkSetting};
 
 /// Pins `encoded` as the exact JSON of `value`, and decodes it back.
 fn assert_json<T>(value: &T, encoded: &str)
@@ -40,27 +30,9 @@ where
     assert_eq!(&serde_json::from_str::<T>(encoded).unwrap(), value);
 }
 
-/// Pins `encoded` as the exact postcard hex of `value`, and decodes it back.
-fn assert_postcard<T>(value: &T, encoded: &str)
-where
-    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
-{
-    assert_eq!(postcard_hex(value), encoded);
-    assert_eq!(&from_postcard_hex::<T>(encoded), value);
-}
-
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn json_encodings_are_pinned() {
-    // The services a server says it hosts.
-    assert_json(
-        &ServiceCapabilities::relay_only(),
-        concat!(
-            r#"{"workspace_replication":true,"#,
-            r#""inbound_server":true,"remote_control_server":true,"app_serving":false,"compute":false}"#,
-        ),
-    );
-
     // The work a device takes.
     assert_json(
         &WorkSetting::own_person(),
@@ -176,13 +148,7 @@ fn json_encodings_are_pinned() {
 }
 
 tilo_test_env::scenario! {
-    fn postcard_toml_and_certification_encodings_are_pinned;
-
-    phase postcard_wire_encodings_and_shard_ids_are_pinned;
-    {
-        // Management responses carry these fields in postcard frames.
-        assert_postcard(&ServiceCapabilities::personal_server(), "0101010101");
-    }
+    fn toml_encodings_are_pinned;
 
     phase toml_encodings_are_pinned;
     {
@@ -198,7 +164,7 @@ tilo_test_env::scenario! {
             },
             work: WorkSetting::own_person(),
             rented: false,
-            services: ServiceCapabilities::relay_only(),
+            app_serving: false,
             web_entry: None,
             web_listen: Some(SocketAddr::from(([0, 0, 0, 0], 8443))),
             web_tls: WebTls::Local,
@@ -234,13 +200,6 @@ builds = true
 charging_only = false
 free_cpu_percent = 0
 free_memory_percent = 0
-
-[services]
-workspace_replication = true
-inbound_server = true
-remote_control_server = true
-app_serving = false
-compute = false
 
 [apple_push]
 key_file = "/var/lib/tilo/apple-push.p8"
