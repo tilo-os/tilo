@@ -325,6 +325,12 @@ pub fn serve(
                 if let Some(window) = frame.widget_mut::<HostedWindow>() {
                     window.hand_desktop(layout.to_string());
                 }
+                // What the page shows next shows that desktop: its views took it first.
+                await_app(frame, |window| {
+                    window
+                        .view()
+                        .is_some_and(tilo_app_window::AppWindow::presses_unanswered)
+                });
                 let changed = patches(page.fill_wells(frame, wells));
                 WindowAnswer::Desktop {
                     changed,

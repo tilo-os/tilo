@@ -333,10 +333,8 @@ pub struct AppWindow {
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window takes
     /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
-    /// The layout's actions the app asked the desktop this window is shown on to carry out
-    /// ([`ToUi::Desktop`]), each `(action, argument)`, until the device that shows it takes them
-    /// ([`Self::take_desktop_asks`]).
-    desktop_asks: Vec<(String, String)>,
+    /// The desktop this window is shown on, when a device shows it on one.
+    desktop: ShownDesktop,
     /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many of
     /// them the app said it ran (`ToUi::Took`).
     fired: u64,
@@ -543,7 +541,7 @@ impl AppWindow {
             held_sent: wire::Held::default(),
             activations: 0,
             shown_runs: Vec::new(),
-            desktop_asks: Vec::new(),
+            desktop: ShownDesktop::default(),
             fired: 0,
             took: 0,
             typed: std::collections::VecDeque::new(),
@@ -779,10 +777,23 @@ impl AppWindow {
         (!self.shown_runs.is_empty()).then(|| self.shown_runs.remove(0))
     }
 
+    /// Hand the app `layout`, the desktop this window is shown on as its person reads it there
+    /// ([`ToApp::Desktop`]), when it is not the one it was last handed. Counted as a press: the
+    /// window is answered once the app took it ([`Self::presses_unanswered`]), so what it shows
+    /// next shows that desktop.
+    pub fn hand_desktop(&mut self, layout: String) {
+        if self.desktop.handed.as_ref() == Some(&layout) {
+            return;
+        }
+        self.desktop.handed = Some(layout.clone());
+        self.fired = self.fired.saturating_add(1);
+        self.tell(ToApp::Desktop { layout });
+    }
+
     /// The layout's actions the app asked the desktop this window is shown on to carry out since
     /// this was last asked, oldest first ([`ToUi::Desktop`]): each `(action, argument)`.
     pub fn take_desktop_asks(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.desktop_asks)
+        std::mem::take(&mut self.desktop.asks)
     }
 
     /// What the app's connection heard of the people at the app since this was last asked
@@ -932,7 +943,7 @@ impl AppWindow {
                 ToUi::Loading => self.show_loading(),
                 ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
-                ToUi::Desktop { action, argument } => self.desktop_asks.push((action, argument)),
+                ToUi::Desktop { action, argument } => self.desktop.asks.push((action, argument)),
                 ToUi::Speak(language) => tilo_ui_base::i18n::I18nManager::set_locale(&language),
                 ToUi::Kept(kept) => self.kept(kept),
                 // The window's page does what the app asked, and its answer goes back as the
@@ -3571,6 +3582,17 @@ impl ui::widget::Queryable for AppWindow {
             self.search_total.unwrap_or(shown).max(shown),
         ))
     }
+}
+
+/// What a window shown on a device's desktop exchanges with its app about that desktop.
+#[derive(Default)]
+struct ShownDesktop {
+    /// The layout as the window last handed the app ([`AppWindow::hand_desktop`]).
+    handed: Option<String>,
+    /// The layout's actions the app asked the desktop to carry out ([`ToUi::Desktop`]), each
+    /// `(action, argument)`, until the device that shows the window takes them
+    /// ([`AppWindow::take_desktop_asks`]).
+    asks: Vec<(String, String)>,
 }
 
 /// A window is on its way until its app sent the view it opens with: the keys a person types

@@ -518,9 +518,13 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
 
         // The dock's launcher opens on the page, as it does on a device: the panel lists the apps
         // she may open.
-        let whole = page.opened.body.clone();
-        let launcher = labelled(&whole, "Launcher")
-            .unwrap_or_else(|| panic!("the dock's launcher entry: {whole}"));
+        // The dock stands again once no window covers it.
+        let whole = page
+            .until("the dock's launcher entry", |html| {
+                labelled(html, "Launcher").is_some()
+            })
+            .await;
+        let launcher = labelled(&whole, "Launcher").unwrap();
         let listed = page.act(Some((launcher, PageAction::Activate))).await;
         let listed = if labelled(&listed, "Tasks").is_some() {
             listed
@@ -1170,6 +1174,24 @@ fn the_styles_are_read_by_the_person_workspaces_rules() {
     host::run_with(&["shell"], |host| async move {
         use tilo_actions::remote::{ActionCallError, ResourceAddress, ResourceCopy};
         let own = own_workspace(&host);
+        // The device reads its styles off the start: the shell's are offered once that read
+        // ends, as a reader following them sees.
+        let computer = Computer::of(&host.daemon(), host.workspace());
+        tilo_test_env::within("the device offers the shell's styles", async {
+            let mut after = None;
+            loop {
+                let (moved, offered) = computer.styles(&own, after).await;
+                if offered
+                    .offered
+                    .iter()
+                    .any(|offered| offered.style == FRAMES)
+                {
+                    break;
+                }
+                after = moved;
+            }
+        })
+        .await;
         let reads = host
             .dispatch()
             .resource_reads()

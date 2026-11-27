@@ -340,6 +340,11 @@ impl Inner {
                         })
                         .map_err(unavailable)?,
                 );
+                // What the act asked of the desktop (a window's Close, the launcher's Open) is
+                // carried out before the page is answered, and the page shows what it left.
+                if let Some(wells) = wells {
+                    patches.extend(wells.follow(window)?);
+                }
                 Ok(patches)
             }
             (Held::App { window, wells, .. }, None) => {
@@ -374,6 +379,10 @@ impl Inner {
             None => Vec::new(),
         };
         patches.extend(window.pointer(event).map_err(unavailable)?);
+        // A drag commits the layout's action it ends in: carried out before the page is answered.
+        if let Some(wells) = wells {
+            patches.extend(wells.follow(window)?);
+        }
         drop(held);
         Ok(patches)
     }

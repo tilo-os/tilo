@@ -907,13 +907,11 @@ impl HostedWindow {
     }
 
     /// Hand the instance `layout`, the desktop the device shows this window on as its person
-    /// reads it there ([`tilo_render_protocol::patch::ToApp::Desktop`]). Nothing before the
-    /// window connected.
+    /// reads it there ([`tilo_render_protocol::patch::ToApp::Desktop`]), as a press it answers
+    /// once it took it. Nothing before the window connected.
     pub fn hand_desktop(&mut self, layout: String) {
         if let Some(connected) = &mut self.connected {
-            connected
-                .view
-                .tell(tilo_render_protocol::patch::ToApp::Desktop { layout });
+            connected.view.hand_desktop(layout);
             connected.view.flush();
         }
     }

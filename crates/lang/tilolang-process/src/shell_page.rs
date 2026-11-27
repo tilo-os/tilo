@@ -136,6 +136,9 @@ pub struct ShellPage {
     apps: Option<Vec<Listed>>,
     /// The readings changed since the views were told.
     untold: bool,
+    /// The press the window counts the desktop it handed last as, answered once the views drew
+    /// it ([`Self::turn`]).
+    answering: Option<u64>,
     /// The catalogue read in flight.
     listing: Option<u64>,
     /// The styles read in flight.
@@ -163,6 +166,7 @@ impl ShellPage {
             layout: None,
             apps: None,
             untold: true,
+            answering: None,
             listing: None,
             styles_reading: None,
             next_correlation: 1,
@@ -232,9 +236,16 @@ impl ShellPage {
     }
 
     /// Take the layout the device handed, carry out what the views asked, read what is due, and
-    /// tell `instance`'s views what moved.
-    pub fn turn(&mut self, instance: &mut Instance) {
-        if let Some(layout) = instance.take_desktop() {
+    /// tell `instance`'s views what moved. Whether the views owe the window another frame: a
+    /// desktop handed now is answered once they drew it, in the next.
+    pub fn turn(&mut self, instance: &mut Instance) -> bool {
+        // The desktop handed last turn is drawn now: the window hears the views took it, with
+        // what they show of it.
+        if let Some(at) = self.answering.take() {
+            instance.press_ran(at);
+            instance.show_ran();
+        }
+        self.answering = instance.take_desktop().map(|(at, layout)| {
             match serde_json::from_str::<Value>(&layout) {
                 Ok(layout) if self.layout.as_ref() != Some(&layout) => {
                     self.layout = Some(layout);
@@ -243,7 +254,8 @@ impl ShellPage {
                 Ok(_) => {}
                 Err(error) => tracing::error!(%error, "the layout the device handed is no JSON"),
             }
-        }
+            at
+        });
         let asked = std::mem::take(&mut *self.asked.borrow_mut());
         for invocation in &asked {
             self.carry_out(instance, invocation);
@@ -290,6 +302,7 @@ impl ShellPage {
                 tracing::warn!(%error, "a page's shell was not told what it reads");
             }
         }
+        self.answering.is_some()
     }
 
     /// Send what is queued with `send`. A read the connection does not take is asked again when
@@ -587,10 +600,30 @@ fn windows_reading(reading: &LayoutReading, read: Option<&Value>) -> Value {
             "recency": at,
             "focused": strip.is_some_and(|strip| strip.active == place.key),
             "preview": "none",
+            // A page draws no window's surface: none is measured, floats or covers a display.
+            "width": 0,
+            "height": 0,
             "not_responding": false,
+            "attention": false,
+            "busy": false,
+            "modified": false,
+            "presence": [],
+            "fullscreen": false,
+            "floating": false,
+            "renameable": false,
+            "opens_tabs": true,
+            "controls_desktop": false,
+            "display_id": "",
+            "bar_location": "",
+            "bar_field": "",
+            "bar_typing": false,
+            "find": Value::Null,
+            "bar": Value::Null,
+            "author": Value::Null,
+            "ended": Value::Null,
         }));
     }
-    json!({ "all": all })
+    json!({ "all": all, "displays": [] })
 }
 
 /// What the page carries out of what a view asked.
