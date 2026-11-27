@@ -1385,6 +1385,14 @@ impl Instance {
         Some(host)
     }
 
+    /// Open the host this instance runs on, and what it publishes with it, without running a
+    /// frame: an instance opened for its callers ([`Self::without_window`]) offers what it
+    /// publishes as it opens, so the call that started it is answered without waiting for a
+    /// frame that has nothing of its own to show.
+    pub fn open_host(&mut self) {
+        let _ = self.host_for();
+    }
+
     /// The name a bound control is announced by: the field it edits, through what the host
     /// declares of that field — the field's own word in the window's language, and its declared
     /// name in words while the package names it in no catalogue.
@@ -2889,7 +2897,10 @@ impl Instance {
         if !self.started {
             self.started = true;
             self.loading = false;
-            if !self.rootless {
+            // An instance with no window opens no view of its own: nobody shows one, and what a
+            // caller reads of it is opened when it is read ([`Self::open_to_read`]). Its first
+            // frame leaves the app's views to the callers that ask for them.
+            if !self.rootless && !self.windowless {
                 let _phase = tilo_resource::profiling::Phase::start("tl.view.open_root");
                 self.open_root(&host);
             }

@@ -1117,6 +1117,12 @@ impl TilolangProcess {
         }
         self.attach_origin(opening, &mut hosted)?;
         opening.reached("opened");
+        // An instance with no window is open for its callers the moment it is admitted: it offers
+        // what it publishes before its first frame runs, so the call that started it answers as
+        // soon as it is open rather than once that frame settles.
+        if hosted.spec().shows == Shows::Nothing {
+            hosted.offer();
+        }
         let stages: Vec<String> = opening
             .reached
             .iter()

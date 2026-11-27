@@ -4631,6 +4631,14 @@ impl Hosted {
         out.into_iter().collect()
     }
 
+    /// Open the host and offer what the instance publishes, before its first frame runs: an
+    /// instance with no window is opened for the callers of its actions, and a call that started
+    /// it is answered once it is open rather than once its first frame settles.
+    pub(crate) fn offer(&mut self) {
+        self.instance.open_host();
+        self.publish();
+    }
+
     /// Publish what the instance offers, when it changed since the broker last took it.
     fn publish(&mut self) {
         let Some(surface) = self.surface.borrow().clone() else {

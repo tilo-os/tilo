@@ -103,8 +103,24 @@ impl NameHost for Alone {
 
 /// Ada's window of the inbox, over a store of its own.
 fn window() -> Instance {
+    let mut window = inbox();
+    window.sync();
+    window
+}
+
+/// An instance of the inbox with no window, over a store of its own: what `start` runs for a
+/// caller of the app's actions.
+fn windowless() -> Instance {
+    let mut instance = inbox();
+    instance.without_window();
+    instance.sync();
+    instance
+}
+
+/// Ada's instance of the inbox, over a store of its own, before it runs a frame.
+fn inbox() -> Instance {
     let (app_end, _window) = pair();
-    let mut instance = Instance::new(
+    Instance::new(
         Config {
             app: APP.to_owned(),
             me: "ada".into(),
@@ -118,9 +134,7 @@ fn window() -> Instance {
         Rc::new(Opening),
         Rc::new(Alone),
         Box::new(app_end),
-    );
-    instance.sync();
-    instance
+    )
 }
 
 /// A conversation about `subject` arrived in the inbox, as sol, who keeps the workspace, wrote it.
@@ -217,6 +231,38 @@ fn a_window_opening_on_its_root_runs_what_opening_the_root_does() {
         host.runtime().read(&inbox, "visits").unwrap(),
         Value::Int(1),
         "the window opening on the inbox opened it, once"
+    );
+}
+
+/// An instance with no window opens no view of its own: nobody opened its root, so neither its
+/// views nor what opening the root does run. A caller that reads it opens the root for that
+/// read, and no opened action runs for a root nobody opened.
+#[test]
+fn an_instance_with_no_window_opens_no_view_until_a_caller_reads_it() {
+    let mut instance = windowless();
+    let host = instance.host().expect("the instance opened its host");
+    let inbox = host.root_of(APP).unwrap();
+    assert!(
+        instance.shown_now().is_empty(),
+        "an instance with no window shows no view"
+    );
+    assert_eq!(
+        host.runtime().read(&inbox, "visits").unwrap(),
+        Value::Int(0),
+        "no view was opened, so what opening the root does did not run"
+    );
+
+    // A caller that reads it — an agent reading the window as text — opens its root for that
+    // read, and runs no opened action of it.
+    instance.open_to_read();
+    assert!(
+        !instance.shown_now().is_empty(),
+        "the read opened the root it reads"
+    );
+    assert_eq!(
+        host.runtime().read(&inbox, "visits").unwrap(),
+        Value::Int(0),
+        "an instance with no window runs no opened action, read or not"
     );
 }
 
