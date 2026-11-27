@@ -1079,7 +1079,7 @@ impl StoreExport {
             frames.extend(self.state.pop_front());
         }
         while !self.done {
-            let (kept, more) = self.link.replay(&self.cursors)?;
+            let (kept, more) = self.link.replayed(&self.cursors)?;
             advance(&mut self.cursors, &kept);
             self.done = !more || kept.is_empty();
             let own = self.link.device();
@@ -1784,7 +1784,7 @@ impl DirectSync {
                 let mut cursors = cursors.to_vec();
                 let mut frames = Vec::new();
                 loop {
-                    let (round, more) = host.replay(&cursors)?;
+                    let (round, more) = host.replayed(&cursors)?;
                     advance(&mut cursors, &round);
                     frames.extend(round);
                     if !more {
@@ -2670,7 +2670,7 @@ impl DirectSync {
     async fn replay_from(&self, host: &Self) -> Result<(), String> {
         let mut cursors = self.cursors();
         loop {
-            let (frames, more) = host.replay(&cursors)?;
+            let (frames, more) = host.replayed(&cursors)?;
             let mut authored = Vec::with_capacity(frames.len());
             for message in &frames {
                 let author = author_of(message)
@@ -2696,15 +2696,76 @@ impl DirectSync {
 
     /// The frames `cursors` do not cover at this device's store, and whether
     /// more are left.
+    ///
+    /// A record whose frames the store no longer reaches back to — a
+    /// compaction retired what the cursors name, and no checkpoint leads what
+    /// it kept — is answered with its whole state as this device holds it
+    /// ([`StatePeer::record_state`]) in place of the frames it kept: a device
+    /// sent the part left would hold a record it cannot apply. The decision is
+    /// this one, taken wherever a store answers for a device.
     #[cfg(not(target_arch = "wasm32"))]
-    fn replay(&self, cursors: &[Cursor]) -> Result<(Vec<NeighbourMsg>, bool), String> {
+    fn replayed(&self, cursors: &[Cursor]) -> Result<(Vec<NeighbourMsg>, bool), String> {
         let Some(store) = &self.0.store else {
             return Ok((Vec::new(), false));
         };
         let replay = store
             .replay(self.workspace()?, cursors, Budget::default())
             .map_err(|error| error.to_string())?;
-        Ok((replay.frames, replay.more))
+        let gapped = Self::gapped_records(cursors, &replay.frames);
+        if gapped.is_empty() {
+            return Ok((replay.frames, replay.more));
+        }
+        let mut frames: Vec<NeighbourMsg> = replay
+            .frames
+            .into_iter()
+            .filter(|message| {
+                Frame::of(message).map_or(true, |frame| !gapped.contains(&frame.lineage.record))
+            })
+            .collect();
+        for record in &gapped {
+            frames.extend(self.record_state(*record));
+        }
+        Ok((frames, replay.more))
+    }
+
+    /// The records whose frames `frames` cannot carry `cursors` on from: a line
+    /// whose first kept frame is past the one after the cursor, or whose numbers
+    /// jump. A store that compacted without a checkpoint leading what it kept
+    /// leaves such a hole, and a device sent the frames after it alone would hold
+    /// a record it cannot apply.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn gapped_records(cursors: &[Cursor], frames: &[NeighbourMsg]) -> BTreeSet<[u8; 32]> {
+        let mut next: BTreeMap<crate::retained::Lineage, u64> = cursors
+            .iter()
+            .map(|cursor| (cursor.lineage, cursor.after_seq))
+            .collect();
+        let mut gapped = BTreeSet::new();
+        for message in frames {
+            let Ok(frame) = Frame::of(message) else {
+                continue;
+            };
+            let after = next.get(&frame.lineage).copied().unwrap_or(0);
+            if frame.seq > after.saturating_add(1) {
+                gapped.insert(frame.lineage.record);
+            }
+            let entry = next.entry(frame.lineage).or_insert(0);
+            *entry = (*entry).max(frame.seq);
+        }
+        gapped
+    }
+
+    /// Every write this device holds of the record on `channel`, as frames:
+    /// [`StatePeer::record_state`] of the app and record the channel names.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn record_state(&self, channel: [u8; 32]) -> Vec<NeighbourMsg> {
+        let Some((app, record)) = self
+            .listing()
+            .into_iter()
+            .find(|(app, record)| neighbour_wire::app_document_group(app, record) == channel)
+        else {
+            return Vec::new();
+        };
+        self.read(|peer| peer.record_state(&app, &record))
     }
 
     /// The device key this link signs for.
@@ -3451,7 +3512,7 @@ impl DirectSync {
                 frames.extend(state.pop_front());
             }
             let more = if state.is_empty() {
-                let (kept, more) = self.replay(&cursors)?;
+                let (kept, more) = self.replayed(&cursors)?;
                 // A frame the store keeps names its own author; one that does
                 // not is this device's.
                 frames.extend(
@@ -3502,9 +3563,15 @@ impl DirectSync {
         let replay = store
             .replay_record(self.workspace()?, channel, cursors, Budget::default())
             .map_err(|error| error.to_string())?;
+        // The store kept no checkpoint the cursors lead into: the record's
+        // whole state goes in the frames it kept of it.
+        let frames = if Self::gapped_records(cursors, &replay.frames).is_empty() {
+            replay.frames
+        } else {
+            self.record_state(channel)
+        };
         let own = self.device();
-        let frames = replay
-            .frames
+        let frames = frames
             .into_iter()
             .filter(|message| reaches(message))
             .map(|message| (author_of(&message).unwrap_or(own), message))
@@ -4664,7 +4731,7 @@ impl DirectSync {
     fn kept(&self) -> Result<Vec<NeighbourMsg>, String> {
         let (mut cursors, mut kept) = (Vec::new(), Vec::new());
         loop {
-            let (frames, more) = self.replay(&cursors)?;
+            let (frames, more) = self.replayed(&cursors)?;
             advance(&mut cursors, &frames);
             let done = !more || frames.is_empty();
             kept.extend(frames);

@@ -67,6 +67,35 @@ impl StatePeer {
             Ok(tilo_automerge_isolate::Applied::Changed(false))
         )
     }
+    /// Every write this state holds of `record` of `app`, as the frames a
+    /// device takes them in as history: the record's whole state as this
+    /// device has it. A store that keeps the record's history answers with
+    /// this in place of the frames it kept when a compaction retired frames
+    /// the device still lacked and no checkpoint leads them, so a device is
+    /// never left with part of a record. Empty for a record this state does
+    /// not hold, and for one written in the clear, whose history no store
+    /// keeps.
+    #[must_use]
+    pub fn record_state(&self, app: &str, record: &str) -> Vec<NeighbourMsg> {
+        let Some(document) = self.core.documents.get(&Route {
+            app: app.into(),
+            record: record.into(),
+        }) else {
+            return Vec::new();
+        };
+        document
+            .sealed
+            .iter()
+            .map(|write| NeighbourMsg::AppDocument {
+                peer: neighbour_wire::peer_handle(write.author.as_bytes()),
+                app_id: app.into(),
+                cluster_id: self.core.workspace.clone(),
+                document_id: record.into(),
+                readers: None,
+                envelope: Box::new(write.clone()),
+            })
+            .collect()
+    }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.core
             .documents

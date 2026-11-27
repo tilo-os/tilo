@@ -377,6 +377,9 @@ struct Hosted {
     /// The keys the workspace's members seal its records under.
     keys: key_group::ContentKeys,
     b: DirectSync,
+    /// The workspace as B joined it, holding nothing of its records: what a
+    /// B that kept nothing starts from.
+    b_joined: StatePeer,
     a_key: SigningKey,
     b_key: SigningKey,
     store: Arc<tilo_peer_state::store::Store>,
@@ -424,6 +427,7 @@ impl Hosted {
             seed(&a, &keys, &a_key, &person, &format!("from a {round}"));
         }
         let b_dir = tempfile::tempdir().unwrap();
+        let b_joined = b.clone();
         let b = stored(&DirectSync::new(b, b_key.clone()), &b_dir);
         let host_endpoint = localhost_endpoint(&a_key).await;
         let host_router = iroh::protocol::Router::builder(host_endpoint.clone())
@@ -444,6 +448,7 @@ impl Hosted {
             a_cert,
             keys,
             b,
+            b_joined,
             a_key,
             b_key,
             store,
@@ -625,5 +630,64 @@ async fn a_device_behind_a_compacted_history_converges() {
         taken.get("AppDocument").copied().unwrap_or_default().0,
         1,
         "the compacted history is not sent again: {taken:?}"
+    );
+}
+
+/// A device that keeps nothing of the record, whose history the host's store
+/// compacted past with no checkpoint to lead it, is sent the record's whole
+/// state: the part the store still kept would leave the record half-synced.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_behind_a_compaction_with_no_checkpoint_is_sent_the_records_state() {
+    let hosted = Box::pin(Hosted::start()).await;
+    let keys = &hosted.keys;
+    hosted.link.abort();
+    let workspace = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
+    let person = hosted.a.read(StatePeer::owner);
+
+    // The host's store is told where the device stood, and retires every
+    // change it kept of the record: the record has no checkpoint to keep.
+    hosted
+        .store
+        .holds(
+            workspace,
+            hosted.b_key.verifying_key().to_bytes(),
+            &hosted.b.cursors(),
+        )
+        .unwrap();
+    let retired = hosted
+        .store
+        .compact(workspace, tilo_clock::unix_now_ns())
+        .unwrap();
+    assert_eq!(
+        retired.frames, 7,
+        "every change after the record's first checkpoint is retired"
+    );
+
+    // The device starts again holding nothing of the record, and the host
+    // writes one change the store keeps: the store now holds the tail alone.
+    let fresh = DirectSync::new(hosted.b_joined.clone(), hosted.b_key.clone());
+    assert!(fresh.read(StatePeer::rows).is_empty(), "it keeps no record");
+    seed(&hosted.a, keys, &hosted.a_key, &person, "after everything");
+    assert_eq!(
+        hosted.store.stands(workspace).len(),
+        1,
+        "the store holds the change after the retired ones alone"
+    );
+    let expected = heads(&hosted.a, keys);
+    let reader = fresh.reader();
+    let again = hosted.again(&fresh);
+    until(&fresh, "the record's whole state is sent", |fresh| {
+        opened_heads(fresh, keys, (APP, RECORD)) == expected
+    })
+    .await;
+    let taken = taken_in(reader, Duration::from_millis(500)).await;
+    again.abort();
+    let converged = value(&fresh, keys);
+    hosted.stop().await;
+    assert_eq!(converged, "after everything");
+    assert_eq!(
+        taken.get("AppDocument").copied().unwrap_or_default().0,
+        9,
+        "the whole record goes, not the part the store kept: {taken:?}"
     );
 }
