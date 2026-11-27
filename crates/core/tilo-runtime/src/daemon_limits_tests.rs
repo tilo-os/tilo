@@ -27,7 +27,7 @@ fn endpoint() -> (tempfile::TempDir, PathBuf, HeldHost) {
     let listener = UnixListener::bind(&socket).unwrap();
     let serving = host.clone();
     let endpoint = Endpoint {
-        session_factory: Arc::new(move || {
+        session_factory: Arc::new(move |_| {
             Ok::<_, std::io::Error>(McpServer::for_person(
                 serving.clone(),
                 "workspace".into(),

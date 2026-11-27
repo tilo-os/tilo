@@ -32,5 +32,3 @@ mod host;
 mod language;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
-#[path = "session_api_connect.rs"]
-mod session_api_connect;

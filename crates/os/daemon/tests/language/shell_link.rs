@@ -20,6 +20,7 @@ use crate::language::host;
 const PROBE: &str = "so.tilo.probe";
 const ASKS: &str = "session.asks";
 const WAITS: &str = "session.waits";
+const BOARD: &str = "session.board";
 const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
 const MODELS: &str = tilo_actions::remote::MODELS_PROVIDER;
 const SERVER_ACCOUNT: &str = tilo_actions::remote::SERVER_ACCOUNT_PROVIDER;
@@ -479,13 +480,109 @@ fn started_shell(
     (session, socket, shell)
 }
 
-/// `tilo do` where no desktop's socket answers reaches the device's daemon, which answers the
-/// person's actions there: it no longer says a desktop session is needed. What the person's seat
-/// keeps for them (the account this computer is signed in to, their model keys) is their
-/// desktop's alone: a program of theirs at the same socket neither lists nor calls it.
+/// The answers to `requests`, sent as an MCP client sends them over one connection to the
+/// daemon's endpoint at `socket`, read until the last of them is answered.
+#[cfg(target_os = "linux")]
+fn mcp_over(socket: &std::path::Path, requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    use std::io::{BufRead as _, Write as _};
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    for request in requests {
+        writeln!(writer, "{request}").unwrap();
+    }
+    let last = requests
+        .iter()
+        .filter_map(|request| request.get("id").cloned())
+        .next_back()
+        .expect("a request to answer");
+    let mut answers = Vec::new();
+    for line in std::io::BufReader::new(stream).lines() {
+        let answer: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+        let done = answer.get("id") == Some(&last);
+        answers.push(answer);
+        if done {
+            return answers;
+        }
+    }
+    panic!("the daemon closed the connection before answering: {answers:?}");
+}
+
+/// An agent's `tilo-runtime --connect` in a Tilo login, with no profile named, reaches this
+/// computer's daemon: the socket a desktop session once served its agents at hears nothing.
 #[cfg(target_os = "linux")]
 #[test]
-fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
+fn connect_in_a_tilo_login_reaches_the_computers_daemon() {
+    use std::io::{BufRead as _, Write as _};
+    use std::os::unix::fs::DirBuilderExt as _;
+    host::in_own_process(|_| {
+        // This computer's own daemon, over the profile its account keeps.
+        let profile = tilo_machine::account_daemon_profile().expect("the test's home");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&profile)
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (session, _, _shell) = started_shell(&profile, &runtime);
+        let run = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        let old = run.join("tilo-session");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&old)
+            .unwrap();
+        let unheard = std::os::unix::net::UnixListener::bind(old.join("agent.sock")).unwrap();
+        unheard.set_nonblocking(true).unwrap();
+        let mut client = std::process::Command::new(tilo_test_env::package_binary!("tilo-runtime"))
+            .arg("--connect")
+            .env("XDG_CURRENT_DESKTOP", "tilo:GNOME")
+            .env_remove("TILO_RUNTIME_PROFILE")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = client.stdin.take().unwrap();
+        for request in [
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "an agent", "version": "1"}}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ] {
+            writeln!(stdin, "{request}").unwrap();
+        }
+        let listed = std::io::BufReader::new(client.stdout.take().unwrap())
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(&line.unwrap()).unwrap())
+            .find(|answer| answer["id"] == json!(2))
+            .expect("the tools are listed");
+        let tools = listed["result"]["tools"].to_string();
+        assert!(tools.contains("tilo_do"), "the daemon's tools: {listed}");
+        assert!(
+            matches!(unheard.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "nothing dials the session's old socket"
+        );
+        drop(stdin);
+        let _ = client.kill();
+        let _ = client.wait();
+        session.stop().unwrap();
+    });
+}
+
+/// What the person's session serves on the device's dispatch, `tilo do` and an agent's MCP
+/// client reach at the daemon's one socket: the session opens no socket of its own for them.
+/// What the person's seat keeps for them (the account this computer is signed in to, their model
+/// keys) is their desktop's alone: a program of theirs at the same socket neither lists nor
+/// calls it.
+#[cfg(target_os = "linux")]
+#[test]
+fn tilo_do_and_an_agent_reach_what_the_session_serves_at_the_daemons_socket() {
     host::in_own_process(|profile| {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -513,18 +610,15 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
                 ),
             ))
             .expect("the shell founds the person's first workspace");
-
-        // What the shell serves on the device's dispatch, as a desktop's seat serves it.
-        let board = echoing(offered(ASKS, "so.tilo.shell", "board/notes", "pin-note"));
+        let board = echoing(offered(BOARD, "so.tilo.shell", "board/notes", "pin-note"));
         let _served = runtime
             .block_on(shell.provide(
-                ASKS,
-                &offered(ASKS, "so.tilo.shell", "board/notes", "pin-note"),
+                BOARD,
+                &offered(BOARD, "so.tilo.shell", "board/notes", "pin-note"),
                 Arc::clone(&board) as _,
                 tilo_action_calls::serve,
             ))
             .unwrap();
-
         // The account this computer is signed in to, as their desktop's seat serves it.
         let account = echoing(offered(
             SERVER_ACCOUNT,
@@ -548,48 +642,77 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
 
         // `tilo do`, as the person types it, with no desktop's socket anywhere.
         let daemon = [tilo_control::client::ControlSocket::Daemon(socket.clone())];
-        let typed = |name: &str, words: &[&str]| {
+        let typed = |run: &dyn Fn(&mut tilo_control::front::Io<'_>) -> u8| {
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
-            let code = tilo_control::front::run(
-                &daemon,
-                name,
-                &words,
-                true,
-                &tilo_control::front::Spelling::tilo(),
-                &mut tilo_control::front::Io {
-                    out: &mut out,
-                    err: &mut err,
-                },
-            );
+            let code = run(&mut tilo_control::front::Io {
+                out: &mut out,
+                err: &mut err,
+            });
             (
                 code,
                 String::from_utf8_lossy(&out).into_owned(),
                 String::from_utf8_lossy(&err).into_owned(),
             )
         };
-        // The device's own action.
-        let (code, out, err) = typed("layout#read", &[]);
-        assert_eq!(code, 0, "the daemon answers the person's call: {err}");
-        let answered: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(answered["status"], "ok", "{out}");
-        // The shell's, listed and called at the same socket.
-        let (code, out, err) = typed("pin-note", &["echo=pinned by hand"]);
-        assert_eq!(code, 0, "tilo do reaches what the shell serves: {err}");
+        let spelling = tilo_control::front::Spelling::tilo();
+        let (code, out, err) = typed(&|io| {
+            tilo_control::front::run(
+                &daemon,
+                "pin-note",
+                &["echo=pinned by hand".to_owned()],
+                true,
+                &spelling,
+                io,
+            )
+        });
+        let (_, listed, _) = typed(&|io| tilo_control::front::list(&daemon, "", &spelling, io));
+        // An agent's MCP client, at the same socket.
+        let answers = mcp_over(
+            &socket,
+            &[
+                json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "an agent", "version": "1"}}}),
+                json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "tilo_find", "arguments": {"query": "pin-note"}}}),
+                json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+                    "name": "tilo_do",
+                    "arguments": {"path": "shell/board/notes#pin-note",
+                                  "args": {"echo": "pinned by an agent"}}}}),
+            ],
+        );
+        let called = answers.last().unwrap();
+        let (text, failed) = host::said(&called["result"]);
+        assert!(
+            !failed && text.contains("pinned by an agent"),
+            "the agent's call reaches the session's action: {called}\nwhat it finds: {}",
+            answers[answers.len() - 2]
+        );
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&out).unwrap()["result"],
-            json!("pinned by hand"),
-            "{out}"
+            code, 0,
+            "tilo do reaches the session's action: {err}\nwhat it lists:\n{listed}"
+        );
+        let typed_echo = board.asked().first().map(|asked| asked.argument.clone());
+        assert!(
+            matches!(&typed_echo, Some(InvokeArgument::Json(arguments)) if arguments.get("echo") == Some(&json!("pinned by hand"))),
+            "the session's provider is asked what was typed: {typed_echo:?}"
+        );
+        assert!(
+            out.contains("pinned by hand"),
+            "tilo do says what it answered: {out}"
         );
         assert_eq!(
             board.asked().len(),
-            1,
-            "the shell's provider answered the call"
+            2,
+            "both calls reached the session's provider"
         );
 
         // The seat's: not listed to the command, and refused when called by name.
-        let (code, _, _) = typed("reveal-token", &["echo=the token"]);
-        assert_ne!(code, 0, "tilo do finds no account token to reveal");
+        assert!(
+            !listed.contains("reveal-token"),
+            "the seat's actions are not listed: {listed}"
+        );
         let program = tilo_action_line::LineClient::of_stream(
             std::os::unix::net::UnixStream::connect(&socket).unwrap(),
         )

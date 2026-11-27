@@ -1,43 +1,11 @@
-//! Where an MCP client inside a Tilo login reaches the desktop it runs in.
-//!
-//! A Tilo session's compositor serves its action broker to agents at
-//! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (the session's *MCP server*):
-//! the person admits each connection as an agent member of a workspace, and
-//! every call then passes the broker's ordinary check as that agent. A
-//! `--connect` client inside the login relays to that server. It never starts
-//! a standalone runtime there: a second, empty authority beside the desktop
-//! would answer every question about the desktop wrongly, and silently.
+//! What an MCP client says as it opens a server, and the server side that reads it: a confined
+//! environment's server, which its `ush` asks for. Every other client reaches the device's
+//! daemon, which serves a desktop session's windows and seat as providers of its one dispatch.
 
 use std::ffi::OsString;
 use std::io::{self, BufRead as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tilo_socket::Stream;
-
-/// The MCP server's path under `runtime_dir`; `None` when there is none to
-/// look in, which leaves no private place for it.
-#[must_use]
-pub fn agent_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::AGENT_SOCKET_FILE))
-}
-
-/// The desktop server this process belongs to, when it runs on a Tilo desktop: the one its
-/// confined environment names, else its login's own. `Ok(None)` off a Tilo desktop; `Err` on one
-/// whose server is not there (yet), saying why.
-///
-/// # Errors
-/// This is a Tilo desktop, and nothing listens where its server goes.
-pub fn desktop_server() -> io::Result<Option<PathBuf>> {
-    match route(
-        false,
-        environment_server(std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)),
-        tilo_paths::login::is_tilo_login(),
-        agent_socket_path(tilo_paths::login::login_runtime_dir().map(Into::into)),
-        Path::exists,
-    )? {
-        Route::Session(server) => Ok(Some(server)),
-        Route::Standalone => Ok(None),
-    }
-}
 
 /// What the agent's harness calls this session ([`SESSION_NAME`]), when it calls it anything: the
 /// name a person or harness set for it in `T_SESSION_NAME`, as a session is named. `None` when
@@ -53,33 +21,6 @@ fn session_name_in(var: &dyn Fn(&str) -> Option<String>) -> Option<String> {
         .map(|name| name.trim().to_owned())
         .filter(|name| !name.is_empty())?;
     Some(name.chars().take(MAX_SESSION_NAME).collect())
-}
-
-/// Bridge this process's stdio to the desktop's MCP server at `server`, whose `initialize` also
-/// says the session the client is (`session_name`, when it knows one): the desktop shows the agent
-/// by that name rather than by its product's name.
-///
-/// # Errors
-/// Nothing answers at `server`, or the lines could not be carried.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn bridge(server: &Path, session_name: Option<String>) -> io::Result<()> {
-    let stream = tilo_files::native::socket::connect(server)
-        .map_err(|error| unreachable_server(server, &error))?;
-    bridge_stdio(
-        stream,
-        Asking {
-            workspace: None,
-            key: agent_key()?,
-            session_name,
-        },
-    )
-}
-
-/// Whether a desktop's MCP server answers at `server`: a desktop that ended leaves its socket
-/// file behind, which nothing accepts on.
-#[must_use]
-pub fn answers(server: &Path) -> bool {
-    tilo_files::native::socket::connect(server).is_ok()
 }
 
 /// The variable naming the file that holds the agent key this client presents: the key a person
@@ -126,90 +67,12 @@ fn key_text(text: &str) -> Option<String> {
         .then(|| key.to_owned())
 }
 
-/// Where a `--connect` client goes.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Route {
-    /// The desktop's MCP server at this path.
-    Session(PathBuf),
-    /// A standalone runtime profile, started when none runs.
-    Standalone,
-}
-
 /// The server of the confined environment this process runs in, when its
 /// environment names one ([`tilo_paths::login::AGENT_SOCKET_ENV`]): an absolute
 /// path, as `ush` sets it.
 #[must_use]
 pub fn environment_server(named: Option<OsString>) -> Option<PathBuf> {
     named.map(PathBuf::from).filter(|path| path.is_absolute())
-}
-
-/// Choose a `--connect` client's route. `standalone` is the client's own
-/// explicit choice of a profile (`--standalone`, `--profile` or
-/// `TILO_RUNTIME_PROFILE`); `environment` is [`environment_server`]'s answer,
-/// the server of the confined environment the client runs in, which it uses in
-/// place of the session's own; `server` is [`agent_socket_path`]'s answer and
-/// `exists` whether something is there.
-pub fn route(
-    standalone: bool,
-    environment: Option<PathBuf>,
-    tilo_login: bool,
-    server: Option<PathBuf>,
-    exists: impl Fn(&Path) -> bool,
-) -> io::Result<Route> {
-    if standalone {
-        return Ok(Route::Standalone);
-    }
-    if let Some(path) = environment {
-        return if exists(&path) {
-            Ok(Route::Session(path))
-        } else {
-            Err(missing_server(&format!(
-                "this environment's server, {}, is not there; the desktop opens it as the \
-                 environment starts",
-                path.display()
-            )))
-        };
-    }
-    if !tilo_login {
-        return Ok(Route::Standalone);
-    }
-    match server {
-        Some(path) if exists(&path) => Ok(Route::Session(path)),
-        Some(path) => Err(missing_server(&format!(
-            "nothing listens at {}; the desktop serves it once first login is complete",
-            path.display()
-        ))),
-        None => Err(missing_server(
-            "this process has no XDG_RUNTIME_DIR and the account has no /run/user directory to \
-             look in",
-        )),
-    }
-}
-
-fn missing_server(reason: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::NotFound,
-        format!(
-            "the desktop's MCP server isn't available: {reason}. This is a Tilo login, where a \
-             standalone runtime would be a second, empty authority beside the desktop, so none \
-             was started. Check that the Tilo desktop is running and its first login is \
-             complete; pass --standalone to run a separate runtime anyway"
-        ),
-    )
-}
-
-/// The error a client reads when the server is there but does not answer.
-#[must_use]
-pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
-    io::Error::new(
-        error.kind(),
-        format!(
-            "the desktop's MCP server isn't available: {} does not answer ({error}). The Tilo \
-             desktop may have ended or be starting; pass --standalone to run a separate runtime \
-             instead",
-            path.display()
-        ),
-    )
 }
 
 /// The most the server reads from a client before it is admitted: its
@@ -867,21 +730,6 @@ pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u6
 mod tests {
     use super::*;
 
-    /// A desktop that ended leaves its socket file behind: only a server that accepts answers.
-    #[test]
-    fn a_socket_an_ended_desktop_left_does_not_answer() {
-        let dir = std::env::temp_dir().join(format!("tilo-mcp-answers-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("agent.sock");
-        let _ = std::fs::remove_file(&path);
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        assert!(answers(&path));
-        drop(listener);
-        assert!(path.exists());
-        assert!(!answers(&path));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
     #[test]
     fn a_client_is_proposed_as_a_canonical_agent_id() {
         assert_eq!(proposed_agent_id("Claude Code"), "claude-code");
@@ -915,32 +763,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_client_is_routed_to_its_logins_server_and_opens_it_with_initialize;
-
-        phase a_login_whose_server_is_missing_says_why_and_how_to_go_on;
-        {
-            let nowhere = route(false, None, true, None, |_| true).unwrap_err();
-            assert!(
-                nowhere
-                    .to_string()
-                    .starts_with("the desktop's MCP server isn't available:"),
-                "{nowhere}"
-            );
-            let down = route(
-                false,
-                None,
-                true,
-                Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock")),
-                |_| false,
-            )
-            .unwrap_err();
-            let text = down.to_string();
-            assert!(
-                text.contains("agent.sock") && text.contains("first login"),
-                "{text}"
-            );
-            assert!(text.contains("--standalone"), "{text}");
-        }
+        fn a_client_opens_its_server_with_initialize;
 
         phase control_requests_are_told_from_mcp_by_their_op;
         {
@@ -956,44 +779,12 @@ mod tests {
             assert!(!is_control_request(b"op"));
         }
 
-        phase the_server_lives_in_the_private_session_directory;
-        {
-            assert_eq!(
-                agent_socket_path(Some("/run/user/1000".into())),
-                Some(PathBuf::from("/run/user/1000/tilo-session/agent.sock"))
-            );
-            assert_eq!(agent_socket_path(Some("run/user".into())), None);
-            assert_eq!(agent_socket_path(None), None);
-        }
-
-        phase a_tilo_login_relays_to_its_server_and_never_falls_back_to_a_standalone_runtime;
-        {
-            let server = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
-            assert_eq!(
-                route(false, None, true, Some(server.clone()), |_| true).unwrap(),
-                Route::Session(server.clone())
-            );
-            let missing = route(false, None, true, Some(server.clone()), |_| false).unwrap_err();
-            assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-            assert!(missing.to_string().contains("--standalone"), "{missing}");
-            assert!(route(false, None, true, None, |_| true).is_err());
-            assert_eq!(
-                route(true, None, true, Some(server.clone()), |_| true).unwrap(),
-                Route::Standalone
-            );
-            assert_eq!(
-                route(false, None, false, Some(server), |_| true).unwrap(),
-                Route::Standalone
-            );
-        }
-
-        phase a_client_in_an_environment_uses_its_environments_server_in_any_login;
+        phase a_client_in_an_environment_names_its_environments_server;
         {
             let own = PathBuf::from("/run/tilo/agent.sock");
-            let session = PathBuf::from("/run/user/1000/tilo-session/agent.sock");
             assert_eq!(
                 environment_server(Some(own.clone().into())),
-                Some(own.clone()),
+                Some(own),
                 "the environment names its server"
             );
             assert_eq!(
@@ -1002,31 +793,6 @@ mod tests {
                 "only an absolute path names one"
             );
             assert_eq!(environment_server(None), None);
-            for login in [true, false] {
-                assert_eq!(
-                    route(
-                        false,
-                        Some(own.clone()),
-                        login,
-                        Some(session.clone()),
-                        |_| true
-                    )
-                    .unwrap(),
-                    Route::Session(own.clone()),
-                    "an environment's own server, not the session's"
-                );
-            }
-            let gone = route(false, Some(own.clone()), true, Some(session), |path| {
-                path != own.as_path()
-            })
-            .unwrap_err();
-            assert_eq!(gone.kind(), io::ErrorKind::NotFound);
-            assert!(gone.to_string().contains("/run/tilo/agent.sock"), "{gone}");
-            assert_eq!(
-                route(true, Some(own), true, None, |_| true).unwrap(),
-                Route::Standalone,
-                "a client's own choice of a profile still wins"
-            );
         }
 
         phase a_client_names_the_workspace_it_asks_for;

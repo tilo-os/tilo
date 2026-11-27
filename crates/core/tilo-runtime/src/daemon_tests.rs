@@ -535,7 +535,7 @@ fn a_probe_that_missed_is_asked_again_within_the_daemons_bound() {
 }
 
 /// A client that names a profile chose a standalone runtime itself; one that
-/// names none is routed by its login (`session_api::route`).
+/// names none reaches this computer's daemon.
 #[test]
 fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
@@ -1061,7 +1061,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     // device's own actions stand in for them here.
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
-        session_factory: std::sync::Arc::new(move || {
+        session_factory: std::sync::Arc::new(move |_| {
             Ok(tilo_mcp::McpServer::for_agent(
                 answers.clone(),
                 String::new(),
@@ -1230,7 +1230,7 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     // The person's services run, answering as the workspace `home`.
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
-        session_factory: std::sync::Arc::new(move || {
+        session_factory: std::sync::Arc::new(move |_| {
             Ok(tilo_mcp::McpServer::for_agent(
                 answers.clone(),
                 String::new(),
@@ -1577,7 +1577,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
     let own = answers.clone();
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
-        session_factory: std::sync::Arc::new(move || {
+        session_factory: std::sync::Arc::new(move |_| {
             Ok(tilo_mcp::McpServer::for_agent(
                 answers.clone(),
                 String::new(),
@@ -1618,7 +1618,7 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
             super::Endpoint {
                 session_factory: {
                     let answers = answers.clone();
-                    std::sync::Arc::new(move || {
+                    std::sync::Arc::new(move |_| {
                         Ok(tilo_mcp::McpServer::for_agent(
                             answers.clone(),
                             String::new(),
@@ -2007,7 +2007,7 @@ fn the_persons_own_daemon_starts_their_shell_when_their_account_asks() {
     native.serve_the_person(super::Endpoint::<crate::device::unclaimed::DeviceOnly> {
         session_factory: {
             let founded = std::sync::Arc::clone(&founded);
-            std::sync::Arc::new(move || {
+            std::sync::Arc::new(move |_| {
                 founded.fetch_add(1, Ordering::SeqCst);
                 Err(io::Error::other("no workspace in this test"))
             })
@@ -2600,7 +2600,7 @@ fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_u
         // The person's services run, answering as the workspace `home`.
         let frames = crate::device::local::Frames::of_the_device(answers.clone());
         native.serve_the_person(super::Endpoint {
-            session_factory: std::sync::Arc::new(move || {
+            session_factory: std::sync::Arc::new(move |_| {
                 Ok(tilo_mcp::McpServer::for_agent(
                     answers.clone(),
                     String::new(),
@@ -2696,7 +2696,7 @@ fn person_served_as_the_kernel_says(
     // The person's services run, answering as the workspace `home`.
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
     native.serve_the_person(super::Endpoint {
-        session_factory: std::sync::Arc::new(move || {
+        session_factory: std::sync::Arc::new(move |_| {
             Ok(tilo_mcp::McpServer::for_agent(
                 answers.clone(),
                 String::new(),
@@ -3225,7 +3225,7 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         // The person's services run, as the daemon starts them behind the founding call.
         let frames = crate::device::local::Frames::of_the_device(answers.clone());
         native.serve_the_person(super::Endpoint {
-            session_factory: std::sync::Arc::new(move || {
+            session_factory: std::sync::Arc::new(move |_| {
                 Ok(tilo_mcp::McpServer::for_agent(
                     answers.clone(),
                     String::new(),
@@ -3907,7 +3907,7 @@ fn a_sign_in_as_someone_else_answers_the_calls_in_flight_and_hands_nothing_on() 
         let provider = Arc::clone(provider);
         let answers = answers.clone();
         super::Endpoint {
-            session_factory: Arc::new(move || {
+            session_factory: Arc::new(move |_| {
                 Ok(tilo_mcp::McpServer::for_agent(
                     answers.clone(),
                     String::new(),

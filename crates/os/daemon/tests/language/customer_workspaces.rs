@@ -88,7 +88,7 @@ fn the_book_explains_the_sdk_and_the_tools_say_what_they_do() {
         let session = host
             .daemon()
             .mcp_session_factory(host.workspace())
-            .expect("the device serves its workspace's MCP")()
+            .expect("the device serves its workspace's MCP")(None)
         .expect("the session opens");
         let answer = session
             .handle(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))

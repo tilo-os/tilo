@@ -1001,7 +1001,7 @@ impl Host {
     /// `tilo mcp` asks for it with, so the agent's calls act there.
     #[must_use]
     pub fn agent_in(&self, workspace: &str) -> Agent {
-        let session = self.daemon().mcp_session_factory(workspace).unwrap()().unwrap();
+        let session = self.daemon().mcp_session_factory(workspace).unwrap()(None).unwrap();
         Agent {
             session,
             calls: std::sync::atomic::AtomicU64::new(1),

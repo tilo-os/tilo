@@ -300,7 +300,10 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
         if self.running_shortcut {
             return self.state.action_query_on_device(caller, &query);
         }
-        self.state.action_query(caller, &query)
+        // Any other run is listed as it dispatches: under the ownership it keeps, so what reaches
+        // this device alone is offered to a run its steps would reach it from.
+        self.state
+            .action_query_with_origin(caller, self.origin.as_ref(), &query)
     }
 
     fn invoke(

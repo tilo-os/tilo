@@ -1642,7 +1642,7 @@ impl Native {
         let answers = self.answers.seated(seated.clone());
         let frames = Frames::of_the_device(answers.clone());
         Endpoint {
-            session_factory: Arc::new(move || {
+            session_factory: Arc::new(move |_| {
                 Ok(McpServer::for_agent(
                     answers.clone(),
                     String::new(),
@@ -2194,15 +2194,26 @@ fn admitted_per_connection(
 ) -> tilo_mcp::SessionFactory<<Daemon as RuntimeServices>::ActionProvider> {
     let session = Arc::downgrade(session);
     let made: OnceLock<tilo_mcp::SessionFactory<_>> = OnceLock::new();
-    Arc::new(move || {
-        if let Some(factory) = made.get() {
-            return factory();
+    Arc::new(move |asked: Option<&str>| {
+        let daemon = || {
+            session
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))
+        };
+        if let Some(asked) = asked {
+            // A client that names a workspace of the person's (`--connect --workspace`) is
+            // admitted to that one, and judged there as anywhere else.
+            let daemon = daemon()?;
+            if asked != daemon.workspace()? {
+                return daemon.mcp_session_factory(asked)?(None);
+            }
         }
-        let daemon = session
-            .upgrade()
-            .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+        if let Some(factory) = made.get() {
+            return factory(None);
+        }
+        let daemon = daemon()?;
         let factory = daemon.mcp_session_factory(&daemon.workspace()?)?;
-        made.get_or_init(|| factory)()
+        made.get_or_init(|| factory)(None)
     })
 }
 
@@ -2448,6 +2459,10 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             launch(stream, &first, descriptors);
             return;
         }
+        // The workspace an MCP client's `initialize` asks to work in, when it names one: its run
+        // is admitted there, as whoever the connection is, or refused where that workspace does
+        // not admit them, as an action frame naming it is.
+        let asked = asked_workspace(&first);
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         // The session is admitted by the first request that needs one, never by a connection's
         // coming: a connection that only asks what this device is (a desktop about to hand its
@@ -2457,9 +2472,14 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let factory = Arc::clone(&self.session_factory);
         let media = self.media.clone();
         let admit = move || {
-            let (hand, factory, media) = (hand.clone(), Arc::clone(&factory), media.clone());
+            let (hand, factory, media, asked) = (
+                hand.clone(),
+                Arc::clone(&factory),
+                media.clone(),
+                asked.clone(),
+            );
             admit_within(move || {
-                let made = crate::seats::making_for(hand.clone(), || factory())?;
+                let made = crate::seats::making_for(hand.clone(), || factory(asked.as_deref()))?;
                 Ok::<_, io::Error>(Arc::new(made.with_media(media.clone())))
             })
         };
@@ -2915,6 +2935,13 @@ fn asks_the_devices_own_actions(stream: &Stream) -> bool {
     }
 }
 
+/// The workspace an MCP client's `initialize`, the line `first`, asks to work in
+/// ([`tilo_mcp::session_api::WORKSPACE`]): `--connect --workspace ID` writes it.
+fn asked_workspace(first: &[u8]) -> Option<String> {
+    let line = first.split(|byte| *byte == b'\n').next()?;
+    tilo_mcp::session_api::parse_hello(line).ok()?.workspace
+}
+
 /// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes
 /// alone.
 fn first_message(
@@ -3191,46 +3218,37 @@ pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Val
 
 /// Bridge this process's stdio to the MCP host it belongs to: inside a
 /// confined environment, the server the environment names
-/// ([`tilo_paths::login::AGENT_SOCKET_ENV`]); inside a Tilo login, the
-/// desktop's MCP server, which is never replaced by a standalone runtime;
-/// elsewhere, or when `standalone`, the persistent daemon of `profile`,
-/// its service started when none answers. EOF closes only this client's connection; neither
-/// applications nor the daemon are owned here.
+/// ([`tilo_paths::login::AGENT_SOCKET_ENV`]); everywhere else, a Tilo desktop
+/// included, the daemon of `profile`, its service started when none answers.
+/// EOF closes only this client's connection; neither applications nor the
+/// daemon are owned here.
 ///
-/// `workspace` is the workspace the client asks this desktop's MCP server for, written into
-/// its `initialize`.
+/// `workspace` is the workspace the client asks to work in, written into its `initialize`: one
+/// the person is a member of, which the daemon admits the agent's run to.
 pub fn connect(
     profile: &Path,
     standalone: bool,
     forward: Option<&tilo_mcp::devices::Forward>,
     workspace: Option<&str>,
 ) -> io::Result<()> {
-    let route = tilo_mcp::session_api::route(
-        standalone,
-        tilo_mcp::session_api::environment_server(std::env::var_os(
-            tilo_paths::login::AGENT_SOCKET_ENV,
-        )),
-        tilo_paths::login::is_tilo_login(),
-        tilo_mcp::session_api::agent_socket_path(
-            tilo_paths::login::login_runtime_dir().map(Into::into),
-        ),
-        Path::exists,
-    )?;
-    let mut stream = match route {
-        tilo_mcp::session_api::Route::Session(server) => {
-            tilo_files::native::socket::connect(&server)
-                .map_err(|error| tilo_mcp::session_api::unreachable_server(&server, &error))?
-        }
-        tilo_mcp::session_api::Route::Standalone if workspace.is_some() => {
-            return Err(invalid(
-                "--workspace asks a Tilo desktop's MCP server for a workspace, and this process \
-                 is not in a Tilo login",
-            ));
-        }
-        tilo_mcp::session_api::Route::Standalone => {
-            running(profile)?;
-            tilo_files::native::socket::connect(&native_socket(profile)?)?
-        }
+    let environment = tilo_mcp::session_api::environment_server(std::env::var_os(
+        tilo_paths::login::AGENT_SOCKET_ENV,
+    ))
+    .filter(|_| !standalone);
+    let mut stream = if let Some(server) = environment {
+        tilo_files::native::socket::connect(&server).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "this environment's server, {}, does not answer ({error}); it is opened as \
+                     the environment starts",
+                    server.display()
+                ),
+            )
+        })?
+    } else {
+        running(profile)?;
+        tilo_files::native::socket::connect(&native_socket(profile)?)?
     };
     if let Some(forward) = forward {
         tilo_mcp::devices::ask_forward(&mut stream, forward)?;

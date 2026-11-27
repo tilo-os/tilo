@@ -61,10 +61,11 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 pub use turns::{MAX_ADMITTED, MAX_WORKING};
 
-/// Host-configured per-session construction. It receives no client identity,
-/// label, requested workspace or execution UUID.
+/// Host-configured per-session construction, given the workspace the client's
+/// hello names, if any. It receives no client identity, label or execution
+/// UUID: the host judges the connection itself.
 pub type SessionFactory<H> =
-    std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
+    std::sync::Arc<dyn Fn(Option<&str>) -> std::io::Result<McpServer<H>> + Send + Sync>;
 
 /// What is told of each look this session makes at an invocation: the
 /// invocation and the state the look found. A turn times what its tools

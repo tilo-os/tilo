@@ -77,7 +77,10 @@ const BINDINGS_FILE: &str = "mcp-server-bindings.json";
 /// its programs look. `None` when there is no runtime directory to put it in.
 #[must_use]
 pub fn path() -> Option<PathBuf> {
-    tilo_mcp::session_api::agent_socket_path(std::env::var_os("XDG_RUNTIME_DIR"))
+    Some(
+        tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?
+            .join(tilo_paths::login::AGENT_SOCKET_FILE),
+    )
 }
 
 /// What a client asks for, as the sheet shows it: where it would work and what it would be called.

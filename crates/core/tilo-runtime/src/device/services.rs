@@ -2198,11 +2198,11 @@ impl Daemon {
     ) -> tilo_mcp::SessionFactory<RuntimeActionProvider> {
         let daemon = Arc::downgrade(self);
         let name = name.to_owned();
-        Arc::new(move || {
+        Arc::new(move |asked: Option<&str>| {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            daemon.agent_session_in(&name, &daemon.workspace)
+            daemon.agent_session_in(&name, asked.unwrap_or(&daemon.workspace))
         })
     }
 
@@ -4739,11 +4739,11 @@ impl Daemon {
         cert: DeviceCert,
     ) -> tilo_mcp::SessionFactory<RuntimeActionProvider> {
         let daemon = Arc::downgrade(self);
-        Arc::new(move || {
+        Arc::new(move |asked| {
             let daemon = daemon
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            let (provider, caller) = daemon.key_tree(&key, &cert, None)?;
+            let (provider, caller) = daemon.key_tree(&key, &cert, asked)?;
             tilo_mcp::McpServer::admitted(provider, caller)
         })
     }
@@ -6540,7 +6540,7 @@ impl RuntimeActionProvider {
         policy_time: tilo_app_host::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
-        Arc::new(move || {
+        Arc::new(move |_| {
             // The MCP client is the person's agent, under a key of its own: the admission stays
             // the person's, and every call the client makes is signed by the agent's key. Each
             // connection is a run of its own, admitted for it: its end retires that run alone,
@@ -7228,6 +7228,26 @@ impl RuntimeActionProvider {
                 .is_some_and(|provider| certified_provider(provider))
             {
                 let answer = session.provider.query(caller, query.clone());
+                return self.with_devices(caller, answer, &query);
+            }
+            // An agent this device runs for its person, under a key it made, is listed what its
+            // calls reach: its run, which keeps the person's admission it was delegated, lists as
+            // it dispatches, so what the person's desktop serves on this device (its board, its
+            // layout) is the agent's to find. What the seat keeps for the person is not listed:
+            // their desktop alone reaches it.
+            if session.agent.is_some() && !session.is_key_run() && !session.own_shell {
+                let answer = session
+                    .provider
+                    .query(session.acting(), query.clone())
+                    .map(|page| {
+                        page.map(|mut page| {
+                            page.rows.retain(|row| !is_seat_provider(&row.provider));
+                            page.providers
+                                .retain(|provider| !is_seat_provider(&provider.provider));
+                            page
+                        })
+                    });
+                let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
                 return self.with_devices(caller, answer, &query);
             }
             // Existing general catalogue/builtin APIs retain the exact

@@ -1,8 +1,6 @@
-//! `tilo mcp`: the agent's MCP server over stdio. On a Tilo desktop it is
-//! the desktop's own MCP server (`agent.sock`), which the person admits the
-//! agent at; elsewhere it is a connection to this computer's one daemon
-//! (`tilo-runtime`), which serves as the device `tilo login` made of
-//! this computer.
+//! `tilo mcp`: the agent's MCP server over stdio, a connection to this
+//! computer's one daemon (`tilo-runtime`), which serves as the device
+//! `tilo login` made of this computer, on a Tilo desktop and anywhere else.
 //!
 //! What the daemon serves is the runtime's own projection of a workspace
 //! ([`tilo_mcp::McpServer`], the agent surface: `tilo_ls`, `tilo_read`,
@@ -24,35 +22,24 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use tilo_api::daemon::{this_computer, unreachable_answer};
+use tilo_api::daemon::{DaemonPlace, this_computer, unreachable_answer};
 
 use crate::login::NOT_LOGGED_IN;
 
-/// `tilo mcp`: on a Tilo desktop, the desktop's own MCP server, which asks the person to let the
-/// agent in; elsewhere, a connection to this computer's daemon, which enters the person's
-/// workspace wherever it is hosted ([`held`]), its service started when none answers.
+/// `tilo mcp`: a connection to this computer's daemon, which enters the person's workspace
+/// wherever it is hosted ([`held`]), its service started when none answers. A desktop session
+/// serves its windows and seat on the daemon's dispatch, so an agent on a Tilo desktop reaches
+/// them there too.
 pub fn serve() -> Result<ExitCode> {
-    let desktop = tilo_mcp::session_api::desktop_server();
-    if let Ok(Some(server)) = &desktop
-        && tilo_mcp::session_api::answers(server)
-    {
-        tilo_mcp::session_api::bridge(server, tilo_mcp::session_api::session_name())?;
-        return Ok(ExitCode::SUCCESS);
-    }
-    // No desktop answers here: one that ended leaves its socket behind, and one whose first login
-    // is not complete has none yet. This computer's own login then reaches its daemon, as on any
-    // other computer; without one the agent hears what it waits for.
-    let login = crate::login::Place::here(crate::identity::paths())?;
-    match (crate::login::served_device_key(login.keys()), desktop) {
-        (Some(_), _) => {}
-        (None, Ok(Some(server))) => {
-            tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
-            return Ok(ExitCode::SUCCESS);
-        }
-        (None, Ok(None)) => return held::alone(NOT_LOGGED_IN),
-        (None, Err(error)) => return held::alone(&error.to_string()),
-    }
+    // A daemon that serves this account already (Tilo OS's, from boot) is reached as it is; with
+    // none, this computer's own login starts it, and without one the agent hears what it waits
+    // for.
     let place = this_computer();
+    let listening = place.as_ref().is_ok_and(DaemonPlace::listening);
+    let login = crate::login::Place::here(crate::identity::paths())?;
+    if !listening && crate::login::served_device_key(login.keys()).is_none() {
+        return held::alone(NOT_LOGGED_IN);
+    }
     let reached = place
         .as_ref()
         .map_err(Clone::clone)
@@ -186,29 +173,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(called["result"]["isError"], true);
-    }
-
-    /// A Tilo desktop whose server is not open yet (its first login is not complete) is no computer
-    /// that needs `tilo login`: the agent hears what it waits for, never "not logged in".
-    #[test]
-    fn a_desktop_whose_server_is_not_open_yet_never_says_not_logged_in() {
-        let waiting = tilo_mcp::session_api::route(
-            false,
-            None,
-            true,
-            Some("/run/user/1000/tilo-session/agent.sock".into()),
-            |_| false,
-        )
-        .unwrap_err()
-        .to_string();
-        let init = ask(
-            &waiting,
-            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
-        )
-        .unwrap();
-        let said = init["result"]["instructions"].as_str().unwrap();
-        assert_eq!(said, waiting);
-        assert!(!said.contains("not logged in"), "{said}");
-        assert!(said.contains("first login"), "{said}");
     }
 }

@@ -1624,3 +1624,13 @@ fn a_development_builds_id_is_read_at_once_after_founding() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn standalone_is_rejected_outside_connect() {
+    let output = Command::new(runtime_binary())
+        .args(["--standalone", "--profile", "/nonexistent/tilo"])
+        .output_locked()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--standalone"));
+}
