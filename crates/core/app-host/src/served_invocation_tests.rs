@@ -79,6 +79,13 @@ async fn progress_native_connection(
                 workspace: workspace.route.cluster_id.clone(),
             })),
             providers: Some(providers),
+            // The person's agent the workspace's record lists.
+            agents: Some(Arc::new(
+                crate::test_support::KeptAgents::default().listing(
+                    &workspace.route.cluster_id,
+                    (AGENT, &person_id_for_root(workspace.cert.user_public_key)),
+                ),
+            )),
             ..workspace.membership.services()
         },
     );
@@ -171,9 +178,35 @@ struct PersonSession {
 impl PersonSession {
     fn open(state: &Arc<AppBrokerState>, workspace: &signed_worker::OriginalWorkspace) -> Self {
         let (caller, evidence) = person(workspace);
+        Self::of(state, caller, &evidence)
+    }
+
+    /// The certified session of whoever `evidence` presents, as `caller`.
+    fn of(
+        state: &Arc<AppBrokerState>,
+        caller: tilo_actions::remote::Caller,
+        evidence: &[u8],
+    ) -> Self {
         let provider = state
-            .certified_local_action_provider(&caller, &evidence, false)
+            .certified_local_action_provider(&caller, evidence, false)
             .unwrap();
+        Self { caller, provider }
+    }
+
+    /// A run of the person's agent [`AGENT`], delegated by their admission on their device, which
+    /// calls as the agent.
+    fn agent(state: &Arc<AppBrokerState>, workspace: &signed_worker::OriginalWorkspace) -> Self {
+        let (person, evidence) = person(workspace);
+        let provider = state
+            .certified_agent_run(&person, &evidence, AGENT)
+            .unwrap();
+        let caller = tilo_actions::remote::Caller::delegated_agent(
+            AGENT,
+            workspace.cert.user_public_key,
+            workspace.cert.device_public_key,
+        )
+        .in_workspace(&workspace.route.cluster_id)
+        .in_new_execution();
         Self { caller, provider }
     }
 
@@ -288,6 +321,8 @@ struct ServedProbe {
 }
 
 const DECLARED_PROBE: &str = "tilo.declared-probe";
+/// The person's agent.
+const AGENT: &str = "scout";
 const UNDECLARED_PROBE: &str = "tilo.undeclared-probe";
 
 fn probe_rows(provider: &str) -> Vec<tilo_actions::api::PlacedAction> {
@@ -786,6 +821,158 @@ async fn an_invocation_waiting_on_a_cancellable_step_can_be_cancelled() {
                     tilo_actions::InvocationUpdate::Cancelled { .. }
                 ),
                 "the invocation answers cancelled"
+            );
+        })
+        .await;
+}
+
+/// A person stops what their agent runs from their own connection: the run is found by its key,
+/// whoever started it, and the one rule lets the person stop it. Another member who knows the
+/// run's id is refused exactly as for an id nobody uses, and their sessions list nothing of it,
+/// while the person's do.
+#[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one agent's run, from its start to the person's cancel and another member's refusal"
+)]
+async fn a_person_stops_their_agents_run_and_another_member_learns_nothing_of_it() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let workspace = signed_worker::OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let person_id = person_id_for_root(workspace.cert.user_public_key);
+            // Another member of the workspace, on a device of their own, allowed everything.
+            let other_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+            let other_key = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
+            let other_cert = signed_worker::signed_device(
+                &other_root,
+                &other_key,
+                "another member's device",
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+            );
+            workspace
+                .authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .push(other_cert.clone());
+            {
+                let mut tree = workspace.membership.write();
+                let held = &mut tree.workspaces[0];
+                let other = person_id_for_root(other_cert.user_public_key);
+                let node = held.policy.node();
+                for (id, grantee) in [
+                    ("another-member", tilo_action_policy::Grantee::person(other)),
+                    (
+                        "the-persons-agent",
+                        tilo_action_policy::Grantee::agent(AGENT, person_id.clone()),
+                    ),
+                ] {
+                    held.policy.grant(tilo_action_policy::Grant::new(
+                        id,
+                        grantee,
+                        node.clone(),
+                        tilo_action_policy::KindSet::ALL,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Grantee::person(person_id.clone()),
+                    ));
+                }
+            }
+            let providers = tilo_workspace_service::workspaces::providers::Providers::default();
+            let (state, connection, directories) =
+                progress_native_connection(&workspace, providers)
+                    .await
+                    .unwrap();
+            let broker = (&state, &directories);
+            connection
+                .handle
+                .publish_actions(&progress_descriptors())
+                .await
+                .unwrap();
+            let invocations = connection
+                .handle
+                .subscribe_stable_invocations()
+                .await
+                .unwrap();
+
+            // The person's agent runs the action, in a session of its own.
+            let agent = PersonSession::agent(&state, &workspace);
+            let run = agent
+                .runs_check(broker, 997, "workspace:atlas")
+                .await
+                .invocation;
+            let delivered = invocations.read().await.unwrap();
+            assert_eq!(delivered.invocation_uuid, *run.0.as_bytes());
+
+            let session = PersonSession::open(&state, &workspace);
+            let (other_caller, other_evidence) = (
+                tilo_actions::remote::Caller::authenticated(
+                    other_cert.user_public_key,
+                    other_cert.device_public_key,
+                )
+                .in_workspace(&workspace.route.cluster_id)
+                .in_new_execution(),
+                signed_worker::presentation(&workspace.route.cluster_id, &other_cert, &other_key),
+            );
+            let other = PersonSession::of(&state, other_caller.clone(), &other_evidence);
+
+            // Another member who knows the id is answered as for an id nobody uses.
+            let refused = other.tries_to_cancel(broker, run).await;
+            let unknown = other
+                .tries_to_cancel(broker, tilo_actions::InvocationId::new())
+                .await;
+            assert!(
+                matches!(
+                    refused,
+                    Err(tilo_actions::remote::ActionCallError::UnknownInvocation)
+                ),
+                "{refused:?}"
+            );
+            assert_eq!(
+                format!("{refused:?}"),
+                format!("{unknown:?}"),
+                "a refusal says nothing about whether the run exists"
+            );
+            assert!(
+                !connection
+                    .handle
+                    .invocation_cancellation(delivered.id)
+                    .await
+                    .unwrap(),
+                "the app hears of no refused cancel"
+            );
+            let others = state
+                .certified_action_lifecycle(&other_caller, &other_evidence)
+                .unwrap();
+            assert!(
+                others.status(delivered.id).is_none(),
+                "another member sees nothing of it"
+            );
+            assert!(!others.can_cancel(delivered.id));
+            assert!(others.statuses().iter().all(|(id, _)| *id != delivered.id));
+
+            // The person's own sessions list it and stop it.
+            let (person_caller, person_evidence) = person(&workspace);
+            let persons = state
+                .certified_action_lifecycle(&person_caller, &person_evidence)
+                .unwrap();
+            assert!(
+                persons.can_cancel(delivered.id),
+                "the person may stop their agent's run"
+            );
+            assert!(persons.statuses().iter().any(|(id, _)| *id == delivered.id));
+            session.cancels(broker, run).await;
+            assert!(
+                connection
+                    .handle
+                    .invocation_cancellation(delivered.id)
+                    .await
+                    .unwrap(),
+                "the app is told the person cancelled the run"
             );
         })
         .await;

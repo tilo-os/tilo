@@ -797,28 +797,31 @@ impl AppBrokerState {
                     .and_then(|jobs| jobs.get(&id).map(|(_, update)| update.clone()))
             })
     }
-    pub(super) fn invocation_status_for_owner(
+    /// Invocation `id` as `asker` may see it, with whoever started it: one `asker` may cancel
+    /// ([`may_cancel`]), and no other.
+    pub(super) fn owned_status<'a>(
         &self,
         id: u64,
-        owner: &InvocationOwner,
-    ) -> Option<tilo_actions::InvocationUpdate> {
+        asker: impl Into<Asking<'a>>,
+    ) -> Option<(InvocationOwner, tilo_actions::InvocationUpdate)> {
+        let asker = asker.into();
         self.expire_stale_invocations();
-        if let Some(update) = self.live_views.status(id, Some(owner)) {
-            return Some(update);
+        if let Some(update) = self.live_views.status(id, Some(asker.owner())) {
+            return Some((asker.owner().clone(), update));
         }
         self.pending_invocations
             .lock()
             .ok()
             .and_then(|jobs| {
                 jobs.get(&id)
-                    .filter(|job| &job.owner == owner)
-                    .map(|job| job.update.clone())
+                    .filter(|job| may_cancel(&job.owner, asker))
+                    .map(|job| (job.owner.clone(), job.update.clone()))
             })
             .or_else(|| {
                 self.completed_invocations.lock().ok().and_then(|jobs| {
                     jobs.get(&id)
-                        .filter(|(retained, _)| retained == owner)
-                        .map(|(_, update)| update.clone())
+                        .filter(|(retained, _)| may_cancel(retained, asker))
+                        .cloned()
                 })
             })
     }
@@ -830,10 +833,11 @@ impl AppBrokerState {
             actor: actor.clone(),
         })
     }
-    pub(super) fn invocation_statuses_for_owner(
+    pub(super) fn invocation_statuses_for_owner<'a>(
         &self,
-        owner: &InvocationOwner,
+        owner: impl Into<Asking<'a>>,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
+        let owner = owner.into();
         self.expire_stale_invocations();
         let mut jobs = self
             .pending_invocations
@@ -841,7 +845,7 @@ impl AppBrokerState {
             .map(|pending| {
                 pending
                     .iter()
-                    .filter(|(_, job)| &job.owner == owner)
+                    .filter(|(_, job)| may_cancel(&job.owner, owner))
                     .map(|(id, job)| (*id, job.update.clone()))
                     .collect::<Vec<_>>()
             })
@@ -850,7 +854,7 @@ impl AppBrokerState {
             jobs.extend(
                 completed
                     .iter()
-                    .filter(|(_, (retained, _))| retained == owner)
+                    .filter(|(_, (retained, _))| may_cancel(retained, owner))
                     .map(|(id, (_, update))| (*id, update.clone())),
             );
         }
@@ -872,20 +876,21 @@ impl AppBrokerState {
     }
     /// Ask invocation `id`'s application to stop, for `owner`. The asker is
     /// answered once the returned write resolves.
-    pub(super) fn request_cancellation_for_owner(
+    pub(super) fn request_cancellation_for_owner<'a>(
         &self,
         id: u64,
-        owner: &InvocationOwner,
+        owner: impl Into<Asking<'a>>,
     ) -> Result<tilo_invocation_journal::Durable, String> {
+        let owner = owner.into();
         self.expire_stale_invocations();
-        if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
+        if let Some(cancelled) = self.live_views.cancel(id, Some(owner.owner())) {
             return cancelled.map(|()| tilo_invocation_journal::Durable::settled());
         }
         // A host step that declared itself cancellable stops on its own flag, and answers as
         // cancelled when it does. Such a step keeps no pending invocation of its own.
         if let Some(asked_by) = self.host_step_owner(id) {
             if !may_cancel(&asked_by, owner) {
-                return Err(NOT_YOURS_TO_CANCEL.into());
+                return Err(NOT_RUNNING.into());
             }
             if self.stop_host_step(id) {
                 return Ok(tilo_invocation_journal::Durable::settled());
@@ -895,11 +900,9 @@ impl AppBrokerState {
             .pending_invocations
             .lock()
             .map_err(|_| "the invocation registry is unavailable".to_string())?;
-        let job = pending
-            .get(&id)
-            .ok_or_else(|| "the invocation is not running".to_string())?;
+        let job = pending.get(&id).ok_or_else(|| NOT_RUNNING.to_string())?;
         if !may_cancel(&job.owner, owner) {
-            return Err(NOT_YOURS_TO_CANCEL.into());
+            return Err(NOT_RUNNING.into());
         }
         let waits = self.waits_on_cancellable_step(job);
         if !job.cancellable && !waits {
@@ -935,7 +938,8 @@ impl AppBrokerState {
             },
         )
     }
-    pub(super) fn can_cancel_for_owner(&self, id: u64, owner: &InvocationOwner) -> bool {
+    pub(super) fn can_cancel_for_owner<'a>(&self, id: u64, owner: impl Into<Asking<'a>>) -> bool {
+        let owner = owner.into();
         self.expire_stale_invocations();
         self.pending_invocations
             .lock()
@@ -958,6 +962,47 @@ impl AppBrokerState {
                 .values()
                 .any(|step| step.continues.as_ref().is_some_and(|of| of.is(job)))
         })
+    }
+    /// Ask the job `workspace` runs under `invocation` to stop, for `asker`, whoever started it:
+    /// the job is found by its full key, then [`may_cancel`] decides. A job that is not the
+    /// asker's to stop reads as no job at all, so asking says nothing about whether it exists;
+    /// so does an id two apps' jobs in the workspace share, which names neither.
+    pub(super) fn cancel_by_key(
+        &self,
+        workspace: &str,
+        invocation: tilo_actions::InvocationId,
+        asker: Asking<'_>,
+    ) -> Result<tilo_invocation_journal::Durable, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
+        self.expire_stale_invocations();
+        let named = |key: &JobKey| key.workspace == workspace && key.invocation == invocation;
+        let mut found: Vec<(u64, JobKey, InvocationOwner)> = self
+            .pending_invocations
+            .lock()
+            .map(|pending| {
+                pending
+                    .iter()
+                    .filter_map(|(id, job)| Some((*id, job.key()?, job.owner.clone())))
+                    .filter(|(_, key, _)| named(key))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Ok(stops) = self.host_step_stops.lock() {
+            found.extend(
+                stops
+                    .iter()
+                    .filter(|(_, step)| named(&step.key))
+                    .map(|(id, step)| (*id, step.key.clone(), step.owner.clone())),
+            );
+        }
+        let [(job, _, owner)] = found.as_slice() else {
+            return Err(ActionCallError::UnknownInvocation);
+        };
+        if !may_cancel(owner, asker) {
+            return Err(ActionCallError::UnknownInvocation);
+        }
+        self.request_cancellation_for_owner(*job, asker)
+            .map_err(|reason| ActionCallError::NotCancellable { reason })
     }
     /// Who asked for host step `id`, while it is a cancellable one that runs.
     fn host_step_owner(&self, id: u64) -> Option<InvocationOwner> {
@@ -1192,39 +1237,56 @@ impl AppBrokerState {
     }
 }
 
-/// Why a cancel is refused to someone the invocation is not theirs to stop.
-pub(super) const NOT_YOURS_TO_CANCEL: &str = "only whoever started the invocation, or the person it runs for, \
-     may cancel it";
+/// Why a cancel is refused: the invocation does not run, or it is not the asker's to stop. The
+/// two read the same, so asking says nothing about an invocation that is someone else's.
+pub(super) const NOT_RUNNING: &str = "the invocation is not running";
 
-/// Whether `asker` may cancel an invocation `owner` started: the invoker itself, or the person an
-/// agent of theirs runs it for, who can always stop what their agents run. Nobody else: not
-/// another agent of the same person, not an app, not another member of the workspace.
-fn may_cancel(owner: &InvocationOwner, asker: &InvocationOwner) -> bool {
-    if owner == asker {
-        return true;
+/// Who asks to cancel an invocation, or to see it.
+#[derive(Clone, Copy)]
+pub(super) enum Asking<'a> {
+    /// Whoever presents this owner: an app's connection, an actor named by the device's own
+    /// shell, a shortcut's unattended run acting as its person. Only what it started is its own.
+    As(&'a InvocationOwner),
+    /// A person's own certified session or connection, as the owner its admission retains (the
+    /// person, certified on one of their devices): what it started, and what an agent of the
+    /// person runs, on any of their devices, whose runs they can always stop.
+    Session(&'a InvocationOwner),
+}
+
+impl<'a> From<&'a InvocationOwner> for Asking<'a> {
+    fn from(owner: &'a InvocationOwner) -> Self {
+        Self::As(owner)
     }
-    match (owner, asker) {
-        (InvocationOwner::Local { actor: started }, InvocationOwner::Local { actor: asking }) => {
-            let runs_for = started
-                .member_id()
-                .and_then(tilo_action_policy::MemberId::agent_person);
-            let asking = asking
-                .member_id()
-                .and_then(tilo_action_policy::MemberId::as_person);
-            runs_for.is_some() && runs_for == asking
+}
+
+impl Asking<'_> {
+    const fn owner(&self) -> &InvocationOwner {
+        match self {
+            Self::As(owner) | Self::Session(owner) => owner,
         }
-        (
-            InvocationOwner::AuthenticatedLocal {
-                root: started,
-                agent: Some(_),
-                ..
-            },
-            InvocationOwner::AuthenticatedLocal {
-                root: asking,
-                agent: None,
-                ..
-            },
-        ) => started == asking,
-        _ => false,
+    }
+}
+
+/// Whether `asker` may cancel an invocation `owner` started: the invoker itself, or, from the
+/// person's own certified session, the person an agent of theirs runs it for. Nobody else: not
+/// another agent of the same person, not an app, not another member of the workspace, and not
+/// a run that only acts as the person, such as a shortcut's unattended run.
+fn may_cancel(owner: &InvocationOwner, asker: Asking<'_>) -> bool {
+    match asker {
+        Asking::As(asking) => owner == asking,
+        Asking::Session(asking) => {
+            owner == asking
+                || matches!(
+                    (owner, asking),
+                    (
+                        InvocationOwner::AuthenticatedLocal {
+                            root: started,
+                            agent: Some(_),
+                            ..
+                        },
+                        InvocationOwner::Certified { root: person, .. },
+                    ) if started == person
+                )
+        }
     }
 }

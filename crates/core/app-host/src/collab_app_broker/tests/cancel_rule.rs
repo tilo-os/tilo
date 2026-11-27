@@ -5,9 +5,11 @@
     reason = "test scenarios and fixtures: a failed unwrap is the assertion"
 )]
 
-//! Who may cancel an invocation: whoever started it, and the person an agent of theirs runs it
-//! for. Nobody else, in the same workspace too: not another agent of the same person, not an
-//! app, not another member.
+//! Who may cancel an invocation by the actor it presents: only whoever started it. Nobody else,
+//! in the same workspace too: not another agent of the same person, not an app, not another
+//! member, and not a run that only acts as the person, as a shortcut's unattended run or an
+//! automation does. A person stops what their agents run from their own certified session,
+//! which the served-invocation tests drive.
 
 use super::*;
 
@@ -118,7 +120,7 @@ fn member(member: tilo_action_policy::MemberId) -> tilo_action_policy::Actor {
 }
 
 #[test]
-fn only_the_invoker_and_the_person_an_agent_runs_for_may_cancel() {
+fn an_actor_cancels_only_what_it_started() {
     use tilo_action_policy::MemberId;
     let (state, _app) = broker();
     let scout = member(MemberId::agent("scout", "owner"));
@@ -152,7 +154,7 @@ fn only_the_invoker_and_the_person_an_agent_runs_for_may_cancel() {
             .request_cancellation(own, actor)
             .err()
             .unwrap_or_else(|| panic!("{who} is refused"));
-        assert_eq!(refusal, NOT_YOURS_TO_CANCEL, "{who}");
+        assert_eq!(refusal, NOT_RUNNING, "{who}");
     }
     assert!(
         !state.cancellation_requests.lock().unwrap().contains(&own),
@@ -166,30 +168,49 @@ fn only_the_invoker_and_the_person_an_agent_runs_for_may_cancel() {
         .expect("the request is durable");
     assert!(state.cancellation_requests.lock().unwrap().contains(&own));
 
-    // The person cancels their agent's run.
+    // A run that acts as the person, as a shortcut's unattended run does, or an automation of
+    // theirs, does not stop what their agent runs: it is not the person's own session.
     let theirs = started(
         &state,
         &BrokerActor::agent("scout", "owner").for_person("owner"),
     );
-    assert!(state.can_cancel(theirs, &person));
-    state
-        .request_cancellation(theirs, &person)
-        .expect("the person stops what their agent runs")
-        .wait_blocking()
-        .expect("the request is durable");
+    for (who, actor) in [
+        ("a run acting as the person", &person),
+        (
+            "an automation",
+            &tilo_action_policy::Actor::automation("nightly"),
+        ),
+    ] {
+        assert!(
+            !state.can_cancel(theirs, actor),
+            "{who} is offered no cancel"
+        );
+        assert_eq!(
+            state.request_cancellation(theirs, actor).err().as_deref(),
+            Some(NOT_RUNNING),
+            "{who}"
+        );
+    }
     assert!(
-        state
+        !state
             .cancellation_requests
             .lock()
             .unwrap()
             .contains(&theirs)
     );
+    // What such a run started is its own to stop.
+    let ran = started(&state, &BrokerActor::person("owner"));
+    state
+        .request_cancellation(ran, &person)
+        .expect("a run stops what it started")
+        .wait_blocking()
+        .expect("the request is durable");
 
     // An agent does not stop what its person started.
     let persons = started(&state, &BrokerActor::person("owner"));
     assert!(!state.can_cancel(persons, &scout));
     assert_eq!(
         state.request_cancellation(persons, &scout).err().as_deref(),
-        Some(NOT_YOURS_TO_CANCEL)
+        Some(NOT_RUNNING)
     );
 }

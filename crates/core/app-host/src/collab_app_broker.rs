@@ -248,21 +248,25 @@ struct HostStepStop {
     stop: Arc<AtomicBool>,
     /// Who asked for it: only they, or whoever may cancel what they run, stop it.
     owner: InvocationOwner,
+    /// The step itself, by its full key.
+    key: JobKey,
     /// The invocation it is a step of, as the dispatch delivered that invocation to the app that
     /// made the call: that invocation waits on it, and its cancel stops it.
-    continues: Option<StepOf>,
+    continues: Option<JobKey>,
 }
 
-/// The delivered invocation a host step is the work of, as its app's verified connection was
-/// delivered it: the app, the workspace and the invocation's id, never what the call named.
+/// A job by its full key: the app it is an action of, the workspace it runs in and its
+/// invocation id. A caller chooses the id, so a job is never found by the id alone.
 #[derive(Clone, PartialEq, Eq)]
-struct StepOf {
+struct JobKey {
     app: String,
     workspace: String,
     invocation: tilo_actions::InvocationId,
 }
 
-impl StepOf {
+impl JobKey {
+    /// The invocation `serving` delivered to its app's verified connection, never what a call
+    /// named.
     fn of(serving: &dyn tilo_actions::remote::Serving) -> Self {
         Self {
             app: serving.app().to_owned(),
@@ -271,21 +275,25 @@ impl StepOf {
         }
     }
 
-    /// Whether `job` is the invocation this step is the work of: the same invocation, delivered
-    /// to the same app in the same workspace.
+    /// Whether `job` is the job this key names.
     fn is(&self, job: &PendingInvocation) -> bool {
-        job.update.invocation() == self.invocation
-            && job.cluster_id == self.workspace
-            && job
-                .original
-                .as_ref()
-                .is_some_and(|original| original.acts_on().0 == self.app)
+        job.key().as_ref() == Some(self)
     }
 }
 
 impl PendingInvocation {
     fn completion_owner(&self) -> InvocationOwner {
         self.owner.clone()
+    }
+
+    /// Its full key: the app it was delivered to, its workspace and its invocation id.
+    fn key(&self) -> Option<JobKey> {
+        let original = self.original.as_ref()?;
+        Some(JobKey {
+            app: original.acts_on().0.to_owned(),
+            workspace: self.cluster_id.clone(),
+            invocation: self.update.invocation(),
+        })
     }
 }
 

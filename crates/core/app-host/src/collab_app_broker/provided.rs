@@ -766,7 +766,12 @@ impl AppBrokerState {
                 super::HostStepStop {
                     stop: Arc::clone(&stop),
                     owner: admitted.owner.clone(),
-                    continues: serving.as_deref().map(super::StepOf::of),
+                    key: super::JobKey {
+                        app: app_id.to_owned(),
+                        workspace: decided.workspace.clone(),
+                        invocation: request.invocation,
+                    },
+                    continues: serving.as_deref().map(super::JobKey::of),
                 },
             );
         }

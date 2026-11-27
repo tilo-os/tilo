@@ -396,25 +396,32 @@ impl CertifiedActionLifecycle {
         };
         self.0
             .state
-            .invocation_statuses_for_owner(&owner)
+            .invocation_statuses_for_owner(super::invocation::Asking::Session(&owner))
             .into_iter()
-            .filter(|(id, update)| self.permitted_job(*id, update.invocation()))
+            .filter(|(id, _)| self.status(*id).is_some())
             .collect()
     }
 
+    /// Invocation `id`, when it is one this session's person or agent may cancel: one it started
+    /// in this session's workspace, or one an agent of the person runs there.
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.0.check(&self.0.caller).ok()?;
         let owner = self.owner()?;
-        let update = self.0.state.invocation_status_for_owner(id, &owner)?;
-        self.permitted_job(id, update.invocation())
+        let (started, update) = self
+            .0
+            .state
+            .owned_status(id, super::invocation::Asking::Session(&owner))?;
+        self.permitted_job(id, update.invocation(), started)
             .then_some(update)
     }
 
     pub fn can_cancel(&self, id: u64) -> bool {
         self.status(id).is_some()
-            && self
-                .owner()
-                .is_some_and(|owner| self.0.state.can_cancel_for_owner(id, &owner))
+            && self.owner().is_some_and(|owner| {
+                self.0
+                    .state
+                    .can_cancel_for_owner(id, super::invocation::Asking::Session(&owner))
+            })
     }
 
     /// Answered once the request is durable: blocks the calling thread for
@@ -425,18 +432,22 @@ impl CertifiedActionLifecycle {
         let owner = self.owner().ok_or("the session cannot name its owner")?;
         self.0
             .state
-            .request_cancellation_for_owner(id, &owner)?
+            .request_cancellation_for_owner(id, super::invocation::Asking::Session(&owner))?
             .wait_blocking()
     }
 
-    fn permitted_job(&self, id: u64, invocation: tilo_actions::InvocationId) -> bool {
+    /// Whether job `id` is the invocation `owner` started under `invocation` in this session's
+    /// workspace, as the journal keeps it.
+    fn permitted_job(
+        &self,
+        id: u64,
+        invocation: tilo_actions::InvocationId,
+        owner: super::InvocationOwner,
+    ) -> bool {
         let Ok(guard) = self.0.state.journal.lock() else {
             return false;
         };
         let Ok(Some(journal)) = guard.as_ref() else {
-            return false;
-        };
-        let Some(owner) = self.owner() else {
             return false;
         };
         let key = super::InvocationKey {
@@ -714,17 +725,22 @@ impl ActionProvider for CertifiedLocalActionProvider {
         id: &tilo_actions::InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         let staged = self.check(caller).and_then(|_| {
-            let job = self
-                .state
-                .remote_job(&self.effective, id)
-                .ok_or(ActionCallError::UnknownInvocation)?;
             let owner = self
                 .admission
                 .owner()
                 .map_err(|_| ActionCallError::NotPermitted)?;
-            self.state
-                .request_cancellation_for_owner(job, &owner)
-                .map_err(|reason| ActionCallError::NotCancellable { reason })
+            // What this connection asked is found by its own log; what an agent of the person
+            // runs is found by its key, and the one rule decides whether they may stop it.
+            let asking = super::invocation::Asking::Session(&owner);
+            match self.state.remote_job(&self.effective, id) {
+                Some(job) => self
+                    .state
+                    .request_cancellation_for_owner(job, asking)
+                    .map_err(|reason| ActionCallError::NotCancellable { reason }),
+                None => self
+                    .state
+                    .cancel_by_key(&self.admission.workspace, *id, asking),
+            }
         });
         super::action_provider::answered_when_durable(staged)
     }
