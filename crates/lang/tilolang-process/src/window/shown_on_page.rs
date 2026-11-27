@@ -81,9 +81,9 @@ impl ShownOnPage {
             let opened = widget_of_target(&composition, show)
                 .ok_or_else(|| "nothing the view shows".to_owned())
                 .and_then(|(widget, named)| {
-                    // The widget answers for the target it carries, whichever form of the
-                    // resource's id the page's address named.
-                    frame.perform_semantic_named(&widget, Some(&named), &Action::Activate)
+                    // The widget answers for the target it carries: a row's own target opens the
+                    // item it presents, whichever form of the resource's id the page named.
+                    frame.perform_semantic_named(&widget, named.as_deref(), &Action::Activate)
                 });
             if let Err(reason) = opened {
                 tracing::debug!(%reason, show, "a page's address names nothing it opens");
@@ -241,18 +241,24 @@ fn composition(frame: &mut Driver) -> Composition {
     composition
 }
 
-/// The widget whose semantics name `target`, in `composition`, and the target it carries: a
-/// resource is named by its published address (`tl:<app>:<id>`, what a catalogue row and a link
-/// give) as its app names it (`<id>`, what its own rows carry), and both name the one resource.
-fn widget_of_target(composition: &Composition, target: &str) -> Option<(String, String)> {
-    fn find(node: &ui::composition::Composed, target: &str) -> Option<(String, String)> {
-        if let Some(named) = node
-            .semantics
-            .as_ref()
-            .and_then(|semantics| semantics.action_target.as_deref())
+/// The widget that shows the resource `target`, in `composition`, and the target its own
+/// activation answers: a resource is named by its published address (`tl:<app>:<id>`, what a
+/// catalogue row and a link give) as its app names it (`<id>`), and both name the one resource.
+/// A row a list draws names the resource it presents as the node's item, and its own activation
+/// target is the list's (`key:…`), which opens that item.
+fn widget_of_target(composition: &Composition, target: &str) -> Option<(String, Option<String>)> {
+    fn find(node: &ui::composition::Composed, target: &str) -> Option<(String, Option<String>)> {
+        let semantics = node.semantics.as_ref();
+        if let Some(named) = semantics.and_then(|semantics| semantics.action_target.as_deref())
             && names_one_resource(named, target)
         {
-            return Some((node.path.clone(), named.to_owned()));
+            return Some((node.path.clone(), Some(named.to_owned())));
+        }
+        if let Some(item) = semantics.and_then(|semantics| semantics.item.as_deref())
+            && names_one_resource(item, target)
+        {
+            let named = semantics.and_then(|semantics| semantics.action_target.clone());
+            return Some((node.path.clone(), named));
         }
         node.children.iter().find_map(|child| find(child, target))
     }
@@ -261,10 +267,22 @@ fn widget_of_target(composition: &Composition, target: &str) -> Option<(String, 
         .find_map(|node| find(node, target))
 }
 
-/// Whether the targets `one` and `other` name the same resource: the same name, or one the
-/// published address of the other's id (`tl:<app>:<id>` and `<id>`).
+/// Whether the targets `one` and `other` name the same resource: the same name, a published
+/// address and the id inside it (`tl:<app>:<id>` and `<id>`), or a row's target, which carries
+/// the id of the item it presents after the list's own key (`key:<widget>~<widget>/<id>`).
 fn names_one_resource(one: &str, other: &str) -> bool {
-    one == other || inside_address(one) == inside_address(other)
+    if one == other {
+        return true;
+    }
+    let (carried, named) = (inside_address(one), inside_address(other));
+    if carried == named {
+        return true;
+    }
+    // A list row's target is the list's key, then `~`, then the widget's own key, then the id
+    // of the item the row presents.
+    let row = carried.split_once('~').map_or(carried, |(_, after)| after);
+    let item = row.split_once('/').map_or(row, |(_, item)| item);
+    item == named
 }
 
 /// `name` without the app a published address carries (`tl:<app>:<id>` is `<id>`); a name that is
@@ -410,5 +428,24 @@ mod tests {
             "root-a/i2"
         ));
         assert_eq!(inside_address("devices/abc/migrate"), "devices/abc/migrate");
+    }
+
+    /// A list row names the item it presents after the list's own key and the widget's, so a
+    /// page address naming that item by its resource id opens the row.
+    #[test]
+    fn a_lists_row_target_names_the_item_it_presents() {
+        assert!(names_one_resource(
+            "key:list.t142.body~list.for3/root-a/i1",
+            "tl:so.tilo.migrate:root-a/i1"
+        ));
+        assert!(names_one_resource(
+            "key:list.t142.body~list.for3/root-a/i1",
+            "root-a/i1"
+        ));
+        assert!(!names_one_resource(
+            "key:list.t142.body~list.for3/root-a/i1",
+            "tl:so.tilo.migrate:root-a/i2"
+        ));
+        assert!(!names_one_resource("root-a/i1/check", "root-a/i1"));
     }
 }

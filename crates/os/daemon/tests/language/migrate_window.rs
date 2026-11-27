@@ -259,10 +259,12 @@ impl Window {
         .unwrap()
     }
 
-    /// Wait until the page shows `words`.
+    /// Wait until the page shows `words`, answering the calls that wait for the person on the
+    /// way: a press that makes a step of the device asks them first.
     async fn shows(&self, words: &str) -> String {
         let deadline = tilo_test_env::hang_deadline();
         loop {
+            approve_waiting(&self.host).await;
             let body = self.body().await;
             if body.contains(words) {
                 return body;
