@@ -277,6 +277,22 @@ impl crate::app::App {
         }
         self.handle_unconsumed_range_key(event, handled);
         self.handle_unconsumed_directional_key(event, navigation, false, handled);
+        // A direction the window's own controls have nothing left for leaves the window: a
+        // window the shell launched asks it to move the desktop's focus on from here, to the
+        // controls beside it and the windows beside theirs.
+        if !*handled
+            && navigation
+            && crate::window_toolbar::is_hosted()
+            && let Some(direction) = pressed_named(event).and_then(Direction::from_key)
+        {
+            use crate::floating_surface::FocusDirection;
+            crate::shell_tabs::focus_left(match direction {
+                Direction::Up => FocusDirection::Up,
+                Direction::Down => FocusDirection::Down,
+                Direction::Left => FocusDirection::Left,
+                Direction::Right => FocusDirection::Right,
+            });
+        }
     }
 
     /// The control of `order` that takes the keyboard when its app does without one of its own choosing

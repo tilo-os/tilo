@@ -399,6 +399,67 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     assert_eq!(app.focused_node, Some(done));
 }
 
+#[test]
+fn a_direction_the_windows_controls_have_nothing_left_for_asks_the_shell_to_move_on() {
+    use crate::floating_surface::{FloatingSurfaceClientMessage, FocusDirection};
+    use crate::shell_tabs::TabRequest;
+    use crate::widget::{Column, TextInput};
+
+    let _ = crate::shell_tabs::take_requests();
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    TextInput::local().with_id("editor").with_initial_value("x"),
+                ))
+                .push(Box::new(Button::new("done", "Done"))),
+        ),
+    );
+    app.init_layout();
+    let root = app.layout.root_node.unwrap();
+    run_layout_pass(&mut app, root, 320, 180, 1.0, false, None).unwrap();
+    let done = app.focusable_order[1];
+    app.set_focused_node(Some(done));
+    let mut down = synth_enter();
+    if let WindowEvent::KeyboardInput { event, .. } = &mut down {
+        event.logical_key = Key::Named(NamedKey::ArrowDown);
+    }
+
+    // A window a shell hosts asks it to move the desktop's focus on from the edge.
+    crate::window_toolbar::set_hosted(true);
+    let mut handled = false;
+    app.handle_unconsumed_key(&down, true, true, &mut handled);
+    assert!(!handled, "no control lies below the last one");
+    assert_eq!(
+        crate::shell_tabs::take_requests(),
+        vec![TabRequest::FocusLeft {
+            direction: FocusDirection::Down
+        }],
+        "the window asks the shell to move the focus on"
+    );
+    assert_eq!(
+        TabRequest::FocusLeft {
+            direction: FocusDirection::Down
+        }
+        .message(Some(7)),
+        FloatingSurfaceClientMessage::FocusLeft {
+            direction: FocusDirection::Down,
+            instance: Some(7),
+        }
+    );
+
+    // A window no shell hosts keeps its keys: nothing is asked of a shell that is not there.
+    crate::window_toolbar::set_hosted(false);
+    let mut handled = false;
+    app.handle_unconsumed_key(&down, true, true, &mut handled);
+    assert!(!handled);
+    assert!(
+        crate::shell_tabs::take_requests().is_empty(),
+        "no shell to move the focus for"
+    );
+}
+
 tilo_test_env::scenario! {
     fn the_action_palette_materializes_dispatches_and_hosts_commands;
 

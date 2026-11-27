@@ -521,6 +521,7 @@ impl AppTabs {
         // answered on this pass and no thread of the session's waits on a client.
         self.socket.take();
         let mut redials = Vec::new();
+        let mut focus_left = Vec::new();
         {
             let mut windows = shared.windows.borrow_mut();
             let mut answered = Answers {
@@ -536,6 +537,7 @@ impl AppTabs {
                 pages: &shared.pages,
                 windows: &mut windows,
                 redials: &mut redials,
+                focus_left: &mut focus_left,
             };
             for arrived in self.requests.try_iter() {
                 match arrived {
@@ -559,6 +561,12 @@ impl AppTabs {
         // A window whose workspace could not arrive asked for it again: the device's daemon
         // dials the workspace's hosts, and the window hears how it went in its next appearance.
         let _ = redials;
+        // A direction the window in front had nothing left for is the desktop's: the focus
+        // moves on to the shell's own controls, and the window in front answers the keys again
+        // when the shell's ring leaves them.
+        for direction in focus_left {
+            crate::shell::hand_focus_to_shell(shared, compositor, direction);
+        }
         // What the members' sessions show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);
@@ -1043,6 +1051,9 @@ struct Answers<'a> {
     windows: &'a mut crate::a11y::WindowExports,
     /// The windows, by app and tab, whose workspace the person asked to dial again this pass.
     redials: &'a mut Vec<(String, Option<u64>)>,
+    /// The directions a window in front's own controls had nothing left for: the desktop's
+    /// focus moves on from it, to the shell's controls beside it.
+    focus_left: &'a mut Vec<crate::shell::part::FocusStep>,
 }
 
 impl Answers<'_> {
@@ -1303,6 +1314,21 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::CycleTab { forward, .. } => {
                 self.desktop
                     .with_policy(|policy| policy.cycle_tab(&app, forward));
+            }
+            FloatingSurfaceClientMessage::FocusLeft { direction, .. } => {
+                // Only the window in front hands the focus back: a window behind it is not the
+                // person's.
+                let front = self.desktop.with_policy(|policy| policy.focused_tab());
+                if own.is_some() && own == front {
+                    use crate::shell::part::FocusStep;
+                    use ui::floating_surface::FocusDirection;
+                    self.focus_left.push(match direction {
+                        FocusDirection::Up => FocusStep::Up,
+                        FocusDirection::Down => FocusStep::Down,
+                        FocusDirection::Left => FocusStep::Left,
+                        FocusDirection::Right => FocusStep::Right,
+                    });
+                }
             }
             FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
                 self.desktop
@@ -1778,6 +1804,7 @@ fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
         | FloatingSurfaceClientMessage::OpenSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenAppSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenFloated { instance, .. }
+        | FloatingSurfaceClientMessage::FocusLeft { instance, .. }
         | FloatingSurfaceClientMessage::WindowRecord { instance, .. }
         | FloatingSurfaceClientMessage::PaintStream { instance, .. }
         | FloatingSurfaceClientMessage::Embeds { instance, .. } => *instance,

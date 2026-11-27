@@ -1418,6 +1418,35 @@ fn typed(value: Value, ty: Option<tilo_actions::params::ParamType>) -> Value {
     }
 }
 
+/// Move the desktop's focus from the window in front back to the shell's own controls: a
+/// direction the window's views had nothing left for is the shell's, and the shell's ring seats
+/// the way it points, so the bar, dock and a window's controls are one order under the keyboard
+/// and a controller.
+pub(crate) fn hand_focus_to_shell(
+    shared: &crate::Shared,
+    compositor: &mut Compositor,
+    direction: part::FocusStep,
+) {
+    // A sheet over the desktop takes the keys of its own: nothing falls through to the shell
+    // behind it.
+    if shared.sheet_up.get() {
+        return;
+    }
+    // The shell answers the keys while the desktop's focus is its own; the press that left the
+    // window reaches it here, through the same key route a keyboard's press takes.
+    shared.shell_seat.set(true);
+    // What a key sends, evdev codes: the arrow the press stood for.
+    let keycode = match direction {
+        part::FocusStep::Up => 103,
+        part::FocusStep::Down => 108,
+        part::FocusStep::Left => 105,
+        part::FocusStep::Right => 106,
+    };
+    for pressed in [true, false] {
+        drop(compositor.input(tilo_compositor::InputEvent::Key { keycode, pressed }));
+    }
+}
+
 /// `desktop:chrome` as the session publishes it: each verb is carried out on `desktop`, the desktop
 /// the session owns, and one that opens a surface opens the shell's view of it on `surfaces` — the
 /// overview, the notifications, the quick settings, About and the workspaces. What only the session

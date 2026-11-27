@@ -23,7 +23,7 @@
 system = 1
 
 # App ↔ shell: the shell-ui connection (crates/ui/ui-core/interface.toml).
-shell-ui = 38
+shell-ui = 39
 
 # App ↔ runtime: every service under [runtime] below
 # (crates/core/runtime-interface/interface.toml).

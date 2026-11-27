@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 38
+version = 39
 version_const = "crates/ui/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -177,6 +177,9 @@ ActionRequest = "accesskit::ActionRequest: one assistive action a client takes o
 "FloatingSurfaceClientMessage::embeds" = "struct"
 "FloatingSurfaceClientMessage::embeds.embeds" = "Vec<DeclaredEmbed>"
 "FloatingSurfaceClientMessage::embeds.instance" = "Option<u64> optional"
+"FloatingSurfaceClientMessage::focus_left" = "struct"
+"FloatingSurfaceClientMessage::focus_left.direction" = "FocusDirection"
+"FloatingSurfaceClientMessage::focus_left.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::hello" = "struct"
 "FloatingSurfaceClientMessage::hello.version" = "u16"
 "FloatingSurfaceClientMessage::open_app_search" = "struct"
@@ -351,6 +354,11 @@ ActionRequest = "accesskit::ActionRequest: one assistive action a client takes o
 "FloatingSurfaceProtocolSource::composite.sources" = "Vec<FloatingSurfaceProtocolSource>"
 "FloatingSurfaceProtocolSource::surface" = "struct"
 "FloatingSurfaceProtocolSource::surface.surface_id" = "u64"
+"FocusDirection" = "enum external"
+"FocusDirection::down" = "unit"
+"FocusDirection::left" = "unit"
+"FocusDirection::right" = "unit"
+"FocusDirection::up" = "unit"
 "HistoryOffer" = "enum external"
 "HistoryOffer::closed" = "unit"
 "HistoryOffer::open" = "unit"

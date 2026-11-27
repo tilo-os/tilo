@@ -1111,3 +1111,88 @@ fn a_window_whose_app_ended_reopens_on_its_record_in_its_place() {
     });
     assert_eq!(place(&session), Some(stood), "where it stood");
 }
+
+/// The control the shell's focus ring stands on now, as assistive technology reads it: its name,
+/// or `None` while the ring is not in the shell.
+fn shell_focus(session: &Session) -> Option<String> {
+    let windows = session.a11y_windows();
+    let (_, _, tree) = windows
+        .iter()
+        .find(|(_, name, _)| name == "Desktop shell")?;
+    let (_, node) = tree.nodes.iter().find(|(id, _)| *id == tree.focus)?;
+    (node.role() != ui::accesskit::Role::Window)
+        .then(|| node.label().unwrap_or_default().to_owned())
+}
+
+/// A direction a hosted window's own controls have nothing left for is the desktop's: the window
+/// asks the shell over its connection, and the shell's ring takes the focus where the press
+/// pointed, so the D-pad crosses the window's edge into the shell's bar and back.
+#[test]
+fn a_direction_a_hosted_windows_focus_has_nothing_left_for_is_the_shells() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let handed = home.home().join("started");
+    let launcher = launcher_recording_pid(&home, &handed);
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let started: Arc<Launches> = Arc::new(Launches::default());
+    let mut session = session_on(apps.clone(), Arc::clone(&started));
+    apps.open(&Launch::Package {
+        app: APP.to_owned(),
+        open: None,
+    })
+    .expect("the app is opened");
+    let (pid, instance) =
+        crate::common::wait_for(&mut session, "the window's process starts", |_| {
+            fs::read_to_string(&handed).ok().and_then(|text| {
+                let line = text.lines().find(|line| !line.trim().is_empty())?;
+                let (pid, instance) = line.trim().split_once(' ')?;
+                Some((pid.parse::<u32>().ok()?, instance.parse::<u64>().ok()?))
+            })
+        });
+    session
+        .desktop()
+        .with_policy(|policy| policy.map(a_window_of(instance, pid)).unwrap());
+    crate::common::until(
+        &mut session,
+        "the app's window is on the shell",
+        |session| tabs_of(session, APP).contains(&instance),
+    );
+    // The window in front holds the desktop's focus, and the shell's ring is nowhere.
+    crate::common::until(&mut session, "the window in front", |session| {
+        session.desktop().with_policy(|policy| policy.focused_tab()) == Some(instance)
+    });
+    assert_eq!(shell_focus(&session), None);
+
+    // A direction its own controls have nothing for: the window asks the shell to move on.
+    let mut connection: UnixStream = ServiceLinks::new(Arc::clone(&started))
+        .shell_ui(APP, instance, Some(pid))
+        .expect("the window's shell-ui connection")
+        .into();
+    for frame in [
+        FloatingSurfaceClientMessage::Hello {
+            version: FLOATING_SURFACE_PROTOCOL_VERSION,
+        },
+        FloatingSurfaceClientMessage::FocusLeft {
+            direction: ui::floating_surface::FocusDirection::Down,
+            instance: None,
+        },
+    ] {
+        let mut bytes = serde_json::to_vec(&frame).unwrap();
+        bytes.push(b'\n');
+        connection.write_all(&bytes).unwrap();
+    }
+    connection.flush().unwrap();
+
+    let ring = crate::common::wait_for(&mut session, "the shell's focus ring", |session| {
+        shell_focus(session).filter(|name| !name.is_empty())
+    });
+    assert!(
+        !ring.is_empty(),
+        "the ring stands on a control of the shell's"
+    );
+    assert!(
+        session.compositor().surface_takes_keys(),
+        "the shell answers the keys the window handed back"
+    );
+}

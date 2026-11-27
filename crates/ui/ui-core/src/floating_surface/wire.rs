@@ -25,6 +25,17 @@ pub struct PaintPart {
     pub of: u64,
 }
 
+/// The way a key pushed past a window's own focus order: an arrow or a controller's D-pad
+/// direction no control of the window lay, which the shell moves the desktop's focus on by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "so.tilo.shell-float.";
 /// The longest frame either end writes: a paint payload in parts, a marker inventory, and a
 /// whole accessibility tree, which is what a window content of ten thousand controls exports.
@@ -239,6 +250,13 @@ pub enum FloatingSurfaceClientMessage {
     /// Ctrl+Shift+Tab that no widget of the app used.
     CycleTab {
         forward: bool,
+        instance: Option<u64>,
+    },
+    /// A direction the window's own controls had nothing left for: the shell moves the desktop's
+    /// focus on from this window, to the controls beside it and the windows beside theirs. Sent
+    /// for an arrow key or a controller's D-pad press the window's focus order could not take.
+    FocusLeft {
+        direction: FocusDirection,
         instance: Option<u64>,
     },
     /// The next window this app maps opens as a tab right after this one.

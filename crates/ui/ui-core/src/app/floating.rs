@@ -1716,6 +1716,7 @@ impl App {
             // window, so there is no shell to float another one over.
             TabRequest::ReopenClosed
             | TabRequest::CycleTab { .. }
+            | TabRequest::FocusLeft { .. }
             | TabRequest::PlaceNextWindowBeside { .. }
             | TabRequest::OpenFloated { .. } => {}
         }

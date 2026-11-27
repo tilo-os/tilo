@@ -18,6 +18,11 @@ pub enum TabRequest {
     CycleTab {
         forward: bool,
     },
+    /// A direction this window's controls had nothing left for: the shell moves the desktop's
+    /// focus on from it.
+    FocusLeft {
+        direction: crate::floating_surface::FocusDirection,
+    },
     PlaceNextWindowBeside {
         background: bool,
     },
@@ -44,6 +49,10 @@ impl TabRequest {
             Self::CloseThis => Message::CloseTab { instance },
             Self::ReopenClosed => Message::ReopenClosedTab,
             Self::CycleTab { forward } => Message::CycleTab { forward, instance },
+            Self::FocusLeft { direction } => Message::FocusLeft {
+                direction,
+                instance,
+            },
             Self::PlaceNextWindowBeside { background } => Message::PlaceNextWindowBeside {
                 background,
                 instance,
@@ -95,6 +104,12 @@ pub fn place_next_window_beside(background: bool) {
 /// last sent from, showing `anchor`: the item that send landed in.
 pub fn open_floated(anchor: String) {
     push(TabRequest::OpenFloated { anchor });
+}
+
+/// A direction this window's own controls had nothing left for: the shell moves the desktop's
+/// focus on from this window, to the controls beside it and the windows beside theirs.
+pub fn focus_left(direction: crate::floating_surface::FocusDirection) {
+    push(TabRequest::FocusLeft { direction });
 }
 
 /// Every request queued on this thread, oldest first.
