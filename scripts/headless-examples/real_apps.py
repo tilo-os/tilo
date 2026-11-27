@@ -226,6 +226,17 @@ def account_env(account, state: Path) -> dict:
         "HOME": account.pw_dir,
         "USER": account.pw_name,
         "LOGNAME": account.pw_name,
+        # The session's own config, data, state and cache: the caller's are the
+        # caller's account's, and a session that writes into them is refused.
+        # Mesa's shader cache is the one that matters most: the render
+        # service's warm-up compiles every pipeline on extra devices and the
+        # frames that follow read what it compiled, which they cannot when the
+        # cache its caller named is somebody else's.
+        "XDG_CONFIG_HOME": str(state / "config"),
+        "XDG_DATA_HOME": str(state / "data"),
+        "XDG_STATE_HOME": str(state / "state"),
+        "XDG_CACHE_HOME": str(state / "cache"),
+        "MESA_SHADER_CACHE_DIR": str(state / "cache" / "mesa-shader-cache"),
         # The caller's temporary directory is the caller's alone; the session
         # scratch belongs to the account like the rest of its state.
         "TMPDIR": str(state / "tmp"),
@@ -830,6 +841,7 @@ class Session:
         self.account = session_account()
         if self.account is not None:
             (self.state / "tmp").mkdir(exist_ok=True)
+            (self.state / "cache").mkdir(exist_ok=True)
             hand_over(self.state, self.account)
         # What this session was started with: a restart brings the same session
         # back — its apps, the tapps it installed and the arguments it was given
