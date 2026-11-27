@@ -122,6 +122,9 @@ pub struct ProcessContext {
     action_context: tilo_actions::ActionContext,
     /// See [`Self::write_as_author`].
     writes_as_author: bool,
+    /// Whether the record is the workspace's one record of an app that keeps one: the app's
+    /// own, which the app founds ([`Self::initialize_new_resource_seeded`]).
+    founded_by_app: bool,
     wake_scope: WakeScope,
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
@@ -625,6 +628,8 @@ impl ProcessContext {
                 (checkout.clone(), None)
             }
         };
+        let founded_by_app =
+            definition.keeps_workspace_resource() && record.id.is_package_primary();
         let wake_scope = WakeScope::new();
         records.wake_on_arrival(wake_scope.handle());
         Ok(Self {
@@ -640,6 +645,7 @@ impl ProcessContext {
             author,
             action_context,
             writes_as_author: false,
+            founded_by_app,
             wake_scope,
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
@@ -935,13 +941,13 @@ impl ProcessContext {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), ResourceOpenError> {
-        let by = tilo_ui_base::permissions::Acting::member(self.author.clone());
-        let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
-        reservation.initialize_by(initialize, &by)?;
-        self.reservation = None;
-        Ok(())
+        self.initialize_new_resource_seeded(initialize, |_| Ok(()))
     }
     /// [`Self::initialize_new_resource`], then `seed` the record as this author on this device.
+    ///
+    /// The workspace's one record of an app that keeps one is the app's own, whoever's window or
+    /// service opens it first: the app founds it, under the grant installing it gave it, as it
+    /// writes everything it does by itself. Any other record is founded by its author.
     pub fn initialize_new_resource_seeded(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
@@ -949,7 +955,11 @@ impl ProcessContext {
     ) -> Result<(), ResourceOpenError> {
         let by = tilo_ui_base::permissions::Acting::member(self.author.clone());
         let reservation = self.reservation.as_mut().ok_or(ResourceOpenError::Busy)?;
-        reservation.initialize_seeded_by(initialize, seed, &by)?;
+        if self.founded_by_app {
+            reservation.initialize_seeded(initialize, seed)?;
+        } else {
+            reservation.initialize_seeded_by(initialize, seed, &by)?;
+        }
         self.reservation = None;
         Ok(())
     }

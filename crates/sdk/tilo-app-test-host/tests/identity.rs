@@ -342,12 +342,13 @@ tilo_test_env::scenario! {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         assert_eq!(app.state().owner, "test-author");
         // Before the seed, only the steps that bring the record to its version, which every
-        // holder derives alike and nobody writes.
+        // holder derives alike and nobody writes, and what the record starts with: the board is
+        // the workspace's one record of its app, which the app founds.
         let mut contexts = app
             .versions()
             .into_iter()
             .filter_map(|version| version.context);
-        let seed = contexts
+        let founded = contexts
             .find(|context| {
                 let step = matches!(
                     context.what,
@@ -362,6 +363,12 @@ tilo_test_env::scenario! {
                 !step
             })
             .unwrap();
+        assert_eq!(founded.change, tilo_actions::ChangeKind::External);
+        assert_eq!(
+            founded.invoker.unwrap().acting.by,
+            tilo_actions::Actor::App("so.tilo.test-board".into())
+        );
+        let seed = contexts.next().unwrap();
         assert_eq!(seed.change, tilo_actions::ChangeKind::External);
         assert_eq!(
             seed.invoker.unwrap().acting.by,
