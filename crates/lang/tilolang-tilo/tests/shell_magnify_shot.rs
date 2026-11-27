@@ -75,7 +75,7 @@ fn tiles(targets: &HashMap<String, Rect>, foot: bool) -> Vec<Rect> {
 fn nearest(tiles: &[Rect], at: Point) -> Option<Rect> {
     let mut best: Option<(f64, Rect)> = None;
     for rect in tiles {
-        let distance = (rect.center() - at).hypot();
+        let distance = rect.center().distance(at);
         if best.is_none_or(|(near, _)| distance < near) {
             best = Some((distance, *rect));
         }
@@ -85,11 +85,8 @@ fn nearest(tiles: &[Rect], at: Point) -> Option<Rect> {
 
 /// Whether the tile under the pointer is the widest, and wider than the ones away from it.
 fn grew_in_place(tiles: &[Rect], at: Point) -> bool {
-    let widest = tiles.iter().map(|rect| rect.width()).fold(0.0, f64::max);
-    let narrowest = tiles
-        .iter()
-        .map(|rect| rect.width())
-        .fold(f64::INFINITY, f64::min);
+    let widest = tiles.iter().map(Rect::width).fold(0.0, f64::max);
+    let narrowest = tiles.iter().map(Rect::width).fold(f64::INFINITY, f64::min);
     nearest(tiles, at).is_some_and(|rect| (rect.width() - widest).abs() < 0.5)
         && widest > narrowest + 4.0
 }

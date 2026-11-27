@@ -716,12 +716,21 @@ fn members_come_first_then_the_address_books_people() {
 /// then the page before it are read by the oldest message shown, and what is written waits in
 /// the draft until the service took it, sent once however often Send is pressed.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one person's flow through the window, step after step"
-)]
 fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     let window = Window::new(Device::serving());
+    the_conversation_reads_page_by_page(&window);
+    what_the_service_holds_stays_with_the_device(&window);
+    let (sending, operation) = a_press_sends_one_operation(&window);
+    an_uncertain_send_keeps_the_words(&window, &sending);
+    a_send_lands_once_and_reads_again(&window, &operation);
+    conflicting_associations_are_said_and_asked_again(&window);
+    a_late_page_never_shows(&window);
+    a_changed_identity_retires_the_route(&window);
+}
+
+/// The one confirmed way of writing to Bo opens on its newest page, and the page before it
+/// stands above what is shown.
+fn the_conversation_reads_page_by_page(window: &Window) {
     press(&window.window(), "NavItem", "Bo Diaz");
     let (newest, asked) = window.device.last("history");
     assert_eq!(asked["route"]["service"], "signal", "{asked}");
@@ -780,9 +789,11 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
         "older lines stand above"
     );
     assert_shows(&shown, "This is the start of the conversation.");
+}
 
-    // What the service holds stays with the device: Messages keeps none of it, so neither its
-    // search nor its export holds a word of it.
+/// What the service holds stays with the device: Messages keeps none of it, so neither a search
+/// nor an export has a word of it.
+fn what_the_service_holds_stays_with_the_device(window: &Window) {
     let found = window.call("search_messages", vec![window.root(), Value::text("noon")]);
     assert_eq!(window.bodies(&found), Vec::<String>::new());
     window.call(
@@ -792,9 +803,12 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     let exported =
         String::from_utf8(window.kept.0.borrow()["messages.json"].clone()).expect("text");
     assert!(!exported.contains("See you at noon"), "{exported}");
+}
 
-    // Writing: the words wait in the draft, and one press sends one operation.
-    press(&shown, "Button", "Write a message");
+/// The words wait in the draft, and one press sends one operation, however often Send is
+/// pressed.
+fn a_press_sends_one_operation(window: &Window) -> (String, String) {
+    press(&window.window(), "Button", "Write a message");
     let shown = window.window();
     type_in(&shown, "On my way");
     let shown = window.window();
@@ -820,15 +834,21 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
         "a second press waits for the first"
     );
     assert_eq!(window.device.started("send").len(), 1, "sent once");
+    (sending, operation)
+}
 
-    // The service could not say whether it went: the words stay, and the window says to check.
-    window.ends(&sending, "failed", json!({"why": "uncertain"}));
+/// The service could not say whether the message went: the words stay, and the window says
+/// to check.
+fn an_uncertain_send_keeps_the_words(window: &Window, sending: &str) {
+    window.ends(sending, "failed", json!({"why": "uncertain"}));
     let shown = window.window();
     assert_shows(&shown, "The outcome could not be confirmed.");
     assert_shows(&shown, "Draft: On my way");
+}
 
-    // Sent: the draft empties and the conversation is read again.
-    press(&shown, "Button", "Send");
+/// A send that lands empties the draft and reads the conversation again.
+fn a_send_lands_once_and_reads_again(window: &Window, operation: &str) {
+    press(&window.window(), "Button", "Send");
     let (sending, asked) = window.device.last("send");
     assert_ne!(
         asked["operation"], operation,
@@ -842,15 +862,17 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     );
     assert_eq!(
         window.device.started("history").len(),
-        reads + 1,
+        reads.saturating_add(1),
         "read again after a send"
     );
     let shown = window.window();
     assert_hides(&shown, "Draft: On my way");
     assert_hides(&shown, "The outcome could not be confirmed.");
+}
 
-    // The service refuses the history of an address another contact claims too: the window
-    // says so in its words, and a new read asks again.
+/// An address another contact claims too is refused in the window's words, and a new read
+/// asks again.
+fn conflicting_associations_are_said_and_asked_again(window: &Window) {
     press(&window.window(), "Button", "Refresh messages");
     let (refused, _) = window.device.last("history");
     window.ends(&refused, "failed", json!({"why": "revoked"}));
@@ -861,9 +883,10 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     );
     press(&shown, "Button", "Refresh messages");
     assert_hides(&window.window(), "conflicting contact associations");
+}
 
-    // A page that arrives after Ada left the conversation never shows: back again, she sees
-    // only what the new read brings.
+/// A page that arrives after Ada left the conversation never shows.
+fn a_late_page_never_shows(window: &Window) {
     let (late, _) = window.device.last("history");
     window.call("back", vec![window.root()]);
     window.ends(
@@ -875,9 +898,12 @@ fn a_confirmed_address_is_read_page_by_page_and_written_to_once() {
     let shown = window.window();
     assert!(shown_said(&shown).is_empty(), "{:?}", shown_said(&shown));
     assert_shows(&shown, "Loading messages…");
+}
 
-    // Bo's Signal identity changed: the route Ada had open retires with its history and its
-    // draft, and nothing stands in for it until she chooses again.
+/// Bo's Signal identity changed: the route retires with its history and its draft, and
+/// nothing stands in for it until she chooses again.
+fn a_changed_identity_retires_the_route(window: &Window) {
+    let shown = window.window();
     type_in(&shown, "For the old address");
     assert_shows(&window.window(), "Draft: For the old address");
     window.directory(vec![contact(
@@ -1121,12 +1147,8 @@ fn linking_this_device_shows_a_private_code_until_it_is_finished() {
 }
 
 /// A first `WhatsApp` account: its protected storage is reviewed, its code shown and refreshed,
-/// the linked identity confirmed; Signal shows a code at once; SMS lists the device's SIMs.
+/// and the linked identity confirmed.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one person's flow through the window, step after step"
-)]
 fn a_first_account_is_reviewed_linked_and_confirmed() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Accounts");
@@ -1206,13 +1228,21 @@ fn a_first_account_is_reviewed_linked_and_confirmed() {
         &window.window(),
         "Device linked. Messaging resumes after its connection and inbox are ready.",
     );
+}
 
-    // Signal shows its code at once; SMS lists the SIMs, or says there are none.
+/// Signal shows its code at once, where `WhatsApp` first has its protected storage reviewed.
+#[test]
+fn a_signal_account_shows_its_code_at_once() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Accounts");
     press(&window.window(), "ListRow", "Link a Signal account");
     let (_, asked) = window.device.last("first_begin");
     assert_eq!(asked["service"], "signal", "{asked}");
+}
+
+/// An SMS account lists the device's SIMs, or says there are none.
+#[test]
+fn an_sms_account_lists_the_sims_or_says_there_are_none() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Accounts");
     press(&window.window(), "ListRow", "Choose an SMS SIM");
@@ -1234,8 +1264,11 @@ fn a_first_account_is_reviewed_linked_and_confirmed() {
         &window.window(),
         "No available SIMs were found on this device.",
     );
+}
 
-    // A setup that stopped returns to choosing a service.
+/// A setup that stopped returns to choosing a service.
+#[test]
+fn a_setup_that_stopped_returns_to_choosing_a_service() {
     let window = Window::new(Device::serving());
     press(&window.window(), "NavItem", "Accounts");
     press(&window.window(), "ListRow", "Link a Signal account");
@@ -1421,12 +1454,18 @@ fn a_german_window_reads_the_catalogue() {
 /// What agents and automations hand Messages: deliveries kept once each and in the order they
 /// were sent, refusals for what names nobody, queued replies, search and export.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one person's flow through the window, step after step"
-)]
 fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
     let window = Window::new(Device::serving());
+    deliveries_are_kept_once_each_in_the_order_they_were_sent(&window);
+    deliveries_that_name_nobody_are_refused(&window);
+    replies_reach_the_conversation_they_name(&window);
+    a_search_reads_every_word_and_labels_each_hit(&window);
+    exports_in_the_formats_a_caller_names(&window);
+}
+
+/// What an agent hands Messages lands in the conversation the sender and recipient name, once
+/// each, in the order it was sent.
+fn deliveries_are_kept_once_each_in_the_order_they_were_sent(window: &Window) {
     let deliver = |from: &str, body: &str, date: &str, to: &str| {
         window.call(
             "deliver_message",
@@ -1476,7 +1515,11 @@ fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
         "kept once each, in the order they were sent"
     );
     assert_shows(&shown, "Kept in this copy of Messages.");
+}
 
+/// A delivery that names nobody, says nothing, or names no date is refused in words that say
+/// what is missing.
+fn deliveries_that_name_nobody_are_refused(window: &Window) {
     for (from, body, date, why) in [
         ("", "words", "", "Name who sent it"),
         ("Bo", " ", "", "A message says something"),
@@ -1499,7 +1542,11 @@ fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
             "{from:?} {body:?} {date:?}: {refused}"
         );
     }
+}
 
+/// A reply reaches the conversation it names and one naming no conversation is refused; writing
+/// to someone new starts a conversation.
+fn replies_reach_the_conversation_they_name(window: &Window) {
     window.call(
         "reply",
         vec![
@@ -1538,7 +1585,11 @@ fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
             "Yes! Book two."
         ]
     );
+}
 
+/// A search reads every word in any case, and the caller's own answer labels each hit by its
+/// words without a read of each.
+fn a_search_reads_every_word_and_labels_each_hit(window: &Window) {
     let found = window.call(
         "search_messages",
         vec![window.root(), Value::text("TICKETS eur")],
@@ -1575,7 +1626,10 @@ fn agents_keep_search_and_export_the_conversations_handed_to_messages() {
             .refused("search_messages", vec![window.root(), Value::text("  ")])
             .contains("some words")
     );
+}
 
+/// An export writes the format the caller names, and a format it does not have is refused.
+fn exports_in_the_formats_a_caller_names(window: &Window) {
     for (format, holds) in [("md", "- **You**"), ("json", "\"queued\":true")] {
         let file = window.call(
             "export_content",
