@@ -298,7 +298,9 @@ impl Board {
     /// move is confirmed, undone and permitted like every other.
     #[must_use]
     pub fn on_drop_binding(mut self, binding: tilo_actions::ActionBinding<BoardDrop>) -> Self {
-        self.drops = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+        self.drops = Some(tilo_ui_base::widget::ActionEmitter::new(
+            crate::Bind::bound(binding),
+        ));
         self
     }
 

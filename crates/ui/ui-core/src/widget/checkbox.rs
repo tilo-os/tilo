@@ -1140,8 +1140,9 @@ mod tests {
         }
 
         fn action_binding_owns_accessibility_activation() {
-            let mut checkbox = Checkbox::bound("native", "checked")
-                .on_action(tilo_ui_base::widget::test_bool_action_binding());
+            let mut checkbox = Checkbox::bound("native", "checked").on_action(
+                crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean),
+            );
             let mut doc = AutoCommit::new();
             tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut checkbox,

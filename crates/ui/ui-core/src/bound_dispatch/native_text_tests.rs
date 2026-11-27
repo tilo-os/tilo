@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
         let domain = tilo_ui_base::ControlDomain::new();
         domain.set_owner(tilo_ui_base::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
         let mut emitter =
-            tilo_ui_base::widget::ActionEmitter::new_in(tilo_ui_base::widget::test_string_action_binding(), &domain);
+            tilo_ui_base::widget::ActionEmitter::new_in(crate::Bind::bound(crate::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)), &domain);
         with_physical_text(true, || emitter.emit("same".into())).unwrap();
         emitter.emit("same".into()).unwrap();
         let queued = domain.drain_partitioned().components;
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
     phase physical_text_provenance_survives_initial_ownership_transfer_and_legacy_draining;
     {
         let mut initial =
-            tilo_ui_base::widget::ActionEmitter::new(tilo_ui_base::widget::test_string_action_binding());
+            tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)));
         with_physical_text(true, || initial.emit("same".into())).unwrap();
         initial.emit("same".into()).unwrap();
         let records = crate::resource::ResourceOwners::in_memory()
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
             initial.take().is_none(),
             "registered holders cannot leak descriptors through legacy taking"
         );
-        let mut legacy = tilo_ui_base::widget::ActionEmitter::new(tilo_ui_base::widget::test_string_action_binding());
+        let mut legacy = tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)));
         with_physical_text(true, || legacy.emit("same".into())).unwrap();
         legacy.emit("same".into()).unwrap();
         let mut parent = crate::widget::Column::new().push(Box::new(TextOwner {

@@ -439,7 +439,7 @@ mod tests {
                 vec![Box::new(Text::new("body"))],
                 Some(ResourceId("res-a".into())),
                 false,
-                Event::Action(bound),
+                Event::Action(crate::Bind::bound(bound)),
             );
             let mut doc = automerge::AutoCommit::new();
             let mut state = tilo_ui_base::widget::Edits::lend(&mut doc);
@@ -474,7 +474,7 @@ mod tests {
                             key: "a".into(),
                             item: Some(ResourceId("res-a".into())),
                             body: vec![Box::new(Text::new("body"))],
-                            activate: Event::Action(bound),
+                            activate: Event::Action(crate::Bind::bound(bound)),
                             ..BoardCardProps::default()
                         }],
                         ..BoardListProps::default()

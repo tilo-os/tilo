@@ -749,7 +749,9 @@ impl KeyboardMapSelection {
     /// Bind inspection to the host-admitted Settings resource effect.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(
+            crate::Bind::bound(binding),
+        ));
         self
     }
 

@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
         group.set_presses(
             edges
                 .iter()
-                .map(|edge| Press::Action(tilo_ui_base::widget::ActionEmitter::new(binding(edge))))
+                .map(|edge| Press::Action(tilo_ui_base::widget::ActionEmitter::new(tilo_ui::Bind::bound(binding(edge)))))
                 .collect(),
         );
         let mut text = TextRenderer::new();

@@ -184,7 +184,7 @@ impl ReactionStripWidget {
 
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<ReactionToggle>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self
     }
 

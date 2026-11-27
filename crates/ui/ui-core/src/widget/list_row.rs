@@ -1983,7 +1983,7 @@ impl ListRow {
         self.actions.push(OwnedAction {
             icon,
             label: label.into(),
-            handler: ActionHandler::Bound(ActionEmitter::new(binding)),
+            handler: ActionHandler::Bound(ActionEmitter::new(crate::Bind::bound(binding))),
         });
         self
     }
@@ -2023,7 +2023,9 @@ impl ListRow {
             label: label.into(),
             destructive,
             on_activate: None,
-            press: tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding)),
+            press: tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(
+                crate::Bind::bound(binding),
+            )),
         });
         self
     }

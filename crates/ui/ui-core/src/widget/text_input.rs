@@ -1539,20 +1539,20 @@ impl TextInput {
 
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(ActionEmitter::new(
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(
             binding.map_input(|edited: Edited| edited.after),
-        ));
+        )));
         self
     }
 
     #[must_use]
     #[cfg(feature = "model")]
     pub fn on_text_edit(mut self, binding: tilo_actions::ActionBinding<TextEdit>) -> Self {
-        self.action = Some(ActionEmitter::new(binding.map_input(
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding.map_input(
             |Edited { before, after }: Edited| {
                 splice_between(&before, &after).unwrap_or(TextEdit::ReplaceText { text: after })
             },
-        )));
+        ))));
         self
     }
 

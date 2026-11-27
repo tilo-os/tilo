@@ -257,15 +257,33 @@ tilo_test_env::scenario! {
         );
 
         // A destructive action of the record is undoable: the click applies
-        // it at once, nobody is asked, and Undo takes it back.
+        // it at once, nobody is asked, the change is in the record's history
+        // as the action the button is bound to, and Undo takes it back.
+        let steps = app.history().len();
         app.harness().click_named("clear-done").unwrap();
         app.settle();
         assert_eq!(app.asking(), None);
         assert_eq!(app.state().items.len(), 1);
+        let history = app.history();
+        assert_eq!(history.len(), steps + 1, "the press is one step of history");
+        // What the step ran, without the moment it ran at.
+        let ran = |history: Vec<tilo_actions::ActionContext>| {
+            let action = history.last()?.action.clone()?;
+            serde_json::from_slice::<serde_json::Value>(&action.payload)
+                .ok()
+                .map(|payload| (action.type_id, payload["op"].clone()))
+        };
+        let pressed = ran(history);
+        assert!(pressed.is_some(), "the press records the action it ran");
         assert!(app.undo());
         assert_eq!(app.state().items.len(), 2);
         app.invoke(Checklist::CLEAR_DONE.invoke()).unwrap();
         assert_eq!(app.state().items.len(), 1);
+        assert_eq!(
+            ran(app.history()),
+            pressed,
+            "the button ran the same typed action the API runs"
+        );
     }
 
     phase typing_in_a_bound_field_is_an_action;

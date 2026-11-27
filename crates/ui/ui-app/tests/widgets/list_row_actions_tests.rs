@@ -401,7 +401,7 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
         move || counted.set(counted.get() + 1),
         |binding| {
             let mut row = ListRow::new("send", "Send").checkbox(false, |_| {});
-            row.set_check_action_for_tests(Some(ActionEmitter::new(binding)));
+            row.set_check_action_for_tests(Some(ActionEmitter::new(tilo_ui::Bind::bound(binding))));
             Box::new(row)
         },
     );

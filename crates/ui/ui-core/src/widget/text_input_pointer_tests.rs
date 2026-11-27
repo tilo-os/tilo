@@ -56,7 +56,9 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
             .on_change(move |value| captured.borrow_mut().push(value.to_owned()))
-            .on_action(tilo_ui_base::widget::test_string_action_binding());
+            .on_action(crate::widget::test_value_action_binding::<String>(
+                tilo_actions::ParamType::Text,
+            ));
         input.bind_text(object.clone());
         tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut input,
@@ -96,7 +98,9 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let captured = std::rc::Rc::clone(&changes);
         let mut input = TextInput::local()
-            .on_action(tilo_ui_base::widget::test_string_action_binding())
+            .on_action(crate::widget::test_value_action_binding::<String>(
+                tilo_actions::ParamType::Text,
+            ))
             .on_change(move |value| captured.borrow_mut().push(value.to_owned()));
         let allowed = answered();
         tilo_ui_base::widget::controls::refresh_control_action_availability(&mut input, &allowed);

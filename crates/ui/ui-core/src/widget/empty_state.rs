@@ -1073,7 +1073,7 @@ fn buttons_under(widget: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<(Strin
 
 #[derive(Clone)]
 enum Handler {
-    Binding(tilo_actions::ActionBinding<()>),
+    Binding(tilo_ui_base::widget::BoundAction<()>),
     Press(Rc<RefCell<Box<dyn FnMut()>>>),
 }
 
@@ -1494,8 +1494,8 @@ impl EmptyState {
     /// Route pointer, keyboard and accessibility activation through an exported resource
     /// action.
     #[must_use]
-    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
-        self.handler = Some(Handler::Binding(binding));
+    pub fn on_action(mut self, binding: impl crate::Bind<()>) -> Self {
+        self.handler = Some(Handler::Binding(crate::Bind::bound(binding)));
         self.rebuild_engine();
         self
     }

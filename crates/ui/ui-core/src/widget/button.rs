@@ -275,8 +275,8 @@ impl Button {
     }
 
     #[must_use]
-    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+    pub fn on_action(mut self, binding: impl crate::Bind<()>) -> Self {
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.on_click = None;
         self
     }

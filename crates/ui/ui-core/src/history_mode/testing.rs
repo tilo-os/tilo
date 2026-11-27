@@ -546,9 +546,9 @@ pub fn native_effect_probe_parts(id: &'static str, operation: &'static str) -> E
     let starts = Rc::new(Cell::new(0));
     let finish = Rc::new(Cell::new(false));
     let completions = Rc::new(Cell::new(0));
-    let emitter = Rc::new(RefCell::new(ActionEmitter::new(
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(crate::Bind::bound(
         tilo_actions::ActionBinding::unit_for(&resource_for(id, operation), "export").unwrap(),
-    )));
+    ))));
     let collab_events = Rc::new(Cell::new(0));
     let collab_wake_handles = Rc::new(RefCell::new(Vec::new()));
     let root = Box::new(LiveOwner {
@@ -598,9 +598,9 @@ pub fn retained_identity_fixture(
     let starts = Rc::new(Cell::new(0));
     let resource =
         mutable_identity_resources("mutable-owner", "fixture.mutable-export", &identity).remove(0);
-    let emitter = Rc::new(RefCell::new(ActionEmitter::new(
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(crate::Bind::bound(
         tilo_actions::ActionBinding::unit_for(&resource, "export").unwrap(),
-    )));
+    ))));
     let owner = LiveOwner {
         resource_id: "mutable-owner",
         type_id: "fixture.mutable-export",

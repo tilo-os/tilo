@@ -428,7 +428,9 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
     let binding = tilo_actions::ActionBinding::unit_for(&spec, "dismiss").expect("published");
     let address = binding.address().clone();
     let mut banner = Banner::new(BannerKind::Info, "Synced").with_dismiss_press(
-        tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding)),
+        tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(
+            tilo_ui::Bind::bound(binding),
+        )),
     );
     banner.dismiss_now_for_tests();
     assert!(

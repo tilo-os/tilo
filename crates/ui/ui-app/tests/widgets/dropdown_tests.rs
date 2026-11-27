@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
 
         fn enter_emits_selection_action_and_closes() {
             let mut dd =
-                Dropdown::new(opts(), "tz").on_action(tilo_ui_base::widget::test_string_action_binding());
+                Dropdown::new(opts(), "tz").on_action(tilo_ui::widget::test_value_action_binding::<String>(tilo_ui::tilo_actions::ParamType::Text));
             tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut dd,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
@@ -842,7 +842,7 @@ tilo_test_env::scenario! {
 
         fn action_binding_owns_accessibility_selection() {
             let mut dropdown = Dropdown::new(opts(), "tz")
-                .on_action(tilo_ui_base::widget::test_string_action_binding());
+                .on_action(tilo_ui::widget::test_value_action_binding::<String>(tilo_ui::tilo_actions::ParamType::Text));
             let mut doc = AutoCommit::new();
             tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
@@ -1091,7 +1091,7 @@ tilo_test_env::scenario! {
     {
         let _settled = tilo_ui_base::motion::testing::settled();
         let mut dropdown =
-            Dropdown::new(opts(), "tz").on_action(tilo_ui_base::widget::test_string_action_binding());
+            Dropdown::new(opts(), "tz").on_action(tilo_ui::widget::test_value_action_binding::<String>(tilo_ui::tilo_actions::ParamType::Text));
         let allowed =
             std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]);
         tilo_ui_base::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
@@ -1115,7 +1115,7 @@ tilo_test_env::scenario! {
 
         // Unavailable capture-only fixtures retain their authored open state.
         let mut capture = Dropdown::new(opts(), "tz")
-            .on_action(tilo_ui_base::widget::test_string_action_binding())
+            .on_action(tilo_ui::widget::test_value_action_binding::<String>(tilo_ui::tilo_actions::ParamType::Text))
             .open();
         tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut capture,

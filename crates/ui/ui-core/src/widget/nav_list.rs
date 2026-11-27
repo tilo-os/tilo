@@ -1008,7 +1008,12 @@ impl NavList {
     ) -> Self {
         self.shared.borrow_mut().selection_actions = bindings
             .into_iter()
-            .map(|(id, binding)| (id, tilo_ui_base::widget::ActionEmitter::new(binding)))
+            .map(|(id, binding)| {
+                (
+                    id,
+                    tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding)),
+                )
+            })
             .collect();
         self
     }
@@ -1067,7 +1072,7 @@ impl NavList {
             if let tilo_ui_base::component::Event::Action(binding) = event {
                 shared.selection_actions.insert(
                     key.clone(),
-                    tilo_ui_base::widget::ActionEmitter::new(binding.clone()),
+                    tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding.clone())),
                 );
                 shared.component_places.insert(key.clone());
             }
@@ -1079,7 +1084,7 @@ impl NavList {
             if let tilo_ui_base::component::Event::Action(binding) = event {
                 shared.section_add_actions.insert(
                     format!("section:{key}"),
-                    tilo_ui_base::widget::ActionEmitter::new(binding.clone()),
+                    tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding.clone())),
                 );
                 shared.component_adds.insert(format!("section:{key}"));
             }

@@ -20,7 +20,7 @@ impl Dismissal {
 
     /// Dismiss through an action published elsewhere.
     pub(crate) fn through(binding: tilo_actions::ActionBinding<()>) -> Self {
-        Self::Through(ActionEmitter::new(binding))
+        Self::Through(ActionEmitter::new(crate::Bind::bound(binding)))
     }
 
     /// The person dismissed the surface.

@@ -524,7 +524,7 @@ impl Slider {
 
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.on_change = None;
         self
     }

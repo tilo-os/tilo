@@ -103,7 +103,7 @@ impl ShortcutRecorder {
     /// Offer every recorded chord, and a reset to the default, to `binding`.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self
     }
 

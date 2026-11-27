@@ -371,18 +371,18 @@ macro_rules! bool_control_api {
         }
 
         #[must_use]
-        pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
+        pub fn on_action(mut self, binding: impl crate::Bind<bool>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Value(
-                tilo_ui_base::widget::ActionEmitter::new(binding),
+                tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding)),
             ));
             self.control.on_set = None;
             self
         }
 
         #[must_use]
-        pub fn on_choose_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        pub fn on_choose_action(mut self, binding: impl crate::Bind<()>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Press(
-                tilo_ui_base::widget::ActionEmitter::new(binding),
+                tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding)),
             ));
             self.control.on_set = None;
             self

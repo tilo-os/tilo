@@ -86,7 +86,7 @@ impl ContentHandoff {
             .arguments()
         })
         .ok()
-        .map(ActionEmitter::new)
+        .map(|binding| ActionEmitter::new(ui_core::Bind::bound(binding)))
     }
 
     /// [`Self::emitter`] for a file: what it is handed is the file's content hash and its
@@ -102,7 +102,7 @@ impl ContentHandoff {
             .arguments()
         })
         .ok()
-        .map(ActionEmitter::new)
+        .map(|binding| ActionEmitter::new(ui_core::Bind::bound(binding)))
     }
 
     /// The app's row [`Self::emitter`]'s launches name, offering its open as `id`.

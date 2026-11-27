@@ -21,7 +21,7 @@ pub use {
 pub mod action_emitter;
 pub mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-pub use action_emitter::ActionEmitter;
+pub use action_emitter::{ActionEmitter, ArgumentsRefused, BoundAction};
 pub use {
     disclosing::BandMotion, disclosing::Ghosts, disclosing::content_box,
     disclosing::follower_shifts, disclosing::place_bands, disclosing::route_to_shifted_children,
@@ -701,80 +701,6 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
 pub fn humanize_control_id(id: &str) -> String {
     let tail = id.rsplit('.').next().unwrap_or(id);
     crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    clippy::unwrap_used,
-    reason = "test support: failing the calling test is the point"
-)]
-fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
-where
-    I: serde::Serialize,
-{
-    let resource =
-        tilo_actions::ResourceSpec::new("test:control", "test", "Test").with_action(spec.clone());
-    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
-        serde_json::json!({"value": value})
-            .as_object()
-            .unwrap()
-            .clone()
-    })
-    .unwrap()
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    clippy::unwrap_used,
-    reason = "test support: failing the calling test is the point"
-)]
-pub fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_bool",
-        vec![ActionParam::required("value", ParamType::Boolean, "Value")],
-        |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
-    ))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    clippy::unwrap_used,
-    reason = "test support: failing the calling test is the point"
-)]
-pub fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_string",
-        vec![ActionParam::required("value", ParamType::Text, "Value")],
-        |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
-    ))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[allow(
-    clippy::unwrap_used,
-    reason = "test support: failing the calling test is the point"
-)]
-pub fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_number",
-        vec![ActionParam::required("value", ParamType::Number, "Value")],
-        |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
-    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

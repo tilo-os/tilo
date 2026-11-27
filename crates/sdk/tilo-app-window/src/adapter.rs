@@ -853,7 +853,7 @@ impl Source for NodeSource<'_> {
             // the control is bound to it, and the window that owns the tree hands the invocation to
             // the app. A view event, and an action the app has not published, stays the view's own.
             if let Some(binding) = self.published(name) {
-                return Event::Action(binding);
+                return Event::Action(ui::Bind::bound(binding));
             }
             Event::View(Intent::new(
                 &self.reconciler.adapter().fired,

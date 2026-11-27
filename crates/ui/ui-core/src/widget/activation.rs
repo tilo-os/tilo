@@ -107,8 +107,8 @@ impl Activation {
         self.opens = false;
     }
 
-    pub(crate) fn set_action(&mut self, binding: tilo_actions::ActionBinding<()>) {
-        self.action = Some(ActionEmitter::new(binding));
+    pub(crate) fn set_action(&mut self, binding: impl crate::Bind<()>) {
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.on_activate = None;
         self.opens = false;
     }

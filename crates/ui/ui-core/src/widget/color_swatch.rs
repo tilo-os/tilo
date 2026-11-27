@@ -455,7 +455,9 @@ impl ColorSwatchPicker {
     /// the state it changes answers.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<usize>) -> Self {
-        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(
+            crate::Bind::bound(binding),
+        ));
         self
     }
 

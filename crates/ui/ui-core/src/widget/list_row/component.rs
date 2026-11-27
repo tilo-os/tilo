@@ -280,7 +280,9 @@ impl ListRow {
         self.check_action = match check.clone() {
             // The app's own action for what a check is: the box holds it, so pressing the box
             // and an agent's invocation of the action are the one route.
-            Event::Action(binding) => Some(tilo_ui_base::widget::ActionEmitter::new(binding)),
+            Event::Action(binding) => Some(tilo_ui_base::widget::ActionEmitter::new(
+                crate::Bind::bound(binding),
+            )),
             Event::None | Event::View(_) => None,
         };
         self.leading = if let Some(bound) = checkbox {

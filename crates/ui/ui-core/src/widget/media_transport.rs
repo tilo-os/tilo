@@ -1018,7 +1018,7 @@ fn triggered_children(
 fn event_report(event: Event) -> Rc<dyn Fn()> {
     let run: std::cell::RefCell<Box<dyn FnMut()>> = std::cell::RefCell::new(match event {
         Event::Action(binding) => {
-            let mut emitter = tilo_ui_base::widget::ActionEmitter::new(binding);
+            let mut emitter = tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding));
             Box::new(move || {
                 if let Err(error) = emitter.emit(()) {
                     tracing::warn!(%error, "a transport control's action refused its arguments");

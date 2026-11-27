@@ -4,7 +4,7 @@ use tilo_actions::ControlInvocation;
 use tilo_ui_base::control_domain::*;
 use tilo_ui_base::{widget::ActionEmitter, widget::Widget};
 fn invocation(value: bool) -> ControlInvocation {
-    tilo_ui_base::widget::test_bool_action_binding()
+    crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)
         .invoke(value)
         .unwrap()
 }
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
     phase control_ownership_core_registration_is_single_ownership_and_late_attach_is_unqualified;
     {
         let domain = ControlDomain::outer();
-        let mut initial = ActionEmitter::new(tilo_ui_base::widget::test_bool_action_binding());
+        let mut initial = ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)));
         initial.emit(true).unwrap();
         initial
             .attach(&domain, DomainAttachment::Initial)
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
         assert_eq!(saved[0].invocation, invocation(true));
         drop(lease);
         assert!(domain.drain_live().is_empty());
-        let mut late = ActionEmitter::new(tilo_ui_base::widget::test_bool_action_binding());
+        let mut late = ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)));
         late.emit(false).unwrap();
         assert!(late.take().is_some());
         assert_eq!(
@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(domain.coverage().unsafe_late_attachments, 1);
         domain.finish_initial_installation();
-        let mut falsely_initial = ActionEmitter::new(tilo_ui_base::widget::test_bool_action_binding());
+        let mut falsely_initial = ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)));
         falsely_initial.emit(true).unwrap();
         assert_eq!(
             falsely_initial.attach(&domain, DomainAttachment::Initial),
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         );
         initial.emit(true).unwrap();
         assert!(initial.take().is_none());
-        let mut closed = ActionEmitter::new_in(tilo_ui_base::widget::test_bool_action_binding(), &domain);
+        let mut closed = ActionEmitter::new_in(crate::Bind::bound(crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)), &domain);
         closed.emit(true).unwrap();
         assert!(closed.take().is_none());
     }
@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
 
     phase control_ownership_core_a_control_without_a_host_keeps_its_own_queue;
     {
-        let mut control = ActionEmitter::new(tilo_ui_base::widget::test_bool_action_binding());
+        let mut control = ActionEmitter::new(crate::Bind::bound(crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean)));
         control.emit(true).unwrap();
         assert_eq!(control.take(), Some(invocation(true)));
         assert!(control.take().is_none());

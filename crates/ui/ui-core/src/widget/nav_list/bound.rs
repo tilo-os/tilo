@@ -207,11 +207,10 @@ impl NavList {
     /// the item's id.
     #[must_use]
     pub fn item_action(mut self, action: NavAction, binding: ActionBinding<String>) -> Self {
-        self.shared
-            .borrow_mut()
-            .bound
-            .items
-            .insert(action.id.clone(), ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.items.insert(
+            action.id.clone(),
+            ActionEmitter::new(crate::Bind::bound(binding)),
+        );
         self.row_actions.push(NavAction {
             opens_menu: false,
             ..action
@@ -233,11 +232,10 @@ impl NavList {
     /// of a section header is pressed.
     #[must_use]
     pub fn section_action(self, action: impl Into<String>, binding: ActionBinding<String>) -> Self {
-        self.shared
-            .borrow_mut()
-            .bound
-            .sections
-            .insert(action.into(), ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.sections.insert(
+            action.into(),
+            ActionEmitter::new(crate::Bind::bound(binding)),
+        );
         self
     }
 
@@ -245,7 +243,8 @@ impl NavList {
     /// renames an editable item (F2 or a double click).
     #[must_use]
     pub fn on_rename_action(mut self, binding: ActionBinding<(String, String)>) -> Self {
-        self.shared.borrow_mut().bound.rename = Some(ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.rename =
+            Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.list = Box::new(self.list.rename_on_double_click());
         self
     }
@@ -255,7 +254,8 @@ impl NavList {
     /// the list).
     #[must_use]
     pub fn on_delete_action(self, binding: ActionBinding<String>) -> Self {
-        self.shared.borrow_mut().bound.delete = Some(ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.delete =
+            Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self
     }
 
@@ -264,7 +264,8 @@ impl NavList {
     /// list its new sections once the action has moved it.
     #[must_use]
     pub fn on_move_action(self, binding: ActionBinding<(String, NavDrop)>) -> Self {
-        self.shared.borrow_mut().bound.moves = Some(ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.moves =
+            Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.with_reordering()
     }
 
@@ -273,7 +274,8 @@ impl NavList {
     /// a click anywhere on it, or Space or Enter.
     #[must_use]
     pub fn on_check_action(self, binding: ActionBinding<(String, bool)>) -> Self {
-        self.shared.borrow_mut().bound.check = Some(ActionEmitter::new(binding));
+        self.shared.borrow_mut().bound.check =
+            Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self
     }
 }

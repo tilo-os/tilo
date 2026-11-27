@@ -236,6 +236,11 @@ label = "Settings are written through typed keys"
 run = "python3 tools/policy/check_settings_writes.py"
 
 [[step]]
+name = "control-binding"
+label = "Only tilo-ui binds a control to an action"
+run = "python3 tools/policy/check_control_binding.py"
+
+[[step]]
 name = "widget-document-writes"
 label = "Widgets never write the document"
 run = "python3 tools/policy/check_widget_document_writes.py"

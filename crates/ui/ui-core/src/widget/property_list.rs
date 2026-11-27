@@ -779,7 +779,7 @@ impl Property {
             self.actions.push(PropertyAction::Bound {
                 icon,
                 label: label.into(),
-                action: tilo_ui_base::widget::ActionEmitter::new(binding),
+                action: tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding)),
             });
         }
         self

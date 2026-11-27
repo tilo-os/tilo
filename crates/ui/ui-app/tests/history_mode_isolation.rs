@@ -12,9 +12,9 @@ use tilo_ui_base::widget::ActionEmitter;
 
 #[test]
 fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effect() {
-    let emitter = Rc::new(RefCell::new(ActionEmitter::new(
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(tilo_ui::Bind::bound(
         tilo_actions::ActionBinding::unit_for(&resource(), "export").unwrap(),
-    )));
+    ))));
     let starts = Rc::new(Cell::new(0));
     let finish = Rc::new(Cell::new(false));
     let completions = Rc::new(Cell::new(0));
@@ -139,9 +139,9 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
 
 #[test]
 fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_arguments() {
-    let emitter = Rc::new(RefCell::new(ActionEmitter::new(
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(tilo_ui::Bind::bound(
         tilo_actions::ActionBinding::unit_for(&resource(), "export").unwrap(),
-    )));
+    ))));
     let manual = Rc::new(RefCell::new(Some(tilo_actions::ControlInvocation {
         address: tilo_actions::ActionAddress::new("phrase-owner", "export"),
         arguments: [(

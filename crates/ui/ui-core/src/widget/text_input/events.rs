@@ -30,7 +30,7 @@ impl TextInput {
     /// press cannot advance a wizard twice.
     pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.enter_submits = true;
-        self.submit_action = Some(ActionEmitter::new_replace_one(binding));
+        self.submit_action = Some(ActionEmitter::new_replace_one(crate::Bind::bound(binding)));
         self
     }
 

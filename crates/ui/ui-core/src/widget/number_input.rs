@@ -550,7 +550,7 @@ impl NumberInput {
 
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.changed = None;
         self
     }
@@ -1501,7 +1501,7 @@ mod tests {
 
             {
                 let mut number =
-                    NumberInput::new(10.0).on_action(tilo_ui_base::widget::test_number_action_binding());
+                    NumberInput::new(10.0).on_action(crate::widget::test_value_action_binding::<f64>(tilo_actions::ParamType::Number));
                 let mut doc = AutoCommit::new();
                 tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut number,

@@ -848,7 +848,7 @@ impl Chip {
     }
 
     #[must_use]
-    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: impl crate::Bind<()>) -> Self {
         self.activation.set_action(binding);
         self
     }
@@ -1788,7 +1788,7 @@ mod tests {
                     tilo_actions::ActionBinding::unit_for(&spec, "remove").expect("published");
                 let address = binding.address().clone();
                 let mut chip = Chip::new("tag").with_remove_press(tilo_ui_base::widget::Press::of(
-                    tilo_ui_base::component::Event::Action(binding),
+                    tilo_ui_base::component::Event::Action(crate::Bind::bound(binding)),
                 ));
                 chip.remove_pressed();
                 assert!(chip.removed, "the press removes the chip");

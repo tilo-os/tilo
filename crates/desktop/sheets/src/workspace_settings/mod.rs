@@ -800,9 +800,9 @@ impl Parts {
     fn choice(&self, label: String, effect: &WorkspaceSettingsEffect) -> ui::widget::MenuItem {
         let binding = self.actions.effect(effect);
         let bound = binding.is_some();
-        let press = ui::widget::Press::of(
-            binding.map_or(ui::component::Event::None, ui::component::Event::Action),
-        );
+        let press = ui::widget::Press::of(binding.map_or(ui::component::Event::None, |binding| {
+            ui::component::Event::Action(ui::Bind::bound(binding))
+        }));
         ui::widget::MenuItem::bound(label, press).with_enabled(bound)
     }
 

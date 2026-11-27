@@ -116,6 +116,8 @@ pub mod settings_device;
 pub mod surface_services;
 
 pub mod a11y_tree;
+mod bind;
+pub use bind::Bind;
 mod action_locus;
 /// The document action host behind the framework's dispatcher. Apps submit edits through the framework,
 /// never through this host.

@@ -276,9 +276,11 @@ impl Toolbar {
     /// Bind the last pushed command to the same admitted action in the row
     /// and overflow menu. The callback is not run for a bound command.
     #[must_use]
-    pub fn with_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+    pub fn with_action(mut self, binding: impl crate::Bind<()>) -> Self {
         if let Some(command) = self.last_command() {
-            command.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+            command.action = Some(tilo_ui_base::widget::ActionEmitter::new(
+                crate::Bind::bound(binding),
+            ));
         }
         self
     }

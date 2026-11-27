@@ -165,5 +165,7 @@ pub fn bound_press(resource: &str, action: &str) -> tilo_ui_base::widget::Press 
     );
     let binding = tilo_actions::ActionBinding::unit_for(&spec, action)
         .expect("the resource publishes the action the press names");
-    tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding))
+    tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(crate::Bind::bound(
+        binding,
+    )))
 }

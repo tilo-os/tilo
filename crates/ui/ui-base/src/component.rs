@@ -717,7 +717,7 @@ pub enum Event {
     #[default]
     None,
     /// An exported action, invoked through the API; the host resolves its policy first.
-    Action(tilo_actions::ActionBinding<()>),
+    Action(crate::widget::BoundAction<()>),
     /// A view intent, queued for the host.
     View(Intent),
 }

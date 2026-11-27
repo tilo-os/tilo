@@ -2906,7 +2906,7 @@ fn bridge_component(
             .unwrap();
     let emitter = Rc::new(RefCell::new(if in_domain {
         tilo_ui_base::widget::ActionEmitter::new_in(
-            binding,
+            crate::Bind::bound(binding),
             &component
                 .callback_binding()
                 .control_domain
@@ -2914,7 +2914,7 @@ fn bridge_component(
                 .unwrap(),
         )
     } else {
-        tilo_ui_base::widget::ActionEmitter::new(binding)
+        tilo_ui_base::widget::ActionEmitter::new(crate::Bind::bound(binding))
     }));
     live.emitter = Some(emitter.clone());
     component.root = Some(Box::new(live));

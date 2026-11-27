@@ -21,10 +21,10 @@ fn message_actions(on: &str) -> tilo_actions::ResourceSpec {
 }
 
 fn bound(on: &str, action: &str) -> Event {
-    Event::Action(
+    Event::Action(crate::Bind::bound(
         tilo_actions::ActionBinding::unit_for(&message_actions(on), action)
             .expect("the message publishes it"),
-    )
+    ))
 }
 
 struct Node {

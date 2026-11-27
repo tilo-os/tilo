@@ -71,14 +71,18 @@ impl Link {
     pub fn action(label: &str, binding: tilo_actions::ActionBinding<()>) -> Self {
         let mut link = Self::new("");
         link.label = label.to_string();
-        link.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+        link.action = Some(tilo_ui_base::widget::ActionEmitter::new(
+            crate::Bind::bound(binding),
+        ));
         link
     }
 
     /// Run `binding` when activated, instead of opening the URL.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
-        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(
+            crate::Bind::bound(binding),
+        ));
         self
     }
 

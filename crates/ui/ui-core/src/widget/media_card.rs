@@ -1105,12 +1105,14 @@ impl MediaCard {
         mut self,
         icon: Icon,
         label: impl Into<String>,
-        binding: tilo_actions::ActionBinding<()>,
+        binding: impl crate::Bind<()>,
     ) -> Self {
         self.hover_action = Some(HoverAction {
             icon,
             label: label.into(),
-            press: HoverPress::Bound(tilo_ui_base::widget::ActionEmitter::new(binding)),
+            press: HoverPress::Bound(tilo_ui_base::widget::ActionEmitter::new(
+                crate::Bind::bound(binding),
+            )),
         });
         self
     }
@@ -1138,7 +1140,7 @@ impl MediaCard {
     }
 
     #[must_use]
-    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: impl crate::Bind<()>) -> Self {
         self.activation.set_action(binding);
         self
     }

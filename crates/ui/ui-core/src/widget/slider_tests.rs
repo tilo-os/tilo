@@ -506,7 +506,7 @@ tilo_test_env::scenario! {
 
         {
             let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
-                .on_action(tilo_ui_base::widget::test_number_action_binding())
+                .on_action(crate::widget::test_value_action_binding::<f64>(tilo_actions::ParamType::Number))
                 .commits_on_release();
             tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut slider,
@@ -555,7 +555,7 @@ tilo_test_env::scenario! {
         {
             let state = tilo_ui_base::LocalState::new(0.0);
             let mut slider = Slider::from_state(&state)
-                .on_action(tilo_ui_base::widget::test_number_action_binding())
+                .on_action(crate::widget::test_value_action_binding::<f64>(tilo_actions::ParamType::Number))
                 .commits_on_release();
             slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
             tilo_ui_base::widget::controls::refresh_control_action_availability(
@@ -580,7 +580,7 @@ tilo_test_env::scenario! {
         {
             let mut slider = Slider::new("native", "legacy")
                 .on_change(|_| panic!("the callback gives way to the bound action"))
-                .on_action(tilo_ui_base::widget::test_number_action_binding());
+                .on_action(crate::widget::test_value_action_binding::<f64>(tilo_actions::ParamType::Number));
             let mut doc = AutoCommit::new();
             tilo_ui_base::widget::controls::refresh_control_action_availability(
                 &mut slider,

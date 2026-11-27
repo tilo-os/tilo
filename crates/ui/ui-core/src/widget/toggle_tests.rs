@@ -182,8 +182,9 @@ fn toggle_bindings_route_activation_unless_disabled() {
     }
 
     {
-        let mut toggle = Toggle::bound("native", "on")
-            .on_action(tilo_ui_base::widget::test_bool_action_binding());
+        let mut toggle = Toggle::bound("native", "on").on_action(
+            crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean),
+        );
         let mut doc = AutoCommit::new();
         tilo_ui_base::widget::controls::refresh_control_action_availability(
             &mut toggle,
@@ -229,8 +230,9 @@ fn a_switch_given_its_state_reads_it_and_an_empty_document_path_is_rejected() {
         "a given switch keeps the value it was built with"
     );
 
-    let mut action_switch =
-        Toggle::given("wifi", false).on_action(tilo_ui_base::widget::test_bool_action_binding());
+    let mut action_switch = Toggle::given("wifi", false).on_action(
+        crate::widget::test_value_action_binding::<bool>(tilo_actions::ParamType::Boolean),
+    );
     tilo_ui_base::widget::controls::refresh_control_action_availability(
         &mut action_switch,
         &std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]),

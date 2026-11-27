@@ -105,7 +105,7 @@ impl HeaderBar {
             }
             previous = Some(command.group);
             let press = tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(
-                command.binding.clone(),
+                crate::Bind::bound(command.binding.clone()),
             ));
             menu.push(MenuItem::bound(command.label.clone(), press).with_enabled(command.enabled));
         }

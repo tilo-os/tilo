@@ -194,7 +194,7 @@ impl PictureChoice {
     /// the value the action writes, not the press.
     #[must_use]
     pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self
     }
 

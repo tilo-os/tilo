@@ -839,7 +839,7 @@ tilo_test_env::scenario! {
     {
         let bound = published("res-inbox", "open");
         let address = bound.address().clone();
-        let mut list = places(tilo_ui_base::component::Event::Action(bound), None);
+        let mut list = places(tilo_ui_base::component::Event::Action(tilo_ui::Bind::bound(bound)), None);
         list.test_choose("item:inbox");
         let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut list);
         assert_eq!(
@@ -861,7 +861,7 @@ tilo_test_env::scenario! {
             tilo_ui_base::component::Event::None,
             Some(tilo_ui_base::component::OfferedAction {
                 label: "New project".into(),
-                run: tilo_ui_base::component::Event::Action(bound),
+                run: tilo_ui_base::component::Event::Action(tilo_ui::Bind::bound(bound)),
                 ..tilo_ui_base::component::OfferedAction::default()
             }),
         );
@@ -1387,11 +1387,11 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     let list = NavList::new(mailboxes())
         .item_action(
             NavAction::new("archive", Icon::Archive, "Archive"),
-            tilo_ui_base::widget::test_string_action_binding(),
+            tilo_ui::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text),
         )
         .section_action(
             "new-folder",
-            tilo_ui_base::widget::test_string_action_binding(),
+            tilo_ui::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text),
         );
     let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
@@ -1481,7 +1481,9 @@ fn bound_check_rename_and_delete_run_their_actions() {
     )])
     .on_check_action(bound())
     .on_rename_action(bound())
-    .on_delete_action(tilo_ui_base::widget::test_string_action_binding());
+    .on_delete_action(tilo_ui::widget::test_value_action_binding::<String>(
+        tilo_actions::ParamType::Text,
+    ));
     let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     click_at(&mut h, work.center().x, work.center().y);

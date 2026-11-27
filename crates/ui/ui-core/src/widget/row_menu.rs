@@ -94,7 +94,7 @@ impl RowMenu {
         self.entries.push(Entry {
             label,
             destructive,
-            emitter: binding.map(ActionEmitter::new),
+            emitter: binding.map(|binding| ActionEmitter::new(crate::Bind::bound(binding))),
         });
         self.rebuild_items();
         self

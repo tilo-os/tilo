@@ -316,7 +316,7 @@ impl Dropdown {
     /// Route every committed selection through an exported resource action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
+        self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.chosen = None;
         self
     }
