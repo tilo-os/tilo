@@ -74,30 +74,6 @@ pub struct ActiveExposure {
     /// then says so in words, and a handle or a key is never a name.
     pub name: String,
 }
-/// Whether the top bar holds its strip of the screen or shows over the windows. The person chooses
-/// between the first and the other two (`desktop_controls.hide_top_bar`); the host moves between
-/// those two as the pointer, the keyboard and the bar's own menus ask for it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum TopBarPresence {
-    /// Holds its strip of the screen; the windows start below it.
-    #[default]
-    Docked,
-    /// Out of the way until reached for: the windows take its strip, and the bar neither paints nor
-    /// takes the pointer.
-    Hidden,
-    /// Reached for: drawn over the windows' top edge, in the same place it is docked. Nothing under
-    /// it moves, coming or going.
-    Shown,
-}
-
-impl TopBarPresence {
-    /// Whether the bar takes no room in the layout.
-    #[must_use]
-    pub fn overlays(self) -> bool {
-        self != Self::Docked
-    }
-}
-
 /// Whether the host lets the person at this desktop invite others here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Invite {

@@ -217,8 +217,6 @@ struct RevealAnim {
 #[derive(Clone, Debug)]
 struct ClosingTab {
     desc: TabDescriptor,
-    index: usize,
-    was_active: bool,
     /// Rect at close-start; the fade animates in place, not tracking the layout
     /// spring.
     pill_rect: Rect,
@@ -410,11 +408,11 @@ pub struct TabBar {
     /// click from `active_id` changing between frames.
     pending_activation: Option<u64>,
     /// `(tab_id, release_point)` when a drag is released outside this bar's rect,
-    /// for a parent (e.g. `GroupRow`) to resolve the drop target.
+    /// for the bar's parent to resolve the drop target.
     pub pending_detach: Option<(u64, Point)>,
     drop_zone_target: Option<usize>,
-    /// Gap index where the drop-target line paints, from own-bar drag events and, for cross-group
-    /// drags, from `GroupRow` on every sibling bar.
+    /// Gap index where the drop-target line paints, from own-bar drag events and, for cross-bar
+    /// drags, from the bars' parent.
     hover_drop_idx: Option<usize>,
     hover_drop_animated_at: Option<Instant>,
     /// `tab_rects[i]` keyed by id, snapshotted just before a reorder/insert/remove;
@@ -687,34 +685,6 @@ impl TabBar {
         self.search_control = width;
     }
 
-    /// The window's search keeps `least` of width for its open query, reaching back over the
-    /// active tab's parts ([`crate::widget::WindowSearch::least_span`]); `None` where the app
-    /// does not search in place, and the parts owe it nothing.
-    pub fn set_search_least(&mut self, least: Option<f64>) {
-        self.touch();
-        self.search_least = least;
-    }
-
-    /// Where the window's search control stands when the active tab put its parts in the bar, and
-    /// how far left an open search may reach; `None` without parts: it follows the tabs.
-    #[must_use]
-    pub fn toolbar_search_part(&self) -> Option<(Rect, f64)> {
-        self.shown_toolbar()?;
-        let row = self.toolbar_row_rect();
-        let location = self.toolbar_row.parts().location;
-        let reach = if location.area() > 0.0 {
-            location.x0
-        } else {
-            row.x0
-        };
-        Some((row, reach))
-    }
-
-    #[must_use]
-    pub fn ground_color(&self, theme: &Theme) -> vello::peniko::Color {
-        self.ground(theme)
-    }
-
     pub(super) fn status_chips_start(&self) -> f64 {
         let search = if self.search_control.is_some() {
             super::window_controls::CONTROL_GAP + super::window_controls::CONTROL_PX
@@ -743,29 +713,6 @@ impl TabBar {
             (None, Some(n)) => n,
             (None, None) => self.pill_row().x0,
         }
-    }
-
-    /// How far back over the tabs the window's search may start when a narrow window leaves its
-    /// query too narrow: past the first tab's icon, which keeps naming the window.
-    #[must_use]
-    pub fn search_cramped_start(&self) -> f64 {
-        let first = self
-            .tab_rects
-            .first()
-            .copied()
-            .filter(|r| r.area() > 0.0)
-            .unwrap_or_else(|| self.pill_row());
-        first.x0 + PILL_PAD_X + ICON_W + TOOLBAR_LEAD_GAP
-    }
-
-    /// What the window's maximize control offers where the window stands: restore while it is
-    /// maximized, snap back while it floats.
-    pub fn set_resize(&mut self, resize: super::window_controls::Resize) {
-        if self.resize == resize {
-            return;
-        }
-        self.touch();
-        self.resize = resize;
     }
 
     fn solo(&self) -> bool {
@@ -815,7 +762,7 @@ impl TabBar {
         true
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
         &self.toolbar_row
     }
@@ -864,25 +811,9 @@ impl TabBar {
         self.toolbar_row.begin_edit()
     }
 
-    /// Hand a keyboard or text event to the location field while it is
-    /// edited. Returns whether the field took it.
-    pub fn location_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
-    ) -> bool {
-        self.touch();
-        self.toolbar_row.is_editing() && self.toolbar_row.field_event(event, ctx)
-    }
-
     pub fn cancel_location_edit(&mut self) -> bool {
         self.touch();
         self.toolbar_row.cancel_edit()
-    }
-
-    #[must_use]
-    pub fn toolbar_hit(&self, p: Point) -> bool {
-        self.active_toolbar().is_some() && self.toolbar_row.hit(p)
     }
 
     /// Where the active tab's location stands (`Rect::ZERO` for none).
@@ -1079,13 +1010,6 @@ impl TabBar {
     #[must_use]
     pub fn window_controls(&self) -> &super::window_controls::WindowControls {
         &self.controls
-    }
-
-    /// Where the window's History toggle stands this frame: the app's
-    /// action, on the window's ground just before the controls' pill.
-    #[must_use]
-    pub fn history_action_rect(&self) -> Rect {
-        self.history_action
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -2630,11 +2554,6 @@ impl TabBar {
         self.touch();
         self.accent_ids.insert(id, color);
     }
-    /// Drop `id`'s leading accent, giving the pill its leading zone back.
-    pub fn clear_accent(&mut self, id: u64) {
-        self.touch();
-        self.accent_ids.remove(&id);
-    }
     pub fn accent(&self, id: u64) -> Option<vello::peniko::Color> {
         self.accent_ids.get(&id).copied()
     }
@@ -2695,7 +2614,6 @@ impl TabBar {
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
         self.snapshot_layout_for_spring();
-        let was_active = self.active_id == id;
         self.tabs.remove(idx);
         if self.active_id == id {
             // Prefer the tab that slid into this index; fall back to the
@@ -2708,8 +2626,6 @@ impl TabBar {
         }
         self.closing_tabs.push(ClosingTab {
             desc,
-            index: idx,
-            was_active,
             pill_rect,
             close_rect,
             started_at: crate::time::now(),
@@ -2717,27 +2633,7 @@ impl TabBar {
         true
     }
 
-    /// Restore a requested close whose host still owns the live tab. No
-    /// metadata or focus is lost while the client asks for a save decision.
-    pub fn cancel_close(&mut self, id: u64) -> bool {
-        let Some(index) = self.closing_tabs.iter().position(|tab| tab.desc.id == id) else {
-            return false;
-        };
-        self.touch();
-        let tab = self.closing_tabs.remove(index);
-        if !self.tabs.iter().any(|live| live.id == id) {
-            self.tabs.insert(tab.index.min(self.tabs.len()), tab.desc);
-        }
-        if tab.was_active {
-            self.active_id = id;
-        }
-        if self.pending_close == Some(id) {
-            self.pending_close = None;
-        }
-        true
-    }
-
-    /// Called by `WindowGroup` once its own fade-out has elapsed.
+    /// The window's own fade-out has elapsed: the closing pill goes.
     pub fn finalize_close(&mut self, id: u64) -> bool {
         self.touch();
         let before = self.closing_tabs.len();
@@ -2763,17 +2659,8 @@ impl TabBar {
         self.closing_tabs.iter().map(|c| c.desc.id).collect()
     }
 
-    /// `Instant` the close fade was latched for `id` — recorded at
-    /// close-start, not on finalize.
-    #[cfg(test)]
-    pub fn closing_started_at(&self, id: u64) -> Option<Instant> {
-        self.closing_tabs
-            .iter()
-            .find(|c| c.desc.id == id)
-            .map(|c| c.started_at)
-    }
     /// Released inside this bar → `pending_reorder` to the gap the indicator points at; outside its
-    /// rect → `pending_detach`, which the parent `GroupRow` resolves by hit-testing sibling bars.
+    /// rect → `pending_detach`, which the bar's parent resolves by hit-testing other bars.
     fn finish_drag_release(&mut self, handled: &mut bool) {
         self.touch();
         if self.toolbar_row.release(self.last_cursor) {
@@ -2929,26 +2816,11 @@ impl TabBar {
         self.press_origin.is_some()
     }
 
-    pub fn dragged_tab(&self) -> Option<u64> {
-        match self.pending_drag {
-            Some(DragPayload::Tab { tab, .. }) => Some(tab),
-            _ => None,
-        }
-    }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> {
         self.pending_reorder.take()
     }
     pub fn take_close(&mut self) -> Option<u64> {
         self.pending_close.take()
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn close_rect_for_tests(&self, tab_id: u64) -> Option<Rect> {
-        self.tabs
-            .iter()
-            .position(|tab| tab.id == tab_id)
-            .and_then(|index| self.close_hit_rect(index))
-            .filter(|rect| rect.area() > 0.0)
     }
 
     /// The tab a middle press closes: the one under the pointer, unless it is pinned or holds
@@ -3025,10 +2897,6 @@ impl TabBar {
                 .map(|(id, toolbar)| (*id, toolbar.card_form()))
                 .collect()
         });
-    }
-
-    pub fn take_collapse(&mut self) -> bool {
-        std::mem::take(&mut self.pending_collapse)
     }
 
     pub fn take_max(&mut self) -> Option<u64> {
@@ -3185,8 +3053,7 @@ impl TabBar {
         }
         self.tab_rects.len()
     }
-    /// Used by cross-group drag routing in `GroupRow::handle_event` to splice a
-    /// detached tab into the target bar without forcing a full rebuild.
+    /// Splice a detached tab into this bar without forcing a full rebuild.
     pub fn insert_tab(&mut self, idx: usize, desc: TabDescriptor) {
         self.touch();
         let clamped = idx.min(self.tabs.len());
@@ -3195,33 +3062,6 @@ impl TabBar {
         self.tabs.insert(clamped, desc);
         self.inserted_at.insert(id, crate::time::now());
         self.active_id = id;
-    }
-
-    /// Called for every sibling bar while another group's tab drag is in flight; a no-op while this
-    /// bar has its own drag, whose moves already drive the hover.
-    pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
-        self.touch();
-        if self.pending_drag.is_some() {
-            return;
-        }
-        let new_target = cursor
-            .filter(|p| self.rect.contains(*p))
-            .map(|p| self.drop_index_for(p));
-        if new_target != self.hover_drop_idx {
-            self.hover_drop_idx = new_target;
-            if new_target.is_some() {
-                self.hover_drop_animated_at = Some(crate::time::now());
-            } else {
-                self.hover_drop_animated_at = None;
-            }
-        }
-    }
-
-    /// Stand the bar on a docked strip of its own instead of the window
-    /// ground: its tabs then lift off the strip's ground.
-    pub fn set_on_strip(&mut self, on_strip: bool) {
-        self.touch();
-        self.on_strip = on_strip;
     }
 
     /// The span the pills are laid out across: the bar, or on a docked strip the strip less the
@@ -4694,7 +4534,7 @@ impl TabBar {
     }
 
     /// Pills mid close-fade, retained past the fade window (at alpha 0) until
-    /// `WindowGroup::sweep_closed_hosts` cleans them up.
+    /// [`Self::finalize_close`] drops them.
     fn draw_closing_tabs(
         &self,
         scene: &mut Scene,
@@ -7177,13 +7017,3 @@ mod component;
 pub use component::{
     PresenceFaceProps, TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point,
 };
-
-/// What a tab bar's tests read of it from outside the module.
-#[cfg(feature = "test-support")]
-impl TabBar {
-    /// The window's toolbar row, as the bar lays it out.
-    #[must_use]
-    pub fn test_toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
-        self.toolbar_row()
-    }
-}

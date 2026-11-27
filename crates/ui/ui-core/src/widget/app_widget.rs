@@ -251,13 +251,6 @@ pub trait AppWidget: Widget {
         None
     }
 
-    /// A person is dragging one edge of this app's window; `fixed` is the edge that holds still on
-    /// screen (`None` once nothing holds).
-    fn set_live_resize_anchor(&mut self, _fixed: Option<crate::widget::WindowEdge>) {}
-
-    /// The edge drag ended.
-    fn release_live_resize_anchor(&mut self) {}
-
     /// What a private window offers its own device: the resources and actions its API publishes, for
     /// the host to list and invoke for this device's person without publishing them to any workspace.
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
@@ -291,15 +284,6 @@ pub trait AppWidget: Widget {
     /// its search providers, which its host cannot read through its widgets.
     fn window_search(&self) -> Option<WindowPublication> {
         None
-    }
-
-    /// Run `invocation`, chosen in the search of this window, as the app's own control would, for an
-    /// app keeping its own document.
-    fn run_window_control(
-        &mut self,
-        invocation: tilo_actions::ControlInvocation,
-    ) -> Result<(), tilo_actions::ControlInvocation> {
-        Err(invocation)
     }
 }
 

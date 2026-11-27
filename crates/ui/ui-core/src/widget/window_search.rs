@@ -548,16 +548,6 @@ impl WindowSearch {
     }
 
     #[must_use]
-    pub fn options_rect(&self) -> Option<Rect> {
-        self.panel.rect().filter(|_| self.is_open())
-    }
-
-    #[must_use]
-    pub fn query_min_width(theme: &Theme) -> f64 {
-        field_min(theme)
-    }
-
-    #[must_use]
     pub fn least_span(theme: &Theme) -> f64 {
         let sibling = f64::from(theme.tokens.spacing.s2);
         field_min(theme) + 2.0 * (CONTROL_PX + sibling)
@@ -610,12 +600,6 @@ impl WindowSearch {
         self.limit = limit;
         self.cramped = anchor.x0;
         self.trailing = false;
-    }
-
-    pub fn set_cramped_start(&mut self, x: f64) {
-        if !self.trailing {
-            self.cramped = x.min(self.anchor.x0);
-        }
     }
 
     pub fn place_trailing(&mut self, anchor: Rect, reach: f64, cramped: f64) {
@@ -832,15 +816,6 @@ impl WindowSearch {
         self.show_query(&adopted.query, adopted.options);
         self.sent = Some(adopted.query.clone());
         self.options_sent = Some(adopted.options);
-    }
-
-    pub fn set_remote_count(&mut self, count: Option<FilterCount>) {
-        if self.remote && self.is_open() {
-            let count = count.filter(|_| !self.field.value().is_empty());
-            if self.field.count() != count {
-                self.field.set_count(count);
-            }
-        }
     }
 
     pub fn close(&mut self, source: MotionSource) {

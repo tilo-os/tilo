@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use vello::kurbo::{Affine, Rect, Vec2};
 
-use super::{Ask, Embed, EmbedState, OpenWindow, ResourceView, SharedWindow};
+use super::{Embed, EmbedState, OpenWindow, ResourceView, SharedWindow};
 use crate::time::{Duration, Instant};
 use crate::window_toolbar::ToolbarAction;
 
@@ -52,35 +52,6 @@ pub fn menu_item(window: &OpenWindow, shared: &[SharedWindow]) -> ToolbarAction 
             tilo_ui_base::i18n::I18nManager::lookup_plain("window-share-to-channel"),
         ),
     }
-}
-
-/// What the person's `chosen` items of the shell's own (by tab) ask of the sharing app, oldest
-/// first.
-#[must_use]
-pub fn asks(
-    chosen: Vec<(u64, String)>,
-    windows: &[OpenWindow],
-    shared: &[SharedWindow],
-) -> Vec<Ask> {
-    let mut asks = Vec::new();
-    for (tab, item) in chosen {
-        let Some(window) = windows.iter().find(|window| window.tab == tab) else {
-            continue;
-        };
-        if item == SHARE_ITEM {
-            asks.push(Ask::Share(window.clone()));
-        } else if item == STOP_ITEM {
-            asks.extend(
-                shared
-                    .iter()
-                    .filter(|share| share.app == window.app && share.record == window.record)
-                    .map(|share| Ask::Stop {
-                        message: share.message.clone(),
-                    }),
-            );
-        }
-    }
-    asks
 }
 
 /// Where `embed`, declared in its window's layout coordinates, is drawn on a shell that
@@ -363,8 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn the_menus_offer_sharing_until_shared_and_choices_become_asks() {
-        let windows = vec![window(1, "plan"), window(2, "notes")];
+    fn the_menus_offer_sharing_until_shared() {
+        let windows = [window(1, "plan"), window(2, "notes")];
         let shared = vec![SharedWindow {
             message: "m1".into(),
             app: "so.tilo.notes".into(),
@@ -373,26 +344,6 @@ mod tests {
         }];
         assert_eq!(menu_item(&windows[0], &shared).id, STOP_ITEM);
         assert_eq!(menu_item(&windows[1], &shared).id, SHARE_ITEM);
-
-        let asked = asks(
-            vec![
-                (1, STOP_ITEM.into()),
-                (2, SHARE_ITEM.into()),
-                (9, SHARE_ITEM.into()),
-            ],
-            &windows,
-            &shared,
-        );
-        assert_eq!(
-            asked,
-            vec![
-                Ask::Stop {
-                    message: "m1".into()
-                },
-                Ask::Share(windows[1].clone())
-            ],
-            "a window no longer listed asks nothing"
-        );
     }
 
     #[test]

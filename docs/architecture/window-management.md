@@ -216,11 +216,10 @@ area at least 24 px wide under touch.
 ## Resizing a window
 
 The strip is infinitely wide, so resizing is never zero-sum unless the person
-asks for it. One rule decides every case, and the code holds it in one place,
-`crates/ui/ui-core/src/widget/edge_resize.rs`: `border_owner` says whose edge a
-point is, `EdgeDrag::resize` says what a drag sets. The row
-(`group_row_edges.rs`) only feeds them geometry: the hover highlight, the press
-and every frame of the drag ask the same two functions.
+asks for it. One rule decides every case: the tl shell's strips
+(`resize_strip` in `apps/tl/shell/strips.tl`) turn every drag into the
+session's `layout.strip.resize` step, recorded and undoable, so a press, a
+script and an agent resize the same way.
 
 - **You resize the window whose edge you grab, and only that window.** Every
   window owns both of its edges. The border between two windows (each one's
@@ -288,12 +287,9 @@ instead of sliding a whole window's width out of view. A tree changed
 elsewhere (a peer's edit, the workspace's echo of a close) is applied to the
 live strip in place, through the same removal, insertion and reorder, so
 it moves the strip no differently than the person doing it here.
-Pinned by `group_row.rs`'s `after_releasing_a_resize_no_window_moves`
-and its width-change tests.
-
-Pinned by `edge_resize.rs`'s unit tests (the rule), `group_row.rs`'s row
-tests (hover highlight, push, Shift, limits, cancel, auto-scroll) and the
-pointer tests in `crates/desktop/session/tests/`.
+Pinned by the strip gesture tests in
+`crates/desktop/session/tests/strips_gestures.rs` and the pointer tests beside
+them.
 
 **Why it kept regressing.** Border ownership used to be nobody's decision. The
 border handle was keyed to its left neighbour (its drag set "left width + dx"),

@@ -398,10 +398,7 @@ pub use {
     strip_geometry::min_group_px, strip_geometry::permille_for_px,
 };
 pub mod edge_resize;
-pub use {
-    edge_resize::EdgeGrab, edge_resize::ResizeMode, edge_resize::WidthLimits,
-    edge_resize::WindowEdge,
-};
+pub use edge_resize::WindowEdge;
 pub mod edge_feedback;
 pub use {
     edge_feedback::DWELL as EDGE_DWELL, edge_feedback::Lit as EdgeLit,

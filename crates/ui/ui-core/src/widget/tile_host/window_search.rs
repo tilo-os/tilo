@@ -23,16 +23,4 @@ impl TileHost {
             providers: crate::bound_dispatch::published_search_providers(self),
         }
     }
-
-    /// Run `invocation` in an app keeping its own document, through its own
-    /// API: it takes no controls through a binding of this tile's.
-    pub(super) fn run_in_own_document(
-        &mut self,
-        invocation: tilo_actions::ControlInvocation,
-    ) -> Result<(), tilo_actions::ControlInvocation> {
-        match &mut self.content {
-            TileContent::App(app) => app.run_window_control(invocation),
-            _ => Err(invocation),
-        }
-    }
 }

@@ -454,16 +454,6 @@ impl TileHost {
         }
     }
 
-    pub fn mount_component(
-        mut component: crate::application::AppComponent,
-        sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
-    ) -> Result<Self, crate::launch_error::LaunchError> {
-        if let Err(error) = component.mount(sink) {
-            return Err(component.setup_error(error));
-        }
-        Ok(Self::from_component(component))
-    }
-
     #[cfg_attr(
         not(feature = "model"),
         expect(unused_mut, reason = "History is model-only")
@@ -521,30 +511,6 @@ impl TileHost {
         }
     }
 
-    /// Queue `invocation` as one of the hosted app's own controls: an action
-    /// the person chose over this window (its in-app search) runs inside the
-    /// app, under the app's ownership and permissions, exactly as clicking the
-    /// control in it would. The outer document never resolves an app's
-    /// actions by address, so this is the only way such a choice reaches
-    /// the app.
-    pub fn queue_control(
-        &mut self,
-        invocation: tilo_actions::ControlInvocation,
-    ) -> Result<(), tilo_actions::ControlInvocation> {
-        let Some(binding) = crate::bound_dispatch::callback_binding(self) else {
-            return self.run_in_own_document(invocation);
-        };
-        let Ok(_entry) = binding.enter() else {
-            return Err(invocation);
-        };
-        let mut queued = binding.queued_controls.borrow_mut();
-        if queued.len() >= 64 {
-            queued.pop_front();
-        }
-        queued.push_back(invocation);
-        Ok(())
-    }
-
     pub fn visit_search_root(
         &mut self,
         visit: &mut dyn FnMut(&mut dyn Widget) -> bool,
@@ -566,15 +532,6 @@ impl TileHost {
             visit(app)
         };
         Some(changed)
-    }
-
-    pub fn in_place_search(&mut self) -> crate::widget::InPlace {
-        let mut found = crate::widget::InPlace::Nothing;
-        let _ = self.visit_search_root(&mut |root| {
-            found = crate::widget::InPlace::of(root);
-            false
-        });
-        found
     }
 
     fn node_style(holds_app: bool) -> Style {
@@ -737,14 +694,6 @@ impl TileHost {
     }
 
     #[must_use]
-    pub fn asking_for_input(&self) -> bool {
-        match &self.content {
-            TileContent::App(app) => app.ime_content().is_some(),
-            _ => false,
-        }
-    }
-
-    #[must_use]
     pub fn with_arrival_shape(mut self, shape: tilo_ui_base::widget::SkeletonShape) -> Self {
         self.declared_arrival_shape = Some(shape);
         self
@@ -893,20 +842,6 @@ impl TileHost {
             return None;
         }
         crate::bound_dispatch::callback_binding(self)
-    }
-
-    /// Stand where this tile stands from now on: `next`, built for the same
-    /// window (an app whose code or record arrived where a placeholder held
-    /// its place), goes on with the arrival ([`Self::continue_arrival`])
-    /// and takes this tile's retained layout node: the app is laid out under
-    /// that node in place and the rest of the host's tree is kept, unless a
-    /// History around it is busy.
-    pub fn take_place_of(&mut self, mut next: Self) {
-        next.continue_arrival(self);
-        next.node = self.node;
-        next.remount = self.node.is_some() && next.lays_out_in_place();
-        next.structure_dirty = !next.remount;
-        *self = next;
     }
 
     /// Built in place of `previous` (an app whose code or record just
@@ -1086,10 +1021,6 @@ impl TileHost {
         self.focused = focused;
     }
 
-    pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(crate::time::now());
-    }
-
     pub fn spawn_in_flight(&self) -> bool {
         match self.spawned_at {
             Some(t) => crate::time::now().saturating_duration_since(t) < spawn_time(),
@@ -1173,15 +1104,6 @@ impl TileHost {
         }
         self.draw_edge_at(scene, transform, theme, radius, rect);
         Some(rect)
-    }
-
-    #[cfg(test)]
-    pub fn spawn_alpha(&self) -> Option<f32> {
-        self.spawned_at.and_then(|t| {
-            let elapsed = crate::time::now().saturating_duration_since(t);
-            (elapsed < spawn_time())
-                .then(|| tilo_ui_base::motion::unit_opacity(spawn_progress(elapsed)))
-        })
     }
 }
 
@@ -2491,10 +2413,6 @@ impl TileHost {
         } else {
             vello::kurbo::RoundedRectRadii::from_single_radius(radius)
         }
-    }
-
-    pub fn set_square_bottom(&mut self, square: bool) {
-        self.square_bottom = square;
     }
 
     fn draw_edge(&self, scene: &mut Scene, transform: Affine, theme: &Theme, radius: f64) {

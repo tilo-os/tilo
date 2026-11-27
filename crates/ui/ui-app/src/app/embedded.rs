@@ -1062,24 +1062,6 @@ impl AppWidget for EmbeddedApp {
             providers: crate::bound_dispatch::published_search_providers(root),
         })
     }
-    fn run_window_control(
-        &mut self,
-        invocation: tilo_actions::ControlInvocation,
-    ) -> Result<(), tilo_actions::ControlInvocation> {
-        match self
-            .app
-            .invoke_local_resource_action(&invocation.address, &invocation.arguments)
-        {
-            Ok(_) => {
-                self.wants_frame.set(true);
-                Ok(())
-            }
-            Err(error) => {
-                tracing::warn!(%error, address = ?invocation.address, "the window's search row was refused");
-                Err(invocation)
-            }
-        }
-    }
     fn invoke_device_local_action(
         &mut self,
         address: &tilo_actions::ActionAddress,

@@ -1511,10 +1511,6 @@ impl ToolbarRow {
         took
     }
 
-    pub(crate) fn hit(&self, p: Point) -> bool {
-        self.hit_part(p).is_some()
-    }
-
     pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
         match self.hit_part(p) {
             Some(Part::Location) => self.field.is_some(),
