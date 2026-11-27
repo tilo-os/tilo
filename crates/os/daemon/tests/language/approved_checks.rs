@@ -214,6 +214,10 @@ view project(p: Project) {
 "#;
 
 /// The line each check's success prints, and the one its failure prints before exiting non-zero.
+/// What a device answers a check its setting no longer approves, in either moment the removal
+/// may reach it: before the invocation is admitted, or as its start reads the setting.
+const NO_APPROVAL: &str = "no approved checks for this exact project resource";
+
 const PASSED: &str = "approved check passed";
 const FAILED: &str = "approved check failed on purpose";
 
@@ -604,6 +608,15 @@ async fn run_check(
 /// The job the host kept for the check: the receipt names it by the invocation it served, which
 /// is the record at `devices/<device>/jobs/<job>`. An answer that names none is the invocation
 /// asked with.
+/// The reason a refusal names, for the refusals the fixture pins to their exact words: an
+/// answer that is no refusal names none.
+fn refusal_reason(error: &ActionCallError) -> Option<String> {
+    match error {
+        ActionCallError::Refused { reason } => Some(reason.clone()),
+        _ => None,
+    }
+}
+
 /// The receipt the action answered, and the job it names: the host's receipt of the check it
 /// ran, whether the answer is that receipt or a view of it carrying the receipt under `receipt`.
 /// An answer naming no invocation is the invocation asked with.
@@ -1090,12 +1103,27 @@ fn a_projects_host_runs_its_approved_checks_and_removal_refuses_the_next() {
             .expect("the person removes the approval");
         assert_eq!(removed["removed"], true);
         step("the approval is removed");
+        // The removal reaches the device as a record it reads when a check is asked for, so an
+        // ask made the instant the setting answers may be admitted before the device has read
+        // it and refused once its start reads the setting. Both say the same thing, and that is
+        // what is asserted: the two asks below are the two sides of that moment, and neither
+        // makes the answer the fixture demands different.
         let refusal = run_check(&host, &address.resource, "passing")
             .await
             .expect_err("a removed approval refuses the next check");
-        assert!(
-            matches!(&refusal, ActionCallError::Refused { reason } if reason.contains("approved checks")),
-            "the refusal names why: {refusal:?}"
+        assert_eq!(
+            refusal_reason(&refusal).as_deref(),
+            Some(NO_APPROVAL),
+            "the refusal names the removed approval: {refusal:?}"
         );
+        let again = run_check(&host, &address.resource, "passing")
+            .await
+            .expect_err("a removed approval refuses every later check");
+        assert_eq!(
+            refusal_reason(&again).as_deref(),
+            Some(NO_APPROVAL),
+            "the later refusal names the removed approval, as the first did: {again:?}"
+        );
+        step("a removed approval refuses, and names what it removed");
     });
 }

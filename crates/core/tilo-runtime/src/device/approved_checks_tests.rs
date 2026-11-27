@@ -737,3 +737,52 @@ fn a_check_call_that_is_not_the_delivered_checks_work_is_refused() {
     );
     assert!(heard.lock().unwrap().is_empty(), "nothing refused reports");
 }
+
+/// An approved project whose check stops before it runs, as one does when the approval it ran
+/// for is taken away while it starts.
+struct Stopped;
+
+impl ApprovedProject for Stopped {
+    fn run(
+        &self,
+        _check_id: &str,
+        _authority: &(dyn Fn() -> Result<(), String> + Sync),
+        _report: &dyn Fn(ReportObservation),
+    ) -> Result<CheckReceipt, String> {
+        Err("no approved checks for this exact project resource".to_owned())
+    }
+}
+
+#[test]
+fn a_check_that_stops_says_why_in_the_job_its_app_reads() {
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let jobs = jobs();
+    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
+    let mut project = registered(&workspace, artifacts.path());
+    project.checks = Box::new(Stopped);
+    let checks = NativeChecks::over(
+        given(Some(Arc::new(project))),
+        Arc::new(Placed {
+            taken: Mutex::default(),
+            refusal: None,
+        }) as Arc<dyn Placement>,
+        Arc::clone(&jobs),
+    );
+    let identity = identity();
+    let error = checks
+        .run_ask(&ask(&workspace, &identity), &|| Ok(()), &|_| {})
+        .expect_err("a check that stops answers no receipt");
+    assert_eq!(error, "no approved checks for this exact project resource");
+    let job = jobs
+        .get("0f8fad5b-d9cb-469f-a165-70867728950e")
+        .expect("the device keeps the job it started");
+    assert_eq!(job["state"], "failed");
+    assert_eq!(
+        job["detail"]["why"], error,
+        "the job says why it stopped where every job's record does: {job}"
+    );
+    assert_eq!(
+        job["done"]["error"], error,
+        "and where a check's own record does: {job}"
+    );
+}

@@ -123,6 +123,20 @@ fn a_jobs_own_end_is_its_invocations_answer_when_no_handler_ends_it() {
         job_outcome(invocation, &json!({"state": "failed", "detail": {"why": "out of memory"}})),
         InvocationUpdate::Failed { error, .. } if error.message == "out of memory"
     ));
+    assert!(
+        matches!(
+            job_outcome(
+                invocation,
+                &json!({
+                    "state": "failed",
+                    "detail": {"error": "no approved checks for this exact project resource"},
+                }),
+            ),
+            InvocationUpdate::Failed { error, .. }
+                if error.message == "no approved checks for this exact project resource"
+        ),
+        "a job that says why it failed under `error` is read, not only that it failed"
+    );
     assert!(matches!(
         job_outcome(invocation, &json!({"state": "cancelled"})),
         InvocationUpdate::Cancelled { .. }

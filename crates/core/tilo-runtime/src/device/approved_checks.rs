@@ -853,14 +853,23 @@ impl CheckJobs {
             job,
             state,
             &serde_json::to_value(receipt).unwrap_or_default(),
+            None,
         );
     }
 
+    /// A check that did not run to its end: its record says why where every job's record says it
+    /// (`detail.why`), so the app that asked and the invocation it holds read the reason rather
+    /// than only that the job failed.
     fn failed(&self, job: &str, why: &str) {
-        self.end(job, "failed", &serde_json::json!({ "error": why }));
+        self.end(
+            job,
+            "failed",
+            &serde_json::json!({ "error": why }),
+            Some(why),
+        );
     }
 
-    fn end(&self, job: &str, state: &str, done: &serde_json::Value) {
+    fn end(&self, job: &str, state: &str, done: &serde_json::Value, why: Option<&str>) {
         if let Some(mut record) = self.get(job) {
             let Some(fields) = record.as_object_mut() else {
                 tracing::warn!(job, "a check's end is not a record");
@@ -868,6 +877,9 @@ impl CheckJobs {
             };
             fields.insert("state".to_owned(), state.into());
             fields.insert("done".to_owned(), done.clone());
+            if let Some(why) = why {
+                fields.insert("detail".to_owned(), serde_json::json!({ "why": why }));
+            }
             if let Err(error) = self.set(job, record) {
                 tracing::warn!(%error, job, "a check's end was not kept");
             }
