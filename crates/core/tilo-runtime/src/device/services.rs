@@ -3875,6 +3875,9 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     let server_settings: Arc<dyn PublishedResources> = Arc::new(
         super::server_settings::Published::new(super::server_settings::Served::this_device()),
     );
+    // This computer's journal, which the session's system service serves to the shell and which
+    // the daemon serves here when no session does: one read, wherever it is served from.
+    let journal: Arc<dyn PublishedResources> = Arc::new(super::journal::Published::new());
     // What only the desktop session signed in here holds (the screen and its windows, the sound,
     // capture, the person's settings, Nearby Send's spool, the speaker groups),
     // reached through the seat its shell serves: while none does, those calls say so.
@@ -3952,6 +3955,10 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
         kept.serving(
             &[super::server_settings::SERVER],
             Arc::clone(&server_settings),
+        )
+        .serving(
+            &[tilo_system_resources::journal::JOURNAL],
+            Arc::clone(&journal),
         )
         .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
         .serving(&[super::clipboard::RESOURCE], Arc::clone(&clipboard))

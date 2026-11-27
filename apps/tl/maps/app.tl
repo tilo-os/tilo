@@ -2258,10 +2258,18 @@ view places_side(a: Atlas, chosen: State<Text>, seen: List<Float>, directions: B
                 ui.Segment("Recent")
             }
             if place == "found" {
-                if a.query == "" {
-                    ui.EmptyState("Search for a place or an address to see it here.", icon: .search)
-                } else if a.places.filter(p -> p.found).is_empty() {
-                    ui.EmptyState("No places found", icon: .search)
+                // Places a search or another app took in stand here whether or not this window
+                // typed a search: they are what was found, and an agent hands them over to be
+                // seen.
+                if a.places.filter(p -> p.found).is_empty() {
+                    if a.query == "" {
+                        ui.EmptyState(
+                            "Search for a place or an address to see it here.",
+                            icon: .search,
+                        )
+                    } else {
+                        ui.EmptyState("No places found", icon: .search)
+                    }
                 } else {
                     stack(gap: .tight) {
                         for found in a.places.filter(p -> p.found) {

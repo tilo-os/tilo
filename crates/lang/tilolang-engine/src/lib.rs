@@ -382,9 +382,13 @@ pub fn register(app: &str, provider: Arc<dyn Provider + Send + Sync>) {
 
 /// The engine of `app`, or one that refuses every ask: an app whose engine has not been
 /// registered yet is refused, never answered by another app's.
+///
+/// A device's development build asks by the id it runs under (`<app>.dev.<device key>`), and the
+/// engine it needs is registered under the app it is a build of: the registry is asked for that
+/// app, so a build is answered by its app's engine and by no other's.
 fn engine_of(app: &str) -> Arc<dyn Provider + Send + Sync> {
     held()
-        .get(app)
+        .get(tilo_app_id::build_of(app))
         .cloned()
         .unwrap_or_else(|| Arc::new(Unregistered))
 }
@@ -753,5 +757,42 @@ mod tests {
             "nothing moves after the end"
         );
         assert!(moved.has_ended());
+    }
+
+    struct Demo;
+
+    const DEMO_JOBS: &[JobOp] = &[JobOp::new("demo.scan", Needs::NOTHING)];
+
+    impl Provider for Demo {
+        fn jobs(&self) -> &'static [JobOp] {
+            DEMO_JOBS
+        }
+
+        fn call(&self, op: &str, input: &str) -> Result<String, String> {
+            match op {
+                "demo.probe" => Ok(format!(r#"{{"input":"{input}"}}"#)),
+                _ => Err(format!("`{op}` is not a demo op")),
+            }
+        }
+    }
+
+    #[test]
+    fn a_development_build_is_answered_by_the_app_it_is_a_build_of() {
+        register("so.tilo.demo", Arc::new(Demo));
+        let dev = "so.tilo.demo.dev.0123456789abcdef";
+        assert_eq!(
+            answer(dev, "demo.probe", "hi").unwrap(),
+            r#"{"input":"hi"}"#,
+            "a build asks its app's engine by the id it runs under"
+        );
+        assert_eq!(
+            job_op(dev, "demo.scan").unwrap().op,
+            "demo.scan",
+            "and starts its jobs the same way"
+        );
+        assert!(
+            answer("so.tilo.somebody-else", "demo.probe", "").is_err(),
+            "the build is answered by its app's engine and no other's"
+        );
     }
 }

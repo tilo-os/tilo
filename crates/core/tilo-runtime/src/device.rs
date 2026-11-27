@@ -90,6 +90,9 @@ mod hosts;
 #[cfg(test)]
 mod hosts_tests;
 pub(crate) mod jobs;
+/// This computer's journal, which the daemon reads for the apps attached to it when no session
+/// serves it.
+pub mod journal;
 pub mod keep;
 pub(crate) mod key_use;
 pub mod lan;

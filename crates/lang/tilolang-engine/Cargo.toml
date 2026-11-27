@@ -12,6 +12,9 @@ homepage.workspace = true
 [dependencies]
 serde_json.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The app a device's development build is a build of: an app's engine is registered under the
+# published id, and a build asks for it by the id it runs under.
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 
 [lints]
 workspace = true

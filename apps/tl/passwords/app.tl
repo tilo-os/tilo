@@ -1998,3 +1998,44 @@ type ToFile {
 type UrlAnswer {
     url: Text
 }
+
+// ---------------------------------------------------------------- scenarios
+/// A vault as a person who has used Passwords for a while finds it: logins, a key and a note, one
+/// of them kept as a favorite. Every secret stays in the vault; these are the records the window
+/// lists, so a capture of this device shows the vault's window with items in it.
+scenario "a vault of logins" {
+    let v = root Vault
+    let fastmail = v.items.insert(
+        Item(
+            entry: "f7d2a1",
+            title: "Fastmail",
+            kind: .login,
+            favorite: true,
+            noted: true,
+            changed: 1763370000,
+        ),
+    )
+    fastmail.places.add("https://app.fastmail.com")
+    fastmail.labels.add("username")
+    fastmail.labels.add("password")
+    fastmail.labels.add("Recovery code")
+    let bank = v.items.insert(
+        Item(entry: "b31c09", title: "Garden bank", kind: .login, changed: 1761120000),
+    )
+    bank.places.add("https://bank.example.org")
+    bank.labels.add("Card number")
+    bank.labels.add("PIN")
+    bank.concerns.add("stale")
+    let key = v.items.insert(
+        Item(entry: "9a4e12", title: "OpenStreetMap key", kind: .api_key, changed: 1759320000),
+    )
+    key.labels.add("Token")
+    let backup = v.items.insert(
+        Item(entry: "5c7f30", title: "Recovery codes", kind: .note, changed: 1756670000),
+    )
+    backup.noted = true
+    let flat = v.items.insert(
+        Item(entry: "2e8b55", title: "Flat Wi-Fi", kind: .wifi, changed: 1754680000),
+    )
+    flat.labels.add("Password")
+}

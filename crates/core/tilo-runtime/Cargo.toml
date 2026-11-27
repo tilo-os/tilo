@@ -129,6 +129,9 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # The resource layer: this device's server settings are published as one of this device's typed
 # resources, with the actions that change them.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
+# This computer's journal: the reading's type and the one read, which the daemon serves the apps
+# attached to it when no session does.
+tilo-system-resources = { version = "0.1.0", path = "../../desktop/tilo-system-resources" }
 # Where a workspace's resources open on the web: the entry the server that keeps it announces,
 # which its apps mint a resource's link under.
 tilo-reference = { version = "0.1.0", path = "../reference" }

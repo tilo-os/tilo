@@ -19943,6 +19943,7 @@ dependencies = [
  "tilo-socket",
  "tilo-startup-metrics",
  "tilo-surface-compile",
+ "tilo-system-resources",
  "tilo-test-env",
  "tilo-test-http",
  "tilo-thumbnail",
@@ -21052,7 +21053,10 @@ dependencies = [
 name = "tilo-system-resources"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "serde",
+ "serde_json",
+ "tilo-bounded-command",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -22626,6 +22630,7 @@ name = "tilolang-engine"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tilo-app-id",
  "tilo-clock",
  "workspace-hack",
 ]
@@ -22740,6 +22745,7 @@ dependencies = [
  "tilo-action-types",
  "tilo-actions",
  "tilo-app",
+ "tilo-app-id",
  "tilo-app-module",
  "tilo-app-test-host",
  "tilo-app-window",
@@ -22788,6 +22794,7 @@ dependencies = [
  "tilo-shm",
  "tilo-socket",
  "tilo-startup-metrics",
+ "tilo-store-engine",
  "tilo-terminal",
  "tilo-test-env",
  "tilo-test-http",

@@ -46,6 +46,10 @@ pub fn register_all() {
             crate::files_engine::register();
             // Maps' kept areas are this device's pictures, which a window may already have drawn.
             tilo_maps_engine::register();
+            // The App Store's sources and the changes a person asks for: what a window asks by
+            // name (`engine.call`, `engine.start`), so a device without a session serves them too.
+            #[cfg(target_os = "linux")]
+            tilo_store_engine::register();
             // The Terminal's shells: a session's pty, its grid and the runs it marks, answered
             // for the app's `engine.call` and `engine.start` in the process that draws its window.
             tilo_terminal::ops::register(Arc::new(Portal));

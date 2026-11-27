@@ -13,7 +13,11 @@ window offers by name — the same addresses a walk presses — never by a point
 on a picture. An app without a plan gets one situation, the window as it
 opens. An app that shows the machine it runs on (its journal, processes,
 drives, files) is built from one of its own scenarios instead: each of its
-situations names one (`scenario`), and the app refuses a capture without.
+situations names one (`scenario`), and the app refuses a capture without. A
+plan may also stage the machine's journal (`[[journal]]`): the entries are
+written where the profile's daemon reads them in place of the machine's own
+journal, so a picture of Logs shows what the plan wrote and never the machine
+the shots run on.
 
 Services (`kind = "service"` in a native app's manifest: the launcher, the
 on-screen keyboard the shell draws, compute workers) have no window and are
@@ -129,6 +133,11 @@ class Plan:
     # Steps name them under `${HOME}`.
     files: list = field(default_factory=list)
     repositories: list = field(default_factory=list)
+    # This device's journal, as a plan stages it (`[[journal]]`: how many minutes before the run
+    # it was written, its severity, unit, program and message): the daemon reads the fixture in
+    # place of the machine's own journal, so a picture of Logs never shows the machine the shots
+    # run on.
+    journal: list = field(default_factory=list)
     # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
     sizes: list = field(default_factory=list)
 
@@ -158,7 +167,7 @@ def load_plan(entry: dict) -> Plan:
     situations = []
     if path.is_file():
         data = tomllib.loads(path.read_text())
-        unknown = set(data) - {"situation", "file", "repository", "sizes"}
+        unknown = set(data) - {"situation", "file", "repository", "journal", "sizes"}
         if unknown:
             raise ValueError(f"{path}: unknown keys {sorted(unknown)}")
         for raw in data.get("situation", []):
@@ -190,10 +199,26 @@ def load_plan(entry: dict) -> Plan:
         raise ValueError(f"{path}: sizes are a list of {sorted(EXTRA_VIEWPORTS)}, got {sizes!r}")
     files = data.get("file", []) if path.is_file() else []
     repositories = data.get("repository", []) if path.is_file() else []
+    journal = data.get("journal", []) if path.is_file() else []
     for item in [*files, *repositories]:
         relative = Path(item.get("path", ""))
         if not item.get("path") or relative.is_absolute() or ".." in relative.parts:
             raise ValueError(f"{path}: a home item's path is relative to the home: {item!r}")
+    for entry in journal:
+        unknown = set(entry) - {"minutes_ago", "priority", "unit", "identifier", "message", "pid"}
+        if unknown:
+            raise ValueError(f"{path}: a journal entry has no {sorted(unknown)}")
+        if not isinstance(entry.get("minutes_ago"), int) or entry["minutes_ago"] < 0:
+            raise ValueError(f"{path}: a journal entry says how many minutes ago it was written: {entry!r}")
+        if entry.get("priority") not in range(8):
+            raise ValueError(f"{path}: a journal entry's priority is 0 (emergency) to 7 (debug): {entry!r}")
+        if not isinstance(entry.get("message"), str) or not entry["message"]:
+            raise ValueError(f"{path}: a journal entry has a message: {entry!r}")
+        for name in ("unit", "identifier"):
+            if name in entry and not isinstance(entry[name], str):
+                raise ValueError(f"{path}: a journal entry's {name} is text: {entry!r}")
+        if "pid" in entry and (not isinstance(entry["pid"], int) or entry["pid"] < 1):
+            raise ValueError(f"{path}: a journal entry's pid is a process id: {entry!r}")
     for item in files:
         if "base64" not in item:
             continue
@@ -202,7 +227,7 @@ def load_plan(entry: dict) -> Plan:
         except (ValueError, TypeError) as error:
             raise ValueError(f"{path}: a seeded file's base64 does not decode: {error}") from error
     return Plan(
-        entry["name"], entry.get("id", entry["name"]), situations, files, repositories, sizes,
+        entry["name"], entry.get("id", entry["name"]), situations, files, repositories, journal, sizes,
     )
 
 
@@ -239,6 +264,34 @@ def seed_home(plan: Plan, home: Path, env: dict) -> None:
             target = repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text)
+
+
+def seed_journal(plan: Plan, root: Path, env: dict) -> None:
+    """Put the plan's journal where the profile's daemon reads it, in place of the machine's own:
+    the `journalctl -o json` lines `TILO_JOURNAL_FIXTURE` names, oldest first."""
+    if not plan.journal:
+        return
+    now = int(time.time() * 1_000_000)
+    lines = []
+    for at, entry in enumerate(sorted(plan.journal, key=lambda entry: -entry["minutes_ago"])):
+        written = now - entry["minutes_ago"] * 60_000_000
+        record = {
+            "__REALTIME_TIMESTAMP": str(written),
+            "__CURSOR": f"s=fixture;i={at:06d}",
+            "_SYSTEMD_UNIT": entry.get("unit", ""),
+            "SYSLOG_IDENTIFIER": entry.get("identifier", entry.get("unit", "")),
+            "PRIORITY": str(entry["priority"]),
+            "MESSAGE": entry["message"],
+            "_HOSTNAME": "studio",
+            "_BOOT_ID": "fixture",
+            "_TRANSPORT": "journal",
+        }
+        if "pid" in entry:
+            record["_PID"] = str(entry["pid"])
+        lines.append(json.dumps(record))
+    path = root / "journal.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    env["TILO_JOURNAL_FIXTURE"] = str(path)
 
 
 def resolve_strings(value, replace):
@@ -385,6 +438,7 @@ class Session:
         self.env = profile_env(self.tmp / "profile")
         self.home = Path(self.env["HOME"])
         seed_home(plan, self.home, self.env)
+        seed_journal(plan, self.tmp, self.env)
 
     def __enter__(self):
         return self

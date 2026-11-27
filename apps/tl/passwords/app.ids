@@ -179,6 +179,7 @@ review_page = p4ndizd3
 rewrite@Item = d7xawlj7
 save_login@Vault = k6wf47xc
 save_login@Vault~present = ugwe3ulv
+scenario "a vault of logins" = o3tmyosh
 secret_label = 5wsa2elj
 set_kind@Item = ft26477c
 set_username@Item = 3pnsqmdw

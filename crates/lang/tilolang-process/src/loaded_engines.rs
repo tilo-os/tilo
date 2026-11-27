@@ -55,7 +55,9 @@ pub const MESSAGES_APP: &str = "so.tilo.messages";
 
 /// The library that answers `app`, when this device ships an engine for it.
 fn library_of(app: &str) -> Option<&'static str> {
-    match app {
+    // A device's development build runs under `<app>.dev.<device key>`; the engine it needs is the
+    // app's own, shipped for the app it is a build of.
+    match tilo_app_id::build_of(app) {
         TYPST_APP => Some("libtilo_typst_engine.so"),
         CHIP_DESIGN_APP => Some("libtilo_chip_engine.so"),
         DIFFMERGE_APP => Some("libtilo_diffmerge_engine.so"),
@@ -74,7 +76,7 @@ fn library_of(app: &str) -> Option<&'static str> {
 /// into this process.
 #[must_use]
 pub fn answers(app: &str) -> bool {
-    library_of(app).is_some() || given(app).is_some()
+    library_of(app).is_some() || given(tilo_app_id::build_of(app)).is_some()
 }
 
 /// The engines a test hands this process in place of a library, by the app each answers.
@@ -120,6 +122,7 @@ fn held() -> MutexGuard<'static, BTreeMap<&'static str, Result<EngineApi, String
 
 /// The engine answering `app`, opening its library the first time and never closing it.
 fn engine_of(app: &str) -> Result<EngineApi, String> {
+    let app = tilo_app_id::build_of(app);
     if let Some(engine) = given(app) {
         return Ok(engine);
     }

@@ -1,4 +1,104 @@
-# Logs: this computer's journal, filtered through the window's own actions.
+# Logs: this computer's journal, filtered through the window's own actions. A capture's profile is
+# not the machine the shots run on, so the journal is staged here and the device reads it in place
+# of its own: the entries below are what Logs shows.
+
+[[journal]]
+minutes_ago = 95
+priority = 6
+unit = "systemd"
+identifier = "systemd"
+message = "Started Tilo session."
+
+[[journal]]
+minutes_ago = 94
+priority = 6
+unit = "tilo-session.service"
+identifier = "tilo-session"
+message = "compositor: 2560x1440 at scale 1.5, 165 Hz"
+
+[[journal]]
+minutes_ago = 92
+priority = 6
+unit = "kernel"
+identifier = "kernel"
+message = "usb 1-3: new high-speed USB device number 5 using xhci_hcd"
+
+[[journal]]
+minutes_ago = 90
+priority = 6
+unit = "NetworkManager.service"
+identifier = "NetworkManager"
+message = "wlan0: associated with studio-home"
+
+[[journal]]
+minutes_ago = 76
+priority = 6
+unit = "pipewire.service"
+identifier = "pipewire"
+message = "default output set to Built-in Audio Stereo"
+
+[[journal]]
+minutes_ago = 61
+priority = 6
+unit = "flatpak-system-helper.service"
+identifier = "flatpak"
+message = "Installed so.tilo.notes/x86_64/stable"
+
+[[journal]]
+minutes_ago = 45
+priority = 6
+unit = "tilo-runtime.service"
+identifier = "tilo-runtime"
+message = "the workspace's files reached this device"
+
+[[journal]]
+minutes_ago = 33
+priority = 6
+unit = "bluetooth.service"
+identifier = "bluetoothd"
+message = "Adapter powered on"
+
+[[journal]]
+minutes_ago = 21
+priority = 7
+unit = "cups.service"
+identifier = "cupsd"
+message = "Printer Office now accepting requests"
+
+[[journal]]
+minutes_ago = 14
+priority = 4
+unit = "tilo-session.service"
+identifier = "tilo-session"
+message = "the GPU reported a lost context; the frame was drawn again"
+
+[[journal]]
+minutes_ago = 9
+priority = 3
+unit = "packagekit.service"
+identifier = "PackageKit"
+message = "Failed to update org.fedoraproject.Platform: dependency resolution failed"
+
+[[journal]]
+minutes_ago = 6
+priority = 4
+unit = "tilo-runtime.service"
+identifier = "tilo-runtime"
+message = "the window did not present within 800 ms; started again"
+
+[[journal]]
+minutes_ago = 3
+priority = 3
+unit = "tilo-backups.service"
+identifier = "tilo-backups"
+message = "Main process exited, code=exited, status=1/FAILURE"
+
+[[journal]]
+minutes_ago = 1
+priority = 3
+unit = "tilo-store.service"
+identifier = "tilo-store"
+message = "the catalogue's database could not be opened: permission denied"
 
 [[situation]]
 name = "journal"

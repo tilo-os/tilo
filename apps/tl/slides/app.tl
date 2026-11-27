@@ -1423,7 +1423,9 @@ fn linear(value: Float) -> Float {
 // ---------------------------------------------------------------------------------------------
 // The window: the slide rail, the stage and the properties beside it.
 view deck(d: Deck) {
-    state current: Text = ""
+    // A deck opens on its first slide: the stage shows it and the rail marks it, so a person
+    // sees the deck they opened rather than an empty page until they pick a slide.
+    state current: Text = if let first = d.slides.at(0) { first.id() } else { "" }
     state chosen: Text = "none"
     state presenting: Bool = false
     state presenter: Bool = false
@@ -1691,23 +1693,23 @@ view slide_rail(d: Deck, current: State<Text>, chosen: State<Text>) {
                 }
                 row(gap: .related, align: .center) {
                     ui.Text("{index + 1}", role: .caption, secondary: true, numeric: true)
-                    ui.Stage(
-                        canvas: [1280, 720],
-                        height: 62.0,
-                        aspect: 16 / 9,
-                        background: slide_ground(d, s),
-                        name: "Slide {index + 1}",
-                    ) {
-                        for e in s.elements {
-                            ui.StagePin(
-                                name: element_label(e),
-                                item: e.id(),
-                                x: e.x,
-                                y: e.y,
-                                width: e.w,
-                                height: e.h,
-                            ) {
-                                element_view(d, s, e, "", false, 0.1)
+                    layers(fill, aspect: 16.0 / 9.0) {
+                        ui.Stage(
+                            canvas: [1280, 720],
+                            background: slide_ground(d, s),
+                            name: "Slide {index + 1}",
+                        ) {
+                            for e in s.elements {
+                                ui.StagePin(
+                                    name: element_label(e),
+                                    item: e.id(),
+                                    x: e.x,
+                                    y: e.y,
+                                    width: e.w,
+                                    height: e.h,
+                                ) {
+                                    element_view(d, s, e, "", false, 0.1)
+                                }
                             }
                         }
                     }
@@ -1744,58 +1746,60 @@ view slide_stage(
     pan: State<List<Float>>,
     editing: State<Bool>,
 ) {
-    ui.Stage(
-        name: "Slide",
-        canvas: [1280, 720],
-        background: slide_ground(d, s),
-        chosen: chosen_key(s, chosen),
-        zoom: if zoom > 0.0 { .some(zoom) } else { .none },
-        pan: .some(pan),
-        fill,
-    ) {
-        on press: set(chosen, "none").then(set(editing, false))
-        on zoomed(scale: Float): set(zoom, scale)
-        on panned(at: List<Float>): set(pan, at)
-        on select(target: Text): set(chosen, target).then(set(editing, opens_empty_box(s, target)))
-        on open(target: Text): set(chosen, target).then(set(editing, true))
-        on delete(target: Text): delete_element_at(s, target).then(set(chosen, "none"))
-        on moved(target: Text, at: List<Int>): move_element_to(s, target, at)
-        on resized(target: Text, at: List<Int>): resize_element_to(s, target, at)
-        on context(target: Text): set(chosen, target)
-        for e in s.elements {
-            ui.StagePin(
-                name: element_label(e),
-                item: e.id(),
-                x: e.x,
-                y: e.y,
-                width: e.w,
-                height: e.h,
-                moves: true,
-            ) {
-                menu: {
-                    ui.MenuItem("Bring to front", icon: .bring_to_front, key: "]") {
-                        on choose: bring_to_front(s, e)
+    layers(fill) {
+        ui.Stage(
+            name: "Slide",
+            canvas: [1280, 720],
+            background: slide_ground(d, s),
+            chosen: chosen_key(s, chosen),
+            zoom: if zoom > 0.0 { .some(zoom) } else { .none },
+            pan: .some(pan),
+        ) {
+            on press: set(chosen, "none").then(set(editing, false))
+            on zoomed(scale: Float): set(zoom, scale)
+            on panned(at: List<Float>): set(pan, at)
+            on select(target: Text): set(chosen, target)
+                .then(set(editing, opens_empty_box(s, target)))
+            on open(target: Text): set(chosen, target).then(set(editing, true))
+            on delete(target: Text): delete_element_at(s, target).then(set(chosen, "none"))
+            on moved(target: Text, at: List<Int>): move_element_to(s, target, at)
+            on resized(target: Text, at: List<Int>): resize_element_to(s, target, at)
+            on context(target: Text): set(chosen, target)
+            for e in s.elements {
+                ui.StagePin(
+                    name: element_label(e),
+                    item: e.id(),
+                    x: e.x,
+                    y: e.y,
+                    width: e.w,
+                    height: e.h,
+                    moves: true,
+                ) {
+                    menu: {
+                        ui.MenuItem("Bring to front", icon: .bring_to_front, key: "]") {
+                            on choose: bring_to_front(s, e)
+                        }
+                        ui.MenuItem("Send to back", icon: .send_to_back, key: "[") {
+                            on choose: send_to_back(s, e)
+                        }
+                        ui.MenuItem("Duplicate", icon: .layers, key: "d") {
+                            on choose: duplicate_element(s, e).then(set(chosen, ""))
+                        }
+                        ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
+                            on choose: copy_element(e)
+                        }
+                        ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
+                            on choose: cut_element(s, e)
+                        }
+                        ui.MenuItem("Paste", icon: .clipboard, key: "Ctrl+V") {
+                            on choose: paste_element(s)
+                        }
+                        ui.MenuItem("Delete", icon: .trash, destructive: true, key: "Delete") {
+                            on choose: delete_element(s, e).then(set(chosen, "none"))
+                        }
                     }
-                    ui.MenuItem("Send to back", icon: .send_to_back, key: "[") {
-                        on choose: send_to_back(s, e)
-                    }
-                    ui.MenuItem("Duplicate", icon: .layers, key: "d") {
-                        on choose: duplicate_element(s, e).then(set(chosen, ""))
-                    }
-                    ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C") {
-                        on choose: copy_element(e)
-                    }
-                    ui.MenuItem("Cut", icon: .scissors, key: "Ctrl+X") {
-                        on choose: cut_element(s, e)
-                    }
-                    ui.MenuItem("Paste", icon: .clipboard, key: "Ctrl+V") {
-                        on choose: paste_element(s)
-                    }
-                    ui.MenuItem("Delete", icon: .trash, destructive: true, key: "Delete") {
-                        on choose: delete_element(s, e).then(set(chosen, "none"))
-                    }
+                    element_view(d, s, e, chosen, editing, 1.0)
                 }
-                element_view(d, s, e, chosen, editing, 1.0)
             }
         }
     }

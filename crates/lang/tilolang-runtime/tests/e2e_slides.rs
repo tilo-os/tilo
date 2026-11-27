@@ -610,6 +610,11 @@ mod cases {
                 Some(&Value::List(vec![Value::Int(1280), Value::Int(720)])),
                 "the stage is the slide's own size, so its words break as they will on the slide"
             );
+            assert!(
+                stage.props.contains_key("background"),
+                "the stage is painted in the ground the slide stands on: {}",
+                dump(view.tree())
+            );
             let mut pins = Vec::new();
             of_kind(stage, "ui.StagePin", &mut pins);
             assert_eq!(

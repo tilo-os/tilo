@@ -1017,24 +1017,27 @@ impl Platform for HostPlatform {
     /// to the registry ([`crate::engines::register_all`]), the content engines among them.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        // The app whose engine answers, which for a device's development build is the app it is a
+        // build of: its engine is the app's own, and the id it runs under is the build's.
+        let engine_app = tilo_app_id::build_of(app);
         // The engines this process opens from its runtime bundle rather than linking: an app's
         // typesetting, its document checks, its text merges, and the ones that follow them.
-        if crate::loaded_engines::answers(app) {
-            return crate::loaded_engines::call(self, app, op, input);
+        if crate::loaded_engines::answers(engine_app) {
+            return crate::loaded_engines::call(self, engine_app, op, input);
         }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
-            if app == passwords_engine::APP {
+            if engine_app == passwords_engine::APP {
                 let device = EngineContent(self);
                 if let Some(answer) = crate::passwords_vault::call(&device, op, input) {
                     return answer;
                 }
-                return passwords_engine::call(&device, app, op, input);
+                return passwords_engine::call(&device, engine_app, op, input);
             }
         }
         crate::engines::register_all();
         self.register_content_engines();
-        tilolang_engine::answer(app, op, input)
+        tilolang_engine::answer(engine_app, op, input)
     }
 
     /// A job, started where its op runs: the device's shared engine host, or this process for

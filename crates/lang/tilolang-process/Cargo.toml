@@ -46,6 +46,9 @@ app-launch = [
     "dep:code-engine",
     "dep:tilo-maps-engine",
     "dep:tilo-terminal",
+    # The App Store's device work: the sources it reads and the changes a person asks for. Its
+    # calls read this computer's package cache, so it runs where the app's other work does.
+    "dep:tilo-store-engine",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -57,6 +60,9 @@ test-support = []
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
+# The app a device's development build is a build of: its engines are the app's own, and a build
+# asks for them by the id it runs under.
+tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 # What `web.get` and `web.post` reach through, on every device: the general network client.
 tilo-network-client = { version = "0.1.0", path = "../../platform/tilo-network-client" }
@@ -257,6 +263,12 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Syste
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The window plays a playback's outputs through the one host, so the cast stacks link here.
 media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["cast"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The App Store's engine: the sources it reads and the changes a person asks for, answered for
+# `so.tilo.store` by name. It reads this computer's package cache through the daemon, as the
+# session's own copy does.
+tilo-store-engine = { version = "0.1.0", path = "../../engines/store-engine", optional = true }
 
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # The Video Editor's editing and picture engines (`app-launch`): what it asks for a probe, a
