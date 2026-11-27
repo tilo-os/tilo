@@ -3,6 +3,7 @@
 //! becomes the workspace's `open` of the app ([`ApplicationLaunch::target`]), asked of
 //! the session's action API: the window never starts anything itself.
 
+#[cfg(feature = "model")]
 use collab_types::app_actions::ApplicationLaunch;
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};

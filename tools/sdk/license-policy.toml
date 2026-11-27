@@ -39,6 +39,7 @@ allowed_expressions = [
     "MIT",
     "MIT OR Apache-2.0",
     "MIT OR Apache-2.0 OR Zlib",
+    "MIT OR BSD-3-Clause",
     "MIT OR Zlib OR Apache-2.0",
     "MIT/Apache-2.0",
     "MIT/BSD-3-Clause",
@@ -133,8 +134,8 @@ client_side = [
 # shrink; a crate joins neither without a decision to make the toolkit depend on it.
 toolkit_reaches = [
     "tilo-accesskit-winit",             # vendor/accesskit_winit
+    "tilo-action-line",                 # crates/core/action-line
     "tilo-action-policy",               # crates/core/action-policy
-    "tilo-action-services",             # crates/core/action-services
     "tilo-action-types",                # crates/platform/action-types
     "tilo-actions",                     # crates/core/actions
     "tilo-advisory-lock",               # crates/platform/advisory-lock
