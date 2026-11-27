@@ -251,22 +251,6 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
     });
 }
 
-/// The lines the window shows once it lists the place with `wanted` in it.
-async fn agent_shows(session: &Session<'_>, workspace: &str, wanted: &str) -> String {
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let lines = view(session, workspace).await;
-        if lines.contains(wanted) {
-            return lines;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the window never read {wanted:?}: {lines}",
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-}
-
 /// The window goes to `place`, as a press of a place does.
 async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
     let (said, failed) = said(
@@ -317,8 +301,21 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
             .daemon()
             .keep_chosen_folder(&workspace, "so.tilo.file-explorer", picked.path(), false)
             .expect("the person's pick is kept");
-        goes_to(&session, &workspace, &reference.to_string_lossy()).await;
-        let lines = agent_shows(&session, &workspace, "in-the-pick.txt").await;
+        // The choice is kept in the device's records and read by the daemon as it changes: the
+        // window is sent to it again until the folder it names lists.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let lines = loop {
+            goes_to(&session, &workspace, &reference.to_string_lossy()).await;
+            let lines = view(&session, &workspace).await;
+            if lines.contains("in-the-pick.txt") {
+                break lines;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the picked folder never lists: {lines}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
         assert!(!lines.contains("outside-the-pick"), "{lines}");
 
         goes_to(&session, &workspace, &beside.path().to_string_lossy()).await;
@@ -351,7 +348,7 @@ fn a_member_the_workspace_lets_read_no_files_sees_nothing() {
             "the-agent-reads-no-files",
             tilo_action_policy::Grantee::agent("viewer", &owner),
             tree,
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Deny,
             tilo_action_policy::Grantee::person(&owner),
         );

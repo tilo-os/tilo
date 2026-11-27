@@ -11,16 +11,36 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
 use crate::language::host::{self, Host};
 
-/// An MCP session the tests act through: a key's, which names the workspace it acts in, and an
-/// agent's — the device's own, or one the workspace's person runs a turn as — which the daemon
-/// already scopes to its workspace.
-#[derive(Clone, Copy)]
-pub enum Session<'a, H = tilo_runtime::device::services::RuntimeActionProvider> {
-    Key(&'a host::Key),
-    Agent(&'a host::Agent<H>),
+/// An agent's MCP session, whatever provider it answers through: the device's own, or one the
+/// workspace's person runs a turn as. The daemon already scopes each to its workspace.
+pub trait Asking: Send + Sync {
+    /// The MCP tool `name` with `arguments`.
+    fn ask<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
 }
 
-impl<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Session<'_, H> {
+impl<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Asking for host::Agent<H> {
+    fn ask<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>> {
+        Box::pin(async move { self.tool(name, arguments).await })
+    }
+}
+
+/// An MCP session the tests act through: a key's, which names the workspace it acts in, and an
+/// agent's.
+#[derive(Clone, Copy)]
+pub enum Session<'a> {
+    Key(&'a host::Key),
+    Agent(&'a dyn Asking),
+}
+
+impl Session<'_> {
     /// The MCP tool `name` with `arguments`.
     pub async fn tool(&self, workspace: &str, name: &str, arguments: &Value) -> Value {
         let mut arguments = arguments.clone();
@@ -31,7 +51,7 @@ impl<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Session<'_
         }
         match self {
             Self::Key(key) => key.tool(name, &arguments).await,
-            Self::Agent(agent) => agent.tool(name, &arguments).await,
+            Self::Agent(agent) => agent.ask(name, &arguments).await,
         }
     }
 }
