@@ -1131,6 +1131,7 @@ tilo_test_env::scenario! {
 
     phase the_machine_record_is_read_where_it_is_kept;
     {
+        use std::os::unix::fs::PermissionsExt as _;
         use tilo_test_env::SpawnUnderEnvLock as _;
         let dir = tempfile::tempdir().unwrap();
         let private = dir.path().join("var/lib/tilo/device-private");
@@ -1147,7 +1148,6 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let mut perms = std::fs::metadata(bin.join("tilo")).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt as _;
         perms.set_mode(0o755);
         std::fs::set_permissions(bin.join("tilo"), perms).unwrap();
         let path = format!(
