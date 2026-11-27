@@ -111,6 +111,11 @@ pub fn sockets_from_env() -> Vec<ControlSocket> {
 /// finds it; else this computer's own.
 #[must_use]
 pub fn daemon_socket(named: Option<OsString>) -> Option<PathBuf> {
+    // A program in a shell reaches the daemon at the endpoint its shell was given, as the app the
+    // shell is for.
+    if let Some(shells) = tilo_machine::named_daemon_native() {
+        return Some(shells);
+    }
     match named.filter(|named| !named.is_empty()).map(PathBuf::from) {
         Some(profile)
             if !tilo_machine::serves_the_computer(

@@ -178,6 +178,27 @@ the supervisor over the `ush`
 service socket for a target and receives a pty master over `SCM_RIGHTS`. What
 crosses the boundary is a terminal, not a namespace.
 
+**A shell acts as the app it is for.** Every shell the supervisor starts (the
+device's own login shell, an environment's guest) is a process of the person's
+account outside every sandbox, so before it hands the session out the supervisor
+tells the device's daemon which app the shell is for and in which workspace, with
+the shell's pid and start time
+([`ush::shell_record`](../../crates/vm/ush/src/shell_record.rs)). The daemon
+judges that shell, and every program typed in it, as the app: Terminal's grants
+in that workspace, never the person's authority, and none of what the person's
+seat keeps (their server account, model keys). It takes the record only from a
+program of the person's that no app's launch is above, for a process that
+program started, while the start time still matches; a record it refuses ends
+the shell and refuses the session. That judgement needs the daemon to see the
+person's processes, which it does where it runs as them (macOS, a development
+run); on Tilo OS it runs as an account of its own and sees none. So each shell
+is also served an endpoint of its own, named to its programs by
+`TILO_DAEMON_NATIVE` in place of the daemon's: for every connection made there
+the supervisor asks the daemon for a connection of the shell's app
+(`{"native":"shell-line"}`, answered with the connection as a descriptor) and
+carries the program's bytes over it, so the program acts as Terminal whatever
+process holds it.
+
 ## The service protocol
 
 The launcher authenticates the caller once with the existing `QUS1` handoff.

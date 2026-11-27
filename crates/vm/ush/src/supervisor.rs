@@ -667,8 +667,7 @@ pub const SERVICE_PROTOCOL: u16 = 2;
 const MAX_ACTIVE_SESSIONS: usize = 8;
 const MAX_SERVICE_LINE: u64 = 4096;
 
-struct SessionTransport<'a> {
-    stream: &'a UnixStream,
+struct SessionTransport {
     active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -687,7 +686,6 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     let (caller, launched, carried) = crate::host::read_handoff(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
     let transport = SessionTransport {
-        stream,
         active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     let mut negotiated = false;
@@ -741,7 +739,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
 }
 
 fn session_limit_reached(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &mut UnixStream,
 ) -> anyhow::Result<bool> {
     if transport.active.load(std::sync::atomic::Ordering::Acquire) < MAX_ACTIVE_SESSIONS {
@@ -783,7 +781,7 @@ struct RequestScope {
 }
 
 fn serve_request(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &mut UnixStream,
     store: &Store,
     host_root: &Path,
@@ -796,6 +794,9 @@ fn serve_request(
     let asked = serde_json::from_str::<RequestScope>(line)
         .unwrap_or_default()
         .workspace;
+    // The app the session's shell acts as: the one the launcher wrote on the connection, or
+    // Terminal for a caller outside every sandbox (the daemon's line, the in-process Terminal).
+    let app = caller.app_id().to_owned();
     let store = &match crate::workspace::scope_of(caller, launched, asked.as_deref()) {
         Ok(workspace) => store.for_workspace(&workspace),
         Err(reason) => {
@@ -831,7 +832,7 @@ fn serve_request(
         ServeRequest::OpenSession {
             target: Target::Host,
             ..
-        } => return serve_host(transport, writer, store, caller, &req),
+        } => return serve_host(transport, writer, store, (caller, &app), &req),
         ServeRequest::AllowHost { expiry } => {
             reply(writer, &allow_host(caller, *expiry), None)?;
             return Ok(Served::Done);
@@ -856,7 +857,7 @@ fn serve_request(
     serve_guest_session(
         transport,
         writer,
-        store,
+        (store, &app),
         host_root,
         req,
         environment.as_deref(),
@@ -864,9 +865,9 @@ fn serve_request(
 }
 
 fn serve_guest_session(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &mut UnixStream,
-    store: &Store,
+    (store, app): (&Store, &str),
     host_root: &Path,
     req: ServeRequest,
     environment: Option<&str>,
@@ -893,7 +894,7 @@ fn serve_guest_session(
     open_environment(
         transport,
         writer,
-        store,
+        (store, app),
         host_root,
         environment,
         &record,
@@ -902,9 +903,9 @@ fn serve_guest_session(
 }
 
 fn open_environment(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &UnixStream,
-    store: &Store,
+    (store, app): (&Store, &str),
     host_root: &Path,
     environment: Option<&str>,
     record: &str,
@@ -940,6 +941,9 @@ fn open_environment(
         "open-session",
         true,
     ));
+    let Ok(endpoint) = shell_endpoint(writer, store, app, &id)? else {
+        return Ok(Served::Refused);
+    };
     let launch = Launch {
         store,
         environment,
@@ -948,16 +952,22 @@ fn open_environment(
         command: &command,
         commands: commands.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
+        daemon: endpoint
+            .as_ref()
+            .map(crate::shell_record::ShellEndpoint::path),
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let (child, diagnostics) = spawn_attached(&launch, &slave)?;
+    let (mut child, diagnostics) = spawn_attached(&launch, &slave)?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
+    if !shell_recorded(writer, store, app, &mut child, &id)? {
+        return Ok(Served::Refused);
+    }
     let session_id = id.clone();
     hand_off_session(
         transport,
@@ -970,8 +980,7 @@ fn open_environment(
             editor_protocol: editor.as_ref().map(|_| tilo_process::editor::VERSION),
             host_session: None,
         },
-        master,
-        child,
+        (master, child, endpoint),
         editor.map(|(app, _)| app),
         || {
             Some(EndWatch {
@@ -1003,12 +1012,15 @@ impl Drop for PendingSessionChild {
 }
 
 fn hand_off_session(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &UnixStream,
     store: &Store,
     response: &ServeResponse,
-    master: std::fs::File,
-    child: std::process::Child,
+    (master, child, endpoint): (
+        std::fs::File,
+        std::process::Child,
+        Option<crate::shell_record::ShellEndpoint>,
+    ),
     editor: Option<tilo_process::editor::Socket>,
     on_started: impl FnOnce() -> Option<EndWatch>,
 ) -> anyhow::Result<()> {
@@ -1061,6 +1073,8 @@ fn hand_off_session(
     active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     std::thread::spawn(move || {
         let termination = finish_session(&supervisor_lease, child, watch);
+        // The shell's programs reach the daemon at its endpoint for as long as it runs.
+        drop(endpoint);
         AuditLog::at(audit_dir).append(
             &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
         );
@@ -1241,10 +1255,10 @@ fn directory(
 }
 
 fn serve_host(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &mut UnixStream,
     store: &Store,
-    caller: &crate::host::Caller,
+    (caller, app): (&crate::host::Caller, &str),
     req: &ServeRequest,
 ) -> anyhow::Result<Served> {
     let ServeRequest::OpenSession {
@@ -1308,12 +1322,18 @@ fn serve_host(
         })
         .flatten();
     let commands = key.filter(|_| rc.is_some());
-    let child = spawn_on_pty(
-        crate::host::host_command(&account, term, command, rc.as_deref(), commands),
-        &slave,
-    )?;
+    let Ok(endpoint) = shell_endpoint(writer, store, app, &id)? else {
+        return Ok(Served::Refused);
+    };
+    let mut shell = crate::host::host_command(&account, term, command, rc.as_deref(), commands);
+    if let Some(endpoint) = &endpoint {
+        shell.env(tilo_machine::DAEMON_NATIVE_VAR, endpoint.path());
+    }
+    let mut child = spawn_on_pty(shell, &slave)?;
     drop(slave);
-    mark_terminal_session(transport.stream, child.id(), &id);
+    if !shell_recorded(writer, store, app, &mut child, &id)? {
+        return Ok(Served::Refused);
+    }
     hand_off_session(
         transport,
         writer,
@@ -1325,56 +1345,97 @@ fn serve_host(
             editor_protocol: None,
             host_session: None,
         },
-        master,
-        child,
+        (master, child, endpoint),
         None,
         || None,
     )?;
     Ok(Served::Done)
 }
 
-/// Record which Terminal launch asked for the Host session led by `leader`
-/// (the process on the other end of `stream`), so the desktop can serve
-/// what is typed in it with that Terminal's workspace scope. Without the
-/// record the session still opens; the desktop then serves it nothing.
-fn mark_terminal_session(stream: &UnixStream, leader: u32, session: &str) {
-    let Some(requester) = peer_pid(stream) else {
-        tracing::warn!("ush: the terminal asking for a host session could not be identified");
-        return;
+/// The endpoint the shell of session `session` reaches the daemon at, as `app`'s in the store's
+/// workspace ([`crate::shell_record::ShellEndpoint`]), made before the shell starts so its
+/// programs are named it from their first: none on a computer whose daemon is not reached from
+/// here. One that cannot be made refuses the session, saying why (`Err`): its programs would
+/// otherwise reach the daemon as the person.
+fn shell_endpoint(
+    writer: &UnixStream,
+    store: &Store,
+    app: &str,
+    session: &str,
+) -> anyhow::Result<Result<Option<crate::shell_record::ShellEndpoint>, Served>> {
+    let Some(daemon) = crate::images::device_actions() else {
+        return Ok(Ok(None));
     };
-    let Some(dir) = crate::terminal_sessions::dir(std::env::var_os("XDG_RUNTIME_DIR")) else {
-        return;
+    let workspace = store.workspace_id();
+    let workspace = if workspace.is_primary() {
+        ""
+    } else {
+        workspace.as_str()
     };
-    if let Err(error) = crate::terminal_sessions::mark(&dir, leader, requester, session) {
-        tracing::warn!(%error, "ush: could not record the host session's terminal");
+    let made = tilo_machine::account_sockets(rustix::process::getuid().as_raw())
+        .map_err(std::io::Error::other)
+        .and_then(|sockets| {
+            crate::shell_record::ShellEndpoint::serve(
+                &sockets.join("shells"),
+                session,
+                daemon.native().to_path_buf(),
+                (app, workspace),
+            )
+        });
+    match made {
+        Ok(endpoint) => Ok(Ok(Some(endpoint))),
+        Err(error) => {
+            let reason = format!("the shell's way to Tilo could not be made: {error}");
+            AuditLog::at(store.audit_dir()).append(
+                &crate::audit::AuditEntry::new(session, "-", "open-session", false)
+                    .because(&reason),
+            );
+            reply(
+                &mut writer.try_clone()?,
+                &ServeResponse::Denied { reason },
+                None,
+            )?;
+            Ok(Err(Served::Refused))
+        }
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-fn peer_pid(_stream: &UnixStream) -> Option<u32> {
-    None
-}
-
-#[cfg(target_os = "linux")]
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut cred).cast(),
-            &raw mut len,
-        )
-    };
-    (rc == 0).then_some(())?;
-    u32::try_from(cred.pid).ok().filter(|pid| *pid != 0)
+/// Tell this computer's daemon that `child`, the shell of session `session` just started, is
+/// `app`'s in the store's workspace ([`crate::shell_record`]), before the session is handed out:
+/// from then on the daemon judges the shell, and every program typed in it, as that app, never as
+/// the person whose account it runs as. A record the daemon refuses ends the shell and refuses the
+/// session, saying why; `false` then.
+fn shell_recorded(
+    writer: &UnixStream,
+    store: &Store,
+    app: &str,
+    child: &mut std::process::Child,
+    session: &str,
+) -> anyhow::Result<bool> {
+    match crate::shell_record::record(child.id(), app, store.workspace_id()) {
+        Ok(crate::shell_record::Recorded::In(_) | crate::shell_record::Recorded::Unseen) => {
+            Ok(true)
+        }
+        Ok(crate::shell_record::Recorded::NoDaemon) => {
+            tracing::debug!("ush: no daemon runs here to judge the shell by its app");
+            Ok(true)
+        }
+        Err(why) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let reason = format!("the shell could not be started as {app}'s: {why}");
+            AuditLog::at(store.audit_dir()).append(
+                &crate::audit::AuditEntry::new(session, "-", "open-session", false)
+                    .because(&reason),
+            );
+            reply(
+                &mut writer.try_clone()?,
+                &ServeResponse::Denied { reason },
+                None,
+            )?;
+            Ok(false)
+        }
+    }
 }
 
 /// Wait for whichever side of a served session ends first and tear the other down; returns
@@ -1499,6 +1560,8 @@ struct Launch<'a> {
     command: &'a [String],
     commands: Option<&'a str>,
     editor: Option<&'a tilo_process::editor::Socket>,
+    /// The endpoint the shell's programs reach the daemon at ([`crate::shell_record`]).
+    daemon: Option<&'a Path>,
 }
 
 fn spawn_attached(
@@ -1559,6 +1622,10 @@ fn spawn_attached(
         launch.store.workspace_id().as_str(),
     );
     cmd.env("TERM", launch.term);
+    match launch.daemon {
+        Some(daemon) => cmd.env(tilo_machine::DAEMON_NATIVE_VAR, daemon),
+        None => cmd.env_remove(tilo_machine::DAEMON_NATIVE_VAR),
+    };
     match launch.commands {
         Some(key) => cmd.env(crate::command_marks::KEY_ENV, key),
         None => cmd.env_remove(crate::command_marks::KEY_ENV),
@@ -1783,7 +1850,6 @@ mod tests {
                 let (mut client, mut server) = UnixStream::pair().unwrap();
                 let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
                 let transport = SessionTransport {
-                    stream: &server.try_clone().unwrap(),
                     active: active.clone(),
                 };
                 let (master, slave) = open_pty(80, 24).unwrap();
@@ -1808,8 +1874,7 @@ mod tests {
                         editor_protocol: None,
                         host_session: None,
                     },
-                    master,
-                    child,
+                    (master, child, None),
                     None,
                     || None,
                 );
@@ -1855,7 +1920,6 @@ mod tests {
                 .unwrap();
             let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let transport = SessionTransport {
-                stream: &server.try_clone().unwrap(),
                 active: active.clone(),
             };
             for index in 0..13 {
@@ -1876,8 +1940,7 @@ mod tests {
                         editor_protocol: None,
                         host_session: None,
                     },
-                    master,
-                    child,
+                    (master, child, None),
                     None,
                     || None,
                 )

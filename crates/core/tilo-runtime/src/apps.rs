@@ -792,6 +792,24 @@ impl Apps {
         let _ = self.launched.record_started(pid, app, workspace);
     }
 
+    /// Record `pid`, a shell the device's shell runtime started for `app` in `workspace`, so it
+    /// and every process below it are judged as that app: while its start time is still
+    /// `started`, the time the runtime read as it started it, so a process that took the pid
+    /// since is no shell of the app's.
+    ///
+    /// # Errors
+    /// The process is no longer the one started then, or it is already recorded as another
+    /// process of an app here.
+    pub(crate) fn record_shell(
+        &self,
+        pid: u32,
+        started: u64,
+        app: &str,
+        workspace: &str,
+    ) -> Result<(), String> {
+        self.launched.record_shell(pid, started, app, workspace)
+    }
+
     /// Record `pid` as the process this runtime started as `app`'s held connection in
     /// `workspace`, as a connector's launch is: what a test of an app that signs in serves its
     /// connection through, rather than starting the app's process.
@@ -2015,6 +2033,38 @@ impl Launched {
     /// for and read back by ([`ProcessOf::Started::own`]).
     pub(crate) fn record_own_tilolang(&self, pid: u32, app: &str, workspace: &str) -> bool {
         self.record_start(pid, app, workspace, true)
+    }
+
+    /// [`Apps::record_shell`]: refused for a process that is not the one started at `started`,
+    /// and for one this runtime already records. The records of shells that ended go as one is
+    /// recorded: a shell has no reaping here to forget it by.
+    fn record_shell(
+        &self,
+        pid: u32,
+        started: u64,
+        app: &str,
+        workspace: &str,
+    ) -> Result<(), String> {
+        if process_start_time(pid) != Some(started) {
+            return Err(format!(
+                "process {pid} is not the shell that started then: it ended, or another process \
+                 took its id"
+            ));
+        }
+        if self.recorded(pid).is_some() {
+            return Err(format!("process {pid} is already an app's here"));
+        }
+        let record = StartedRecord {
+            start_time: started,
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+            own: false,
+        };
+        let mut started_here = self.2.lock_recover();
+        started_here.retain(|pid, record| process_start_time(*pid) == Some(record.start_time));
+        started_here.insert(pid, record);
+        drop(started_here);
+        Ok(())
     }
 
     fn record_start(&self, pid: u32, app: &str, workspace: &str, own: bool) -> bool {

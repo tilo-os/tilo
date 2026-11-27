@@ -1027,6 +1027,9 @@ fn serve_the_started(
     // A person who signs in from now on has their workspace here (the one their desktop hands
     // over, or one founded for them now) and a link their shell is admitted by.
     native.seats.follow_launches(app_of(session));
+    native
+        .seats
+        .follow_shells(record_shell(session), shell_lines(session));
     native.serve_apps(app_take(session));
     #[cfg(unix)]
     session.apps().serve_own_lines(own_lines(session));
@@ -1263,6 +1266,43 @@ const CLOSING_ENDPOINT: Duration = Duration::from_secs(5);
 /// in and close before the next part starts without waiting for it.
 const CLOSING_WORKSPACES: Duration = Duration::from_secs(10);
 
+/// What records a shell the device's shell runtime started for an app, as that app's.
+fn record_shell(session: &Arc<Daemon>) -> crate::seats::RecordShell {
+    let session = Arc::downgrade(session);
+    Arc::new(move |pid, started, app, workspace| {
+        session
+            .upgrade()
+            .ok_or_else(|| "this computer's daemon is stopping".to_owned())?
+            .record_shell(pid, started, app, workspace)
+    })
+}
+
+/// What makes a connection of an app's shell, served as that app in its workspace exactly as the
+/// native endpoint serves a process the daemon started for it ([`Frames::of_an_app`]): whatever
+/// process holds it acts as the app, so a shell's programs reach the daemon as Terminal even where
+/// the daemon cannot see their processes. It stands for no process the daemon started: nothing is
+/// released to it that is kept for one ([`crate::device::vault_release`]).
+fn shell_lines(session: &Arc<Daemon>) -> crate::seats::ShellLines {
+    let session = Arc::downgrade(session);
+    Arc::new(move |app: &str, workspace: &str| {
+        let session = session
+            .upgrade()
+            .ok_or_else(|| "this computer's daemon is stopping".to_owned())?;
+        let workspace = session.shell_workspace(workspace)?;
+        let failed = |error: io::Error| format!("no connection was made for the shell: {error}");
+        let (ours, theirs) = tilo_socket::pair().map_err(failed)?;
+        let at = AppAt {
+            app: app.to_owned(),
+            workspace: workspace.clone(),
+            pid: 0,
+        };
+        // Closed when the person's part ends, as every connection it serves is.
+        let held = session.connections().hold(&ours);
+        serve_as_app(ours, Frames::of_an_app(&session, &at), None, held).map_err(failed)?;
+        Ok((workspace, theirs))
+    })
+}
+
 /// What finds the app a process the daemon started runs, from the launch records `session`
 /// keeps, as the process connects: the app has connected once it reaches the native endpoint.
 fn app_of(session: &Arc<Daemon>) -> crate::seats::AppOf {
@@ -1400,6 +1440,9 @@ pub(crate) fn serve_for_test(
 ) -> io::Result<()> {
     let native = Arc::new(Native::new(device, peer_of, admission));
     native.seats.follow_launches(app_of(session));
+    native
+        .seats
+        .follow_shells(record_shell(session), shell_lines(session));
     native.serve_apps(app_take(session));
     native.serve_the_person(the_persons(session, Arc::new(OnceLock::new())));
     native.serve_keys(key_endpoint(session));

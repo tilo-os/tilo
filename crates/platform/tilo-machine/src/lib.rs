@@ -31,6 +31,18 @@ pub const DAEMON_NATIVE: &str = "native.sock";
 /// The variable naming a device daemon's profile when it is not the account's own: a test's, a VM
 /// host's.
 pub const DAEMON_PROFILE_VAR: &str = "TILO_RUNTIME_PROFILE";
+/// The variable naming the endpoint a program reaches the device daemon at in place of its native
+/// endpoint: the one the shell runtime serves each shell it starts, on which the daemon answers
+/// the shell's programs as the app the shell is for (Terminal), never as their account.
+pub const DAEMON_NATIVE_VAR: &str = "TILO_DAEMON_NATIVE";
+
+/// The endpoint [`DAEMON_NATIVE_VAR`] names, when it names an absolute path.
+#[must_use]
+pub fn named_daemon_native() -> Option<std::path::PathBuf> {
+    std::env::var_os(DAEMON_NATIVE_VAR)
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
 
 /// The profile an account's own device daemon keeps its state in, under its home: its store, its
 /// device's key and certificates, and the sockets of a profile named apart. Tilo OS's system unit
@@ -129,6 +141,9 @@ pub fn account_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
 /// As [`daemon_sockets`].
 #[cfg(unix)]
 pub fn daemon_native() -> Result<std::path::PathBuf, String> {
+    if let Some(named) = named_daemon_native() {
+        return Ok(named);
+    }
     Ok(daemon_sockets(rustix::process::geteuid().as_raw())?.join(DAEMON_NATIVE))
 }
 

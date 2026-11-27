@@ -115,6 +115,107 @@ impl LaunchRequest {
     }
 }
 
+/// The value of [`ShellRecord::native`] that tells this computer's daemon of a shell started for
+/// an app.
+pub const SHELL: &str = "shell";
+
+/// `{"native":"shell", ...}`: the device's shell runtime telling this computer's daemon of a shell
+/// it started for an app (Terminal above all) in a workspace, answered `{"workspace"}` once
+/// recorded, `{"unseen": true}` by a daemon that cannot see the account's processes (one that runs
+/// as an account of its own), or `{"error"}`. From then on the daemon judges that shell, and every
+/// process started in it that connects to it directly, as the app: with the app's grants in that
+/// workspace, never the authority of the account it runs as. A daemon that cannot see them judges
+/// only the connections the shell's own endpoint asks for ([`ShellLine`]).
+///
+/// The daemon takes it from a process of the person's own that no app's launch is above, and for a
+/// process below the one asking alone: a program can only ever narrow what its own children
+/// reach. The start time is the one the runtime read as it started the shell, so a process that
+/// took the pid since is never taken for it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellRecord {
+    pub native: String,
+    /// The shell's process.
+    pub pid: u32,
+    /// When the shell's process started, as the kernel counts it (`/proc/<pid>/stat`'s
+    /// `starttime` on Linux).
+    pub started: u64,
+    /// The app the shell is for.
+    pub app: String,
+    /// The workspace the shell runs in: the runtime's primary one when empty.
+    pub workspace: String,
+}
+
+impl ShellRecord {
+    /// The record of `pid`, started at `started`, as `app`'s shell in `workspace`.
+    #[must_use]
+    pub fn new(pid: u32, started: u64, app: &str, workspace: &str) -> Self {
+        Self {
+            native: SHELL.to_owned(),
+            pid,
+            started,
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+        }
+    }
+
+    /// This record as the one line the daemon's native endpoint reads.
+    ///
+    /// # Errors
+    /// The record does not encode.
+    pub fn line(&self) -> serde_json::Result<Vec<u8>> {
+        let mut line = serde_json::to_vec(self)?;
+        line.push(b'\n');
+        Ok(line)
+    }
+}
+
+/// The value of [`ShellLine::native`] that asks this computer's daemon for a connection of an
+/// app's shell.
+pub const SHELL_LINE: &str = "shell-line";
+
+/// `{"native":"shell-line", ...}`: the device's shell runtime asking this computer's daemon for a
+/// connection that acts as an app (Terminal above all) in a workspace, on behalf of a program in a
+/// shell it started for that app. Answered `{"workspace"}` with the connection as the line's one
+/// descriptor, or `{"error"}`.
+///
+/// The runtime serves each shell an endpoint of its own and asks for one of these for each
+/// connection a program in the shell makes there, so the program reaches the daemon as the app
+/// and never as the account it runs as, whether or not the daemon can see the program's process.
+/// The daemon answers it to a program of the person's own that no app's launch is above: a
+/// connection it hands only ever acts with less than the program asking for it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShellLine {
+    pub native: String,
+    /// The app the connection acts as.
+    pub app: String,
+    /// The workspace it acts in: the runtime's primary one when empty.
+    pub workspace: String,
+}
+
+impl ShellLine {
+    /// The ask for a connection of `app` in `workspace`.
+    #[must_use]
+    pub fn new(app: &str, workspace: &str) -> Self {
+        Self {
+            native: SHELL_LINE.to_owned(),
+            app: app.to_owned(),
+            workspace: workspace.to_owned(),
+        }
+    }
+
+    /// This ask as the one line the daemon's native endpoint reads.
+    ///
+    /// # Errors
+    /// The ask does not encode.
+    pub fn line(&self) -> serde_json::Result<Vec<u8>> {
+        let mut line = serde_json::to_vec(self)?;
+        line.push(b'\n');
+        Ok(line)
+    }
+}
+
 /// Ask this computer's daemon to start another instance of `app_id` in this app's workspace, over
 /// the native service connection the launcher handed this app: the launch a person's `--run-app`
 /// makes, which starts the installed package's own program and records the instance like any

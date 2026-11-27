@@ -294,6 +294,11 @@ impl DeviceActions {
     /// # Errors
     /// The login's directory or the sockets' directory cannot be made ([`sockets`]).
     pub fn here(paths: crate::IdentityPaths) -> Result<Self, String> {
+        // A program in a shell reaches the daemon at the endpoint its shell was given, as the
+        // app the shell is for.
+        if let Some(shells) = tilo_machine::named_daemon_native() {
+            return Ok(Self::at(shells));
+        }
         let login = super::Place::here(paths).map_err(|error| format!("{error:#}"))?;
         let (sockets, _) = sockets(login.dir())?;
         Ok(Self::at(native_in(&sockets)))

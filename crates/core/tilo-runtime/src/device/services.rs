@@ -1958,6 +1958,43 @@ impl Daemon {
         self.apps.attested(pid)
     }
 
+    /// Record `pid`, a shell the device's shell runtime started for `app` in `workspace` at
+    /// `started`, as that app's: it and everything started in it act with the app's grants from
+    /// now on, never the person's. No workspace named is the runtime's primary one, this daemon's
+    /// own; any other must be one this computer holds. Answers the workspace it was recorded in.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the process is not that shell
+    /// ([`crate::apps::Apps::record_shell`]).
+    pub(crate) fn record_shell(
+        &self,
+        pid: u32,
+        started: u64,
+        app: &str,
+        workspace: &str,
+    ) -> Result<String, String> {
+        let workspace = self.shell_workspace(workspace)?;
+        self.apps.record_shell(pid, started, app, &workspace)?;
+        Ok(workspace)
+    }
+
+    /// The workspace a shell the shell runtime names runs in: this daemon's own for none (the
+    /// runtime's primary one), and any other one this computer holds.
+    ///
+    /// # Errors
+    /// The workspace is not held here.
+    pub(crate) fn shell_workspace(&self, workspace: &str) -> Result<String, String> {
+        let workspace = if workspace.is_empty() {
+            self.workspace.clone()
+        } else {
+            workspace.to_owned()
+        };
+        if workspace != self.workspace && !self.apps.launches_into(&workspace) {
+            return Err(format!("this computer holds no workspace {workspace}"));
+        }
+        Ok(workspace)
+    }
+
     /// [`Self::app_of`], for a connection process `pid` made to this device: the app it runs has
     /// connected ([`crate::apps::Apps::connected_as`]).
     pub(crate) fn app_connected(&self, pid: u32) -> Option<(String, String)> {

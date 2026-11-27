@@ -54,7 +54,7 @@ enum Route {
 ///
 /// The window's connection failed.
 pub(super) fn serve_hosted(
-    transport: &SessionTransport<'_>,
+    transport: &SessionTransport,
     writer: &mut UnixStream,
     store: &Store,
     req: &ServeRequest,

@@ -77,6 +77,12 @@ const LINK: &str = runtime_collab::wire::shell::SHELL_LINK;
 /// Hand the device's tilolang processes an instance: `{secret}`, the one-use secret the daemon
 /// answered the shell's link with, and the packet socket as the line's one descriptor.
 const PROCESSES: &str = runtime_collab::wire::shell::SHELL_PROCESSES;
+/// Tell of a shell the device's shell runtime started for an app: a
+/// [`runtime_portal::native::ShellRecord`], answered `{workspace}`.
+const SHELL: &str = runtime_portal::native::SHELL;
+/// Make a connection of an app's shell: a [`runtime_portal::native::ShellLine`], answered
+/// `{workspace}` with the connection as its descriptor.
+const SHELL_LINE: &str = runtime_portal::native::SHELL_LINE;
 /// Why anyone but root is refused the seats' actions.
 pub(crate) const ROOT_ALONE: &str = "only root says who signed in on this computer, or who left";
 
@@ -223,9 +229,42 @@ pub(crate) fn peer_of(stream: &Stream) -> io::Result<Peer> {
     Peer::of(stream)
 }
 
+/// Whether `pid` is a process `ancestor` started, directly or below one it started, as the kernel
+/// reads their parents now. A process is never its own descendant.
+fn descends_from(pid: u32, ancestor: u32) -> bool {
+    /// How many parents are read at most: no tree is this deep, and a pid reused while it is read
+    /// could make a cycle.
+    const MAX_ANCESTRY: usize = 4096;
+    let mut current = pid;
+    for _ in 0..MAX_ANCESTRY {
+        let Some(parent) = crate::apps::parent_of(current) else {
+            return false;
+        };
+        if parent == ancestor {
+            return true;
+        }
+        if parent <= 1 || parent == current {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
 /// What finds the app and workspace the daemon started process `pid` as: the daemon's launch
 /// records, walked up the process's parents where a sandbox put it below its launcher.
 pub(crate) type AppOf = Arc<dyn Fn(u32) -> Option<(String, String)> + Send + Sync>;
+
+/// What records a shell the device's shell runtime started for an app: its pid, the start time the
+/// runtime read, the app and the workspace it named. Answers the workspace it was recorded in, or
+/// why it was not.
+pub(crate) type RecordShell =
+    Arc<dyn Fn(u32, u64, &str, &str) -> Result<String, String> + Send + Sync>;
+
+/// What makes a connection of an app's shell: the app and the workspace the shell runtime named,
+/// answered the workspace it acts in and the connection's other end, served as that app there.
+pub(crate) type ShellLines =
+    Arc<dyn Fn(&str, &str) -> Result<(String, Stream), String> + Send + Sync>;
 
 /// An app the daemon started, and the workspace it runs in: what a connection from it is
 /// admitted as.
@@ -348,6 +387,11 @@ pub(crate) struct Seats {
     /// What finds the app the daemon started a peer process as, once the daemon keeps its
     /// launch records.
     app_of: Arc<Mutex<Option<AppOf>>>,
+    /// What records a shell the shell runtime started for an app, once the daemon keeps its
+    /// launch records.
+    record_shell: Arc<Mutex<Option<RecordShell>>>,
+    /// What makes a connection of an app's shell, once the person's services run.
+    shell_lines: Arc<Mutex<Option<ShellLines>>>,
     /// What the daemon does for its person, and whether their services started: `Starting` until
     /// they run, and why they did not when their start failed.
     shells: Arc<tokio::sync::watch::Sender<Services>>,
@@ -371,6 +415,8 @@ impl Seats {
             device,
             peer_of,
             app_of: Arc::default(),
+            record_shell: Arc::default(),
+            shell_lines: Arc::default(),
             shells: Arc::new(tokio::sync::watch::channel(Services::Starting).0),
             started: Arc::default(),
             keys: Arc::default(),
@@ -386,6 +432,15 @@ impl Seats {
             .app_of
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(app_of);
+    }
+
+    /// Record the shells the shell runtime tells of with `record` from now on
+    /// ([`runtime_portal::native::ShellRecord`]).
+    /// And make the connections their endpoints ask for with `lines`
+    /// ([`runtime_portal::native::ShellLine`]).
+    pub(crate) fn follow_shells(&self, record: RecordShell, lines: ShellLines) {
+        *self.record_shell.lock_recover() = Some(record);
+        *self.shell_lines.lock_recover() = Some(lines);
     }
 
     /// The key the account `seat` acts as, with its certificate: an account signed in as
@@ -660,6 +715,14 @@ impl Seats {
                 self.hand_processes(seat, request, received)
                     .map_or_else(|why| json!({"error": why}), |()| json!({"handed": true})),
             )),
+            SHELL => Some(ready(
+                self.record_shell(seat, request)
+                    .unwrap_or_else(|why| json!({"error": why})),
+            )),
+            SHELL_LINE => Some(ready(
+                self.shell_line(seat, request, handed)
+                    .unwrap_or_else(|why| json!({"error": why})),
+            )),
             _ => None,
         }
     }
@@ -668,8 +731,90 @@ impl Seats {
     pub(crate) fn asks(request: &Value) -> bool {
         matches!(
             request.get("native").and_then(Value::as_str),
-            Some(WHO | START | WAIT | LINK | PROCESSES)
+            Some(WHO | START | WAIT | LINK | PROCESSES | SHELL | SHELL_LINE)
         )
+    }
+
+    /// Record the shell `request` tells of ([`runtime_portal::native::ShellRecord`]) as the app's
+    /// it names, in its workspace: from then on it and every process below it act as that app.
+    /// Only a program of this computer's person that no app's launch is above tells of one, and
+    /// only of a process it started (directly or below one it started): a record only ever
+    /// narrows what the asker's own children reach, never what another process does.
+    fn record_shell(&self, seat: &Seat, request: &Value) -> Result<Value, String> {
+        let record: runtime_portal::native::ShellRecord =
+            serde_json::from_value(request.clone())
+                .map_err(|error| format!("a shell's record does not read: {error}"))?;
+        self.shell_runtime(seat)?;
+        let Some(asking) = seat.pid else {
+            return Err(
+                "this connection's process is not known, so no shell can be tied below it"
+                    .to_owned(),
+            );
+        };
+        // A daemon that runs as an account of its own sees none of the person's processes: it
+        // judges nothing by them, and a shell's programs reach it as the app through the
+        // connections the shell's endpoint asks for alone.
+        if crate::apps::parent_of(asking).is_none() {
+            return Ok(json!({ "unseen": true }));
+        }
+        if !descends_from(record.pid, asking) {
+            return Err(format!(
+                "process {} was not started by the program telling of it",
+                record.pid
+            ));
+        }
+        if record.app.is_empty() {
+            return Err("a shell's record names no app".to_owned());
+        }
+        let record_shell = self
+            .record_shell
+            .lock_recover()
+            .clone()
+            .ok_or("this computer is not serving its person's workspaces yet")?;
+        let workspace = record_shell(record.pid, record.started, &record.app, &record.workspace)?;
+        Ok(json!({ "workspace": workspace }))
+    }
+
+    /// A connection of the app's shell `request` names ([`runtime_portal::native::ShellLine`]),
+    /// left in `handed` to go with the answer: it acts as that app in its workspace, whatever
+    /// process holds it.
+    fn shell_line(&self, seat: &Seat, request: &Value, handed: &Hand) -> Result<Value, String> {
+        let asked: runtime_portal::native::ShellLine = serde_json::from_value(request.clone())
+            .map_err(|error| format!("a shell's ask for a connection does not read: {error}"))?;
+        self.shell_runtime(seat)?;
+        if asked.app.is_empty() {
+            return Err("a shell's ask for a connection names no app".to_owned());
+        }
+        let lines = self
+            .shell_lines
+            .lock_recover()
+            .clone()
+            .ok_or("this computer is not serving its person's workspaces yet")?;
+        let (workspace, line) = lines(&asked.app, &asked.workspace)?;
+        *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(line));
+        Ok(json!({ "workspace": workspace }))
+    }
+
+    /// Whether `seat` may speak for the shells it starts: a program of this computer's person that
+    /// no app's launch is above, as the shell runtime is. What it is told only ever narrows what
+    /// its shells reach.
+    fn shell_runtime(&self, seat: &Seat) -> Result<(), String> {
+        if let Some(app) = &seat.app {
+            return Err(format!(
+                "a process of {} speaks for no shell: only the shell runtime does",
+                app.app
+            ));
+        }
+        let persons = match seat.admitted {
+            Admitted::Device => !self.admission.system(),
+            Admitted::Person(person) => self.device.person() == Some(person),
+            Admitted::Key { .. } | Admitted::Founding { .. } | Admitted::Stranger => false,
+        };
+        if persons {
+            Ok(())
+        } else {
+            Err("only a program of this computer's person speaks for a shell here".to_owned())
+        }
     }
 
     /// Whether the account `seat` starts its person's shell through this daemon: the account a

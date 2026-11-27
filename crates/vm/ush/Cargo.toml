@@ -106,13 +106,14 @@ tilo-actions = { path = "../../core/actions" }
 tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame" }
 tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity" }
+# Where a shell's programs are told to reach the device daemon.
+tilo-machine.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-machine.workspace = true
 ush = { path = ".", features = ["test-workspace"] }
 # The real guest agent behind a fake VM link: a hosted program's terminal
 # server is tested against what serves it in the VM.

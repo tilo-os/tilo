@@ -534,12 +534,20 @@ fn asking() -> Arc<tilo_action_services::TestProvider> {
 fn probe(
     confirmation: tilo_actions::ConfirmationPolicy,
 ) -> Arc<tilo_action_services::TestProvider> {
+    probe_named(ASKS, confirmation)
+}
+
+/// [`probe`], offered as the provider `named`.
+fn probe_named(
+    named: &'static str,
+    confirmation: tilo_actions::ConfirmationPolicy,
+) -> Arc<tilo_action_services::TestProvider> {
     use tilo_action_services::TestProvider;
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
     Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(
-            ASKS,
-            ASKS,
+            named,
+            named,
             tilo_actions::ActionDescriptor {
                 did: None,
                 state: tilo_actions::ActionState::default(),
@@ -565,8 +573,8 @@ fn probe(
         let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
         if query.provider.is_none() {
             page.providers.push(CatalogueProvider {
-                provider: ASKS.into(),
-                app_id: ASKS.into(),
+                provider: named.into(),
+                app_id: named.into(),
                 workspace: caller.workspace().unwrap_or_default().to_owned(),
                 document_id: String::new(),
                 browsable: true,
@@ -1009,6 +1017,342 @@ fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
     let _ = std::process::Command::new("kill")
         .arg(helper.to_string())
         .status();
+}
+
+const SHELL_TEST: &str = "device::local::tests::a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused";
+
+/// What the daemon answers the shell runtime's record `record`, told on a connection from `pid`
+/// of the person's account: the answer's line, `Null` when it is none.
+fn told(socket: &Path, pid: u32, record: &runtime_portal::native::ShellRecord) -> Value {
+    use std::io::{BufRead as _, Write as _};
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(pid, Ordering::SeqCst);
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.write_all(&record.line().unwrap()).unwrap();
+    let mut answer = String::new();
+    let _ = BufReader::new(stream).read_line(&mut answer);
+    serde_json::from_str(answer.trim()).unwrap_or(Value::Null)
+}
+
+/// The shell runtime tells the daemon of a shell it started for Terminal, as `ush` does for every
+/// shell: the shell, and a program typed in it, are judged as Terminal in the workspace from then
+/// on. An action the person runs is refused them as Terminal's, which holds no grant for it, and
+/// so is what the person's seat keeps (the account this computer is signed in to). A record whose
+/// start time is not the shell's, one told by a process that did not start it, and one told by a
+/// process in the shell are refused. The person's own programs, the runtime's among them, stay
+/// the person's.
+#[cfg(target_os = "linux")]
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the record, its forgeries and what each process reaches, read top to bottom"
+)]
+fn a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused() {
+    use runtime_portal::native::ShellRecord;
+    use std::io::BufRead as _;
+    use tilo_actions::remote::{
+        ActionCallError, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+        SERVER_ACCOUNT_PROVIDER,
+    };
+    const TERMINAL: &str = tilo_app_id::apps::TERMINAL;
+    let Some(root) = isolated_root(SHELL_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let probe = probe(tilo_actions::ConfirmationPolicy::default());
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let account = probe_named(
+        SERVER_ACCOUNT_PROVIDER,
+        tilo_actions::ConfirmationPolicy::default(),
+    );
+    daemon.provide(SERVER_ACCOUNT_PROVIDER, Arc::clone(&account) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let publish = |provider: &str| {
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: provider.into(),
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+            },
+            serde_json::Map::new(),
+        )
+    };
+    let in_workspace = Caller::local_person("").in_workspace(workspace.clone());
+    let from = |pid: u32| {
+        PEER.store(OWN, Ordering::SeqCst);
+        PEER_PID.store(pid, Ordering::SeqCst);
+        tilo_action_services::LineClient::of_stream(UnixStream::connect(&socket).unwrap()).unwrap()
+    };
+    let refusal = |answer: Result<InvocationReceipt, ActionCallError>| match answer {
+        Err(error)
+        | Ok(InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => error,
+        Ok(receipt) => panic!("a program in the shell acts on its person's authority: {receipt:?}"),
+    };
+
+    // This test stands in for the runtime: the shell is its child, and a program typed in the
+    // shell its grandchild.
+    let runtime = std::process::id();
+    let mut shell = std::process::Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & echo $!; wait"])
+        .stdout(std::process::Stdio::piped())
+        .spawn_locked()
+        .unwrap();
+    let mut said = String::new();
+    BufReader::new(shell.stdout.take().unwrap())
+        .read_line(&mut said)
+        .unwrap();
+    let typed: u32 = said.trim().parse().unwrap();
+    let started = crate::apps::process_start_time(shell.id()).unwrap();
+
+    // A record whose start time is not the shell's is refused: a process that took its pid since
+    // is never the shell.
+    let forged = told(
+        &socket,
+        runtime,
+        &ShellRecord::new(shell.id(), started + 1, TERMINAL, ""),
+    );
+    assert!(
+        forged.get("error").is_some(),
+        "a record with another start time is refused: {forged}"
+    );
+    // A process that did not start the shell tells of nothing.
+    let mut beside = a_process();
+    let not_its = told(
+        &socket,
+        beside.id(),
+        &ShellRecord::new(shell.id(), started, TERMINAL, ""),
+    );
+    assert!(
+        not_its.get("error").is_some(),
+        "a record of a process the teller did not start is refused: {not_its}"
+    );
+    assert_eq!(
+        daemon.apps().attested(typed),
+        None,
+        "a refused record judges nothing"
+    );
+
+    // The runtime tells of its shell, in the primary workspace, as it does when it starts one.
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(runtime, Ordering::SeqCst);
+    assert_eq!(
+        ush::shell_record::record_at(&socket, shell.id(), TERMINAL, ""),
+        Ok(ush::shell_record::Recorded::In(workspace.clone())),
+        "the runtime's primary workspace is the daemon's own"
+    );
+    let as_terminal = Some((TERMINAL.to_owned(), workspace.clone()));
+    assert_eq!(daemon.apps().attested(shell.id()), as_terminal);
+    assert_eq!(
+        daemon.apps().attested(typed),
+        as_terminal,
+        "a program typed in the shell acts as Terminal"
+    );
+    assert_eq!(
+        daemon.apps().process_of(typed),
+        Some(crate::apps::ProcessOf::Started {
+            app: TERMINAL.to_owned(),
+            workspace,
+            own: false,
+        }),
+        "with none of the standing of a process the daemon started for Terminal itself"
+    );
+    assert_eq!(
+        daemon.apps().attested(runtime),
+        None,
+        "the runtime that told of it stays the person's"
+    );
+
+    // The person's own program runs the action.
+    let person = from(beside.id());
+    let receipt = answered(person.invoke(&in_workspace, publish(ASKS))).expect("the person's call");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the person's call runs: {receipt:?}"
+    );
+    assert_eq!(probe.asked().len(), 1);
+
+    // The program typed in the shell is Terminal, which holds no grant for it: nothing runs.
+    let in_shell = from(typed);
+    assert!(
+        matches!(
+            refusal(answered(in_shell.invoke(&in_workspace, publish(ASKS)))),
+            ActionCallError::NotPermitted
+        ),
+        "a program in the shell is refused as Terminal"
+    );
+    assert_eq!(
+        probe.asked().len(),
+        1,
+        "nothing ran for the program in the shell"
+    );
+    // Nor does it reach the account this computer is signed in to.
+    let _ = refusal(answered(
+        in_shell.invoke(&in_workspace, publish(SERVER_ACCOUNT_PROVIDER)),
+    ));
+    assert!(
+        account.asked().is_empty(),
+        "the seat's account is not reached from the shell"
+    );
+
+    // A process in the shell cannot tell of another app's shell below it: it is Terminal's.
+    let typed_started = crate::apps::process_start_time(typed).unwrap();
+    let from_the_shell = told(
+        &socket,
+        shell.id(),
+        &ShellRecord::new(typed, typed_started, "so.tilo.files", ""),
+    );
+    assert!(
+        from_the_shell.get("workspace").is_none(),
+        "a process in the shell tells of no shell: {from_the_shell}"
+    );
+    assert_eq!(daemon.apps().attested(typed), as_terminal);
+
+    for process in [&mut shell, &mut beside] {
+        process.kill().unwrap();
+        process.wait().unwrap();
+    }
+    // The program outlives the shell that started it; it is ended by its pid.
+    let _ = std::process::Command::new("kill")
+        .arg(typed.to_string())
+        .status();
+}
+
+const UNSEEN_TEST: &str = "device::local::tests::a_shells_endpoint_acts_as_terminal_where_the_daemon_sees_no_process_of_the_person";
+
+/// On Tilo OS the daemon runs as an account of its own and sees none of the person's processes,
+/// so it cannot judge a program by the shell above it. The shell runtime's record of a shell is
+/// answered as unseen and judges nothing; the shell's own endpoint, which the runtime serves it in
+/// place of the daemon's, carries each connection over one the daemon made for Terminal: a call
+/// there is refused as Terminal's, the seat's account included, while the person's own program
+/// runs it. A connection judged as an app asks for no such connection.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shells_endpoint_acts_as_terminal_where_the_daemon_sees_no_process_of_the_person() {
+    use runtime_portal::native::{ShellLine, ShellRecord};
+    use tilo_actions::remote::{
+        ActionCallError, InvocationReceipt, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+        SERVER_ACCOUNT_PROVIDER,
+    };
+    const TERMINAL: &str = tilo_app_id::apps::TERMINAL;
+    /// A process no daemon sees: above the kernel's largest pid.
+    const UNSEEN: u32 = 1 << 30;
+    let Some(root) = isolated_root(UNSEEN_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let probe = probe(tilo_actions::ConfirmationPolicy::default());
+    daemon.provide(ASKS, Arc::clone(&probe) as _);
+    let account = probe_named(
+        SERVER_ACCOUNT_PROVIDER,
+        tilo_actions::ConfirmationPolicy::default(),
+    );
+    daemon.provide(SERVER_ACCOUNT_PROVIDER, Arc::clone(&account) as _);
+    let socket = native_endpoint(&daemon, &root);
+    let publish = |provider: &str| {
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: provider.into(),
+                address: tilo_actions::ActionAddress::new("probe", "publish"),
+            },
+            serde_json::Map::new(),
+        )
+    };
+    let in_workspace = Caller::local_person("").in_workspace(workspace.clone());
+    let refusal = |answer: Result<InvocationReceipt, ActionCallError>| match answer {
+        Err(error)
+        | Ok(InvocationReceipt {
+            status: ReceiptStatus::Rejected { error },
+            ..
+        }) => error,
+        Ok(receipt) => panic!("a program in the shell acts on its person's authority: {receipt:?}"),
+    };
+
+    // The person's own program runs the action.
+    let person = line_client(&socket, OWN);
+    let receipt = answered(person.invoke(&in_workspace, publish(ASKS))).expect("the person's call");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the person's call runs: {receipt:?}"
+    );
+    assert_eq!(probe.asked().len(), 1);
+
+    // From here on the daemon sees no process of the person's: the runtime's included.
+    let mut shell = a_process();
+    let started = crate::apps::process_start_time(shell.id()).unwrap();
+    assert_eq!(
+        told(
+            &socket,
+            UNSEEN,
+            &ShellRecord::new(shell.id(), started, TERMINAL, "")
+        ),
+        serde_json::json!({ "unseen": true }),
+        "a daemon that sees no process of the person's judges nothing by them"
+    );
+    assert_eq!(daemon.apps().attested(shell.id()), None);
+
+    // The shell's endpoint, as the runtime serves it: a program's connection there is Terminal's.
+    let endpoint = ush::shell_record::ShellEndpoint::serve(
+        &root.join("shells"),
+        "s",
+        socket.clone(),
+        (TERMINAL, ""),
+    )
+    .unwrap();
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(UNSEEN, Ordering::SeqCst);
+    let in_shell =
+        tilo_action_services::LineClient::of_stream(UnixStream::connect(endpoint.path()).unwrap())
+            .unwrap();
+    assert!(
+        matches!(
+            refusal(answered(in_shell.invoke(&in_workspace, publish(ASKS)))),
+            ActionCallError::NotPermitted
+        ),
+        "a program in the shell is refused as Terminal"
+    );
+    let _ = refusal(answered(
+        in_shell.invoke(&in_workspace, publish(SERVER_ACCOUNT_PROVIDER)),
+    ));
+    assert_eq!(
+        probe.asked().len(),
+        1,
+        "nothing ran for the program in the shell"
+    );
+    assert!(
+        account.asked().is_empty(),
+        "the seat's account is not reached from the shell"
+    );
+
+    // A connection the daemon judges as an app asks for no connection of a shell.
+    daemon
+        .apps()
+        .record_started(shell.id(), TERMINAL, &workspace);
+    let from_an_app = told_line(&socket, shell.id(), &ShellLine::new(TERMINAL, ""));
+    assert!(
+        from_an_app.get("workspace").is_none(),
+        "an app asks for no connection of a shell: {from_an_app}"
+    );
+
+    drop(endpoint);
+    shell.kill().unwrap();
+    shell.wait().unwrap();
+}
+
+/// What the daemon answers `ask`, made on a connection from `pid` of the person's account: the
+/// answer's line, `Null` when it is none.
+fn told_line(socket: &Path, pid: u32, ask: &runtime_portal::native::ShellLine) -> Value {
+    use std::io::{BufRead as _, Write as _};
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(pid, Ordering::SeqCst);
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.write_all(&ask.line().unwrap()).unwrap();
+    let mut answer = String::new();
+    let _ = BufReader::new(stream).read_line(&mut answer);
+    serde_json::from_str(answer.trim()).unwrap_or(Value::Null)
 }
 
 const OWN_LINE_TEST: &str =
