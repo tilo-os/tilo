@@ -1,6 +1,8 @@
 //! Where the windows the shell shows stand, as the last layout left them: the whole of each window,
 //! and the bounds of the tab it shows. Every display shows a strip of its own, so that is every row
 //! the shell draws, not only the one the person works in.
+use std::collections::HashMap;
+
 use tilo_desktop_model::{LayoutKind, StripId, TileContent};
 use ui::floating_layer::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE};
 use ui::kurbo::Rect;
@@ -14,6 +16,20 @@ impl DesktopHandle {
     /// strip than its own.
     pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
         self.shared.borrow().shown_tabs.content()
+    }
+
+    /// Where the shell that draws the windows itself stood each tab's content, in the surface's
+    /// coordinates: a tilolang shell lays its wells out in its own views, and each window stands in
+    /// its tab's well. What the windows offer by name is found there from now on, and a tab not in
+    /// `placed` is not drawn. Whether that moved anything.
+    pub fn place_contents(&self, placed: HashMap<TabId, Rect>) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.placed.as_ref() == Some(&placed) {
+            return false;
+        }
+        shared.shown_tabs.place(&placed);
+        shared.placed = Some(placed);
+        true
     }
 
     /// Where each drawn window's active tab stands, in the surface's coordinates, as of the last
@@ -107,6 +123,14 @@ impl ShownTabs {
             }
         }
         self
+    }
+
+    /// Stand each window's content where the shell that draws the windows placed it: a tab it
+    /// gave no place is not drawn, whatever the layout reckoned.
+    fn place(&mut self, placed: &HashMap<TabId, Rect>) {
+        for shown in &mut self.0 {
+            shown.content = placed.get(&shown.tab).copied();
+        }
     }
 
     /// Where each window draws its active tab: absent while its app's window is not laid out.
@@ -298,7 +322,10 @@ pub fn lay_out(shared: &mut Shared) -> bool {
     for section in sections(shared) {
         lay_out_section(shared, &section, &reveal_asked, &mut laid);
     }
-    let shown = ShownTabs(laid.shown);
+    let mut shown = ShownTabs(laid.shown);
+    if let Some(placed) = &shared.placed {
+        shown.place(placed);
+    }
     let moved = shared.shown_tabs != shown
         || shared.float_covers != laid.covers
         || shared.pans != laid.pans;

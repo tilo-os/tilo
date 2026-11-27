@@ -328,6 +328,10 @@ impl WindowPolicy for WellPolicy {
         self.mapped.retain(|id| !gone.contains(id));
         self.configured.retain(|id, _| !gone.contains(id));
         let mut placement = Vec::with_capacity(windows.len());
+        // Where each tab's window stands this pass, from the desktop's origin: what the desktop
+        // finds a window's own controls by, so a point aimed at one lands on it.
+        let (ox, oy) = self.desktop.origin();
+        let mut contents = HashMap::new();
         for (window, current) in windows {
             if let Some(title) = &window.title {
                 self.desktop.policy().retitle(window.id, title);
@@ -369,6 +373,14 @@ impl WindowPolicy for WellPolicy {
                 });
                 continue;
             }
+            if let Some(tab) = self.desktop.policy().tab_of(window.id) {
+                // Where the window stands, at the whole pixel it is placed at.
+                let at = (
+                    f64::from(round(well.x0)) - f64::from(ox),
+                    f64::from(round(well.y0)) - f64::from(oy),
+                );
+                contents.insert(tab, ui::kurbo::Rect::from_origin_size(at, well.size()));
+            }
             let size = (extent(well.width()), extent(well.height()));
             // The client is configured when the room its well gives it changed. What it was
             // configured to is the policy's own record once it has sent one; before that it is
@@ -392,6 +404,7 @@ impl WindowPolicy for WellPolicy {
                 fullscreen: None,
             });
         }
+        self.desktop.policy().handle().place_contents(contents);
         Some(placement)
     }
 

@@ -351,3 +351,40 @@ fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a
         "a click never configures a client that committed a size within its constraint"
     );
 }
+
+#[test]
+fn a_windows_content_is_found_where_its_well_stands_not_where_the_desktop_reckons() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let shell = desktop(7);
+    let mut policy = shell.well_policy();
+    let outputs = output();
+    let (window, key) = mapped(&mut policy, 43, "org.example.App");
+    // The shell's frame: a bar of 88 logical pixels over the well, which the desktop's own layout
+    // of strips and gutters knows nothing of.
+    let wells = policy.wells();
+    let _frame = Frame::new(wells.clone(), 88.0, &key, VIEWPORT);
+    let well = wells.well(&key).expect("the well is on screen");
+    let size = policy.initial_size(&window, &outputs).expect("a size");
+    let at = policy.place(&window, size, &outputs);
+    policy
+        .arrange(&[(window, LayoutRect::new(at, size.into()))], &outputs)
+        .expect("a placement");
+    // Where the desktop says the window's content stands is where a control the window describes
+    // is offered, and where a point aimed at it lands: the well's, where the window is.
+    let tab = shell.tab_of(43).expect("the window has its tab");
+    let content = shell
+        .with_policy(|policy| policy.handle().shown_tabs())
+        .into_iter()
+        .find_map(|(shown, rect)| (shown == tab).then_some(rect))
+        .expect("the window is shown");
+    assert_eq!(
+        (content.x0, content.y0, content.width(), content.height()),
+        (
+            f64::from(round(well.x0)),
+            f64::from(round(well.y0)),
+            well.width(),
+            well.height()
+        ),
+        "the window's content stands in its well"
+    );
+}

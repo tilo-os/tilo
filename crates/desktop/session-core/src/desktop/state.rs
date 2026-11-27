@@ -276,6 +276,11 @@ pub struct Shared {
     pub replaced: bool,
     /// Where each shown window stands and the bounds of the tab it shows, as last laid out.
     pub shown_tabs: ShownTabs,
+    /// Where the shell that draws the windows itself stood each tab's content, in the surface's
+    /// coordinates ([`DesktopHandle::place_contents`]): a tilolang shell puts every window in a
+    /// well its own views lay out, so this, not the layout's reckoning, is where a window's
+    /// controls are. `None` while no such shell said.
+    pub placed: Option<HashMap<TabId, Rect>>,
     /// The floating window the person carries with a press, while the press lasts
     /// ([`DesktopHandle::carry_float_at`]).
     pub carried: Option<floats::Carried>,

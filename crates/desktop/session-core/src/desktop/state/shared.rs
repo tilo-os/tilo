@@ -105,6 +105,7 @@ impl Shared {
             top_overlay: 0.0,
             replaced: false,
             shown_tabs: ShownTabs::default(),
+            placed: None,
             carried: None,
             float_covers: Vec::new(),
             shown_strip: None,
