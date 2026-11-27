@@ -2812,8 +2812,8 @@ impl Core {
             return trap("expected an action reference");
         };
         // What the call runs under: the invocation a scenario pushed for it, else the run's own.
-        // The invocation names who runs it and the moment it acts at; the resource its changes
-        // are made from is the invocation's, else the run's. A scenario's code is the host's own
+        // The invocation names who runs it; the moment it acts at and the resource its changes
+        // are made from are the invocation's, else the run's. A scenario's code is the host's own
         // making, so what it calls is seed data too: it runs without asking.
         let (from, who, at, seed) = {
             let frames = self.frames.borrow();
@@ -2827,7 +2827,9 @@ impl Core {
                             .or_else(|| invocation.and_then(|inv| inv.from.clone()))
                             .or_else(|| state.note.from.clone()),
                         invocation.map(|inv| inv.who.clone()),
-                        invocation.and_then(|inv| inv.at.clone()),
+                        invocation
+                            .and_then(|inv| inv.at.clone())
+                            .or_else(|| state.note.at.clone()),
                         state.scenario,
                     )
                 }

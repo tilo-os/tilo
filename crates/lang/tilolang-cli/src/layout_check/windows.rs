@@ -2536,7 +2536,10 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         "the line names both who changed the task, in the order they changed it: {words:?}"
     );
     assert!(
-        words.get(1).is_some_and(|said| said == "marked it done"),
+        // Checking it off moves it to the Done column: its status is what says it is done.
+        words
+            .get(1)
+            .is_some_and(|said| said == "set status to Done"),
         "and goes on with the newest change's words: {words:?}"
     );
 }

@@ -282,6 +282,7 @@ type Task {
         filter labels
         filter status
         filter assignee
+        hide done
         hide at
         hide remind
         hide assigned_by

@@ -368,7 +368,7 @@ pub fn resolve(
     if !filters_declared {
         return out;
     }
-    let mut hidden_names: Vec<(String, Span)> = Vec::new();
+    let mut hidden_names: Vec<(String, String, Span)> = Vec::new();
     for entry in &block.entries {
         match &entry.kind {
             SearchEntryKind::Field { field, label, opts } => {
@@ -415,8 +415,8 @@ pub fn resolve(
                             format!("`{}` is hidden already", field.name),
                         );
                     } else {
+                        hidden_names.push((field.name.clone(), id.clone(), field.span));
                         out.hidden.push(id);
-                        hidden_names.push((field.name.clone(), field.span));
                     }
                 }
             }
@@ -433,7 +433,7 @@ pub fn resolve(
                         // A field search never holds is no filter either, here or by default.
                         if !out.hidden.contains(&id) {
                             out.hidden.push(id.clone());
-                            hidden_names.push((field.name.clone(), field.span));
+                            hidden_names.push((field.name.clone(), id.clone(), field.span));
                         }
                         out.concealed.push(id);
                     }
@@ -441,8 +441,14 @@ pub fn resolve(
             }
         }
     }
-    for (name, span) in hidden_names {
-        if out.filters.iter().any(|f| f.key == name) {
+    // A filter on the field itself, not a named filter whose label reads like it: "Done" over
+    // the status is no filter on a `done` flag kept beside it.
+    for (name, id, span) in hidden_names {
+        if out
+            .filters
+            .iter()
+            .any(|f| f.field.as_deref() == Some(id.as_str()))
+        {
             ctx.err(
                 "E104",
                 span,
