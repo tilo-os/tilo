@@ -306,7 +306,7 @@ impl Published for AppProcess {
             .collect()
     }
 
-    /// The controls the app's window shows by name and by what it does, each
+    /// What the app's window shows by name and by what it does, each
     /// where it stands on the desktop: what its accessibility tree exports,
     /// read with the same rule the app's own window hands the desktop
     /// ([`ui::App::window_controls`]), moved from the window's content to

@@ -14,6 +14,7 @@ use crate::floating_surface::{
     Recipient, RecipientKind,
 };
 use crate::window_targets::{TargetAction, WindowTarget};
+use tilo_ui_base::component::Described;
 
 use super::App;
 use super::AppSurface;
@@ -60,13 +61,86 @@ fn sent(shell: &mut UnixStream) -> Vec<FloatingSurfaceClientMessage> {
         .collect()
 }
 
-/// The controls the window described on this pass.
+/// What the window last told the shell it shows, after a pass of its own.
 fn described(app: &mut App, shell: &mut UnixStream) -> Option<Vec<WindowTarget>> {
     app.pump_floating_surface_service();
-    sent(shell).into_iter().find_map(|message| match message {
-        FloatingSurfaceClientMessage::WindowTargets { targets, .. } => Some(targets),
-        _ => None,
-    })
+    sent(shell)
+        .into_iter()
+        .filter_map(|message| match message {
+            FloatingSurfaceClientMessage::WindowTargets { targets, .. } => Some(targets),
+            _ => None,
+        })
+        .next_back()
+}
+
+/// A window showing a map, the sentence under it that says whose data it is, and a button.
+fn map_window() -> (App, UnixStream) {
+    let map = crate::widget::Map::from_props(
+        "map",
+        crate::widget::MapProps {
+            name: Some("Map".to_owned()),
+            ..crate::widget::MapProps::default()
+        },
+    );
+    let sentence = crate::widget::Text::new("Map data and map tiles © OpenStreetMap contributors.");
+    let button = crate::widget::Button::new("go", "Go");
+    // A map fills the room it stands in, as it does in a window: laid on the window's own ground,
+    // it is given the whole of it.
+    let window = crate::widget::Stack::new()
+        .push(Box::new(map))
+        .push(Box::new(sentence))
+        .push(Box::new(button));
+    let mut app = app_with_root(crate::State::new(), Box::new(window));
+    layout(&mut app);
+    let (app_side, shell_side) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    (app, shell_side)
+}
+
+/// What a window shows is what a person sees in it, not only what they press: a map and the
+/// sentence under it are named where they stand, though neither answers a press, as the button
+/// beside them is.
+#[test]
+fn a_map_and_its_sentence_are_described_though_nothing_is_pressed_on_them() {
+    let (mut app, mut shell) = map_window();
+    let targets = described(&mut app, &mut shell).expect("the window describes what it shows");
+    let shown: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+
+    let map = targets
+        .iter()
+        .find(|target| target.name == "Map")
+        .unwrap_or_else(|| panic!("the map stands on the window: {shown:?}"));
+    assert!(
+        map.actions.is_empty(),
+        "nothing is pressed on the map itself: {:?}",
+        map.actions
+    );
+    assert!(
+        map.rect[2] > map.rect[0] && map.rect[3] > map.rect[1],
+        "the map is described where it is drawn: {:?}",
+        map.rect
+    );
+
+    let said = targets
+        .iter()
+        .find(|target| target.name == "Map data and map tiles © OpenStreetMap contributors.")
+        .unwrap_or_else(|| panic!("the sentence under the map is on the window: {shown:?}"));
+    assert!(
+        said.actions.is_empty(),
+        "a sentence answers no press: {:?}",
+        said.actions
+    );
+    assert!(
+        said.rect[2] > said.rect[0] && said.rect[3] > said.rect[1],
+        "the sentence is described where it is drawn: {:?}",
+        said.rect
+    );
+
+    let go = targets
+        .iter()
+        .find(|target| target.name == "Go")
+        .expect("the button beside them is offered");
+    assert_eq!(go.actions, vec![TargetAction::Activate]);
 }
 
 /// What the shell presses on the window: the control `name` of `role`, as an

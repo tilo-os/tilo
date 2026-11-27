@@ -1,15 +1,15 @@
-//! The controls of a window's own content, as the app that draws them describes them to
-//! the shell: what a session finds and presses by name
+//! What a window's own content shows, as the app that draws it describes it to the shell: what a
+//! session finds by name and presses there
 //! ([`crate::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]), and what
 //! the shell presses on the app
 //! ([`crate::floating_surface::FloatingSurfaceHostMessage::PressTarget`]), which answers
 //! through the same path an assistive technology's activation takes. A window drawn by
-//! another process publishes no surface of the shell's own: the controls inside it are
+//! another process publishes no surface of the shell's own: the things inside it are
 //! the app's, and nothing outside the app could name them without this.
 
 use serde::{Deserialize, Serialize};
 
-/// Most controls one window describes.
+/// Most things one window describes.
 pub const MAX_TARGETS: usize = 256;
 
 /// What the shell may do to a control of a window's content.
@@ -32,7 +32,8 @@ impl TargetAction {
     }
 }
 
-/// One control of a window's content that a caller can name and press.
+/// One thing a window's content shows: a control a caller names and presses, or a thing it names
+/// and reads (a map, the sentence under it), which answers no press.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowTarget {
     pub role: String,
@@ -55,15 +56,15 @@ pub struct WindowTarget {
 }
 
 impl WindowTarget {
-    /// Whether it can be pressed at all: a control that answers nothing is not one a
-    /// caller can act on.
+    /// Whether it can be pressed at all: a thing a window shows that answers no press — a map, a
+    /// sentence a person reads — is not one a caller can act on, only name.
     #[must_use]
     pub fn pressable(&self) -> bool {
         !self.actions.is_empty()
     }
 }
 
-/// One control of a window's content, as the window itself lists it: its name in the
+/// One thing a window's content shows, as the window itself lists it: its name in the
 /// person's language, what it does, and where it stands in the window's own coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowControl {

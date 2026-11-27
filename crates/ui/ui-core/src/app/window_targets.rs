@@ -47,7 +47,8 @@ impl App {
     /// it hides, and one it answers nothing on is never offered.
     ///
     /// What the window says beside its controls — a status line, whose seat
-    /// is the person's, a heading — follows them, as far as the room left
+    /// is the person's, a heading — and the regions it names, as a map of the
+    /// world stands in the Maps window, follow them, as far as the room left
     /// allows: a person reads it there, and so does an agent or a test that
     /// asks what the window shows. The controls come first, so a long page of
     /// words never crowds out one of them; and a control's own words are not
@@ -69,12 +70,14 @@ impl App {
                 .author_id()
                 .map(str::trim)
                 .filter(|identity| !identity.is_empty());
-            // Words the window says carry them as their value where they have no label.
+            // Words the window says carry them as their value where they have no label; a
+            // region it names says what stands there (the map of the world, a board).
             let says = matches!(
                 described.role(),
                 crate::accesskit::Role::Label
                     | crate::accesskit::Role::Paragraph
                     | crate::accesskit::Role::Heading
+                    | crate::accesskit::Role::Group
             );
             let name = described
                 .label()

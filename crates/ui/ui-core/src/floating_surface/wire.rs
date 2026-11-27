@@ -345,10 +345,10 @@ pub enum FloatingSurfaceClientMessage {
     SharedWindows {
         shared: Vec<crate::window_share::SharedWindow>,
     },
-    /// The controls of this window content, as the app's accessibility
-    /// tree exports them (`crate::window_targets`), at
+    /// What this window's content shows, as the app's accessibility
+    /// tree exports it (`crate::window_targets`), at
     /// most [`crate::window_targets::MAX_TARGETS`]: what a session, a test or an
-    /// agent finds them by name and presses
+    /// agent finds by name, reads and, where it answers a press, presses
     /// ([`FloatingSurfaceHostMessage::PressTarget`]). Sent whenever the tree
     /// they come from changes, never per frame. `instance` names the tab, as
     /// for [`Self::Toolbar`].
