@@ -2411,7 +2411,7 @@ suite = "sdk/python/tests/test_daemon.py"
 check = "sdk-python"
 
 [[covered]]
-suite = "sdk/python/tests/test_many.py"
+suite = "sdk/python/tests/test_http.py"
 check = "sdk-python"
 
 [[covered]]
