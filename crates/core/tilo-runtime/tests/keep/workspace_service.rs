@@ -139,17 +139,22 @@ fn not_known(answer: &RemoteActionMessage) -> bool {
 /// A host answers its own operations, asked with no workspace, for the people it knows: its own
 /// person, one its operator lists, and a member of a workspace it holds. Anyone else may ask it
 /// only to hold a workspace another host serves, which its work setting decides, and is told
-/// for the rest that the host does not know them.
+/// for the rest that the host does not know them. A person it invited reaches that workspace
+/// alone, and its own device enters one through its entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_host_answers_its_own_operations_for_the_people_it_knows() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario: who the host knows, whom it invited and what each reaches"
+)]
+async fn a_host_answers_its_people_and_admits_one_it_invited() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let bob = TestUser::fresh("Bob");
     let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
+    let list = serde_json::json!({});
     let cy = TestUser::fresh("Cy");
     let cys_phone = cy.enrol("phone", DeviceCapabilities::member());
-    let list = serde_json::json!({});
 
     // The operator trusts their own person alone.
     let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
@@ -183,88 +188,17 @@ async fn a_host_answers_its_own_operations_for_the_people_it_knows() {
         host_action(&remote, &bobs_phone, LIST_WORKSPACES, list.clone()).await;
     drop((endpoint, remote));
     let (endpoint, remote) = host_operations(&cys_phone, &hosted).await;
-    let refused = host_answer(&remote, &cys_phone, LIST_WORKSPACES, list).await;
+    let refused = host_answer(&remote, &cys_phone, LIST_WORKSPACES, list.clone()).await;
     assert!(
         not_known(&refused),
         "the operator lists Bob alone: {refused:?}"
     );
     drop((endpoint, remote));
     hosted.stop().await;
-}
 
-/// `phone`, a device of `alice`'s own, lists the workspaces `laptop` hosts and enters `workspace`
-/// through its join, over `remote` and the endpoint its link runs from.
-async fn enter_on(
-    alice: &TestUser,
-    phone: &TestDevice,
-    endpoint: &Endpoint,
-    remote: &RemoteDevice,
-    workspace: &WorkspaceSummary,
-) {
-    let listed: Vec<WorkspaceListing> =
-        host_action(remote, phone, LIST_WORKSPACES, serde_json::json!({})).await;
-    assert!(
-        listed
-            .iter()
-            .any(|listed| listed.workspace == workspace.workspace),
-        "the host lists the workspace its person made: {listed:?}"
-    );
-    let entered: EnteredWorkspace = host_action(
-        remote,
-        phone,
-        ENTER_WORKSPACE,
-        serde_json::json!({ "workspace": workspace.workspace }),
-    )
-    .await;
-    let own = entered.invitation.decode().unwrap();
-    let verified = decode_and_verify_invitation(
-        &own.signed_invitation,
-        Some(alice.user_pk),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    WorkspaceJoinClient::new(endpoint.clone())
-        .redeem_hint(
-            &verified.grant().transport[0],
-            own.signed_invitation,
-            phone.cert.clone(),
-            &phone.sk,
-            [5; 32],
-        )
-        .await
-        .unwrap();
-}
-
-/// `phone`, a device of `alice`'s own, lists the workspaces `laptop` hosts and enters `workspace`
-/// on a link of its own.
-async fn own_device_enters(
-    alice: &TestUser,
-    phone: &TestDevice,
-    hosted: &Hosted,
-    workspace: &WorkspaceSummary,
-) -> Linked {
-    let (endpoint, remote) = host_operations(phone, hosted).await;
-    enter_on(alice, phone, &endpoint, &remote, workspace).await;
-    drop(remote);
-    drop(endpoint);
-    Linked::open_hosted(hosted, phone, workspace.workspace_id)
-        .await
-        .expect("the workspace admits the device that entered it")
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_through_it() {
-    let alice = TestUser::fresh("Alice");
-    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
-    let phone = alice.enrol("phone", DeviceCapabilities::primary());
-    let bob = TestUser::fresh("Bob");
-    let bobs_phone = bob.enrol("phone", DeviceCapabilities::member());
+    // A host that holds a workspace serves it to the people it invited into it.
     let hosted = serve_on(&alice, &laptop, WorkSetting::none()).await;
     let workspace = hosted.host.workspaces().create("Plans").await.unwrap();
-
-    // The laptop serves the workspace itself: its join answers name
-    // it so, with no host capability.
     let invitation = hosted
         .host
         .workspaces()
@@ -338,6 +272,67 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
     }
     drop((bobs, phone_link));
     hosted.stop().await;
+}
+
+/// `phone`, a device of `alice`'s own, lists the workspaces `laptop` hosts and enters `workspace`
+/// through its join, over `remote` and the endpoint its link runs from.
+async fn enter_on(
+    alice: &TestUser,
+    phone: &TestDevice,
+    endpoint: &Endpoint,
+    remote: &RemoteDevice,
+    workspace: &WorkspaceSummary,
+) {
+    let listed: Vec<WorkspaceListing> =
+        host_action(remote, phone, LIST_WORKSPACES, serde_json::json!({})).await;
+    assert!(
+        listed
+            .iter()
+            .any(|listed| listed.workspace == workspace.workspace),
+        "the host lists the workspace its person made: {listed:?}"
+    );
+    let entered: EnteredWorkspace = host_action(
+        remote,
+        phone,
+        ENTER_WORKSPACE,
+        serde_json::json!({ "workspace": workspace.workspace }),
+    )
+    .await;
+    let own = entered.invitation.decode().unwrap();
+    let verified = decode_and_verify_invitation(
+        &own.signed_invitation,
+        Some(alice.user_pk),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    WorkspaceJoinClient::new(endpoint.clone())
+        .redeem_hint(
+            &verified.grant().transport[0],
+            own.signed_invitation,
+            phone.cert.clone(),
+            &phone.sk,
+            [5; 32],
+        )
+        .await
+        .unwrap();
+}
+
+/// `phone`, a device of `alice`'s own, lists the workspaces `laptop` hosts and enters `workspace`
+/// on a link of its own.
+async fn own_device_enters(
+    alice: &TestUser,
+    phone: &TestDevice,
+    hosted: &Hosted,
+    workspace: &WorkspaceSummary,
+) -> Linked {
+    let (endpoint, remote) = host_operations(phone, hosted).await;
+    enter_on(alice, phone, &endpoint, &remote, workspace).await;
+    drop(remote);
+    drop(endpoint);
+    Linked::open_hosted(hosted, phone, workspace.workspace_id)
+        .await
+        .expect("the workspace admits the device that entered it")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
