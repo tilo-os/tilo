@@ -314,6 +314,8 @@ struct Taken {
     /// The heads of the change itself, before what reached the record meanwhile was merged in: the
     /// record this session now shows.
     laid: Vec<ChangeHash>,
+    /// Whether this write founded the record: a record this device held nothing of.
+    founding: bool,
     took: crate::engine_write::Written,
 }
 
@@ -475,6 +477,7 @@ impl Save {
             windows,
             steps,
             laid,
+            founding,
             took,
         }))
     }
@@ -1907,6 +1910,27 @@ impl Layouts {
                     });
                     self.keep_pending();
                 }
+                // A record this device held nothing of, whose write the workspace refused, is one
+                // the workspace already holds and this device's read has not brought yet: it
+                // founds no second one, and nobody hears a refusal that is its own read being
+                // behind. What the person arranged stays theirs, and the look after the read
+                // writes it on the record the workspace holds.
+                Err(error) if taken.founding => {
+                    tracing::warn!(
+                        %workspace_id,
+                        %error,
+                        "the layout's founding write was refused: the workspace holds one its \
+                         read has not brought yet"
+                    );
+                    let steps = laying.pending.clone();
+                    self.held(key, |held| {
+                        held.written = None;
+                        held.kept = None;
+                        held.based = None;
+                        held.pending_steps.restore(steps);
+                    });
+                    self.keep_pending();
+                }
                 Err(error) => {
                     // The record is not the workspace's until it takes it: the next write is made
                     // on what the workspace holds, not on the write it refused. A history over the
@@ -2437,6 +2461,11 @@ impl Layouts {
                 continue;
             }
             let key = (workspace_id, route.clone());
+            // A device the workspace has not admitted yet keeps this view here, as it keeps the
+            // layout: what it changed is written on the look after the admission arrives.
+            if self.waits_for_admission(&key, workspace, None, person, false) {
+                continue;
+            }
             // What the person changed here, over what the record holds. A session ending writes the
             // view as the person has it here: there is no look after this one to write what they
             // changed, and what only this device decides — the widths they chose and what they made
