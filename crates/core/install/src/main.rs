@@ -1029,7 +1029,7 @@ fn main() {
         let _ = OFFLINE_STORE.set(root);
     }
     #[cfg(any(unix, windows))]
-    app_cli::device::act_in(cli.workspace);
+    package_actions::device::act_in(cli.workspace);
     if let Err(e) = dispatch(cli.cmd) {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);

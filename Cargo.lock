@@ -6503,7 +6503,6 @@ dependencies = [
 name = "install"
 version = "0.1.0"
 dependencies = [
- "app-cli",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",

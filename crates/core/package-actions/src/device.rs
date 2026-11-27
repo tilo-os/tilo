@@ -28,6 +28,12 @@ const DEV_ID: &str = "dev-id";
 /// How long a change made through the daemon may take to run.
 const CHANGE_WAIT: std::time::Duration = std::time::Duration::from_millis(CHANGE_WAIT_MS);
 
+/// Make this process's changes in `workspace` (its id), or, with none, in the one
+/// `TILO_APP_WORKSPACE` names, else the daemon's own. The first naming holds.
+pub fn act_in(workspace: Option<String>) {
+    app_cli::device::act_in(workspace);
+}
+
 /// Make `change` through this computer's daemon, putting each local file it names first.
 ///
 /// # Errors
