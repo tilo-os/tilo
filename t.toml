@@ -3761,15 +3761,37 @@ heavy = true
 arch = ["x86_64", "aarch64"]
 
 [[check]]
+name = "chromium-blocker"
+# The host links this library to match filter rules in native code
+# (crates/engines/chromium-blocker). Cargo reads every member's manifest and the lockfile to build
+# it, so it is built on its own here and `chromium-engine` reads the library: a dependant is keyed
+# by what its need output, not by what the need read, so a head that moved a manifest builds the
+# library again (seconds) and the engine not at all while its bytes stay the same.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = '''set -euo pipefail
+cargo build --locked -p tilo-chromium-blocker --profile thin-app
+rm -rf /target/chromium-blocker && mkdir -p /target/chromium-blocker
+cp "$CARGO_TARGET_DIR/thin-app/libtilo_chromium_blocker.a" /target/chromium-blocker/
+'''
+outputs = ["/target/chromium-blocker/**"]
+requires = ["arch=x86_64"]
+timeout_secs = 1800
+default = false
+
+[[check]]
 name = "chromium-engine"
 # The Browser's engine alone: the pinned CEF archive (its SHA-256 in
-# scripts/browser/cef-lock.json), the host's sources and the blocker library they link, and
-# nothing else of the tree. So one build answers every tree, and the checks that need a session
-# are given it (`TILO_CHROMIUM_ENGINE`) rather than downloading and compiling Chromium each. A
-# developer's own `dist/dev/nested-session-build.sh` run, which no check answers, builds it in
+# scripts/browser/cef-lock.json) and the host's sources, and nothing else of the tree. So one
+# build answers every tree, and the checks that need a session are given it (`TILO_CHROMIUM_ENGINE`)
+# rather than downloading and compiling Chromium each. The blocker library it links is
+# `chromium-blocker`'s, given here by `TILO_CHROMIUM_BLOCKER`: this check runs no cargo, so it
+# reads no manifest or lockfile and only a change to the library itself rebuilds Chromium. A
+# developer's own `dist/dev/nested-session-build.sh` run, which no check answers, builds both in
 # place as before.
 egress = { to = ["code.tilo.so:443", "cef-builds.spotifycdn.com:443"], pinned = true }
 run = "python3 scripts/browser/build-host.py --work /target/chromium-build --runtime /target/chromium-engine --jobs \"${CARGO_BUILD_JOBS:-$(nproc)}\""
+needs = ["chromium-blocker"]
+env = { TILO_CHROMIUM_BLOCKER = "/target/chromium-blocker/libtilo_chromium_blocker.a" }
 outputs = ["/target/chromium-engine/**"]
 requires = ["arch=x86_64"]
 timeout_secs = 3600

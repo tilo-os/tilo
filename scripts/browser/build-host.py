@@ -200,6 +200,22 @@ def install_runtime(build, dest, strip=None):
     return engine
 
 
+def blocker_library():
+    """The blocker static library the host links.
+
+    `TILO_CHROMIUM_BLOCKER` names the one the `chromium-blocker` check built, so this build reads
+    no Cargo file and is answered from the cache for every tree alike. A developer's run, which
+    no check answers, builds it with cargo here.
+    """
+    given = os.environ.get("TILO_CHROMIUM_BLOCKER")
+    if given:
+        library = Path(given)
+        if not library.is_file():
+            raise ValueError(f"TILO_CHROMIUM_BLOCKER names no static library: {library}")
+        return library
+    return build_blocker_library()
+
+
 def build_blocker_library():
     built = subprocess.run(
         ["cargo", "build", "--locked", "-p", "tilo-chromium-blocker", "--profile", "thin-app",
@@ -242,7 +258,7 @@ def main():
     if not cmake:
         raise SystemExit("CMake is required. Install CMake, or use target/chromium-tools Python venv with cmake and ninja.")
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
-    blocker = build_blocker_library()
+    blocker = blocker_library()
     build = work / "chromium-build"
     subprocess.run([cmake, "-S", str(ROOT / "crates/engines/chromium-host/chromium"), "-B", str(build),
                     f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",

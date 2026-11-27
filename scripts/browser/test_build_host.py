@@ -108,6 +108,34 @@ class AcquisitionTests(unittest.TestCase):
                     self.assertIs(build_host.verify_archive(path, entry), want)
 
 
+class BlockerLibraryTests(unittest.TestCase):
+    def test_the_checks_library_is_used_when_the_environment_names_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            library = Path(tmp) / "libtilo_chromium_blocker.a"
+            library.write_bytes(b"static library")
+            with patch.dict(build_host.os.environ, {"TILO_CHROMIUM_BLOCKER": str(library)}):
+                with patch.object(build_host, "build_blocker_library") as build:
+                    self.assertEqual(build_host.blocker_library(), library)
+                    build.assert_not_called()
+
+    def test_a_named_library_that_is_missing_fails_instead_of_building_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "libtilo_chromium_blocker.a"
+            with patch.dict(build_host.os.environ, {"TILO_CHROMIUM_BLOCKER": str(missing)}):
+                with patch.object(build_host, "build_blocker_library") as build:
+                    with self.assertRaisesRegex(ValueError, "TILO_CHROMIUM_BLOCKER"):
+                        build_host.blocker_library()
+                    build.assert_not_called()
+
+    def test_a_developers_run_builds_the_library_with_cargo(self):
+        with patch.dict(build_host.os.environ) as env:
+            env.pop("TILO_CHROMIUM_BLOCKER", None)
+            built = Path("/nowhere/libtilo_chromium_blocker.a")
+            with patch.object(build_host, "build_blocker_library", return_value=built) as build:
+                self.assertEqual(build_host.blocker_library(), built)
+                build.assert_called_once_with()
+
+
 class RuntimeTreeTests(unittest.TestCase):
     def build_output(self, root, skip=()):
         build = Path(root) / "build"
