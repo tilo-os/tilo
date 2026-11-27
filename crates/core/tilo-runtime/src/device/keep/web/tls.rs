@@ -872,6 +872,18 @@ mod tests {
             let (renewed, renewed_pin) = presented_on(12);
             assert_ne!(renewed, first, "a due certificate is issued again, live");
             assert_ne!(renewed_pin, first_pin, "a page pins the one presented now");
+            // What a browser pins (`serverCertificateHashes`): an ECDSA P-256 leaf valid for at
+            // most 14 days from its start, whose hash is the one its page is handed.
+            for (chain, pin) in [(&first, first_pin), (&renewed, renewed_pin)] {
+                let (_, leaf) = x509_parser::parse_x509_certificate(&chain[0]).unwrap();
+                let key = &leaf.public_key().algorithm;
+                assert_eq!(key.algorithm, x509_parser::oid_registry::OID_KEY_TYPE_EC_PUBLIC_KEY);
+                let curve = key.parameters.as_ref().and_then(|curve| curve.as_oid().ok());
+                assert_eq!(curve, Some(x509_parser::oid_registry::OID_EC_P256));
+                let valid = leaf.validity();
+                assert!(valid.not_after.timestamp() - valid.not_before.timestamp() <= 14 * 24 * 3600);
+                assert_eq!(<[u8; 32]>::from(sha2::Sha256::digest(&chain[0])), pin);
+            }
             let adas = trusting_person(ada.verifying_key().to_bytes(), RevocationList::new());
             assert!(matches!(
                 presented(&adas, &first, "localhost", day(14)),
