@@ -171,7 +171,28 @@ pub struct Store {
     /// This device's own writes of each workspace no other device keeping it has taken in yet,
     /// and those refused ([`crate::reach`]).
     reach: crate::reach::Ledgers,
+    /// How far this device reserved the sequence numbers of its own lines, by workspace and line
+    /// ([`Store::reserve_sequence`]): the numbers it hands out next, and the end of the block it
+    /// has made durable.
+    sequences: std::sync::Mutex<BTreeMap<(WorkspaceId, Lineage), Reserved>>,
 }
+
+/// The numbers of one line this store hands out: those it reserved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Reserved {
+    /// Whether the line's reservation was read back from disk (or was made) here: a line this
+    /// store has handed no number of yet starts past what it holds and what it is told.
+    loaded: bool,
+    /// The next number the line takes.
+    next: u64,
+    /// The end of the block whose numbers are on disk: a device that stops starts past it.
+    end: u64,
+}
+
+/// How many sequence numbers of a line this device reserves at once: its block's end is written
+/// before any number inside it is handed out, so a write costs one file write a block and a
+/// device that stops mid-block skips what it never used when it starts again.
+const SEQUENCE_BLOCK: u64 = 32;
 
 /// Where a store's files are: a directory of its backend.
 pub(crate) struct Disk {
@@ -704,6 +725,7 @@ impl Store {
                 channel_order: 0,
             }),
             reach: crate::reach::Ledgers::default(),
+            sequences: std::sync::Mutex::new(BTreeMap::new()),
         };
         let holders = store.stored_holders()?;
         let channels = store.stored_channels()?;
@@ -1792,8 +1814,7 @@ impl Store {
         Ok(self.disk.root.join(STATE).join(path))
     }
 
-    /// What every device said it holds, as [`Store::open`] reads it. A file
-    /// that is not one is skipped, as a stray frame file is.
+    /// What every device said it holds, as [`Store::open`] reads it. A file    /// that is not one is skipped, as a stray frame file is.
     fn stored_holders(&self) -> Result<Vec<HeldBy>, StoreError> {
         let mut found = Vec::new();
         for workspace in self.disk.directories(&self.disk.root.join(HOLDERS))? {
@@ -1913,6 +1934,7 @@ impl Store {
                 channel_order: 0,
             }),
             reach: crate::reach::Ledgers::default(),
+            sequences: std::sync::Mutex::new(BTreeMap::new()),
         };
         let workspaces: Vec<WorkspaceId> = {
             let mut held = set_aside.held.lock_recover();
