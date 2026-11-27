@@ -250,7 +250,10 @@ template view band(content: View) {
 /// rests in, so a magnified item grows over the page rather than moving it, and a floating dock
 /// stands the theme's gap in from the screen's edge.
 view side_dock(s: Shell, edge: Edge) {
-    row(fill, align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
+    // Its own width, under the same rule as the dock on the foot's height: `fill` here would
+    // share the shell's width between the dock and the windows, leaving the page half its room.
+    // A full dock takes the edge's width from `dock_ground` itself.
+    row(align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
         dock_ground(s, edge)
     }
 }
