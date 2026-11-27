@@ -759,3 +759,74 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
         over.join("\n")
     );
 }
+
+/// An app's window opens on the frame the app first drew for it: a client waits for its initial
+/// configure before it draws, so the first frame it presents is the one the compositor maps and
+/// shows. Between that frame leaving the app and the compositor mapping its toplevel there is one
+/// dispatch of the session's loop, not a wait on anything else the session does: 910 ms there was a
+/// whole open's budget on its own, spent before the window could show.
+#[test]
+fn an_apps_first_frame_is_mapped_without_waiting_a_second_one() {
+    const APP: &str = "so.tilo.notes";
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let ada = Person::new("Ada");
+    let mut device = ada.device("Ada's laptop");
+    device.run_session(
+        tilo_test_env::started_variant("tilo-session", "fast", "dev-overrides")
+            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session")),
+    );
+    install_tl(&device);
+    let trusted = install_runtimes(&device);
+    device.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);
+    device.start();
+    tilo_test_env::wait_for(format!("{} showing a workspace", device.label), || {
+        device.showing().filter(|showing| !showing.is_empty())
+    });
+    let after = device.log().lines().count();
+    device.open(APP);
+    device.wait_for_window(APP);
+    let mapped = |line: &&str| {
+        line.contains("application toplevel mapped") && field(line, "package_id") == Some(APP)
+    };
+    let segment = tilo_test_env::wait_for(format!("{APP}'s map in {}'s log", device.label), || {
+        let log = device.log();
+        let segment = log.lines().skip(after).collect::<Vec<_>>().join("\n");
+        segment.lines().any(|line| mapped(&line)).then_some(segment)
+    });
+    let map = segment
+        .lines()
+        .find(mapped)
+        .unwrap_or_else(|| panic!("{APP}'s toplevel mapped in the open's log: {segment}"));
+    let mapped_epoch_us: u128 = field(map, "mapped_epoch_us")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            panic!("{APP}'s map is timed on the wall clock against the app's own frames: {map}")
+        });
+    let written = tilo_test_env::wait_for(
+        format!(
+            "{APP}'s startup timeline up to its first frame on {}",
+            device.label
+        ),
+        || timeline(&device, APP),
+    );
+    let first_frame_us = first_frame_epoch_us(&written)
+        .unwrap_or_else(|| panic!("{APP}'s timeline names its first frame: {written}"));
+    let wait_us = mapped_epoch_us.saturating_sub(first_frame_us);
+    assert!(
+        wait_us <= 100_000,
+        "{APP}'s toplevel was mapped {wait_us} us after the app's first frame; it must be within \
+         100 ms of it, one dispatch of the session's loop:\n  map {map}\n  the open's phases:\n{}",
+        open_phase_lines(&segment),
+    );
+    device.stop();
+}
+
+/// The lines of `segment` that say where an open's time went, indented for a failure's message.
+fn open_phase_lines(segment: &str) -> String {
+    segment
+        .lines()
+        .filter(|line| line.contains("tilo::launch_latency") || line.contains("APP-STARTUP"))
+        .map(|line| format!("    {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}

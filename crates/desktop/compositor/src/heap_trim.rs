@@ -30,6 +30,13 @@ const MIN_INTERVAL: Duration = Duration::from_secs(10);
 pub const STARTUP_SETTLED: Duration = Duration::from_secs(30);
 /// How long the compositor stays quiet after work before a quiet trim ([`request_when_quiet`]).
 const QUIET_SETTLE: Duration = Duration::from_secs(2);
+/// How often a trim held back for an app's open looks again: a launch shows in tens of
+/// milliseconds.
+const HOLD_RETRY: Duration = Duration::from_millis(50);
+/// How long a trim is held back for an app's open before it runs anyway: an open that installs
+/// first takes seconds, and the heap can wait that long; a launch whose window never comes must
+/// not keep it forever.
+const HOLD_FOR_OPENS: Duration = Duration::from_secs(10);
 
 /// `instant` plus `duration` ; an instant past the clock's range stays put.
 fn after(instant: Instant, duration: Duration) -> Instant {
@@ -50,6 +57,13 @@ struct Schedule {
     trimming: bool,
     /// The running trim serves a set-time request ([`request_after`]).
     serving_set_time: bool,
+    /// Since when a due trim has been held back for a window on its way to its first frame
+    /// ([`HOLD_FOR_OPENS`]): the compositor allocates the whole way there, and a trim takes every
+    /// arena's lock while it walks them.
+    held: Option<Instant>,
+    /// When a held trim looks again ([`HOLD_RETRY`]): after each refusal, so the trimmer never
+    /// spins on a request that keeps coming due.
+    retry: Option<Instant>,
 }
 
 impl Schedule {
@@ -73,6 +87,9 @@ impl Schedule {
             .map(|(first, last)| after(last, SETTLE).min(after(first, MAX_DELAY)));
         let quiet = self.quiet.map(|quiet| after(quiet, QUIET_SETTLE));
         let soonest = [settled, self.later, quiet].into_iter().flatten().min()?;
+        // A request that came due while an app was opening is looked at again rather than served
+        // until that open is over.
+        let soonest = self.retry.map_or(soonest, |retry| soonest.max(retry));
         Some(
             self.last_trim
                 .map_or(soonest, |trimmed| soonest.max(after(trimmed, MIN_INTERVAL))),
@@ -81,6 +98,22 @@ impl Schedule {
 
     /// Whether to trim at `now` ; if so, the requests due by then count as served.
     fn take(&mut self, now: Instant) -> bool {
+        if self.due().is_none_or(|due| due > now) {
+            return false;
+        }
+        // An app's window is on its way to the frame it maps on: its process, that frame and the
+        // session's own drawing allocate the whole way, and `malloc_trim` takes every arena's lock
+        // while it walks them, which holds the loop off the frame the window opens on. The trim
+        // waits for the window to come, and runs anyway once one has taken longer than an open may.
+        if tilo_startup_metrics::launch_awaiting_its_window() {
+            let held = *self.held.get_or_insert(now);
+            if now.duration_since(held) < HOLD_FOR_OPENS {
+                self.retry = Some(after(now, HOLD_RETRY));
+                return false;
+            }
+        }
+        self.held = None;
+        self.retry = None;
         if self.due().is_some_and(|due| due <= now) {
             self.pending = None;
             self.serving_set_time = self.later.is_some_and(|later| later <= now);
@@ -483,6 +516,44 @@ mod tests {
             assert!(schedule.take(at(start, 1_000)));
             schedule.request_at(at(start, 2_000));
             assert_eq!(schedule.due(), Some(at(start, 11_000)));
+        }
+
+        phase a_trim_waits_for_an_apps_open_and_runs_once_its_window_maps;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            // An app is opening: its process, its first frame and the session's own drawing
+            // allocate the whole way, and a trim takes every arena's lock over them.
+            tilo_startup_metrics::launch_requested("so.tilo.test-opening");
+            schedule.request(start);
+            assert_eq!(schedule.due(), Some(at(start, 1_000)), "the settle is over");
+            assert!(!schedule.take(at(start, 1_000)), "the trim waits for the open");
+            assert_eq!(
+                schedule.due(),
+                Some(at(start, 1_050)),
+                "and looks again in 50 ms"
+            );
+            assert!(!schedule.take(at(start, 1_050)));
+            // The app's window maps: the trim runs.
+            tilo_startup_metrics::launch_mapped("so.tilo.test-opening", 9_100);
+            tilo_startup_metrics::launch_first_present(9_100, 1);
+            assert!(schedule.take(at(start, 1_100)), "its window came");
+        }
+
+        phase a_trim_held_for_a_window_that_never_maps_runs_at_the_longest_hold;
+        {
+            let start = Instant::now();
+            let mut schedule = Schedule::default();
+            let launch = tilo_startup_metrics::launch_requested("so.tilo.test-never-shows");
+            schedule.request(start);
+            assert!(!schedule.take(at(start, 1_000)));
+            assert_eq!(schedule.due(), Some(at(start, 1_050)));
+            assert!(!schedule.take(at(start, 1_050)));
+            assert!(
+                schedule.take(at(start, 11_000)),
+                "a window that never maps keeps the heap no longer than the hold"
+            );
+            tilo_startup_metrics::launch_failed(launch);
         }
     }
 

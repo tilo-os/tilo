@@ -297,6 +297,7 @@ pub fn launch_mapped(key: &str, surface_id: u64) {
         surface_id,
         request_to_map_us = now.duration_since(requested_at).as_micros(),
         spawn_to_map_us = spawned_at.map(|spawned| now.duration_since(spawned).as_micros()),
+        mapped_epoch_us = tilo_clock::unix_now_ns() / 1_000,
         "application toplevel mapped"
     );
 }
@@ -357,6 +358,16 @@ pub fn launches_awaiting_first_present() -> Vec<u64> {
         .iter()
         .filter_map(|launch| launch.surface_id)
         .collect()
+}
+
+/// Whether a launch's window has yet to be mapped: asked for, and no buffer it drew has reached
+/// the compositor. While one is on its way, its process, that frame and the session's own drawing
+/// allocate the whole way to the frame the window maps on.
+#[must_use]
+pub fn launch_awaiting_its_window() -> bool {
+    launch_table()
+        .iter()
+        .any(|launch| launch.surface_id.is_none())
 }
 
 /// Log one launch's retirement, and stop counting its surface as awaiting.
