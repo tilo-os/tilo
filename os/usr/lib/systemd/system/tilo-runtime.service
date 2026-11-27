@@ -53,6 +53,10 @@ ProtectSystem=strict
 ReadWritePaths=/var/lib/tilo/state
 # Where the certificates a person gives this device are filed.
 ReadWritePaths=/var/lib/tilo/device
+# Whose device this is: the public key of the person it makes or joins, written
+# when an account's first sign-in founds them. Without it that founding fails
+# on a read-only file system and the first login has no person.
+ReadWritePaths=/var/lib/tilo/user-identity
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
