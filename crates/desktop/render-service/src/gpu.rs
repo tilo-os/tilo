@@ -4,9 +4,12 @@
 //! rasterizes the frame on the CPU inside the same device and its buffers
 //! are shared memory rather than dma-bufs.
 //!
-//! On a software adapter the device's pipelines are compiled before the
-//! service says it is ready, on extra devices from the session's budget
-//! ([`crate::warmup`]).
+//! A software adapter compiles a pipeline on its first dispatch, on the frame
+//! that needs it: the service says it is ready as soon as its device is open,
+//! never after warming pipelines, which on a CPU driver took longer than the
+//! wait an app's first frame allows and left the app with no service at all.
+//! Mesa's shader cache, the session's own, keeps what one process compiled for
+//! the next.
 
 use vello::wgpu;
 use vello::{AaSupport, Renderer, RendererOptions};
@@ -40,8 +43,8 @@ pub enum GpuError {
 
 impl Gpu {
     /// Open the device the compositor composites on, whose render node is
-    /// `render_node`, build every vello pipeline now (the service exists to
-    /// have them warm), and open a GBM allocator on the same node.
+    /// `render_node`, build its renderer, and open a GBM allocator on the same
+    /// node.
     pub fn open(render_node: Option<&std::path::Path>) -> Result<Self, GpuError> {
         let mut context = tilo_ui_base::gpu::RenderContext::new();
         let index = pollster::block_on(context.device(None)).ok_or(GpuError::NoAdapter)?;
@@ -52,16 +55,6 @@ impl Gpu {
         let loss = handle.loss_monitor();
         let software = tilo_ui_base::gpu::rasterizes_on_cpu(&adapter);
         let renderer = new_renderer(&device)?;
-        #[cfg(target_os = "linux")]
-        if software {
-            // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
-            // seconds of one-at-a-time work a first frame drawn by the renderer would wait on.
-            let slots = crate::warmup::acquire();
-            crate::warmup::precompile(&renderer, (&device, &queue), slots.devices(), &|| {
-                handle.open_peer()
-            });
-            drop(slots);
-        }
         #[cfg(target_os = "linux")]
         let allocator = match render_node.filter(|_| !software) {
             Some(path) => {
@@ -137,8 +130,7 @@ impl Gpu {
     }
 }
 
-/// Every pipeline built now: the service exists to have them warm when an
-/// app's first frame arrives.
+/// The renderer the service draws every frame of the workspace through.
 fn new_renderer(device: &wgpu::Device) -> Result<Renderer, GpuError> {
     Renderer::new(
         device,
@@ -277,48 +269,6 @@ mod tests {
             freed <= baseline.saturating_add(MIB),
             "freed device memory stayed charged: {baseline} before, {held} with the texture, \
              {freed} after it and 96 MiB of buffers were freed"
-        );
-    }
-
-    /// The warm-up's extra devices compile at the same time: each is opened
-    /// while the others are, on a thread of its own, never one after another.
-    #[test]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the arrival guard is handed to the condvar's wait, which releases it"
-    )]
-    fn the_warm_up_compiles_on_its_extra_devices_at_once() {
-        use std::sync::{Condvar, Mutex};
-        use std::time::Duration;
-
-        const HELPERS: usize = 3;
-        let mut context = tilo_ui_base::gpu::RenderContext::new();
-        let index = pollster::block_on(context.device(None)).expect("a wgpu adapter");
-        let handle = &context.devices[index];
-        let renderer = new_renderer(&handle.device).expect("the renderer builds");
-        // Each helper waits at the door until every other helper is there too:
-        // helpers opened one after another would never all meet.
-        let arrived = Mutex::new(0_usize);
-        let all_here = Condvar::new();
-        let met = Mutex::new(0_usize);
-        crate::warmup::precompile(&renderer, (&handle.device, &handle.queue), HELPERS, &|| {
-            let mut count = arrived.lock().expect("not poisoned");
-            *count += 1;
-            all_here.notify_all();
-            let all_met = !all_here
-                .wait_timeout_while(count, Duration::from_secs(30), |count| *count < HELPERS)
-                .expect("not poisoned")
-                .1
-                .timed_out();
-            if all_met {
-                *met.lock().expect("not poisoned") += 1;
-            }
-            handle.open_peer()
-        });
-        assert_eq!(
-            *met.lock().expect("not poisoned"),
-            HELPERS,
-            "every extra device was opened while the others were"
         );
     }
 }

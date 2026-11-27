@@ -4,8 +4,8 @@
 //! Toolkit apps record each frame as a vello scene, as always, and hand it
 //! to their workspace's render service instead of drawing it themselves
 //! (`tilo-render-protocol`). The service validates the scene, rasterizes it
-//! on a device it opened once — warm pipelines, warm glyph cache, shared by
-//! every app of the workspace — into a dma-buf, and the app attaches that
+//! on a device it opened once — pipelines it keeps, a warm glyph cache, shared
+//! by every app of the workspace — into a dma-buf, and the app attaches that
 //! buffer to its own surface, so the compositor composites or scans it out
 //! like any client's.
 //!
@@ -31,8 +31,6 @@ mod gpu;
 mod registry;
 mod service;
 mod surface;
-#[cfg(target_os = "linux")]
-mod warmup;
 
 use std::path::PathBuf;
 
