@@ -76,6 +76,9 @@ pub fn window_instance() -> Option<u64> {
 struct Watch {
     /// Marked by the thread when it woke the window; the window resumes it after reading.
     woke: Arc<Woken>,
+    /// Set when the instance's end of the connection hung up: what the window waits for will
+    /// never come, so it stops waiting for a view that never arrives.
+    gone: Arc<std::sync::atomic::AtomicBool>,
     resume: std::sync::mpsc::Sender<()>,
     /// What the thread wakes: the component running the window.
     wake: Arc<Mutex<ui::wake::WakeHandle>>,
@@ -98,6 +101,8 @@ impl Watch {
         let signalled = Arc::new(Woken::default());
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hung_up = Arc::clone(&gone);
         let waking = Arc::clone(&wake);
         let (stopped, stop) = std::io::pipe().ok()?;
         let thread = std::thread::Builder::new()
@@ -136,6 +141,7 @@ impl Watch {
                         .wake();
                     // The host hung up: the window keeps its last frame.
                     if poll[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                        hung_up.store(true, std::sync::atomic::Ordering::Release);
                         return;
                     }
                     if resumed.recv().is_err() {
@@ -153,6 +159,7 @@ impl Watch {
             .ok()?;
         Some(Self {
             woke: signalled,
+            gone,
             resume,
             wake,
             stop: Some(stop),
@@ -166,6 +173,8 @@ impl Watch {
         let signalled = Arc::new(Woken::default());
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
+        let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hung_up = Arc::clone(&gone);
         let waking = Arc::clone(&wake);
         // SAFETY: no attributes and no name; manual reset, unset.
         let event = unsafe {
@@ -204,6 +213,7 @@ impl Watch {
                         .wake();
                     // The host hung up: the window keeps its last frame.
                     if pipe.hung_up() {
+                        hung_up.store(true, std::sync::atomic::Ordering::Release);
                         return;
                     }
                     if resumed.recv().is_err() {
@@ -221,11 +231,17 @@ impl Watch {
             .ok()?;
         Some(Self {
             woke: signalled,
+            gone,
             resume,
             wake,
             stop,
             thread: Some(thread),
         })
+    }
+
+    /// Whether the instance's end of the connection hung up: nothing more will arrive.
+    fn gone(&self) -> bool {
+        self.gone.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Wake the component running the window from now on: the one whose pass this is, when it
@@ -863,8 +879,18 @@ impl HostedWindow {
             return false;
         };
         connected.view.flush();
-        let watch = connected.watch.as_ref();
-        watch.inspect(|watch| watch.woke.wait(None)).is_some()
+        let Some(watch) = connected.watch.as_ref() else {
+            return false;
+        };
+        watch.woke.wait(None);
+        // The instance hung up without a view: the window says so rather than waiting for one
+        // that will never come.
+        if watch.gone() {
+            connected
+                .view
+                .app_gone("the app's window closed before it opened");
+        }
+        true
     }
 
     /// What the person does from now on serves `call`, the invocation they signed for it as its
@@ -1478,6 +1504,25 @@ mod picker_tests {
         assert!(
             cancelled.pick(&files(false, false)).is_empty(),
             "a cancelled chooser answers no paths"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod watching_tests {
+    use super::HostedWindow;
+
+    /// A window whose instance hung up before it sent a view stops waiting for one, and says the
+    /// app could not be opened: a page would otherwise wait for a view that never comes.
+    #[test]
+    fn a_window_whose_instance_hung_up_stops_waiting_and_says_so() {
+        let (window_end, instance_end) = crate::patch_pair().expect("a patch connection");
+        let mut window = HostedWindow::over(window_end);
+        drop(instance_end);
+        assert!(window.wait_for_app(), "the window watches its connection");
+        assert!(
+            !ui::widget::AwaitsContent::awaits_content(&window),
+            "the window waits for no view once its instance is gone"
         );
     }
 }

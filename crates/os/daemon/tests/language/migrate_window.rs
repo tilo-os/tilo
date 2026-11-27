@@ -656,6 +656,48 @@ fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
     });
 }
 
+/// One app, two windows: a window opened after the app's process runs asks the device's engine
+/// as the first did. The process starts with the first window; the second is an instance handed
+/// to it, and what that instance's first call asks of the device must arrive there too.
+#[test]
+fn a_second_window_of_a_started_app_reaches_the_devices_engine() {
+    host::run_with(&["migrate", "contacts"], |host| async move {
+        host.install_app(MIGRATE).await;
+        let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
+        tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
+        host.daemon().serve_migrations();
+
+        for window in 1..=2 {
+            let list = Window {
+                migration: None,
+                host: std::sync::Arc::clone(&host),
+            };
+            list.shows("Bring something in").await;
+            list.press("Bring something in").await;
+            // The engine was asked: what it found is offered on the page it answers.
+            let body = list.shows("Thunderbird on this computer").await;
+            assert!(
+                body.contains("A mail account on its server"),
+                "window {window} shows what the device found: {body}"
+            );
+        }
+    });
+}
+
+/// A page of an app this computer has, but the workspace was never told of, says the app could
+/// not be opened, rather than waiting for a window that never comes: the app's root is kept in
+/// the workspace, which refuses it where the app is not installed there.
+#[test]
+fn a_page_of_an_app_the_workspace_does_not_have_says_why() {
+    host::run_with(&["migrate"], |host| async move {
+        let list = Window {
+            migration: None,
+            host: std::sync::Arc::clone(&host),
+        };
+        list.shows("could not be opened").await;
+    });
+}
+
 /// The keys a status says are chosen.
 fn chosen(status: &Value) -> Vec<String> {
     status["chosen"]

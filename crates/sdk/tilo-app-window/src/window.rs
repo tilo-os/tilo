@@ -826,6 +826,22 @@ impl AppWindow {
         self.failed = Some(why.to_owned());
     }
 
+    /// The app's end of the window went before it sent a view: the window shows the platform's
+    /// error state, with `why` under it, and takes nothing more. A page showing the window
+    /// answers the page as it stands rather than waiting for a view that never comes.
+    pub fn app_gone(&mut self, why: &str) {
+        tracing::warn!(why, "an app's window went before it opened");
+        if self.failed.is_none() {
+            let state = ui::widget::EmptyState::new(t("tilolang-open-failed")).with_quote(why);
+            if let Some(pane) = self.shell_pane() {
+                pane.set(Box::new(state));
+            }
+            self.built = None;
+            self.structure_dirty = true;
+        }
+        self.failed = Some(why.to_owned());
+    }
+
     /// Do what the app asked of the window's page, and answer it: an operation the page answers
     /// at once is done here; one the page thinks about waits with the window's next frames.
     fn page_asked(&mut self, request_id: u32, request: Vec<u8>) {
