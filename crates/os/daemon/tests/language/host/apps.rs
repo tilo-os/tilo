@@ -75,11 +75,12 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
 /// Build the package `source` (an `app.tl`), written into a scratch directory as `name`, and
 /// install it into the store the device's process names (`TILO_APPS_DATA_DIR`), as a person or
 /// their agent installs a package while the device runs: signed by the publisher [`install`]
-/// made, and built against the packages it installed.
+/// made, and built against the packages it installed. Answers the `.tapp` it built, which a
+/// workspace install names.
 ///
 /// # Panics
 /// The process names no store [`install`] made, or the package does not build or install.
-pub fn install_source(name: &str, source: &str) {
+pub fn install_source(name: &str, source: &str) -> PathBuf {
     let store = PathBuf::from(
         std::env::var_os("TILO_APPS_DATA_DIR").expect("the device's process names its store"),
     );
@@ -105,11 +106,14 @@ pub fn install_source(name: &str, source: &str) {
         &publisher,
     )
     .unwrap_or_else(|error| panic!("{name} builds: {error}"));
-    install_tapp(&store, &built.last().unwrap().tapp);
+    let tapp = built.last().unwrap().tapp.clone();
+    install_tapp(&store, &tapp);
     // This device installs what it was handed, compiling the machine code the app runs.
     if let Some(data) = tilo_paths::data_dir() {
         tilo_runtime::device::packages::compile_installed_at(&store, &data);
     }
+    // The package file as it was built: what a workspace's install names.
+    tapp
 }
 
 /// Install the package at `tapp` into the app store at `store`.

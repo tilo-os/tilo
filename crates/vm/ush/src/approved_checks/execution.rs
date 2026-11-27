@@ -418,6 +418,17 @@ fn start(
         "--unit",
         &unit.0,
     ]);
+    // The unit's supervisor asks the account's manager for the check's process tree and its
+    // limits over the account's own bus. A unit started here does not inherit the caller's
+    // environment, so the session's runtime directory is named for it: without it the supervisor
+    // cannot reach the manager that started it.
+    for name in ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] {
+        if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
+            let mut assignment = std::ffi::OsString::from(format!("--setenv={name}="));
+            assignment.push(value);
+            command.arg(assignment);
+        }
+    }
     for property in [
         format!("CPUQuota={}%", check.limits.cpu_percent),
         format!("MemoryMax={}", check.limits.memory_bytes),

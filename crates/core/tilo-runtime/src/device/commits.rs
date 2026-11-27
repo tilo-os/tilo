@@ -50,15 +50,13 @@ impl ServiceCommits {
 
 impl WorkspaceCommits for ServiceCommits {
     /// The service keeps each device's own effect receipts in its copy of the
-    /// workspace: a member copy's are this device's.
+    /// workspace: a member copy's are this device's. Answered from the copy the
+    /// service keeps read of, without waiting on it: the broker asks from the
+    /// runtime that serves the workspaces, which must not wait on itself.
     fn projects_workspace(&self, workspace: WorkspaceId) -> bool {
-        let copies = self.copies().clone();
-        super::workspaces::block_on_owned(async move {
-            copies
-                .is_member(&workspace.to_string())
-                .await
-                .unwrap_or(false)
-        })
+        self.copies()
+            .copy_now(workspace)
+            .is_some_and(|copy| copy.member)
     }
 
     fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
