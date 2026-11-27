@@ -340,10 +340,11 @@ fn least_window_width() -> Float {
 /// changes, so no border belongs to two windows. The row's first window's leading edge is the
 /// row's own start, which has nothing to give: it is no grip.
 view row_window(a: Layout, s: LayoutStrip, lists: Bool) {
+    let share = if s.width <= 0 { 667 } else { s.width }
     if s.leaving {
-        leaving_window(a, s)
+        leaving_window(a, s, fill: share, min: 44rem)
     } else {
-        standing_window(a, s, lists, true)
+        standing_window(a, s, lists, true, fill: share, min: 44rem)
     }
 }
 
