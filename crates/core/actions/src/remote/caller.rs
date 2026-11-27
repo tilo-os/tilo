@@ -119,6 +119,9 @@ pub struct Caller {
     // The step of a Shortcut run whose action the Shortcut's saved rules consent to in advance
     // (`Self::consented_in_advance`): set only by the runner, in process, never from a frame.
     consented: bool,
+    // The rules the person saved with the Shortcut this caller's run is (`Self::within_shortcut`):
+    // set only by the runner, in process, never from a frame.
+    shortcut_grant: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 /// The key one of a person's calls came in on, beside the person it acts as
@@ -215,6 +218,7 @@ impl Caller {
             launched_app: None,
             placed: None,
             consented: false,
+            shortcut_grant: None,
         }
     }
 
@@ -945,6 +949,24 @@ impl Caller {
         self
     }
 
+    /// The same Shortcut run ([`Self::running_shortcut`]), bounded by `grant`, the rules its
+    /// person saved with it: every call the run makes, its steps and whatever their code calls at
+    /// any depth, is decided within them as well as by whom it runs for. Set only by the
+    /// provider's Shortcut runner; a caller that runs no Shortcut is left as it was.
+    #[must_use]
+    pub fn within_shortcut(mut self, grant: Vec<tilo_action_policy::Rule>) -> Self {
+        if self.acting.is_automation() {
+            self.shortcut_grant = Some(grant);
+        }
+        self
+    }
+
+    /// The rules bounding this caller's Shortcut run ([`Self::within_shortcut`]).
+    #[must_use]
+    pub fn shortcut_grant(&self) -> Option<&[tilo_action_policy::Rule]> {
+        self.shortcut_grant.as_deref()
+    }
+
     /// Whether the person's saved Shortcut consents to this step in advance
     /// ([`Self::consented_in_advance`]).
     #[must_use]
@@ -1199,6 +1221,9 @@ impl KeptCaller {
             placed: None,
             // A kept call is asked again for what it was made for.
             consented: false,
+            // What a waiting call goes on with is admitted again for itself, never as a step of a
+            // Shortcut's run the runner bounds.
+            shortcut_grant: None,
         }
     }
 }

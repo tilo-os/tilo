@@ -3490,8 +3490,15 @@ async fn drive_shovel(
                 inbound_tx.state.notify_events();
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
-                let result =
-                    install_sdk_encryption(join_context!(), &mut routes, spec, *group).await;
+                // Boxed: joining is a large future, which would otherwise grow the whole
+                // command loop's.
+                let result = Box::pin(install_sdk_encryption(
+                    join_context!(),
+                    &mut routes,
+                    spec,
+                    *group,
+                ))
+                .await;
                 let _ = reply.send(result);
             }
             SdkCommand::PublishActionDirectory { requests, .. } => {

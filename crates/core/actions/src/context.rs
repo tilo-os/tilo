@@ -1447,6 +1447,11 @@ pub struct ActionInvoker {
     /// device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<InvokerDevice>,
+    /// The rules the person saved with the Shortcut whose unattended run this is: every call
+    /// the run makes, at any depth, is decided within them. Set only by the host that admitted
+    /// the run, from the runner's caller, and never taken from a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 impl ActionInvoker {
@@ -1459,7 +1464,15 @@ impl ActionInvoker {
             appearance: None,
             name: None,
             device: None,
+            grant: None,
         }
+    }
+
+    /// The same invoker, a Shortcut's run bounded by `grant` ([`Self::grant`]).
+    #[must_use]
+    pub fn within_shortcut(mut self, grant: Option<Vec<tilo_action_policy::Rule>>) -> Self {
+        self.grant = grant.filter(|_| self.acting.is_automation());
+        self
     }
 
     /// A member acting for themselves.

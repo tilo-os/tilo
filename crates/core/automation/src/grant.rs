@@ -7,10 +7,8 @@
 //! own grants, whether that person may take the action at all. The effective
 //! answer is the stricter of the two.
 
-use tilo_action_policy::{
-    Answer, Context, Grant, GrantId, Grantee, Level, Rule, Segment, TreePath, decide,
-};
-use tilo_action_types::{ActionKind, KindSet, Lifetime};
+use tilo_action_policy::{Answer, Context, Level, Rule, Segment, TreePath, decide};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::ActionKey;
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::params::ActionParam;
@@ -282,20 +280,8 @@ pub struct StepGrant {
 pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGrant {
     // The shortcut's own rules, judged as everyone's: who runs it decides
     // elsewhere, and its steps are never a member's grants of their own.
-    let subject = Grantee::role(tilo_action_policy::Role::Viewer);
-    let grants: Vec<Grant> = grant
-        .iter()
-        .enumerate()
-        .map(|(index, rule)| Grant {
-            id: GrantId::new(index.to_string()),
-            grantee: subject.clone(),
-            node: rule.node.clone(),
-            kinds: rule.kinds,
-            answer: rule.answer,
-            lifetime: Lifetime::UntilRevoked,
-            granted_by: subject.clone(),
-        })
-        .collect();
+    let subject = Rule::bound_grantee();
+    let grants = Rule::bound_grants(grant);
     let decision = decide(
         &grants,
         std::slice::from_ref(&subject),

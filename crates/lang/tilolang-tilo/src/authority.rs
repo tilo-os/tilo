@@ -22,7 +22,8 @@ use std::rc::Rc;
 use tilo_action_policy::ActingPolicy as _;
 
 use tilo_action_policy::{
-    Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, Party, TreePath, authorship,
+    Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, Party, Rule, TreePath,
+    authorship,
 };
 use tilo_member_types::MemberId;
 use tilolang_runtime::meta::Meta;
@@ -52,6 +53,11 @@ struct State {
     agents: HashMap<Actor, Option<String>>,
     /// What bounds each Shortcut run the API admitted beside its person.
     runs: HashMap<Actor, crate::publish::ShortcutRun>,
+    /// The actions each Shortcut run reached through an action its rules allow: what that
+    /// action's own package code calls ([`Meta`]'s `reaches`), which is what allowing it allows.
+    carried: HashMap<Actor, HashSet<String>>,
+    /// The actions each action's own code calls, at any depth, by id, as its package declares.
+    reaches: HashMap<String, Vec<String>>,
     /// The hosts each app's package declares its `uses web` requests may reach, as installed.
     web: HashMap<String, Vec<String>>,
     /// The outside capabilities each app's package declares its code can queue (`smtp.send`), by
@@ -94,6 +100,14 @@ impl TiloAuthority {
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
             state.names.insert(action.id.clone(), action.name.clone());
+            state.reaches.insert(
+                action.id.clone(),
+                action
+                    .reaches
+                    .iter()
+                    .map(|reached| reached.action.clone())
+                    .collect(),
+            );
             if !action.outside.is_empty() {
                 state
                     .outside
@@ -467,7 +481,43 @@ impl Authority for TiloAuthority {
             });
         }
         let cx = Context::at_time(tilo_clock::wall()).with_earlier_ids(&earlier);
-        decision(policy.decide(&node, action_kind(action.class), &cx).answer)
+        let answer = policy.decide(&node, action_kind(action.class), &cx).answer;
+        let Some(rules) = run.and_then(|run| run.grant.as_deref()) else {
+            return decision(answer);
+        };
+        // A Shortcut's run is decided within the rules its person saved with it, at any depth.
+        // Its step itself (no code led to it) the runner decided within them, at the node the
+        // catalogue names it by. What an action they allow calls through its own package code is
+        // what allowing it allows; any other call is decided by the rules themselves.
+        let carried = chain.is_empty()
+            || state
+                .carried
+                .get(invoker)
+                .is_some_and(|carried| carried.contains(&action.action));
+        let within_rules = if carried {
+            Answer::Allow
+        } else {
+            let grants = Rule::bound_grants(rules);
+            Party::new(vec![Rule::bound_grantee()], &grants)
+                .decide(&node, action_kind(action.class), &cx)
+                .answer
+        };
+        let answer = answer.min(within_rules);
+        if answer != Answer::Deny {
+            let reached = state
+                .reaches
+                .get(&action.action)
+                .cloned()
+                .unwrap_or_default();
+            drop(state);
+            self.state
+                .borrow_mut()
+                .carried
+                .entry(invoker.clone())
+                .or_default()
+                .extend(reached);
+        }
+        decision(answer)
     }
 }
 
@@ -865,5 +915,64 @@ mod tests {
         // Nothing stored was rewritten: the grants name Todo as they did.
         assert_eq!(policy.grants, stored);
         assert!(stored.contains(&node_denied) && stored.contains(&editor));
+    }
+
+    /// A Shortcut's run is decided within the rules its person saved with it at every depth, not
+    /// only at its steps: what the action they allowed calls through its own code runs, and a
+    /// call beyond the rules is refused though the person may make it.
+    #[test]
+    fn a_shortcuts_run_calls_nothing_beyond_its_saved_rules() {
+        let authority = authority(Vec::new());
+        let run = Actor::Automation(tilo_member_types::AutomationId::new("reminder"));
+        let allowed = Rule::new(
+            TreePath::workspace(WORKSPACE)
+                .app(APP)
+                .kind(format!("tl.{APP}"))
+                .action("remove"),
+            tilo_action_types::KindSet::ALL,
+            Answer::Allow,
+        );
+        authority.admit_agent(&run, Some(PERSON));
+        authority.admit_run(
+            &run,
+            crate::publish::ShortcutRun {
+                through: None,
+                grant: Some(vec![allowed]),
+            },
+        );
+        // What `remove`'s own code calls, as its package declares.
+        authority
+            .state
+            .borrow_mut()
+            .reaches
+            .insert("remove".to_owned(), vec!["purge".to_owned()]);
+        let call = |action: &str| ActionInfo {
+            action: action.to_owned(),
+            ..info(EffectClass::Undoable, true)
+        };
+        let person = Actor::from(MemberId::person(PERSON));
+        assert_eq!(
+            authority.decide(&person, &[module()], &call("add")),
+            Decision::Allow
+        );
+        // Before `remove` runs, what it calls is the rules' to decide, as any call is.
+        assert_eq!(
+            authority.decide(&run, &[module()], &call("purge")),
+            Decision::Deny
+        );
+        assert_eq!(
+            authority.decide(&run, &[module()], &call("remove")),
+            Decision::Allow,
+            "a call the rules allow runs at any depth"
+        );
+        assert_eq!(
+            authority.decide(&run, &[module()], &call("purge")),
+            Decision::Allow
+        );
+        assert_eq!(
+            authority.decide(&run, &[module()], &call("add")),
+            Decision::Deny,
+            "a nested call beyond the run's rules is refused, though its person may make it"
+        );
     }
 }

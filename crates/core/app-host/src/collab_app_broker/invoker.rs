@@ -79,11 +79,18 @@ fn invoked_with(
         .unwrap_or_default()
         .with_host_actor(&admitted, presence);
     let mut context = signed_by_request(Some(context), request).unwrap_or_default();
-    // The name the admitting host knows an agent by, never one the request carries.
-    if let Some(invoker) = context.invoker.as_mut() {
+    // The name the admitting host knows an agent by, never one the request carries, and the
+    // rules bounding a Shortcut's run, as its runner set them.
+    if let Some(invoker) = context.invoker.take() {
+        let mut invoker = invoker.within_shortcut(
+            admitting
+                .and_then(tilo_actions::remote::Caller::shortcut_grant)
+                .map(<[_]>::to_vec),
+        );
         invoker.name = admitting
             .and_then(tilo_actions::remote::Caller::agent_name)
             .map(str::to_owned);
+        context.invoker = Some(invoker);
     }
     Ok(Some(context))
 }

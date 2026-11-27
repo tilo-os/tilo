@@ -700,6 +700,32 @@ impl Rule {
             answer,
         }
     }
+
+    /// `rules` as grants, judged as everyone's ([`Self::bound_grantee`]): what a Shortcut's saved
+    /// rules bound its run by, whoever it runs for. They are never a member's own grants.
+    #[must_use]
+    pub fn bound_grants(rules: &[Self]) -> Vec<Grant> {
+        let subject = Self::bound_grantee();
+        rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| Grant {
+                id: GrantId::new(index.to_string()),
+                grantee: subject.clone(),
+                node: rule.node.clone(),
+                kinds: rule.kinds,
+                answer: rule.answer,
+                lifetime: Lifetime::UntilRevoked,
+                granted_by: subject.clone(),
+            })
+            .collect()
+    }
+
+    /// Whom [`Self::bound_grants`] name.
+    #[must_use]
+    pub fn bound_grantee() -> Grantee {
+        Grantee::role(Role::Viewer)
+    }
 }
 
 /// A named grant set people pick instead of writing grants one by one.

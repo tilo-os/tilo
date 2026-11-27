@@ -85,6 +85,9 @@ pub struct ShortcutRun {
     /// The agent the run acts through: the one that saved the Shortcut. Its own grants and
     /// delegation bound every call the run makes, as they bound the agent's own calls.
     pub through: Option<tilo_actions::MemberId>,
+    /// The rules its person saved with the Shortcut: every call the run makes, at any depth, is
+    /// decided within them. `None` where the API named none.
+    pub grant: Option<Vec<tilo_action_policy::Rule>>,
 }
 
 impl Caller {
@@ -135,6 +138,7 @@ impl From<&tilo_actions::ActionInvoker> for Caller {
             app: invoker.acting.app().map(|app| app.as_str().to_owned()),
             run: invoker.acting.is_automation().then(|| ShortcutRun {
                 through: invoker.acting.acting_agent().cloned(),
+                grant: invoker.grant.clone(),
             }),
         }
     }

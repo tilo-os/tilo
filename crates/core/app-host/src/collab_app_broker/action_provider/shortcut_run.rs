@@ -369,7 +369,10 @@ impl AppBrokerState {
         let invocation = admitted.invocation;
         let host = BrokerApi::for_run(Arc::clone(self), origin);
         let state = Arc::clone(self);
-        let caller = caller.clone().running_shortcut(shortcut.id.clone());
+        let caller = caller
+            .clone()
+            .running_shortcut(shortcut.id.clone())
+            .within_shortcut(shortcut.grant.clone());
         let workspace = workspace.to_string();
         let parent = start.parent.clone();
         let approval = start.approval.clone();
