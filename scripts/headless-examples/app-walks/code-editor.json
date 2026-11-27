@@ -19,11 +19,12 @@
     },
     {
       "id": "new-file",
-      "said": "Make a file and write code in it",
+      "said": "Make a file, put the keyboard in its code and write in it",
       "ops": [
         { "press": { "tl": "New file" } },
-        { "wait_for": "ui.CodeEditor" },
-        { "type": { "into": "ui.CodeEditor", "text": "fn main() {\n    let x = 1;\n}\n" } },
+        { "wait_for": "Write the file" },
+        { "click": "Write the file" },
+        { "type": "fn main() {\n    let x = 1;\n}\n" },
         { "wait_for": "Unsaved" }
       ]
     },
@@ -47,12 +48,14 @@
     },
     {
       "id": "search-the-project",
-      "said": "Search the project and read the places it found",
+      "said": "Search the project from the window's own search and read the places it found",
       "ops": [
         { "press": { "tl": "Panel" } },
         { "press": { "tl": "Search results" } },
-        { "type": { "into": "ui.TextInput", "text": "main" } },
-        { "press": { "tl": "Search" } }
+        { "chord": ["Control", "f"] },
+        { "wait_for": "Search" },
+        { "click": "Search" },
+        { "type": "main" }
       ]
     },
     {

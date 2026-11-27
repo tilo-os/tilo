@@ -47,13 +47,13 @@
           }
         },
         {
-          "wait_for": "ui.CodeEditor"
+          "wait_for": "Write a Typst document"
         },
         {
-          "type": {
-            "into": "ui.CodeEditor",
-            "text": "= A letter\n\nHello from Typst, typeset on this device.\n"
-          }
+          "click": "Write a Typst document"
+        },
+        {
+          "type": "= A letter\n\nHello from Typst, typeset on this device.\n"
         },
         {
           "wait_for": "Page 1 of 1"
@@ -65,10 +65,10 @@
       "said": "A broken line is a problem the window says",
       "ops": [
         {
-          "type": {
-            "into": "ui.CodeEditor",
-            "text": "\n#undefined_thing\n"
-          }
+          "click": "Write a Typst document"
+        },
+        {
+          "type": "\n#undefined_thing\n"
         },
         {
           "wait_for": "This document does not typeset"

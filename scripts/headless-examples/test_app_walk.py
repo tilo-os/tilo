@@ -16,9 +16,10 @@ _spec = importlib.util.spec_from_file_location("app_walk", HERE / "app-walk.py")
 walk = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(walk)
 
-#: The ops whose value is the query a person typed, read as text (`op_actions`'s
-#: `query.lower()`): a flag there is no query, and stops the driver mid-walk.
-QUERY_OPS = ("actions", "search")
+#: The ops whose value the driver reads as text: a query it lowercases (`op_actions`), or the
+#: text it types (`op_type`). Anything else there — a flag, a control to type into — is no text,
+#: and stops the driver or types nothing.
+TEXT_OPS = ("actions", "search", "type")
 
 
 def steps():
@@ -119,15 +120,16 @@ class TheStepFiles(unittest.TestCase):
                     with self.subTest(walk=path.stem, step=step["id"], variant=variant, op=name):
                         self.assertIn(name, driver)
 
-    def test_a_query_op_is_asked_a_query(self):
-        """An op whose value is the query a person typed reads it as text (`query.lower()`):
-        a step that hands one a flag does not fail as that step, it stops the driver mid-walk
-        and takes the whole family's run with it. The form an op declares is held here, in
+    def test_every_op_that_reads_text_is_asked_text(self):
+        """An op whose value the driver reads as text is handed text: a query (`query.lower()`)
+        or what is typed. A flag or a control to type into there does not fail as that step —
+        it stops the driver mid-walk, taking the whole family's run with it, or types nothing
+        and fails steps later with the wrong reason. The form an op declares is held here, in
         seconds, beside the one that holds an op's name."""
         for path, spec in steps():
             for step in spec["steps"]:
                 for _variant, name, value in ops_of(step):
-                    if name not in QUERY_OPS:
+                    if name not in TEXT_OPS:
                         continue
                     for asked in self.asked(value):
                         with self.subTest(walk=path.stem, step=step["id"], op=name):
