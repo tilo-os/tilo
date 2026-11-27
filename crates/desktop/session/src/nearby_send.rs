@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, ApiError, InvocationId, ResourceSpec};
@@ -24,6 +23,11 @@ use tilo_app_host::nearby_send::{
 };
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_lock::MutexRecover as _;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
@@ -659,14 +663,14 @@ fn via_daemon(view: &WorkspaceView, workspace: &str) -> Option<Vec<PathBuf>> {
 /// The folders `sandbox` lets Files reach with `access`, as it decides it now.
 fn folders_in(sandbox: &[CapOverride], access: Access) -> Vec<PathBuf> {
     let now = tilo_clock::unix_now();
-    collab_types::caps::sandbox::of_app_at(sandbox, wire::APP, now)
+    tilo_permissions::caps::sandbox::of_app_at(sandbox, wire::APP, now)
         .into_iter()
         .filter_map(|capability| match &capability.scope {
             Scope::FsPath(path) => Some(path),
             _ => None,
         })
         .filter(|path| {
-            collab_types::caps::decide_app(
+            tilo_permissions::caps::decide_app(
                 wire::APP,
                 &ResourceRef::FsPath((*path).clone()),
                 access,
@@ -729,8 +733,8 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
-    use collab_types::caps::Effect;
     use tilo_action_policy::Grantee;
+    use tilo_permissions::caps::Effect;
 
     /// A send stages the files it hands over only beneath a folder its workspace's Files grants:
     /// its thread asks the loop, which answers from the seat's shell, and a file outside the grant

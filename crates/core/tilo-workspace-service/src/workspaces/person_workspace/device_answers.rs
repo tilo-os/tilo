@@ -3,8 +3,8 @@
 //! capability, naming the device it is about: it answers only there, and any device of theirs
 //! may take it back. [`tilo_peer_state::DeviceGrants`] decides by it.
 
-use collab_types::caps::DeviceCap;
 use tilo_peer_state::DeviceAnswer;
+use tilo_permissions::caps::DeviceCap;
 use tilo_resource::{Collection, Id, Model, Refusal, resource};
 
 /// The resource of the person's kept device answers in their own workspace.

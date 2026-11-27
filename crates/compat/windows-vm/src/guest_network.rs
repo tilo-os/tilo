@@ -237,7 +237,7 @@ impl Drop for GuestNetworkProxy {
 }
 
 /// The lease's policy, read through the one `NetHost` grammar
-/// (`collab_types::caps::NetHostPattern`) every other enforcer reads. A host
+/// (`tilo_permissions::caps::NetHostPattern`) every other enforcer reads. A host
 /// that does not parse — an IP literal included — refuses the whole lease
 /// rather than silently narrowing it: the caller asked for exact canonical
 /// values.

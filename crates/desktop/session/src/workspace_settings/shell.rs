@@ -7,9 +7,9 @@
 
 use std::cell::{Cell, RefCell};
 
-use collab_types::caps::Effect;
 use tilo_action_policy::{Refusal, Role};
 use tilo_desktop_model::{Layout, Workspace};
+use tilo_permissions::caps::Effect;
 use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
 use tilo_session_core::desktop::host::chrome::ChromeIntent;
 use tilo_session_core::desktop::i18n::{t, t_args};

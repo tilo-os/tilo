@@ -38,9 +38,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use collab_types::caps::CapOverride;
 use tilo_action_services::environment_commands::{CommandOutput, Person, VmSecret};
 use tilo_action_services::server_account::Refusal;
+use tilo_permissions::caps::CapOverride;
 use ush_shell::commands::Render;
 use ush_shell::{Output, Run, Shell, Stdio};
 use ush_tilo::{Acted, Environment, Keeping, NativeFiles, NoPrograms, Place, Programs, TiloHost};

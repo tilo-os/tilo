@@ -245,8 +245,8 @@ pub(crate) struct Ask<'a> {
 pub(crate) async fn share(portal: &Portal, ask: Ask<'_>) -> Result<Shared, Ended> {
     // A workspace that refuses its apps the screen or the input refuses the share without asking.
     let refused = |device| portal.consents.refused(ask.caller, device);
-    if (ask.selection.is_some() && refused(collab_types::caps::DeviceCap::Screen))
-        || (ask.devices != 0 && refused(collab_types::caps::DeviceCap::Input))
+    if (ask.selection.is_some() && refused(tilo_permissions::caps::DeviceCap::Screen))
+        || (ask.devices != 0 && refused(tilo_permissions::caps::DeviceCap::Input))
     {
         return Err(Ended::Cancelled);
     }

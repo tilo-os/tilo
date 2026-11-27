@@ -19,22 +19,22 @@ enum = "FloatingSurfaceHostMessage"
 reason = "the session shell's half of the same connection: newline-delimited JSON over a local socket, never by position, between ends of one protocol number, so no bytes written before are read back"
 
 [[break]]
-file = "crates/core/collab-types/src/caps.rs"
+file = "crates/core/permissions/src/caps.rs"
 enum = "Principal"
 reason = "a sandbox capability names a grantee and an app, not a principal: there are no users whose stored capability lists must read, and the shipped list moves with the image"
 
 [[break]]
-file = "crates/core/collab-types/src/caps.rs"
+file = "crates/core/permissions/src/caps.rs"
 enum = "PrincipalWire"
 reason = "written and read only by `Principal`, which is gone; no build reads it back"
 
 [[break]]
-file = "crates/core/collab-types/src/caps.rs"
+file = "crates/core/permissions/src/caps.rs"
 enum = "Subject"
 reason = "a sandbox capability names a grantee and an app, not a subject: there are no users whose stored capability lists must read, and the shipped list moves with the image"
 
 [[break]]
-file = "crates/core/collab-types/src/caps.rs"
+file = "crates/core/permissions/src/caps.rs"
 enum = "Actor"
 reason = "the sandbox asks with an `Acting` (a member chain and an app) instead of a bag of principals; nothing stores an actor"
 
@@ -378,7 +378,7 @@ enum = "TriggerSpec"
 reason = "renames RecordChanged to ResourceChanged in place: stored formats change with the code and nothing written before is read"
 
 [[break]]
-file = "crates/core/collab-types/src/caps.rs"
+file = "crates/core/permissions/src/caps.rs"
 enum = "Scope"
 reason = "renames FsRecord to FsResource in place: stored formats change with the code and nothing written before is read"
 

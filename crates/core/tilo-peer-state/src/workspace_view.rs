@@ -245,7 +245,7 @@ pub struct WorkspaceReading {
     pub shortcuts: Vec<tilo_automation::SavedShortcut>,
     /// What its governance lets its apps reach; `None` while that does not read.
     #[serde(default)]
-    pub sandbox: Option<Vec<collab_types::caps::CapOverride>>,
+    pub sandbox: Option<Vec<tilo_permissions::caps::CapOverride>>,
 }
 
 impl WorkspaceReading {

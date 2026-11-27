@@ -1342,7 +1342,7 @@ inputs = [
   # timeline asks for where its sockets go.
   "dist/dev/nested-session.sh",
   # The NetHost grant vectors apps must answer like environments do.
-  "crates/core/collab-types/tests/net_host_vectors.txt",
+  "crates/core/permissions/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
   "os/usr/libexec/tilo-session",
   # The units that rebuild the sandbox system view when what it reads changes.
@@ -1364,7 +1364,7 @@ readers = [
 [[cargo]]
 package = "tilo-egress"
 # The NetHost grant vectors environments must answer like apps do.
-inputs = ["crates/core/collab-types/tests/net_host_vectors.txt"]
+inputs = ["crates/core/permissions/tests/net_host_vectors.txt"]
 readers = ["crates/core/egress/src/policy.rs"]
 
 [[cargo]]

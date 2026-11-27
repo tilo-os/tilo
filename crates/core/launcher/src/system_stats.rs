@@ -10,7 +10,7 @@ use std::path::Path;
 
 use tilo_system_stats::protocol::{Grant, Grants, Handoff, PROTOCOL, write_handoff};
 
-use collab_types::caps::DeviceCap;
+use tilo_permissions::caps::DeviceCap;
 
 use crate::capabilities::{CapabilityPlan, declares};
 use crate::manifest::ManifestView;

@@ -16,10 +16,13 @@ use std::net::TcpListener;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapOverride, LaunchGrants, Scope};
 use launcher::manifest::ServiceReq;
 use launcher::run::{LaunchOptions, launch_with_captured};
 use tilo_action_policy::Grantee;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::LaunchGrants;
+use tilo_permissions::caps::Scope;
 
 use crate::support::{bwrap, isolated_options, manifest};
 

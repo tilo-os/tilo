@@ -4,10 +4,12 @@
 
 use std::collections::BTreeSet;
 
-use collab_types::caps::{DeviceCap, Effect, Scope};
 use tilo_action_policy::Answer;
 use tilo_desktop_model::Layout;
 use tilo_peer_state::{DeviceGrants, Refusal};
+use tilo_permissions::caps::DeviceCap;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 
 /// What the workspaces of `tree` refuse their apps of the person's devices at `now` (in
 /// milliseconds), as `(workspace, app, device)`: workspaces are named by their id, as the portal
@@ -49,10 +51,11 @@ pub(crate) fn ended(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{Access, CapOverride};
     use tilo_action_policy::Grantee;
     use tilo_action_types::Lifetime;
     use tilo_desktop_model::Workspace;
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
 
     fn shell(caps: Vec<CapOverride>) -> Layout {
         let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Studio");

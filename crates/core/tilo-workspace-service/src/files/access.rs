@@ -6,9 +6,9 @@
 //! ([`fs_protocol::file_action::verb_node`]), and reading at the tree's own records' node, so
 //! the mount, the service and every receiver answer the same question.
 
-use collab_types::caps::Access;
 use tilo_action_policy::{Answer, Context, TreePath, WorkspacePolicy};
 use tilo_action_types::ActionKind;
+use tilo_permissions::caps::Access;
 
 /// The nodes a member's access to `workspace`'s files is decided at: the tree's records, listing
 /// them and writing a file.
@@ -58,7 +58,7 @@ pub const WORKSPACE_FILES: &str = "/var/workspace";
 /// The access list the Files mounts enforce, and when it next changes by itself.
 pub struct Listed {
     /// Who may read and write which files, in the mounts' terms.
-    pub authority: collab_types::caps::FsAuthority,
+    pub authority: tilo_permissions::caps::FsAuthority,
     /// The earliest instant (Unix milliseconds) a member's time-limited grant lapses at: the list
     /// is to be made again then.
     pub refresh_at: Option<u64>,
@@ -78,10 +78,12 @@ pub fn list<'a>(
     person: &str,
     device: Option<[u8; 32]>,
 ) -> Listed {
-    use collab_types::caps::{CapOverride, Effect, Scope};
     use tilo_action_policy::Grantee;
     use tilo_action_types::Lifetime;
     use tilo_member_types::Acting;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Effect;
+    use tilo_permissions::caps::Scope;
 
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key)));
     let mut capabilities = Vec::new();
@@ -148,7 +150,7 @@ pub fn list<'a>(
         }
     }
     Listed {
-        authority: collab_types::caps::FsAuthority { capabilities },
+        authority: tilo_permissions::caps::FsAuthority { capabilities },
         refresh_at: next_refresh,
     }
 }
@@ -161,8 +163,8 @@ fn person_key(person: &str) -> Option<[u8; 32]> {
 /// person sitting here: the mount acts as the device, so the person's grants must reach it
 /// without widening anything.
 fn push_with_device(
-    capabilities: &mut Vec<collab_types::caps::CapOverride>,
-    capability: &collab_types::caps::CapOverride,
+    capabilities: &mut Vec<tilo_permissions::caps::CapOverride>,
+    capability: &tilo_permissions::caps::CapOverride,
     acting: Option<&tilo_member_types::Acting>,
     device: Option<[u8; 32]>,
 ) {
@@ -211,12 +213,15 @@ impl crate::workspaces::Workspaces {
 )]
 mod tests {
     use super::*;
-    use collab_types::caps::FsAuthority;
-    use collab_types::caps::{Access, CapOverride, Effect, Scope};
     use tilo_action_policy::{Answer, Grantee, Role};
     use tilo_action_types::Lifetime;
     use tilo_desktop_model::{Layout, Workspace};
     use tilo_member_types::Acting;
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Effect;
+    use tilo_permissions::caps::FsAuthority;
+    use tilo_permissions::caps::Scope;
 
     /// The list the mounts of the device `device` are told for `tree`'s workspaces, as `person`.
     fn listed(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
@@ -245,27 +250,27 @@ mod tests {
     }
 
     /// Does the list the mounts are told let `acting` read `path` ? This is the decision every
-    /// Files open asks ([`collab_types::decide_capability`]), so an answer here is the daemon's
+    /// Files open asks ([`tilo_permissions::caps::decide_capability`]), so an answer here is the daemon's
     /// answer.
     fn may_read(list: &FsAuthority, acting: &Acting, path: &str) -> bool {
-        collab_types::decide_capability(
+        tilo_permissions::caps::decide_capability(
             acting,
-            &collab_types::ResourceRef::FsPath(path.into()),
+            &tilo_permissions::caps::ResourceRef::FsPath(path.into()),
             Access::Read,
             &list.capabilities,
             Some(0),
-        ) == collab_types::CapDecision::Allow
+        ) == tilo_permissions::caps::CapDecision::Allow
     }
 
     /// [`may_read`] for a write.
     fn may_write(list: &FsAuthority, acting: &Acting, path: &str) -> bool {
-        collab_types::decide_capability(
+        tilo_permissions::caps::decide_capability(
             acting,
-            &collab_types::ResourceRef::FsPath(path.into()),
+            &tilo_permissions::caps::ResourceRef::FsPath(path.into()),
             Access::Write,
             &list.capabilities,
             Some(0),
-        ) == collab_types::CapDecision::Allow
+        ) == tilo_permissions::caps::CapDecision::Allow
     }
 
     tilo_test_env::scenario! {
@@ -386,7 +391,7 @@ mod tests {
             ));
 
             // The person takes the folder back while an app has it open.
-            assert!(collab_types::caps::sandbox::revoke(&mut tree.workspaces[0].sandbox, "brief"));
+            assert!(tilo_permissions::caps::sandbox::revoke(&mut tree.workspaces[0].sandbox, "brief"));
             let now = listed(&tree, PERSON, device);
             assert!(
                 !may_read(&now, &actor, &format!("{FOLDER}/plan.md")),
@@ -409,7 +414,7 @@ mod tests {
             .lasting(tilo_action_types::Lifetime::Session);
             let device_only = CapOverride::grant(
                 Grantee::person(PERSON),
-                Scope::Device(collab_types::caps::DeviceCap::Camera),
+                Scope::Device(tilo_permissions::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("so.tilo.notes");

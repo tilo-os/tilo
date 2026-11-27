@@ -140,7 +140,7 @@ mod tests {
             .grants
             .iter()
             .filter_map(|grant| match &grant.scope {
-                collab_types::caps::Scope::FsPath(path) => Some(path.clone()),
+                tilo_permissions::caps::Scope::FsPath(path) => Some(path.clone()),
                 _ => None,
             })
             .collect();

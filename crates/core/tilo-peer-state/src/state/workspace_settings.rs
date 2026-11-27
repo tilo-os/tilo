@@ -87,7 +87,7 @@ impl StatePeer {
                     .put_member_sandbox(&workspace.sandbox, key, now)
             }
             SettingsChange::RevokeSandbox { capability } => {
-                if !collab_types::caps::sandbox::revoke(&mut workspace.sandbox, capability) {
+                if !tilo_permissions::caps::sandbox::revoke(&mut workspace.sandbox, capability) {
                     return Ok(false);
                 }
                 self.governance_mut()
@@ -127,7 +127,7 @@ impl StatePeer {
 /// session or a single use is never written into the workspace.
 fn grant_sandbox(
     workspace: &mut tilo_desktop_model::Workspace,
-    capability: &collab_types::caps::CapOverride,
+    capability: &tilo_permissions::caps::CapOverride,
     by: tilo_member_types::MemberId,
 ) -> Result<(), String> {
     if !capability.is_durable() {
@@ -140,7 +140,7 @@ fn grant_sandbox(
     if capability.id.trim().is_empty() {
         capability.id.clear();
     }
-    collab_types::caps::sandbox::grant(&mut workspace.sandbox, capability.granted_by(by));
+    tilo_permissions::caps::sandbox::grant(&mut workspace.sandbox, capability.granted_by(by));
     Ok(())
 }
 
@@ -262,7 +262,7 @@ impl PeerGovernanceMut<'_> {
     /// `key` is not a member's device, or governance cannot be updated.
     pub fn put_member_sandbox(
         self,
-        sandbox: &[collab_types::caps::CapOverride],
+        sandbox: &[tilo_permissions::caps::CapOverride],
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {

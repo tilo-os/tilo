@@ -14,11 +14,16 @@ use crate::desktop::i18n::{t, t_args};
 use tilo_action_policy::{Grantee, Refusal};
 use tilo_sort::CompactSort as _;
 
-use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope, sandbox};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
 use tilo_action_types::Lifetime;
 use tilo_desktop_model::Workspace;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::DeviceCap;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
+use tilo_permissions::caps::sandbox;
 
 pub mod agent_access;
 pub mod default_apps;
@@ -1137,7 +1142,7 @@ mod members_tests {
             assert!(
                 !ws.allows(
                     &ws.acting_for_person(PEER),
-                    &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
+                    &tilo_permissions::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
                     Access::Write
                 ),
                 "removing a member must revoke what they held, not just hide them"
@@ -1421,8 +1426,8 @@ mod permissions_tests {
 
     use super::*;
     use crate::desktop::authority::WorkspaceAuthority as _;
-    use collab_types::caps::ResourceRef;
     use tilo_desktop_model::WorkspaceId;
+    use tilo_permissions::caps::ResourceRef;
 
     const OWNER: &str = "owner-user";
     /// Whoever is looking at the tab; never a grantor in these fixtures.

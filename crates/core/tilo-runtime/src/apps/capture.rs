@@ -23,10 +23,12 @@ pub(crate) struct Writes {
 impl Writes {
     /// The grants these writes add to the launch of `app`: each directory writable, through the
     /// app alone, for this one launch.
-    pub(crate) fn grants(&self, app: &str) -> Vec<collab_types::caps::CapOverride> {
-        use collab_types::caps::{Access, CapOverride, Scope};
+    pub(crate) fn grants(&self, app: &str) -> Vec<tilo_permissions::caps::CapOverride> {
         use tilo_action_policy::Grantee;
         use tilo_action_types::Lifetime;
+        use tilo_permissions::caps::Access;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Scope;
         self.dirs
             .iter()
             .map(|dir| {

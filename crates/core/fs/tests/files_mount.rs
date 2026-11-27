@@ -215,8 +215,12 @@ fn the_mount_serves_the_workspace_the_session_shows() {
     // (`sessions_list` in the daemon's own tests).
     let acl = root.join("fs-capabilities.json");
     {
-        use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
         use tilo_action_policy::{Grantee, Role};
+        use tilo_permissions::caps::Access;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Effect;
+        use tilo_permissions::caps::FsAuthority;
+        use tilo_permissions::caps::Scope;
         let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{SESSION_WORKSPACE}"));
         let capabilities = vec![
             CapOverride::new(

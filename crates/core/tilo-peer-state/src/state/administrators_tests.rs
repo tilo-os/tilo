@@ -130,7 +130,9 @@ tilo_test_env::scenario! {
     // an editor does none of it.
     {
         use crate::workspace_membership::SettingsChange;
-        use collab_types::caps::{Access, CapOverride, Scope};
+        use tilo_permissions::caps::Access;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Scope;
         use tilo_action_policy::Grantee;
         let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
         let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);

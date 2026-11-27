@@ -1,6 +1,6 @@
 //! Evaluating an environment's grants.
 //!
-//! There is no `ush` permission type: a grant is a `collab_types::caps::CapOverride` in
+//! There is no `ush` permission type: a grant is a `tilo_permissions::caps::CapOverride` in
 //! the environment record, evaluated by the same `decide_capability` the compositor's
 //! permissions panel and the FUSE mount use. `perm trust-dir ~/src` mints exactly what the
 //! compositor writes for "Always allow" on a filesystem prompt (see
@@ -12,11 +12,15 @@
 
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app,
-};
 use tilo_action_policy::Grantee;
 use tilo_environment::{RUNTIME_APP_ID, is_grantable};
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
+use tilo_permissions::caps::decide_app;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Policy {
@@ -91,7 +95,7 @@ impl Policy {
             };
             // A stored grant that is not a host in the one grammar (an IP
             // literal, written before addresses were refused) covers nothing.
-            if let Err(reason) = collab_types::caps::NetHostPattern::parse(host) {
+            if let Err(reason) = tilo_permissions::caps::NetHostPattern::parse(host) {
                 tracing::warn!(%reason, "ignoring a network grant that is not a host");
                 continue;
             }

@@ -10,10 +10,12 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use collab_types::caps::{Access, CapOverride, Scope};
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::Grantee;
 use tilo_desktop_model::WorkspaceId;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Scope;
 use tilo_service::{AskSender, Asked, Question};
 
 use crate::apps::ReachFirst;
@@ -116,7 +118,7 @@ impl crate::Shared {
                 grants.iter().try_fold(
                     tilo_session_core::desktop::workspace_settings::PolicyEdit::default(),
                     |edit, cap| {
-                        Ok(edit.and(collab_types::caps::sandbox::grant_as_at(
+                        Ok(edit.and(tilo_permissions::caps::sandbox::grant_as_at(
                             &workspace.policy,
                             &mut workspace.sandbox,
                             actor,

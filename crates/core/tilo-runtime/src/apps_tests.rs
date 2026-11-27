@@ -1,10 +1,12 @@
 use super::*;
 use crate::device::workspaces::block_on_owned;
-use collab_types::caps::{Access, CapOverride, Scope};
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout, PackageStore};
 use tilo_action_policy::Grantee;
 use tilo_app_package::{BlobHash, Collection, SignedRoot, SigningIdentity};
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Scope;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const WORKSPACE: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
@@ -247,8 +249,8 @@ impl Granted {
 }
 
 impl LaunchGrantsSource for Granted {
-    fn launch_grants(&self, _workspace: &str) -> collab_types::caps::LaunchGrants {
-        collab_types::caps::LaunchGrants {
+    fn launch_grants(&self, _workspace: &str) -> tilo_permissions::caps::LaunchGrants {
+        tilo_permissions::caps::LaunchGrants {
             author: false,
             sandbox: self.caps.clone(),
         }

@@ -18,8 +18,12 @@
 //! filesystem and lives with the runtime (`ush::file_actions`).
 use std::path::{Component, Path, PathBuf};
 
-use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, decide_app};
 use serde::{Deserialize, Serialize};
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::decide_app;
 use tilo_resource::Model;
 
 use crate::RUNTIME_APP_ID;

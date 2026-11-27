@@ -7,11 +7,16 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
 /// The devices a plan names, as the launchers on every platform read them.
-pub use collab_types::caps::DeviceCap;
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, LaunchGrants, ResourceRef, Scope, decide_app,
-};
+pub use tilo_permissions::caps::DeviceCap;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::LaunchGrants;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
+use tilo_permissions::caps::decide_app;
 
 /// How an app may take part in the space it is launched into.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -149,7 +154,7 @@ impl CapabilityPlan {
                     // A stored grant that is not a host in the one grammar (an IP literal, written
                     // before addresses were refused) covers nothing; say so rather than drop it
                     // silently.
-                    if let Err(reason) = collab_types::caps::NetHostPattern::parse(host) {
+                    if let Err(reason) = tilo_permissions::caps::NetHostPattern::parse(host) {
                         tracing::warn!(%reason, "ignoring a network grant that is not a host");
                         continue;
                     }

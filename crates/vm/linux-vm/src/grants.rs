@@ -4,12 +4,16 @@
 
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_app,
-};
 use linux_vm_protocol::{GuestShare, share_path_allowed};
 use tilo_action_policy::Grantee;
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
+use tilo_permissions::caps::decide_app;
 
 /// The app every Linux VM grant names.
 pub const LINUX_VM_APP_ID: &str = "so.tilo.linux-vm";

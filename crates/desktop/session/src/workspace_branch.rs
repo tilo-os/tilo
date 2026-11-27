@@ -90,12 +90,13 @@ pub(crate) fn shell_of(
         .iter()
         .cloned()
         .map(|mut grant| {
-            if let (collab_types::caps::Scope::FsPath(path), Some((Some(from), Some(to)))) =
+            if let (tilo_permissions::caps::Scope::FsPath(path), Some((Some(from), Some(to)))) =
                 (&grant.scope, &trees)
                 && let Ok(rest) = Path::new(path).strip_prefix(from)
             {
-                grant.scope =
-                    collab_types::caps::Scope::FsPath(to.join(rest).to_string_lossy().into_owned());
+                grant.scope = tilo_permissions::caps::Scope::FsPath(
+                    to.join(rest).to_string_lossy().into_owned(),
+                );
             }
             grant
         })

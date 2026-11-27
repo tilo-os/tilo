@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
             let ctx = PermissionContext::permissive();
             // Not a bypass flag — inspectable capabilities and a structural owner.
             let scopes: Vec<_> = ctx.capabilities().iter().map(|cap| &cap.scope).collect();
-            let every_device = collab_types::caps::DeviceCap::ALL.map(Scope::Device);
+            let every_device = tilo_permissions::caps::DeviceCap::ALL.map(Scope::Device);
             assert_eq!(
                 scopes,
                 [
@@ -300,12 +300,12 @@ tilo_test_env::scenario! {
                 Access::Write
             )));
             assert!(ctx.check(&PermissionScope::Sandbox {
-                resource: ResourceRef::Device(collab_types::caps::DeviceCap::Camera),
+                resource: ResourceRef::Device(tilo_permissions::caps::DeviceCap::Camera),
                 access: Access::Read,
             }));
             assert_eq!(
                 ctx.check_with_denied_feedback(&PermissionScope::Sandbox {
-                    resource: ResourceRef::Device(collab_types::caps::DeviceCap::Camera),
+                    resource: ResourceRef::Device(tilo_permissions::caps::DeviceCap::Camera),
                     access: Access::Read,
                 }),
                 None

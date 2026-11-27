@@ -469,7 +469,7 @@ async fn a_remembered_share_asks_again_once_the_screen_is_taken_back() {
     let restore = results["restore_data"].try_clone().expect("clone");
 
     bed.portal.end_captures(|app, _, device| {
-        app == APP && device == collab_types::caps::DeviceCap::Screen
+        app == APP && device == tilo_permissions::caps::DeviceCap::Screen
     });
     assert!(
         bed.portal.grants().resources().is_empty(),

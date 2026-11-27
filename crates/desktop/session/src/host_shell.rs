@@ -12,10 +12,10 @@ use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use collab_types::caps::DeviceCap;
 use tilo_action_policy::Answer;
 use tilo_action_types::Lifetime;
 use tilo_peer_state::DeviceGrants;
+use tilo_permissions::caps::DeviceCap;
 use tilo_portal::PortalCaller;
 use tilo_portal::consent::{AccessQuestion, Consents};
 use ui::floating_surface::FloatingSurfaceHostMessage;

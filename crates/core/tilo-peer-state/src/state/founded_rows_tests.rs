@@ -118,11 +118,11 @@ fn preset(name: &str) -> tilo_action_policy::Preset {
     }
 }
 
-fn capability(id: &str) -> collab_types::caps::CapOverride {
-    collab_types::caps::CapOverride::grant(
+fn capability(id: &str) -> tilo_permissions::caps::CapOverride {
+    tilo_permissions::caps::CapOverride::grant(
         tilo_action_policy::Grantee::person("ada"),
-        collab_types::caps::Scope::FsPath("/var/workspace".into()),
-        collab_types::caps::Access::Read,
+        tilo_permissions::caps::Scope::FsPath("/var/workspace".into()),
+        tilo_permissions::caps::Access::Read,
     )
     .with_id(id)
 }

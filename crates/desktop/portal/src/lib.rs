@@ -19,11 +19,11 @@
               object, methods take their arguments by value and name some they ignore"
 )]
 
-use collab_types::caps::DeviceCap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use tilo_permissions::caps::DeviceCap;
 
 use serde_json::{Map, Value};
 use tilo_actions::{ActionOutput, ApiError, ResourcePresentation, ResourceSpec};

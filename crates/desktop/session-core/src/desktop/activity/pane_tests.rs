@@ -26,9 +26,11 @@ mod tests {
     }
     use automerge::ActorId;
     use automerge::transaction::{CommitOptions, Transactable};
-    use collab_types::caps::{Access, CapOverride, Scope};
     use tilo_action_policy::Grantee;
     use tilo_automerge::ApplyIncoming as _;
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Scope;
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
@@ -91,7 +93,7 @@ mod tests {
             &user,
             CapOverride::grant(
                 Grantee::person("ada"),
-                Scope::Device(collab_types::caps::DeviceCap::Camera),
+                Scope::Device(tilo_permissions::caps::DeviceCap::Camera),
                 Access::Read,
             )
             .through("terminal"),

@@ -196,7 +196,7 @@ fn a_guest_reaches_its_granted_host_and_nothing_else() {
     assert!(
         env.grants
             .iter()
-            .any(|c| c.scope == collab_types::caps::Scope::NetHost("denied.test".into())),
+            .any(|c| c.scope == tilo_permissions::caps::Scope::NetHost("denied.test".into())),
         "{:?}",
         env.grants
     );

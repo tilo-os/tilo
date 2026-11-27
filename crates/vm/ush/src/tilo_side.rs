@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use collab_types::caps::CapOverride;
+use tilo_permissions::caps::CapOverride;
 use ush_shell::{Input, Output, Program, Run, Std, Stdio};
 use ush_tilo::{Acted, Environment, Place, Programs};
 
@@ -852,7 +852,7 @@ impl Programs for SessionGuest {
 
 fn starting_dir(policy: &Policy, home: &Path, now: Option<u64>) -> PathBuf {
     std::iter::once(home.to_path_buf())
-        .filter(|home| policy.permits(home, collab_types::caps::Access::Read, now))
+        .filter(|home| policy.permits(home, tilo_permissions::caps::Access::Read, now))
         .chain(policy.trusted_dirs(now))
         .chain(policy.readable_dirs(now))
         .next()

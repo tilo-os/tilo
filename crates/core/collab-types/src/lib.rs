@@ -10,8 +10,6 @@
 //! - [`artifact`] — `ArtifactId`: the artifact a document's ops belong to.
 //! - [`role`] — `Role`, `OpKind`, `ArtifactKind` of the op envelope; who may
 //!   make which change is decided by `tilo-action-policy` grants.
-//! - [`caps`] — the app sandbox: `(who × scope × access)` capabilities
-//!   over paths, file records, devices and network hosts.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
 //! - [`commit`] — `WorkspaceCommit`, the one signed record of every unit
@@ -50,7 +48,6 @@ pub mod artifact;
 pub mod before_call;
 pub mod calls;
 pub mod canonical;
-pub mod caps;
 pub mod channel_key;
 pub mod claim;
 pub mod commit;
@@ -101,10 +98,6 @@ pub use artifact::{
     files_history_step, files_open_puts, files_open_step,
 };
 pub use canonical::{CanonicalError, canonical_bytes};
-pub use caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, FsAuthority, LaunchGrants, ResourceRef,
-    Scope, decide_app, decide_capability, host_covers, path_covers,
-};
 pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, Invoker, UnitPath,
     check_claimed, claims_of, field_edit_mutation, record_unit,

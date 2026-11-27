@@ -1,9 +1,12 @@
 //! Which names a sandbox may resolve, and so which addresses it may reach;
-//! the grammar and the decision are `collab_types::caps::net`'s.
+//! the grammar and the decision are `tilo_permissions::caps::net`'s.
 
 use std::net::IpAddr;
 
-pub use collab_types::caps::{Allowed, EgressPolicy, HostPattern, NetHostError};
+pub use tilo_permissions::caps::Allowed;
+pub use tilo_permissions::caps::EgressPolicy;
+pub use tilo_permissions::caps::HostPattern;
+pub use tilo_permissions::caps::NetHostError;
 
 /// Whether an address a resolver answered for an allowed name may be admitted:
 /// never the unspecified, multicast, broadcast, link-local or loopback ones.
@@ -163,7 +166,7 @@ mod tests {
 
         phase environment_egress_answers_every_shared_vector;
         {
-            let vectors = include_str!("../../collab-types/tests/net_host_vectors.txt");
+            let vectors = include_str!("../../permissions/tests/net_host_vectors.txt");
             let rows: Vec<(&str, &str, bool)> = vectors
                 .lines()
                 .map(str::trim)

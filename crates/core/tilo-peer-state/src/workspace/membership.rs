@@ -1431,7 +1431,7 @@ fn sandbox(
             continue;
         }
         may(governance::GRANT)?;
-        let capability: collab_types::caps::CapOverride = serde_json::from_slice(bytes)
+        let capability: tilo_permissions::caps::CapOverride = serde_json::from_slice(bytes)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
         if !capability.is_durable() {
             return Err(MembershipRefusal::Refused(format!(

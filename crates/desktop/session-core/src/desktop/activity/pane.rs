@@ -35,9 +35,12 @@ use ui::time::{Duration, SystemTime};
 
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
-use collab_types::caps::{Access, CapOverride, Effect, Scope};
 use tilo_action_policy::Grantee;
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::{widget::ArtifactKind, widget::HistoryEntryId};
 use ui::widget::EntryKind;

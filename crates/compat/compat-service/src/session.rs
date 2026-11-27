@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use collab_types::caps::CapOverride;
 use compat_catalogue::{ApplicationQuery, Catalogue, Layer, VmFallback};
 use rustix::net::{
     RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
@@ -22,6 +21,7 @@ use rustix::net::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_clock::try_unix_now;
+use tilo_permissions::caps::CapOverride;
 use wire_frame::{FrameError, Framing};
 
 mod manager;

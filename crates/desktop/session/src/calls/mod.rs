@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::DeviceCap;
 use media::realtime::InputFormat;
 use media::realtime::capture::{CaptureConfig, VideoCapture};
 use tilo_actions::remote::native_media::{
@@ -27,6 +26,7 @@ use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
 use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters, ScreenShare};
+use tilo_permissions::caps::DeviceCap;
 
 use crate::sync::{self, LiveCall};
 use media::voice::call::{self, Audio, Source, Voice};

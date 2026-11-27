@@ -1,7 +1,7 @@
 //! Tilo's single broker for launching Windows software.
 //!
 //! The catalogue chooses a route, but grants no authority. This service
-//! resolves the ordinary [`collab_types::caps::CapOverride`] grants through
+//! resolves the ordinary [`tilo_permissions::caps::CapOverride`] grants through
 //! [`launcher::capabilities::CapabilityPlan`], then projects that result into
 //! a fixed Wine/UMU Bubblewrap shape or passes it unchanged to the managed VM
 //! delegate. It deliberately defines no parallel permission vocabulary.

@@ -1683,7 +1683,7 @@ pub fn readable_folder(
         .iter()
         .find(|granted| granted.id == capability)
         .ok_or_else(|| format!("the workspace has no capability `{capability}`"))?;
-    let collab_types::Scope::FsPath(path) = &granted.scope else {
+    let tilo_permissions::caps::Scope::FsPath(path) = &granted.scope else {
         return Err(format!("capability `{capability}` does not share a folder"));
     };
     let Some(saver) = saver.person_id().filter(|saver| {
@@ -1692,13 +1692,13 @@ pub fn readable_folder(
         return Err("the saver is not a member of the workspace".into());
     };
     let acting = tilo_member_types::Acting::person(saver);
-    if collab_types::caps::decide_capability(
+    if tilo_permissions::caps::decide_capability(
         &acting,
-        &collab_types::ResourceRef::FsPath(path.clone()),
-        collab_types::caps::Access::Read,
+        &tilo_permissions::caps::ResourceRef::FsPath(path.clone()),
+        tilo_permissions::caps::Access::Read,
         &workspace.sandbox,
         Some(tilo_clock::unix_now().saturating_mul(1000)),
-    ) != collab_types::CapDecision::Allow
+    ) != tilo_permissions::caps::CapDecision::Allow
     {
         return Err(format!(
             "the saver may not read the folder capability `{capability}` shares"

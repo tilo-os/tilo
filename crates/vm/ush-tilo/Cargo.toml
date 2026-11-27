@@ -11,6 +11,7 @@ name = "ush_tilo"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../../core/permissions" }
 ush-shell = { path = "../ush-shell" }
 # The record's grants and file actions: what this host reads under and writes through.
 tilo-environment = { path = "../../core/environment" }

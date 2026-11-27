@@ -15,9 +15,14 @@
 
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, LaunchGrants, Scope};
 use tilo_action_policy::Grantee;
 use tilo_action_policy::WorkspacePolicy;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::DeviceCap;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::LaunchGrants;
+use tilo_permissions::caps::Scope;
 
 /// The one app that browses this device's own files. It is handed the home
 /// of the machine it runs on; every other app reaches files through what the
@@ -222,7 +227,9 @@ mod tests {
     use tilo_app_package::manifest::{NetMode, SandboxNet};
 
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Scope;
 
     fn granted(workspace: &Workspace, app: &str, path: &str) -> LaunchGrants {
         let mut grants = workspace.grants.clone();

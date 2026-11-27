@@ -36,6 +36,7 @@ path = "src/lib.rs"
 dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # A launch holds its chosen trees under a lock the collection respects (`lease`).
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }

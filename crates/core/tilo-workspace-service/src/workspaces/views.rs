@@ -16,7 +16,7 @@ pub struct ViewReadPolicy {
     /// The certified caller's current member access in the workspace.
     pub access: MemberAccess,
     /// The workspace's current sandbox capabilities.
-    pub sandbox: Vec<collab_types::caps::CapOverride>,
+    pub sandbox: Vec<tilo_permissions::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
 }

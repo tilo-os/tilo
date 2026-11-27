@@ -17,11 +17,11 @@
 use std::path::{Path, PathBuf};
 
 use automerge::ChangeHash;
-use collab_types::caps::CapOverride;
 use collab_types::store::wire::{Bytes, Command, RecordPage, RecordPages, Reply};
 use tilo_device_identity::login::TERMINAL_RECORDS;
 use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, is_record_key};
+use tilo_permissions::caps::CapOverride;
 use tilo_resource::{AppNamed, Doc, Invoke, Replica, Resource};
 
 use crate::images::Images;
@@ -126,7 +126,7 @@ impl Records {
             .find(|grant| !confinement.admits(grant))
         {
             Some(CapOverride {
-                scope: collab_types::caps::Scope::FsPath(path),
+                scope: tilo_permissions::caps::Scope::FsPath(path),
                 ..
             }) => Err(RecordError::Refused(confinement.refusal(path))),
             Some(_) => Err(RecordError::Refused(
@@ -452,13 +452,13 @@ impl Records {
             environment.home_dir = home;
         }
         for grant in &mut environment.grants {
-            let collab_types::caps::Scope::FsPath(path) = &grant.scope else {
+            let tilo_permissions::caps::Scope::FsPath(path) = &grant.scope else {
                 continue;
             };
             let Some(moved) = rehome(path) else {
                 continue;
             };
-            let write = grant.access == collab_types::caps::Access::Write;
+            let write = grant.access == tilo_permissions::caps::Access::Write;
             let made = tilo_environment::dir_grant(Path::new(&moved), write)
                 .map_err(RecordError::Refused)?;
             grant.scope = made.scope;
@@ -581,8 +581,11 @@ impl Records {
 }
 
 /// The verb that grants what `grant` does: a directory, or a host.
-fn granting(grant: &collab_types::caps::CapOverride) -> Result<Invoke<Environment>, RecordError> {
-    use collab_types::caps::{Access, Scope};
+fn granting(
+    grant: &tilo_permissions::caps::CapOverride,
+) -> Result<Invoke<Environment>, RecordError> {
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::Scope;
     match &grant.scope {
         Scope::FsPath(path) => {
             Ok(Environment::GRANT_DIR.with((path.clone(), grant.access == Access::Write)))
@@ -1221,7 +1224,7 @@ mod tests {
             let read = records.load(DEFAULT_RECORD).unwrap().unwrap();
             assert!(
                 read.grants.iter().all(|g| {
-                    !matches!(&g.scope, collab_types::caps::Scope::FsPath(p) if Path::new(p).starts_with(tree(W2)))
+                    !matches!(&g.scope, tilo_permissions::caps::Scope::FsPath(p) if Path::new(p).starts_with(tree(W2)))
                 }),
                 "{:?}",
                 read.grants

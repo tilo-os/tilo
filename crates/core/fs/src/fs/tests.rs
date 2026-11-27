@@ -2408,8 +2408,12 @@ mod shipped_access_tests {
     /// The list a session sends a mount whose person has write access to workspace `id` by
     /// their role: the workspace's folder bounded, and the person granted inside it.
     fn sessions_list(id: &str) -> String {
-        use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
         use tilo_action_policy::{Grantee, Role};
+        use tilo_permissions::caps::Access;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Effect;
+        use tilo_permissions::caps::FsAuthority;
+        use tilo_permissions::caps::Scope;
 
         let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
         let capabilities = vec![

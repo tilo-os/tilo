@@ -452,17 +452,21 @@ mod tests {
         {
             let record = FileDocumentId::new();
             let other = FileDocumentId::new();
-            let scope = collab_types::Scope::FsResource(record.0.to_string());
+            let scope = tilo_permissions::caps::Scope::FsResource(record.0.to_string());
             assert!(
-                scope
-                    .matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
+                scope.matches_resource(&tilo_permissions::caps::ResourceRef::FsResource(
+                    record.0.to_string()
+                ))
             );
             assert!(
-                !scope
-                    .matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
+                !scope.matches_resource(&tilo_permissions::caps::ResourceRef::FsResource(
+                    other.0.to_string()
+                ))
             );
             assert!(
-                !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))
+                !scope.matches_resource(&tilo_permissions::caps::ResourceRef::FsPath(
+                    "/renamed.txt".into()
+                ))
             );
         }
     }

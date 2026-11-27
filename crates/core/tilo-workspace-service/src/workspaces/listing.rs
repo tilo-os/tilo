@@ -489,7 +489,7 @@ impl Workspaces {
     /// The sandbox capabilities `workspace`'s governance grants its apps: the
     /// folders they reach in the Files mounts, as every other reader of them
     /// takes them. Empty for a workspace this service does not hold.
-    pub async fn sandbox_of(&self, workspace: &str) -> Vec<collab_types::caps::CapOverride> {
+    pub async fn sandbox_of(&self, workspace: &str) -> Vec<tilo_permissions::caps::CapOverride> {
         let Ok(state) = self.workspace(workspace).await else {
             return Vec::new();
         };

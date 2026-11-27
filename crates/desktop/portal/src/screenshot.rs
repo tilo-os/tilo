@@ -103,7 +103,7 @@ async fn take(
     // A workspace that refuses its apps the screen refuses a picture the person would pick too.
     if portal
         .consents
-        .refused(caller, collab_types::caps::DeviceCap::Screen)
+        .refused(caller, tilo_permissions::caps::DeviceCap::Screen)
     {
         return Err(Ended::Cancelled);
     }
@@ -133,7 +133,7 @@ async fn take(
                 .decide(
                     caller,
                     &handle,
-                    collab_types::caps::DeviceCap::Screen,
+                    tilo_permissions::caps::DeviceCap::Screen,
                     AccessQuestion {
                         capability: SCREENSHOT_CAPABILITY.into(),
                         reason: None,

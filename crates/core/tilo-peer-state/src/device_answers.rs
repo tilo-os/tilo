@@ -15,11 +15,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use collab_types::caps::DeviceCap;
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::Answer;
 use tilo_action_types::Lifetime;
 use tilo_lock::MutexRecover as _;
+use tilo_permissions::caps::DeviceCap;
 use tilo_user_identity::DeviceCert;
 
 /// One kept answer, as the person's record of them holds it.

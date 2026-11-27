@@ -4,10 +4,15 @@
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;
 
-use collab_types::caps::{Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope};
 use tilo_action_policy::Grantee;
 use tilo_action_types::Lifetime;
 use tilo_desktop_model::*;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::DeviceCap;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
 
 fn grant(app: &str, scope: Scope, access: Access, lifetime: Lifetime) -> CapOverride {
     CapOverride::grant(Grantee::person("ada"), scope, access)
@@ -37,7 +42,7 @@ tilo_test_env::scenario! {
                 "a workspace with no owner has no administrators"
             );
             assert_ne!(
-                collab_types::caps::decide_app("org.gnome.gedit",
+                tilo_permissions::caps::decide_app("org.gnome.gedit",
                     &ResourceRef::FsPath("/home/u/work".into()),
                     Access::Read, &ws.sandbox, Some(NOW * 1000)),
                 CapDecision::Allow,
@@ -49,13 +54,13 @@ tilo_test_env::scenario! {
     phase grants_round_trip_via_serde_json;
     {
         let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Demo");
-        collab_types::caps::sandbox::grant(&mut ws.sandbox, grant(
+        tilo_permissions::caps::sandbox::grant(&mut ws.sandbox, grant(
             "org.gnome.gedit",
             Scope::FsPath("/home/u/work".into()),
             Access::Write,
             Lifetime::UntilRevoked,
         ));
-        collab_types::caps::sandbox::grant(&mut ws.sandbox, grant(
+        tilo_permissions::caps::sandbox::grant(&mut ws.sandbox, grant(
             "org.gnome.gedit",
             Scope::NetHost("github.com".into()),
             Access::Write,
@@ -65,31 +70,31 @@ tilo_test_env::scenario! {
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round.sandbox, ws.sandbox);
-        assert_eq!(collab_types::caps::sandbox::of_app_at(&round.sandbox, "org.gnome.gedit", NOW).len(), 2);
+        assert_eq!(tilo_permissions::caps::sandbox::of_app_at(&round.sandbox, "org.gnome.gedit", NOW).len(), 2);
 
         // And the decision function agrees after the round-trip.
         let app = "org.gnome.gedit";
         assert_eq!(
-            collab_types::caps::decide_app(app,
+            tilo_permissions::caps::decide_app(app,
                 &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
                 Access::Write, &round.sandbox, Some(NOW * 1000)),
             CapDecision::Allow
         );
         assert_ne!(
-            collab_types::caps::decide_app(app,
+            tilo_permissions::caps::decide_app(app,
                 &ResourceRef::FsPath("/home/u/secrets".into()),
                 Access::Read, &round.sandbox, Some(NOW * 1000)),
             CapDecision::Allow,
             "a path outside the grant stays denied across serialisation"
         );
         assert_eq!(
-            collab_types::caps::decide_app(app,
+            tilo_permissions::caps::decide_app(app,
                 &ResourceRef::NetHost("github.com".into()),
                 Access::Write, &round.sandbox, Some(NOW * 1000)),
             CapDecision::Allow
         );
         assert_ne!(
-            collab_types::caps::decide_app(app,
+            tilo_permissions::caps::decide_app(app,
                 &ResourceRef::NetHost("evil.example".into()),
                 Access::Write, &round.sandbox, Some(NOW * 1000)),
             CapDecision::Allow,
@@ -141,7 +146,7 @@ tilo_test_env::scenario! {
         );
         first.policy.grant(member("later", Some(LATER)));
         let mut second = Workspace::new(WorkspaceId::from_u128(2), "Second");
-        collab_types::caps::sandbox::grant(&mut second.sandbox, grant(
+        tilo_permissions::caps::sandbox::grant(&mut second.sandbox, grant(
             "org.gnome.gedit",
             Scope::FsPath("/home/u/work".into()),
             Access::Write,
@@ -149,7 +154,7 @@ tilo_test_env::scenario! {
         ));
         assert_eq!(first.policy.next_grant_expiry_after(NOW), Some(LATER));
         assert_eq!(
-            collab_types::caps::sandbox::next_expiry_after(&second.sandbox, NOW),
+            tilo_permissions::caps::sandbox::next_expiry_after(&second.sandbox, NOW),
             Some(SOON)
         );
         let tree = Layout {
@@ -171,7 +176,7 @@ tilo_test_env::scenario! {
         assert!(!commands::stop_control(&mut ws.policy, TERMINAL), "nothing to take back");
         let control = commands::control_grant(&ws.policy, TERMINAL, Grantee::person("ada"));
         ws.policy.grant(control);
-        collab_types::caps::sandbox::grant(&mut ws.sandbox, grant(
+        tilo_permissions::caps::sandbox::grant(&mut ws.sandbox, grant(
             TERMINAL,
             Scope::NetHost("*".into()),
             Access::Write,
@@ -185,7 +190,7 @@ tilo_test_env::scenario! {
         assert!(commands::stop_control(&mut ws.policy, TERMINAL));
         assert!(!commands::has_control_at(&ws.policy, TERMINAL, NOW));
         assert_eq!(
-            collab_types::caps::sandbox::of_app_at(&ws.sandbox, TERMINAL, NOW).len(),
+            tilo_permissions::caps::sandbox::of_app_at(&ws.sandbox, TERMINAL, NOW).len(),
             1,
             "its network grant stays"
         );

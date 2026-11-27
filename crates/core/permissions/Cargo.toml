@@ -17,10 +17,16 @@ tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
-collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
+# The system app a presence key or a permission scope refers to.
+tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
+# The capabilities are records of the workspace.
+tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }

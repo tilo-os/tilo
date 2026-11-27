@@ -246,7 +246,9 @@ fn the_owner_raised_ada() -> (WorkspaceId, WorkspacePolicy, String, String, Stri
 /// member's session, so that member's device starts the app without asking its person again.
 #[test]
 fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
-    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Scope;
     let sessions = the_owner_admitted_ada();
     let owner = hex::encode(sessions.owner_cert.user_public_key);
     let mut workspace = Workspace::new(sessions.workspace_id, "Test");
@@ -257,7 +259,7 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
         Access::Read,
     )
     .through("so.tilo.mail");
-    let edit = collab_types::caps::sandbox::grant_as_at(
+    let edit = tilo_permissions::caps::sandbox::grant_as_at(
         &workspace.policy,
         &mut workspace.sandbox,
         &owner,
@@ -828,15 +830,15 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
     let mut session = a_listed_session();
     // The workspace grants an app the camera, as one of its devices wrote.
     let mut tree = session.session().handle().read(Clone::clone);
-    collab_types::caps::sandbox::grant(
+    tilo_permissions::caps::sandbox::grant(
         &mut tree
             .active_workspace_mut()
             .expect("a workspace in front")
             .sandbox,
-        collab_types::caps::CapOverride::grant(
+        tilo_permissions::caps::CapOverride::grant(
             tilo_action_policy::Grantee::person("ada"),
-            collab_types::caps::Scope::Device(collab_types::caps::DeviceCap::Camera),
-            collab_types::caps::Access::Read,
+            tilo_permissions::caps::Scope::Device(tilo_permissions::caps::DeviceCap::Camera),
+            tilo_permissions::caps::Access::Read,
         )
         .through("so.tilo.notes")
         .lasting(tilo_action_types::Lifetime::Session),

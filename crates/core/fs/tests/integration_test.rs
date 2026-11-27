@@ -17,13 +17,16 @@ use std::{
 };
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
 use fuser::{Config, MountOption};
 use tempfile::tempdir;
 use tilo_action_policy::Grantee;
 use tilo_fs::namespace::ROOT_INO;
 use tilo_fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::Access as CapAccess;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
@@ -1135,7 +1138,7 @@ fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
 fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
     std::fs::write(
         path,
-        serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
+        serde_json::to_vec(&tilo_permissions::caps::FsAuthority::from(caps.to_vec())).unwrap(),
     )
     .unwrap();
     std::thread::sleep(Duration::from_millis(10));

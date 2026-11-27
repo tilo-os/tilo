@@ -8,7 +8,7 @@
 //!   [`PermissionScope::Action`] names a node below the workspace and the action's
 //!   kind.
 //! - **May this app's code reach this path, device or host?** Decided by the
-//!   sandbox capabilities of [`collab_types::caps`]
+//!   sandbox capabilities of [`caps`]
 //!   ([`PermissionScope::Sandbox`]).
 //!
 //! The host installs both via [`PermissionContext::new`]; nothing here decides
@@ -57,11 +57,11 @@ impl PartialEq for OnceSpender {
 
 impl Eq for OnceSpender {}
 
-pub use collab_types::caps::{
-    Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
-};
-pub use collab_types::role::Role;
+pub mod caps;
+
+pub use caps::{Access, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability};
 pub use tilo_action_policy as policy;
+pub use tilo_action_policy::Role;
 pub use tilo_action_policy::{Answer, MemberAccess, TreePath};
 pub use tilo_action_types::{ActionKind, KindSet};
 
@@ -74,7 +74,7 @@ pub const LOCAL_USER: &str = "local";
 pub const LOCAL_WORKSPACE: &str = "local";
 
 /// Which system app a presence key or a permission scope refers to.
-pub use collab_types::presence::AppKind;
+pub use tilo_presence::AppKind;
 
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -298,11 +298,11 @@ impl PermissionContext {
             Acting::person(LOCAL_USER),
             [
                 Scope::FsPath("/".into()),
-                Scope::NetHost(collab_types::caps::EVERY.into()),
-                Scope::FsResource(collab_types::caps::EVERY.into()),
+                Scope::NetHost(crate::caps::EVERY.into()),
+                Scope::FsResource(crate::caps::EVERY.into()),
             ]
             .into_iter()
-            .chain(collab_types::caps::DeviceCap::ALL.map(Scope::Device))
+            .chain(crate::caps::DeviceCap::ALL.map(Scope::Device))
             .enumerate()
             .map(|(index, scope)| {
                 CapOverride::grant(Grantee::person(LOCAL_USER), scope, Access::Write)
@@ -1997,7 +1997,7 @@ mod tests {
                 )));
                 assert_eq!(
                     ctx.capabilities().len(),
-                    3 + collab_types::caps::DeviceCap::ALL.len(),
+                    3 + crate::caps::DeviceCap::ALL.len(),
                     "every path, site and file, and every device by its type"
                 );
                 assert_eq!(ctx.capabilities()[0].access, Access::Write);

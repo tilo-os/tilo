@@ -264,7 +264,8 @@ pub fn public_suffix_wildcard(entry: &str) -> Option<&str> {
 /// under the domain (the domain itself needs its own entry), and cannot name
 /// a public suffix or an address literal. Only an `allowlist` reads them.
 pub fn validate_net_hosts(net: &SandboxNet) -> Result<(), ManifestError> {
-    use collab_types::caps::{HostPattern, NetHostError};
+    use tilo_permissions::caps::HostPattern;
+    use tilo_permissions::caps::NetHostError;
 
     if !matches!(net.mode, NetMode::Allowlist) {
         return Ok(());

@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{Seek as _, SeekFrom};
 use std::sync::{Arc, Mutex};
 
-use collab_types::caps::CapOverride;
+use tilo_permissions::caps::CapOverride;
 
 use super::{
     CLOSE_BEFORE_DELETE, CapabilityAuthority, InstallOutcome, ManagedApplication,

@@ -179,7 +179,7 @@ impl crate::Shared {
 /// back, so it goes. Whether the shell's workspace changed.
 fn project_sandbox(
     workspace: &mut Workspace,
-    mut listed: Vec<collab_types::caps::CapOverride>,
+    mut listed: Vec<tilo_permissions::caps::CapOverride>,
 ) -> bool {
     listed.extend(
         workspace

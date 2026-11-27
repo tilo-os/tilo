@@ -50,6 +50,7 @@ test = true
 required-features = ["test-support"]
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 futures = { workspace = true, default-features = true }

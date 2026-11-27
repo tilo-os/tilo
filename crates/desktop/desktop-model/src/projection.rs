@@ -291,7 +291,7 @@ pub fn workspace_content_of(doc: &AutoCommit) -> tilo_action_policy::ContentPoli
 /// [`WORKSPACE_SANDBOX_KEY`].
 pub fn project_workspace_sandbox(
     doc: &mut AutoCommit,
-    sandbox: &[collab_types::caps::CapOverride],
+    sandbox: &[tilo_permissions::caps::CapOverride],
 ) -> Result<(), String> {
     let entries = sandbox
         .iter()
@@ -301,7 +301,7 @@ pub fn project_workspace_sandbox(
 }
 
 /// The sandbox capabilities a workspace document carries.
-pub fn workspace_sandbox_of(doc: &AutoCommit) -> Vec<collab_types::caps::CapOverride> {
+pub fn workspace_sandbox_of(doc: &AutoCommit) -> Vec<tilo_permissions::caps::CapOverride> {
     blob_map_of(doc, WORKSPACE_SANDBOX_KEY)
         .into_iter()
         .map(|(_, cap)| cap)

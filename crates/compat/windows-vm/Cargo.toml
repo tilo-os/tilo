@@ -7,6 +7,7 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../../core/permissions" }
 uuid.workspace = true
 tilo-paths.workspace = true
 tilo-libvirt-domain = { path = "../../vm/libvirt-domain" }

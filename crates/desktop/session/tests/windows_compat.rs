@@ -1608,8 +1608,10 @@ fn a_windows_programs_sound_lives_as_long_as_the_program() {
 /// Grant the program a filtered network for `name`, through the session's shell, and let the
 /// session publish it before the compatibility service is asked to start it.
 fn grant_network(desktop: &mut KeptDesktop, rig: &KeptRig, name: &str) {
-    use collab_types::caps::{Access, CapOverride, Scope};
     use tilo_action_policy::Grantee;
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Scope;
     let handle = desktop.session.handle();
     let mut tree: tilo_desktop_model::Layout = handle.read(Clone::clone);
     let workspace = tree
@@ -1642,7 +1644,7 @@ fn revoke_network(desktop: &KeptDesktop) {
     for workspace in &mut tree.workspaces {
         workspace
             .sandbox
-            .retain(|grant| !matches!(grant.scope, collab_types::caps::Scope::NetHost(_)));
+            .retain(|grant| !matches!(grant.scope, tilo_permissions::caps::Scope::NetHost(_)));
     }
     handle.replace_tree(tree);
 }

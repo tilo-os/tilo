@@ -42,7 +42,7 @@ struct Cli {
 /// How the mount enforces per-identity file access.
 #[derive(Args, Debug, Clone, Default)]
 struct AclArgs {
-    /// Enforce this capability list (JSON array of `collab_types::CapOverride`); a load failure aborts the mount.
+    /// Enforce this capability list (JSON array of `tilo_permissions::caps::CapOverride`); a load failure aborts the mount.
     #[arg(long, value_name = "FILE")]
     acl: Option<PathBuf>,
     /// The identity this mount acts as: 64 hex chars (Ed25519 public key). Defaults to the certified human root.
@@ -1456,8 +1456,12 @@ mod tests {
     /// The list a session sends a mount whose person, `person`, has write access to workspace
     /// `id` by their role: the workspace's folder bounded, and the person granted inside it.
     fn sessions_list(person: &IdentityKey, id: &str) -> String {
-        use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
         use tilo_action_policy::{Grantee, Role};
+        use tilo_permissions::caps::Access;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Effect;
+        use tilo_permissions::caps::FsAuthority;
+        use tilo_permissions::caps::Scope;
 
         let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
         let capabilities = vec![
@@ -1527,7 +1531,10 @@ mod tests {
                 assert!(!acl.permits(&identity, "/anything", Access::Write));
             }
             {
-                use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
+                use tilo_permissions::caps::Access as CapAccess;
+                use tilo_permissions::caps::CapOverride;
+                use tilo_permissions::caps::Effect;
+                use tilo_permissions::caps::Scope;
                 use tilo_fs::Access;
 
                 let who = [0x0A; 32];
@@ -1541,7 +1548,7 @@ mod tests {
                 let path = dir.path().join("caps.json");
                 std::fs::write(
                     &path,
-                    serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+                    serde_json::to_vec(&tilo_permissions::caps::FsAuthority::from(caps)).unwrap(),
                 )
                 .unwrap();
 

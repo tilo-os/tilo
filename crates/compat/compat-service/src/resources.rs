@@ -149,7 +149,7 @@ impl LaunchResourceBroker for SystemResourceBroker {
         let microphone = request
             .capabilities
             .devices
-            .contains(&collab_types::caps::DeviceCap::Microphone);
+            .contains(&tilo_permissions::caps::DeviceCap::Microphone);
         let (id, graph) = self
             .prepare(microphone)
             .map_err(|error| ResourceError::Refused(format!("audio proxy: {error}")))?;

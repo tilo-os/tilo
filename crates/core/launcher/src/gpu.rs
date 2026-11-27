@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tilo_lock::MutexRecover as _;
 
 /// The device an app declares and is granted to reach the GPU itself.
-pub const CAPABILITY: collab_types::caps::DeviceCap = collab_types::caps::DeviceCap::Gpu;
+pub const CAPABILITY: tilo_permissions::caps::DeviceCap = tilo_permissions::caps::DeviceCap::Gpu;
 
 /// Whether `manifest`'s app opens the GPU itself.
 pub fn granted(

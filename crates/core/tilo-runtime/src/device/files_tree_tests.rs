@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use collab_types::caps::{Access as Granted, CapOverride, Scope};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::Grantee;
 use tilo_actions::remote::{
@@ -29,6 +28,9 @@ use tilo_actions::remote::{
 };
 use tilo_fs::Access;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
+use tilo_permissions::caps::Access as Granted;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Scope;
 use tilo_server_protocol::workspaces::{RemoveMemberRequest, Role};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::files::{FOLDERS_APP, FolderList};

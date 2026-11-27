@@ -1,6 +1,6 @@
 //! The capability list a mount enforces, kept current while it runs.
 //!
-//! `--acl FILE` binds a [`collab_types::FsAuthority`] to a mount: the list the session last
+//! `--acl FILE` binds a [`tilo_permissions::caps::FsAuthority`] to a mount: the list the session last
 //! decided from the workspace's signed member list and told the mount over its tree's
 //! connection ([`CapabilityFile::keep`]), kept here so a mount that starts while the session is
 //! away enforces the last list it was told.
@@ -27,8 +27,8 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use collab_types::CapOverride;
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::CapOverride;
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;
@@ -71,7 +71,7 @@ impl CapabilityFile {
     /// # Errors
     ///
     /// Returns [`CapsError::Read`] when `path` cannot be opened or stat'd, or
-    /// [`CapsError::Parse`] when its contents are not an [`collab_types::FsAuthority`].
+    /// [`CapsError::Parse`] when its contents are not an [`tilo_permissions::caps::FsAuthority`].
     pub fn load(
         path: impl Into<PathBuf>,
         identity: IdentityKey,
@@ -235,7 +235,10 @@ fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, FileStamp), CapsE
 /// The file authority `bytes` hold.
 /// # Errors
 /// [`CapsError::Parse`] for a malformed file.
-pub fn authority(bytes: &[u8], path: &Path) -> Result<collab_types::FsAuthority, CapsError> {
+pub fn authority(
+    bytes: &[u8],
+    path: &Path,
+) -> Result<tilo_permissions::caps::FsAuthority, CapsError> {
     serde_json::from_slice(bytes).map_err(|source| CapsError::Parse {
         path: path.to_path_buf(),
         source,
@@ -262,8 +265,10 @@ pub enum CapsError {
 mod tests {
     use super::*;
     use crate::acl::Access;
-    use collab_types::{Access as CapAccess, Effect, Scope};
     use tilo_action_policy::Grantee;
+    use tilo_permissions::caps::Access as CapAccess;
+    use tilo_permissions::caps::Effect;
+    use tilo_permissions::caps::Scope;
 
     fn alice() -> Grantee {
         Grantee::person(hex::encode(ALICE))
@@ -283,7 +288,7 @@ mod tests {
     fn write_caps(path: &Path, caps: &[CapOverride]) {
         std::fs::write(
             path,
-            serde_json::to_vec(&collab_types::FsAuthority::from(caps.to_vec())).unwrap(),
+            serde_json::to_vec(&tilo_permissions::caps::FsAuthority::from(caps.to_vec())).unwrap(),
         )
         .unwrap();
         // The stamp includes mtime at filesystem resolution; don't rely on length differing within one tick.

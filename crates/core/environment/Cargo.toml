@@ -14,6 +14,7 @@ name = "tilo_environment"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 tilo-member-types.workspace = true
 # The record layer: an environment is a `#[resource]` record with actions.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }

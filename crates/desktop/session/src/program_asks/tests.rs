@@ -462,7 +462,7 @@ async fn declining_refuses() {
 /// durations they may allow it for, and the one they pick is what the portal keeps.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_portal_request_asks_and_is_answered() {
-    use collab_types::caps::DeviceCap;
+    use tilo_permissions::caps::DeviceCap;
     use tilo_portal::consent::{AccessQuestion, Consents};
     let (sender, device) = session();
     let consents = Consents::new(sender, tilo_peer_state::DeviceGrants::unkept());

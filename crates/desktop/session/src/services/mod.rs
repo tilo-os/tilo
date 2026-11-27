@@ -21,10 +21,10 @@
 //! ([`launcher::services::HANDED_SERVICES`]), the services every app's manifest declares, and the
 //! connections every tilolang instance is handed — and fails when one has no row here.
 
-use collab_types::caps::DeviceCap;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
+use tilo_permissions::caps::DeviceCap;
 
 use serde_json::{Map, Value};
 use settings_sections::network_usage::{ConnectionKind, Reading};

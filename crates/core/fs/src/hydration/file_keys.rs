@@ -644,8 +644,10 @@ mod tests {
         another: WorkspaceId,
         allowed: bool,
     ) -> crate::acl::WorkspaceAcl {
-        use collab_types::{CapOverride, Effect, Scope};
         use tilo_action_policy::Grantee;
+        use tilo_permissions::caps::CapOverride;
+        use tilo_permissions::caps::Effect;
+        use tilo_permissions::caps::Scope;
 
         let capabilities: Vec<_> = [workspace, another]
             .into_iter()
@@ -656,14 +658,14 @@ mod tests {
                     who.clone(),
                     scope.clone(),
                     Effect::WorkspaceFileBoundary,
-                    collab_types::Access::Read,
+                    tilo_permissions::caps::Access::Read,
                 )];
                 if id != workspace || allowed {
                     caps.push(CapOverride::new(
                         who,
                         scope,
                         Effect::WorkspaceFileAccess,
-                        collab_types::Access::Write,
+                        tilo_permissions::caps::Access::Write,
                     ));
                 }
                 caps

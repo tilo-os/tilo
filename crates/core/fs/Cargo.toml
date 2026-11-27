@@ -91,6 +91,7 @@ path = "tests/document_media_footprint.rs"
 required-features = ["filesystem"]
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-action-line = { version = "0.1.0", path = "../action-line" }

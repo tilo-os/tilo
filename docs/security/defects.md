@@ -1231,7 +1231,7 @@ These are load-bearing and correct. Changing them requires understanding why the
   separately stored field, so the two cannot drift.
 - `crates/core/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
   launch is refused, not downgraded.
-- `crates/core/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
+- `crates/core/permissions/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
   egress proxy specifically so the two interpretations cannot diverge.
 - `docs/app-model/trust.md:218` — package revocation is re-read at every launch; there is no
   "trust the install-time verification forever" cache.

@@ -5,7 +5,7 @@
 //! Fail closed: an identity has access only if some entry explicitly grants it, and a mount with no
 //! ACL attached keeps Unix-veneer-only behaviour. The one permission vocabulary is the capability
 //! model: [`WorkspaceAcl::from_capabilities`] delegates every decision to
-//! [`collab_types::decide_capability`], so containment, expiry and deny-bias never drift from the
+//! [`tilo_permissions::caps::decide_capability`], so containment, expiry and deny-bias never drift from the
 //! other enforcement points. [`AclEntry`] remains for direct, capability-free grants.
 //!
 //! A denial is an absence: [`WorkspaceAcl::visible`] decides whether a path is in the identity's view
@@ -14,11 +14,15 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use collab_types::{
-    Access as CapAccess, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
-    path_covers,
-};
 use tilo_member_types::{Acting, MemberId};
+use tilo_permissions::caps::Access as CapAccess;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::Scope;
+use tilo_permissions::caps::decide_capability;
+use tilo_permissions::caps::path_covers;
 
 /// A Tilo identity: the 32-byte Ed25519 public key that anchors a person or one of their devices.
 pub type IdentityKey = [u8; 32];
@@ -44,7 +48,7 @@ pub struct AclEntry {
 /// The capability list bound to one mount identity: the actor the mount acts as and the
 /// capabilities authoritative for it. Decisions are not precomputed into [`AclEntry`]s, since a
 /// flat prefix list cannot express a `Restrict` deeper than a `Grant`; the list stays whole and
-/// [`collab_types::decide_capability`] is asked about the concrete path at check time.
+/// [`tilo_permissions::caps::decide_capability`] is asked about the concrete path at check time.
 #[derive(Clone, Debug)]
 struct CapBinding {
     identity: IdentityKey,
@@ -172,7 +176,7 @@ fn mount_acting(identity: IdentityKey, members: &[MemberId]) -> Acting {
 /// A workspace's per-identity access-control list. Two sources, both
 /// A workspace's per-identity access-control list. Two sources, both fail-closed: capability
 /// bindings ([`WorkspaceAcl::from_capabilities`], the production path) delegate to
-/// [`collab_types::decide_capability`]; direct entries ([`AclEntry`]) are a flat list with union
+/// [`tilo_permissions::caps::decide_capability`]; direct entries ([`AclEntry`]) are a flat list with union
 /// semantics, so absence is denial. An empty ACL grants nothing to anyone.
 #[cfg(test)]
 #[derive(Clone, Debug)]
@@ -198,7 +202,7 @@ impl WorkspaceAcl {
     /// root; ancestor scopes map to the root too. The caller's signed list is never modified.
     ///
     /// `caps` is the workspace's whole capability list, unfiltered: capabilities that do not reach
-    /// the mount, are not [`collab_types::Scope::FsPath`], or have expired are ignored by the
+    /// the mount, are not [`tilo_permissions::caps::Scope::FsPath`], or have expired are ignored by the
     /// decision itself, since pre-filtering could drop a `Restrict` that must still bite.
     ///
     /// `members` are the members the mount can prove besides its own key. `now` is seconds since
@@ -305,7 +309,7 @@ impl WorkspaceAcl {
 
     /// Whether `identity` holds `access` on `path`. Fail-closed: `true` only if a direct entry whose
     /// prefix covers `path` grants it, or a bound capability decides `Allow`. Both routes use
-    /// [`collab_types::path_covers`], the function the capability model matches `FsPath` with.
+    /// [`tilo_permissions::caps::path_covers`], the function the capability model matches `FsPath` with.
     pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
         if !plain(path) {
             return false;

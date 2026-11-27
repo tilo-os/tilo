@@ -22,6 +22,7 @@ path = "src/lib.rs"
 # by both the native loader and the Flatpak packager.
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true

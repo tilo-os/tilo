@@ -408,7 +408,7 @@ pub enum SettingsChange {
     },
     /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {
-        capability: collab_types::caps::CapOverride,
+        capability: tilo_permissions::caps::CapOverride,
     },
     /// Take back the sandbox capability with this id.
     RevokeSandbox { capability: String },

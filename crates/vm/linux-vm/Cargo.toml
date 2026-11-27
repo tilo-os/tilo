@@ -33,6 +33,7 @@ path = "src/jail_main.rs"
 ignored = ["serde_bytes"]
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../../core/permissions" }
 tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }

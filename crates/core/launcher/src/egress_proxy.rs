@@ -18,7 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-pub use collab_types::caps::{EgressPolicy, NetHostPattern};
+pub use tilo_permissions::caps::EgressPolicy;
+pub use tilo_permissions::caps::NetHostPattern;
 use tilo_socket::tokio::Stream as LocalStream;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Semaphore, oneshot};
@@ -2251,7 +2252,7 @@ mod tests {
         phase app_egress_answers_every_shared_vector;
         // The app side of the shared vector file, through the production decision.
         {
-            let vectors = include_str!("../../collab-types/tests/net_host_vectors.txt");
+            let vectors = include_str!("../../permissions/tests/net_host_vectors.txt");
             let rows: Vec<(&str, &str, bool)> = vectors
                 .lines()
                 .map(str::trim)

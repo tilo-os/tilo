@@ -203,7 +203,7 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
             reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
         )
     )]
-    fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants;
+    fn launch_grants(&self, workspace: &str) -> tilo_permissions::caps::LaunchGrants;
 
     /// Whether this device holds `workspace`, so an app may be launched into it here.
     fn serves(&self, workspace: &str) -> bool;
@@ -493,10 +493,10 @@ impl Apps {
             reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
         )
     )]
-    fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants {
+    fn launch_grants(&self, workspace: &str) -> tilo_permissions::caps::LaunchGrants {
         self.grants
             .get()
-            .map_or_else(collab_types::caps::LaunchGrants::default, |source| {
+            .map_or_else(tilo_permissions::caps::LaunchGrants::default, |source| {
                 source.launch_grants(workspace)
             })
     }
@@ -511,7 +511,11 @@ impl Apps {
             reason = "only an app sandbox reads it, and this platform has none: every launch is refused"
         )
     )]
-    fn app_grants(&self, app: &InstalledApp, workspace: &str) -> collab_types::caps::LaunchGrants {
+    fn app_grants(
+        &self,
+        app: &InstalledApp,
+        workspace: &str,
+    ) -> tilo_permissions::caps::LaunchGrants {
         self.launch_grants(workspace).for_app(app.app_id.as_str())
     }
 
@@ -523,7 +527,7 @@ impl Apps {
         app: &InstalledApp,
         workspace: &str,
         writes: Option<&capture::Writes>,
-    ) -> collab_types::caps::LaunchGrants {
+    ) -> tilo_permissions::caps::LaunchGrants {
         let mut grants = self.app_grants(app, workspace);
         if let Some(writes) = writes {
             grants.sandbox.extend(writes.grants(app.app_id.as_str()));
@@ -2573,10 +2577,12 @@ mod tests;
 
 /// The device of the machine a capture device is.
 #[cfg(target_os = "macos")]
-pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types::caps::DeviceCap {
+pub(crate) const fn device_cap(
+    device: tilo_capture::DeviceKind,
+) -> tilo_permissions::caps::DeviceCap {
     match device {
-        tilo_capture::DeviceKind::Camera => collab_types::caps::DeviceCap::Camera,
-        tilo_capture::DeviceKind::Microphone => collab_types::caps::DeviceCap::Microphone,
+        tilo_capture::DeviceKind::Camera => tilo_permissions::caps::DeviceCap::Camera,
+        tilo_capture::DeviceKind::Microphone => tilo_permissions::caps::DeviceCap::Microphone,
     }
 }
 

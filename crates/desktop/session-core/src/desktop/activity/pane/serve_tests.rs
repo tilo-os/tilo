@@ -2,8 +2,10 @@ use std::rc::Rc;
 
 use crate::desktop::activity::vocabulary as wire;
 use automerge::ActorId;
-use collab_types::caps::{Access, CapOverride, Scope};
 use tilo_action_policy::Grantee;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Scope;
 
 use super::super::{ActivityView, WorkspaceActivityPane};
 use crate::desktop::activity::testing::{TestHost, TestTree};

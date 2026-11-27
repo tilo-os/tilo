@@ -722,7 +722,7 @@ impl TrustedLauncherRegistry for SessionLaunches {
 
 /// A workspace's sandbox capabilities, whole: restrictions included, as the service filters them to
 /// the program's own app id.
-type Sandbox = Vec<collab_types::caps::CapOverride>;
+type Sandbox = Vec<tilo_permissions::caps::CapOverride>;
 
 /// How long the service waits for the loop to read a sandbox: the loop answers on its next pass, so
 /// this only bounds a frozen session.

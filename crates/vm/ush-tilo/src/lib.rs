@@ -46,12 +46,12 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use collab_types::caps::Access;
-pub use collab_types::caps::CapOverride;
 use tilo_environment::files::{
     AppendFileOp, FileAction, MAX_TEXT_BYTES, WriteOp, anchored, cli, normalize, permits,
     permits_in, ungranted,
 };
+use tilo_permissions::caps::Access;
+pub use tilo_permissions::caps::CapOverride;
 use ush_shell::jobs::Job;
 use ush_shell::{
     DirEntry, FileCall, HistoryQuery, Host, Metadata, Output, Program, Run, Stdio, WriteMode,

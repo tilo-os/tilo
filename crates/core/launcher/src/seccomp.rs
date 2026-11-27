@@ -11,7 +11,7 @@ pub use sandbox_core::seccomp::{
 pub use sandbox_core::seccomp::{SeccompProfile, SyscallGrants};
 
 /// The device that lets an app use `io_uring` (`sandbox_core::seccomp::IO_URING_SYSCALLS`).
-pub const IO_URING: collab_types::caps::DeviceCap = collab_types::caps::DeviceCap::IoUring;
+pub const IO_URING: tilo_permissions::caps::DeviceCap = tilo_permissions::caps::DeviceCap::IoUring;
 
 /// The syscalls one launch of `manifest` may make beyond the baseline.
 #[must_use]

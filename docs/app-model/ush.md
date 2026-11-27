@@ -119,7 +119,7 @@ guest netns (owned by a user namespace the supervisor owns)
   (recorded as `.example.com`, the capability vocabulary's spelling);
   `perm allow-host '*'` everything. An address cannot be granted: it would
   bypass the resolver that decides. The grammar is the one every `NetHost`
-  grant is read with (`collab_types::caps::NetHostPattern`), so a host
+  grant is read with (`tilo_permissions::caps::NetHostPattern`), so a host
   allowed here means the same to an app; only `*` differs, by backend.
 - **No address literal gets through.** An address is reachable only after the
   stub answered it for a granted name, and only until the answer ages out.
@@ -712,7 +712,7 @@ available; the tools an environment already has keep working.
 (see [The network](#the-network)); `perm list` shows hosts as `net …`.
 
 `perm trust-dir ~/src` applies `grant-dir`, which mints a
-`collab_types::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
+`tilo_permissions::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
 `Scope::FsPath`, `Effect::Grant`, `Access::Write` — into the record, and every
 question is `decide_capability`. That is the same record the compositor stores,
 renders in its permissions panel and can revoke. A `Restrict` written elsewhere

@@ -3,7 +3,6 @@ use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use collab_types::caps::CapOverride;
 use compat_catalogue::{
     ApplicationQuery, Architecture, Catalogue, CatalogueError, LaunchPlan, Layer, MatchKind,
     Runtime, VmFallback,
@@ -12,6 +11,7 @@ use launcher::capabilities::CapabilityPlan;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tilo_permissions::caps::CapOverride;
 
 use crate::{
     CapsuleCommandPlan, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, ExecutionError,
@@ -1884,7 +1884,7 @@ fn explanation(
         },
         microphone: capabilities
             .devices
-            .contains(&collab_types::caps::DeviceCap::Microphone),
+            .contains(&tilo_permissions::caps::DeviceCap::Microphone),
         audio_output,
     };
     ExplainStatus {

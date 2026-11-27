@@ -93,11 +93,13 @@ fn fedora_nss_trust_module_resolves_inside_the_app_sandbox() {
 /// return its stdout.
 fn launch_with_grants(
     data: &DataHome,
-    grants: &[(String, collab_types::caps::Access)],
+    grants: &[(String, tilo_permissions::caps::Access)],
     argv: &[&str],
 ) -> String {
-    use collab_types::caps::{CapOverride, LaunchGrants, Scope};
     use tilo_action_policy::Grantee;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::LaunchGrants;
+    use tilo_permissions::caps::Scope;
 
     let caps_file = data.path.join("caps.json");
     let sandbox = grants
@@ -148,7 +150,7 @@ fn launch_with_grants(
     reason = "one person's home, probed phase by phase through the production launch"
 )]
 fn a_home_grant_never_reaches_tilos_private_configuration() {
-    use collab_types::caps::Access;
+    use tilo_permissions::caps::Access;
 
     // Built before the home is replaced: the fixture compiles with `rustc` from the developer's
     // toolchain, which lives under the real `HOME`.
@@ -287,8 +289,8 @@ fn a_home_grant_never_reaches_tilos_private_configuration() {
 /// only while no sandbox binds the runtime directory.
 #[test]
 fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
-    use collab_types::caps::Access;
     use std::os::unix::net::UnixListener;
+    use tilo_permissions::caps::Access;
 
     let _ = workspacetest_payload();
     let mut home = tilo_test_env::TestHome::new().expect("temporary home");

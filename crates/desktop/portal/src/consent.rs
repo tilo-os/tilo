@@ -13,11 +13,11 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use collab_types::caps::DeviceCap;
 use serde::{Deserialize, Serialize};
 use tilo_action_types::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::{DeviceGrants, Kept};
+use tilo_permissions::caps::DeviceCap;
 use tilo_service::{Answer, AskSender, Question};
 
 use crate::PortalCaller;

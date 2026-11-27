@@ -17,6 +17,7 @@ description = "The canonical Tilo desktop model shared by every host."
 # `tools/policy/check_crate_graph.py` enforces that list.
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../../core/permissions" }
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 # Which apps' windows open a record each member keeps as their own, as their manifests declare.

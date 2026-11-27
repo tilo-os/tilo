@@ -637,8 +637,8 @@ fn media_kind(cap: Capability) -> Option<os_actions::MediaKind> {
 }
 
 /// The capability one of the person's answered devices is, when the pane lists answers about it.
-fn capability_of_device(cap: collab_types::caps::DeviceCap) -> Option<Capability> {
-    use collab_types::caps::DeviceCap;
+fn capability_of_device(cap: tilo_permissions::caps::DeviceCap) -> Option<Capability> {
+    use tilo_permissions::caps::DeviceCap;
     match cap {
         DeviceCap::Camera => Some(Capability::Camera),
         DeviceCap::Microphone => Some(Capability::Microphone),
@@ -713,7 +713,7 @@ mod tests {
 
     fn answer(
         app: &str,
-        cap: collab_types::caps::DeviceCap,
+        cap: tilo_permissions::caps::DeviceCap,
         allowed: bool,
     ) -> tilo_peer_state::Kept {
         tilo_peer_state::Kept {
@@ -757,12 +757,12 @@ mod tests {
             answers: vec![
                 answer(
                     "so.tilo.recorder",
-                    collab_types::caps::DeviceCap::Camera,
+                    tilo_permissions::caps::DeviceCap::Camera,
                     true,
                 ),
                 answer(
                     "so.tilo.meet",
-                    collab_types::caps::DeviceCap::Microphone,
+                    tilo_permissions::caps::DeviceCap::Microphone,
                     false,
                 ),
             ],

@@ -2,15 +2,18 @@
 //! [`Workspace`] takes `now` explicitly so the model stays clock-free; every host asks through this
 //! one trait instead of reading the time itself.
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox,
-};
 use collab_types::role::Role as CapRole;
 use tilo_action_policy::{Answer, Grant, TreePath, roles};
 use tilo_action_types::ActionKind;
 use tilo_clock::unix_now;
 use tilo_desktop_model::{Workspace, WorkspaceDefaultError};
 use tilo_member_types::Acting;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapDecision;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::ResourceRef;
+use tilo_permissions::caps::decide_capability;
+use tilo_permissions::caps::sandbox;
 
 /// The model's authority questions answered at this machine's clock.
 pub trait WorkspaceAuthority {
@@ -113,9 +116,9 @@ mod tests {
     //! member has no role, and who may not govern neither grants nor revokes.
 
     use super::*;
-    use collab_types::caps::Scope;
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::WorkspaceId;
+    use tilo_permissions::caps::Scope;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";

@@ -829,10 +829,14 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
 
 #[cfg(test)]
 mod tests {
-    use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope};
     use serde_json::{Map, Value};
     use tilo_action_policy::Grantee;
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::DeviceCap;
+    use tilo_permissions::caps::Effect;
+    use tilo_permissions::caps::Scope;
 
     use super::*;
 

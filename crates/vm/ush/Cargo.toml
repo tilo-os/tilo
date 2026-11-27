@@ -31,6 +31,7 @@ dev-overrides = ["package-store/dev-overrides"]
 test-workspace = []
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../../core/permissions" }
 tilo-action-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 tilo-action-line-serve = { version = "0.1.0", path = "../../core/action-line-serve" }

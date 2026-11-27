@@ -30,10 +30,10 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Str};
 
 use crate::Portal;
-use collab_types::caps::DeviceCap;
 use tilo_action_policy::Answer;
 use tilo_action_types::Lifetime;
 use tilo_peer_state::DeviceGrants;
+use tilo_permissions::caps::DeviceCap;
 
 /// The frontend's table of device permissions.
 const DEVICES_TABLE: &str = "devices";

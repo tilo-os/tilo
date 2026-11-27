@@ -1042,19 +1042,19 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
     /// What a launch into `workspace` hands its apps: the sandbox its
     /// governance records, whether this device hosts it or holds it as a
     /// member copy.
-    fn launch_grants(&self, workspace: &str) -> collab_types::caps::LaunchGrants {
+    fn launch_grants(&self, workspace: &str) -> tilo_permissions::caps::LaunchGrants {
         let Some(id) = WorkspaceId::parse(workspace) else {
-            return collab_types::caps::LaunchGrants::default();
+            return tilo_permissions::caps::LaunchGrants::default();
         };
         let Some(sandbox) = self
             .peer(id)
             .and_then(|peer| peer.governance().member_sandbox().ok())
         else {
-            return collab_types::caps::LaunchGrants::default();
+            return tilo_permissions::caps::LaunchGrants::default();
         };
-        collab_types::caps::LaunchGrants {
+        tilo_permissions::caps::LaunchGrants {
             sandbox,
-            ..collab_types::caps::LaunchGrants::default()
+            ..tilo_permissions::caps::LaunchGrants::default()
         }
     }
 

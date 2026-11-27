@@ -21,9 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bounded_command::WakeFd;
-use collab_types::caps::Access;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
+use tilo_permissions::caps::Access;
 
 use crate::audit::{AuditEntry, AuditLog};
 use crate::policy::Policy;
@@ -601,12 +601,10 @@ impl BrokerState {
     }
 
     fn revoke(&self, id: &str) -> Response {
-        let was_host = self
-            .environment
-            .current()
-            .grants
-            .iter()
-            .any(|c| c.id == id && matches!(c.scope, collab_types::caps::Scope::NetHost(_)));
+        let was_host =
+            self.environment.current().grants.iter().any(|c| {
+                c.id == id && matches!(c.scope, tilo_permissions::caps::Scope::NetHost(_))
+            });
         if let Err(reason) = self.apply("revoke", id, Environment::REVOKE_GRANT.with(id.to_owned()))
         {
             return Response::Denied { reason };
@@ -757,8 +755,9 @@ impl BrokerState {
     }
 
     fn perm_entries(&self) -> Vec<PermEntry> {
-        use collab_types::caps::{Effect, Scope};
         use tilo_action_types::Lifetime;
+        use tilo_permissions::caps::Effect;
+        use tilo_permissions::caps::Scope;
         self.environment
             .current()
             .grants
@@ -1761,7 +1760,8 @@ pub(crate) mod tests {
 
         phase linux_vm_shims_reach_the_vm_only_with_the_users_own_grants;
         {
-            use collab_types::caps::{CapOverride, Scope};
+            use tilo_permissions::caps::CapOverride;
+            use tilo_permissions::caps::Scope;
             let policy = Policy::new(vec![
                 CapOverride::grant(
                     tilo_action_policy::Grantee::person("local"),

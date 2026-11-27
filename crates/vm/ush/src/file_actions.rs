@@ -29,7 +29,6 @@ pub use tilo_environment::files::cli;
 pub mod command;
 pub mod watch;
 
-use collab_types::caps::Access;
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
 use tilo_content::ContentStore;
@@ -38,6 +37,7 @@ pub use tilo_environment::files::{
     AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
     RestoreOp, RevertOp, TruncateOp, UndoEntry, WriteOp, anchored, normalize,
 };
+use tilo_permissions::caps::Access;
 use tilo_resource::{AppNamed, Id, Invoke, Replica, Settled};
 
 use crate::audit::{AuditEntry, AuditLog};

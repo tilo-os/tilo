@@ -920,7 +920,9 @@ tilo_test_env::scenario! {
     phase capability_files_on_disk_become_binds_or_nothing;
     {
         {
-            use collab_types::caps::{Access, CapOverride, Scope};
+            use tilo_permissions::caps::Access;
+            use tilo_permissions::caps::CapOverride;
+            use tilo_permissions::caps::Scope;
             use tilo_action_policy::Grantee;
 
             let dir = tempfile::tempdir().unwrap();
@@ -943,7 +945,7 @@ tilo_test_env::scenario! {
             ];
             std::fs::write(
                 &caps_file,
-                serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                serde_json::to_vec(&tilo_permissions::caps::LaunchGrants {
                     author: false,
                     sandbox: caps,
                 })

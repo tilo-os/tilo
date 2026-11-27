@@ -6,13 +6,21 @@
 //! Emphasis is deliberately on **denial**: a model only shown to permit
 //! things hasn't been shown to work at all.
 
-use collab_types::caps::{
-    Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
-    decide_capability,
-};
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
+
 use tilo_action_policy::{Grantee, Role};
 use tilo_action_types::Lifetime;
 use tilo_member_types::{Acting, MemberId};
+use tilo_permissions::caps::{
+    Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
+    decide_capability,
+};
 
 fn fs(path: &str) -> ResourceRef {
     ResourceRef::FsPath(path.into())

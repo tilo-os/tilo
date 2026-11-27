@@ -16,10 +16,13 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
-use collab_types::caps::{Access, CapOverride, Effect, Scope};
 use tilo_action_policy::Grantee;
 pub use tilo_app_package::PackageId;
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 use tilo_resource::{
     ActionCx, Id, Invoke, JsonSchema, Model, ModelError, Outbox, Undoing, resource,
 };
@@ -882,7 +885,7 @@ pub fn machine_grant() -> CapOverride {
 }
 
 pub fn normalize_host(host: &str) -> Result<String, String> {
-    collab_types::caps::NetHostPattern::parse(host)
+    tilo_permissions::caps::NetHostPattern::parse(host)
         .map(|pattern| pattern.to_string())
         .map_err(|reason| reason.to_string())
 }
@@ -1232,7 +1235,7 @@ mod tests {
             ]
         );
         assert!(env.grants.iter().all(is_runtime_grant));
-        assert!(collab_types::caps::host_covers(
+        assert!(tilo_permissions::caps::host_covers(
             ".crates.io",
             "static.crates.io"
         ));

@@ -4210,7 +4210,7 @@ mod app_dir_tests {
                 let file = dir.path().join("grants.json");
                 std::fs::write(
                     &file,
-                    serde_json::to_vec(&collab_types::caps::LaunchGrants {
+                    serde_json::to_vec(&tilo_permissions::caps::LaunchGrants {
                         author: true,
                         sandbox: Vec::new(),
                     })

@@ -82,7 +82,7 @@ pub(crate) struct Grant {
     pub app_label: String,
     /// What the notice words it as.
     pub capability: String,
-    /// The device it is kept under, by [`collab_types::caps::DeviceCap::name`].
+    /// The device it is kept under, by [`tilo_permissions::caps::DeviceCap::name`].
     pub device: String,
 }
 

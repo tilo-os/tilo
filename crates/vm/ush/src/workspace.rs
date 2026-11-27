@@ -13,8 +13,10 @@
 
 use std::path::{Path, PathBuf};
 
-use collab_types::caps::{CapOverride, Effect, Scope};
 use tilo_environment::{Environment, is_record_key};
+use tilo_permissions::caps::CapOverride;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 
 use crate::records::{RecordError, Records};
 use crate::store::Store;

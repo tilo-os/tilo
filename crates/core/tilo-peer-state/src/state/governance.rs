@@ -151,7 +151,7 @@ impl PeerGovernance<'_> {
             .any(|entry| !recorded.contains(&entry.revoked_device_public_key))
     }
     /// The sandbox capabilities the workspace's governance grants its apps.
-    pub fn member_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
+    pub fn member_sandbox(self) -> Result<Vec<tilo_permissions::caps::CapOverride>, String> {
         let doc = self
             .peer
             .core

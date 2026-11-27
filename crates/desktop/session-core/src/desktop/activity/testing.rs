@@ -6,7 +6,6 @@
 //! memory.
 use super::{ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier};
 use automerge::{AutoCommit, ChangeHash};
-use collab_types::caps::CapOverride;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,6 +15,7 @@ use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId,
 };
+use tilo_permissions::caps::CapOverride;
 
 /// The local user every [`TestHost`] answers for.
 pub(crate) const LOCAL_USER: &str = "local";
@@ -370,7 +370,7 @@ impl TestTree {
                 .workspaces
                 .iter_mut()
                 .find(|w| w.id() == workspace_id)?;
-            collab_types::caps::sandbox::grant_as_at(
+            tilo_permissions::caps::sandbox::grant_as_at(
                 &workspace.policy,
                 &mut workspace.sandbox,
                 grantor,
@@ -400,7 +400,7 @@ impl TestTree {
             else {
                 return false;
             };
-            collab_types::caps::sandbox::revoke_as_at(
+            tilo_permissions::caps::sandbox::revoke_as_at(
                 &listed.policy,
                 &mut listed.sandbox,
                 revoker,

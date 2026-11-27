@@ -12,13 +12,15 @@
 //! told what its owner shared with whom. The rows name people as the workspace names them, never
 //! by their key.
 
-use collab_types::caps::{Access, Effect, Scope};
 use tilo_action_policy::{
     Answer, Context, Grant, Grantee, Labels, Level, TreePath, WorkspacePolicy, roles,
 };
 use tilo_action_types::ActionKind;
 use tilo_desktop_model::Workspace;
 use tilo_member_types::MemberId;
+use tilo_permissions::caps::Access;
+use tilo_permissions::caps::Effect;
+use tilo_permissions::caps::Scope;
 
 /// One part of a workspace shared with someone, as the overview's list shows it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -227,7 +229,7 @@ fn granted_at(workspace: &Workspace, grant: &Grant) -> u64 {
 /// One capability a person holds in `workspace` as a row, `None` for a refusal, one that has
 /// lapsed, one no person holds, or the reader's own.
 fn capability_row(
-    cap: &collab_types::caps::CapOverride,
+    cap: &tilo_permissions::caps::CapOverride,
     workspace: &Workspace,
     person: &str,
     now_ms: u64,
@@ -335,10 +337,13 @@ mod tests {
     //! and the member who may not administer the workspace's grants seeing none.
 
     use super::*;
-    use collab_types::caps::{Access, CapOverride, Effect, Scope};
     use tilo_action_policy::{Change, Role};
     use tilo_action_types::KindSet;
     use tilo_desktop_model::WorkspaceId;
+    use tilo_permissions::caps::Access;
+    use tilo_permissions::caps::CapOverride;
+    use tilo_permissions::caps::Effect;
+    use tilo_permissions::caps::Scope;
 
     const OWNER: &str = "owner0000000000000000000000000000000000000000000000000000000000000";
     const ADA: &str = "ada00000000000000000000000000000000000000000000000000000000000000";

@@ -14,8 +14,8 @@ use crate::layout::Tab;
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use collab_types::Member;
-use collab_types::caps::CapOverride;
 use tilo_action_policy::{Grantee, Preset, Role, WorkspacePolicy, roles};
+use tilo_permissions::caps::CapOverride;
 
 use crate::layout::{Strip, WorkspaceLayout};
 use crate::present::Present;
@@ -191,7 +191,7 @@ impl Layout {
             .flat_map(|workspace| {
                 [
                     workspace.policy.next_grant_expiry_after(now),
-                    collab_types::caps::sandbox::next_expiry_after(&workspace.sandbox, now),
+                    tilo_permissions::caps::sandbox::next_expiry_after(&workspace.sandbox, now),
                 ]
             })
             .flatten()

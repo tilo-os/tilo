@@ -18,6 +18,7 @@ path = "src/lib.rs"
 # depends on this crate.
 
 [dependencies]
+tilo-permissions = { version = "0.1.0", path = "../permissions" }
 automerge.workspace = true
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

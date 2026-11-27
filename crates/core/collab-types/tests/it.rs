@@ -9,8 +9,6 @@
 
 #[path = "canonical.rs"]
 mod canonical;
-#[path = "capability_model.rs"]
-mod capability_model;
 #[path = "compaction.rs"]
 mod compaction;
 #[path = "signing.rs"]

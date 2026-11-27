@@ -301,8 +301,8 @@ impl VmPortalAuthority for CanonicalRailPortalAuthority {
                 Vec::new()
             },
             network: self.native_rail && !capabilities.net_hosts.is_empty(),
-            clipboard: device_granted(collab_types::caps::DeviceCap::Clipboard),
-            microphone: device_granted(collab_types::caps::DeviceCap::Microphone),
+            clipboard: device_granted(tilo_permissions::caps::DeviceCap::Clipboard),
+            microphone: device_granted(tilo_permissions::caps::DeviceCap::Microphone),
             portal_documents: Vec::new(),
         })
     }
@@ -1343,14 +1343,14 @@ fn validate_portal_projection(
     if grants.microphone
         && !capabilities
             .devices
-            .contains(&collab_types::caps::DeviceCap::Microphone)
+            .contains(&tilo_permissions::caps::DeviceCap::Microphone)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("microphone"));
     }
     if grants.clipboard
         && !capabilities
             .devices
-            .contains(&collab_types::caps::DeviceCap::Clipboard)
+            .contains(&tilo_permissions::caps::DeviceCap::Clipboard)
     {
         return Err(windows_vm::LaunchError::BrokerEscalated("clipboard"));
     }
@@ -1627,8 +1627,8 @@ mod tests {
                 CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
             let capabilities = CapabilityPlan {
                 devices: vec![
-                    collab_types::caps::DeviceCap::Clipboard,
-                    collab_types::caps::DeviceCap::Microphone,
+                    tilo_permissions::caps::DeviceCap::Clipboard,
+                    tilo_permissions::caps::DeviceCap::Microphone,
                 ],
                 allow_network: true,
                 net_hosts: vec!["example.test".to_string()],
