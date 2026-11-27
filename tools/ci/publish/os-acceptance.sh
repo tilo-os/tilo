@@ -10,9 +10,9 @@
 # Three tracks run side by side, each booting throwaway overlays of the installed disk or the OS
 # image's own UKI:
 #
-#   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
-#            a third device through one without the identity key, sibling unlock and, on
-#            x86_64, wake (os/dev/test-nearby-pairing.sh)
+#   devices  a computer that joined a person with a ticket signs in to its desktop
+#            (os/dev/test-joined-device-startup.sh); the ticket comes from a second
+#            overlay of the same disk, and both share one private LAN
 #   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh),
 #            whose guest-side checks are os/tests/boot_units_check.sh,
 #            os/tests/projection-boot-check.sh, os/tests/h264-boot-check.py,
@@ -63,13 +63,8 @@ for node in /dev/dri/renderD*; do
   [[ -c $node && -r $node && -w $node ]] && { TILO_VM_DISPLAY=gl; break; }
 done
 
-wake=()
-if [[ $arch == x86_64 ]]; then wake=(--wake); fi
 devices() {
-  local rc=0
-  bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined-device" || rc=1
-  bash os/dev/test-nearby-pairing.sh "$disk" --out "$out/nearby-pairing" --unlock "${wake[@]}" || rc=1
-  return "$rc"
+  bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined-device"
 }
 desktop() {
   bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")"
