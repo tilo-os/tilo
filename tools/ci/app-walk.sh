@@ -8,7 +8,8 @@
 #
 #   tools/ci/app-walk.sh OUT WALK|FAMILY [app-walk.py args...]
 #
-# T_INPUT_ONLY (rust|tl) walks one version, T_INPUT_DISCOVER=1 keeps every step's controls.
+# T_INPUT_ONLY (rust|tl) walks one version, T_INPUT_DISCOVER=1 keeps every step's controls,
+# T_INPUT_WALK one walk of the family.
 #
 # OUT gets the walk's page (walk.md), what it found (walk.json, summary.json), the comparison
 # (compare.md, compare.json), every snapshot and each session's log — what the `app-walk/WALK`
@@ -159,6 +160,9 @@ trap keep EXIT
 args=()
 [[ -n ${T_INPUT_ONLY:-} ]] && args+=(--only "$T_INPUT_ONLY")
 [[ -n ${T_INPUT_DISCOVER:-} ]] && args+=(--discover)
+# T_INPUT_WALK walks one of a family's walks alone, by its step file's name (`gallery` of the
+# apps family): what a run proving one app needs, without the family's others before it.
+[[ -n ${T_INPUT_WALK:-} ]] && args+=(--only-walk "$T_INPUT_WALK")
 # Each walk is held to its baseline from main where it has one.
 args+=(--compare)
 python3 scripts/headless-examples/app-walk.py "$app" --out "$run/walk" --state "$states" \
