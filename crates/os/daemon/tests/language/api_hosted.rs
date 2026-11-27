@@ -20,6 +20,7 @@ use tilo_actions::remote::{ActionProvider, ResourceAddress, ResourceCopy};
 use tilo_workspace_records::models as model_providers;
 use tilo_workspace_records::vault as workspace_vault;
 
+use super::api_workspaces::ids;
 use crate::language::host;
 use crate::language::host::said;
 
@@ -402,12 +403,7 @@ fn a_call_is_served_after_the_host_it_used_goes_away() {
             .await;
         assert_eq!(status, 200, "{listed}");
         assert!(
-            listed["result"]["workspaces"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|workspace| workspace["id"].as_str())
-                .any(|id| id == workspace.as_str()),
+            ids(&listed["result"]).contains(&workspace),
             "it lists the workspace: {listed}"
         );
         let (status, read) = key

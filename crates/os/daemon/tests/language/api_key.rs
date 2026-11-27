@@ -12,6 +12,7 @@
 
 use serde_json::{Value, json};
 
+use super::api_workspaces::ids;
 use crate::language::host;
 use crate::language::host::said;
 
@@ -97,11 +98,7 @@ fn a_key_its_program_holds_reaches_the_host_directly() {
             .await;
         assert_eq!(status, 200, "{listed}");
         assert!(
-            listed["result"]["workspaces"]
-                .as_array()
-                .is_some_and(|rows| rows
-                    .iter()
-                    .any(|row| row["id"].as_str() == Some(made.as_str()))),
+            ids(&listed["result"]).contains(&made),
             "the key lists the workspace it made: {listed}"
         );
     });

@@ -115,6 +115,18 @@ fn an_owner_makes_and_unmakes_administrators_and_hands_the_workspace_on() {
         let ada_row = row_of(&rows, &ada).expect("Ada stays");
         assert_eq!(ada_row["owner"], false, "{rows:?}");
         assert_eq!(ada_row["administrator"], true, "{rows:?}");
+        let listed = host
+            .key("Ada's script")
+            .post(super::api_workspaces::LIST, &json!({}))
+            .await
+            .1;
+        let row = listed["result"]["workspaces"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["id"] == workspace.as_str()));
+        assert!(
+            row.is_some_and(|row| row["own"] == false && row["role"] != "owner"),
+            "{listed}"
+        );
     });
 }
 

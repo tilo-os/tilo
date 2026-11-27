@@ -81,16 +81,12 @@ impl Workspace {
     /// joined with its membership.
     pub(crate) fn record(listed: tilo_server_protocol::workspaces::ListedWorkspace) -> Self {
         Self {
-            id: listed.workspace,
-            name: listed.name,
             host: listed.host.as_ref().map(|host| host.name.clone()),
-            own: listed.role.as_deref() == Some(tilo_server_protocol::workspaces::OWNER_ROLE),
             kept_here: false,
-            not_here: None,
-            role: listed.role,
             labels: listed.labels,
             unattended: listed.unattended,
             address: listed.host,
+            ..crate::session::held(listed.workspace, listed.name, listed.role.as_deref())
         }
     }
 
@@ -99,17 +95,13 @@ impl Workspace {
         listing: &tilo_server_protocol::workspaces::WorkspaceListing,
         host: Option<String>,
     ) -> Self {
+        let (id, name) = (listing.workspace.clone(), listing.name.clone());
         Self {
-            id: listing.workspace.clone(),
-            name: listing.name.clone(),
             host,
-            own: listing.role.as_deref() == Some("owner"),
             kept_here: false,
-            not_here: None,
-            role: listing.role.clone(),
             labels: listing.labels.clone(),
             unattended: listing.unattended,
-            address: None,
+            ..crate::session::held(id, name, listing.role.as_deref())
         }
     }
 }

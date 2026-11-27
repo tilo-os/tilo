@@ -13,14 +13,14 @@ use serde_json::{Value, json};
 use crate::language::host;
 
 /// Where a key lists a person's workspaces: the account's action.
-const LIST: &str = "/v1/resources/account/workspaces/actions/list";
+pub(super) const LIST: &str = "/v1/resources/account/workspaces/actions/list";
 /// Where a key makes one.
 const CREATE: &str = "/v1/resources/account/workspaces/actions/create";
 /// Where a desktop hands its workspaces to the device it runs on.
 const IMPORT: &str = "/v1/resources/account/workspaces/actions/import";
 
 /// The ids the `account/workspaces#list` answer lists.
-fn ids(listed: &Value) -> Vec<String> {
+pub(super) fn ids(listed: &Value) -> Vec<String> {
     listed["workspaces"]
         .as_array()
         .into_iter()

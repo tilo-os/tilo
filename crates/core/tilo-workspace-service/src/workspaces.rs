@@ -2746,16 +2746,14 @@ impl Workspaces {
         summary
     }
 
-    /// The one person a listing of `workspace`'s people leaves out: this
-    /// host's own person, where it keeps workspaces of people's own and this
-    /// one is no workspace of theirs. There the host runs for everyone and is
-    /// no person of the workspace's, though its device founds each and so is
-    /// the owner its policy first names. On the host's own person's workspace
-    /// their row is theirs as any member's, so an owner who hands the
-    /// workspace on stays in it.
+    /// The one person a listing of `workspace`'s people leaves out: this host's own person, where
+    /// it keeps the workspace as another person's own. There the host runs it for them and is no
+    /// person of theirs, though its device founded it. Anywhere else the host's person is a member
+    /// as any other: in a workspace they joined, and in their own after they hand it on.
     fn member_list_without(&self, workspace: &str) -> Option<String> {
         let host = self.inner.host.cert.user_public_key;
-        (self.own().is_some() && !self.owns(&host, workspace)).then(|| hex::encode(host))
+        let owner = self.own()?.owner_of(workspace)?;
+        (owner != host).then(|| hex::encode(host))
     }
 
     /// `workspace` as a listing names it: its name and generation, read

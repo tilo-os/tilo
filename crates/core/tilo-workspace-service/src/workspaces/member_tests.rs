@@ -23,12 +23,13 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCapabilities;
 
 /// A device that joins names its person as they asked, among the workspace's people: the serving
-/// device that let it in writes the name, and its member list shows it.
+/// device that let it in writes the name, its member list shows it, and the joiner's lists them.
 #[tokio::test]
 async fn a_device_that_joins_names_its_person_in_the_workspace() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Named", 12).await;
+    let person = hex::encode(device.1.user_public_key);
     let member = member_service(member_state.path(), device).await;
     member
         .workspaces()
@@ -43,6 +44,18 @@ async fn a_device_that_joins_names_its_person_in_the_workspace() {
         .iter()
         .any(|member| member["name"] == "Ada Lovelace");
     assert!(named, "the serving device names the person who joined");
+    let offer = super::super::OwnWorkspaceOffer::free("tilo.test");
+    member.workspaces().offer_own_workspaces(offer).unwrap();
+    let mine = member
+        .workspaces()
+        .members(&created.workspace)
+        .await
+        .unwrap();
+    assert!(
+        mine.iter()
+            .any(|row| row["actor"]["member"]["person"] == person),
+        "{mine:?}"
+    );
 }
 
 #[tokio::test]

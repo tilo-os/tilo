@@ -412,17 +412,17 @@ pub trait AccountServer: Send + Sync {
 pub type Imported =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, String>> + Send>>;
 
-/// A workspace a desktop keeps, as the account lists it: the person's own.
+/// A workspace a desktop keeps, as the account lists it: the person's `role` there names it own.
 #[must_use]
-pub fn held(id: String, name: String) -> Workspace {
+pub fn held(id: String, name: String, role: Option<&str>) -> Workspace {
     Workspace {
         id,
         name,
         host: None,
-        role: Some("owner".into()),
+        role: role.map(str::to_owned),
         labels: Labels::new(),
         unattended: false,
-        own: true,
+        own: role == Some(tilo_server_protocol::workspaces::OWNER_ROLE),
         kept_here: true,
         not_here: None,
         address: None,

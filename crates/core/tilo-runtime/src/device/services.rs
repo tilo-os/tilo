@@ -5045,10 +5045,7 @@ impl tilo_api::session::Here for Daemon {
             .into_iter()
             .map(|workspace| {
                 let id = workspace.id().to_string();
-                let mut workspace = tilo_api::session::held(id.clone(), workspace.name);
-                workspace.labels = self.workspaces.labels_of(&id);
-                workspace.unattended = self.workspaces.runs_unattended(&id);
-                workspace
+                described_workspace(&id, workspace.name, &self.workspaces)
             })
             .collect();
         // The one this computer enters through first: what a command that names none acts in.
@@ -5067,7 +5064,7 @@ impl tilo_api::session::Here for Daemon {
             .map(|missing| tilo_api::session::Workspace {
                 kept_here: false,
                 not_here: Some(missing.why),
-                ..tilo_api::session::held(missing.workspace, missing.name)
+                ..tilo_api::session::held(missing.workspace, missing.name, None)
             })
             .collect()
     }
@@ -5680,13 +5677,17 @@ fn listed_workspace(
     workspace
 }
 
-/// The workspace `id` called `name`, with what this device keeps of it.
+/// The workspace `id` called `name`, with what this device keeps of it and its person's role.
 fn described_workspace(
     id: &str,
     name: String,
     workspaces: &ServiceWorkspaces,
 ) -> tilo_api::session::Workspace {
-    let mut workspace = tilo_api::session::held(id.to_owned(), name);
+    let person = hex::encode(workspaces.device_cert().user_public_key);
+    let role = WorkspaceId::parse(id)
+        .and_then(|held| workspaces.workspace(held)?.policy.role_of(&person))
+        .map(tilo_action_policy::Role::key);
+    let mut workspace = tilo_api::session::held(id.to_owned(), name, role);
     workspace.labels = workspaces.labels_of(id);
     workspace.unattended = workspaces.runs_unattended(id);
     workspace

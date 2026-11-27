@@ -7,6 +7,7 @@
 use serde_json::{Value, json};
 use tilo_runtime::RuntimeServices as _;
 
+use super::api_workspaces::ids;
 use crate::language::host;
 
 /// Where the account's `resource#action` is run.
@@ -26,16 +27,6 @@ fn workspace_route(workspace: &str, path: &str) -> String {
         "/v1/workspaces/{workspace}/resources/{}",
         tilo_api::v1::routing::encode_path(path)
     )
-}
-
-/// The ids a list of workspaces names.
-fn ids(listed: &Value) -> Vec<String> {
-    listed["workspaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|row| row["id"].as_str().map(str::to_owned))
-        .collect()
 }
 
 /// A workspace made through the account, labelled `labels`.

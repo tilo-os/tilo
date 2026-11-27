@@ -2,22 +2,13 @@
 //! lists the one list the daemon keeps for the person, reads what it lists, and makes one the
 //! computer it runs on answers for.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
+use super::api_workspaces::{LIST, ids};
 use crate::language::host;
 
-/// Where a key makes a workspace and lists them: the account's actions.
+/// Where a key makes a workspace.
 const CREATE: &str = "/v1/resources/account/workspaces/actions/create";
-const LIST: &str = "/v1/resources/account/workspaces/actions/list";
-/// The ids of the workspaces an `account/workspaces#list` answer lists.
-fn ids(listed: &Value) -> Vec<String> {
-    listed["workspaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|workspace| workspace["id"].as_str().map(str::to_owned))
-        .collect()
-}
 
 /// The key lists what the computer lists, reads it, and makes one, which the computer holds.
 #[test]

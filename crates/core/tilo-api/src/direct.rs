@@ -458,7 +458,11 @@ mod tests {
 
     impl crate::session::Here for Desktop {
         fn workspaces(&self, _: &tilo_user_identity::DeviceCert) -> Vec<crate::session::Workspace> {
-            vec![crate::session::held(WORKSPACE.into(), "Release".into())]
+            vec![crate::session::held(
+                WORKSPACE.into(),
+                "Release".into(),
+                Some("owner"),
+            )]
         }
 
         fn enter(
@@ -656,7 +660,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|(id, name)| crate::session::held(id.clone(), name.clone()))
+                .map(|(id, name)| crate::session::held(id.clone(), name.clone(), Some("owner")))
                 .collect()
         }
 
@@ -668,7 +672,7 @@ mod tests {
                 .map(|(id, why)| crate::session::Workspace {
                     kept_here: false,
                     not_here: Some(why.clone()),
-                    ..crate::session::held(id.clone(), String::new())
+                    ..crate::session::held(id.clone(), String::new(), None)
                 })
                 .collect()
         }
