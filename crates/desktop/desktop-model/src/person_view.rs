@@ -37,6 +37,20 @@ pub fn person_of(record: &str) -> Option<&str> {
 /// The kind of a person's view of a workspace's layout.
 pub const PERSON_VIEW_KIND: &str = "desktop.person-view";
 
+/// The message a change of `person`'s view is committed with: their edit of the view, a record of
+/// [`PERSON_VIEW_KIND`]. The view is sealed to its person, so the workspace decides its writes by
+/// the kind their messages claim: a change claiming the shared layout's kind
+/// ([`crate::shared_resource::change_message`]) is refused as one that writes other than it says.
+#[must_use]
+pub fn change_message(person: &str) -> String {
+    tilo_actions::ActionContext::for_resource(resource_of(person), PERSON_VIEW_KIND, "View")
+        .with_invoker(tilo_actions::ActionInvoker::person(person))
+        .change_message()
+        .unwrap_or_else(|| {
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+        })
+}
+
 /// The keys a view is kept under.
 const FRONT_STRIP: &str = "front_strip";
 const FRONT_GROUP: &str = "front_group";

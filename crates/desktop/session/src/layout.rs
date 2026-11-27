@@ -2547,11 +2547,18 @@ impl Layouts {
                 tracing::warn!(%workspace_id, "a layout edit was made by no person");
                 return false;
             };
-            let message = shared_resource::claiming_renames(
-                &candidate,
-                &candidate.base_heads(),
-                shared_resource::change_message(&author),
-            );
+            // Each record's change names that record's kind: the person's view is a record of
+            // its own, and a change of it claiming the shared layout's kind is refused. Only the
+            // shared layout holds strips a change renames.
+            let message = if route.document == DESKTOP_DOCUMENT {
+                shared_resource::claiming_renames(
+                    &candidate,
+                    &candidate.base_heads(),
+                    shared_resource::change_message(&author),
+                )
+            } else {
+                person_view::change_message(&author)
+            };
             candidate.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(message),
             );
@@ -3152,7 +3159,7 @@ fn view_step(
     {
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(shared_resource::change_message(person)),
+                .with_message(person_view::change_message(person)),
         );
     }
     // An arranging action's step is the person's, on whichever of their devices made it.
@@ -3164,7 +3171,7 @@ fn view_step(
         return Ok(false);
     }
     let message = step.acted.as_ref().map_or_else(
-        || shared_resource::change_message(person),
+        || person_view::change_message(person),
         |acted| acted.message.clone(),
     );
     doc.commit_with(
