@@ -35,6 +35,10 @@ use tilo_ui_base::widget::*;
 use winit::event::*;
 use winit::keyboard::*;
 
+#[allow(
+    dead_code,
+    reason = "a fixture stands the whole record its table reads a part of"
+)]
 struct Item {
     name: String,
     depth: usize,

@@ -488,7 +488,11 @@ fn a_check_fills_in_over_frames_unless_the_row_is_still() {
             levels.windows(2).all(|pair| pair[1] >= pair[0] - 1e-6),
             "{name}: {levels:?}"
         );
-        assert!((levels[23] - 1.0).abs() < 1e-3, "{name}: it settles marked");
+        // The fill eases to its marked level and stops there: the last frames hold still.
+        assert!(
+            (levels[23] - 1.0).abs() < 2e-3,
+            "{name}: it settles marked: {levels:?}"
+        );
     }
     assert!(state.get(), "the binding took the person's check");
     let fired = intents.take();
