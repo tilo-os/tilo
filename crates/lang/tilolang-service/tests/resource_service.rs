@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
             tilolang::compile_package(DISCUSSION.0, &IdsLock::parse(DISCUSSION.1).unwrap(), &platform)
                 .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         let mut with_discussion = platform.clone();
-        with_discussion.push(discussion.meta.clone());
+        with_discussion.push(discussion.meta);
         let notes = tilolang::compile_package(
             NOTES.0,
             &IdsLock::parse(NOTES.1).unwrap(),
