@@ -45,7 +45,7 @@ fn from_env() -> Option<String> {
 }
 
 /// The workspace this process's changes are made in, when one was named.
-fn named() -> Option<&'static str> {
+pub(crate) fn named() -> Option<&'static str> {
     NAMED.get_or_init(from_env).as_deref()
 }
 

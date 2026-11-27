@@ -142,6 +142,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// offer, and an empty list offers nothing rather than trusting something
 /// nobody configured.
 ///
+/// A process acting in a workspace it names (`tilo -w <workspace> app …`) reads
+/// that workspace's registries, as `app repo list` does, rather than those of
+/// the computer's own workspace, which lists none.
+///
 /// `TILO_STORE_CONFIG_DIR` names a `registries.toml` a test or a development
 /// build reads instead; production reads the workspace alone.
 #[must_use]
@@ -154,6 +158,13 @@ pub fn load_registries() -> RegistriesFile {
         return fs::read_to_string(path)
             .ok()
             .and_then(|text| toml::from_str::<RegistriesFile>(&text).ok())
+            .unwrap_or_default();
+    }
+    #[cfg(any(unix, windows))]
+    if crate::device::named().is_some() {
+        return crate::device::registries("registry.list", &serde_json::json!({}))
+            .ok()
+            .and_then(|value| registries_from_rows(&value))
             .unwrap_or_default();
     }
     RegistriesFile {
