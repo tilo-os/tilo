@@ -60,19 +60,21 @@ fn keep_content(content: &tilo_content::ContentStore, bytes: &[u8]) {
     }
 }
 
+/// Decide changes against the app surfaces that live in the content store the apps this runtime
+/// hosts keep their content in, and in the store of the apps this device installed: an app
+/// another process of this device installed after the daemon started is one whose signed surface
+/// this process was never handed, and its changes are decided by it.
+fn decide_against_installed_surfaces() {
+    let content = tilo_content_device::for_app();
+    tilo_app_host::decide_receipt_against_surfaces(move |_, hash| {
+        content
+            .read(hash)
+            .or_else(|| installed_surface(hash).inspect(|bytes| keep_content(&content, bytes)))
+    });
+}
+
 fn run() -> io::Result<()> {
-    // The app surfaces changes are decided against live in the content store
-    // the apps this runtime hosts keep their content in, and in the store of the apps this device
-    // installed: an app another process of this device installed after the daemon started is one
-    // whose signed surface this process was never handed, and its changes are decided by it.
-    {
-        let content = tilo_content_device::for_app();
-        tilo_app_host::decide_receipt_against_surfaces(move |_, hash| {
-            content
-                .read(hash)
-                .or_else(|| installed_surface(hash).inspect(|bytes| keep_content(&content, bytes)))
-        });
-    }
+    decide_against_installed_surfaces();
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     // The tools a hosted workspace offers an agent, without a workspace or a session:
     // `tools/docs/reference/mcp_tools.py` writes their reference from this answer, so the page
