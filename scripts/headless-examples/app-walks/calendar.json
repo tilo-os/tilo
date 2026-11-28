@@ -10,7 +10,7 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open Calendar on the month it is today, with today picked out",
+      "said": "Open Calendar on the month it is today, with today picked out, letting it use the internet when it asks",
       "ops": {
         "rust": [
           {
@@ -34,7 +34,9 @@
             "theme": false
           },
           {
-            "launch": true
+            "launch": {
+              "answer": "Allow"
+            }
           },
           {
             "wait_for": "window"

@@ -1777,18 +1777,26 @@ class Walk:
             self.window = found
         return found
 
-    def launch(self, wait: bool = True, deadline: float = 120.0) -> dict:
+    def launch(self, wait: bool = True, deadline: float = 120.0,
+               answer: str | None = None) -> dict:
         """Open the app through the desktop's own launcher. Without `wait`, the
         walk goes on the moment the launcher takes it: what a person presses
-        before the app is ready. Answers where the wait went: the catalogue
-        listing that finds the app's row and the invoke that starts it
-        (`listing_ms`, `invoke_ms` of the ask), the window (`window_ms`) and the
-        app's own process and window (`up_ms`)."""
+        before the app is ready. `answer` is the control a question before the
+        app's process asks (the network its manifest declares): the person's
+        yes, pressed as they press it, after which the app starts. Answers where
+        the wait went: the catalogue listing that finds the app's row and the
+        invoke that starts it (`listing_ms`, `invoke_ms` of the ask), the window
+        (`window_ms`) and the app's own process and window (`up_ms`)."""
         self.asking()
         began = time.monotonic()
         self.session.open(self.v["id"])
         asked = round((time.monotonic() - began) * 1000)
         took = {**self.session.opened_took, "asked_ms": asked}
+        if answer is not None:
+            selector = {"prefix": answer}
+            until_value(f"the question {answer!r} before {self.v['id']} starts",
+                        lambda: control(self.session, selector), deadline)
+            press(self.session, selector)
         if wait:
             until_value(f"the window of {self.v['id']}", self.window_of, deadline)
             # The app's own process in the session's store, where the launcher
@@ -1964,11 +1972,14 @@ class Walk:
             self.device = None
 
     def op_launch(self, value) -> dict:
-        """Open the app, waiting for its window unless the value says not to."""
+        """Open the app, waiting for its window unless the value says not to, and
+        answering the question the app asks before its process starts when the
+        value names the answer (`{"answer": "Allow"}`)."""
         wait = value if isinstance(value, bool) else value.get("wait", True)
+        answer = value.get("answer") if isinstance(value, dict) else None
         began = time.monotonic()
         took = self.launch(wait=wait, deadline=float(value.get("deadline", 120))
-                           if isinstance(value, dict) else 120.0)
+                           if isinstance(value, dict) else 120.0, answer=answer)
         waited = None
         if wait:
             waited = round((time.monotonic() - began) * 1000)

@@ -15,25 +15,7 @@
         {
           "theme": false
         },
-        {
-          "launch": {
-            "wait": false
-          }
-        },
-        {
-          "wait_for": {
-            "shown": {
-              "prefix": "Allow"
-            }
-          }
-        },
-        {
-          "press_any": [
-            {
-              "prefix": "Allow"
-            }
-          ]
-        },
+        {"launch": {"answer": "Allow"}},
         {
           "wait_for": "window"
         },

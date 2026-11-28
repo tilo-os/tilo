@@ -13,21 +13,7 @@
         {
           "theme": false
         },
-        {
-          "launch": {
-            "wait": false
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Allow"
-          }
-        },
-        {
-          "press_any": [
-            "Allow"
-          ]
-        },
+        {"launch": {"answer": "Allow"}},
         {
           "wait_for": "window"
         },

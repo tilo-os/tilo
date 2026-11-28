@@ -304,38 +304,50 @@
     },
     {
       "id": "export-vcard",
-      "said": "Export the book as a vCard through the person's own save chooser",
-      "ops": {
-        "tl": [
-          {
-            "press_any": [
-              "File"
-            ]
-          },
-          {
-            "wait_for": {
-              "shown": {
-                "menuitem": "Export all contacts…"
-              }
+      "said": "Export the book as a vCard through the system's Export…, saved where the person says",
+      "ops": [
+        {
+          "press_any": [
+            "More actions"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "Export…"
             }
-          },
-          {
-            "press_any": [
-              {
-                "menuitem": "Export all contacts…"
-              }
-            ]
-          },
-          {
-            "choose": {
-              "name": "Contacts.vcf"
-            }
-          },
-          {
-            "questions": true
           }
-        ]
-      }
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "Export…"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "vCard 4.0"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "vCard 4.0"
+            }
+          ]
+        },
+        {
+          "choose": {
+            "name": "Contacts.vcf"
+          }
+        },
+        {
+          "questions": true
+        }
+      ]
     },
     {
       "id": "merge-duplicate",
