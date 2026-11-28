@@ -180,10 +180,10 @@ pub struct WidgetSurface {
     host: Driver,
     placement: Placement,
     frames: Frames,
-    /// The next frame repaints the surface whole: the target holds pixels of a frame other than
-    /// the last one drawn (a new size, its material), so the damage the frames before took
+    /// Why the next frame repaints the surface whole: the target holds pixels of a frame other
+    /// than the last one drawn (a new size, its material), so the damage the frames before took
     /// describes nothing of it.
-    whole: bool,
+    whole: Option<&'static str>,
     /// The parts the compositor poses, below the rest of the tree.
     lifted: Vec<LiftedLayer>,
     /// Moves whenever the layer may show pixels of another frame entirely.
@@ -275,7 +275,7 @@ impl WidgetSurface {
             host,
             placement,
             frames: Frames::new(size),
-            whole: true,
+            whole: Some("a target nothing was drawn on"),
             lifted: Vec::new(),
             generation: 0,
             scene: vello::Scene::new(),
@@ -557,7 +557,7 @@ impl WidgetSurface {
             // What the tree drew for the old size says nothing of this one: the next frame
             // draws whole, and the target is repainted all of it.
             self.generation = self.generation.wrapping_add(1);
-            self.whole = true;
+            self.whole = Some("another size");
         }
         self.owe();
     }
@@ -1001,7 +1001,7 @@ impl ShellSurface for WidgetSurface {
                 self.owed = Owed::Material;
                 // Its material is drawn again where it lies, not only where a widget changed:
                 // the frame that takes the images draws whole.
-                self.whole = true;
+                self.whole = Some("its material");
             }
         }
         self.owe();
@@ -1244,7 +1244,7 @@ impl ShellSurface for WidgetSurface {
         // The target's pixels are not the ones the frames before painted (a new size, its
         // material): this frame draws the whole tree again, and the target is repainted all of
         // it.
-        if std::mem::take(&mut self.whole) {
+        if self.whole.take().is_some() {
             self.host.repaint_whole();
         }
         // A surface draws its material with the image it has when it draws:
