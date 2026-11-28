@@ -17,19 +17,23 @@ const FOLDER: &str = "Launch plan";
 /// The lines the Files window of the device's workspace shows an agent, asked as the person's own
 /// agent asks it.
 async fn view(session: &Session<'_>, workspace: &str) -> String {
-    // A window still opening answers that its read waits: it is read again, as an agent does,
-    // while a device under load takes its time to start the app.
-    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    // A window still opening answers that its read waits, or shows that it is starting: it is
+    // read again, as an agent does, while a device under load takes its time to start the app.
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let (lines, failed) = said(
             &session
                 .tool(workspace, "tilo_view", &json!({"path": "file-explorer"}))
                 .await,
         );
-        if !failed {
+        let starting = lines.contains("Files is starting");
+        if !failed && !starting {
             return lines;
         }
-        assert!(lines.contains("not finished yet"), "{lines}",);
+        assert!(
+            failed && lines.contains("not finished yet") || starting,
+            "{lines}",
+        );
         assert!(Instant::now() < deadline, "the window never reads: {lines}");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
