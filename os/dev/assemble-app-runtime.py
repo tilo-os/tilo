@@ -461,8 +461,14 @@ def assemble_inside(args):
 
 def engine_pins(repo):
     """The further runtimes the source's apps require by exact version (the
-    Browser's engine): each ships with its app or the app leaves the cohort."""
-    return sorted({pin for entry in application_entries(repo) for pin in entry['pins']})
+    Browser's engine): each ships with its app or the app leaves the cohort.
+    A native app pins it in its manifest; a tilolang package names it in its
+    `app` declaration, which its built manifest then pins."""
+    pins = {pin for entry in application_entries(repo) for pin in entry['pins']}
+    for source in sorted((repo / 'apps/tl').glob('*/app.tl')):
+        pins.update(re.findall(r'^\s+engine:\s*"(tilo-runtime/[^"]+)"',
+                               source.read_text(), re.MULTILINE))
+    return sorted(pins)
 
 
 def container_host_root():

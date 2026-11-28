@@ -274,7 +274,7 @@ class PayloadTreeTests(unittest.TestCase):
         source = root / 'compiled'
         for name in ('libruntime_dylib.so', 'runtime-engines',
                      'tilo-runtime-bundle', 'tilo-app-package', 'tilo-install', 'tilo-cli-shim',
-                     'thin-apps/tilolang-process'):
+                     'tilolang-std', 'thin-apps/tilolang-process'):
             (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text('')
         for name in ('apps', 'language-packs'):

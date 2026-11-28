@@ -96,7 +96,8 @@ grep -Fq 'python3 -m http.server "$browser_fixture_port"' "$installer_cycle" \
   && ok 'the installed-target cold boot proves Browser renders a local offline page' \
   || bad 'the installed-target cold boot lacks durable Browser render evidence'
 
-if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+if grep -Fq 'cp -f "$out/target-observe.txt" "$out/07-first-boot-oobe.txt"' "$installer_cycle" \
+  && grep -Fq 'die "first installed boot did not reach direct OOBE"' "$installer_cycle" \
   && grep -Fq "wait_screen 10-oobe-backup-resumed 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
   && grep -Fq 'OOBE did not resume after an interrupted first boot' "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
