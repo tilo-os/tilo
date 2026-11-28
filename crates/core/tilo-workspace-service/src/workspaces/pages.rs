@@ -717,11 +717,7 @@ impl Workspaces {
         // the record of their devices there lists it as every device of theirs is listed, so the
         // record carries it to the rest. The certificate is the one the host verified for the
         // request, and the write is the host's own, as a daemon's is where it keeps the record.
-        if workspace == super::person_workspace::workspace_id(self)
-            && let Err(error) = super::person_workspace::devices::keep(self, device).await
-        {
-            tracing::warn!(%error, "a device of the person's is not listed in their devices");
-        }
+        super::person_workspace::devices::keep_if_own(self, workspace, device).await;
         self.page_workspace(workspace, device).await
     }
 

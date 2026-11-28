@@ -2422,6 +2422,27 @@ pub async fn keep(workspaces: &super::Workspaces, cert: &DeviceCert) -> Result<(
     super::apply(workspaces, DEVICES, Devices::keeping(cert)?).await
 }
 
+/// Keep `cert`, a device the host admitted into the person's own workspace `workspace`, in the
+/// record of their devices: a device that asks the host to place that workspace and one it lets
+/// in through its entry are listed there as a daemon that settles lists itself, so every device
+/// of theirs reads it and what the record admits — its windows and that workspace's live
+/// session — is answered for it. Another workspace keeps nothing: its roster lists the device.
+pub(crate) async fn keep_if_own(
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+) {
+    if workspace != super::workspace_id(workspaces) {
+        return;
+    }
+    if let Err(error) = keep(workspaces, cert).await {
+        tracing::warn!(
+            %error,
+            "a device of the person's is not listed in their devices"
+        );
+    }
+}
+
 /// Keep `value` as the fact `name` in the entry of `cert`'s device, in the record of its person's
 /// own workspace as `workspaces` keeps it: what a device says of itself, each written by that device
 /// alone.

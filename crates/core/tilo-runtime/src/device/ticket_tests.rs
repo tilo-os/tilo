@@ -1580,9 +1580,9 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
 }
 
 /// A device of the person's that keeps a member copy of their own workspace is not the device
-/// that holds it: it writes itself into the person's devices record through the server that
-/// does, and the server admits the write. What a device whose founding handed their workspace
-/// to a server does, and what the server decides its later writes against.
+/// that holds it: the server that does lists it among their devices as its entry admits it, and
+/// admits the writes it makes through the copy. What a device whose founding handed their
+/// workspace to a server does, and what the server decides its later writes against.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_device_keeping_a_copy_lists_itself_through_the_server_that_holds_it() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -1616,14 +1616,14 @@ async fn a_device_keeping_a_copy_lists_itself_through_the_server_that_holds_it()
                 .any(|entry| entry.cert.device_public_key == host.issuer_cert.device_public_key)
         };
     assert!(
-        !listed(
+        listed(
             tilo_workspace_service::workspaces::person_workspace::devices::of(
                 &host.hosted,
                 &person
             )
             .await
         ),
-        "the server's record does not have the device yet"
+        "the server lists the device its entry admitted"
     );
 
     // The device lists itself as its daemon does on each start: a member copy writes through

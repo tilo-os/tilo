@@ -59,6 +59,31 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         Some(server.own()),
         "the phone is in the person's own workspace: {devices:?}"
     );
+    // The person's own workspace, kept on their server, lists the phone among their devices:
+    // what carries it to their other devices, and what admits its windows and that workspace's
+    // live session there.
+    let person = server.person.verifying_key().to_bytes();
+    support::until(
+        "the person's own workspace lists the phone among their devices",
+        || {
+            let listed = server.runtime.block_on(async {
+                tilo_workspace_service::workspaces::person_workspace::devices::of(
+                    &server.workspaces(),
+                    &person,
+                )
+                .await
+                .listed(&person)
+            });
+            if listed
+                .iter()
+                .any(|listed| listed.device.called(&listed.cert) == "Pixel")
+            {
+                Ok(())
+            } else {
+                Err(format!("{listed:?}"))
+            }
+        },
+    );
 
     // What the phone's view lists under the workspace (`device.apps`): the apps the workspace's
     // host installed into it, which its device reads from the record its follower reads too.

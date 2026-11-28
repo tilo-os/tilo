@@ -102,7 +102,7 @@ impl Admit for Workspaces {
                     })
                 };
                 if let Some(again) = again {
-                    return self.with_host(&entering.workspace, again).await;
+                    return self.with_host(&entering.workspace, cert, again).await;
                 }
             }
             // A device that is a member already — a `tilo mcp` restarted, a
@@ -114,7 +114,7 @@ impl Admit for Workspaces {
             if entering.through == Through::Entry
                 && let Some(member) = self.member_already(cert, &entering.workspace).await
             {
-                return self.with_host(&entering.workspace, member).await;
+                return self.with_host(&entering.workspace, cert, member).await;
             }
             // A further device of someone the workspace has in it — a second
             // tab, a new computer of theirs — is theirs, not a newcomer's:
@@ -216,7 +216,7 @@ impl Admit for Workspaces {
             if let Some(access) = access {
                 self.key_arrival(&entering.workspace, cert, access).await;
             }
-            self.with_host(&entering.workspace, entered).await
+            self.with_host(&entering.workspace, cert, entered).await
         })
     }
 }
@@ -810,8 +810,11 @@ impl Workspaces {
     }
 
     /// `entered`, with this host's signed address for the workspace, where a
-    /// desktop takes it in.
-    async fn with_host(&self, workspace: &str, entered: Entered) -> Entered {
+    /// desktop takes it in, and the device listed in the record of the person's
+    /// devices where the workspace is their own: a page that places that
+    /// workspace and a daemon that settles are listed there as this entry's
+    /// device is, so every device of theirs reads it among their own.
+    async fn with_host(&self, workspace: &str, cert: &DeviceCert, entered: Entered) -> Entered {
         let Entered::Admitted {
             workspace: uuid,
             workspace_id,
@@ -822,6 +825,7 @@ impl Workspaces {
         else {
             return entered;
         };
+        crate::workspaces::person_workspace::devices::keep_if_own(self, workspace, cert).await;
         let host = match self.workspace(workspace).await {
             Ok(hosted) => {
                 let hint = self.transport_hint(&*hosted.lock().await);
@@ -1627,6 +1631,41 @@ mod tests {
                 .enter_agent_key((&stranger_key, &strangers), &workspace, "Scribe")
                 .await,
             Err("the agent's person is not in this workspace".to_owned())
+        );
+        server.shutdown().await;
+    }
+
+    /// A device of the person's that the host lets into their own workspace through its entry
+    /// is listed with their devices there: the record carries it to every other device of
+    /// theirs, and it is what admits the device's windows and that workspace's live session.
+    /// The device writes nothing itself: it holds no copy of the workspace yet.
+    #[tokio::test]
+    async fn a_device_let_in_is_listed_with_the_persons_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces();
+        let person = SigningKey::from_bytes(&[1; 32]);
+        let own = crate::workspaces::person_workspace::found(workspaces)
+            .await
+            .expect("the person's own workspace is founded on their server");
+        let (phone_key, phone) = device_of(&person, DeviceCapabilities::member());
+
+        let entered = through_the_entry(workspaces, &own, (&phone_key, &phone)).await;
+        assert!(
+            matches!(entered, Entered::Admitted { .. }),
+            "the phone enters the person's own workspace through its entry: {entered:?}"
+        );
+        let listed =
+            crate::workspaces::person_workspace::devices::of(workspaces, &phone.user_public_key)
+                .await
+                .listed(&phone.user_public_key);
+        assert!(
+            listed
+                .iter()
+                .any(|listed| listed.cert.device_public_key == phone.device_public_key),
+            "the device the host let into the person's own workspace is listed with their \
+             devices: {listed:?}"
         );
         server.shutdown().await;
     }
