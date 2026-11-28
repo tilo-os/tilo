@@ -52,15 +52,6 @@ pub const ADDRESSING: [&str; 2] = [DHCP, STATIC];
 /// configuration, refused it whole, or put the previous network back.
 pub const REPORT_STATES: [&str; 3] = ["applied", "refused", "reverted"];
 
-/// The request a server writes for the root helper to apply.
-pub const REQUEST: &str = "/var/lib/tilo/state/device-config.request";
-/// The report the helper writes there.
-pub const REPORT: &str = "/var/lib/tilo/state/device-config.report";
-/// The helper's note that it applied the network and waits for a confirmation.
-pub const APPLIED_AT: &str = "/var/lib/tilo/state/device-config.applied-at";
-/// The daemon's confirmation that the device is still reached.
-pub const CONFIRMED: &str = "/var/lib/tilo/state/device-config.confirmed";
-
 /// How long [`confirm`] waits for the helper to say it applied.
 const APPLY_WAIT: Duration = Duration::from_secs(20);
 /// How often [`confirm`] looks for that note.
@@ -142,17 +133,6 @@ impl Paths {
             report: dir.join("device-config.report"),
             applied_at: dir.join("device-config.applied-at"),
             confirmed: dir.join("device-config.confirmed"),
-        }
-    }
-}
-
-impl Default for Paths {
-    fn default() -> Self {
-        Self {
-            request: PathBuf::from(REQUEST),
-            report: PathBuf::from(REPORT),
-            applied_at: PathBuf::from(APPLIED_AT),
-            confirmed: PathBuf::from(CONFIRMED),
         }
     }
 }

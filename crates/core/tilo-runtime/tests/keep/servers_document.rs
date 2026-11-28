@@ -9,7 +9,7 @@
 )]
 
 use tilo_resource::Id;
-use tilo_runtime::device::keep::servers::applied;
+use tilo_runtime::device::keep::servers::{applied, policy as servers_policy};
 use tilo_server_protocol::WorkSetting;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::DeviceCapabilities;
@@ -88,6 +88,8 @@ async fn record_written_as(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it_go() {
+    let machine = tempfile::tempdir().unwrap();
+    let requests = applied::Requests::at(machine.path().join(servers_policy::POLICY_REQUEST_FILE));
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let nas = alice.enrol("nas", DeviceCapabilities::member());
@@ -111,7 +113,9 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
             .await
             .ok()
     };
-    applied::reconcile(workspaces).await.unwrap();
+    applied::reconcile_into(workspaces, &requests)
+        .await
+        .unwrap();
     assert!(retained().await.is_none(), "a plan holds nothing yet");
 
     // The machine enrolled with the plan's token and gave the address it is
@@ -144,7 +148,9 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
     assert!(!apps.is_empty(), "the changes reach the record's history");
     assert!(apps.iter().all(|app| app == SERVERS.0), "{apps:?}");
     // Whichever pass of the document hands it over: this one, or the one its change started.
-    applied::reconcile(workspaces).await.unwrap();
+    applied::reconcile_into(workspaces, &requests)
+        .await
+        .unwrap();
     let held = workspaces
         .keeping_devices(&workspace.workspace)
         .await
@@ -182,7 +188,9 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
         .remove_server(&workspace.workspace, &hex::encode(nas.device_pubkey()))
         .await
         .unwrap();
-    let again = applied::reconcile(workspaces).await.unwrap();
+    let again = applied::reconcile_into(workspaces, &requests)
+        .await
+        .unwrap();
     assert!(
         !again.held.contains(&workspace.workspace),
         "the plan does not hand it back: {again:?}"
@@ -330,7 +338,8 @@ async fn a_servers_machine_configuration_is_written_and_its_report_read() {
     let nas = alice.enrol("nas", DeviceCapabilities::member());
     let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
     let requests = tempfile::tempdir().unwrap();
-    let requests_at = || applied::Requests::at(requests.path().join("update-policy.request"));
+    let requests_at =
+        || applied::Requests::at(requests.path().join(servers_policy::POLICY_REQUEST_FILE));
     let workspaces = server.host.workspaces();
     let admin = person_workspace_id(&alice.user_pk);
     workspaces

@@ -17,13 +17,8 @@ use std::path::Path;
 use tilo_workspace_service::workspaces::servers::{MINUTES_PER_DAY, Server, UPDATES};
 
 /// The file a server writes what its update policy should be, for the
-/// root-run helper to apply: in the server's state root, which is
-/// `/var/lib/tilo/state` on the image ([`POLICY_REQUEST`]).
+/// root-run helper to apply, in the daemon's profile.
 pub const POLICY_REQUEST_FILE: &str = "update-policy.request";
-
-/// Where the image's server writes [`POLICY_REQUEST_FILE`], and the root-run
-/// helper reads it.
-pub const POLICY_REQUEST: &str = "/var/lib/tilo/state/update-policy.request";
 
 /// What a server's entry says its update policy is.
 #[derive(Clone, Debug, PartialEq, Eq)]

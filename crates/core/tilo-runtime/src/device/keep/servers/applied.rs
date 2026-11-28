@@ -31,7 +31,7 @@ use tilo_workspace_service::workspaces::servers::{SERVERS, device, device_id, re
 
 /// The file in a server's state root that says it was retired, which its
 /// machine reads to start its daemon no more.
-const RETIRED: &str = "decommissioned";
+pub(crate) const RETIRED: &str = "decommissioned";
 
 /// Where a server writes what its entry asks of the machine, for the root
 /// helpers to apply.
@@ -56,12 +56,6 @@ impl Requests {
             policy,
             device: device::Paths::under(&dir),
         }
-    }
-}
-
-impl Default for Requests {
-    fn default() -> Self {
-        Self::at(policy::POLICY_REQUEST)
     }
 }
 
@@ -91,19 +85,10 @@ pub struct Applied {
 
 /// Apply the admin workspace's [`SERVERS`] document as it stands: attach and
 /// detach the servers of the workspaces this device hosts, and apply this
-/// device's own entry.
+/// device's own entry, its requests written where the root helpers read them.
 ///
 /// # Errors
 /// The document could not be read, or a workspace's hosts could not be changed.
-pub async fn reconcile(workspaces: &Workspaces) -> Result<Applied, String> {
-    reconcile_into(workspaces, &Requests::default()).await
-}
-
-/// [`reconcile`] with the requests written where the root helpers read
-/// them ([`Requests`]).
-///
-/// # Errors
-/// As [`reconcile`].
 pub async fn reconcile_into(
     workspaces: &Workspaces,
     requests: &Requests,

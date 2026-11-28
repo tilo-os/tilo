@@ -273,3 +273,53 @@ fn the_status_says_which_way_this_boots_volume_opened() {
         "a file that is not one says nothing"
     );
 }
+
+/// Every file the daemon exchanges with the image's root-run units is one a unit or helper reads,
+/// and every such path one the daemon writes: a wrong directory fails here, not on a server.
+#[test]
+fn the_machine_files_are_where_the_image_reads_them() {
+    use crate::device::keep::servers::{applied, policy};
+    let machine = crate::device::keep::machine(Path::new(tilo_machine::DAEMON_SYSTEM_PROFILE));
+    let requests = applied::Requests::at(machine.join(policy::POLICY_REQUEST_FILE));
+    let device = requests.device;
+    let written = std::collections::BTreeSet::from([
+        requests.policy,
+        device.request,
+        device.report,
+        device.applied_at,
+        device.confirmed,
+        machine.join(CONTROL_REQUEST),
+        machine.join(super::CONTROL_RESULT),
+        machine.join(applied::RETIRED),
+        machine.join(crate::device::ticket::APPROVALS_STAGING),
+    ]);
+    let read: std::collections::BTreeSet<_> = [
+        include_str!(
+            "../../../../../../../os/usr/lib/systemd/system/tilo-server-update-policy.path"
+        ),
+        include_str!("../../../../../../../os/usr/lib/systemd/system/tilo-server-control.path"),
+        include_str!(
+            "../../../../../../../os/usr/lib/systemd/system/tilo-server-device-config.path"
+        ),
+        include_str!(
+            "../../../../../../../os/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf"
+        ),
+        include_str!("../../../../../../../os/usr/lib/systemd/system/tilo-server-unlock.service"),
+        include_str!("../../../../../../../os/usr/libexec/tilo-server-control"),
+        include_str!("../../../../../../../os/usr/libexec/tilo-server-device-config"),
+        include_str!("../../../../../../../os/usr/libexec/tilo-server-update-policy"),
+        include_str!("../../../../../../../os/usr/libexec/tilo-server-update-apply"),
+    ]
+    .into_iter()
+    .flat_map(|text| {
+        text.match_indices("/var/lib/tilo/state/")
+            .map(move |(at, _)| &text[at..])
+    })
+    .map(|path| {
+        path.split(|c: char| !c.is_ascii_alphanumeric() && !"._/-".contains(c))
+            .next()
+    })
+    .map(|path| std::path::PathBuf::from(path.unwrap()))
+    .collect();
+    assert_eq!(written, read);
+}

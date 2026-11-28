@@ -20,6 +20,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Where the daemon stages the update approvals its root unit carries into place.
+pub(crate) const APPROVALS_STAGING: &str = "approvals-next";
+
 use super::workspaces::ServiceWorkspaces;
 use crate::device::issuing::{Role, TicketServer};
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -675,7 +678,7 @@ async fn floor_answer(
         authority: text("authority")?,
         request: text("request")?,
     };
-    let staging = machine.state_root().join("approvals-next");
+    let staging = machine.state_root().join(APPROVALS_STAGING);
     let answer = match machine.floor(asked).await? {
         Ok(approvals) => {
             crate::device::keep::rollout::store_approvals(&staging, &approvals)?;

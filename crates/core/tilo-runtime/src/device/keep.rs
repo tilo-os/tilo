@@ -541,6 +541,11 @@ fn local_hosts(listen: SocketAddr) -> Vec<String> {
     hosts
 }
 
+/// Where the daemon serving `profile` writes what the machine's root-run units read: the profile.
+pub(crate) fn machine(profile: &Path) -> PathBuf {
+    profile.to_path_buf()
+}
+
 /// What a server keeps on: the device and its workspace service.
 pub(crate) struct On<'a> {
     /// The device's directory, where its workspace service is kept.
