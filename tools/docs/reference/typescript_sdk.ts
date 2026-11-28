@@ -49,6 +49,7 @@ const GROUPS: [string, string[]][] = [
   ]],
   ["Connection", ["Daemon", "DaemonConnection", "Send", "FetchLike", "NATIVE_PACKAGE", "VERSION"]],
   ["Calls", ["CallLane", "CarriedCall", "CallAsk", "CallFrame", "CallReport", "CallLink", "CallPerson"]],
+  ["Presence", ["PresenceLane", "PresenceSaid", "PresenceMember"]],
   ["Errors", ["Refused"]],
 ];
 
