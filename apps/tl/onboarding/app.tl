@@ -24,20 +24,20 @@ fn gutter() -> Float {
     24.0
 }
 
-/// How tall the card stands on a step, or 0.0 where it takes the height of what it holds (the
-/// hand-off, the choice of an existing identity).
+/// How tall the card stands on a step: the room its page needs for the step's controls, held to
+/// the display's own room by the view. Every step takes a height, the hand-off included: a card
+/// that hugs its content stands taller than the display on a short one, and the ways forward
+/// under the page, and the page's own end, would sit past its edge where nobody reaches them.
 fn panel_height(s: session.Setup, large: Bool) -> Float {
     if s.step == "tour" {
         if large { 672.0 } else { 640.0 }
-    } else if s.step == "ready" or s.step == "existing" and not s.recovery_only {
-        0.0
     } else if large {
         672.0
     } else if s.step == "intro" {
         520.0
     } else {
-        // Restore, protection, backup, the recovery key and the formats offer hold dense
-        // decisions and controls.
+        // Restore, protection, backup, the recovery key, the formats offer and the hand-off hold
+        // dense decisions and controls.
         560.0
     }
 }
@@ -202,29 +202,10 @@ view setup(s: session.Setup) {
             ui.Backdrop(ground: .trusted)
         }
         row(fill, align: .center, distribute: .center) {
-            if height > 0.0 {
-                stack(height: height * 1dp) {
-                    setup_card(
-                        s,
-                        width,
-                        true,
-                        backup_passphrase,
-                        path,
-                        picked,
-                        code,
-                        new_passphrase,
-                        confirmation,
-                        words,
-                        first,
-                        second,
-                        third,
-                    )
-                }
-            } else {
+            stack(height: height * 1dp) {
                 setup_card(
                     s,
                     width,
-                    false,
                     backup_passphrase,
                     path,
                     picked,
@@ -251,11 +232,11 @@ fn stage_described(s: session.Setup) -> Text {
 }
 
 /// The card: the progress header, the step's page, which scrolls when it is taller than the card,
-/// and the footer of its ways forward, which stays in view.
+/// and the footer of its ways forward, which stays in view. The card takes the height its view
+/// gives it, so the page scrolls inside a card the display holds whole.
 view setup_card(
     s: session.Setup,
     width: Float,
-    tall: Bool,
     backup_passphrase: State<Text>,
     path: State<Text>,
     picked: State<Int>,
@@ -269,7 +250,7 @@ view setup_card(
 ) {
     ui.FloatingPanel(
         width: width,
-        fill_height: tall,
+        fill_height: true,
         label: if s.step == "tour" { "Desktop tour" } else { eyebrow(s) },
         description: stage_described(s),
     ) {
@@ -292,7 +273,7 @@ view setup_card(
                 scroll_label: if s.step == "tour" { tour_stage(s) } else { stage_name(s) },
                 shows_bar: s.step != "backup",
                 reveals_focus: s.step == "backup",
-                fills_height: tall,
+                fills_height: true,
             ) {
                 // A form keeps the field Tab reaches in view; a page of explanation keeps its bar
                 // showing while there is more below.
