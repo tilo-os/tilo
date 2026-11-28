@@ -1190,7 +1190,8 @@ pub fn android_manifest(
         android:debuggable="{debuggable}"
         android:extractNativeLibs="true"
         android:hardwareAccelerated="true"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight">
 
         <!-- The toolkit adapts to rotation, resizing, keyboards, density, locale and theme
              itself; recreating the activity would restart the app's process (see
