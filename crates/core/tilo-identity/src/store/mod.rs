@@ -20,7 +20,7 @@ pub use kept_above::take_up_person_kept_above;
 pub use records::*;
 pub use registry::{
     IdentityProfile, IdentityRegistry, IdentityRegistryStore, identity_for_workspace,
-    selected_actor_id_prompt, selected_identity_path,
+    presented_person_in, selected_actor_id_prompt, selected_identity_path,
 };
 
 /// Why a device that holds only part of the identity's key signs nothing as

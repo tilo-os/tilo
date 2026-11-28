@@ -899,6 +899,8 @@ fn admit_secret_file(
     #[cfg(not(unix))]
     let _ = (forbidden_mode, owner_policy);
     let metadata = file.metadata()?;
+    #[cfg(unix)]
+    let metadata = tightened_device_key(file, path, metadata, forbidden_mode, owner_policy)?;
     if !metadata.is_file() {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -935,6 +937,37 @@ fn admit_secret_file(
         }
     }
     Ok(())
+}
+
+/// `metadata` of the device key in `file`, made owner-only first when an earlier Tilo left it
+/// open to its group alone (it wrote the key 0640 once) and this account owns it: the daemon's
+/// own file, which it tightens and says so, rather than refuse every install from before the
+/// key was owner-only. A key open to other users, or another account's, is left to be refused.
+#[cfg(unix)]
+fn tightened_device_key(
+    file: &fs::File,
+    path: &Path,
+    metadata: fs::Metadata,
+    forbidden_mode: u32,
+    owner_policy: SecretOwner,
+) -> Result<fs::Metadata, PersistError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let mode = metadata.permissions().mode() & 0o777;
+    if owner_policy != SecretOwner::RootOrReader
+        || !metadata.is_file()
+        || mode & forbidden_mode == 0
+        || mode & 0o007 != 0
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+    {
+        return Ok(metadata);
+    }
+    file.set_permissions(fs::Permissions::from_mode(mode & 0o700))?;
+    tracing::warn!(
+        path = %path.display(),
+        mode = format_args!("{mode:o}"),
+        "the device key was open to its group; it is owner-only now"
+    );
+    Ok(file.metadata()?)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1004,7 +1037,8 @@ fn write_public_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// # Errors
 ///
 /// Returns [`PersistError::InsecurePermissions`] if the file is readable or
-/// writable by anyone but its owner (a group-readable key is refused),
+/// writable by other users (a key of this account's open to its group alone,
+/// as an earlier Tilo wrote it, is made owner-only and read),
 /// [`PersistError::InsecureOwner`] if it is owned by neither root nor the
 /// reader (root, which may always read it, is never refused),
 /// [`PersistError::Io`] if it cannot be read, or
@@ -2647,7 +2681,8 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The device key is owner-only and refuses a group-readable one, and rejects a
+        /// The device key is owner-only, tightens one open to its group alone, refuses one
+        /// open to other users, and rejects a
         /// multiply-named inode; its creation writes it so, a user-scoped secret still refuses
         /// group read; the device key is created once then reloaded, simultaneous creation
         /// persists one key, an unreadable key raises instead of rotating, and adopting a key
@@ -2656,8 +2691,9 @@ mod tests {
 
         phase device_key_is_owner_only_and_refuses_a_group_readable_key;
         // Only the device's daemon reads the key, as the account that owns its
-        // directory. A key anyone else can reach — its group included — is
-        // refused on every read rather than trusted to whoever set the mode.
+        // directory. A key other users can reach is refused on every read rather
+        // than trusted to whoever set the mode; one an earlier Tilo left open to
+        // its group is the daemon's own, which it makes owner-only.
         {
             #[cfg(unix)]
             {
@@ -2674,20 +2710,23 @@ mod tests {
                 // Owner-only: accepted.
                 assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
 
-                // A group read: refused, whether read by path or from an opened file.
-                fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
-                match read_device_key(path) {
-                    Err(PersistError::InsecurePermissions { mode, .. }) => assert_eq!(mode, 0o640),
-                    other => panic!("a group-readable device key must be refused, got {other:?}"),
+                // Open to its group alone, as an earlier Tilo wrote it: the daemon's own key, made
+                // owner-only before it is read, whether read by path or from an opened file.
+                for mode in [0o640u32, 0o660, 0o620] {
+                    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+                    assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+                    let left = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+                    assert_eq!(left, 0o600, "mode {mode:o} is tightened");
                 }
+                fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
                 let file = fs::File::open(path).unwrap();
-                assert!(matches!(
-                    read_device_key_from_file(&file),
-                    Err(PersistError::InsecurePermissions { .. })
-                ));
+                assert_eq!(
+                    read_device_key_from_file(&file).unwrap().to_bytes(),
+                    sk.to_bytes()
+                );
 
-                // Any bit for the group or for `other`: refused.
-                for mode in [0o644u32, 0o604, 0o601, 0o666, 0o660, 0o620] {
+                // Any bit for `other`: refused, and left as it is.
+                for mode in [0o644u32, 0o604, 0o601, 0o666] {
                     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
                     match read_device_key(path) {
                         Err(PersistError::InsecurePermissions { .. }) => {}

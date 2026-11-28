@@ -46,6 +46,7 @@ postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 zeroize.workspace = true
 # Where a device's login dials its server (`login::ServerAddress`).
 iroh-base = { workspace = true, features = ["key"] }

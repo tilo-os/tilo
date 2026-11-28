@@ -141,9 +141,9 @@ pub fn serving_in(
     identity_dir: &std::path::Path,
     paths: &IdentityPaths,
 ) -> io::Result<(SigningKey, DeviceCert)> {
-    // The person this computer presents is the owner named in its identity tree; without one,
-    // the identity the account selected stands.
-    let presented = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok();
+    // The person this computer presents is the one the account selected, else the owner named
+    // in its identity tree.
+    let presented = crate::store::presented_person_in(identity_dir, paths);
     let store = crate::store::IdentityRegistryStore::at(identity_dir);
     let registry = store.load_reconciled_cached()?;
     let profile = registry
@@ -274,5 +274,51 @@ mod tests {
         );
         let error = current(&workspace).unwrap_err();
         assert!(error.to_string().contains("revoked"), "{error}");
+    }
+
+    /// A person moved onto a computer that another identity of the account claimed first is the
+    /// one its daemon serves: the account selected them. The first identity still owns the
+    /// machine, and its certificate for the same key stays beside theirs.
+    #[test]
+    fn a_computer_serves_the_person_its_account_selected_not_the_first_to_claim_it() {
+        crate::sources::test_trust::install();
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config");
+        let system_root = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config)
+            .set("TILO_IDENTITY_ROOT", &system_root)
+            .set(crate::provisioning::FILE_SECRETS_ENV, "1");
+        let identity_dir = crate::store::account_identity_dir(&config.join("tilo/identity"));
+        let paths = tilo_device_identity::IdentityPaths::under(&system_root);
+        let storage = crate::provisioning::IdentityStorage::Files;
+        tilo_device_identity::persist::load_or_create_device_key(&paths).unwrap();
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
+
+        // The first identity claims the machine.
+        crate::provisioning::ensure_collaboration_identity(&identity_dir, &paths, storage).unwrap();
+        let owner = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
+        // Another person's root moves here, and the account acts as them from now on.
+        let moved = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+        let person = moved.verifying_key().to_bytes();
+        let id = format!("person-{}", hex::encode(&person[..8]));
+        crate::provisioning::import_single_device_root_as(&identity_dir, &id, &moved, "", storage)
+            .unwrap();
+        crate::provisioning::ensure_collaboration_identity(&identity_dir, &paths, storage).unwrap();
+        assert_eq!(
+            tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap(),
+            owner,
+            "the first identity still owns the machine"
+        );
+        assert!(paths.device_cert_for_user(&owner).exists());
+
+        let (_, served) = serving_in(&identity_dir, &paths).unwrap();
+        assert_eq!(served.user_public_key, person);
+        assert_eq!(
+            crate::store::identity_for_workspace("")
+                .unwrap()
+                .map(|profile| profile.user_public_key),
+            Some(person)
+        );
     }
 }

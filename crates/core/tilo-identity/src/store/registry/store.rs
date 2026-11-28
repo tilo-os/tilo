@@ -524,7 +524,7 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
     Ok(registry
-        .for_workspace(workspace, presented_person())
+        .for_workspace(workspace, store.presented_person())
         .map(|profile| profile.record_path))
 }
 
@@ -540,7 +540,7 @@ pub fn selected_actor_id_prompt(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_prompt()?;
     Ok(registry
-        .for_workspace(workspace, presented_person())
+        .for_workspace(workspace, store.presented_person())
         .map(|profile| profile.person_id()))
 }
 
@@ -549,13 +549,32 @@ pub fn selected_actor_id_prompt(workspace: &str) -> io::Result<Option<String>> {
 pub fn identity_for_workspace(workspace: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
-    Ok(registry.for_workspace(workspace, presented_person()))
+    Ok(registry.for_workspace(workspace, store.presented_person()))
 }
 
-/// The person this device presents: the owner named in its `user-identity/pubkey.bin`.
-fn presented_person() -> Option<[u8; 32]> {
-    let paths = crate::provisioning::collaboration_identity_paths();
-    tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok()
+/// The person this device presents for the account whose identities are in `identity_dir`,
+/// with its own identity tree at `paths`: the one the account selected (its active record), else
+/// the owner named in `user-identity/pubkey.bin`. A person moved onto a computer that another of
+/// the account's identities claimed first is the one the account selected, not that first one.
+#[must_use]
+pub fn presented_person_in(
+    identity_dir: &Path,
+    paths: &tilo_device_identity::IdentityPaths,
+) -> Option<[u8; 32]> {
+    crate::store::resolve_active_identity(identity_dir)
+        .and_then(|record| crate::store::load_metadata_from_path(&record).ok())
+        .map(|metadata| metadata.group_public_key)
+        .or_else(|| tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok())
+}
+
+impl IdentityRegistryStore {
+    /// [`presented_person_in`] for this store and the device's identity tree.
+    fn presented_person(&self) -> Option<[u8; 32]> {
+        presented_person_in(
+            &self.identity_dir,
+            &crate::provisioning::collaboration_identity_paths(),
+        )
+    }
 }
 
 /// Resolve the identity directory from environment variables.

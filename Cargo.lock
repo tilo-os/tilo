@@ -16970,6 +16970,7 @@ dependencies = [
  "tilo-secrets",
  "tilo-test-env",
  "tilo-user-identity",
+ "tracing",
  "workspace-hack",
  "zeroize",
 ]

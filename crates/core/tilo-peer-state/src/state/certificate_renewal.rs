@@ -40,7 +40,7 @@ impl PeerGovernance<'_> {
         if renewed.issued_at_ns <= held.issued_at_ns {
             return Err("the workspace holds a newer certificate for this device".into());
         }
-        if !renewed.capabilities.grants_no_more_than(&held.capabilities) {
+        if !renewed.may_replace(&held) {
             return Err("a renewed certificate grants no more than the one it replaces".into());
         }
         tilo_user_identity::verify_device_cert_at(renewed, now_ns(now)).map_err(err)?;

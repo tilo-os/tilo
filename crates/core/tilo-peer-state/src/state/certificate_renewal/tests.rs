@@ -4,7 +4,7 @@ use crate::StatePeer;
 use crate::admission_tests::seeded;
 use crate::join::Role;
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCert, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
 use crate::fixture::member_cert_with;
@@ -45,10 +45,20 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_of(&DeviceCapabilities::member())
+}
+
+/// [`fixture`], its Editor's certificates granting `capabilities`.
+fn fixture_of(capabilities: &DeviceCapabilities) -> Fixture {
     let (mut peer, authority, _, _, now) = seeded();
     let root = SigningKey::from_bytes(&[5; 32]);
     let device = SigningKey::from_bytes(&[6; 32]);
-    let held = cert(&root, &device, 1000 * SECOND, Some(1500 * SECOND));
+    let granting = |mut cert: DeviceCert| {
+        cert.capabilities = capabilities.clone();
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    };
+    let held = granting(cert(&root, &device, 1000 * SECOND, Some(1500 * SECOND)));
     admit(
         &mut peer,
         &authority,
@@ -58,7 +68,7 @@ fn fixture() -> Fixture {
             .checked_add(Duration::from_secs(1200))
             .unwrap(),
     );
-    let renewed = cert(&root, &device, 1900 * SECOND, Some(2900 * SECOND));
+    let renewed = granting(cert(&root, &device, 1900 * SECOND, Some(2900 * SECOND)));
     Fixture {
         peer,
         authority,
@@ -176,5 +186,27 @@ tilo_test_env::scenario! {
         wider.capabilities.can_admit_devices = true;
         sign_device_cert(&mut wider, &root).unwrap();
         assert!(peer.governance().renewal_of(&wider, now).is_err());
+    }
+
+    phase the_root_lifts_the_cap_of_a_device_that_called_itself_foreign;
+    {
+        let Fixture {
+            mut peer,
+            root,
+            device,
+            now,
+            ..
+        } = fixture_of(&DeviceCapabilities {
+            foreign: true,
+            ..DeviceCapabilities::member()
+        });
+        // Its person's root certifies it again, as the device that holds the root does.
+        let uncapped = cert(&root, &device, 1900 * SECOND, Some(2900 * SECOND));
+        assert!(
+            peer.governance_mut()
+                .renew_member_certificate(&uncapped, &device, now)
+                .unwrap()
+        );
+        assert!(peer.certificates().contains(&uncapped));
     }
 }

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 mod store;
 pub use store::{
-    IdentityRegistryStore, identity_for_workspace, selected_actor_id_prompt, selected_identity_path,
+    IdentityRegistryStore, identity_for_workspace, presented_person_in, selected_actor_id_prompt,
+    selected_identity_path,
 };
 
 /// Public metadata for one locally available signing identity.
@@ -60,8 +61,8 @@ impl IdentityRegistry {
             .or_else(|| self.person_identity(presented))
     }
 
-    /// The identity this device presents wherever it goes: the person named by
-    /// `user-identity/pubkey.bin`, or, without one, the identity this login marked active.
+    /// The identity this device presents wherever it goes: the person `presented` names
+    /// ([`presented_person_in`]), or, without one, the identity this login marked active.
     #[must_use]
     pub fn person_identity(&self, presented: Option<[u8; 32]>) -> Option<IdentityProfile> {
         presented

@@ -461,9 +461,10 @@ impl Identity {
         let (mut key, mut cert) = serving()?;
         // A computer that slept past its certificate's renewal renews it before its person's
         // services open with it: the session asks for a renewal only once they run. A device that
-        // holds no root of its person's waits for one of theirs that does.
-        if tilo_identity::provisioning::renewal_due_at(&cert)
-            .is_some_and(|due| due <= tilo_clock::unix_now_ns())
+        // holds no root of its person's waits for one of theirs that does. One that holds the
+        // root never keeps the cap a ticket login on another operating system gave it.
+        if reissued_here(&cert, tilo_clock::unix_now_ns())
+            && (!cert.capabilities.foreign || holds_a_root(this_account_uid()))
         {
             match renew_certificates(this_account_uid(), cert.device_public_key) {
                 Ok(_) => (key, cert) = serving()?,
@@ -759,7 +760,7 @@ pub fn this_accounts_root_dir() -> io::Result<std::path::PathBuf> {
 
 /// The identity store of the account this device acts as its person, with this device's key and
 /// certificates kept in `keys`: the daemon's own account `own` when its identity names the person
-/// this device's certificate does; else the account recorded at founding in the daemon's
+/// this device's certificate does, or a person this device holds a certificate of; else the account recorded at founding in the daemon's
 /// `profile` ([`tilo_api::daemon::admission::person_record`]), when that account's identity names
 /// them.
 ///
@@ -785,12 +786,15 @@ pub(crate) fn device_identity_dir(
             "this account took up the person its computer kept before each account kept its own"
         );
     }
-    let Some(person) =
-        tilo_device_identity::login::served_cert(keys).map(|cert| cert.user_public_key)
-    else {
+    let Some(served) = tilo_device_identity::login::served_cert(keys) else {
         return Ok(own_store);
     };
-    if store_names(&own_store, person) {
+    let person = served.user_public_key;
+    // The person this device presents is the one the account selected: a person moved onto a
+    // computer that another of the account's identities claimed first holds a certificate of
+    // their own beside the first one's.
+    if store_names(&own_store, person) || certified_here(&own_store, keys, served.device_public_key)
+    {
         return Ok(own_store);
     }
     let recorded = tilo_api::daemon::admission::recorded_accounts(profile)?;
@@ -829,7 +833,8 @@ pub(crate) fn device_identity_dir(
             ),
         )
     })?;
-    if metadata.group_public_key != person {
+    if metadata.group_public_key != person && !certified_here(&dir, keys, served.device_public_key)
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -842,6 +847,24 @@ pub(crate) fn device_identity_dir(
         ));
     }
     Ok(dir)
+}
+
+/// Whether this device, whose key is `device`, holds in `keys` a certificate of the person the
+/// identity store at `dir` names as the account's own.
+fn certified_here(
+    dir: &Path,
+    keys: &tilo_device_identity::IdentityPaths,
+    device: [u8; 32],
+) -> bool {
+    tilo_identity::store::resolve_active_identity(dir)
+        .and_then(|record| tilo_identity::store::load_metadata_from_path(&record).ok())
+        .and_then(|metadata| {
+            tilo_device_identity::persist::read_device_cert(
+                &keys.device_cert_for_user(&metadata.group_public_key),
+            )
+            .ok()
+        })
+        .is_some_and(|cert| cert.device_public_key == device)
 }
 
 /// Whether the identity store at `dir` names `person` as the account's own.
@@ -888,11 +911,21 @@ pub(crate) fn root_for(uid: u32) -> anyhow::Result<Option<tilo_identity::store::
     }
 }
 
-/// Renew this device's certificates of the account `uid`'s person that are due, with the root
-/// this computer keeps for that account. `device` is this device's key, which each renewed
-/// certificate names. The root is sealed with the device key, so only the daemon opens it: an
-/// account's session asks this rather than renew its certificates itself. Each keeps its
-/// lifetime from the time it is renewed. Answers how many were renewed.
+/// Whether the root this computer keeps signs this device's `cert` again at `now`: it is due for
+/// renewal, or capped as foreign. The device that holds its person's root acts with the root's
+/// authority wherever it runs, so it never keeps the cap a ticket login on an operating system
+/// Tilo does not control gave it, which would refuse its person's agents here.
+fn reissued_here(cert: &tilo_user_identity::DeviceCert, now: u64) -> bool {
+    cert.capabilities.foreign
+        || tilo_identity::provisioning::renewal_due_at(cert).is_some_and(|due| due <= now)
+}
+
+/// Renew this device's certificates of the account `uid`'s person that are due
+/// ([`reissued_here`]), with the root this computer keeps for that account, uncapped. `device` is
+/// this device's key, which each renewed certificate names. The root is sealed with the device
+/// key, so only the daemon opens it: an account's session asks this rather than renew its
+/// certificates itself. Each keeps its lifetime from the time it is renewed. Answers how many
+/// were renewed.
 ///
 /// # Errors
 /// The account holds no person here, this computer keeps no root of theirs while one of their
@@ -918,7 +951,7 @@ pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, Stri
     if let Ok(cert) = persist::read_device_cert(&path)
         && cert.user_public_key == person
         && cert.device_public_key == device
-        && tilo_identity::provisioning::renewal_due_at(&cert).is_some_and(|at| at <= now)
+        && reissued_here(&cert, now)
     {
         due.push((path, cert));
     }
@@ -942,6 +975,10 @@ pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, Stri
             .expires_at_ns
             .map(|expires| expires.saturating_sub(held.issued_at_ns));
         let mut cert = DeviceCert {
+            capabilities: tilo_user_identity::DeviceCapabilities {
+                foreign: false,
+                ..held.capabilities.clone()
+            },
             issued_at_ns: now,
             expires_at_ns: lifetime.map(|lifetime| now.saturating_add(lifetime)),
             signature: [0; 64],

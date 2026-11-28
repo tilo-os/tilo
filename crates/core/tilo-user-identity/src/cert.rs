@@ -1959,6 +1959,23 @@ impl DeviceCert {
         matches!(self.expires_at_ns, Some(e) if now_ns >= e)
     }
 
+    /// Whether this certificate may take the place of `held`, the same
+    /// device's earlier one, as far as what it grants: no more than `held`
+    /// ([`DeviceCapabilities::grants_no_more_than`]), except that its person's
+    /// root may lift the cap of a device that called itself foreign. That cap
+    /// is the device's own report of its operating system, so the root that
+    /// certified it says again what it is (a device that holds the root acts
+    /// with its authority); a certificate another device issued never lifts it.
+    #[must_use]
+    pub fn may_replace(&self, held: &Self) -> bool {
+        let uncapped = DeviceCapabilities {
+            foreign: true,
+            ..self.capabilities.clone()
+        };
+        self.capabilities.grants_no_more_than(&held.capabilities)
+            || (self.issuer.is_none() && uncapped.grants_no_more_than(&held.capabilities))
+    }
+
     /// The device this certificate writes for: its own, or the device that
     /// certified it as its workspace service
     /// ([`DeviceCapabilities::workspace_service`]). Signatures are the
@@ -2011,13 +2028,13 @@ impl DeviceCert {
     ///
     /// This is the single rule a workspace, a fleet and a person's devices
     /// share: a renewal keeps the device the member it was, so it may never
-    /// widen what it grants or come from another root.
+    /// widen what it grants ([`Self::may_replace`]) or come from another root.
     #[must_use]
     pub fn renews(&self, held: &Self) -> bool {
         self.device_public_key == held.device_public_key
             && self.user_public_key == held.user_public_key
             && self.issued_at_ns > held.issued_at_ns
-            && self.capabilities.grants_no_more_than(&held.capabilities)
+            && self.may_replace(held)
     }
 }
 

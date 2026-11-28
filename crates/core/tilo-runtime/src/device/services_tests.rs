@@ -4648,3 +4648,75 @@ fn only_a_program_a_seat_handed_over_is_on_this_device() {
         "another device's caller is not this device's"
     );
 }
+
+const MOVED_PERSON_TEST: &str = "device::services::tests::a_person_moved_onto_a_computer_another_claimed_first_is_served_uncapped";
+
+/// A computer shaped as a laptop whose person moved onto it after another identity of the account
+/// had claimed it: the first person founded here; the second's root was brought over and the
+/// account acts as them; a ticket login certified the device for them capped, as an operating
+/// system Tilo does not control is; and an earlier Tilo left the device key open to its group.
+/// The daemon starts, serves the person the account selected, and has their root lift the cap.
+#[test]
+fn a_person_moved_onto_a_computer_another_claimed_first_is_served_uncapped() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use tilo_device_identity::persist;
+    let Some(root) = isolated_root(MOVED_PERSON_TEST) else {
+        return;
+    };
+    let keys = tilo_identity::provisioning::collaboration_identity_paths();
+    let uid = rustix::process::geteuid().as_raw();
+    let first = persist::read_public_key(&keys.user_pubkey).unwrap();
+    let device = persist::read_device_cert(&keys.device_cert_for_user(&first))
+        .unwrap()
+        .device_public_key;
+
+    let moved = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let person = moved.verifying_key().to_bytes();
+    as_the_daemon(|| {
+        tilo_identity::provisioning::import_single_device_root_as(
+            &super::account_identity_dir(uid).unwrap(),
+            &format!("person-{}", hex::encode(&person[..8])),
+            &moved,
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+    });
+    let mut capped = tilo_user_identity::DeviceCert {
+        user_public_key: person,
+        device_public_key: device,
+        device_label: "tilo on laptop".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities {
+            foreign: true,
+            ..tilo_user_identity::DeviceCapabilities::primary()
+        },
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut capped, &moved).unwrap();
+    persist::write_device_cert(&keys.device_cert_for_user(&person), &capped).unwrap();
+    std::fs::set_permissions(&keys.device_privkey, std::fs::Permissions::from_mode(0o640)).unwrap();
+
+    let daemon = Daemon::start_reporting(&root, &mut |_| {}).unwrap();
+    assert_eq!(
+        daemon.cert.user_public_key, person,
+        "the daemon serves the person the account selected, not the first to claim the computer"
+    );
+    assert!(
+        !daemon.cert.capabilities.foreign,
+        "their root lifts the cap"
+    );
+    assert!(daemon.cert.renews(&capped));
+    assert_eq!(
+        persist::read_public_key(&keys.user_pubkey).unwrap(),
+        first,
+        "the first identity still owns the computer"
+    );
+    let mode = std::fs::metadata(&keys.device_privkey)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "the device key is owner-only again");
+}
