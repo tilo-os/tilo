@@ -846,6 +846,27 @@ mod cases {
             );
         }
 
+        phase the_request_body_tab_names_its_section;
+        {
+            let s = Tester::new();
+            let mut window = s.window();
+            let tabs = of_kind(window.tree(), "ui.ViewTabs")
+                .into_iter()
+                .find(|node| prop(node, "label") == "Request")
+                .expect("the request's tabs stand in the window")
+                .key
+                .clone();
+            window
+                .fire_with(&tabs, "change", Some(&Value::Int(3)))
+                .expect("the Body tab is chosen");
+            window.poll_patches().unwrap();
+            let words = dump(window.tree());
+            assert!(
+                words.contains("Request body"),
+                "the body's section names what it edits: {words}"
+            );
+        }
+
         phase the_window_shows_the_request_tabs_the_answer_and_the_sheets;
         {
             let s = Tester::new();

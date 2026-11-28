@@ -1629,7 +1629,7 @@ fn credential_field(s: AuthScheme) -> Text {
 
 /// The request's body: its mode, and what the mode edits.
 view body_panel(w: Workspace) {
-    ui.Section("Body") {
+    ui.Section("Request body") {
         ui.ToggleGroup(caption: "Body", fill: true) {
             ui.Segment("None", chosen: w.builder.body_mode == .none) {
                 on press: set_body_mode(w, .none)

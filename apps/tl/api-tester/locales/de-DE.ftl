@@ -881,6 +881,7 @@ d-t7usmncz = Anmeldefläche
     .w-cancel = Abbrechen
 
 d-dvg27g6l = Rumpffläche
+    .w-request-body = Anfragetext
     .w-body = Rumpf
     .w-none = Keine
     .w-json = JSON

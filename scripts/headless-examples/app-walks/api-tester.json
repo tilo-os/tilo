@@ -72,6 +72,22 @@
       }
     },
     {
+      "id": "body",
+      "said": "Open the request body and see the section named for it",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Body"
+            ]
+          },
+          {
+            "wait_for": "Request body"
+          }
+        ]
+      }
+    },
+    {
       "id": "auth",
       "said": "Choose a sign-in and keep it on this device",
       "ops": {
