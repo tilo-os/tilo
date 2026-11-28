@@ -527,26 +527,7 @@ impl Server {
     /// Returns [`ServerError::Iroh`] (the transport error kind) when the
     /// certificate cannot be loaded or an address cannot be bound.
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, ServerError> {
-        self.serve_web_also_at(config, Vec::new()).await
-    }
-
-    /// [`Self::serve_web`] for a server that is reached under more origins
-    /// than the one it publishes: `also` are the others (a front that hands
-    /// a second name on to the same listener), named at its start by whoever
-    /// keeps it. A setup code's pairing link may name one of them as it may
-    /// name the published origin; a name the server was not told stays
-    /// another server, whatever a request says of itself.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serve_web`], and when one of `also` is no origin a server
-    /// is published at, or stands beside no published origin.
-    pub async fn serve_web_also_at(
-        &self,
-        config: WebConfig,
-        also: Vec<String>,
-    ) -> Result<WebHandle, ServerError> {
-        let parts = self.web_parts(config, also);
+        let parts = self.web_parts(config, Vec::new());
         let handle = serve_parts(parts.clone()).await?;
         self.web_ui.started(parts, &handle);
         Ok(handle)
