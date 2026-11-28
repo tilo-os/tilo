@@ -1036,3 +1036,102 @@ fn an_app_whose_runtime_a_registry_offers_is_installed_with_it() {
         "the app installed beside the runtime it needs"
     );
 }
+
+/// The workspace's governance action `verb`, asked as its device's person: it completes.
+fn ask_completes(
+    workspaces: &crate::device::workspaces::ServiceWorkspaces,
+    workspace: &str,
+    verb: &str,
+    arguments: serde_json::Value,
+) {
+    let asked = crate::device::dev_builds::ask_as_person(workspaces, workspace, verb, arguments);
+    assert!(
+        matches!(
+            asked,
+            Ok(tilo_actions::remote::ReceiptStatus::Completed { .. })
+        ),
+        "the workspace takes {verb}: {asked:?}"
+    );
+}
+
+// USER REQUIREMENT: a workspace's apps follow the store without anyone typing a command. The
+// release a workspace runs moves to the store's newest one on the regular check; one the
+// workspace went back to stays, until its runtime is gone and it no longer runs here, when the
+// workspace moves to the store's current release.
+#[test]
+fn a_workspace_whose_app_release_runtime_is_gone_moves_to_the_stores_current_release() {
+    use crate::device::app_updates::{Stuck, follow_store_in};
+
+    const APP: &str = "so.tilo.follows-the-store";
+    let (_dir, _cache, _env) = device();
+    let old = author(APP, "0.1.0");
+    let current = author(APP, "0.2.0");
+    let registry = Registry::start(APP, "0.2.0", &current, current.clone()).listed();
+    let id = tilo_desktop_model::WorkspaceId::new();
+    let (workspaces, _directory, _key, _cert, _lock) = tilo_rt::app()
+        .block_on(crate::device::workspaces::ServiceWorkspaces::test_hosting_person(id))
+        .unwrap();
+    let workspace = id.to_string();
+    let local = &registry.registries[0];
+    ask_completes(
+        &workspaces,
+        &workspace,
+        "registry.add",
+        serde_json::json!({
+            "name": local.name,
+            "url": local.base_url,
+            "owner_key": local.owner_pubkey_hex,
+        }),
+    );
+    let install = |tapp: &[u8], version: &str| {
+        let release = release_of(APP, version, tapp);
+        ask_completes(
+            &workspaces,
+            &workspace,
+            tilo_action_policy::roles::governance::INSTALL_APP,
+            serde_json::json!({
+                "app": release.app,
+                "version": release.version,
+                "surface": release.surface,
+                "package": release.package,
+                "publisher": release.publisher,
+            }),
+        );
+    };
+    let runs = |stuck: bool| {
+        let stuck: Arc<Stuck> = Arc::new(move |_, _| stuck);
+        tilo_rt::app()
+            .block_on(follow_store_in(&workspaces, &workspace, &stuck))
+            .unwrap();
+        let release = tilo_rt::app()
+            .block_on(workspaces.copies().app_versions(&workspace))
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|installed| installed.release)
+            .find(|release| release.app == APP)
+            .expect("the workspace runs the app");
+        (release.version, release.package)
+    };
+    let current_package = release_of(APP, "0.2.0", &current).package;
+
+    install(&old, "0.1.0");
+    assert_eq!(
+        runs(false),
+        ("0.2.0".to_owned(), current_package.clone()),
+        "the regular check moves the workspace to the store's newest release"
+    );
+
+    install(&old, "0.1.0");
+    assert_eq!(
+        runs(false).0,
+        "0.1.0",
+        "a workspace that went back to an earlier release stays there while it runs"
+    );
+
+    assert_eq!(
+        runs(true),
+        ("0.2.0".to_owned(), current_package),
+        "a release that no longer runs here moves to the store's current one"
+    );
+}

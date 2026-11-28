@@ -1,5 +1,5 @@
 [Unit]
-Description=Update your apps to their newest builds
+Description=Update your Flatpak apps and the app catalogue
 
 [Service]
 # Nothing here is a person waiting: the work yields to the desktop while it
@@ -24,13 +24,10 @@ ExecStart=-/bin/sh -c '[ "$$(uname -m)" = x86_64 ] || exec /usr/bin/flatpak remo
 # The Flatpak apps you installed (the App Store installs into your own
 # Flatpak installation) and their runtimes to their newest builds, like every
 # other app. The device's own Flatpaks are its administrator's to update.
+# Tilo apps are not updated here: the version each runs is its workspace's, and
+# the daemon moves every workspace it keeps to the store's newest releases
+# (crates/core/tilo-runtime/src/device/app_updates.rs).
 ExecStart=-/usr/bin/flatpak update --user --noninteractive
-# Every installed app to the newest build this system can run; a build for
-# other interface versions is never offered (docs/architecture/compatibility.md).
-# Nobody is waiting on this run, so a repository it cannot read (offline, or
-# not answering) is said in its log and tried again next hour rather than
-# marking the unit failed; an update that was offered and did not install is.
-ExecStart=/usr/bin/app update --tolerate-unreachable
 Nice=19
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle

@@ -46,6 +46,8 @@ mod catalogue_language_tests;
 /// The dispatch the turns of the workspaces' agents run here call through.
 mod turn_dispatch;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
+/// A workspace's apps moved to the store's newest releases as their person's standing choice.
+mod app_updates;
 pub mod capabilities;
 /// What the person copies on one device continuing on their others: the daemon carries it.
 pub mod clipboard;

@@ -1,5 +1,5 @@
 [Unit]
-Description=Keep your apps on their newest builds
+Description=Keep your Flatpak apps and the app catalogue current
 
 # Apps update in the background, without a restart: an app that is running
 # keeps its build until it next starts. Hourly, so a build that fits a newly

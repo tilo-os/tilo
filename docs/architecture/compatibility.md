@@ -8,10 +8,12 @@ behaviour. The one thing that survives every change is the person's data.
 
 ## Everyone on the newest version
 
-- **Apps** (and the runtime builds they link) update in the background:
-  `tilo-app-update.timer` runs `app update` hourly, except on a connection the
-  owner marked metered. No restart: a running app keeps its build until it
-  next starts.
+- **Apps** (and the runtime builds they link) update in the background: the
+  version an app runs is its workspace's, and the daemon moves every workspace
+  it keeps for its person to the store's newest releases hourly, and at once
+  when an app's release no longer runs on the device. Flatpak apps update with
+  `tilo-app-update.timer`, except on a connection the owner marked metered. No
+  restart: a running app keeps its build until it next starts.
 - **The system image** is fetched, verified and staged by
   `bootc-fetch-apply-updates.timer`, at least daily, and then applied live,
   component by component, without a reboot (below). Only a kernel,

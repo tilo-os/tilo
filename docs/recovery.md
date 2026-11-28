@@ -35,7 +35,7 @@ so it survives, but the runtime bundle it links against went back with `/usr`.
 A copy whose runtime build is missing never runs over the image's own copy of
 the app, so an app the image ships runs as that image ships it. Any other app
 counts as out of date until its runtime is back, so the next `app update`
-(hourly, `tilo-app-update.timer`) fetches that runtime. Rolling forward
+fetches that runtime. Rolling forward
 needs nothing: the newer copy was never removed and runs again.
 
 Every path that offers a rollback prints this before it does anything —

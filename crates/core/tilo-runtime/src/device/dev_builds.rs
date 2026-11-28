@@ -78,44 +78,22 @@ impl DevBuilds {
     /// The workspace's governance action `verb` with `arguments`, asked as this device's person,
     /// as their own act on the workspace's tree is asked: its answer.
     fn ask(&self, app: &str, verb: &str, arguments: Value) -> Result<Value, String> {
-        let tree = self
-            .workspaces
-            .copies()
-            .providers()
-            .get(WORKSPACE_GOVERNANCE_PROVIDER)
-            .ok_or_else(|| {
-                format!("{app} is installed on this device alone: it keeps no workspace")
-            })?;
-        let cert = self.workspaces.device_cert();
-        let person = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(&self.workspace);
-        let request = InvokeRequest {
-            asks: false,
-            invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget::workspace_governance(&self.workspace, verb),
-            argument: InvokeArgument::Json(match arguments {
-                Value::Object(arguments) => arguments,
-                _ => serde_json::Map::new(),
-            }),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        };
-        let receipt = match tree.answers.invoke(&person, request).wait_timeout(WAIT) {
-            Ok(Some(Ok(receipt))) => receipt,
-            Ok(Some(Err(refused))) => return Err(refusal(app, &refused)),
-            Ok(None) | Err(_) => {
+        let status = match ask_as_person(&self.workspaces, &self.workspace, verb, arguments) {
+            Ok(status) => status,
+            Err(Unasked::NoWorkspace) => {
+                return Err(format!(
+                    "{app} is installed on this device alone: it keeps no workspace"
+                ));
+            }
+            Err(Unasked::Refused(refused)) => return Err(refusal(app, &refused)),
+            Err(Unasked::Unanswered) => {
                 return Err(format!(
                     "{app} is installed on this device, and the workspace did not answer its \
                      install in time"
                 ));
             }
         };
-        match receipt.status {
+        match status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
             ReceiptStatus::Failed { error } => Err(format!(
                 "{app} is installed on this device, and the workspace's install of it failed: {}",
@@ -126,6 +104,60 @@ impl DevBuilds {
                 "{app} is installed on this device, and the workspace did not install it"
             )),
         }
+    }
+}
+
+/// Why a governance action asked as this device's person ended in no receipt.
+#[derive(Debug)]
+pub(crate) enum Unasked {
+    /// No workspace governance answers on this device.
+    NoWorkspace,
+    /// The workspace refused the call: it does not let this person take it.
+    Refused(ActionCallError),
+    /// It did not answer in time.
+    Unanswered,
+}
+
+/// The workspace `workspace`'s governance action `verb` with `arguments`, asked as this device's
+/// person, as their own act on the workspace's tree is asked (the workspace decides whether they
+/// may, as for a call from their terminal): how it ended. Blocking.
+///
+/// # Errors
+/// No workspace answers here, the workspace refused the call, or it did not answer in time.
+pub(crate) fn ask_as_person(
+    workspaces: &ServiceWorkspaces,
+    workspace: &str,
+    verb: &str,
+    arguments: Value,
+) -> Result<ReceiptStatus, Unasked> {
+    let tree = workspaces
+        .copies()
+        .providers()
+        .get(WORKSPACE_GOVERNANCE_PROVIDER)
+        .ok_or(Unasked::NoWorkspace)?;
+    let cert = workspaces.device_cert();
+    let person =
+        Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace);
+    let request = InvokeRequest {
+        asks: false,
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget::workspace_governance(workspace, verb),
+        argument: InvokeArgument::Json(match arguments {
+            Value::Object(arguments) => arguments,
+            _ => serde_json::Map::new(),
+        }),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    match tree.answers.invoke(&person, request).wait_timeout(WAIT) {
+        Ok(Some(Ok(receipt))) => Ok(receipt.status),
+        Ok(Some(Err(refused))) => Err(Unasked::Refused(refused)),
+        Ok(None) | Err(_) => Err(Unasked::Unanswered),
     }
 }
 

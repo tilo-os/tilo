@@ -69,6 +69,10 @@ struct Writer {
     /// Where a development build this device installs is installed too: the workspace its
     /// person's services serve, once they run ([`PackageCache::install_dev_builds_in`]).
     dev_builds: Arc<Mutex<DevBuildsIn>>,
+    /// The packages (their roots, hex) a workspace named that this device cannot run: the
+    /// runtime each runs on is offered by no repository the workspace reads. Moves when one is
+    /// found, so what moves a workspace's apps on to a release that runs looks again.
+    cannot_run: Arc<tokio::sync::watch::Sender<std::collections::BTreeSet<String>>>,
 }
 
 /// Where the device's development builds are installed beside it: the workspace its person's
@@ -481,6 +485,9 @@ impl PackageCache {
                 named: Arc::default(),
                 installing: Arc::default(),
                 dev_builds: Arc::default(),
+                cannot_run: Arc::new(tokio::sync::watch::Sender::new(
+                    std::collections::BTreeSet::new(),
+                )),
             },
             log: Mutex::default(),
         }
@@ -542,6 +549,22 @@ impl PackageCache {
     /// an app that stopped coming up says why in its row, and reads as installed still.
     pub(crate) fn watch_app_failures(&self, failures: Arc<crate::apps::Failures>) {
         self.writer.rows.watch_failures(failures);
+    }
+
+    /// Whether a workspace named the package `package` (its root, hex) and this device found it
+    /// cannot run it: no repository the workspace reads offers the runtime it runs on.
+    pub(crate) fn cannot_run(&self, package: &str) -> bool {
+        self.writer
+            .cannot_run
+            .borrow()
+            .contains(&package.to_ascii_lowercase())
+    }
+
+    /// A watch that moves when this device finds a package a workspace named that it cannot run.
+    pub(crate) fn watch_cannot_run(
+        &self,
+    ) -> tokio::sync::watch::Receiver<std::collections::BTreeSet<String>> {
+        self.writer.cannot_run.subscribe()
     }
 
     /// The rows as every view of them reads them, for a test that must see what an app's row
@@ -1577,6 +1600,9 @@ impl PackageCache {
         }
         if let Err(error) = self.keep_runtimes(release, bytes, lists, registries) {
             self.writer.rows.arrived(&release.app);
+            self.writer
+                .cannot_run
+                .send_if_modified(|packages| packages.insert(release.package.to_ascii_lowercase()));
             tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
             return;
         }

@@ -3432,6 +3432,12 @@ impl Daemon {
                 // An app whose connection stopped coming up says why in its row.
                 cache.watch_app_failures(apps.failures());
                 super::packages::follow(&cache, Arc::clone(&workspaces));
+                // What the workspaces run moves to the store's newest releases, as their person.
+                super::app_updates::follow_store(
+                    Arc::clone(&workspaces),
+                    Arc::clone(&cache),
+                    apps.failures(),
+                );
                 // Builds installed while this start ran are installed in the workspace on a
                 // thread of their own.
                 drop(

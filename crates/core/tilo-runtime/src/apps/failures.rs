@@ -201,6 +201,16 @@ impl Failures {
             .collect()
     }
 
+    /// Whether this device stopped starting `app`'s connection in `workspace`: it fails at start
+    /// the same way every time, until something changes.
+    #[must_use]
+    pub(crate) fn stopped(&self, workspace: &str, app: &str) -> bool {
+        self.by_key
+            .lock_recover()
+            .get(&(workspace.to_owned(), app.to_owned()))
+            .is_some_and(|failure| failure.stopped)
+    }
+
     /// A watch that moves when what a row says of an app changes.
     #[must_use]
     pub(crate) fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
