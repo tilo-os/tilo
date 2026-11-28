@@ -63,13 +63,21 @@ pub fn replaced(doc: &AutoCommit) -> std::collections::BTreeSet<[u8; 4]> {
 pub const KEPT_KEY: &str = "base_kept_v1";
 
 /// One named change of a workspace's governance as a reader lists it: the
-/// change's hash, the message naming its action, and the time its commit
-/// carries.
+/// change's hash, the message naming its action, the time its commit
+/// carries, and the people it is about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeptChange {
     pub change: ChangeHash,
     pub message: String,
     pub time: i64,
+    /// The membership operations the change wrote first, by id: what its people are read
+    /// from. A base keeps them beside the change, as the operations themselves stay in it.
+    pub ops: Vec<crate::members::OpId>,
+    /// The people the action is about, whose ban, removal, unban, place or joining it is: read
+    /// from the signed operations it wrote that the workspace's replay applied, of the action its
+    /// message names, never from the message itself. None for a change that wrote no such
+    /// operation, or one its author was not allowed to make.
+    pub subjects: Vec<String>,
 }
 
 /// The named changes `doc`'s bases kept ([`KEPT_KEY`]), oldest first.
@@ -98,10 +106,19 @@ fn kept(doc: &AutoCommit) -> Vec<KeptChange> {
                 },
                 _ => 0,
             };
+            // A base made before bases kept a change's operations keeps none.
+            let ops = text(&entry, "ops")
+                .unwrap_or_default()
+                .split_whitespace()
+                .filter_map(|id| hex::decode(id).ok()?.try_into().ok())
+                .map(crate::members::OpId)
+                .collect();
             Some(KeptChange {
                 change,
                 message,
                 time,
+                ops,
+                subjects: Vec::new(),
             })
         })
         .collect()
@@ -115,7 +132,17 @@ pub fn named_changes(doc: &AutoCommit) -> Vec<KeptChange> {
     let mut named = kept(doc);
     let mut seen: std::collections::HashSet<ChangeHash> =
         named.iter().map(|kept| kept.change).collect();
+    // Each operation is the change's that wrote it first: one that writes an operation again
+    // (its bytes copied from an earlier change) takes on none of its people.
+    let mut written: std::collections::BTreeSet<crate::members::OpId> = named
+        .iter()
+        .flat_map(|kept| kept.ops.iter().copied())
+        .collect();
     for change in doc.clone().get_changes(&[]) {
+        let ops: Vec<crate::members::OpId> = ops_written(&change)
+            .into_iter()
+            .filter(|id| written.insert(*id))
+            .collect();
         let Some(message) = change
             .message()
             .filter(|message| collab_types::Stamp::of_message(message).is_some())
@@ -127,10 +154,62 @@ pub fn named_changes(doc: &AutoCommit) -> Vec<KeptChange> {
                 change: change.hash(),
                 message: message.to_owned(),
                 time: change.timestamp(),
+                ops,
+                subjects: Vec::new(),
             });
         }
     }
+    let workspace = match doc.get(ROOT, "workspace") {
+        Ok(Some((value, _))) => value.into_string().unwrap_or_default(),
+        _ => String::new(),
+    };
+    let applied = crate::members::subjects(doc, &workspace);
+    for kept in &mut named {
+        let verb = collab_types::Stamp::of_message(&kept.message)
+            .map(|stamp| stamp.verb)
+            .unwrap_or_default();
+        for subject in kept.ops.iter().filter_map(|id| applied.get(id)).flatten() {
+            if carries(&verb, subject.action) && !kept.subjects.contains(&subject.person) {
+                kept.subjects.push(subject.person.clone());
+            }
+        }
+    }
     named
+}
+
+/// The membership operations `change` writes, by id: each a signed operation put under its
+/// own key at the document's root. A value there that is no operation proving its author is
+/// none.
+fn ops_written(change: &automerge::Change) -> Vec<crate::members::OpId> {
+    change
+        .decode()
+        .operations
+        .into_iter()
+        .filter(|op| {
+            op.obj == automerge::legacy::ObjectId::Root
+                && matches!(&op.key, automerge::legacy::Key::Map(key)
+                    if crate::members::op::keyed(key).is_some())
+        })
+        .filter_map(|op| match op.action {
+            automerge::legacy::OpType::Put(ScalarValue::Bytes(bytes)) => {
+                crate::members::SignedMembershipOp::verified_stored(&bytes)
+                    .ok()
+                    .map(|(id, _)| id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a change named `verb` carries out an operation's `action` on its person: the action
+/// itself, a joining's admission, or a member's place, which their role or a role of the
+/// workspace's own gives. A message naming another action than the operation took names no one.
+fn carries(verb: &str, action: &str) -> bool {
+    use tilo_action_policy::roles::governance::{ADD_MEMBER, GRANT, REVOKE, SET_ROLE};
+    match verb {
+        ADD_MEMBER | SET_ROLE => matches!(action, ADD_MEMBER | SET_ROLE | GRANT | REVOKE),
+        _ => verb == action,
+    }
 }
 
 /// A document holding `doc`'s state as it stands, in one change by `actor`
@@ -175,6 +254,10 @@ pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge:
             base.put(&entry, "change", kept.change.to_string())?;
             base.put(&entry, "message", kept.message)?;
             base.put(&entry, "time", ScalarValue::Int(kept.time))?;
+            if !kept.ops.is_empty() {
+                let ops: Vec<String> = kept.ops.iter().map(|id| id.to_key()).collect();
+                base.put(&entry, "ops", ops.join(" "))?;
+            }
         }
     }
     base.commit_with(automerge::transaction::CommitOptions::default().with_time(0));

@@ -757,6 +757,7 @@ async fn member_changes_reply(
                         change: change.change,
                         message: change.message,
                         time: change.time,
+                        subjects: change.subjects,
                     })
                     .collect()
             }),

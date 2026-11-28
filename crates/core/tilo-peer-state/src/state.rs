@@ -650,6 +650,9 @@ mod member_action_tests;
 #[cfg(test)]
 #[path = "state/member_list_tests.rs"]
 mod member_list_tests;
+#[cfg(test)]
+#[path = "state/member_subjects_tests.rs"]
+mod member_subjects_tests;
 mod rebase;
 #[cfg(test)]
 #[path = "state/removal_tests.rs"]

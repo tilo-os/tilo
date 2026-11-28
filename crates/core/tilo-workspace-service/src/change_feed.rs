@@ -129,7 +129,7 @@ impl DocumentsFeed {
             ),
             &members
                 .into_iter()
-                .map(|change| (change.change, change.message, change.time))
+                .map(|change| (change.change, change.message, change.time, change.subjects))
                 .collect::<Vec<_>>(),
         );
         let revisions: HashMap<DocumentKey, [u8; 32]> = stood

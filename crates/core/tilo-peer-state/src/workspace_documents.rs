@@ -112,13 +112,15 @@ pub trait DeviceDocuments: collab_types::signer::MaybeSendSync + 'static {
 }
 
 /// One change of a workspace's members as its governance names it: the change's hash, the
-/// message naming the action it carried out and who decided it, and the time its commit carries
-/// (Unix seconds).
+/// message naming the action it carried out and who decided it, the time its commit carries
+/// (Unix seconds), and the people it is about, read from the signed operations it wrote
+/// ([`crate::workspace::base::KeptChange::subjects`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemberChange {
     pub change: [u8; 32],
     pub message: String,
     pub time: i64,
+    pub subjects: Vec<String>,
 }
 
 impl From<crate::workspace::base::KeptChange> for MemberChange {
@@ -127,6 +129,7 @@ impl From<crate::workspace::base::KeptChange> for MemberChange {
             change: kept.change.0,
             message: kept.message,
             time: kept.time,
+            subjects: kept.subjects,
         }
     }
 }

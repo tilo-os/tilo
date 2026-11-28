@@ -129,6 +129,48 @@ struct Replayed {
     /// When each grant the state's operations write was given, in nanoseconds
     /// since the Unix epoch, by its id: the latest time an operation wrote it.
     grant_times: BTreeMap<GrantId, u64>,
+    /// The operations the replay applied, with the people each is about: what a reader of the
+    /// workspace's members takes a change's subject from ([`subjects`]). An operation its author
+    /// was not allowed to make changed nothing, and names no one.
+    applied: BTreeMap<OpId, Vec<Subject>>,
+}
+
+/// One person an applied membership operation is about, with the action it took on them: a
+/// change's verb (`ban`, `set-role`), or `join` for an admission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subject {
+    pub action: &'static str,
+    pub person: String,
+}
+
+/// The people each operation the replay of `doc` applied is about, by the operation's id
+/// ([`Subject`]): read from the signed operation itself, never from what a change's message
+/// says, and only of an operation its author was allowed to make.
+#[must_use]
+pub fn subjects(doc: &AutoCommit, workspace: &str) -> BTreeMap<OpId, Vec<Subject>> {
+    replayed(doc, workspace).applied
+}
+
+/// The people `op`, applied, is about.
+fn subjects_of(op: &SignedMembershipOp) -> Vec<Subject> {
+    match &op.command {
+        MembershipOpCommand::Admit { person, .. } | MembershipOpCommand::Enter { person, .. } => {
+            vec![Subject {
+                action: roles::governance::JOIN,
+                person: hex::encode(person),
+            }]
+        }
+        MembershipOpCommand::Project { changes } => changes
+            .iter()
+            .filter_map(|change| {
+                Some(Subject {
+                    action: change.action(),
+                    person: change.person()?.to_owned(),
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The document states whose membership was read, by workspace and heads.
@@ -230,7 +272,11 @@ pub(crate) fn carry(
             return;
         };
         let owner = replayed.policy.owner.clone();
-        replayed.unadmitted |= !op_effect(&mut replayed.policy, &op, &mut log);
+        let (admitted, applied) = op_effect(&mut replayed.policy, &op, &mut log);
+        replayed.unadmitted |= !admitted;
+        if applied {
+            replayed.applied.insert(id, subjects_of(&op));
+        }
         log.record_entry(&op);
         replayed.owner_moved |= replayed.policy.owner != owner;
         note_grant_times(&op, &mut replayed.grant_times);
@@ -252,6 +298,10 @@ pub(crate) fn carry(
         assert_eq!(
             whole.grant_times, replayed.grant_times,
             "a carried membership names the grants' times as its state replays to"
+        );
+        assert_eq!(
+            whole.applied, replayed.applied,
+            "a carried membership applied the operations its state replays"
         );
     }
     keep(workspace, after.base_heads(), replayed);
@@ -280,7 +330,7 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
             )
         })
         .collect();
-    let (policy, unadmitted, owner_moved) = replay_held(doc, workspace, &held);
+    let (policy, unadmitted, owner_moved, applied) = replay_held(doc, workspace, &held);
     Replayed {
         policy,
         op_keys,
@@ -288,6 +338,7 @@ fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
         unadmitted,
         owner_moved,
         grant_times: grant_times_of(&held),
+        applied,
     }
 }
 
@@ -365,12 +416,17 @@ pub(super) fn start(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
 /// The membership `held`, `doc`'s operations, give, whether an admission
 /// admitted no one, and whether a transfer moved the owner from the one the
 /// `owner` row names.
-fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool, bool) {
+fn replay_held(
+    doc: &AutoCommit,
+    workspace: &str,
+    held: &HeldOps,
+) -> (WorkspacePolicy, bool, bool, BTreeMap<OpId, Vec<Subject>>) {
     let mut policy = start(doc, workspace);
     order(&mut policy);
     let mut log = Log::new(doc, workspace);
     let mut unadmitted = false;
     let mut owner_moved = false;
+    let mut applied = BTreeMap::new();
     // Each operation waits for the parents it was written on top of; one
     // whose parents are all applied is ready. Of the ready ones the next is
     // the one the order reaches first. An operation written on top of one
@@ -398,7 +454,11 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
         ready.remove(&next);
         if let Some(op) = held.get(&next) {
             let owner = policy.owner.clone();
-            unadmitted |= !op_effect(&mut policy, op, &mut log);
+            let (admitted, took) = op_effect(&mut policy, op, &mut log);
+            unadmitted |= !admitted;
+            if took {
+                applied.insert(next, subjects_of(op));
+            }
             log.record_entry(op);
             owner_moved |= policy.owner != owner;
         }
@@ -413,7 +473,7 @@ fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspaceP
         }
     }
     order(&mut policy);
-    (policy, unadmitted, owner_moved)
+    (policy, unadmitted, owner_moved, applied)
 }
 
 /// The grants of a membership in the one order every device reads them in: by
@@ -714,35 +774,39 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
 /// operation with a change its author's grants do not allow changes nothing:
 /// one refused step takes the whole operation with it, so a writer cannot slip
 /// a change past the membership by putting an allowed one in front of it.
-/// False when it was an admission that admitted no one.
-fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, log: &mut Log) -> bool {
+/// Whether it admitted whoever an admission names (false only for an admission that admitted no
+/// one), and whether it took effect at all.
+fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp, log: &mut Log) -> (bool, bool) {
     match &op.command {
         MembershipOpCommand::Governance { .. }
         | MembershipOpCommand::Compact { .. }
-        | MembershipOpCommand::Readmit { .. } => {}
+        | MembershipOpCommand::Readmit { .. } => (true, true),
         MembershipOpCommand::Admit { invite, person } => {
             if !log.admit(policy, *invite, *person, op.at_ns) {
-                return false;
+                return (false, false);
             }
             order(policy);
+            (true, true)
         }
         MembershipOpCommand::Enter { entry, person } => {
             if !log.enter(policy, op, *entry, *person) {
-                return false;
+                return (false, false);
             }
             order(policy);
+            (true, true)
         }
         MembershipOpCommand::Project { .. } => {
-            if let Ok(next) = tilo_failure::ignored!(
+            let Ok(next) = tilo_failure::ignored!(
                 "a change this author's grants do not allow takes the whole operation with it",
                 effect(log.doc, policy, op)
-            ) {
-                *policy = next;
-                order(policy);
-            }
+            ) else {
+                return (true, false);
+            };
+            *policy = next;
+            order(policy);
+            (true, true)
         }
     }
-    true
 }
 
 /// [`replay`] of the workspace `doc` declares itself (its `workspace` row).

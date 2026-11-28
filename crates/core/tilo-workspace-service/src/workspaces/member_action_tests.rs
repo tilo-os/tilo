@@ -458,11 +458,11 @@ fn feed_after(
     cursor: Option<&str>,
 ) -> tilo_actions::remote::ChangePage {
     use crate::workspace_documents::DeviceDocuments as _;
-    let named: Vec<([u8; 32], String, i64)> = documents
+    let named: Vec<([u8; 32], String, i64, Vec<String>)> = documents
         .member_changes(workspace)
         .expect("the workspace's members read")
         .into_iter()
-        .map(|change| (change.change, change.message, change.time))
+        .map(|change| (change.change, change.message, change.time, change.subjects))
         .collect();
     log.take_in_named(
         &(
@@ -472,6 +472,22 @@ fn feed_after(
         &named,
     );
     log.page(cursor, None)
+}
+
+/// Each change of the members on `page`: its verb, and the person it is about, as the resource
+/// under `workspace/members` it names.
+fn people_named(page: &tilo_actions::remote::ChangePage) -> Vec<(String, String)> {
+    let text = |value: &serde_json::Value| value.as_str().unwrap_or_default().to_owned();
+    page.changes
+        .iter()
+        .map(|change| {
+            let resource = text(&change.entry["resource"]);
+            let person = resource
+                .strip_prefix("workspace/members/")
+                .unwrap_or_default();
+            (text(&change.entry["verb"]), person.to_owned())
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -549,22 +565,20 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
         .unwrap();
 
     let page = feed_after(&documents, &mut log, &workspace, Some(&cursor));
-    let verbs: Vec<&str> = page
-        .changes
-        .iter()
-        .map(|change| change.entry["verb"].as_str().unwrap_or_default())
-        .collect();
+    // Each action once, in the order it was made, the first administration's among them, and
+    // each about the person it acted on, so a watcher acts on that one account.
+    let (banned, removed) = (hex::encode(banned), hex::encode(removed));
     assert_eq!(
-        verbs,
+        people_named(&page),
         [
-            governance::ADD_MEMBER,
-            governance::ADD_MEMBER,
-            governance::BAN,
-            governance::REMOVE_MEMBER,
-            governance::UNBAN,
-        ],
-        "each action once, in the order it was made, the first administration's \
-         among them: {page:?}"
+            (governance::ADD_MEMBER, &banned),
+            (governance::ADD_MEMBER, &removed),
+            (governance::BAN, &banned),
+            (governance::REMOVE_MEMBER, &removed),
+            (governance::UNBAN, &banned),
+        ]
+        .map(|(verb, person)| (verb.to_owned(), person.clone())),
+        "{page:?}"
     );
     for change in &page.changes {
         assert_eq!(change.app, tilo_action_policy::agent_answers::WORKSPACE_APP);
@@ -626,6 +640,12 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
     assert_eq!(joins.len(), 1, "the invitation accepted, once: {page:?}");
     let join = joins[0];
     assert_eq!(join.record, "workspace/members");
+    // The change is about the person who joined, so a watcher of the members acts on theirs.
+    assert_eq!(
+        join.entry["resource"],
+        format!("workspace/members/{}", hex::encode(guest.user_public_key)),
+        "the join names the joiner: {join:?}"
+    );
     assert_eq!(
         join.entry["by"],
         collab_types::Stamp::by(&actor(guest.user_public_key)).as_str(),

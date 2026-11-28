@@ -835,6 +835,7 @@ impl DeviceDocuments for DaemonDocuments {
                         change: change.change,
                         message: change.message,
                         time: change.time,
+                        subjects: change.subjects,
                     },
                 )
                 .collect()),

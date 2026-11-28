@@ -841,12 +841,14 @@ pub enum ShellReply {
 }
 
 /// One change of a workspace's members as its governance names it: the change's hash, the
-/// message naming its action and who decided it, and the time its commit carries (Unix seconds).
+/// message naming its action and who decided it, the time its commit carries (Unix seconds), and
+/// the people it is about, as the signed operations it wrote name them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellMemberChange {
     pub change: [u8; 32],
     pub message: String,
     pub time: i64,
+    pub subjects: Vec<String>,
 }
 
 /// A document the device took a write to.

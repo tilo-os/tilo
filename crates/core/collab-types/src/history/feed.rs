@@ -143,17 +143,29 @@ impl ChangeLog {
     }
 
     /// Take in the changes of a workspace's members its governance names (`named`: each change's
-    /// hash, the message naming its action and who decided it, and its time in Unix seconds,
-    /// oldest first) as changes of `record`, its members' resource: each action listed once, with
-    /// its verb, who decided it and when, as a record's own history lists a change. The changes
-    /// one administration made name the same invocation, and are that one action (a ban is a
-    /// removal and the block that keeps the person out); a change whose message names no action
-    /// is no member change, and is left out. Call it before [`Self::take_in`], which ends the
-    /// first look.
-    pub fn take_in_named(&mut self, record: &DocumentKey, named: &[([u8; 32], String, i64)]) {
-        let mut versions: Vec<serde_json::Value> = Vec::new();
+    /// hash, the message naming its action and who decided it, its time in Unix seconds, and the
+    /// people it is about, oldest first) as changes of `record`, its members' resource: each
+    /// action listed once, with its verb, who decided it and when, as a record's own history lists
+    /// a change. The changes one administration made name the same invocation, and are that one
+    /// action (a ban is a removal and the block that keeps the person out); a change whose message
+    /// names no action is no member change, and is left out.
+    ///
+    /// An action about people is a change of the record under each of them
+    /// (`workspace/members/<person>`), so a reader tells whose change it is and acts on that
+    /// account. Who they are is what the change's signed operations name
+    /// (`tilo_peer_state::workspace::base::KeptChange::subjects`), never its message: an action
+    /// whose operations name no one is a change of the record alone. Call it before
+    /// [`Self::take_in`], which ends the first look.
+    pub fn take_in_named(
+        &mut self,
+        record: &DocumentKey,
+        named: &[([u8; 32], String, i64, Vec<String>)],
+    ) {
+        // One action per invocation, the first change of it naming it, about everyone any of its
+        // changes is about.
+        let mut actions: Vec<(&[u8; 32], crate::Stamp, i64, Vec<&str>)> = Vec::new();
         let mut last_invocation: Option<String> = None;
-        for (change, message, time) in named {
+        for (change, message, time, subjects) in named {
             let Some(stamp) = crate::Stamp::of_message(message) else {
                 continue;
             };
@@ -161,19 +173,40 @@ impl ChangeLog {
                 continue;
             }
             let invocation = (!stamp.invocation.is_empty()).then(|| stamp.invocation.clone());
-            if invocation.is_some() && invocation == last_invocation {
-                continue;
-            }
+            let same = invocation.is_some() && invocation == last_invocation;
             last_invocation = invocation;
-            versions.push(serde_json::json!({
-                "change": super::steps::short(&ChangeHash(*change)),
-                "resource": record.1,
-                "verb": stamp.verb,
-                "sentence": stamp.verb,
-                "by": stamp.invoker,
-                "time_ms": time.saturating_mul(1000),
-                "happened": tilo_actions::remote::What::Edited.word(),
-            }));
+            if !same {
+                actions.push((change, stamp, *time, Vec::new()));
+            }
+            if let Some((_, _, _, people)) = actions.last_mut() {
+                for subject in subjects.iter().filter(|subject| !subject.is_empty()) {
+                    if !people.contains(&subject.as_str()) {
+                        people.push(subject);
+                    }
+                }
+            }
+        }
+        let mut versions: Vec<serde_json::Value> = Vec::new();
+        for (change, stamp, time, people) in actions {
+            let resources: Vec<String> = if people.is_empty() {
+                vec![record.1.clone()]
+            } else {
+                people
+                    .iter()
+                    .map(|person| format!("{}/{person}", record.1))
+                    .collect()
+            };
+            for resource in resources {
+                versions.push(serde_json::json!({
+                    "change": super::steps::short(&ChangeHash(*change)),
+                    "resource": resource,
+                    "verb": stamp.verb,
+                    "sentence": stamp.verb,
+                    "by": stamp.invoker,
+                    "time_ms": time.saturating_mul(1000),
+                    "happened": tilo_actions::remote::What::Edited.word(),
+                }));
+            }
         }
         self.take_in_versions(record, versions);
     }
