@@ -141,10 +141,12 @@ pub fn device_rows(
                     HostedActions::Select(crate::i18n::t("devices-row-action-send"))
                 } else {
                     match playing {
-                        Some(title) if device.online => HostedActions::Select(crate::i18n::t_args(
-                            "devices-row-play-here",
-                            &[("media", title.into())],
-                        )),
+                        Some(title) if device.online && device.audio_output => {
+                            HostedActions::Select(crate::i18n::t_args(
+                                "devices-row-play-here",
+                                &[("media", title.into())],
+                            ))
+                        }
                         _ if !device.online && device.wakeable => {
                             HostedActions::Select(crate::i18n::t("devices-row-wake"))
                         }

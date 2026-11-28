@@ -153,6 +153,24 @@ fn keep(daemon: &TestDaemon, device: [u8; 32], label: &str, display: bool) {
     );
 }
 
+/// Say `device` has no sound output, as a device that cannot take what plays here.
+fn keep_silent(daemon: &TestDaemon, device: [u8; 32], label: &str, display: bool) {
+    let cert = daemon.certifying(device, label);
+    daemon.keeping(
+        &cert,
+        &DeviceAbout {
+            label: label.into(),
+            kind: DeviceKind::Laptop,
+            capabilities: FabricCapabilities {
+                display,
+                audio_output: false,
+                ..FabricCapabilities::default()
+            },
+        },
+        &[],
+    );
+}
+
 /// A session on a daemon holding the person's own workspace, with this computer and `devices` in
 /// their record: each a name, a label, whether it is online and whether it shows.
 fn session(devices: &[(&str, &str, bool, bool)], host: Rc<Host>) -> Harness {
@@ -526,6 +544,45 @@ fn pressing_another_device_sends_it_what_plays_here() {
     );
     assert!(*resume_playing);
     assert!(!has_video);
+}
+
+#[test]
+fn a_device_that_cannot_play_is_not_sent_what_plays_here() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut harness = session(
+        &[("laptop", "Laptop", true, true)],
+        Rc::new(Host::default()),
+    );
+    harness.playing();
+    // The row answers with what plays here only while the device can play it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        harness.step();
+        if row(&harness, &key_of("laptop")).actions
+            == HostedActions::Select("Play Clair de lune here".into())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the laptop's row offers what plays here: {:#?}",
+            row(&harness, &key_of("laptop"))
+        );
+    }
+    keep_silent(&harness.daemon, owner_id("laptop"), "Laptop", true);
+
+    // A device with no sound output is not offered the hand-over, and pressing it sends nothing:
+    // it opens that device's settings, as a press on a device with nothing playing does.
+    until(&mut harness, |harness| {
+        row(harness, &key_of("laptop")).actions
+            != HostedActions::Select("Play Clair de lune here".into())
+    });
+    harness.press(&key_of("laptop"), RowPart::Row);
+    assert!(
+        harness.sent().is_empty(),
+        "a device that cannot play is not sent what plays here: {:?}",
+        harness.sent()
+    );
 }
 
 #[test]

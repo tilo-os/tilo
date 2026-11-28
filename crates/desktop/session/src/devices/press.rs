@@ -151,7 +151,9 @@ fn device(shared: &Shared, fabric: &SharedLink, row: &str, part: RowPart) {
         let readings = shared.readings.borrow();
         readings.handover()
     }
-    .filter(|_| device.online && fabric.require_media().is_ok());
+    // What plays here can only continue on a device that plays: one with no sound output is
+    // managed from its settings, as a press on a device with nothing playing is.
+    .filter(|_| device.online && device.audio_output && fabric.require_media().is_ok());
     let Some(source) = source else {
         crate::quick_settings::open_settings(shared, device.settings_link());
         return;
