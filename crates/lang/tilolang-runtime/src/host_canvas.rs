@@ -23,6 +23,7 @@ impl Core {
             | Imp::CanvasDiff
             | Imp::CanvasSelect
             | Imp::CanvasInspect
+            | Imp::CanvasSample
             | Imp::CanvasRemoveAlong
             | Imp::CanvasSvg
             | Imp::CanvasSvgImport => self.canvas_text(imp, a),
@@ -100,6 +101,13 @@ impl Core {
     /// measure, and the document written as SVG.
     fn canvas_text(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
+            Imp::CanvasSample => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let pictures = self.file_pairs(a.h(2)?)?;
+                let answer = self.canvas.borrow().sample(&artwork, &request, &pictures);
+                self.result(answer.map(Value::text))
+            }
             Imp::CanvasWand => {
                 let picture = self.picture_bytes(a.h(0)?)?;
                 let request = self.text(a.h(1)?)?;

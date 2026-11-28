@@ -84,6 +84,9 @@ type Suggestion (readers: author until sent) {
     photos: Set<Text>
     /// Whether a name was approved: a sent suggestion is the workspace's, not only its author's.
     sent: Bool = false
+    /// Set aside for now: the face is kept, out of the list, until the person asks to see the
+    /// ones they hid. A scan never offers it twice, since the photos are still its own.
+    hidden: Bool = false
 }
 
 /// What an edit does to one field of every selected photo: keeps what each photo has, takes it
@@ -110,6 +113,10 @@ type Library {
     /// Faces the image model found and nobody has named yet: each is its scanner's alone until
     /// they approve a name, which sends it to the workspace.
     suggestions: Collection<Suggestion>
+    /// The language the device reads the words in a picture in, as the reader names it
+    /// (`eng`, `deu`): "Read the text" uses it, so a library of German signs is found by its
+    /// words.
+    text_language: Text = "eng"
     /// The last folder import: how many files it looked at, how many became photos, and what it
     /// could not read, so a person knows what arrived and what did not.
     import_found: Int = 0
@@ -525,21 +532,55 @@ action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Det
     }
 }
 
-/// The words in the photograph, read on this device and kept with the photo, so the library
-/// finds it by what it says. Needs no model: a device without one still reads its text.
-action recognize_text(p: Photo) uses image (icon: .scan_line, label: "Read the text") {
-    match try vision.ocr(vision.image_model, image: shown_picture(p)) {
+/// The language the device reads text in, as the languages its reader knows.
+fn text_languages() -> List<Text> {
+    ["eng", "deu", "fra", "spa", "ita", "por", "nld", "pol", "rus", "tur", "chi_sim", "jpn", "kor"]
+}
+
+/// The words in the photograph, read on this device in the library's text language and kept with
+/// the photo, so the library finds it by what it says. Needs no model: a device without one still
+/// reads its text.
+action recognize_text(lib: Library, p: Photo) uses image (
+    icon: .scan_line,
+    label: "Read the text",
+) {
+    match try vision.ocr(
+        vision.image_model,
+        image: shown_picture(p),
+        language: .some(lib.text_language),
+    ) {
         .ok(words) => {
             p.recognized = words
         }
-        .err(_) => {}
+        .err(why) => {
+            lib.notice = why
+        }
     }
 }
 
-/// Copies the photograph to the person's clipboard as a picture, so it pastes into another app.
-action copy_photo(p: Photo) uses clipboard (icon: .copy, label: "Copy") {
+/// Sets the language the device reads text in, as its reader names it: `eng` for English, `deu`
+/// for German, and the same for the other languages it knows.
+action set_text_language(lib: Library, language: Text) (icon: .globe, label: "Text language") {
+    require language.trim() != "" and language.trim().len() <= 16 "A language is named by one to sixteen letters"
+    require language.trim().lower().split("").all(c -> is_letter(c) or c == "_") "A language's name holds letters only"
+    lib.text_language = language.trim().lower()
+}
+
+/// Whether a one-letter text is a letter of the alphabet.
+fn is_letter(c: Text) -> Bool {
+    c != "" and "abcdefghijklmnopqrstuvwxyz".contains(c.lower())
+}
+
+/// Copies the photograph to the person's clipboard as a picture, so it pastes into another app;
+/// where the device has no clipboard or refuses it, the library says so.
+action copy_photo(lib: Library, p: Photo) uses clipboard (icon: .copy, label: "Copy") {
     if shown_picture(p) != "" {
-        clipboard.copy_image(File.at(p.name, shown_picture(p)))
+        let copied = clipboard.copy_image(File.at(p.name, shown_picture(p)))
+        lib.notice = if copied {
+            "The picture is on the clipboard."
+        } else {
+            "The picture could not be copied to the clipboard."
+        }
     }
 }
 
@@ -1179,6 +1220,7 @@ action approve_suggestion(lib: Library, s: Suggestion, name: Text = s.name) (
         if let p = lib.photos.find(x -> x.id == id) { p.people.add(name) }
     }
     s.sent = true
+    s.hidden = false
 }
 
 /// Puts a face's photos on a person the library already knows, and sends the suggestion.
@@ -1189,15 +1231,19 @@ action merge_suggestion(lib: Library, s: Suggestion, person: Person) (icon: .use
         if let p = lib.photos.find(x -> x.id == id) { p.people.add(person.name) }
     }
     s.sent = true
+    s.hidden = false
 }
 
-/// Takes a suggestion away: the face is not offered again, since the photos are not rescanned
-/// into one while they are unnamed only by choice.
-destructive action dismiss_suggestion(lib: Library, s: Suggestion) (
-    icon: .x,
-    label: "Dismiss the suggestion",
-) {
-    lib.suggestions.remove(s)
+/// Sets a suggestion aside without losing it: the face leaves the list and is kept, so the
+/// person can bring it back when they know who it is. The photos are not scanned into a second
+/// suggestion meanwhile.
+action hide_suggestion(lib: Library, s: Suggestion) (icon: .eye_off, label: "Hide the suggestion") {
+    s.hidden = true
+}
+
+/// Brings a face the person set aside back into the list.
+action restore_suggestion(lib: Library, s: Suggestion) (icon: .eye, label: "Show the suggestion") {
+    s.hidden = false
 }
 
 /// The person the library knows by `name`, started where it knows none.
@@ -1543,6 +1589,15 @@ view library(lib: Library) {
                         }
                     }
                 }
+                // Each file that did not become a photo: its name and why, so a folder's
+                // problems are read one at a time rather than counted.
+                if lib.import_job == "" and not lib.import_issues.is_empty() {
+                    ui.Section("What could not be read") {
+                        for issue in lib.import_issues {
+                            ui.ListRow(title: issue, icon: .circle_alert)
+                        }
+                    }
+                }
                 if lib.notice != "" {
                     ui.Banner(lib.notice, kind: .info, action: "Dismiss") {
                         on act: dismiss_notice(lib)
@@ -1688,13 +1743,17 @@ view present(lib: Library, slide: State<Int>, presenting: State<Bool>) {
 
 /// The people the library knows, each a row opening the photos they are on.
 view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
+    // Whether the faces the person set aside are shown beside the ones still to name.
+    state show_hidden: Bool = false
+    let waiting = lib.suggestions.filter(s -> not s.hidden)
+    let set_aside = lib.suggestions.filter(s -> s.hidden)
     stack(gap: .section, fill) {
         face_recognition(lib)
         // The faces nobody has named: each is this device's own until its name is approved, so
         // another member's suggestions never appear here.
-        if not lib.suggestions.is_empty() {
+        if not waiting.is_empty() {
             ui.Section("Faces to name") {
-                for s in lib.suggestions {
+                for s in waiting {
                     stack(gap: .tight) {
                         row(gap: .tight, align: .center) {
                             ui.Avatar(name: s.name)
@@ -1712,12 +1771,12 @@ view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
                                 }
                             }
                             ui.Button(
-                                "",
-                                icon: .x,
+                                "Hide",
+                                icon: .eye_off,
                                 icon_only: true,
-                                accessible_name: "Dismiss the suggestion",
+                                accessible_name: "Hide the suggestion",
                             ) {
-                                on press: dismiss_suggestion(lib, s)
+                                on press: hide_suggestion(lib, s)
                             }
                         }
                         ui.Text(
@@ -1729,7 +1788,32 @@ view people_list(lib: Library, place: State<Text>, viewing: State<Text>) {
                 }
             }
         }
-        if lib.people.is_empty() and lib.suggestions.is_empty() {
+        // The faces set aside: kept, and out of the way, until the person asks for them again.
+        if not set_aside.is_empty() {
+            ui.Section("Hidden faces") {
+                ui.Button(
+                    if show_hidden { "Hide them again" } else { "Show hidden faces" },
+                    icon: if show_hidden { .eye_off } else { .eye },
+                ) {
+                    on press: set(show_hidden, not show_hidden)
+                }
+                if show_hidden {
+                    for s in set_aside {
+                        row(gap: .tight, align: .center) {
+                            ui.Avatar(name: s.name)
+                            ui.TextInput(bind: s.name, placeholder: "Name this person", fill)
+                            ui.Button("Approve", icon: .check, role: .primary) {
+                                on press: approve_suggestion(lib, s, s.name)
+                            }
+                            ui.Button("Show again", icon: .eye) {
+                                on press: restore_suggestion(lib, s)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if lib.people.is_empty() and waiting.is_empty() and set_aside.is_empty() {
             ui.EmptyState(
                 "No people yet",
                 message: "The vision service proposes the people in your photos; name them, merge them and split them here.",
@@ -2321,10 +2405,10 @@ view viewer(
                 on press: tag_photo(p)
             }
             ui.Button("Read the text", icon: .scan_line) {
-                on press: recognize_text(p)
+                on press: recognize_text(lib, p)
             }
             ui.Button("Copy", icon: .copy) {
-                on press: copy_photo(p)
+                on press: copy_photo(lib, p)
             }
             if p.edited != "" {
                 ui.Button("Reset edits", icon: .undo_2) {
@@ -2569,6 +2653,15 @@ view analysis_page(lib: Library) {
                 }
             }
         }
+        ui.Section("Reading text") {
+            ui.MenuButton("Text language: {lib.text_language}", icon: .globe) {
+                for language in text_languages() {
+                    ui.MenuItem(language) {
+                        on choose: set_text_language(lib, language)
+                    }
+                }
+            }
+        }
         if run.model != "" {
             ui.Property("Model", run.model)
             ui.Property("Revision", run.revision.slice(0, 10), copyable: true)
@@ -2698,10 +2791,10 @@ view details_fields(lib: Library, p: Photo) {
                 on press: analyze_photo(p)
             }
             ui.Button("Read the text", icon: .scan_line) {
-                on press: recognize_text(p)
+                on press: recognize_text(lib, p)
             }
             ui.Button("Copy", icon: .copy) {
-                on press: copy_photo(p)
+                on press: copy_photo(lib, p)
             }
             if p.latitude != 0.0 or p.longitude != 0.0 {
                 ui.Button("Clear place", icon: .map_pin) {

@@ -593,6 +593,8 @@ imports! {
     CanvasDiff = "canvas_diff" ([H, H, H, H] -> [H]);
     CanvasSelect = "canvas_select" ([H, H] -> [H]);
     CanvasInspect = "canvas_inspect" ([H, H] -> [H]);
+    // The colour the artwork shows at a point, as `#rrggbb`: what an eyedropper picks.
+    CanvasSample = "canvas_sample" ([H, H, H] -> [H]);
     CanvasRemoveAlong = "canvas_remove_along" ([H, H] -> [H]);
     CanvasDiffPicture = "canvas_diff_picture" ([H, H, H, H] -> [H]);
     CanvasSvg = "canvas_svg" ([H, H] -> [H]);

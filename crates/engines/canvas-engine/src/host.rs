@@ -265,6 +265,14 @@ struct RecordMark {
     colour: String,
     #[serde(default)]
     brush: String,
+    /// An outline drawn around the mark: its colour, its width in units, and its dash pattern
+    /// `[on, off, …]`.
+    #[serde(default)]
+    stroke: String,
+    #[serde(default)]
+    stroke_width: f64,
+    #[serde(default)]
+    dash: Vec<f64>,
     #[serde(default = "one")]
     opacity: f64,
     /// A gradient fill, drawn instead of the plain colour: `linear` or `radial`, its ends and
@@ -755,6 +763,7 @@ fn shape_of(mark: &RecordMark, style: &mut Style) -> Shape {
     if mark.kind == "stroke" {
         // The ink the hand paints in is the stroke's colour; a shape is filled with it.
         style.stroke = Some(colour);
+        style.dash.clone_from(&mark.dash);
         Shape::Stroke {
             points: mark.points.chunks_exact(3).map(<[f64]>::to_vec).collect(),
             size: mark.size,
@@ -793,8 +802,19 @@ fn shape_of(mark: &RecordMark, style: &mut Style) -> Shape {
         }
     } else {
         style.fill = Some(colour);
+        outline_of(mark, style);
         Shape::Path { d: mark.d.clone() }
     }
+}
+
+/// The outline a mark's record asks for, when it names one.
+fn outline_of(mark: &RecordMark, style: &mut Style) {
+    if mark.stroke.is_empty() || mark.stroke_width <= 0.0 {
+        return;
+    }
+    style.stroke = Some(mark.stroke.clone());
+    style.stroke_width = mark.stroke_width;
+    style.dash.clone_from(&mark.dash);
 }
 
 /// A mark's gradient fill, when its record names one with at least two stops.
@@ -990,6 +1010,40 @@ pub fn look(
             .map_err(|error| format!("the look's answer cannot be written: {error}"))?;
         Ok((picture.bytes, info))
     })
+}
+
+/// The colour the artwork shows at a point, as `#rrggbb`: what the eyedropper picks. The point
+/// is `[x, y]` in artwork units; the colour is averaged over a unit's patch, after masks,
+/// erasers and the reference, as the window draws it.
+///
+/// # Errors
+///
+/// Why the artwork cannot be drawn.
+pub fn sample(
+    art: &Artwork,
+    request: &str,
+    pictures: &[(String, Vec<u8>)],
+) -> Result<String, String> {
+    let request: Sample = serde_json::from_str(request)
+        .map_err(|error| format!("a sample's fields cannot be read: {error}"))?;
+    lending(pictures, || {
+        let mut renderer = Renderer::default();
+        let mut text = TextRenderer::new();
+        let colour = view_ops::shown_colour(
+            &mut renderer,
+            &mut text,
+            art,
+            tilo_ui::vello::kurbo::Point::new(request.at[0], request.at[1]),
+        )?;
+        let rgba = colour.to_rgba8();
+        Ok(format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b))
+    })
+}
+
+/// What sampling asks for: the point to read.
+#[derive(serde::Deserialize)]
+struct Sample {
+    at: [f64; 2],
 }
 
 /// A soft edge a refinement keeps, as the picture's address, its bytes and the rect they cover.
@@ -1451,6 +1505,9 @@ mod tests {
                     "kind": "path",
                     "d": "M 0 0 L 10 10 Z",
                     "colour": "#2f7fb8",
+                    "stroke": "#000000",
+                    "stroke_width": 3.0,
+                    "dash": [8.0, 4.0],
                 },
                 {
                     "layer": { "name": "Ink" },
@@ -1524,6 +1581,13 @@ mod tests {
         assert_eq!(stroke.style.params.get("flow"), Some(&0.5));
         let path = marks.next().expect("the shape");
         assert_eq!(path.style.fill.as_deref(), Some("#2f7fb8"));
+        assert_eq!(
+            path.style.stroke.as_deref(),
+            Some("#000000"),
+            "the shape's outline is its own"
+        );
+        assert!((path.style.stroke_width - 3.0).abs() < f64::EPSILON);
+        assert_eq!(path.style.dash, vec![8.0, 4.0], "the outline is dashed");
         let picture = marks.next().expect("the picture");
         match &picture.shape {
             Shape::Image {
@@ -1577,5 +1641,57 @@ mod tests {
 
         let selection = art.selection.expect("the selection is kept");
         assert_eq!(selection.d, "M 0 0 L 5 5 Z");
+    }
+
+    #[test]
+    fn an_export_of_the_selection_is_the_box_it_encloses() {
+        let records = serde_json::json!({
+            "width": 100.0,
+            "height": 100.0,
+            "layers": [{ "name": "Base", "visible": true }],
+            "marks": [{
+                "layer": { "name": "Base" },
+                "kind": "path",
+                "d": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+                "colour": "#ff0000",
+            }],
+            "selection": { "d": "M 25 25 L 35 25 L 35 35 L 25 35 Z", "feather": 0.0 },
+        })
+        .to_string();
+        let art = artwork_of_records(&records).expect("the records are an artwork");
+        let (bytes, info) = export(
+            &art,
+            r#"{"format":"png","scale":1.0,"selection":true}"#,
+            &[],
+        )
+        .expect("the selection draws");
+        assert!(!bytes.is_empty(), "the picture is written");
+        let info: serde_json::Value = serde_json::from_str(&info).expect("the export's answer");
+        assert_eq!(info["width"], 10, "the selection's box across: {info}");
+        assert_eq!(info["height"], 10, "and down: {info}");
+    }
+
+    #[test]
+    fn a_sample_reads_a_point_or_says_its_fields_cannot_be() {
+        let records = serde_json::json!({
+            "width": 100.0,
+            "height": 100.0,
+            "layers": [{ "name": "Base", "visible": true }],
+            "marks": [{
+                "layer": { "name": "Base" },
+                "kind": "path",
+                "d": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+                "colour": "#ff0000",
+            }],
+        })
+        .to_string();
+        let art = artwork_of_records(&records).expect("the records are an artwork");
+        let colour = sample(&art, r#"{"at":[50.0,50.0]}"#, &[]).expect("the artwork draws");
+        assert!(
+            colour.starts_with('#') && colour.len() == 7,
+            "the colour is a hex triplet: {colour}"
+        );
+        let refused = sample(&art, r#"{"at":"the middle"}"#, &[]).expect_err("no point, no sample");
+        assert!(refused.contains("cannot be read"), "{refused}");
     }
 }

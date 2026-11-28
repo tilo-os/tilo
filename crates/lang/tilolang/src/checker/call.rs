@@ -3712,7 +3712,7 @@ impl Checker<'_> {
         Ex::host(imp, given, held)
     }
 
-    /// `canvas.look`, `canvas.export`, `canvas.grade`, `canvas.wand`, `canvas.svg`,
+    /// `canvas.look`, `canvas.export`, `canvas.grade`, `canvas.wand`, `canvas.sample`, `canvas.svg`,
     /// `canvas.svg_import`, `canvas.save` and `canvas.open`: the device's drawing engine, over
     /// the artwork's JSON and the pictures it shows. Reading only what it is handed, a call is
     /// no effect, as `pdf` is; a picture it answers is kept as content.
@@ -3786,6 +3786,12 @@ impl Checker<'_> {
                 result(Ty::Text),
                 "the artwork as JSON and what to inspect as JSON",
                 vec![Ty::Text, Ty::Text],
+            ),
+            "sample" => (
+                Imp::CanvasSample,
+                result(Ty::Text),
+                "the artwork as JSON, the point to sample as JSON, and its pictures' addresses",
+                vec![Ty::Text, Ty::Text, pictures()],
             ),
             "select" => (
                 Imp::CanvasSelect,

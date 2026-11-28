@@ -26,16 +26,16 @@ use Imp::{
     ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, Call, CallFn, CallInputs,
     CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport,
     CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
-    CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand,
-    ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
-    ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
-    CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
-    CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
-    DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit, DurationText,
-    EditField, EngineCall, EngineCancel, EngineCheck, EngineJob, EnginePicture, EngineStart,
-    EngineState, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF,
-    EnumSetH, EnumSetI, EventPart, EventPress, EventValue, FieldChanged, FileAt, FileBook,
-    FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCopyTo, FileCrop, FileData,
+    CanvasRemoveAlong, CanvasSample, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport,
+    CanvasWand, ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText,
+    ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
+    CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace,
+    CollRelatives, CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse,
+    DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe, DescribeRef, DeviceRefLit,
+    DurationText, EditField, EngineCall, EngineCancel, EngineCheck, EngineJob, EnginePicture,
+    EngineStart, EngineState, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
+    EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventPress, EventValue, FieldChanged, FileAt,
+    FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCopyTo, FileCrop, FileData,
     FileEncode, FileExtract, FileFiles, FileHere, FileImageInfo, FileList, FileMarkdown, FileMkdir,
     FileMove, FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart,
     FilePreview, FileReadPath, FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat,
@@ -880,8 +880,8 @@ impl Core {
             | PdfPicture | PdfSave => self.pdf_import(imp, a),
             CanvasLook | CanvasExport | CanvasGrade | CanvasWand | CanvasFind | CanvasCombine
             | CanvasMeasure | CanvasCompare | CanvasDiff | CanvasDiffPicture | CanvasSelect
-            | CanvasRemoveAlong | CanvasInspect | CanvasSvg | CanvasSvgImport | CanvasSave
-            | CanvasOpen => self.canvas_import(imp, a),
+            | CanvasRemoveAlong | CanvasInspect | CanvasSample | CanvasSvg | CanvasSvgImport
+            | CanvasSave | CanvasOpen => self.canvas_import(imp, a),
             SheetValues | SheetEdit | SheetRanges | SheetNumbers | SheetRecords | SheetEntry => {
                 self.sheet_call(imp, a)
             }

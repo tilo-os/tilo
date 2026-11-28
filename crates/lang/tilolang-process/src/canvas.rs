@@ -113,6 +113,16 @@ impl CanvasHost for Engine {
         canvas_engine::host::inspect(&art, request)
     }
 
+    fn sample(
+        &self,
+        artwork_json: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        let art = artwork(artwork_json)?;
+        canvas_engine::host::sample(&art, request, pictures)
+    }
+
     fn remove_along(&self, artwork_json: &str, request: &str) -> Result<String, String> {
         let art = artwork(artwork_json)?;
         canvas_engine::host::remove_along(&art, request)

@@ -462,6 +462,7 @@ imports! {
     (CanvasDiff, "canvas_diff", "iiii", "i"),
     (CanvasSelect, "canvas_select", "ii", "i"),
     (CanvasInspect, "canvas_inspect", "ii", "i"),
+    (CanvasSample, "canvas_sample", "iii", "i"),
     (CanvasRemoveAlong, "canvas_remove_along", "ii", "i"),
     (CanvasDiffPicture, "canvas_diff_picture", "iiii", "i"),
     (CanvasSvg, "canvas_svg", "ii", "i"),

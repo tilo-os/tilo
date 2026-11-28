@@ -8,7 +8,7 @@
 
 use serde_json::{Value, json};
 use tilo_ui::vello::Scene;
-use tilo_ui::vello::kurbo::{Affine, Point, Rect};
+use tilo_ui::vello::kurbo::{Affine, Point, Rect, Shape as _};
 use tilo_ui::vello::peniko::Color;
 use tilo_ui_base::TextRenderer;
 use tilo_ui_base::num::f64_of_usize;
@@ -940,11 +940,16 @@ pub fn draw_export(
         "webp" => "webp",
         other => return Err(format!("format {other:?} is png, jpeg or webp")),
     };
+    let region = if export.selection.unwrap_or(false) {
+        selection_bounds(art)?
+    } else {
+        art.bounds()
+    };
     let drawing = draw_rgba(
         renderer,
         text,
         art,
-        art.bounds(),
+        region,
         scale,
         &Options {
             bare: export.transparent.unwrap_or(false),
@@ -960,6 +965,21 @@ pub fn draw_export(
 }
 
 /// An export's RGBA encoded as `format`, written to `path` when given.
+/// The box the artwork's selection encloses, within the artboard.
+fn selection_bounds(art: &Artwork) -> Result<Rect, String> {
+    let selection = art
+        .selection
+        .as_ref()
+        .ok_or("there is no selection to export")?;
+    let path = tilo_ui::vello::kurbo::BezPath::from_svg(&selection.d)
+        .map_err(|error| format!("the selection's outline cannot be read: {error}"))?;
+    let bounds = path.bounding_box().intersect(art.bounds());
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return Err("the selection encloses no area".to_owned());
+    }
+    Ok(bounds)
+}
+
 fn finish_export(
     rgba: &[u8],
     (width, height): (u32, u32),

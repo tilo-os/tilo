@@ -141,6 +141,19 @@ pub trait CanvasHost {
     /// Why it cannot be read.
     fn inspect(&self, artwork: &str, request: &str) -> Result<String, String>;
 
+    /// The colour the artwork shows at the point `request` names, as `#rrggbb`: what an
+    /// eyedropper picks, after masks, erasers and the reference picture.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be drawn.
+    fn sample(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String>;
+
     /// The artwork, or the marks `request` names, as an SVG document.
     ///
     /// # Errors
@@ -253,6 +266,15 @@ impl CanvasHost for NoCanvas {
     }
 
     fn inspect(&self, _artwork: &str, _request: &str) -> Result<String, String> {
+        Err(unavailable())
+    }
+
+    fn sample(
+        &self,
+        _artwork: &str,
+        _request: &str,
+        _pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
         Err(unavailable())
     }
 

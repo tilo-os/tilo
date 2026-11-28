@@ -289,6 +289,315 @@ primary action new_event(
     )
 }
 
+/// Makes an event of one line a person types: "Lunch with Sam friday 1pm" starts lunch with Sam
+/// at one on Friday, "Workshop tomorrow at 10 for 90 min" runs ninety minutes from ten tomorrow,
+/// "Trip on 2026-11-03 at 8:00" lands on that day, and "Dinner tonight" is at eight. The words
+/// that said when are the line's alone; everything else is the title. A line that names no day
+/// lands on the day the window is looking at, and one that names no time starts on the next
+/// quarter hour, a hour long.
+action quick_add(c: Calendars, line: Text) -> Event uses time (icon: .plus, label: "Quick add") {
+    let anchor = quick_anchor(c, now)
+    let parts = quick_parts(line, now, anchor)
+    let title = parts.at(0) ?? ""
+    let start_wall = parts.at(1) ?? ""
+    let end_wall = parts.at(2) ?? ""
+    let day = Date.parse(start_wall, near: now) ?? anchor
+    c.events.insert(
+        Event(
+            title: title,
+            start: start_wall,
+            end: end_wall,
+            all_day: false,
+            day: day,
+            end_day: Date.parse(end_wall, near: now) ?? day,
+            timezone: "floating",
+            calendar: c.calendars.first(),
+        ),
+    )
+}
+
+/// What a quick-add line says it will write, in the person's words: its title, the day and the
+/// hours, so a line that lands elsewhere says so before anything is written.
+fn quick_said(line: Text, now: Time, anchor: Date) -> Text {
+    let parts = quick_parts(line, now, anchor)
+    let title = parts.at(0) ?? ""
+    let start = Time.parse(parts.at(1) ?? "", near: now)
+    let end = Time.parse(parts.at(2) ?? "", near: now)
+    let name = if title == "" { "New event" } else { title }
+    if let s = start, e = end {
+        let day = (s.wall("floating") ?? "").slice(0, 10)
+        let when = if day == anchor.iso() {
+            "today"
+        } else if day == (anchor + 1d).iso() { "tomorrow" } else { day }
+        "{name}, {when}, {s.clock()} – {e.clock()}"
+    } else { name }
+}
+
+/// The day a quick-add line that names none lands on: the day the window stands on, or today
+/// when the window has not said.
+fn quick_anchor(c: Calendars, now: Time) -> Date {
+    let day = c.anchor_at.day()
+    if day.year() < 2000 { now.day() } else { day }
+}
+
+/// The quick-add line read into `[title, start wall time, end wall time]`, the wall times in the
+/// form a calendar writes. The day, the clock and the length are each read once, from the first
+/// words that name them; those words leave the title.
+fn quick_parts(line: Text, now: Time, anchor: Date) -> List<Text> {
+    let words = line.split(" ")
+    let said = words.map(w -> w.lower())
+    let taken = Map<Bool>()
+    let at = words.map((w, i) -> i)
+    // The day: today, tonight, tomorrow, a weekday (with `next` before it), or a day as written.
+    let chosen = Map<Text>()
+    let tonight = Map<Bool>()
+    for i in at {
+        if chosen.get("d") == .none {
+            let w = said.at(i) ?? ""
+            let next = if i > 0 { said.at(i - 1) ?? "" } else { "" }
+            if w == "today" {
+                chosen.put("d", anchor.iso())
+                taken.put(i.to_text(), true)
+            } else if w == "tonight" {
+                chosen.put("d", anchor.iso())
+                tonight.put("on", true)
+                taken.put(i.to_text(), true)
+            } else if w == "tomorrow" {
+                chosen.put("d", (anchor + 1d).iso())
+                taken.put(i.to_text(), true)
+            } else if w == "on" and quick_day(said.at(i + 1) ?? "", now) != .none {
+                if let d = quick_day(said.at(i + 1) ?? "", now) { chosen.put("d", d.iso()) }
+                taken.put(i.to_text(), true)
+                taken.put((i + 1).to_text(), true)
+            } else if quick_day(w, now) != .none {
+                if let d = quick_day(w, now) {
+                    chosen.put("d", if next == "next" { d + Duration(7 * 86400) } else { d }.iso())
+                }
+                taken.put(i.to_text(), true)
+                if next == "next" { taken.put((i - 1).to_text(), true) }
+            }
+        }
+    }
+    // The clock: "at 9", "9am", "15:30", "noon" or "midnight"; without `at` only a spelling that
+    // is unmistakably a clock, so "5 things to do" keeps its five.
+    let clock = Map<Int>()
+    for i in at {
+        if clock.get("s") == .none {
+            let w = said.at(i) ?? ""
+            if w == "at" and quick_clock(said.at(i + 1) ?? "", true) != .none {
+                if let seconds = quick_clock(said.at(i + 1) ?? "", true) { clock.put("s", seconds) }
+                taken.put(i.to_text(), true)
+                taken.put((i + 1).to_text(), true)
+            } else if quick_clock(w, false) != .none {
+                if let seconds = quick_clock(w, false) { clock.put("s", seconds) }
+                taken.put(i.to_text(), true)
+            }
+        }
+    }
+    // The length: "for 90 min", "for 2h", "for half an hour" or "for an hour".
+    let length = Map<Int>()
+    for i in at {
+        if length.get("s") == .none and (said.at(i) ?? "") == "for" {
+            if let minutes = quick_length(said, i) {
+                length.put("s", minutes * 60)
+                let second = said.at(i + 1) ?? ""
+                let used = if second == "half" {
+                    4
+                } else if second == "an" or second == "a" {
+                    3
+                } else if unit_of(second) == "" { 3 } else { 2 }
+                for n in [0, 1, 2, 3] {
+                    if n < used { taken.put((i + n).to_text(), true) }
+                }
+            }
+        }
+    }
+    let day = if let iso = chosen.get("d") { Date.parse(iso, near: now) ?? anchor } else { anchor }
+    let seconds = if let s = clock.get("s") {
+        s
+    } else if tonight.get("on") == .none {
+        next_quarter(now).time_of_day().seconds()
+    } else { 20 * 3600 }
+    let start = (Time.parse("{day.iso()}T00:00:00", near: now) ?? now) + Duration(seconds)
+    let end = start + Duration(length.get("s") ?? 3600)
+    let kept = at.filter(i -> taken.get(i.to_text()) == .none).map(i -> words.at(i) ?? "")
+    [kept.join(" ").trim(), start.wall("floating") ?? "", end.wall("floating") ?? ""]
+}
+
+/// The day `word` names, read from the day it is typed near: a weekday is the next one, or a day
+/// as written (`2026-11-03`). Nothing for any other word.
+fn quick_day(word: Text, now: Time) -> Option<Date> {
+    if word.len() != 10 or word.slice(4, 5) != "-" or word.slice(7, 8) != "-" {
+        if let want = quick_weekday(word) {
+            let ahead = (want - weekday_of(now.day()) + 7) % 7
+            return .some(now.day() + Duration(ahead * 86400))
+        }
+        return .none
+    }
+    Date.parse(word, near: now)
+}
+
+/// The weekday a word names, Monday zero: `mon`, `monday` and `mo` are all Monday.
+fn quick_weekday(word: Text) -> Option<Int> {
+    if word == "mon" or word == "monday" or word == "mo" {
+        .some(0)
+    } else if word == "tue" or word == "tuesday" or word == "tues" {
+        .some(1)
+    } else if word == "wed" or word == "wednesday" {
+        .some(2)
+    } else if word == "thu" or word == "thursday" or word == "thur" or word == "thurs" {
+        .some(3)
+    } else if word == "fri" or word == "friday" {
+        .some(4)
+    } else if word == "sat" or word == "saturday" {
+        .some(5)
+    } else if word == "sun" or word == "sunday" { .some(6) } else { .none }
+}
+
+/// A day's weekday, Monday zero.
+fn weekday_of(day: Date) -> Int {
+    let w = day.weekday()
+    if w == .monday {
+        0
+    } else if w == .tuesday {
+        1
+    } else if w == .wednesday {
+        2
+    } else if w == .thursday {
+        3
+    } else if w == .friday { 4 } else if w == .saturday { 5 } else { 6 }
+}
+
+/// The time of day a word names, in seconds from midnight: `9am`, `9:30pm`, `15:30`, `noon`,
+/// `midnight`, or an hour alone after `at`. Nothing when the word is no clock, and nothing for an
+/// impossible one ("25:99"), which stays in the title.
+fn quick_clock(word: Text, bare: Bool) -> Option<Int> {
+    if word == "noon" or word == "midday" {
+        return .some(12 * 3600)
+    }
+    if word == "midnight" {
+        return .some(0)
+    }
+    let afternoon: Option<Bool> = if word.ends_with("pm") {
+        .some(true)
+    } else if word.ends_with("am") { .some(false) } else { .none }
+    let rest = if afternoon != .none { word.slice(0, word.len() - 2) } else { word }
+    let colon = rest.find(":")
+    if let at = colon {
+        let minutes_text = rest.slice(at + 1, rest.len())
+        if minutes_text.len() != 2 {
+            return .none
+        }
+        if let h = rest.slice(0, at).to_int(), m = minutes_text.to_int() {
+            if h > 23 or m > 59 {
+                return .none
+            }
+            return .some(twelve_hour(h, m, afternoon) * 3600 + m * 60)
+        }
+        return .none
+    }
+    if afternoon == .none and not bare {
+        return .none
+    }
+    if let h = rest.to_int() {
+        let hours = twelve_hour(h, 0, afternoon)
+        if hours > 23 {
+            return .none
+        }
+        return .some(hours * 3600)
+    }
+    .none
+}
+
+/// `hours` as a 24-hour clock: the afternoon after noon, and an hour alone after `at` taken in the
+/// afternoon when it is one to six.
+fn twelve_hour(hours: Int, minutes: Int, afternoon: Option<Bool>) -> Int {
+    if afternoon == .some(true) and hours < 12 {
+        hours + 12
+    } else if afternoon == .some(false) and hours == 12 {
+        0
+    } else if afternoon == .none and minutes == 0 and hours >= 1 and hours <= 6 {
+        hours + 12
+    } else { hours }
+}
+
+/// The minutes a length starting at `for` (word `index`) names: "90 min", "2 hours", "2h",
+/// "half an hour" or "an hour". Nothing for any other words.
+fn quick_length(said: List<Text>, index: Int) -> Option<Int> {
+    let second = said.at(index + 1) ?? ""
+    if second == "half" {
+        let article = said.at(index + 2) ?? ""
+        let unit = said.at(index + 3) ?? ""
+        if (article == "an" or article == "a") and hour_word(unit) {
+            return .some(30)
+        }
+        return .none
+    }
+    if second == "an" or second == "a" {
+        if hour_word(said.at(index + 2) ?? "") {
+            return .some(60)
+        }
+        return .none
+    }
+    let unit = unit_of(second)
+    if unit == "" {
+        return minutes_of(amount_of(second), said.at(index + 2) ?? "")
+    }
+    minutes_of(amount_of(second), unit)
+}
+
+/// Whether a word is an hour: `h`, `hr`, `hrs`, `hour` or `hours`.
+fn hour_word(word: Text) -> Bool {
+    word == "h" or word == "hr" or word == "hrs" or word == "hour" or word == "hours"
+}
+
+/// How many minutes `amount` of `unit` is, rounded and kept to what a calendar holds; nothing for
+/// any other unit or a length under a minute.
+fn minutes_of(amount: Float, unit: Text) -> Option<Int> {
+    let minutes = if unit == "min"
+        or unit == "mins"
+        or unit == "minute"
+        or unit == "minutes"
+        or unit == "m" {
+        amount
+    } else if hour_word(unit) {
+        amount * 60.0
+    } else {
+        return .none
+    }
+    if minutes < 1.0 {
+        return .none
+    }
+    .some(minutes.round().clamp(15, 1440))
+}
+
+/// Where the number at the start of `word` ends: the first letter or sign that is no digit and
+/// no point.
+fn number_end(word: Text) -> Int {
+    let end = Map<Int>()
+    let letters = word.split("")
+    for i in letters.map((c, i) -> i) {
+        let here = letters.at(i) ?? ""
+        if end.get("e") == .none and not (digit_char(here) or here == ".") { end.put("e", i) }
+    }
+    end.get("e") ?? word.len()
+}
+
+/// Whether a one-letter text is a digit.
+fn digit_char(c: Text) -> Bool {
+    c != "" and "0123456789".contains(c)
+}
+
+/// The number a word starts with (`90` of `90min`), zero where it starts with none.
+fn amount_of(word: Text) -> Float {
+    word.slice(0, number_end(word)).to_float() ?? 0.0
+}
+
+/// The unit a word ends with after its number (`min` of `90min`); empty where it holds none.
+fn unit_of(word: Text) -> Text {
+    word.slice(number_end(word), word.len())
+}
+
 /// Makes an event of the hours dragged across, from where the drag began to where it ended.
 action new_between(c: Calendars, start: Time, end: Time) -> Event uses time (label: "New event") {
     require end > start "A drag goes forward in time"
@@ -1947,6 +2256,9 @@ view window(c: Calendars) {
     state task_project: Option<Project> = .none
     // The day the sidebar's own calendar shows ringed, which is where the window goes.
     state picked: Option<Date> = .none
+    // The quick-add line being typed and whether its sheet is open.
+    state quick: Text = ""
+    state quick_open: Bool = false
     // A window asked to show an event shows the week it stands on and opens it.
     on show(e: Event): set(place, "week").then(open(e))
     // A window asked to show a project lists its tasks.
@@ -1995,6 +2307,9 @@ view window(c: Calendars) {
             }
         }
         actions: {
+            ui.Button("Quick add", icon: .plus, key: "Shift+N") {
+                on press: set(quick, "").then(set(quick_open, true))
+            }
             ui.Button(
                 "",
                 icon: .refresh,
@@ -2078,6 +2393,30 @@ view window(c: Calendars) {
                 }
             }
         }
+    }
+    if quick_open {
+        quick_add_sheet(c, quick, quick_open)
+    }
+}
+
+/// The quick-add sheet: one line read as an event, what it will write said under it, and then the
+/// event made. Reading what is typed says its day and hours before anything is written.
+view quick_add_sheet(c: Calendars, line: State<Text>, open: State<Bool>) {
+    ui.ModalDialog(title: "Quick add", open: open, primary: "Add event", secondary: "Cancel") {
+        body: {
+            stack(gap: .related) {
+                ui.Text("What and when", role: .caption, secondary: true)
+                ui.TextInput(bind: line, placeholder: "Lunch with Sam friday 1pm", autofocus: true)
+                ui.Text(
+                    quick_said(line, c.anchor_at, quick_anchor(c, c.anchor_at)),
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
+        on act_primary: quick_add(c, line).then(set(line, "")).then(set(open, false))
+        on act_secondary: set(open, false)
+        on dismiss: set(open, false)
     }
 }
 

@@ -39,6 +39,8 @@ mod cases {
     #[derive(Clone, Default)]
     struct Vision {
         asked: Rc<RefCell<Vec<String>>>,
+        /// The language each read-the-text call named.
+        ocr_language: Rc<RefCell<Vec<String>>>,
         /// The type of the record `tags` answers with, and its fields' ids, as the vision package
         /// declares them.
         shown: Rc<RefCell<(String, std::collections::BTreeMap<String, String>)>>,
@@ -76,7 +78,22 @@ mod cases {
             }
             self.asked.borrow_mut().push(name.clone());
             match name.as_str() {
-                "ocr" => Invoked::Done(Value::text("HARBOUR CAFE, OPEN 7 TO 4")),
+                "ocr" => {
+                    let Invocation::Action { args, .. } = invocation else {
+                        return Invoked::Failed("this device changes nothing".to_owned());
+                    };
+                    let language = args
+                        .iter()
+                        .find(|(name, _)| name == "language")
+                        .and_then(|(_, value)| match value {
+                            Value::Opt(Some(inner)) => inner.as_text().map(str::to_owned),
+                            Value::Text(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    self.ocr_language.borrow_mut().push(language);
+                    Invoked::Done(Value::text("HARBOUR CAFE, OPEN 7 TO 4"))
+                }
                 // What the model says one picture shows, as the record the surface declares.
                 "shows" => {
                     let shown = self.shown.borrow();
@@ -571,6 +588,15 @@ mod cases {
                 "and what could not be read, and why"
             );
             assert!(Gallery::labels(&page).iter().any(|l| l == "Try again"));
+            // Each file that did not become a photo is a row of its own, saying why.
+            let problems: Vec<String> = of_kind(page.tree(), "ui.ListRow")
+                .into_iter()
+                .filter_map(|row| row.props.get("title").and_then(Value::as_text).map(str::to_owned))
+                .collect();
+            assert!(
+                problems.iter().any(|p| p == "Quay-at-dusk.png: Could not read this image"),
+                "the import's problems are listed one file at a time: {problems:?}"
+            );
 
             // Trying again asks the device for the picture that failed, and nothing else.
             g.call("retry_import", vec![Value::resource(&g.lib)]);
@@ -626,7 +652,10 @@ mod cases {
                 "import_photo",
                 vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
             ));
-            g.call("recognize_text", vec![Value::resource(&photo)]);
+            g.call(
+                "recognize_text",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
             assert_eq!(
                 g.rt.read(&photo, "recognized").unwrap(),
                 Value::text("HARBOUR CAFE, OPEN 7 TO 4"),
@@ -746,6 +775,73 @@ mod cases {
             assert!(g.ids_of(&g.scan(), "scanned").is_empty());
         }
 
+        phase a_face_set_aside_is_hidden_and_can_come_back;
+        {
+            let g = Gallery::new();
+            g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            );
+            g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Quay.png")],
+            );
+            g.call("set_recognition", vec![Value::resource(&g.lib), Value::Bool(true)]);
+            g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
+            let suggestion = g
+                .records("suggestions")
+                .into_iter()
+                .next()
+                .expect("the face the model found");
+            // Setting a face aside keeps it: the person sees it again when they ask, and the
+            // photos are not read into a second suggestion meanwhile.
+            g.call(
+                "hide_suggestion",
+                vec![Value::resource(&g.lib), Value::resource(&suggestion)],
+            );
+            assert_eq!(g.records("suggestions").len(), 1, "a hidden face is kept");
+            assert_eq!(
+                g.rt.read(&suggestion, "hidden").unwrap(),
+                Value::Bool(true),
+                "the face is out of the list"
+            );
+            g.call_and_approve("scan_faces", vec![Value::resource(&g.lib)]);
+            assert_eq!(g.records("suggestions").len(), 1, "and not offered twice");
+            // The people page keeps it out of sight until the person asks for the hidden ones.
+            let mut page = g.open("library", vec![Value::resource(&g.lib)]);
+            let people = of_kind(page.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| item.props.get("key") == Some(&Value::text("people")))
+                .unwrap_or_else(|| panic!("no People place: {}", dump(page.tree())))
+                .key
+                .clone();
+            page.fire(&people, "select").unwrap();
+            page.poll_patches().unwrap();
+            assert!(
+                !Gallery::labels(&page).iter().any(|l| l == "Approve"),
+                "a hidden face is not in the list: {:?}",
+                Gallery::labels(&page)
+            );
+            let show = Gallery::control(&page, "ui.Button", "label", "Show hidden faces");
+            page.fire(&show, "press").unwrap();
+            page.poll_patches().unwrap();
+            assert!(
+                Gallery::labels(&page).iter().any(|l| l == "Show again"),
+                "the hidden face is shown: {:?}",
+                Gallery::labels(&page)
+            );
+            // Bring it back, and it is a face to name again.
+            g.call(
+                "restore_suggestion",
+                vec![Value::resource(&g.lib), Value::resource(&suggestion)],
+            );
+            assert_eq!(
+                g.rt.read(&suggestion, "hidden").unwrap(),
+                Value::Bool(false),
+                "the face is back in the list"
+            );
+        }
+
         phase a_face_scan_goes_batch_by_batch_and_pauses;
         {
             let g = Gallery::new();
@@ -794,6 +890,67 @@ mod cases {
             assert!(!g.rt.readers_admit(&other, &scan));
         }
 
+        phase text_is_read_in_the_language_the_library_names;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            // The language the reader is given is the library's, and it is checked.
+            assert!(!g.attempt(
+                "set_text_language",
+                vec![Value::resource(&g.lib), Value::text("english!")],
+            ));
+            g.call(
+                "set_text_language",
+                vec![Value::resource(&g.lib), Value::text("deu")],
+            );
+            assert_eq!(g.rt.read(&g.lib, "text_language").unwrap(), Value::text("deu"));
+            g.call(
+                "recognize_text",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
+            assert_eq!(
+                g.vision.ocr_language.borrow().as_slice(),
+                &["deu".to_owned()][..],
+                "the device reads the picture's text in German"
+            );
+            assert_eq!(
+                g.rt.read(&photo, "recognized").unwrap(),
+                Value::text("HARBOUR CAFE, OPEN 7 TO 4")
+            );
+        }
+
+        phase a_copy_the_clipboard_refuses_says_so;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            g.clipboard.refuse(true);
+            g.call_and_approve(
+                "copy_photo",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
+            assert_eq!(
+                g.rt.read(&g.lib, "notice").unwrap(),
+                Value::text("The picture could not be copied to the clipboard."),
+                "a refused copy is said, not dropped"
+            );
+            g.clipboard.refuse(false);
+            g.call_and_approve(
+                "copy_photo",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
+            assert!(g.clipboard.held().is_some(), "the picture is on the clipboard");
+            assert_eq!(
+                g.rt.read(&g.lib, "notice").unwrap(),
+                Value::text("The picture is on the clipboard.")
+            );
+        }
+
         phase copying_a_photo_puts_its_picture_on_the_clipboard;
         {
             let g = Gallery::new();
@@ -801,7 +958,10 @@ mod cases {
                 "import_photo",
                 vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
             ));
-            g.call_and_approve("copy_photo", vec![Value::resource(&photo)]);
+            g.call_and_approve(
+                "copy_photo",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
             let copied = g.clipboard.held();
             let (mime, bytes) = copied.expect("the picture was copied");
             assert_eq!(mime, "image/png");

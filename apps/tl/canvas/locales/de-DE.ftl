@@ -378,6 +378,15 @@ d-ocgibcwg = Bibliothek
     .w-new-artwork-starts-one = Neues Bild beginnt eines
     .w-new-artwork = Neues Bild
     .w-open-an-artwork = Bild öffnen…
+    .w-screen-1920-1080 = Screen, 1920 × 1080
+    .w-a4-2480-3508 = A4, 2480 × 3508
+    .w-letter-2550-3300 = Letter, 2550 × 3300
+    .w-square-2048-2048 = Square, 2048 × 2048
+    .w-poster-3600-5400 = Poster, 3600 × 5400
+    .w-icon-1024-1024 = Icon, 1024 × 1024
+    .w-sprite-32-32 = Sprite, 32 × 32
+    .w-sprite-64-64 = Sprite, 64 × 64
+    .w-scene-128-128 = Scene, 128 × 128
 
 d-sqei2kjp = Neues Bild~present
 
@@ -405,7 +414,6 @@ d-vbu6ayw5 = Bild
     .w-brush = Pinsel
     .w-fill-the-selection = Auswahl füllen
     .w-deselect = Auswahl aufheben
-    .w-export = Exportieren
     .w-png-full-size = PNG, volle Größe
     .w-png-twice-the-size = PNG, doppelte Größe
     .w-jpeg-full-size = JPEG, volle Größe
@@ -419,11 +427,9 @@ d-vbu6ayw5 = Bild
     .w-select = Auswählen
     .w-zoom-out = Verkleinern
     .w-zoom-in = Vergrößern
-    .w-fit = Einpassen
     .w-new-artwork = Neues Kunstwerk
     .w-place-a-picture = Ein Bild platzieren
     .w-look = Erscheinungsbild
-    .w-save = Speichern
     .w-brush-2 = Pinsel: { $brush }
     .w-wand = Zauberstab
     .w-text = Text
@@ -461,12 +467,102 @@ d-vbu6ayw5 = Bild
     .w-difference = Differenz
     .w-clear-the-reference = Die Referenz löschen
     .w-the-artwork-against-its-reference = Das Bild gegen seine Referenz
+    .w-chart = Chart
+    .w-keyboard-shortcuts = Keyboard shortcuts
+    .w-light-hides = Light hides
+    .w-light-shows = Light shows
+    .w-remove-the-mask = Remove the mask
+    .w-add-a-mask = Add a mask
+    .w-unlock = Unlock
+    .w-lock = Lock
+    .w-nudge = Nudge
+    .w-left = Left
+    .w-right = Right
+    .w-align = Align
+    .w-align-left-edges = Align left edges
+    .w-align-centres = Align centres
+    .w-align-right-edges = Align right edges
+    .w-align-top-edges = Align top edges
+    .w-align-middles = Align middles
+    .w-align-bottom-edges = Align bottom edges
+    .w-space-evenly-across = Space evenly across
+    .w-space-evenly-down = Space evenly down
+    .w-align-on-the-artwork = Align on the artwork
+    .w-centre-across-the-artwork = Centre across the artwork
+    .w-centre-down-the-artwork = Centre down the artwork
+    .w-left-edge-of-the-artwork = Left edge of the artwork
+    .w-right-edge-of-the-artwork = Right edge of the artwork
+    .w-top-edge-of-the-artwork = Top edge of the artwork
+    .w-bottom-edge-of-the-artwork = Bottom edge of the artwork
+    .w-delete-the-picked-marks = Delete the picked marks
+    .w-outline = Outline
+    .w-solid = Solid
+    .w-dashed = Dashed
+    .w-dotted = Dotted
+    .w-outline-width = Outline width
+    .w-outline-colour = Outline colour
+    .w-no-outline = No outline
+    .w-eyedropper = Eyedropper
+    .w-crop = Crop
+    .w-smaller-brush = Smaller brush
+    .w-larger-brush = Larger brush
+    .w-outline-the-selection = Outline the selection
+    .w-clip-the-picks-to-the-selection = Clip the picks to the selection
+    .w-file = File
+    .w-save-the-artwork = Save the artwork
+    .w-png-of-the-selection = PNG of the selection
+    .w-gradient-stops = Gradient stops
+    .w-stop = Stop { $value }
+    .w-add-a-stop = Add a stop
+    .w-remove-a-stop = Remove a stop
+    .w-actual-size = Actual size
+    .w-draw-a-chart = Draw a chart
+    .w-draw-the-chart = Draw the chart
+    .w-cancel = Cancel
+    .w-title-over-the-chart = Title over the chart
+    .w-labels-one-per-value = Labels, one per value
+    .w-jan-feb-mar-apr = Jan, Feb, Mar, Apr
+    .w-values = Values
+    .w-close = Close
+    .w-tools = Tools
+    .w-b = B
+    .w-x = X
+    .w-i = I
+    .w-r = R
+    .w-e = E
+    .w-l = L
+    .w-c = C
+    .w-crop-the-picture = Crop the picture
+    .w-v = V
+    .w-q = Q
+    .w-w = W
+    .w-t = T
+    .w-view = View
+    .w-and = + and -
+    .w-zoom-in-or-out = Zoom in or out
+    .w-shift-1 = Shift+1
+    .w-fit-the-artwork = Fit the artwork
+    .w-shift-0 = Shift+0
+    .w-and-2 = {""}[ and ]
+    .w-smaller-or-larger-brush = Smaller or larger brush
+    .w-marks-and-artwork = Marks and artwork
+    .w-alt-arrows = Alt+Arrows
+    .w-nudge-the-picked-marks = Nudge the picked marks
+    .w-delete = Delete
+    .w-escape = Escape
+    .w-let-the-picks-or-the-selection = Let the picks or the selection go
+    .w-ctrl-n = Ctrl+N
+    .w-ctrl-o = Ctrl+O
+    .w-open-an-artwork = Open an artwork
+    .w-ctrl-s = Ctrl+S
+    .w-ctrl-shift-e = Ctrl+Shift+E
+    .w-export-a-png = Export a PNG
+    .w-show-or-close-this-reference = Show or close this reference
 
 d-y5teghkv = Offen
     .doc = Ob die Hand noch auf ihm liegt: der Strich, den ein bewegter Zeiger verlängert.
 
 d-54j6cyar-filter-open = Offen
-
 
 d-j3bzgr3f = Titel
 
@@ -490,7 +586,6 @@ d-xocfgdc7-filter-height = Höhe
 
 d-xocfgdc7-filter-selection = Auswahl
 
-
 d-xunw6qmv = Name
 
 d-sxka2uxh = Medium
@@ -510,7 +605,6 @@ d-tsgjljmf-filter-visible = Sichtbar
 d-tsgjljmf-filter-locked = Gesperrt
 
 d-tsgjljmf-filter-texture = Textur
-
 
 d-67wvmkkq = Name
 
@@ -535,7 +629,6 @@ d-uslws4n3-filter-layer = Ebene
 d-uslws4n3-filter-size = Größe
 
 d-uslws4n3-filter-opacity = Deckkraft
-
 
 d-nxcluiyf = D
 
@@ -692,6 +785,7 @@ d-ynku6xaf = Bild platzieren
 d-ynku6xaf-file = Datei
 
 d-od5n7ehr = Bilddatei platzieren~present
+
 d-4bht3tzh = Medien
     .doc = Die im Bild gespeicherten Medien-Voreinstellungen, die seine Ebenen nennen können.
 
@@ -797,6 +891,7 @@ d-erjm2yk6-filter-blur = Unschärfe
 d-erjm2yk6-filter-sharpen = Schärfen
 
 d-erjm2yk6-filter-vignette = Vignette
+
 d-hyumfmpg = Gruppe
     .doc = Der Ordner, in dem die Markierung steht; leer ohne Ordner.
 
@@ -900,6 +995,7 @@ d-p45w3ec2 = Körnung
 
 d-gdv4nrn7 = Weichzeichnen
     .doc = Die Kante der Markierung nach außen über so viele Einheiten auslaufen lassen.
+
 d-dvxs4mkf = Schatten x
     .doc = Ein Schatten, der außerhalb der Markierung fällt, und einer, der in sie fällt.
 
@@ -1000,6 +1096,7 @@ d-54j6cyar-filter-inner_shadow_blur = Unschärfe des inneren Schattens
 
 d-j7jomf5b = Weichzeichnungsbild
     .doc = Die weiche Kante, die eine verfeinerte Auswahl behält: eine Bilddatei, weiß, wo ausgewählt, und ihr Rahmen.
+
 d-oeihhduj = Matte x
 
 d-iqzt5i5r = Matte y
@@ -1107,6 +1204,7 @@ d-km2u7cyx = Gruppe
 d-qhmnxju4 = Maske für
 
 d-6oqanygz = Basis
+
 d-y6iyulut = Invertieren
 
 d-k2r2z54p = Beschneiden
@@ -1208,6 +1306,7 @@ d-6dypgs2o = Pigment-JSON
 d-dgwlsywk = Name
 
 d-b74p3dso = Farbe
+
 d-rfus746j = Granulation
 
 d-veeu7fpc = Stärke
@@ -1309,6 +1408,7 @@ d-gnfltu6g = Zeilenhöhe
 d-u2tmalez = Laufweite
 
 d-hyqcnmz5 = Textpfad
+
 d-q73msd2q = Nass
 
 d-gfq7akbn = Parameter
@@ -1408,6 +1508,7 @@ d-uslws4n3-filter-grain = Körnung
 d-uslws4n3-filter-feather = Weichzeichnen
 
 d-uslws4n3-filter-shadow_x = Schatten x
+
 d-uslws4n3-filter-shadow_y = Schatten y
 
 d-uslws4n3-filter-shadow_blur = Schattenunschärfe
@@ -1511,6 +1612,7 @@ d-giesycja = Toleranz
 d-vry7txyu = Überall
 
 d-e3v56jsz = Rahmen
+
 d-h5crbxpj-filter-tolerance = Toleranz
 
 d-h5crbxpj-filter-everywhere = Überall
@@ -1620,6 +1722,7 @@ d-3chzyjat = Anfrage zum Entfernen
         [one] Anfrage zum Entfernen
        *[other] Anfragen zum Entfernen
     }
+
 d-js4zslbp = Entlang
 
 d-besel4qy = Ebene
@@ -1729,6 +1832,7 @@ d-mqefo2tn-align = Ausrichtung
 d-mqefo2tn-line_height = Zeilenhöhe
 
 d-mqefo2tn-tracking = Laufweite
+
 d-mqefo2tn-path = Pfad
 
 d-pirwd2l5 = Mit einem Farbverlauf füllen
@@ -1835,6 +1939,7 @@ d-oov7ulkw-y = Y
 d-oov7ulkw-width = Breite
 
 d-oov7ulkw-height = Höhe
+
 d-52t4qnah = Die Bilddatei begradigen
     .doc = Dreht die Bilddatei in ihrem Rahmen, in Grad, und vergrößert sie, sodass keine Ecke zeigt.
     .did = begradigte eine Bilddatei
@@ -1941,6 +2046,7 @@ d-mm6p34kb-at = Stelle
 d-mm6p34kb-colour = Farbe
 
 d-mm6p34kb-tolerance = Toleranz
+
 d-mm6p34kb-everywhere = Überall
 
 d-cbwhrf4z = Das Motiv auswählen
@@ -2058,6 +2164,7 @@ d-ptrlfypq-pixelated = Verpixelt
 d-ptrlfypq-grain = Körnung
 
 d-ptrlfypq-feather = Weichzeichnen
+
 d-ptrlfypq-shadow_x = Schatten x
 
 d-ptrlfypq-shadow_y = Schatten y
@@ -2163,6 +2270,7 @@ d-n66jlhri-mode = Modus
 d-n66jlhri-feather = Weichzeichnen
 
 d-n66jlhri-grow = Zuwachs
+
 d-n66jlhri-invert = Invertieren
 
 d-4zurdfeg = Die Auswahl wachsen lassen
@@ -2275,6 +2383,7 @@ d-o4yvpii6 = Auswahl verfeinern~present
 d-d3vnhf3u = Markierungen kombinieren~present
 
 d-m7kwzjqw = Markierungen messen~present
+
 d-uszm3wfi = Referenz setzen~present
 
 d-pku6nuhg = Mit Referenz vergleichen~present
@@ -2341,3 +2450,198 @@ d-7ycx6t2x = Versionszeitleiste
     .w-versions = Versionen
     .w-versions-of = Versionen von { $title }
     .w-back-to-now = Zurück zu jetzt
+
+d-ksv2yvrf = Stroke
+    .doc = An outline drawn round the mark: its colour, its width in units, and its dashes `[on, off, …]`.
+
+d-7szkprsh = Stroke width
+
+d-gv765hzt = Dash
+
+d-54j6cyar-filter-stroke_width = Stroke width
+
+d-2szzh4en = Selection
+    .doc = Draw only the selection's area, as the selection's outline encloses it.
+
+d-b3ilsucz-filter-selection = Selection
+
+d-popjohmq = Stroke
+
+d-ajfe4kl3 = Stroke width
+
+d-lprn2lsq = Dash
+
+d-uslws4n3-filter-stroke_width = Stroke width
+
+d-t324xi3w = Move a gradient stop
+    .doc = Moves a stop of the mark's gradient along it, its offset 0 to 1.
+    .did = moved a gradient stop
+    .w-the-mark-is-filled-with-no = The mark is filled with no gradient
+    .w-a-gradient-stop-is-between-0 = A gradient stop is between 0 and 1
+    .w-that-stop-is-not-one-the = That stop is not one the gradient has
+
+d-t324xi3w-at = At
+
+d-t324xi3w-offset = Offset
+
+d-gh5joeqj = Colour a gradient stop
+    .doc = Colours a stop of the mark's gradient.
+    .did = coloured a gradient stop
+    .w-the-mark-is-filled-with-no = The mark is filled with no gradient
+    .w-that-stop-is-not-one-the = That stop is not one the gradient has
+
+d-gh5joeqj-at = At
+
+d-gh5joeqj-colour = Colour
+
+d-im7c23o6 = Add a gradient stop
+    .doc = Adds a stop to the mark's gradient, at `offset`, in `colour`.
+    .did = added a gradient stop
+    .w-the-mark-is-filled-with-no = The mark is filled with no gradient
+    .w-a-gradient-stop-is-between-0 = A gradient stop is between 0 and 1
+    .w-a-gradient-has-at-most-sixteen = A gradient has at most sixteen stops
+
+d-im7c23o6-offset = Offset
+
+d-im7c23o6-colour = Colour
+
+d-nkjgqihe = Remove a gradient stop
+    .doc = Takes a stop off the mark's gradient.
+    .did = removed a gradient stop
+    .w-the-mark-is-filled-with-no = The mark is filled with no gradient
+    .w-that-stop-is-not-one-the = That stop is not one the gradient has
+    .w-a-gradient-keeps-two-stops-at = A gradient keeps two stops at least
+
+d-nkjgqihe-at = At
+
+d-sig6b3gg = Draw a chart
+    .doc = Draws a bar chart from labels and values, so a person or an agent gives the numbers and the artwork gains bars, their labels and the axis under them as ordinary marks in one group: every tool that works on marks works on the chart, and one undo takes it away.
+    .did = drew a chart
+    .w-a-chart-is-drawn-from-at = A chart is drawn from at least one value
+    .w-give-one-label-per-value = Give one label per value
+    .w-a-chart-draws-at-most-200 = A chart draws at most 200 bars
+    .w-a-chart-s-values-are-zero = A chart's values are zero or more
+    .w-a-chart-is-bars-or-a = A chart is bars or a horizontal bar chart
+    .w-a-chart-s-scale-is-zero = A chart's scale is zero or more
+    .w-a-chart-s-scale-is-at = A chart's scale is at least its largest value
+    .w-a-bar-is-zero-or-more = A bar is zero or more wide
+    .w-a-chart-s-labels-are-zero = A chart's labels are zero or more large
+
+d-sig6b3gg-labels = Labels
+
+d-sig6b3gg-values = Values
+
+d-sig6b3gg-kind = Kind
+
+d-sig6b3gg-box = Box
+
+d-sig6b3gg-max = Max
+
+d-sig6b3gg-bar_width = Bar width
+
+d-sig6b3gg-colour = Colour
+
+d-sig6b3gg-label_size = Label size
+
+d-sig6b3gg-values_shown = Values shown
+
+d-sig6b3gg-title = Title
+
+d-sig6b3gg-layer = Layer
+
+d-s64wpusb = Dash the outline
+    .doc = Outline dashes a mark's outline in: `[]` restores a solid line, `[8, 4]` is dashed and `[1, 3]` dotted.
+    .did = dashed an outline
+    .w-an-outline-takes-at-most-sixteen = An outline takes at most sixteen dash lengths
+    .w-a-dash-length-is-zero-or = A dash length is zero or more
+    .w-dashes-are-not-all-zero = Dashes are not all zero
+
+d-s64wpusb-dash = Dash
+
+d-d2wqyta2 = Outline the mark
+    .doc = Outlines a mark: its colour and how wide it is, drawn outside its edge, so a shape stands out from what is under it.
+    .did = outlined a mark
+    .w-an-outline-is-0-to-256 = An outline is 0 to 256 units wide
+
+d-d2wqyta2-stroke = Stroke
+
+d-d2wqyta2-width = Width
+
+d-ignjkum5 = Pick the colour
+    .doc = Picks the colour the artwork shows at a point, as the eye sees it: every layer composited, erasers taken off, the reference over it.
+    .w-a-point-is-x-and-y = A point is x and y
+
+d-ignjkum5-at = At
+
+d-eqskbad2 = Nudge the picked marks
+    .doc = Moves the picked marks by `dx`, `dy` units, as the arrow keys nudge them.
+    .w-pick-the-marks-to-nudge = Pick the marks to nudge
+
+d-eqskbad2-dx = Dx
+
+d-eqskbad2-dy = Dy
+
+d-uzjsgqd2 = Delete the picked marks
+    .doc = Removes the marks a person picked.
+    .w-pick-the-marks-to-delete = Pick the marks to delete
+
+d-ykbztsd4 = Align marks
+    .doc = Aligns marks on an edge of their own extent, the artwork's, or another mark's, and spaces them evenly along an axis.
+    .did = aligned marks
+    .w-name-the-marks-to-align-or = Name the marks to align, or pick them
+    .w-an-edge-is-left-center-right = An edge is left, center, right, top, middle or bottom
+    .w-marks-spread-across-or-down = Marks spread across or down
+    .w-give-an-edge-to-line-up = Give an edge to line up on or an axis to spread along
+    .w-spreading-needs-two-or-more-marks = Spreading needs two or more marks, or a frame to spread across
+
+d-ykbztsd4-marks = Marks
+
+d-ykbztsd4-edge = Edge
+
+d-ykbztsd4-distribute = Distribute
+
+d-ykbztsd4-to_artwork = To artwork
+
+d-ykbztsd4-to = To
+
+d-aebvcghh = Outline the selection
+    .doc = Outlines the selection as a mark on `layer`: a stroke along its edge and no fill, so a person frames what they chose with the paint they hold.
+    .w-an-outline-is-above-zero-and = An outline is above zero and up to 64 units
+
+d-aebvcghh-layer = Layer
+
+d-aebvcghh-colour = Colour
+
+d-aebvcghh-width = Width
+
+d-ucddjeu7 = Clip the picks to the selection
+    .doc = Cuts the picked marks to the selection, so only the part inside it shows.
+    .w-pick-the-marks-to-clip = Pick the marks to clip
+
+d-t4ze7q3o-selection = Selection
+
+d-rug7zfyo = Set gradient offset~present
+
+d-nwhibusl = Set gradient colour~present
+
+d-ithhgeyk = Add gradient stop~present
+
+d-ax6roaib = Remove gradient stop~present
+
+d-rwiorfow = Add chart~present
+
+d-uhvbkfmj = Set dash~present
+
+d-j2rhaczq = Set outline~present
+
+d-6zr2gf46 = Sample colour~present
+
+d-nghbckfi = Nudge picked~present
+
+d-ravd3hgm = Delete picked~present
+
+d-mngrxwap = Align marks~present
+
+d-vgter2gx = Outline selection~present
+
+d-qvft3uid = Clip picks to selection~present

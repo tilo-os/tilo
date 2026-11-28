@@ -247,11 +247,6 @@ d-zsaipz5s-s = V
 
 d-zsaipz5s-person = Person
 
-d-zpg34mwz = Den Vorschlag verwerfen
-    .doc = Nimmt einen Vorschlag weg: das Gesicht wird nicht wieder angeboten, da die Fotos nicht erneut zu einem zusammengefasst werden, solange sie nur aus freier Wahl unbenannt sind.
-
-d-zpg34mwz-s = V
-
 d-diaii65m = Person mit Namen
     .doc = Die Person, die die Bibliothek unter `name` kennt, angelegt, wenn sie keine kennt.
 
@@ -361,7 +356,6 @@ d-hfgcskel = Bibliothek
     .w-name-this-person = Diese Person benennen
     .w-approve = Bestätigen
     .w-merge = Zusammenführen
-    .w-dismiss-the-suggestion = Den Vorschlag verwerfen
     .w-photos-suggested-on-this-device-shared = { $len } Fotos auf diesem Gerät vorgeschlagen, erst mit dem Namen geteilt.
     .w-no-people-yet = Noch keine Personen
     .w-no-capture-date = Kein Aufnahmedatum
@@ -433,6 +427,13 @@ d-hfgcskel = Bibliothek
     .w-waiting-for-the-photo = Warten auf das Foto
     .w-your-library-is-empty = Deine Bibliothek ist leer
     .w-photos-2 = { $len } Fotos
+    .w-what-could-not-be-read = What could not be read
+    .w-hide = Hide
+    .w-hide-the-suggestion = Hide the suggestion
+    .w-hidden-faces = Hidden faces
+    .w-hide-them-again = Hide them again
+    .w-show-hidden-faces = Show hidden faces
+    .w-show-again = Show again
 
 d-i4ssir2r = Personenzeile
     .w-photos = { $len } Fotos
@@ -499,18 +500,12 @@ d-3cyhe74u = Bild aufnehmen
 
 d-3cyhe74u-file = Datei
 
-d-5lnp7pby = Kopieren
-    .doc = Kopiert das Foto als Bild in die Zwischenablage, sodass es sich in eine andere App einfügen lässt.
-
 d-6jdgyzo3 = Importiert
 
 d-ybraeglq = Importprobleme
 
 d-p4pebna2 = Erkannter Text
     .doc = Die Wörter im Bild, wie dieses Gerät sie gelesen hat: ein Schild, eine Seite, ein Schaufenster.
-
-d-psxrvclu = Text lesen
-    .doc = Die Wörter im Foto, auf diesem Gerät gelesen und beim Foto behalten, sodass die Bibliothek es an seinem Text findet.
 
 d-tp7e7pzd = Gefundene Dateien
     .doc = Der letzte Ordnerimport: wie viele Dateien er ansah, wie viele Fotos wurden und was er nicht lesen konnte.
@@ -881,3 +876,42 @@ d-pzcabmuh = Analyseseite
     .w-resume = Fortsetzen
     .w-retry-failed-photos = Fehlgeschlagene Fotos erneut versuchen
     .w-revision = Revision
+    .w-reading-text = Reading text
+    .w-text-language = Text language: { $text_language }
+
+d-oyuobhyk = Hidden
+    .doc = Set aside for now: the face is kept, out of the list, until the person asks to see the ones they hid.
+
+d-xea2av67-filter-hidden = Hidden
+
+d-vujyawn3 = Text language
+    .doc = The language the device reads the words in a picture in, as the reader names it (`eng`, `deu`): "Read the text" uses it, so a library of German signs is found by its words.
+
+d-f66engsk = Read the text
+    .doc = The words in the photograph, read on this device in the library's text language and kept with the photo, so the library finds it by what it says.
+
+d-f66engsk-p = P
+
+d-tc5cgmoa = Text language
+    .doc = Sets the language the device reads text in, as its reader names it: `eng` for English, `deu` for German, and the same for the other languages it knows.
+    .w-a-language-is-named-by-one = A language is named by one to sixteen letters
+    .w-a-language-s-name-holds-letters = A language's name holds letters only
+
+d-tc5cgmoa-language = Language
+
+d-5wky26na = Copy
+    .doc = Copies the photograph to the person's clipboard as a picture, so it pastes into another app; where the device has no clipboard or refuses it, the library says so.
+
+d-5wky26na-p = P
+
+d-nbkaiy6j = Hide the suggestion
+    .doc = Sets a suggestion aside without losing it: the face leaves the list and is kept, so the person can bring it back when they know who it is.
+
+d-nbkaiy6j-s = S
+
+d-tftlav5x = Show the suggestion
+    .doc = Brings a face the person set aside back into the list.
+
+d-tftlav5x-s = S
+
+d-t4imbtyj = Set text language~present

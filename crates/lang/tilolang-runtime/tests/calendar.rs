@@ -288,6 +288,24 @@ mod cases {
             .collect()
     }
 
+    /// The words a view shows, its texts in order.
+    fn shown(tree: &UiNode) -> Vec<String> {
+        of_kind(tree, "ui.Text")
+            .iter()
+            .filter_map(|node| text_prop_opt(node, "value"))
+            .collect()
+    }
+
+    /// The key of the control of `kind` whose `prop` says `text`.
+    fn control_in(view: &ViewInstance, kind: &str, prop: &str, text: &str) -> String {
+        of_kind(view.tree(), kind)
+            .into_iter()
+            .find(|node| text_prop_opt(node, prop).as_deref() == Some(text))
+            .unwrap_or_else(|| panic!("no {kind} with {prop} `{text}`"))
+            .key
+            .clone()
+    }
+
     tilo_test_env::scenario! {
         fn a_calendar_makes_moves_and_repeats_what_it_holds;
 
@@ -304,6 +322,88 @@ mod cases {
             assert_eq!(s.projected(&s.root, "events").len(), 1);
             // The workspace's own calendar was made with the root, and holds it.
             assert!(matches!(s.read(&e, "calendar"), Value::Opt(Some(_))));
+        }
+
+        phase a_quick_add_line_is_read_as_an_event;
+        {
+            let s = sheet();
+            let quick = |line: &str| {
+                s.call_ref(
+                    "quick_add",
+                    &[
+                        ("c", Value::resource(&s.root)),
+                        ("line", Value::text(line)),
+                    ],
+                )
+            };
+            // A weekday and a clock are read, and the words that said when leave the title.
+            let lunch = quick("Lunch with Sam friday 1pm");
+            assert_eq!(s.text(&lunch, "title"), "Lunch with Sam");
+            assert_eq!(s.text(&lunch, "start"), "2026-11-27T13:00:00");
+            assert_eq!(s.text(&lunch, "end"), "2026-11-27T14:00:00");
+            assert_eq!(s.text(&lunch, "day"), "2026-11-27");
+            // No day or clock: the next quarter hour, an hour long, on the day the window shows.
+            let plumber = quick("Call the plumber");
+            assert_eq!(s.text(&plumber, "title"), "Call the plumber");
+            assert_eq!(s.text(&plumber, "start"), "2026-11-24T09:45:00");
+            assert_eq!(s.text(&plumber, "end"), "2026-11-24T10:45:00");
+            // Today, tonight and tomorrow, and a length that sets the end.
+            assert_eq!(s.text(&quick("Coffee today 9am"), "start"), "2026-11-24T09:00:00");
+            assert_eq!(s.text(&quick("Dinner tonight"), "start"), "2026-11-24T20:00:00");
+            let workshop = quick("Workshop tomorrow at 10 for 90 min");
+            assert_eq!(s.text(&workshop, "title"), "Workshop");
+            assert_eq!(s.text(&workshop, "start"), "2026-11-25T10:00:00");
+            assert_eq!(s.text(&workshop, "end"), "2026-11-25T11:30:00");
+            // `next friday` is the one after this week, never the day the person is on.
+            assert_eq!(s.text(&quick("Sync next friday 10am"), "start"), "2026-12-04T10:00:00");
+            // A day as written is read however it is introduced.
+            let trip = quick("Trip on 2026-11-03 at 8:00");
+            assert_eq!(s.text(&trip, "title"), "Trip");
+            assert_eq!(s.text(&trip, "start"), "2026-11-03T08:00:00");
+            // Clocks as people write them; a bare hour after `at` is taken in the afternoon when
+            // it is one to six, and an impossible one stays in the title.
+            assert_eq!(s.text(&quick("Call at 3pm"), "start"), "2026-11-24T15:00:00");
+            assert_eq!(s.text(&quick("Call at 3:30pm"), "start"), "2026-11-24T15:30:00");
+            assert_eq!(s.text(&quick("Call at 15:30"), "start"), "2026-11-24T15:30:00");
+            assert_eq!(s.text(&quick("Call at 3"), "start"), "2026-11-24T15:00:00");
+            assert_eq!(s.text(&quick("Call at 21"), "start"), "2026-11-24T21:00:00");
+            let noon = quick("Call at noon");
+            assert_eq!(s.text(&noon, "start"), "2026-11-24T12:00:00");
+            // Words that are no clock keep their place in the title.
+            let joes = quick("Dinner at Joe's at 7pm");
+            assert_eq!(s.text(&joes, "title"), "Dinner at Joe's");
+            assert_eq!(s.text(&joes, "start"), "2026-11-24T19:00:00");
+            let score = quick("1:1 with Sam about 5 things");
+            assert_eq!(s.text(&score, "title"), "1:1 with Sam about 5 things");
+            let party = quick("Party at 25:99");
+            assert_eq!(s.text(&party, "title"), "Party at 25:99");
+            assert_eq!(s.text(&party, "start"), "2026-11-24T09:45:00");
+        }
+
+        phase the_quick_add_sheet_says_what_the_line_will_write;
+        {
+            let s = sheet();
+            let mut window = s.root_window();
+            let open = control_in(&window, "ui.Button", "label", "Quick add");
+            window.fire(&open, "press").unwrap();
+            window.poll_patches().unwrap();
+            let field = control_in(
+                &window,
+                "ui.TextInput",
+                "placeholder",
+                "Lunch with Sam friday 1pm",
+            );
+            window
+                .edit(&field, &Value::text("Lunch with Sam friday 1pm"))
+                .unwrap();
+            window.poll_patches().unwrap();
+            assert!(
+                shown(window.tree())
+                    .iter()
+                    .any(|line| line.contains("Lunch with Sam, ") && line.contains("13:00")),
+                "the sheet says the day and hours: {:?}",
+                shown(window.tree())
+            );
         }
 
         phase an_event_moves_to_another_day_with_the_clock_and_reminder_it_kept;

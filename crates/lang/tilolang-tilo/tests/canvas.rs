@@ -92,6 +92,9 @@ impl CanvasHost for Engine {
     fn inspect(&self, _: &str, _: &str) -> Result<String, String> {
         Err(cannot())
     }
+    fn sample(&self, _: &str, _: &str, _: &[(String, Vec<u8>)]) -> Result<String, String> {
+        Err(cannot())
+    }
     fn svg(&self, _: &str, _: &str) -> Result<String, String> {
         Err(cannot())
     }

@@ -268,6 +268,8 @@ pub struct Export {
     /// JPEG quality (default 90).
     #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
+    /// Draw only the selection's area, cropped to the box its outline encloses.
+    pub selection: Option<bool>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
     pub path: Option<tilo_resource::AbsolutePath>,
 }

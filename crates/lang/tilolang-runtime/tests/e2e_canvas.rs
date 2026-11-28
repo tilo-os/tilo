@@ -53,10 +53,40 @@ mod cases {
         "selection": { "d": "M 0 0 L 5 5 Z", "feather": 2.0 }
     }"##;
 
-    /// The device's drawing engine, which opens every archive as [`ARTWORK_FILE`] and keeps the
-    /// artwork each call asked it to draw.
+    /// The device's drawing engine: it keeps the artwork each look asked it to draw, and
+    /// answers inspecting and sampling with what the test set.
     #[derive(Clone, Default)]
-    struct Drawing(Rc<RefCell<Vec<String>>>);
+    struct Drawing {
+        log: Rc<RefCell<Vec<String>>>,
+        inspection: Rc<RefCell<String>>,
+        colour: Rc<RefCell<String>>,
+    }
+
+    impl Drawing {
+        /// An engine that keeps each artwork it is asked to draw in `log`.
+        fn recording(log: Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                log,
+                ..Self::default()
+            }
+        }
+
+        /// An engine that inspects as `json` says: each mark's bounds.
+        fn inspecting(json: &str) -> Self {
+            Self {
+                inspection: Rc::new(RefCell::new(json.to_owned())),
+                ..Self::default()
+            }
+        }
+
+        /// An engine whose eyedropper reads `colour`.
+        fn sampling(colour: &str) -> Self {
+            Self {
+                colour: Rc::new(RefCell::new(colour.to_owned())),
+                ..Self::default()
+            }
+        }
+    }
 
     fn undrawn<T>() -> Result<T, String> {
         Err("this test draws nothing".to_owned())
@@ -69,17 +99,20 @@ mod cases {
             _request: &str,
             _pictures: &[(String, Vec<u8>)],
         ) -> Result<(Vec<u8>, String), String> {
-            self.0.borrow_mut().push(artwork.to_owned());
+            self.log.borrow_mut().push(artwork.to_owned());
             undrawn()
         }
 
         fn export(
             &self,
-            _artwork: &str,
-            _request: &str,
-            _pictures: &[(String, Vec<u8>)],
+            artwork: &str,
+            request: &str,
+            pictures: &[(String, Vec<u8>)],
         ) -> Result<(Vec<u8>, String), String> {
-            undrawn()
+            self.log
+                .borrow_mut()
+                .push(format!("export|{artwork}|{request}|{pictures:?}"));
+            Ok((vec![1, 2, 3], r#"{"width":4,"height":3}"#.to_owned()))
         }
 
         fn grade(&self, _picture: &[u8], _adjust: &str) -> Result<Vec<u8>, String> {
@@ -119,7 +152,7 @@ mod cases {
             _request: &str,
             _pictures: &[(String, Vec<u8>)],
         ) -> Result<String, String> {
-            self.0.borrow_mut().push(artwork.to_owned());
+            self.log.borrow_mut().push(artwork.to_owned());
             Ok(r#"[{"id":"mark-0","ink_area":12.5,"offset":[-1.5,2.0]}]"#.to_owned())
         }
 
@@ -130,7 +163,7 @@ mod cases {
             request: &str,
             _pictures: &[(String, Vec<u8>)],
         ) -> Result<(Option<Vec<u8>>, String), String> {
-            self.0
+            self.log
                 .borrow_mut()
                 .push(format!("{before}|{after}|{request}"));
             Ok((
@@ -146,7 +179,7 @@ mod cases {
             request: &str,
             pictures: &[(String, Vec<u8>)],
         ) -> Result<(Vec<u8>, String), String> {
-            self.0.borrow_mut().push(format!(
+            self.log.borrow_mut().push(format!(
                 "{artwork}|{request}|{}",
                 pictures
                     .iter()
@@ -158,7 +191,24 @@ mod cases {
         }
 
         fn inspect(&self, _artwork: &str, _request: &str) -> Result<String, String> {
-            Ok(r#"{"layers":[{"id":"layer-1"}],"marks":[{"id":"mark-0"}]}"#.to_owned())
+            let held = self.inspection.borrow();
+            Ok(if held.is_empty() {
+                r#"{"layers":[{"id":"layer-1"}],"marks":[{"id":"mark-0"}]}"#.to_owned()
+            } else {
+                held.clone()
+            })
+        }
+
+        fn sample(
+            &self,
+            artwork: &str,
+            request: &str,
+            _pictures: &[(String, Vec<u8>)],
+        ) -> Result<String, String> {
+            self.log
+                .borrow_mut()
+                .push(format!("sample|{artwork}|{request}"));
+            Ok(self.colour.borrow().clone())
         }
 
         fn select(&self, _artwork: &str, _request: &str) -> Result<String, String> {
@@ -476,6 +526,34 @@ mod cases {
                 "{action} is Canvas's change in the system's history: {actions:?}"
             );
         }
+    }
+
+    /// The stops of a mark's gradient, as offsets and colours.
+    fn gradient_of(c: &Canvas, mark: &ResourceRef) -> (Vec<f64>, Vec<String>) {
+        let list = |value: Value| match value {
+            Value::List(items) => items,
+            Value::Opt(Some(inner)) => match *inner {
+                Value::List(items) => items,
+                other => panic!("a list, not {other:?}"),
+            },
+            other => panic!("a list, not {other:?}"),
+        };
+        let offsets = list(c.rt.read(mark, "gradient_offsets").unwrap())
+            .into_iter()
+            .map(|v| match v {
+                Value::Float(n) => n,
+                Value::Int(n) => f64::from(i32::try_from(n).unwrap()),
+                other => panic!("a stop's offset, not {other:?}"),
+            })
+            .collect();
+        let colours = list(c.rt.read(mark, "gradient_colours").unwrap())
+            .into_iter()
+            .map(|v| match v {
+                Value::Text(text) => text,
+                other => panic!("a stop's colour, not {other:?}"),
+            })
+            .collect();
+        (offsets, colours)
     }
 
     /// Two of three marks are picked and combined, and the one kept moves and turns.
@@ -879,7 +957,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Balance");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
 
             let combined = shapes_combine_into_one_mark(&c, &art);
             the_ink_is_measured(&c, &art, &combined);
@@ -892,7 +970,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Marks");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             let kept = two_picked_marks_combine_into_one(&c, &art);
             the_mark_is_clipped_finished_and_drawn(&c, &art, &kept, &log);
         }
@@ -902,7 +980,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Selecting");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log));
+            c.rt.set_canvas(Drawing::recording(log));
             let selected = c.call(
                 "select_shape",
                 vec![
@@ -982,7 +1060,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Versions");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             c.call(
                 "add_shape",
                 vec![
@@ -1065,7 +1143,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("A photo");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             let file = c.dawn();
             let picture = returned_ref(c.call(
                 "place_picture",
@@ -1176,7 +1254,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Masks");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             c.call("add_layer", vec![Value::resource(&art), Value::text("Ink")]);
             let ink = c.layer(&art, "Ink");
             let mask = returned_ref(c.call(
@@ -1338,7 +1416,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Type");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             let text = returned_ref(c.call(
                 "add_text",
                 vec![
@@ -1405,7 +1483,7 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Oil");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             let medium = returned_ref(c.call(
                 "save_medium",
                 vec![
@@ -1524,7 +1602,7 @@ mod cases {
         {
             let c = Canvas::new();
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_canvas(Drawing(log.clone()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
             let art = c.new_artwork("Seen");
             c.drag(&art, "brush", [1.0, 2.0], [3.0, 4.0], [5.0, 6.0]);
             c.call("draw_look", vec![Value::resource(&art), Value::Int(128)]);
@@ -1628,13 +1706,14 @@ mod cases {
                 "the paint's colour"
             );
             // What the artwork leaves as.
-            let export = named("ui.MenuButton", "Export")
+            let export = named("ui.MenuButton", "File")
                 .unwrap_or_else(|| panic!("the window offers the artwork's export in\n{}", dump(tree)));
             let formats: Vec<String> = of_kind(export, "ui.MenuItem")
                 .into_iter()
                 .map(|node| text_prop(node, "label"))
                 .collect();
             for format in [
+                "Save the artwork",
                 "PNG, full size",
                 "JPEG, full size",
                 "WebP, full size",
@@ -1653,6 +1732,474 @@ mod cases {
                 !of_kind(tree, "ui.PaintSurface").is_empty(),
                 "the artwork is painted on a surface"
             );
+        }
+
+        phase a_chart_is_drawn_as_marks_in_one_group;
+        {
+            let c = Canvas::new();
+            let art = c.new_artwork("Chart");
+            c.call(
+                "add_chart",
+                vec![
+                    Value::resource(&art),
+                    Value::List(vec![Value::text("Jan"), Value::text("Feb")]),
+                    Value::List(vec![Value::Float(2.0), Value::Float(4.0)]),
+                    Value::text("bar"),
+                    Value::List(vec![]),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::text("#4e79a7"),
+                    Value::Float(0.0),
+                    Value::Bool(true),
+                    Value::text("Sales"),
+                    Value::none(),
+                ],
+            );
+            let marks = c.marks(&art);
+            assert!(marks.len() >= 8, "bars, labels, values, the axis and the title: {}", marks.len());
+            for mark in &marks {
+                assert_eq!(c.text(mark, "group"), "chart", "the chart is one group");
+            }
+            let names: Vec<String> = marks.iter().map(|m| c.text(m, "name")).collect();
+            assert!(names.iter().any(|n| n == "Jan"), "{names:?}");
+            assert!(names.iter().any(|n| n == "Feb"), "{names:?}");
+            let texts: Vec<String> = marks
+                .iter()
+                .filter(|m| c.text(m, "kind") == "text")
+                .map(|m| c.text(m, "text"))
+                .collect();
+            for word in ["Sales", "Jan", "Feb"] {
+                assert!(texts.iter().any(|t| t == word), "the chart says {word}: {texts:?}");
+            }
+            assert!(
+                texts.iter().any(|t| t.starts_with('2') || t.starts_with('4')),
+                "the values are written above the bars: {texts:?}"
+            );
+            // The bars grow with their values: the second is twice the first.
+            let first = marks
+                .iter()
+                .find(|m| c.text(m, "name") == "Jan")
+                .expect("the first bar");
+            let second = marks
+                .iter()
+                .find(|m| c.text(m, "name") == "Feb")
+                .expect("the second bar");
+            assert_ne!(c.text(first, "d"), c.text(second, "d"), "two values draw two bars");
+        }
+
+        phase a_dashed_outline_is_handed_to_the_engine;
+        {
+            let c = Canvas::new();
+            let log = Rc::new(RefCell::new(Vec::new()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
+            let art = c.new_artwork("Dash");
+            let shape = returned_ref(c.call(
+                "add_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text("M 0 0 L 20 0 L 20 20 Z"),
+                    Value::text("#2f7fb8"),
+                ],
+            ));
+            c.call(
+                "set_outline",
+                vec![
+                    Value::resource(&shape),
+                    Value::text("#000000"),
+                    Value::Float(3.0),
+                ],
+            );
+            c.call(
+                "set_dash",
+                vec![
+                    Value::resource(&shape),
+                    Value::List(vec![Value::Float(8.0), Value::Float(4.0)]),
+                ],
+            );
+            c.call("draw_look", vec![Value::resource(&art)]);
+            let seen = log.borrow().last().cloned().expect("the engine was asked");
+            for field in [
+                "\"stroke\":\"#000000\"",
+                "\"stroke_width\":3.0",
+                "\"dash\":[8.0,4.0]",
+            ] {
+                assert!(seen.contains(field), "the engine reads {field}: {seen}");
+            }
+            // A solid line is dashes of nothing.
+            c.call(
+                "set_dash",
+                vec![Value::resource(&shape), Value::List(vec![])],
+            );
+            c.call("draw_look", vec![Value::resource(&art)]);
+            let seen = log.borrow().last().cloned().expect("the engine was asked again");
+            assert!(seen.contains("\"dash\":[]"), "a solid outline: {seen}");
+        }
+
+        phase marks_align_and_spread;
+        {
+            let c = Canvas::new();
+            c.rt.set_canvas(Drawing::inspecting(
+                r#"{"layers":[],"marks":[
+                    {"id":"mark-0","bounds":[0,0,10,10]},
+                    {"id":"mark-1","bounds":[25,0,10,10]},
+                    {"id":"mark-2","bounds":[100,0,10,10]}]}"#,
+            ));
+            let art = c.new_artwork("Align");
+            let mut made = Vec::new();
+            for _ in 0..3 {
+                made.push(returned_ref(c.call(
+                    "add_shape",
+                    vec![
+                        Value::resource(&art),
+                        Value::none(),
+                        Value::text("M 0 0 L 10 0 L 10 10 L 0 10 Z"),
+                        Value::text("#ffffff"),
+                    ],
+                )));
+            }
+            let chosen = Value::List(made.iter().map(Value::resource).collect());
+            // Aligning left edges moves the marks onto the left of their own extent.
+            c.call(
+                "align_marks",
+                vec![
+                    Value::resource(&art),
+                    chosen.clone(),
+                    Value::text("left"),
+                ],
+            );
+            let moved = |mark: &ResourceRef| match c.rt.read(mark, "transform").unwrap() {
+                Value::List(items) => match items.get(4) {
+                    Some(Value::Float(dx)) => *dx,
+                    _ => 0.0,
+                },
+                other => panic!("a transform, not {other:?}"),
+            };
+            assert!(
+                (moved(&made[1]) - -25.0).abs() < 1e-9,
+                "the second mark moves to the first's left edge"
+            );
+            assert!(
+                (moved(&made[2]) - -100.0).abs() < 1e-9,
+                "the third too"
+            );
+            assert!((moved(&made[0]) - 0.0).abs() < 1e-9, "the first stays");
+            // Spreading them evenly leaves equal gaps and the outer two where they are.
+            c.call(
+                "align_marks",
+                vec![
+                    Value::resource(&art),
+                    chosen,
+                    Value::text(""),
+                    Value::text("horizontal"),
+                ],
+            );
+            let spread: Vec<f64> = made.iter().map(moved).collect();
+            assert!((spread[0] - 0.0).abs() < 1e-9, "the first stays: {spread:?}");
+            assert!((spread[1] - 0.0).abs() < 1e-9, "the middle sits between: {spread:?}");
+            assert!((spread[2] - -100.0).abs() < 1e-9, "the last stays: {spread:?}");
+        }
+
+        phase the_eyedropper_takes_the_colour_the_artwork_shows;
+        {
+            let c = Canvas::new();
+            let log = Rc::new(RefCell::new(Vec::new()));
+            let mut drawing = Drawing::sampling("#d24b3a");
+            drawing.log = log.clone();
+            c.rt.set_canvas(drawing);
+            let art = c.new_artwork("Pick");
+            let mut view = c.window(&art);
+            let surface = of_kind(view.tree(), "ui.PaintSurface")[0].key.clone();
+            let pipette = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Eyedropper")
+                .unwrap_or_else(|| panic!("the window offers the eyedropper in: {}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&pipette, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(
+                c.marks(&art).len(),
+                0,
+                "taking a colour paints nothing"
+            );
+            view.fire_with(
+                &surface,
+                "stroke_start",
+                Some(&Value::List(vec![Value::Float(5.0), Value::Float(6.0)])),
+            )
+            .unwrap();
+            view.poll_patches().unwrap();
+            let colour = match view.tree().find(&surface).unwrap().props.get("colour") {
+                Some(Value::Text(colour)) => colour.clone(),
+                other => panic!("the surface's colour, not {other:?}"),
+            };
+            assert_eq!(colour, "#d24b3a", "the brush takes the colour at the point");
+            let asked = log.borrow().last().cloned().expect("the engine was asked");
+            assert!(asked.starts_with("sample|"), "{asked}");
+            assert!(
+                asked.contains("\"at\":[5") && asked.contains(",6"),
+                "the point sampled: {asked}"
+            );
+        }
+
+        phase a_mask_crop_gradient_and_selection_are_used_through_the_window;
+        {
+            let c = Canvas::new();
+            let art = c.new_artwork("Layers");
+            c.rt.set_canvas(Drawing::default());
+            let mut view = c.window(&art);
+            // Choosing the layer shows what it can be made into: a mask, or its lock.
+            let row = of_kind(view.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|node| text_prop(node, "title") == "Layer 1")
+                .expect("the layer's row")
+                .key
+                .clone();
+            view.fire(&row, "activate").unwrap();
+            view.poll_patches().unwrap();
+            let add = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Add a mask")
+                .unwrap_or_else(|| panic!("a mask is offered: {}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&add, "press").unwrap();
+            view.poll_patches().unwrap();
+            let layers = c.layers(&art);
+            assert_eq!(layers.len(), 2, "the mask is a layer of its own");
+            let mask = layers
+                .iter()
+                .find(|layer| c.text(layer, "mask_of") == "Layer 1")
+                .expect("the mask names its layer")
+                .clone();
+            // A mask shows where it is light; turned over, where it is dark.
+            let invert = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Light shows")
+                .unwrap_or_else(|| panic!("the mask's switch: {}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&invert, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert!(c.flag(&mask, "invert"), "the mask hides where it is light");
+            assert!(
+                of_kind(view.tree(), "ui.Button")
+                    .into_iter()
+                    .any(|node| text_prop(node, "label") == "Remove the mask"),
+                "the mask can be taken off: {}",
+                dump(view.tree())
+            );
+            c.call(
+                "remove_layer",
+                vec![Value::resource(&art), Value::resource(&mask)],
+            );
+            assert_eq!(c.layers(&art).len(), 1, "the mask is gone");
+
+            // A drag over a picture with the crop tool keeps the part it enclosed.
+            let picture = returned_ref(c.call(
+                "place_picture",
+                vec![Value::resource(&art), Value::file(c.dawn())],
+            ));
+            c.drag(&art, "crop", [0.0, 0.0], [200.0, 200.0], [400.0, 300.0]);
+            assert!(
+                (c.float(&picture, "crop_width") - 0.5).abs() < 1e-9,
+                "the crop keeps half the picture across: {}",
+                c.float(&picture, "crop_width")
+            );
+            assert!(
+                (c.float(&picture, "crop_height") - 0.5).abs() < 1e-9,
+                "and half down"
+            );
+
+            // A gradient's stops are moved, coloured, added and taken off.
+            let shape = returned_ref(c.call(
+                "add_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text("M 0 0 L 10 0 L 10 10 L 0 10 Z"),
+                    Value::text("#ffffff"),
+                ],
+            ));
+            c.call(
+                "fill_gradient",
+                vec![
+                    Value::resource(&shape),
+                    Value::text("linear"),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Float(10.0),
+                    Value::Float(10.0),
+                    Value::List(vec![Value::Float(0.0), Value::Float(1.0)]),
+                    Value::List(vec![Value::text("#ff0000"), Value::text("#0000ff")]),
+                ],
+            );
+            c.call(
+                "set_gradient_offset",
+                vec![
+                    Value::resource(&shape),
+                    Value::Int(0),
+                    Value::Float(0.25),
+                ],
+            );
+            c.call(
+                "set_gradient_colour",
+                vec![
+                    Value::resource(&shape),
+                    Value::Int(1),
+                    Value::text("#00ff00"),
+                ],
+            );
+            c.call(
+                "add_gradient_stop",
+                vec![
+                    Value::resource(&shape),
+                    Value::Float(0.5),
+                    Value::text("#000000"),
+                ],
+            );
+            let (offsets, colours) = gradient_of(&c, &shape);
+            assert_eq!(offsets, vec![0.25, 1.0, 0.5], "a stop moved, one added");
+            assert_eq!(colours, ["#ff0000", "#00ff00", "#000000"]);
+            c.call(
+                "remove_gradient_stop",
+                vec![Value::resource(&shape), Value::Int(1)],
+            );
+            let (offsets, colours) = gradient_of(&c, &shape);
+            assert_eq!(offsets, vec![0.25, 0.5], "the middle stop is gone");
+            assert_eq!(colours, ["#ff0000", "#000000"]);
+
+            // The selection outlines itself, and cuts what is picked to its shape.
+            c.call(
+                "select_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::text("rect"),
+                    Value::List(vec![Value::Float(10.0), Value::Float(10.0)]),
+                    Value::List(vec![Value::Float(50.0), Value::Float(50.0)]),
+                    Value::text("replace"),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Bool(false),
+                ],
+            );
+            let outlined = match c.call(
+                "outline_selection",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text("#ff0000"),
+                    Value::Float(3.0),
+                ],
+            ) {
+                InvokeOutcome::Done(Value::Opt(Some(inner))) => match *inner {
+                    Value::Ref(r) => ResourceRef::clone(&r.target),
+                    other => panic!("the outline, not {other:?}"),
+                },
+                other => panic!("the outline, not {other:?}"),
+            };
+            assert_eq!(c.text(&outlined, "colour"), "none", "it is no fill");
+            assert_eq!(c.text(&outlined, "stroke"), "#ff0000");
+            assert!((c.float(&outlined, "stroke_width") - 3.0).abs() < 1e-9);
+            c.call(
+                "pick_marks",
+                vec![
+                    Value::resource(&art),
+                    Value::List(vec![Value::resource(&shape)]),
+                ],
+            );
+            c.call("clip_picks_to_selection", vec![Value::resource(&art)]);
+            assert_eq!(
+                c.text(&shape, "clip"),
+                "M 0 0 L 9 0 L 9 9 Z",
+                "the picked mark is cut to the area"
+            );
+
+            // Exporting the selection asks the engine for its area, and refuses with none.
+            let log = Rc::new(RefCell::new(Vec::new()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
+            c.call(
+                "export_picture",
+                vec![
+                    Value::resource(&art),
+                    Value::text("png"),
+                    Value::Float(1.0),
+                    Value::Bool(true),
+                ],
+            );
+            let asked = log.borrow().last().cloned().expect("the engine was asked");
+            assert!(asked.starts_with("export|"), "{asked}");
+            assert!(asked.contains("\"selection\":true"), "the selection's area: {asked}");
+            let bare = c.new_artwork("Nothing selected");
+            c.call(
+                "export_picture",
+                vec![
+                    Value::resource(&bare),
+                    Value::text("png"),
+                    Value::Float(1.0),
+                    Value::Bool(true),
+                ],
+            );
+            assert_eq!(c.text(&bare, "notice"), "Select an area to export it");
+        }
+
+        phase the_window_offers_its_sizes_shortcuts_and_help;
+        {
+            let c = Canvas::new();
+            let mut library = c
+                .rt
+                .open_view(&me(), &c.app.view("library"), vec![Value::resource(&c.root)])
+                .unwrap();
+            library.set_lazy_rows(false).unwrap();
+            let new = of_kind(library.tree(), "ui.MenuButton")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "New artwork")
+                .unwrap_or_else(|| panic!("the library offers a new artwork: {}", dump(library.tree())));
+            let sizes: Vec<String> = of_kind(new, "ui.MenuItem")
+                .into_iter()
+                .map(|node| text_prop(node, "label"))
+                .collect();
+            for size in [
+                "Screen, 1920 × 1080",
+                "A4, 2480 × 3508",
+                "Letter, 2550 × 3300",
+                "Poster, 3600 × 5400",
+                "Sprite, 32 × 32",
+            ] {
+                assert!(sizes.iter().any(|s| s == size), "the presets offer {size}: {sizes:?}");
+            }
+            let art = c.new_artwork("Keys");
+            let mut view = c.window(&art);
+            let keys = |view: &ViewInstance| {
+                let mut held = Vec::new();
+                for node in of_kind(view.tree(), "ui.Button") {
+                    if let Some(Value::List(keys)) = node.props.get("keys") {
+                        held.extend(keys.iter().filter_map(|k| k.as_text().map(str::to_owned)));
+                    }
+                }
+                for node in of_kind(view.tree(), "ui.MenuItem") {
+                    if let Some(Value::Text(key)) = node.props.get("key") {
+                        held.push(key.clone());
+                    }
+                }
+                held
+            };
+            let held = keys(&view);
+            for key in ["b", "i", "[", "]", "Shift+1", "Shift+0", "?"] {
+                assert!(held.iter().any(|k| k == key), "the window answers {key}: {held:?}");
+            }
+            // The help sheet names them.
+            let help = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Keyboard shortcuts")
+                .expect("the window offers its keyboard reference")
+                .key
+                .clone();
+            view.fire(&help, "press").unwrap();
+            view.poll_patches().unwrap();
+            let shown = of_kind(view.tree(), "ui.KeyHint").len();
+            assert!(shown >= 20, "the reference lists the keys: {shown}");
         }
     }
 }

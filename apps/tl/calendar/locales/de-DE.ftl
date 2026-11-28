@@ -1046,6 +1046,11 @@ d-nd2mftjh = Window
     .w-repeats = { $title } repeats
     .w-only-this-date = Only this date
     .w-this-and-all-following = This and all following
+    .w-quick-add = Quick add
+    .w-add-event = Add event
+    .w-cancel = Cancel
+    .w-what-and-when = What and when
+    .w-lunch-with-sam-friday-1pm = Lunch with Sam friday 1pm
 
 d-li3ayrd7 = Woche
 
@@ -1254,7 +1259,14 @@ d-qy4w4m3w = Event page
     .w-from-contacts = Aus den Kontakten
     .w-invite-by-email-address = Invite by email address
 
-
 d-rpmzv4ld = Entfernen~present
 
 d-vajspafs = Ausladen~present
+
+d-h6y3yzla = Quick add
+    .doc = Makes an event of one line a person types: "Lunch with Sam friday 1pm" starts lunch with Sam at one on Friday, "Workshop tomorrow at 10 for 90 min" runs ninety minutes from ten tomorrow, "Trip on 2026-11-03 at 8:00" lands on that day, and "Dinner tonight" is at eight.
+
+d-h6y3yzla-line = Line
+
+d-rbpe5fsh = Quick said
+    .w-new-event = New event

@@ -107,6 +107,11 @@ type Mark (title: name) {
     /// `round`, `pen`, `pencil`, `marker`, `airbrush`, `charcoal`, `calligraphy`, `eraser`,
     /// `pixel` or `pixel-eraser`; empty for the round ink brush.
     brush: Text = ""
+    /// An outline drawn round the mark: its colour, its width in units, and its dashes
+    /// `[on, off, …]`. Empty or no width for none.
+    stroke: Text = ""
+    stroke_width: Float = 0.0
+    dash: List<Float>
     opacity: Float = 1.0
     /// Whether the hand is still on it: the stroke a moving pointer extends. A stroke whose end
     /// never came (the window closed midway) stops being extended once the next one starts.
@@ -270,6 +275,8 @@ type LookRequest {
 type ExportRequest {
     format: Text
     scale: Float
+    /// Draw only the selection's area, as the selection's outline encloses it.
+    selection: Option<Bool> = .none
 }
 
 /// What an SVG export asks for: the whole artwork, its text as text.
@@ -364,6 +371,9 @@ type MarkJson {
     size: Float
     colour: Text
     brush: Text
+    stroke: Text
+    stroke_width: Float
+    dash: List<Float>
     opacity: Float
     src: Text
     x: Float
@@ -443,10 +453,38 @@ default view library for Library
 view library(lib: Library) {
     stack(gap: .related) {
         row(gap: .related, align: .center) {
-            ui.Button("New artwork", icon: .plus) {
-                on press: new_artwork(lib, "Untitled artwork", 1024.0, 768.0)
+            // The sizes an artwork starts at, as a print shop or a screen hands them out.
+            ui.MenuButton("New artwork", icon: .plus) {
+                ui.MenuItem("Screen, 1920 × 1080", key: "Ctrl+N") {
+                    on choose: new_artwork(lib, "Untitled artwork", 1920.0, 1080.0)
+                }
+                ui.MenuItem("A4, 2480 × 3508") {
+                    on choose: new_artwork(lib, "Untitled artwork", 2480.0, 3508.0)
+                }
+                ui.MenuItem("Letter, 2550 × 3300") {
+                    on choose: new_artwork(lib, "Untitled artwork", 2550.0, 3300.0)
+                }
+                ui.MenuItem("Square, 2048 × 2048") {
+                    on choose: new_artwork(lib, "Untitled artwork", 2048.0, 2048.0)
+                }
+                ui.MenuItem("Poster, 3600 × 5400") {
+                    on choose: new_artwork(lib, "Untitled artwork", 3600.0, 5400.0)
+                }
+                ui.MenuItem("Icon, 1024 × 1024") {
+                    on choose: new_artwork(lib, "Untitled artwork", 1024.0, 1024.0)
+                }
+                ui.MenuSeparator()
+                ui.MenuItem("Sprite, 32 × 32") {
+                    on choose: new_artwork(lib, "Untitled artwork", 32.0, 32.0)
+                }
+                ui.MenuItem("Sprite, 64 × 64") {
+                    on choose: new_artwork(lib, "Untitled artwork", 64.0, 64.0)
+                }
+                ui.MenuItem("Scene, 128 × 128") {
+                    on choose: new_artwork(lib, "Untitled artwork", 128.0, 128.0)
+                }
             }
-            ui.Button("Open an artwork…", icon: .file_plus) {
+            ui.Button("Open an artwork…", icon: .file_plus, key: "Ctrl+O") {
                 on press: file.choose(
                     open_artwork(lib),
                     accept: ["application/vnd.tilo.artwork+zip", ".artwork"],
@@ -580,6 +618,9 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                             for key in params.keys() {
                                 kept.params.put(key, params.get(key) ?? 0.0)
                             }
+                            kept.stroke = nested_text(row, "style", "stroke")
+                            kept.stroke_width = nested_number(row, "style", "stroke_width") ?? 0.0
+                            kept.dash = numbers_at(nested_object(row, "style"), "dash")
                             if let gradient = deep_field(row, "style", "gradient") {
                                 kept.gradient = text_field(gradient, "kind")
                                 kept.gradient_x0 = number_at(gradient, "from", 0)
@@ -893,6 +934,66 @@ action fill_gradient(
     m.gradient_y1 = y1
     m.gradient_offsets = .some(offsets)
     m.gradient_colours = .some(colours)
+}
+
+/// How many stops the mark's gradient has.
+fn gradient_stops(m: Mark) -> Int {
+    (m.gradient_offsets ?? []).len()
+}
+
+/// Moves a stop of the mark's gradient along it, its offset 0 to 1.
+action set_gradient_offset(m: Mark, at: Int, offset: Float) (
+    label: "Move a gradient stop",
+    did: "moved a gradient stop",
+) {
+    require m.gradient != "" "The mark is filled with no gradient"
+    require offset >= 0.0 and offset <= 1.0 "A gradient stop is between 0 and 1"
+    require at >= 0 and at < gradient_stops(m) "That stop is not one the gradient has"
+    let offsets = m.gradient_offsets ?? []
+    m.gradient_offsets = .some(offsets.map((o, i) -> if i == at { offset } else { o }))
+}
+
+/// Colours a stop of the mark's gradient.
+action set_gradient_colour(m: Mark, at: Int, colour: Text) (
+    label: "Colour a gradient stop",
+    did: "coloured a gradient stop",
+) {
+    require m.gradient != "" "The mark is filled with no gradient"
+    require at >= 0 and at < gradient_stops(m) "That stop is not one the gradient has"
+    let colours = m.gradient_colours ?? []
+    m.gradient_colours = .some(colours.map((c, i) -> if i == at { colour } else { c }))
+}
+
+/// Adds a stop to the mark's gradient, at `offset`, in `colour`.
+action add_gradient_stop(m: Mark, offset: Float = 0.5, colour: Text = "#1d1b19") (
+    icon: .plus,
+    label: "Add a gradient stop",
+    did: "added a gradient stop",
+) {
+    require m.gradient != "" "The mark is filled with no gradient"
+    require offset >= 0.0 and offset <= 1.0 "A gradient stop is between 0 and 1"
+    require gradient_stops(m) < 16 "A gradient has at most sixteen stops"
+    m.gradient_offsets = .some((m.gradient_offsets ?? []) + [offset])
+    m.gradient_colours = .some((m.gradient_colours ?? []) + [colour])
+}
+
+/// Takes a stop off the mark's gradient.
+action remove_gradient_stop(m: Mark, at: Int) (
+    icon: .minus,
+    label: "Remove a gradient stop",
+    did: "removed a gradient stop",
+) {
+    require m.gradient != "" "The mark is filled with no gradient"
+    require at >= 0 and at < gradient_stops(m) "That stop is not one the gradient has"
+    require gradient_stops(m) > 2 "A gradient keeps two stops at least"
+    let offsets = m.gradient_offsets ?? []
+    let colours = m.gradient_colours ?? []
+    m.gradient_offsets = .some(
+        offsets.map((o, i) -> if i == at { -1.0 } else { o }).filter(o -> o >= 0.0),
+    )
+    m.gradient_colours = .some(
+        colours.map((c, i) -> if i == at { "" } else { c }).filter(c -> c != ""),
+    )
 }
 
 /// Whether the artwork keeps a medium saved under `id`.
@@ -1286,6 +1387,443 @@ action add_shape(a: Artwork, layer: Option<Layer>, d: Text, colour: Text) -> Mar
     require unlocked(layer) "The layer is locked"
     let on = if let chosen = layer { chosen } else { top_layer(a) }
     a.marks.insert(Mark(layer: on, kind: "path", d: d, colour: colour))
+}
+
+/// Draws a bar chart from labels and values, so a person or an agent gives the numbers and the
+/// artwork gains bars, their labels and the axis under them as ordinary marks in one group: every
+/// tool that works on marks works on the chart, and one undo takes it away. `kind` is `bar` or
+/// `hbar`; `box` is the bars' area `[x, y, width, height]`, the artwork less margins when left
+/// out, and `max` scales the bars to a value beyond their largest.
+action add_chart(
+    a: Artwork,
+    labels: List<Text>,
+    values: List<Float>,
+    kind: Text = "bar",
+    box: List<Float> = [],
+    max: Float = 0.0,
+    bar_width: Float = 0.0,
+    colour: Text = "#4e79a7",
+    label_size: Float = 0.0,
+    values_shown: Bool = false,
+    title: Text = "",
+    layer: Option<Layer> = .none,
+) -> Int (icon: .bar_chart, label: "Draw a chart", did: "drew a chart") {
+    require values.len() > 0 "A chart is drawn from at least one value"
+    require labels.len() == values.len() "Give one label per value"
+    require values.len() <= 200 "A chart draws at most 200 bars"
+    require values.all(v -> v >= 0.0) "A chart's values are zero or more"
+    require kind == "bar" or kind == "hbar" "A chart is bars or a horizontal bar chart"
+    require max >= 0.0 "A chart's scale is zero or more"
+    require max == 0.0 or max >= (values.sort_by(v -> v, desc).first() ?? 0.0) "A chart's scale is at least its largest value"
+    require bar_width >= 0.0 "A bar is zero or more wide"
+    require label_size >= 0.0 "A chart's labels are zero or more large"
+    let n = values.len()
+    let horizontal = kind == "hbar"
+    let largest = values.sort_by(v -> v, desc).first() ?? 0.0
+    let scale = if max > 0.0 { max } else if largest > 0.0 { largest } else { 1.0 }
+    let area = if box.len() >= 4 {
+        box
+    } else {
+        chart_area(a, horizontal, title != "", values_shown)
+    }
+    let across = if horizontal { area.at(3) ?? 1.0 } else { area.at(2) ?? 1.0 }
+    if across < 1.0 {
+        a.notice = "A chart's area is one unit or more each way"
+        return 0
+    }
+    if bar_width > 0.0 and bar_width * n.to_float() > across + 1e-6 {
+        a.notice = "{n} bars {bar_width} wide do not fit in the area's {across}"
+        return 0
+    }
+    let width = if bar_width > 0.0 {
+        bar_width
+    } else {
+        across / (n.to_float() + (n - 1).to_float() * 2.0 / 3.0)
+    }
+    let pitch = if n > 1 {
+        (across - width * n.to_float()) / (n - 1).to_float() + width
+    } else { 0.0 }
+    let first = if n > 1 { 0.0 } else { (across - width) / 2.0 }
+    let size = if label_size > 0.0 {
+        label_size
+    } else {
+        (a.width.min(a.height) / 25.0).clamp(10.0, 48.0).round(0)
+    }
+    let on = if let chosen = layer { chosen } else { top_layer(a) }
+    let group = if a.marks.find(m -> m.group == "chart") == .none {
+        "chart"
+    } else { "chart-{a.marks.len()}" }
+    let x = area.at(0) ?? 0.0
+    let y = area.at(1) ?? 0.0
+    let h = area.at(3) ?? 0.0
+    let length = if horizontal { area.at(2) ?? 1.0 } else { h }
+    let made: List<Mark> = []
+    if title != "" {
+        let title_size = (size * 1.4).round(0)
+        let above = if values_shown and not horizontal { size * 1.4 } else { 0.0 }
+        let t = add_text(
+            a,
+            .some(on),
+            title,
+            x + (area.at(2) ?? 0.0) / 2.0,
+            y - above - title_size * 0.6,
+            title_size,
+            "#000000",
+            "",
+            700,
+            false,
+            "center",
+            0.0,
+            0.0,
+            "",
+        )
+        made = made + [t]
+    }
+    // The axis just outside the area, so the bars cover none of it.
+    let axis = if horizontal {
+        add_shape(a, .some(on), rect_path([x - 1.0, y], [x, y + h]), "#666666")
+    } else {
+        add_shape(
+            a,
+            .some(on),
+            rect_path([x, y + h], [x + (area.at(2) ?? 0.0), y + h + 2.0]),
+            "#666666",
+        )
+    }
+    made = made + [axis]
+    for i in values.map((v, i) -> i) {
+        let label = labels.at(i) ?? ""
+        let value = values.at(i) ?? 0.0
+        let bar_length = if value > 0.0 { (value / scale * length).max(1.0) } else { 0.0 }
+        let offset = first + i.to_float() * pitch
+        let bx = if horizontal { x } else { x + offset }
+        let by = if horizontal { y + offset } else { y + h - bar_length }
+        let bw = if horizontal { bar_length } else { width }
+        let bh = if horizontal { width } else { bar_length }
+        if value > 0.0 {
+            let bar = add_shape(a, .some(on), rect_path([bx, by], [bx + bw, by + bh]), colour)
+            bar.name = label
+            made = made + [bar]
+        }
+        if label != "" {
+            let at = if horizontal {
+                [x - 2.0 - size * 0.4, by + bh / 2.0 + size * 0.35]
+            } else { [bx + bw / 2.0, y + h + size * 1.2] }
+            let t = add_text(
+                a,
+                .some(on),
+                label,
+                at.at(0) ?? 0.0,
+                at.at(1) ?? 0.0,
+                size,
+                "#000000",
+                "",
+                0,
+                false,
+                if horizontal { "end" } else { "center" },
+                0.0,
+                0.0,
+                "",
+            )
+            made = made + [t]
+        }
+        if values_shown {
+            let at = if horizontal {
+                [bx + bw + size * 0.4, by + bh / 2.0 + size * 0.35]
+            } else { [bx + bw / 2.0, by - size * 0.35] }
+            let t = add_text(
+                a,
+                .some(on),
+                chart_number(value),
+                at.at(0) ?? 0.0,
+                at.at(1) ?? 0.0,
+                size,
+                "#000000",
+                "",
+                0,
+                false,
+                if horizontal { "start" } else { "center" },
+                0.0,
+                0.0,
+                "",
+            )
+            made = made + [t]
+        }
+    }
+    for m in made {
+        m.group = group
+    }
+    made.len()
+}
+
+/// The area a chart stands in when none is given: the artwork less margins for its labels, its
+/// title and the values.
+fn chart_area(a: Artwork, horizontal: Bool, titled: Bool, values_shown: Bool) -> List<Float> {
+    let width = a.width
+    let height = a.height
+    let top = height * 0.08 + if titled { height * 0.08 } else { 0.0 } + if values_shown and not horizontal { height * 0.06 } else { 0.0 }
+    let left = if horizontal { width * 0.22 } else { width * 0.08 }
+    let right = if horizontal {
+        if values_shown { width * 0.12 } else { width * 0.06 }
+    } else { width * 0.08 }
+    let bottom = if horizontal { height * 0.06 } else { height * 0.14 }
+    [left, top, width - left - right, height - top - bottom]
+}
+
+/// A value as a chart writes it above its bar: whole numbers without a point, others to at most
+/// two decimals.
+fn chart_number(value: Float) -> Text {
+    if value.round(0) == value { value.round(0).to_text() } else { value.round(2).to_text() }
+}
+
+/// Outline dashes a mark's outline in: `[]` restores a solid line, `[8, 4]` is dashed and
+/// `[1, 3]` dotted.
+action set_dash(m: Mark, dash: List<Float>) (
+    icon: .minus,
+    label: "Dash the outline",
+    did: "dashed an outline",
+) {
+    require dash.len() <= 16 "An outline takes at most sixteen dash lengths"
+    require dash.all(length -> length >= 0.0) "A dash length is zero or more"
+    require dash.is_empty() or dash.sum() > 0.0 "Dashes are not all zero"
+    m.dash = dash
+}
+
+/// Outlines a mark: its colour and how wide it is, drawn outside its edge, so a shape stands out
+/// from what is under it.
+action set_outline(m: Mark, stroke: Text = m.stroke, width: Float = m.stroke_width) (
+    icon: .square,
+    label: "Outline the mark",
+    did: "outlined a mark",
+) {
+    require width >= 0.0 and width <= 256.0 "An outline is 0 to 256 units wide"
+    m.stroke = stroke
+    m.stroke_width = if stroke == "" { 0.0 } else { width }
+}
+
+/// Picks the colour the artwork shows at a point, as the eye sees it: every layer composited,
+/// erasers taken off, the reference over it. The window loads it on the brush.
+action sample_colour(a: Artwork, at: List<Float>) -> Option<Text> uses image (
+    icon: .pipette,
+    label: "Pick the colour",
+) {
+    require at.len() >= 2 "A point is x and y"
+    let request = "\{\"at\":["
+        + (at.at(0) ?? 0.0).to_text()
+        + ","
+        + (at.at(1) ?? 0.0).to_text()
+        + "]\}"
+    match canvas.sample(artwork_json(a), request, picture_addresses(a)) {
+        .ok(colour) => {
+            a.notice = ""
+            return .some(colour)
+        }
+        .err(why) => {
+            a.notice = why
+            return .none
+        }
+    }
+}
+
+/// The colour the artwork shows at a point, as `#rrggbb`, for the window to load on the brush:
+/// what the eyedropper reads, and nothing when the device cannot draw.
+fn colour_at(a: Artwork, at: List<Float>) -> Option<Text> {
+    let request = "\{\"at\":["
+        + (at.at(0) ?? 0.0).to_text()
+        + ","
+        + (at.at(1) ?? 0.0).to_text()
+        + "]\}"
+    match canvas.sample(artwork_json(a), request, picture_addresses(a)) {
+        .ok(colour) => .some(colour),
+        .err(_) => .none,
+    }
+}
+
+/// Moves the picked marks by `dx`, `dy` units, as the arrow keys nudge them.
+action nudge_picked(a: Artwork, dx: Float, dy: Float) (label: "Nudge the picked marks") {
+    require a.picked.len() > 0 "Pick the marks to nudge"
+    for m in a.picked {
+        move_mark(m, dx, dy)
+    }
+}
+
+/// Removes the marks a person picked.
+destructive action delete_picked(a: Artwork) (icon: .trash, label: "Delete the picked marks") {
+    require a.picked.len() > 0 "Pick the marks to delete"
+    for m in a.picked.map(m -> m) {
+        a.marks.remove(m)
+    }
+    a.picked = []
+}
+
+/// Aligns marks on an edge of their own extent, the artwork's, or another mark's, and spaces them
+/// evenly along an axis. A mark can be aligned and spaced in one go. Answers how many moved.
+action align_marks(
+    a: Artwork,
+    marks: List<Mark>,
+    edge: Text = "",
+    distribute: Text = "",
+    to_artwork: Bool = false,
+    to: Option<Mark> = .none,
+) -> Int (icon: .align_start_horizontal, label: "Align marks", did: "aligned marks") {
+    require marks.len() > 0 or a.picked.len() > 0 "Name the marks to align, or pick them"
+    require edge == "left"
+        or edge == "center"
+        or edge == "right"
+        or edge == "top"
+        or edge == "middle"
+        or edge == "bottom"
+        or edge == "" "An edge is left, center, right, top, middle or bottom"
+    require distribute == "" or distribute == "horizontal" or distribute == "vertical" "Marks spread across or down"
+    require edge != "" or distribute != "" "Give an edge to line up on or an axis to spread along"
+    require distribute == "" or marks.len() >= 2 or a.picked.len() >= 2 or to_artwork or to != .none "Spreading needs two or more marks, or a frame to spread across"
+    let chosen = if marks.len() == 0 { a.picked } else { marks }
+    let held = match canvas.inspect(artwork_json(a), json.encode(InspectAsk(limit: .some(400)))) {
+        .ok(answer) => match json.parse(answer) {
+            .ok(value) => array_field(value, "marks"),
+            .err(_) => [],
+        },
+        .err(_) => [],
+    }
+    if held.len() == 0 {
+        a.notice = "The artwork cannot be read to align it"
+        return 0
+    }
+    let boxes = chosen.map(m -> bounds_of(held, mark_id(a, m)))
+    if not boxes.all(b -> b.len() >= 4) {
+        a.notice = "Some marks cannot be measured"
+        return 0
+    }
+    let target = if to_artwork {
+        [0.0, 0.0, a.width, a.height]
+    } else if let other = to { bounds_of(held, mark_id(a, other)) } else { extent_of(boxes) }
+    if target.len() < 4 {
+        a.notice = "There is nothing to align to"
+        return 0
+    }
+    let horizontal = distribute == "horizontal"
+    let frame = if to_artwork or to != .none { target } else { extent_of(boxes) }
+    let order = chosen.map((m, i) -> i).sort_by(i -> box_centre(boxes.at(i) ?? [], horizontal))
+    let shifts = chosen.map((m, i) -> shift_for(boxes, order, i, edge, distribute, target, frame))
+    for i in chosen.map((m, i) -> i) {
+        let shift = shifts.at(i) ?? [0.0, 0.0]
+        let dx = shift.at(0) ?? 0.0
+        let dy = shift.at(1) ?? 0.0
+        if dx != 0.0 or dy != 0.0 {
+            if let m = chosen.at(i) { move_mark(m, dx, dy) }
+        }
+    }
+    chosen.len()
+}
+
+/// The id the device's drawing engine names a mark by, in the order the artwork keeps its marks.
+fn mark_id(a: Artwork, m: Mark) -> Text {
+    "mark-{a.marks.index_of(m) ?? 0}"
+}
+
+/// The bounds `[x, y, width, height]` an inspection gives a mark, or nothing when it does not
+/// list it.
+fn bounds_of(held: List<json.Value>, id: Text) -> List<Float> {
+    if let row = held.find(r -> text_field(r, "id") == id) { numbers_at(row, "bounds") } else { [] }
+}
+
+/// The box containing every box: `[x0, y0, x1, y1]`.
+fn extent_of(boxes: List<List<Float>>) -> List<Float> {
+    let left = boxes.map(b -> b.at(0) ?? 0.0).sort_by(v -> v).first() ?? 0.0
+    let top = boxes.map(b -> b.at(1) ?? 0.0).sort_by(v -> v).first() ?? 0.0
+    let right = boxes.map(b -> (b.at(0) ?? 0.0) + (b.at(2) ?? 0.0)).sort_by(v -> v, desc).first()
+        ?? 0.0
+    let bottom = boxes.map(b -> (b.at(1) ?? 0.0) + (b.at(3) ?? 0.0)).sort_by(v -> v, desc).first()
+        ?? 0.0
+    [left, top, right, bottom]
+}
+
+/// A box's middle along an axis.
+fn box_centre(box: List<Float>, horizontal: Bool) -> Float {
+    if horizontal {
+        (box.at(0) ?? 0.0) + (box.at(2) ?? 0.0) / 2.0
+    } else {
+        (box.at(1) ?? 0.0) + (box.at(3) ?? 0.0) / 2.0
+    }
+}
+
+/// How far the `index`th box moves: onto the edge it is aligned by, plus its share of spreading
+/// the boxes along an axis inside `frame`.
+fn shift_for(
+    boxes: List<List<Float>>,
+    order: List<Int>,
+    index: Int,
+    edge: Text,
+    distribute: Text,
+    target: List<Float>,
+    frame: List<Float>,
+) -> List<Float> {
+    let b = boxes.at(index) ?? [0.0, 0.0, 0.0, 0.0]
+    let horizontal = distribute == "horizontal"
+    let along = if distribute == "" {
+        0.0
+    } else {
+        spread_shift(boxes, order, index, horizontal, frame)
+    }
+    [edge_shift(b, target, edge, true) + along, edge_shift(b, target, edge, false)]
+}
+
+/// How far a box moves to sit on `edge` of the target box `[x, y, width, height]`, across the x
+/// axis (`along` true) or the y axis.
+fn edge_shift(box: List<Float>, target: List<Float>, edge: Text, along: Bool) -> Float {
+    if along {
+        let left = (target.at(0) ?? 0.0) - (box.at(0) ?? 0.0)
+        let centre = (target.at(0) ?? 0.0) + (target.at(2) ?? 0.0) / 2.0
+        -((box.at(0) ?? 0.0) + (box.at(2) ?? 0.0) / 2.0)
+        let right = (target.at(0) ?? 0.0) + (target.at(2) ?? 0.0)
+        -((box.at(0) ?? 0.0) + (box.at(2) ?? 0.0))
+        if edge == "left" {
+            left
+        } else if edge == "center" { centre } else if edge == "right" { right } else { 0.0 }
+    } else {
+        let top = (target.at(1) ?? 0.0) - (box.at(1) ?? 0.0)
+        let middle = (target.at(1) ?? 0.0) + (target.at(3) ?? 0.0) / 2.0
+        -((box.at(1) ?? 0.0) + (box.at(3) ?? 0.0) / 2.0)
+        let bottom = (target.at(1) ?? 0.0) + (target.at(3) ?? 0.0)
+        -((box.at(1) ?? 0.0) + (box.at(3) ?? 0.0))
+        if edge == "top" {
+            top
+        } else if edge == "middle" { middle } else if edge == "bottom" { bottom } else { 0.0 }
+    }
+}
+
+/// How far the `index`th box moves so the boxes are spaced evenly along an axis inside `frame`,
+/// with equal gaps between them and none outside.
+fn spread_shift(
+    boxes: List<List<Float>>,
+    order: List<Int>,
+    index: Int,
+    horizontal: Bool,
+    frame: List<Float>,
+) -> Float {
+    let from = if horizontal { frame.at(0) ?? 0.0 } else { frame.at(1) ?? 0.0 }
+    let to = from + if horizontal { frame.at(2) ?? 0.0 } else { frame.at(3) ?? 0.0 }
+    let total = order.map(i -> box_length(boxes, i, horizontal)).sum()
+    let gaps = (order.len() - 1).max(1)
+    let gap = (to - from - total) / gaps.to_float()
+    let at = order.index_of(index) ?? 0
+    let before = order.take(at).map(i -> box_length(boxes, i, horizontal)).sum()
+    let cursor = if order.len() == 1 {
+        from + (to - from - total) / 2.0
+    } else { from + before + gap * at.to_float() }
+    cursor - box_start(boxes, index, horizontal)
+}
+
+/// A box's length along an axis.
+fn box_length(boxes: List<List<Float>>, i: Int, horizontal: Bool) -> Float {
+    let b = boxes.at(i) ?? []
+    if horizontal { b.at(2) ?? 0.0 } else { b.at(3) ?? 0.0 }
+}
+
+/// A box's start along an axis.
+fn box_start(boxes: List<List<Float>>, i: Int, horizontal: Bool) -> Float {
+    let b = boxes.at(i) ?? []
+    if horizontal { b.at(0) ?? 0.0 } else { b.at(1) ?? 0.0 }
 }
 
 destructive action remove_mark(a: Artwork, m: Mark) (icon: .trash, label: "Remove a mark") {
@@ -2593,6 +3131,50 @@ action invert_selection(a: Artwork) -> Option<Text> uses image (
     return .none
 }
 
+/// Outlines the selection as a mark on `layer`: a stroke along its edge and no fill, so a person
+/// frames what they chose with the paint they hold.
+action outline_selection(
+    a: Artwork,
+    layer: Option<Layer> = .none,
+    colour: Text = "#1d1b19",
+    width: Float = 2.0,
+) -> Option<Mark> (icon: .circle_dashed, label: "Outline the selection") {
+    require width > 0.0 and width <= 64.0 "An outline is above zero and up to 64 units"
+    if let area = a.selection {
+        let on = if let chosen = layer { chosen } else { top_layer(a) }
+        let made = a.marks.insert(
+            Mark(
+                layer: on,
+                kind: "path",
+                d: area.d,
+                colour: "none",
+                stroke: colour,
+                stroke_width: width,
+            ),
+        )
+        a.notice = ""
+        return .some(made)
+    }
+    a.notice = "Select an area first"
+    return .none
+}
+
+/// Cuts the picked marks to the selection, so only the part inside it shows.
+action clip_picks_to_selection(a: Artwork) (
+    icon: .scissors,
+    label: "Clip the picks to the selection",
+) {
+    require a.picked.len() > 0 "Pick the marks to clip"
+    if let area = a.selection {
+        for m in a.picked {
+            m.clip = area.d
+        }
+        a.notice = ""
+    } else {
+        a.notice = "Select an area first"
+    }
+}
+
 /// Selects the shape of the marks or groups `ids` name, meeting the area there is by `mode`.
 action select_marks(
     a: Artwork,
@@ -2879,6 +3461,9 @@ fn mark_json(m: Mark) -> MarkJson {
         size: m.size,
         colour: m.colour,
         brush: m.brush,
+        stroke: m.stroke,
+        stroke_width: m.stroke_width,
+        dash: m.dash,
         opacity: m.opacity,
         src: m.src,
         x: m.x,
@@ -2998,12 +3583,19 @@ action draw_look(a: Artwork, size: Int = 768) (icon: .eye, label: "Look at the a
 }
 
 /// Writes the artwork at full size as a PNG, JPEG or WebP picture.
-action export_picture(a: Artwork, format: Text = "png", scale: Float = 1.0) -> Option<File> (
-    icon: .download,
-    label: "Export a picture",
-    did: "exported a picture",
-) {
-    let request = json.encode(ExportRequest(format: format, scale: scale))
+action export_picture(
+    a: Artwork,
+    format: Text = "png",
+    scale: Float = 1.0,
+    selection: Bool = false,
+) -> Option<File> (icon: .download, label: "Export a picture", did: "exported a picture") {
+    if selection and a.selection == .none {
+        a.notice = "Select an area to export it"
+        return .none
+    }
+    let request = json.encode(
+        ExportRequest(format: format, scale: scale, selection: .some(selection)),
+    )
     match canvas.export(artwork_json(a), request, picture_addresses(a)) {
         .ok(file) => .some(file),
         .err(why) => {
@@ -3087,6 +3679,9 @@ fn drawn_mark(layer: Layer, row: json.Value) -> Option<Mark> {
         let fill = text_field(row, "fill")
         let colour = if fill != "" { fill } else { text_field(row, "stroke") }
         let opacity = number_field(row, "opacity") ?? 1.0
+        let stroke = text_field(row, "stroke")
+        let stroke_width = number_field(row, "stroke_width") ?? 0.0
+        let dash = numbers_at(row, "dash")
         if kind == "stroke" {
             let points = points_field(shape, "points")
             return .some(
@@ -3099,11 +3694,25 @@ fn drawn_mark(layer: Layer, row: json.Value) -> Option<Mark> {
                     colour: colour,
                     brush: text_field(row, "brush"),
                     opacity: opacity,
+                    stroke: stroke,
+                    stroke_width: stroke_width,
+                    dash: dash,
                 ),
             )
         }
         if let d = path_of(shape) {
-            return .some(Mark(layer: layer, kind: "path", d: d, colour: colour, opacity: opacity))
+            return .some(
+                Mark(
+                    layer: layer,
+                    kind: "path",
+                    d: d,
+                    colour: colour,
+                    opacity: opacity,
+                    stroke: stroke,
+                    stroke_width: stroke_width,
+                    dash: dash,
+                ),
+            )
         }
     }
     .none
@@ -3325,6 +3934,11 @@ fn pair_text(pair: json.Value, at: Int) -> Text {
     } else { "" }
 }
 
+/// A gradient stop's colour, black where the list holds none there.
+fn stop_colour(colours: List<Text>, at: Int) -> Text {
+    colours.at(at) ?? "#000000"
+}
+
 fn stop_numbers(stops: json.Value) -> List<Float> {
     if let items = as_array(stops) { items.map(pair -> pair_number(pair, 0)) } else { [] }
 }
@@ -3365,9 +3979,12 @@ view artwork(a: Artwork) {
     state zoom: Float = 1.0
     state pan_x: Float = 0.0
     state pan_y: Float = 0.0
+    // The chart being made, and the keyboard reference, each open while its sheet is.
+    state chart_open: Bool = false
+    state help: Bool = false
     std.page(a, canvas: true, fill: true) {
         header: {
-            artwork_head(a, tool, brush, size, colour, show_layers, zoom, pan_x, pan_y)
+            artwork_head(a, show_layers, chart_open, help)
         }
         if a.notice != "" {
             ui.Banner(a.notice, kind: .warning) {
@@ -3393,7 +4010,11 @@ view artwork(a: Artwork) {
                     pan: [pan_x, pan_y],
                     label: a.title,
                 ) {
-                    on stroke_start(p: List<Float>): set(shape_from, p)
+                    on stroke_start(p: List<Float>): set(
+                            colour,
+                            if tool == "eyedropper" { colour_at(a, p) ?? colour } else { colour },
+                        )
+                        .then(set(shape_from, p))
                         .then(
                             start_paint(a, tool, paint_brush(tool, brush), chosen, p, size, colour),
                         )
@@ -3419,92 +4040,137 @@ view artwork(a: Artwork) {
                     on panned(delta): set(pan_x, pan_x + (delta.at(0) ?? 0.0))
                         .then(set(pan_y, pan_y + (delta.at(1) ?? 0.0)))
                 }
-                well(a, tool, brush, size, colour, chosen, pan_x, pan_y, zoom)
+                well(a, tool, brush, size, colour, chosen, pan_x, pan_y, zoom, help)
                 version_timeline(a)
             }
         }
     }
+    if chart_open {
+        chart_sheet(a, chart_open)
+    }
+    if help {
+        help_sheet(help)
+    }
 }
 
-/// The window's own controls: the tools, the view, and what makes and keeps the artwork.
+/// The window's own controls: what makes and keeps the artwork, the chart sheet and the help.
 view artwork_head(
     a: Artwork,
-    tool: State<Text>,
-    brush: State<Text>,
-    size: Float,
-    colour: Text,
     show_layers: State<Bool>,
-    zoom: State<Float>,
-    pan_x: State<Float>,
-    pan_y: State<Float>,
+    chart_open: State<Bool>,
+    help: State<Bool>,
 ) {
     ui.Toolbar {
-        ui.ToolbarButton("Brush", icon: .pencil, toggled: tool == "brush") {
-            on press: set(tool, "brush")
-        }
-        ui.ToolbarButton("Eraser", icon: .eraser, toggled: tool == "eraser") {
-            on press: set(tool, "eraser")
-        }
-        ui.ToolbarSeparator()
-        ui.ToolbarButton("Rectangle", icon: .square, toggled: tool == "rect") {
-            on press: set(tool, "rect")
-        }
-        ui.ToolbarButton("Ellipse", icon: .circle, toggled: tool == "ellipse") {
-            on press: set(tool, "ellipse")
-        }
-        ui.ToolbarButton("Line", icon: .minus, toggled: tool == "line") {
-            on press: set(tool, "line")
-        }
-        ui.ToolbarButton("Select", icon: .circle_dashed, toggled: tool == "select") {
-            on press: set(tool, "select")
-        }
-        ui.ToolbarButton("Lasso", icon: .lasso, toggled: tool == "lasso") {
-            on press: set(tool, "lasso")
-        }
-        ui.ToolbarButton("Wand", icon: .wand_sparkles, toggled: tool == "wand") {
-            on press: set(tool, "wand")
-        }
-        ui.ToolbarButton("Text", icon: .type, toggled: tool == "text") {
-            on press: set(tool, "text")
-        }
-        ui.ToolbarSeparator()
-        ui.ToolbarButton("Zoom out", icon: .zoom_out, joined: true) {
-            on press: set(zoom, (zoom / 1.25).max(0.05))
-        }
-        ui.ToolbarButton("Zoom in", icon: .zoom_in, joined: true) {
-            on press: set(zoom, (zoom * 1.25).min(64.0))
-        }
-        ui.ToolbarButton("Fit", icon: .maximize) {
-            on press: set(zoom, 1.0).then(set(pan_x, 0.0)).then(set(pan_y, 0.0))
-        }
-        ui.ToolbarSeparator()
-        ui.ToolbarButton("New artwork", icon: .plus) {
+        ui.ToolbarButton("New artwork", icon: .plus, priority: 6) {
             on press: new_artwork(root Library, "Untitled artwork", 1024.0, 768.0)
         }
-        ui.ToolbarButton("Add layer", icon: .layers) {
+        ui.ToolbarButton("Add layer", icon: .layers, priority: 5) {
             on press: add_layer(a, "")
         }
-        ui.ToolbarButton("Place a picture", icon: .image_plus) {
+        ui.ToolbarButton("Place a picture", icon: .image_plus, priority: 4) {
             on press: file.choose(
                 place_picture(a),
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
         }
-        ui.ToolbarButton("Set the reference", icon: .image) {
+        ui.ToolbarButton("Set the reference", icon: .image, priority: 3) {
             on press: file.choose(
                 set_reference(a),
                 accept: ["image/png", "image/jpeg", "image/webp"],
             )
         }
-        ui.ToolbarButton("Look", icon: .eye) {
+        ui.ToolbarButton("Chart", icon: .bar_chart, priority: 4) {
+            on press: set(chart_open, true)
+        }
+        ui.ToolbarButton("Look", icon: .eye, priority: 2) {
             on press: draw_look(a)
         }
-        ui.ToolbarButton("Save", icon: .save) {
-            on press: save_artwork(a)
-        }
         ui.ToolbarSpacer()
-        ui.ToolbarButton("Layers", icon: .panel_left, toggled: show_layers) {
+        ui.ToolbarButton("Keyboard shortcuts", icon: .circle_help, priority: 1) {
+            on press: set(help, true)
+        }
+        ui.ToolbarButton("Layers", icon: .panel_left, toggled: show_layers, priority: 6) {
             on press: set(show_layers, not show_layers)
+        }
+    }
+}
+
+/// The chart sheet: the labels and the numbers they stand for, and the title over them. Drawing
+/// it makes the bars, their labels and the axis as marks in one group.
+view chart_sheet(a: Artwork, open: State<Bool>) {
+    state title: Text = ""
+    state labels: Text = "Jan, Feb, Mar, Apr"
+    state values: Text = "3, 5, 2, 6"
+    ui.ModalDialog(
+        title: "Draw a chart",
+        open: open,
+        primary: "Draw the chart",
+        secondary: "Cancel",
+    ) {
+        body: {
+            stack(gap: .related) {
+                ui.TextInput(bind: title, placeholder: "Title over the chart")
+                ui.Text("Labels, one per value", role: .caption, secondary: true)
+                ui.TextInput(bind: labels, placeholder: "Jan, Feb, Mar, Apr")
+                ui.Text("Values", role: .caption, secondary: true)
+                ui.TextInput(bind: values, placeholder: "3, 5, 2, 6")
+            }
+        }
+        on act_primary: add_chart(
+                a,
+                labels.split(",").map(x -> x.trim()).filter(x -> x != ""),
+                values.split(",").map(x -> x.trim().to_float() ?? 0.0),
+                title: title,
+            )
+            .then(set(open, false))
+        on act_secondary: set(open, false)
+        on dismiss: set(open, false)
+    }
+}
+
+/// The keyboard reference: what each key does while the artwork has the window.
+view help_sheet(open: State<Bool>) {
+    ui.ModalDialog(
+        title: "Keyboard shortcuts",
+        icon: .circle_help,
+        open: open,
+        secondary: "Close",
+    ) {
+        on act_secondary: set(open, false)
+        on dismiss: set(open, false)
+        stack(gap: .related, padding: .related) {
+            ui.Text("Tools", role: .heading)
+            ui.KeyHints {
+                ui.KeyHint(["B"], "Brush")
+                ui.KeyHint(["X"], "Eraser")
+                ui.KeyHint(["I"], "Eyedropper")
+                ui.KeyHint(["R"], "Rectangle")
+                ui.KeyHint(["E"], "Ellipse")
+                ui.KeyHint(["L"], "Line")
+                ui.KeyHint(["C"], "Crop the picture")
+                ui.KeyHint(["V"], "Select")
+                ui.KeyHint(["Q"], "Lasso")
+                ui.KeyHint(["W"], "Wand")
+                ui.KeyHint(["T"], "Text")
+            }
+            ui.Text("View", role: .heading)
+            ui.KeyHints {
+                ui.KeyHint(["+ and -"], "Zoom in or out")
+                ui.KeyHint(["Shift+1"], "Fit the artwork")
+                ui.KeyHint(["Shift+0"], "Actual size")
+                ui.KeyHint(["[ and ]"], "Smaller or larger brush")
+            }
+            ui.Text("Marks and artwork", role: .heading)
+            ui.KeyHints {
+                ui.KeyHint(["Alt+Arrows"], "Nudge the picked marks")
+                ui.KeyHint(["Delete"], "Delete the picked marks")
+                ui.KeyHint(["Escape"], "Let the picks or the selection go")
+                ui.KeyHint(["Ctrl+N"], "New artwork")
+                ui.KeyHint(["Ctrl+O"], "Open an artwork")
+                ui.KeyHint(["Ctrl+S"], "Save the artwork")
+                ui.KeyHint(["Ctrl+Shift+E"], "Export a PNG")
+                ui.KeyHint(["?"], "Show or close this reference")
+            }
         }
     }
 }
@@ -3543,10 +4209,10 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                     row(gap: .tight, align: .center) {
                         ui.Text("Opacity", role: .caption, secondary: true)
                         ui.Slider(bind: layer.opacity, label: "Opacity", min: 0.0, max: 1.0)
-                        ui.Button("Up", icon: .chevron_up, icon_only: true) {
+                        ui.Button("Up", role: .plain, icon: .chevron_up, icon_only: true) {
                             on press: move_layer_up(a, layer)
                         }
-                        ui.Button("Down", icon: .chevron_down, icon_only: true) {
+                        ui.Button("Down", role: .plain, icon: .chevron_down, icon_only: true) {
                             on press: move_layer_down(a, layer)
                         }
                     }
@@ -3554,6 +4220,26 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
             }
         }
         if let layer = chosen {
+            row(gap: .tight, align: .center) {
+                if let mask = a.layers.find(m -> m.mask_of == layer.name) {
+                    ui.Button(
+                        if mask.invert { "Light hides" } else { "Light shows" },
+                        icon: .contrast,
+                    ) {
+                        on press: set_mask(a, mask, invert: not mask.invert)
+                    }
+                    ui.Button("Remove the mask", icon: .trash) {
+                        on press: remove_layer(a, mask)
+                    }
+                } else if layer.mask_of == "" {
+                    ui.Button("Add a mask", icon: .contrast) {
+                        on press: add_mask(a, layer)
+                    }
+                }
+                ui.Button(if layer.locked { "Unlock" } else { "Lock" }, icon: .lock) {
+                    on press: lock_layer(a, layer)
+                }
+            }
             ui.MenuButton("Medium: {medium_said(layer.medium)}", icon: .droplet) {
                 ui.MenuItem("Plain paint") {
                     on choose: set_medium(a, layer, "")
@@ -3598,7 +4284,103 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
             }
             if a.picked.len() > 0 {
                 ui.Text("{a.picked.len()} picked", role: .caption, secondary: true)
-                ui.Button("Let the picks go", icon: .x) {
+                row(gap: .tight, align: .center) {
+                    ui.Text("Nudge", role: .caption, secondary: true)
+                    ui.Button(
+                        "Left",
+                        role: .plain,
+                        icon: .arrow_left,
+                        icon_only: true,
+                        keys: ["Alt+ArrowLeft"],
+                    ) {
+                        on press: nudge_picked(a, -1.0, 0.0)
+                    }
+                    ui.Button(
+                        "Up",
+                        role: .plain,
+                        icon: .arrow_up,
+                        icon_only: true,
+                        keys: ["Alt+ArrowUp"],
+                    ) {
+                        on press: nudge_picked(a, 0.0, -1.0)
+                    }
+                    ui.Button(
+                        "Down",
+                        role: .plain,
+                        icon: .arrow_down,
+                        icon_only: true,
+                        keys: ["Alt+ArrowDown"],
+                    ) {
+                        on press: nudge_picked(a, 0.0, 1.0)
+                    }
+                    ui.Button(
+                        "Right",
+                        role: .plain,
+                        icon: .arrow_right,
+                        icon_only: true,
+                        keys: ["Alt+ArrowRight"],
+                    ) {
+                        on press: nudge_picked(a, 1.0, 0.0)
+                    }
+                }
+                if a.picked.len() >= 2 {
+                    ui.MenuButton("Align", icon: .align_start_horizontal) {
+                        ui.MenuItem("Align left edges") {
+                            on choose: align_marks(a, a.picked, "left")
+                        }
+                        ui.MenuItem("Align centres") {
+                            on choose: align_marks(a, a.picked, "center")
+                        }
+                        ui.MenuItem("Align right edges") {
+                            on choose: align_marks(a, a.picked, "right")
+                        }
+                        ui.MenuItem("Align top edges") {
+                            on choose: align_marks(a, a.picked, "top")
+                        }
+                        ui.MenuItem("Align middles") {
+                            on choose: align_marks(a, a.picked, "middle")
+                        }
+                        ui.MenuItem("Align bottom edges") {
+                            on choose: align_marks(a, a.picked, "bottom")
+                        }
+                        ui.MenuSeparator()
+                        ui.MenuItem("Space evenly across") {
+                            on choose: align_marks(a, a.picked, distribute: "horizontal")
+                        }
+                        ui.MenuItem("Space evenly down") {
+                            on choose: align_marks(a, a.picked, distribute: "vertical")
+                        }
+                    }
+                }
+                ui.MenuButton("Align on the artwork", icon: .maximize) {
+                    ui.MenuItem("Centre across the artwork") {
+                        on choose: align_marks(a, a.picked, "center", to_artwork: true)
+                    }
+                    ui.MenuItem("Centre down the artwork") {
+                        on choose: align_marks(a, a.picked, "middle", to_artwork: true)
+                    }
+                    ui.MenuItem("Left edge of the artwork") {
+                        on choose: align_marks(a, a.picked, "left", to_artwork: true)
+                    }
+                    ui.MenuItem("Right edge of the artwork") {
+                        on choose: align_marks(a, a.picked, "right", to_artwork: true)
+                    }
+                    ui.MenuItem("Top edge of the artwork") {
+                        on choose: align_marks(a, a.picked, "top", to_artwork: true)
+                    }
+                    ui.MenuItem("Bottom edge of the artwork") {
+                        on choose: align_marks(a, a.picked, "bottom", to_artwork: true)
+                    }
+                }
+                ui.Button(
+                    "Delete the picked marks",
+                    icon: .trash,
+                    role: .destructive,
+                    keys: ["Delete"],
+                ) {
+                    on press: delete_picked(a)
+                }
+                ui.Button("Let the picks go", icon: .x, keys: ["Escape"]) {
                     on press: clear_picked(a)
                 }
             }
@@ -3634,6 +4416,34 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                 }
                 ui.Slider(value: m.params.get("taper") ?? 0.0, label: "Taper", min: 0.0, max: 1.0) {
                     on change(v): set_dynamics(m, taper: v)
+                }
+            }
+            ui.Section("Outline") {
+                row(gap: .tight, align: .center) {
+                    ui.Button("Solid", toggled: m.dash.is_empty()) {
+                        on press: set_dash(m, [])
+                    }
+                    ui.Button("Dashed", toggled: m.dash == [8.0, 4.0]) {
+                        on press: set_dash(m, [8.0, 4.0])
+                    }
+                    ui.Button("Dotted", toggled: m.dash == [1.0, 3.0]) {
+                        on press: set_dash(m, [1.0, 3.0])
+                    }
+                }
+                ui.Slider(bind: m.stroke_width, label: "Outline width", min: 0.0, max: 24.0)
+                ui.MenuButton("Outline colour", icon: .droplet) {
+                    for ink in inks() {
+                        ui.MenuItem(ink) {
+                            on choose: set_outline(
+                                m,
+                                ink,
+                                if m.stroke_width > 0.0 { m.stroke_width } else { 2.0 },
+                            )
+                        }
+                    }
+                    ui.MenuItem("No outline") {
+                        on choose: set_outline(m, "", 0.0)
+                    }
                 }
             }
         }
@@ -3766,8 +4576,122 @@ view well(
     pan_x: State<Float>,
     pan_y: State<Float>,
     zoom: State<Float>,
+    help: State<Bool>,
 ) {
     row(gap: .related, align: .center, wrap: true) {
+        // The tools, each answering its letter while the artwork has the window.
+        row(gap: .tight, align: .center, wrap: true) {
+            ui.Button(
+                "Brush",
+                role: .plain,
+                icon: .pencil,
+                icon_only: true,
+                toggled: tool == "brush",
+                keys: ["b"],
+            ) {
+                on press: set(tool, "brush")
+            }
+            ui.Button(
+                "Eraser",
+                role: .plain,
+                icon: .eraser,
+                icon_only: true,
+                toggled: tool == "eraser",
+                keys: ["x"],
+            ) {
+                on press: set(tool, "eraser")
+            }
+            ui.Button(
+                "Eyedropper",
+                role: .plain,
+                icon: .pipette,
+                icon_only: true,
+                toggled: tool == "eyedropper",
+                keys: ["i"],
+            ) {
+                on press: set(tool, "eyedropper")
+            }
+            ui.Button(
+                "Rectangle",
+                role: .plain,
+                icon: .square,
+                icon_only: true,
+                toggled: tool == "rect",
+                keys: ["r"],
+            ) {
+                on press: set(tool, "rect")
+            }
+            ui.Button(
+                "Ellipse",
+                role: .plain,
+                icon: .circle,
+                icon_only: true,
+                toggled: tool == "ellipse",
+                keys: ["e"],
+            ) {
+                on press: set(tool, "ellipse")
+            }
+            ui.Button(
+                "Line",
+                role: .plain,
+                icon: .minus,
+                icon_only: true,
+                toggled: tool == "line",
+                keys: ["l"],
+            ) {
+                on press: set(tool, "line")
+            }
+            ui.Button(
+                "Crop",
+                role: .plain,
+                icon: .crop,
+                icon_only: true,
+                toggled: tool == "crop",
+                keys: ["c"],
+            ) {
+                on press: set(tool, "crop")
+            }
+            ui.Button(
+                "Select",
+                role: .plain,
+                icon: .circle_dashed,
+                icon_only: true,
+                toggled: tool == "select",
+                keys: ["v"],
+            ) {
+                on press: set(tool, "select")
+            }
+            ui.Button(
+                "Lasso",
+                role: .plain,
+                icon: .lasso,
+                icon_only: true,
+                toggled: tool == "lasso",
+                keys: ["q"],
+            ) {
+                on press: set(tool, "lasso")
+            }
+            ui.Button(
+                "Wand",
+                role: .plain,
+                icon: .wand_sparkles,
+                icon_only: true,
+                toggled: tool == "wand",
+                keys: ["w"],
+            ) {
+                on press: set(tool, "wand")
+            }
+            ui.Button(
+                "Text",
+                role: .plain,
+                icon: .type,
+                icon_only: true,
+                toggled: tool == "text",
+                keys: ["t"],
+            ) {
+                on press: set(tool, "text")
+            }
+        }
         ui.MenuButton("Brush: {brush}", icon: .pencil) {
             for preset in brushes() {
                 ui.MenuItem(preset) {
@@ -3777,7 +4701,13 @@ view well(
         }
         // What the next stroke lays down: the brush, its size and the paint, drawn as they change.
         ui.StrokePreview(paint_brush(tool, brush), size: size, colour: colour)
+        ui.Button("Smaller brush", role: .plain, icon: .minus, icon_only: true, keys: ["["]) {
+            on press: set(size, (size - 1.0).max(1.0))
+        }
         ui.Slider(bind: size, label: "Size", min: 1.0, max: 128.0, fill)
+        ui.Button("Larger brush", role: .plain, icon: .plus, icon_only: true, keys: ["]"]) {
+            on press: set(size, (size + 1.0).min(128.0))
+        }
         ui.ColorPicker(bind: colour, swatches: inks(), columns: 7, label: "Paint")
         if let layer = chosen {
             if let medium = a.media.find(m -> m.key == layer.medium) {
@@ -3796,13 +4726,31 @@ view well(
             ui.Button("Fill the selection", icon: .paint_bucket) {
                 on press: fill_selection(a, .none, colour)
             }
-            ui.Button("Deselect", icon: .circle_dashed) {
+            if a.selection != .none {
+                ui.Button("Outline the selection", icon: .circle_dashed) {
+                    on press: outline_selection(a, .none, colour, 2.0)
+                }
+            }
+            if a.picked.len() > 0 and a.selection != .none {
+                ui.Button("Clip the picks to the selection", icon: .scissors) {
+                    on press: clip_picks_to_selection(a)
+                }
+            }
+            ui.Button("Deselect", icon: .circle_dashed, keys: ["Escape"]) {
                 on press: clear_selection(a)
             }
         }
-        ui.MenuButton("Export", icon: .download) {
-            ui.MenuItem("PNG, full size") {
+        ui.MenuButton("File", icon: .save) {
+            ui.MenuItem("Save the artwork", icon: .save, key: "Ctrl+S") {
+                on choose: save_artwork(a)
+            }
+            ui.MenuItem("PNG, full size", key: "Ctrl+Shift+E") {
                 on choose: file.save(export_picture(a, "png", 1.0), name: "Artwork.png")
+            }
+            if a.selection != .none {
+                ui.MenuItem("PNG of the selection") {
+                    on choose: file.save(export_picture(a, "png", 1.0, true), name: "Selection.png")
+                }
             }
             ui.MenuItem("PNG, twice the size") {
                 on choose: file.save(export_picture(a, "png", 2.0), name: "Artwork.png")
@@ -3848,6 +4796,41 @@ view well(
                 }
             }
         }
+        if let shape = last_shape(a) {
+            if shape.gradient != "" {
+                ui.Section("Gradient stops") {
+                    let offsets = shape.gradient_offsets ?? []
+                    let colours = shape.gradient_colours ?? []
+                    for i in offsets.map((o, i) -> i) {
+                        row(gap: .tight, align: .center) {
+                            ui.Slider(
+                                value: offsets.at(i) ?? 0.0,
+                                label: "Stop {i + 1}",
+                                min: 0.0,
+                                max: 1.0,
+                            ) {
+                                on change(v): set_gradient_offset(shape, i, v)
+                            }
+                            ui.MenuButton(stop_colour(colours, i), icon: .droplet) {
+                                for ink in inks() {
+                                    ui.MenuItem(ink) {
+                                        on choose: set_gradient_colour(shape, i, ink)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    row(gap: .tight, align: .center) {
+                        ui.Button("Add a stop", icon: .plus) {
+                            on press: add_gradient_stop(shape)
+                        }
+                        ui.Button("Remove a stop", icon: .minus) {
+                            on press: remove_gradient_stop(shape, (offsets.len() - 1).max(0))
+                        }
+                    }
+                }
+            }
+        }
         if a.reference != .none {
             ui.MenuButton("Reference", icon: .image) {
                 ui.MenuItem("Side by side") {
@@ -3867,9 +4850,39 @@ view well(
         if a.comparison != "" {
             ui.ImageViewer(a.comparison, alt: "The artwork against its reference", aspect: 1.5)
         }
+        ui.Button("Zoom out", role: .plain, icon: .zoom_out, icon_only: true, keys: ["-"]) {
+            on press: set(zoom, (zoom / 1.25).max(0.05))
+        }
         ui.Text("{zoomed_said(zoom)}", role: .caption, secondary: true)
-        ui.Button("Fit the view", icon: .maximize, icon_only: true) {
+        ui.Button("Zoom in", role: .plain, icon: .zoom_in, icon_only: true, keys: ["+"]) {
+            on press: set(zoom, (zoom * 1.25).min(64.0))
+        }
+        ui.Button(
+            "Actual size",
+            role: .plain,
+            icon: .layout_grid,
+            icon_only: true,
+            keys: ["Shift+0"],
+        ) {
+            on press: set(zoom, 1.0)
+        }
+        ui.Button(
+            "Fit the view",
+            role: .plain,
+            icon: .maximize,
+            icon_only: true,
+            keys: ["Shift+1"],
+        ) {
             on press: set(zoom, 1.0).then(set(pan_x, 0.0)).then(set(pan_y, 0.0))
+        }
+        ui.Button(
+            "Keyboard shortcuts",
+            role: .plain,
+            icon: .circle_help,
+            icon_only: true,
+            keys: ["?"],
+        ) {
+            on press: set(help, true)
         }
     }
 }
@@ -4014,8 +5027,38 @@ action finish_paint(
     if tool == "line" and not same_place(from, point) {
         return .some(add_shape(a, layer, line_path(from, point, size), colour))
     }
+    if tool == "crop" and not same_place(from, point) {
+        if let p = last_picture(a) {
+            let area = dragged_crop(p, from, point)
+            let width = area.at(2) ?? 0.0
+            let height = area.at(3) ?? 0.0
+            if width > 0.02 and height > 0.02 {
+                crop_picture(p, area.at(0) ?? 0.0, area.at(1) ?? 0.0, width, height)
+            }
+        }
+    }
     if tool == "select" and not same_place(from, point) { select_area(a, rect_path(from, point)) }
     .none
+}
+
+/// Where a crop drag over the picture `p` crops it, as fractions of the picture's own pixels:
+/// the drag's corners inside the frame the picture is drawn in, laid over the crop it has.
+fn dragged_crop(p: Mark, from: List<Float>, to: List<Float>) -> List<Float> {
+    let fx0 = from.at(0) ?? 0.0
+    let fy0 = from.at(1) ?? 0.0
+    let fx1 = to.at(0) ?? 0.0
+    let fy1 = to.at(1) ?? 0.0
+    let left = fx0.min(fx1)
+    let top = fy0.min(fy1)
+    let right = fx0.max(fx1)
+    let bottom = fy0.max(fy1)
+    let width = p.width.max(0.0001)
+    let height = p.height.max(0.0001)
+    let x = ((left - p.x) / width).clamp(0.0, 1.0)
+    let y = ((top - p.y) / height).clamp(0.0, 1.0)
+    let w = ((right - p.x) / width).clamp(0.0, 1.0) - x
+    let h = ((bottom - p.y) / height).clamp(0.0, 1.0) - y
+    [p.crop_x + x * p.crop_width, p.crop_y + y * p.crop_height, w * p.crop_width, h * p.crop_height]
 }
 
 /// The lasso's points with `p` added while the lasso tool draws; unchanged for any other tool.

@@ -1173,6 +1173,15 @@ impl tilolang_runtime::canvas::CanvasHost for SharedCanvas {
         self.0.inspect(artwork, request)
     }
 
+    fn sample(
+        &self,
+        artwork: &str,
+        request: &str,
+        pictures: &[(String, Vec<u8>)],
+    ) -> Result<String, String> {
+        self.0.sample(artwork, request, pictures)
+    }
+
     fn remove_along(&self, artwork: &str, request: &str) -> Result<String, String> {
         self.0.remove_along(artwork, request)
     }
