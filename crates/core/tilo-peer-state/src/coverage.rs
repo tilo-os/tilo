@@ -138,6 +138,27 @@ pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
     }
     Ok(rows)
 }
+/// The coverage row of the route `key` ([`route_key`]), reading that route alone.
+pub(crate) fn route_entry(doc: &AutoCommit, key: &str) -> Result<Option<Coverage>, String> {
+    crate::route_maps::route(doc, LAYOUT, key)?
+        .map(|bytes| decode_route(key, &bytes))
+        .transpose()
+}
+/// The coverage rows of `routes` that `doc` holds.
+pub(crate) fn rows_of(
+    doc: Option<&AutoCommit>,
+    routes: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Coverage>, String> {
+    let mut rows = BTreeMap::new();
+    if let Some(doc) = doc {
+        for route in routes {
+            if let Some(row) = route_entry(doc, route)? {
+                rows.insert(route.clone(), row);
+            }
+        }
+    }
+    Ok(rows)
+}
 /// Every stored coverage encoding is canonical.
 pub fn canonical(doc: &AutoCommit) -> bool {
     route_values(doc).is_ok_and(|routes| {
@@ -192,27 +213,45 @@ fn next_rows(doc: &AutoCommit, coverages: Vec<Coverage>) -> Result<CoverageRows,
     Ok((rows, next))
 }
 pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<(), String> {
-    if coverages.is_empty() {
+    // Only the incoming routes are read and written: a record's coverage costs the same
+    // however many records the workspace covers.
+    let mut next = BTreeMap::new();
+    for coverage in coverages {
+        let route = route_key(&coverage.app, &coverage.record);
+        let bytes = encode_route(&route, &coverage)?;
+        if next.insert(route, bytes).is_some() {
+            return Err("duplicate checkpoint coverage route in batch".into());
+        }
+    }
+    if next.is_empty() {
         return Ok(());
     }
-    let (_, next) = next_rows(doc, coverages)?;
     // A durable receipt stored as "the route's current coverage" must keep
     // naming the coverage it was issued for: pin it in full, in the same
     // change, before that route's coverage changes.
     let pinned = crate::durability::pin_before_coverage_change(doc, &next)?;
-    match pinned {
-        Some(receipts) => crate::route_maps::write_raw(
-            doc,
-            &[(LAYOUT, &next), (crate::durability::LAYOUT, &receipts)],
-        )?,
-        None => crate::route_maps::write_raw(doc, &[(LAYOUT, &next)])?,
-    };
+    crate::route_maps::put_routes(doc, LAYOUT, &next)?;
+    crate::route_maps::put_routes(doc, crate::durability::LAYOUT, &pinned)?;
     Ok(())
 }
 /// Check that `after` never regresses a coverage row of `before`.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
-    let old = before.map(entries).transpose()?.unwrap_or_default();
-    let new = entries(after)?;
+    monotonic_of(before, after, None)
+}
+/// [`monotonic`] of the rows of `routes` alone, the routes a batch wrote, or of every row when
+/// it does not name them: a record's coverage costs the same however many records are covered.
+pub(crate) fn monotonic_of(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    routes: Option<&BTreeSet<String>>,
+) -> Result<(), String> {
+    let (old, new) = match routes {
+        None => (
+            before.map(entries).transpose()?.unwrap_or_default(),
+            entries(after)?,
+        ),
+        Some(routes) => (rows_of(before, routes)?, rows_of(Some(after), routes)?),
+    };
     for (key, prior) in old {
         let next = new
             .get(&key)

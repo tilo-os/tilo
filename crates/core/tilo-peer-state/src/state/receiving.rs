@@ -779,6 +779,7 @@ impl StatePeer {
         // The one workspace admission the shell's workspace tree runs too.
         let workspace::AdmittedWorkspace {
             mut candidate,
+            checkpoints_only,
             rebased,
         } = workspace::admit_workspace_changes(
             workspace::WorkspaceAdmission {
@@ -852,7 +853,7 @@ impl StatePeer {
         // The governance may name a record this replica holds nothing of and
         // that no one can send it: an empty one. Held before the writes
         // waiting on it are tried, so the first one builds on the record.
-        covered_documents::hold_covered_empty_documents(self)
+        covered_documents::hold_covered_empty_documents(self, checkpoints_only.as_ref())
             .map_err(crate::AdmissionError::malformed)?;
         let mut report = AdmissionReport::metadata(ReceiveOutcome {
             changed,

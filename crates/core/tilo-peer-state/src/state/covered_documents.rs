@@ -18,11 +18,20 @@ use super::{
 /// for one. The replica holds it as if the checkpoint had reached it, so a
 /// write of its own builds on a record it has, and the checkpoint it would
 /// retransmit is the one the coverage names.
-pub(super) fn hold_covered_empty_documents(peer: &mut StatePeer) -> Result<usize, String> {
+///
+/// `routes` names the coverage a change wrote when it wrote nothing else of the governance: only
+/// those rows can have come to cover a record as empty, so only they are read.
+pub(super) fn hold_covered_empty_documents(
+    peer: &mut StatePeer,
+    routes: Option<&std::collections::BTreeSet<String>>,
+) -> Result<usize, String> {
     let Some(workspace) = peer.core.workspace_doc.as_deref() else {
         return Ok(0);
     };
-    let coverages = crate::coverage::entries(workspace)?;
+    let coverages = match routes {
+        Some(routes) => crate::coverage::rows_of(Some(workspace), routes)?,
+        None => crate::coverage::entries(workspace)?,
+    };
     let mut held = 0_usize;
     for coverage in coverages.values() {
         let route = Route {

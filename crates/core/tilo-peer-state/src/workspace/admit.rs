@@ -10,6 +10,7 @@
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
+use std::collections::{BTreeMap, BTreeSet};
 use tilo_action_policy::{Answer, Context, TreePath};
 use tilo_action_types::ActionKind;
 
@@ -95,6 +96,33 @@ pub struct AdmittedWorkspace {
     /// The candidate is a newer base ([`super::base`]) replacing the
     /// document held, not that document with the batch applied.
     pub rebased: bool,
+    /// The checkpoint coverage and durable receipt routes the batch wrote, when that is all of
+    /// the governance it wrote: what follows it reads those routes alone. `None` when it wrote
+    /// anything else, or did not say where it wrote.
+    pub checkpoints_only: Option<BTreeSet<String>>,
+}
+
+/// The coverage and durable receipt routes `touched` names, or `None` when it names either map
+/// whole.
+fn checkpoint_routes(touched: &BTreeMap<String, super::rows::Wrote>) -> Option<BTreeSet<String>> {
+    let mut routes = BTreeSet::new();
+    for key in [crate::coverage::FIELD_V2, crate::durability::FIELD_V2] {
+        match touched.get(key) {
+            None => {}
+            Some(super::rows::Wrote::Entries(entries)) => routes.extend(entries.iter().cloned()),
+            Some(super::rows::Wrote::Whole) => return None,
+        }
+    }
+    Some(routes)
+}
+
+/// [`checkpoint_routes`] when `touched` names nothing but them.
+fn only_checkpoints(touched: &BTreeMap<String, super::rows::Wrote>) -> Option<BTreeSet<String>> {
+    touched
+        .keys()
+        .all(|key| key == crate::coverage::FIELD_V2 || key == crate::durability::FIELD_V2)
+        .then(|| checkpoint_routes(touched))
+        .flatten()
 }
 
 /// Why a batch was refused. Display strings are the peer-state messages.
@@ -291,6 +319,15 @@ pub fn admit_workspace_changes(
             // devices write theirs the same way.
             let grown = crate::members::growth(input.before, &candidate)
                 .map_err(WorkspaceRefusal::Membership)?;
+            // Read where the batch wrote, never every row: a record's checkpoint costs what it
+            // wrote however many records the workspace covers.
+            let written: Vec<automerge::Change> = changes
+                .iter()
+                .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
+                .collect();
+            let touched = super::rows::touched(&candidate, &written);
+            let changed_rows =
+                |before: &AutoCommit| super::changed_rows_by(before, &candidate, &written, true);
             let hosted = if grown > 0 {
                 super::membership::admit_operations(
                     input.before,
@@ -301,27 +338,25 @@ pub fn admit_workspace_changes(
                 )
                 .map_err(membership)?;
                 true
-            } else if !super::governance_unchanged(input.before, &candidate) {
+            } else if let Some(changed) = input
+                .before
+                .map(changed_rows)
+                .filter(|changed| !changed.is_empty())
+            {
                 // A change to the workspace's governance is an operation's: a
                 // batch that changes it without one changes nothing, but for
                 // the checkpoints a keeper publishes as it publishes them.
-                let written: Vec<automerge::Change> = changes
-                    .iter()
-                    .filter_map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
-                    .collect();
-                let checkpoints = input.before.is_some_and(|before| {
-                    super::changed_rows_by(before, &candidate, &written, true)
-                        == [super::GovernanceRow::Checkpoints]
-                });
-                if !(checkpoints && keeps_checkpoints(&input)) {
+                if !(changed == [super::GovernanceRow::Checkpoints] && keeps_checkpoints(&input)) {
                     return Err(WorkspaceRefusal::GovernanceWriter.into());
                 }
                 true
             } else {
                 false
             };
-            checked(&input, &candidate, hosted)?;
+            let routes = touched.as_ref().and_then(checkpoint_routes);
+            checked(&input, &candidate, hosted, routes.as_ref())?;
             Ok(AdmittedWorkspace {
+                checkpoints_only: touched.as_ref().and_then(only_checkpoints),
                 candidate,
                 rebased: false,
             })
@@ -354,10 +389,11 @@ pub fn admit_workspace_changes(
             }
             // The receiver projects what it owns onto the base it adopts, so a
             // base leaving out or changing its entries holds only until then.
-            checked(&input, &candidate, true)?;
+            checked(&input, &candidate, true, None)?;
             Ok(AdmittedWorkspace {
                 candidate,
                 rebased: true,
+                checkpoints_only: None,
             })
         }
         super::base::Lineage::Refounded => Err(WorkspaceRefusal::Refounded.into()),
@@ -429,7 +465,11 @@ fn first_member_list(
     {
         return Err(WorkspaceRefusal::WriteForbidden.into());
     }
-    Ok(AdmittedWorkspace { candidate, rebased })
+    Ok(AdmittedWorkspace {
+        candidate,
+        rebased,
+        checkpoints_only: None,
+    })
 }
 
 /// What a governance batch from a sender holding no role may change: the
@@ -494,10 +534,16 @@ fn enrolling_writes(
     {
         let author = listed(before, input.workspace, sender)?;
         own_grant((before, &candidate), &touched, &author)?;
-        checked(input, &candidate, true)?;
+        checked(
+            input,
+            &candidate,
+            true,
+            checkpoint_routes(&touched).as_ref(),
+        )?;
         return Ok(AdmittedWorkspace {
             candidate,
             rebased: false,
+            checkpoints_only: None,
         });
     }
     let author = own_operations((before, &candidate), &touched, sender)?;
@@ -515,10 +561,16 @@ fn enrolling_writes(
         (input.now_ns, false),
     )
     .map_err(membership)?;
-    checked(input, &candidate, true)?;
+    checked(
+        input,
+        &candidate,
+        true,
+        checkpoint_routes(&touched).as_ref(),
+    )?;
     Ok(AdmittedWorkspace {
         candidate,
         rebased: false,
+        checkpoints_only: None,
     })
 }
 
@@ -759,6 +811,7 @@ fn checked(
     input: &WorkspaceAdmission<'_>,
     candidate: &AutoCommit,
     hosted: bool,
+    routes: Option<&BTreeSet<String>>,
 ) -> Result<(), WorkspaceRefusal> {
     let WorkspaceAdmission {
         before,
@@ -812,10 +865,10 @@ fn checked(
     if !super::redemptions_kept(before, candidate) {
         return Err(WorkspaceRefusal::RedemptionImmutable);
     }
-    crate::coverage::monotonic(before, candidate).map_err(WorkspaceRefusal::Coverage)?;
+    crate::coverage::monotonic_of(before, candidate, routes).map_err(WorkspaceRefusal::Coverage)?;
     crate::removals::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
     crate::standing::monotonic(before, candidate).map_err(WorkspaceRefusal::Removals)?;
-    crate::durability::monotonic(before, candidate).map_err(WorkspaceRefusal::Durability)
+    crate::durability::monotonic_of(before, candidate, routes).map_err(WorkspaceRefusal::Durability)
 }
 
 /// A shortcut a batch adds or changes names, as who saved it, no one or the

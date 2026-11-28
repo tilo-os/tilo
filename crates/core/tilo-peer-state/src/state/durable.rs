@@ -361,7 +361,8 @@ impl StatePeer {
         let Some(snapshot) = document.covered_snapshot.as_ref() else {
             return Ok(None);
         };
-        if crate::coverage::entries(workspace)?.get(&crate::coverage::route_key(app, record))
+        if crate::coverage::route_entry(workspace, &crate::coverage::route_key(app, record))?
+            .as_ref()
             != Some(coverage)
         {
             return Ok(None);

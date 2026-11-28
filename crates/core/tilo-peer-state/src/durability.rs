@@ -55,12 +55,8 @@ enum RouteValue {
     Current { generation: u64 },
     Full(Box<DurableReceipt>),
 }
-fn encode_route(
-    key: &str,
-    receipt: &DurableReceipt,
-    coverage: &BTreeMap<String, Coverage>,
-) -> Result<Vec<u8>, String> {
-    let current = coverage.get(key) == Some(&receipt.coverage)
+fn encode_route(receipt: &DurableReceipt, coverage: Option<&Coverage>) -> Result<Vec<u8>, String> {
+    let current = coverage == Some(&receipt.coverage)
         && DurableReceipt::new(receipt.coverage.clone(), receipt.generation)
             .ok()
             .as_ref()
@@ -74,11 +70,7 @@ fn encode_route(
     };
     postcard::to_allocvec(&value).map_err(|e| e.to_string())
 }
-fn decode_route(
-    key: &str,
-    bytes: &[u8],
-    coverage: &BTreeMap<String, Coverage>,
-) -> Result<DurableReceipt, String> {
+fn decode_route(bytes: &[u8], coverage: Option<&Coverage>) -> Result<DurableReceipt, String> {
     let Some(value) = crate::route_maps::exact::<RouteValue>(bytes) else {
         return Err(format!(
             "invalid durable receipts: {}",
@@ -91,7 +83,6 @@ fn decode_route(
         RouteValue::Full(receipt) => Ok(*receipt),
         RouteValue::Current { generation } => DurableReceipt::new(
             coverage
-                .get(key)
                 .ok_or("durable receipt names absent checkpoint coverage")?
                 .clone(),
             generation,
@@ -107,7 +98,7 @@ fn rows(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, String> {
     if !routes.is_empty() {
         let coverage = crate::coverage::entries(doc)?;
         for (key, bytes) in routes {
-            let receipt = decode_route(&key, &bytes, &coverage)?;
+            let receipt = decode_route(&bytes, coverage.get(&key))?;
             rows.insert(key, receipt);
         }
     }
@@ -119,8 +110,8 @@ pub fn canonical(doc: &AutoCommit) -> bool {
         return false;
     };
     routes.iter().all(|(key, bytes)| {
-        decode_route(key, bytes, &coverage).is_ok_and(|receipt| {
-            encode_route(key, &receipt, &coverage).ok().as_deref() == Some(bytes)
+        decode_route(bytes, coverage.get(key)).is_ok_and(|receipt| {
+            encode_route(&receipt, coverage.get(key)).ok().as_deref() == Some(bytes)
         })
     })
 }
@@ -134,6 +125,29 @@ pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, Str
     }
     Ok(rows)
 }
+/// The receipts of `routes` that `doc` holds, each checked as [`entries`] checks it.
+fn receipts_of(
+    doc: Option<&AutoCommit>,
+    routes: &std::collections::BTreeSet<String>,
+) -> Result<BTreeMap<String, DurableReceipt>, String> {
+    let mut receipts = BTreeMap::new();
+    let Some(doc) = doc else {
+        return Ok(receipts);
+    };
+    for route in routes {
+        let Some(bytes) = crate::route_maps::route(doc, LAYOUT, route)? else {
+            continue;
+        };
+        let coverage = crate::coverage::route_entry(doc, route)?;
+        let receipt = decode_route(&bytes, coverage.as_ref())?;
+        receipt.validate()?;
+        if *route != route_key(&receipt.coverage.app, &receipt.coverage.record) {
+            return Err("durable receipt route mismatch".into());
+        }
+        receipts.insert(route.clone(), receipt);
+    }
+    Ok(receipts)
+}
 /// Raw route values of a complete receipt set against `coverage` rows.
 pub(crate) fn encode_all(
     receipts: &BTreeMap<String, DurableReceipt>,
@@ -141,7 +155,7 @@ pub(crate) fn encode_all(
 ) -> Result<BTreeMap<String, Vec<u8>>, String> {
     receipts
         .iter()
-        .map(|(key, receipt)| Ok((key.clone(), encode_route(key, receipt, coverage)?)))
+        .map(|(key, receipt)| Ok((key.clone(), encode_route(receipt, coverage.get(key))?)))
         .collect()
 }
 /// Replace the receipt set with `receipts`, writing only changed routes.
@@ -156,42 +170,55 @@ pub fn put(doc: &mut AutoCommit, receipts: BTreeMap<String, DurableReceipt>) -> 
 }
 /// Before coverage routes change to `next_coverage` (raw route values), the
 /// receipt values that must be rewritten in full in the same change: every
-/// `Current` receipt whose route coverage changes. `None` when none must.
+/// `Current` receipt whose route coverage changes. Only the routes of
+/// `next_coverage` are read.
 pub(crate) fn pin_before_coverage_change(
     doc: &AutoCommit,
     next_coverage: &BTreeMap<String, Vec<u8>>,
-) -> Result<Option<BTreeMap<String, Vec<u8>>>, String> {
-    let routes = route_values(doc)?;
-    if routes.is_empty() {
-        return Ok(None);
-    }
-    let old_coverage = crate::coverage::entries(doc)?;
-    let old_raw = crate::coverage::route_values(doc)?;
-    let mut changed = false;
-    let mut next = BTreeMap::new();
-    for (key, bytes) in routes {
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut pinned = BTreeMap::new();
+    for (key, next) in next_coverage {
+        let Some(bytes) = crate::route_maps::route(doc, LAYOUT, key)? else {
+            continue;
+        };
         let current = matches!(
             crate::route_maps::exact::<RouteValue>(&bytes),
             Some(RouteValue::Current { .. })
         );
-        if current && old_raw.get(&key) != next_coverage.get(&key) {
-            let receipt = decode_route(&key, &bytes, &old_coverage)?;
-            next.insert(
-                key,
+        let old_raw = crate::route_maps::route(doc, crate::coverage::LAYOUT, key)?;
+        if current && old_raw.as_ref() != Some(next) {
+            let old = crate::coverage::route_entry(doc, key)?;
+            let receipt = decode_route(&bytes, old.as_ref())?;
+            pinned.insert(
+                key.clone(),
                 postcard::to_allocvec(&RouteValue::Full(Box::new(receipt)))
                     .map_err(|e| e.to_string())?,
             );
-            changed = true;
-        } else {
-            next.insert(key, bytes);
         }
     }
-    Ok(changed.then_some(next))
+    Ok(pinned)
 }
 /// Check that `after` never regresses a receipt of `before`.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
-    let old = before.map(entries).transpose()?.unwrap_or_default();
-    let new = entries(after)?;
+    monotonic_of(before, after, None)
+}
+/// [`monotonic`] of the receipts of `routes` alone, the routes whose receipt or coverage a batch
+/// wrote, or of every receipt when it does not name them.
+pub(crate) fn monotonic_of(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    routes: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(), String> {
+    let (old, new) = match routes {
+        None => (
+            before.map(entries).transpose()?.unwrap_or_default(),
+            entries(after)?,
+        ),
+        Some(routes) => (
+            receipts_of(before, routes)?,
+            receipts_of(Some(after), routes)?,
+        ),
+    };
     for (key, prior) in old {
         let next = new.get(&key).ok_or("durable receipt cannot be erased")?;
         if next.generation < prior.generation

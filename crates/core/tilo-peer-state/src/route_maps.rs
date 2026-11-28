@@ -45,6 +45,55 @@ pub(crate) fn route_bytes(
     Ok(Some(rows))
 }
 
+/// The raw bytes of the route `key` (its winning value), if the map holds it.
+pub(crate) fn route(
+    doc: &AutoCommit,
+    layout: Layout,
+    key: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(object) = routes_object(doc, layout)? else {
+        return Ok(None);
+    };
+    match doc.get(&object, key).map_err(|e| e.to_string())? {
+        None => Ok(None),
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => Ok(Some(bytes.clone())),
+            _ => Err(format!("{} route is not bytes", layout.routes)),
+        },
+        Some(_) => Err(format!("{} route is not bytes", layout.routes)),
+    }
+}
+
+/// Write the routes of `routes` leaving them pending, as [`write_raw`] does, and leave every
+/// other route as it is: a writer that changes a few routes reads and writes only those.
+///
+/// # Errors
+///
+/// The workspace was founded without the layout's map, or the document refuses
+/// the write.
+pub(crate) fn put_routes(
+    doc: &mut AutoCommit,
+    layout: Layout,
+    routes: &BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    if routes.is_empty() {
+        return Ok(());
+    }
+    let object = routes_object(doc, layout)?.ok_or_else(|| {
+        format!(
+            "the workspace was founded without its `{}` routes",
+            layout.routes
+        )
+    })?;
+    for (key, bytes) in routes {
+        if route(doc, layout, key)?.as_ref() != Some(bytes) {
+            doc.put(&object, key.as_str(), ScalarValue::Bytes(bytes.clone()))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Deterministic identity of the whole map, for "did governance
 /// change" comparisons. `None` when the map is absent.
 pub(crate) fn identity(doc: &AutoCommit, layout: Layout) -> Option<Vec<u8>> {

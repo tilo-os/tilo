@@ -17,8 +17,10 @@ impl StatePeer {
         let Some(workspace) = self.core.workspace_doc.as_deref() else {
             return Ok(None);
         };
-        Ok(crate::coverage::entries(workspace)?
-            .remove(&crate::coverage::route_key(&route.app, &route.record)))
+        crate::coverage::route_entry(
+            workspace,
+            &crate::coverage::route_key(&route.app, &route.record),
+        )
     }
     /// True only when governance covers this exact route with a checkpoint by
     /// the same author at a strictly greater sequence than `sequence`. Any other
