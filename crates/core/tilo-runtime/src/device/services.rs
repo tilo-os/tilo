@@ -8766,8 +8766,8 @@ async fn answer_a_record(
 }
 
 /// Answer the person's keys from the broker from now on, and serve the workspaces' pages
-/// through the daemon's apps: the workspace founded here when this computer founded one
-/// (`founded`), else every workspace a keeping server (`serving`) holds.
+/// through the daemon's apps: every workspace a keeping server (`serving`) holds, its person's
+/// own among them when it founded them, else the workspace founded here (`founded`).
 fn serve_key_sessions(
     key_sessions: &crate::key_sessions::KeySessions,
     (broker, invocations, apps): (&BrokerHandle, &Arc<Invocations>, &Arc<apps::Apps>),
@@ -8783,6 +8783,14 @@ fn serve_key_sessions(
         .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))?;
     let policy_time = policy_origin.capture().map_err(io::Error::other)?;
     let sessions: Arc<dyn crate::key_sessions::Sessions> = match founded {
+        _ if serving => Arc::new(host_runs::KeptRuns {
+            broker,
+            workspaces: Arc::clone(workspaces),
+            apps: Arc::clone(apps),
+            invocations: Arc::clone(invocations),
+            actor: actor.to_owned(),
+            policy_time,
+        }),
         // The person's workspace may not be founded yet: their desktop can still hand over the
         // one it kept. Its dispatch is admitted when a key first reaches it, not here.
         Some(workspace) => Arc::new(host_runs::HostRuns {
@@ -8792,14 +8800,6 @@ fn serve_key_sessions(
             first: Arc::clone(first),
             provider: std::sync::OnceLock::new(),
             workspace: workspace.to_string(),
-            actor: actor.to_owned(),
-            policy_time,
-        }),
-        None if serving => Arc::new(host_runs::KeptRuns {
-            broker,
-            workspaces: Arc::clone(workspaces),
-            apps: Arc::clone(apps),
-            invocations: Arc::clone(invocations),
             actor: actor.to_owned(),
             policy_time,
         }),
