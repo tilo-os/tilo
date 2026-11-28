@@ -5483,7 +5483,13 @@ fn every_example_is_what_new_renders_for_it() {
         assert_eq!(on_disk, generated, "{}: file set", example.name);
         for (path, source) in &rendered {
             let disk = std::fs::read_to_string(dir.join(path)).expect("example file");
-            assert_eq!(&disk, source, "{}: {}", example.name, path.display());
+            // The `[[offers]]` a `tilolang surface` run writes from the example's code are that
+            // step's, as the compiled surface beside it is.
+            let authored = match disk.split_once("\n\n# What the app offers") {
+                Some((authored, _)) => format!("{authored}\n"),
+                None => disk,
+            };
+            assert_eq!(&authored, source, "{}: {}", example.name, path.display());
         }
     }
 }
