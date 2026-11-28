@@ -138,20 +138,6 @@ d-3wbouwis = Quelle gestört
 d-ymfvuwvo = Nächste Ausführung
     .doc = Wann die nächste Sicherung läuft, gezählt ab 1970; null, wenn nichts sie plant.
 
-d-rnz74k4z = Zeile der nächsten Ausführung
-    .w-by-hand = Von Hand
-    .w-not-known = Nicht bekannt
-
-d-4qyas4qh = Belegungszeile
-    .w-used = { $size_text } belegt
-    .w-of = { $size_text } von { $size_text2 }
-
-d-ucmdxqos = Seitentitel
-    .w-this-device = Dieses Gerät
-    .w-where-they-go = Wohin sie gehen
-    .w-retention = Aufbewahrung
-    .w-all-backups = Alle Sicherungen
-
 d-v3i3cihq = Zielname
     .doc = Der Name des Zielordners und was er enthält.
 
@@ -502,147 +488,6 @@ d-vq7l4nar = Stand schließen
 
 d-apgumkkc = Ersetzen erlauben
 
-d-t5f6lf3u = Jetzt gesichert
-
-d-ngp7g7pa = Geprüft
-
-d-s2kwexka = Wiederherstellen angefragt
-
-d-4vnqjv4m = Wiederhergestellt
-
-d-yeswuxpe = Fenster
-
-d-5kspbgsu = Auswahl
-    .w-choose-the-folder-to-protect = Ordner zum Schützen wählen
-    .w-choose-where-snapshots-go = Wählen, wohin Stände gehen
-    .w-choose-the-folder-to-restore-into = Ordner zum Wiederherstellen wählen
-    .w-up = Nach oben
-    .w-restore-into-this-folder = In diesen Ordner wiederherstellen
-    .w-use-this-folder = Diesen Ordner verwenden
-    .w-cancel = Abbrechen
-    .w-that-folder-could-not-be-read = Der Ordner ließ sich nicht lesen
-    .w-folders = Ordner
-    .w-no-folders-inside = Keine Ordner darin
-
-d-xpn57dne = Einrichtung
-    .w-set-up-backups = Datensicherung einrichten
-    .w-choose-a-folder-to-protect-and = Wähle einen Ordner zum Schützen und wohin seine Stände gehen.
-    .w-the-folder-to-protect = Der zu schützende Ordner
-    .w-nothing-chosen-yet = Noch nichts gewählt
-    .w-snapshots-copy-this-folder-as-it = Stände kopieren diesen Ordner, wie er jetzt ist.
-    .w-choose-the-folder-to-protect = Ordner zum Schützen wählen
-    .w-folder = Ordner
-    .w-called = Name
-    .w-kind = Art
-    .w-choose-another-folder = Anderen Ordner wählen
-    .w-where-snapshots-go = Wohin Stände gehen
-    .w-each-snapshot-is-written-here-outside = Jeder Stand wird hier geschrieben, außerhalb des kopierten Ordners.
-    .w-choose-where-snapshots-go = Wählen, wohin Stände gehen
-    .w-used = Belegt
-    .w-that-could-not-be-done = Das ließ sich nicht tun
-    .w-back-up-now = Jetzt sichern
-
-d-pvbigiav = Fenster
-    .w-backups = Datensicherung
-    .w-all-backups = Alle Sicherungen
-    .w-this-device = Dieses Gerät
-    .w-where-they-go = Wohin sie gehen
-    .w-retention = Aufbewahrung
-    .w-snapshots = Stände
-    .w-failed = Fehlgeschlagen { $when }
-    .w-stop = Anhalten
-    .w-back-up-now = Jetzt sichern
-    .w-look-again = Erneut nachsehen
-    .w-work-under-way = Laufende Arbeit
-    .w-something-needs-a-look = Etwas braucht einen Blick
-    .w-dismiss = Ausblenden
-
-d-sqdhwi4z = Arbeitszeile
-    .w-backing-up = Sichere
-    .w-verifying-the-snapshot = Prüfe den Stand
-    .w-restoring-the-snapshot = Stelle den Stand wieder her
-    .w-stop = Anhalten
-
-d-anqvfopn = Verlauf
-    .w-last-backup = Letzte Sicherung
-    .w-next-run = Nächste Ausführung
-    .w-snapshots = Stände
-    .w-protected = Geschützt
-    .w-need-a-look = Braucht einen Blick
-    .w-newest-first = Neueste zuerst
-    .w-oldest-first = Älteste zuerst
-    .w-newest = Neuester { $when }
-    .w-no-snapshots-yet = Noch keine Stände
-    .w-back-up-the-folder-to-make = Sichere den Ordner, um den ersten Stand anzulegen.
-
-d-xm44zffk = Standzeile
-    .w-changed = { $size_text }, { $files_text } geändert
-
-d-qrinzowj = Standblatt
-    .w-restore = Wiederherstellen…
-    .w-verify = Prüfen
-    .w-taken = Art
-    .w-how = Art
-    .w-kept-as = Aufbewahrt als
-    .w-size = Größe
-    .w-changed = Geändert
-    .w-state = Zustand
-    .w-why-it-failed = Warum es fehlschlug
-    .w-files = Dateien
-    .w-the-snapshot-holds-no-files = Der Stand enthält keine Dateien
-    .w-the-snapshot-s-files = Die Dateien des Stands
-    .w-restore-into = Wiederherstellen nach { $restore_into }
-    .w-what-the-folder-holds-is-replaced = Was der Ordner enthält, wird durch den Stand ersetzt.
-    .w-the-folder-must-be-new-or = Der Ordner muss neu oder leer sein.
-    .w-restore-here = Hierhin wiederherstellen
-    .w-choose-another-folder = Anderen Ordner wählen
-    .w-choose-the-folder-to-restore-into = Ordner zum Wiederherstellen wählen
-    .w-replace-what-the-folder-holds = Ersetzen, was der Ordner enthält
-
-d-xs435fkb = Dateizeile
-
-d-nel5mdzq = Quellseite
-    .w-folder = Ordner
-    .w-called = Name
-    .w-kind = Art
-    .w-schedule = Zeitplan
-    .w-state = Zustand
-    .w-needs-a-look = Braucht einen Blick
-    .w-fine = In Ordnung
-    .w-choose-another-folder = Anderen Ordner wählen
-    .w-its-snapshots = Seine Stände
-
-d-6lykvoui = Zielseite
-    .w-folder = Ordner
-    .w-called = Name
-    .w-used = Belegt
-    .w-encrypted = Verschlüsselt
-    .w-yes = Ja
-    .w-no = Nein
-    .w-state = Zustand
-    .w-needs-a-look = Braucht einen Blick
-    .w-fine = In Ordnung
-    .w-choose-another-folder = Anderen Ordner wählen
-    .w-its-snapshots = Seine Stände
-
-d-76vcytvk = Aufbewahrungsseite
-    .w-a-backup-keeps-this-many-snapshots = Eine Sicherung behält so viele Stände je Klasse, und den neuesten von allen.
-    .w-kept = Aufbewahrt
-    .w-hourly = stündlich
-    .w-hourly-2 = Stündlich
-    .w-daily = täglich
-    .w-daily-2 = Täglich
-    .w-weekly = wöchentlich
-    .w-weekly-2 = Wöchentlich
-    .w-monthly = monatlich
-    .w-monthly-2 = Monatlich
-    .w-kept-at-most = Höchstens { $policy_total } aufbewahrt
-    .w-the-newest-snapshot-always-stays = Der neueste Stand bleibt immer
-
-d-lxppnx67 = Aufbewahrungszeile
-    .w-one-fewer = Einen { $label } weniger
-    .w-one-more = Einen { $label } mehr
-
 d-7rulekdp = Ordner einklappen
     .doc = Klappt einen Ordner aus dem Dateiverzeichnis des Stands ein oder wieder aus.
 
@@ -693,5 +538,167 @@ d-v7fwyqef = Herkunftswörter
     .w-workspace = Arbeitsbereich
     .w-custom-folder = Eigener Ordner
 
+d-tgaw76i6 = Entfernungszeile
+    .w-nothing-would-be-removed-the-next = Nichts würde entfernt: Die nächste Sicherung behält jede Momentaufnahme.
+    .w-the-next-backup-would-remove-one = Die nächste Sicherung würde eine Momentaufnahme entfernen, aufgenommen { $when }.
+    .w-the-next-backup-would-remove-snapshots = Die nächste Sicherung würde { $len } Momentaufnahmen entfernen: { $join }.
+
 d-iadmcosj = Letzte Sicherung
     .w-never = Nie
+
+d-rnz74k4z = Zeile der nächsten Ausführung
+    .w-by-hand = Von Hand
+    .w-not-known = Nicht bekannt
+
+d-4qyas4qh = Belegungszeile
+    .w-used = { $size_text } belegt
+    .w-of = { $size_text } von { $size_text2 }
+
+d-ucmdxqos = Seitentitel
+    .w-this-device = Dieses Gerät
+    .w-destination = Ziel
+    .w-retention = Aufbewahrung
+    .w-all-backups = Alle Sicherungen
+
+d-t5f6lf3u = Jetzt gesichert
+
+d-ngp7g7pa = Geprüft
+
+d-s2kwexka = Wiederherstellen angefragt
+
+d-4vnqjv4m = Wiederhergestellt
+
+d-yeswuxpe = Fenster
+
+d-5kspbgsu = Auswahl
+    .w-choose-the-folder-to-protect = Ordner zum Schützen wählen
+    .w-choose-where-snapshots-go = Wählen, wohin Stände gehen
+    .w-choose-the-folder-to-restore-into = Ordner zum Wiederherstellen wählen
+    .w-up = Nach oben
+    .w-restore-into-this-folder = In diesen Ordner wiederherstellen
+    .w-use-this-folder = Diesen Ordner verwenden
+    .w-cancel = Abbrechen
+    .w-that-folder-could-not-be-read = Der Ordner ließ sich nicht lesen
+    .w-folders = Ordner
+    .w-no-folders-inside = Keine Ordner darin
+
+d-xpn57dne = Einrichtung
+    .w-set-up-backups = Datensicherung einrichten
+    .w-choose-a-folder-to-protect-and = Wähle einen Ordner zum Schützen und wohin seine Stände gehen.
+    .w-the-folder-to-protect = Der zu schützende Ordner
+    .w-nothing-chosen-yet = Noch nichts gewählt
+    .w-snapshots-copy-this-folder-as-it = Stände kopieren diesen Ordner, wie er jetzt ist.
+    .w-choose-the-folder-to-protect = Ordner zum Schützen wählen
+    .w-folder = Ordner
+    .w-called = Name
+    .w-kind = Art
+    .w-choose-another-folder = Anderen Ordner wählen
+    .w-where-snapshots-go = Wohin Stände gehen
+    .w-each-snapshot-is-written-here-outside = Jeder Stand wird hier geschrieben, außerhalb des kopierten Ordners.
+    .w-choose-where-snapshots-go = Wählen, wohin Stände gehen
+    .w-used = Belegt
+    .w-that-could-not-be-done = Das ließ sich nicht tun
+    .w-back-up-now = Jetzt sichern
+
+d-pvbigiav = Fenster
+    .w-backups = Datensicherung
+    .w-all-backups = Alle Sicherungen
+    .w-this-device = Dieses Gerät
+    .w-destination = Ziel
+    .w-retention = Aufbewahrung
+    .w-snapshots = Stände
+    .w-failed = Fehlgeschlagen { $when }
+    .w-stop = Anhalten
+    .w-back-up-now = Jetzt sichern
+    .w-look-again = Erneut nachsehen
+    .w-work-under-way = Laufende Arbeit
+    .w-something-needs-a-look = Etwas braucht einen Blick
+    .w-dismiss = Ausblenden
+
+d-sqdhwi4z = Arbeitszeile
+    .w-backing-up = Sichere
+    .w-verifying-the-snapshot = Prüfe den Stand
+    .w-restoring-the-snapshot = Stelle den Stand wieder her
+    .w-stop = Anhalten
+
+d-anqvfopn = Verlauf
+    .w-last-backup = Letzte Sicherung
+    .w-next-run = Nächste Ausführung
+    .w-snapshots = Stände
+    .w-protected = Geschützt
+    .w-need-a-look = Braucht einen Blick
+    .w-newest-first = Neueste zuerst
+    .w-oldest-first = Älteste zuerst
+    .w-newest = Neuester { $when }
+    .w-no-snapshots-yet = Noch keine Stände
+    .w-back-up-the-folder-to-make = Sichere den Ordner, um den ersten Stand anzulegen.
+
+d-xm44zffk = Standzeile
+    .w-changed = { $size_text }, { $files_text } geändert
+
+d-qrinzowj = Standblatt
+    .w-restore = Wiederherstellen…
+    .w-verify = Prüfen
+    .w-taken = Art
+    .w-stored-on = Gespeichert auf
+    .w-how = Art
+    .w-kept-as = Aufbewahrt als
+    .w-size = Größe
+    .w-changed = Geändert
+    .w-state = Zustand
+    .w-why-it-failed = Warum es fehlschlug
+    .w-files = Dateien
+    .w-the-snapshot-holds-no-files = Der Stand enthält keine Dateien
+    .w-the-snapshot-s-files = Die Dateien des Stands
+    .w-restore-into = Wiederherstellen nach { $restore_into }
+    .w-what-the-folder-holds-is-replaced = Was der Ordner enthält, wird durch den Stand ersetzt.
+    .w-the-folder-must-be-new-or = Der Ordner muss neu oder leer sein.
+    .w-restore-here = Hierhin wiederherstellen
+    .w-choose-another-folder = Anderen Ordner wählen
+    .w-the-whole-snapshot-is-restored-into = Die ganze Momentaufnahme wird in einen neuen oder leeren Ordner deiner Wahl zurückgespielt, und jede Datei wird geprüft. Nichts, was schon existiert, wird ersetzt.
+    .w-choose-the-folder-to-restore-into = Ordner zum Wiederherstellen wählen
+    .w-replace-what-the-folder-holds = Ersetzen, was der Ordner enthält
+
+d-xs435fkb = Dateizeile
+
+d-nel5mdzq = Quellseite
+    .w-folder = Ordner
+    .w-called = Name
+    .w-kind = Art
+    .w-schedule = Zeitplan
+    .w-state = Zustand
+    .w-needs-a-look = Braucht einen Blick
+    .w-fine = In Ordnung
+    .w-choose-another-folder = Anderen Ordner wählen
+    .w-its-snapshots = Seine Stände
+
+d-6lykvoui = Zielseite
+    .w-folder = Ordner
+    .w-called = Name
+    .w-used = Belegt
+    .w-capacity = Kapazität
+    .w-free = Frei
+    .w-encrypted = Verschlüsselt
+    .w-yes = Ja
+    .w-no = Nein
+    .w-state = Zustand
+    .w-needs-a-look = Braucht einen Blick
+    .w-fine = In Ordnung
+    .w-choose-another-folder = Anderen Ordner wählen
+    .w-its-snapshots = Seine Stände
+
+d-76vcytvk = Aufbewahrungsseite
+    .w-snapshots-to-keep = Aufzubewahrende Momentaufnahmen
+    .w-hourly = stündlich
+    .w-hourly-snapshots-to-keep = Stündliche Momentaufnahmen aufbewahren
+    .w-daily = täglich
+    .w-daily-snapshots-to-keep = Tägliche Momentaufnahmen aufbewahren
+    .w-weekly = wöchentlich
+    .w-weekly-snapshots-to-keep = Wöchentliche Momentaufnahmen aufbewahren
+    .w-monthly = monatlich
+    .w-monthly-snapshots-to-keep = Monatliche Momentaufnahmen aufbewahren
+    .w-each-source-keeps-at-most-snapshots = Jede Quelle behält höchstens { $policy_total } Momentaufnahmen, plus die bis zum Entfernen aufbewahrten
+
+d-lxppnx67 = Aufbewahrungszeile
+    .w-one-fewer = Einen { $label } weniger
+    .w-one-more = Einen { $label } mehr

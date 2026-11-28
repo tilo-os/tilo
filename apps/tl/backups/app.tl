@@ -911,6 +911,80 @@ fn failed_count(b: Backups) -> Int {
     b.snapshots.count(s -> s.health == .failed)
 }
 
+/// The period a snapshot taken at `at` counts in, for the retention class: 0 hourly, 1 daily,
+/// 2 weekly, 3 monthly.
+fn period_of(at: Int, class: Int) -> Int {
+    let days = at / 86400
+    if class == 0 {
+        at / 3600
+    } else if class == 1 { days } else if class == 2 { (days + 3) / 7 } else { month_of(days) }
+}
+
+/// The month a day counted from 1970-01-01 falls in, as `year * 12 + month`.
+fn month_of(days: Int) -> Int {
+    let z = days + 719468
+    let era = z / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let shifted = (5 * doy + 2) / 153
+    let month = if shifted < 10 { shifted + 3 } else { shifted - 9 }
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 }
+    year * 12 + month
+}
+
+/// The second each snapshot the policy keeps was taken: the newest, the newest of each hour,
+/// day, week and month class, and the ones kept until removed.
+fn kept_seconds(b: Backups) -> List<Int> {
+    let newest_first = b.snapshots.sort_by(s -> s.at, desc)
+    let kept: List<Int> = []
+    if let newest = newest_first.first() {
+        kept = kept + [newest.at]
+    }
+    for s in newest_first {
+        if s.kept == .kept and not kept.contains(s.at) {
+            kept = kept + [s.at]
+        }
+    }
+    for class in [0, 1, 2, 3] {
+        let count = if class == 0 {
+            b.policy.hourly
+        } else if class == 1 {
+            b.policy.daily
+        } else if class == 2 { b.policy.weekly } else { b.policy.monthly }
+        let seen: List<Int> = []
+        for s in newest_first {
+            if seen.len() < count {
+                let period = period_of(s.at, class)
+                if not seen.contains(period) {
+                    seen = seen + [period]
+                    if not kept.contains(s.at) {
+                        kept = kept + [s.at]
+                    }
+                }
+            }
+        }
+    }
+    kept
+}
+
+/// What the counts on screen would remove at the next backup, said as one sentence.
+fn removal_line(b: Backups) -> Text {
+    let kept = kept_seconds(b)
+    let doomed = b.snapshots.filter(s -> not kept.contains(s.at)).sort_by(s -> s.at, desc)
+    if doomed.is_empty() {
+        std.say("Nothing would be removed: the next backup keeps every snapshot.")
+    } else if doomed.len() == 1 {
+        if let one = doomed.first() {
+            std.say("The next backup would remove one snapshot, taken {when(one.at)}.")
+        } else { "" }
+    } else {
+        std.say(
+            "The next backup would remove {doomed.len()} snapshots: {doomed.map(s -> when(s.at)).join(", ")}.",
+        )
+    }
+}
+
 fn last_backup_line(b: Backups) -> Text {
     if let s = latest(b) { when(s.at) } else { "Never" }
 }
@@ -1086,7 +1160,7 @@ view shell(b: Backups) {
                 ui.NavItem("source", "This device", icon: .hard_drive, live: failed_count(b)) {
                     on select: show_place(b, "source")
                 }
-                ui.NavItem("destination", "Where they go", icon: .archive) {
+                ui.NavItem("destination", "Destination", icon: .archive) {
                     on select: show_place(b, "destination")
                 }
                 ui.NavItem("retention", "Retention", icon: .hourglass) {
@@ -1177,7 +1251,7 @@ fn page_title(b: Backups) -> Text {
     if b.place == "source" {
         if b.source_name != "" { b.source_name } else { "This device" }
     } else if b.place == "destination" {
-        if b.destination_name != "" { b.destination_name } else { "Where they go" }
+        if b.destination_name != "" { b.destination_name } else { "Destination" }
     } else if b.place == "retention" { "Retention" } else { "All backups" }
 }
 
@@ -1271,6 +1345,10 @@ view snapshot_sheet(b: Backups, s: Snapshot) {
         body: {
             ui.PropertyList {
                 ui.Property("Taken", when(s.at))
+                ui.Property(
+                    "Stored on",
+                    if b.destination_name != "" { b.destination_name } else { b.destination },
+                )
                 ui.Property("How", taken_words(s.taken))
                 ui.Property("Kept as", kept_words(s.kept))
                 ui.Property("Size", size_text(s.size_bytes))
@@ -1331,6 +1409,11 @@ view snapshot_sheet(b: Backups, s: Snapshot) {
                     on press: begin_restore(b)
                 }
             } else {
+                ui.Text(
+                    "The whole snapshot is restored into a new or empty folder you choose, and every file is checked. Nothing that already exists is replaced.",
+                    role: .caption,
+                    secondary: true,
+                )
                 ui.Button("Choose the folder to restore into", icon: .folder_open) {
                     on press: begin_restore(b)
                 }
@@ -1412,6 +1495,10 @@ view destination_page(b: Backups) {
         ui.Property("Folder", b.destination)
         ui.Property("Called", b.destination_name)
         ui.Property("Used", used_line(b))
+        if b.total_bytes > 0 {
+            ui.Property("Capacity", size_text(b.total_bytes))
+            ui.Property("Free", size_text(b.total_bytes - b.used_bytes))
+        }
         ui.Property("Encrypted", if b.encrypted { "Yes" } else { "No" })
         ui.Property("State", if b.destination_failing { "Needs a look" } else { "Fine" })
     }
@@ -1428,22 +1515,21 @@ view destination_page(b: Backups) {
     }
 }
 
-/// The retention policy: how many snapshots of each class a backup keeps.
+/// The retention policy: how many snapshots of each class a backup keeps, and what the
+/// counts on screen would remove at the next backup.
 view retention_page(b: Backups) {
-    ui.Text(
-        "A backup keeps this many snapshots of each class, and the newest of all.",
-        secondary: true,
-    )
-    ui.Section(title: "Kept") {
-        policy_row(b, "hourly", "Hourly", b.policy.hourly)
-        policy_row(b, "daily", "Daily", b.policy.daily)
-        policy_row(b, "weekly", "Weekly", b.policy.weekly)
-        policy_row(b, "monthly", "Monthly", b.policy.monthly)
+    ui.Section(title: "Snapshots to keep") {
+        policy_row(b, "hourly", "Hourly snapshots to keep", b.policy.hourly)
+        policy_row(b, "daily", "Daily snapshots to keep", b.policy.daily)
+        policy_row(b, "weekly", "Weekly snapshots to keep", b.policy.weekly)
+        policy_row(b, "monthly", "Monthly snapshots to keep", b.policy.monthly)
         ui.Facts {
-            ui.Fact("{policy_total(b.policy)} kept at most")
-            ui.Fact("The newest snapshot always stays")
+            ui.Fact(
+                "Each source keeps at most {policy_total(b.policy)} snapshots, plus the ones kept until removed",
+            )
         }
     }
+    ui.Text(removal_line(b), role: .body)
 }
 
 view policy_row(b: Backups, which: Text, label: Text, kept: Int) {

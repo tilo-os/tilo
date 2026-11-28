@@ -410,6 +410,36 @@ mod cases {
             .collect()
     }
 
+    /// Whether any node in `tree` says `wanted` in its `name` prop.
+    fn has_prop(tree: &UiNode, name: &str, wanted: &str) -> bool {
+        tree.props
+            .get(name)
+            .is_some_and(|value| matches!(value, Value::Text(text) if text == wanted))
+            || tree
+                .children
+                .iter()
+                .any(|child| has_prop(child, name, wanted))
+    }
+
+    /// Whether any word of any node in `tree` is `wanted`.
+    fn says(tree: &UiNode, wanted: &str) -> bool {
+        tree.props
+            .values()
+            .any(|value| matches!(value, Value::Text(text) if text == wanted))
+            || tree.children.iter().any(|child| says(child, wanted))
+    }
+
+    /// Whether any word of any node in `tree` starts with `wanted`.
+    fn says_starting(tree: &UiNode, wanted: &str) -> bool {
+        tree.props
+            .values()
+            .any(|value| matches!(value, Value::Text(text) if text.starts_with(wanted)))
+            || tree
+                .children
+                .iter()
+                .any(|child| says_starting(child, wanted))
+    }
+
     tilo_test_env::scenario! {
         fn e2e_backups_1;
 
@@ -672,8 +702,171 @@ mod cases {
                 .map(|fact| prop(fact, "text"))
                 .collect();
             assert!(
-                facts.iter().any(|fact| fact.contains("kept at most")),
+                facts
+                    .iter()
+                    .any(|fact| fact.contains("keeps at most")
+                        && fact.contains("kept until removed")),
                 "the retention page says how many are kept: {facts:?}"
+            );
+        }
+
+        phase the_retention_page_says_what_the_next_backup_would_remove;
+        {
+            let s = Backups::new();
+            s.set_up();
+            // Three snapshots: the newest, one kept until removed, and one no class keeps.
+            let snapshots = |retentions: [&str; 3]| {
+                let at = [1_795_080_000_i64, 1_795_076_400, 1_795_072_800];
+                let labels = ["", "Saved before", ""];
+                let kinds = ["auto", "manual", "auto"];
+                let listed: Vec<_> = (0..3)
+                    .map(|i| {
+                        serde_json::json!({
+                            "id": format!("s{i}"),
+                            "source_id": "local-source",
+                            "dest_id": "local-destination",
+                            "taken_unix_seconds": at[i],
+                            "label": labels[i],
+                            "kind": kinds[i],
+                            "retention": retentions[i],
+                            "size_bytes": 1_000_000_i64,
+                            "delta_bytes": 1_000_000_i64,
+                            "files_changed": 1,
+                            "status": "complete",
+                            "failure": "",
+                            "files": [],
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "sources": [{"id": "local-source", "name": "Documents",
+                        "path": "/home/you/Documents", "kind": "custom",
+                        "schedule": "on_demand", "enabled": true, "health": "ok"}],
+                    "destinations": [{"id": "local-destination", "name": "backup-drive",
+                        "kind": "local_folder", "used_bytes": 312_000_000_000_i64,
+                        "total_bytes": 500_000_000_000_i64, "encrypted": false,
+                        "health": "ok"}],
+                    "snapshots": listed,
+                })
+                .to_string()
+            };
+            s.done(
+                "keep_catalog",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(snapshots(["hourly", "keep", "hourly"])),
+                ],
+            );
+            // Every class keeps none: only the newest and the one kept until removed stay.
+            for _ in 0..30 {
+                for which in ["hourly", "daily", "weekly", "monthly"] {
+                    s.done(
+                        "keep_fewer",
+                        vec![Value::resource(&s.root), Value::text(which)],
+                    );
+                }
+            }
+            s.done(
+                "show_place",
+                vec![Value::resource(&s.root), Value::text("retention")],
+            );
+            let window = s.window();
+            assert!(
+                says_starting(
+                    window.tree(),
+                    "The next backup would remove one snapshot, taken"
+                ),
+                "the page says what the next backup would remove"
+            );
+            assert!(
+                has_prop(window.tree(), "title", "Snapshots to keep"),
+                "the page names what it counts"
+            );
+
+            // Every snapshot kept until removed: nothing would go.
+            let s = Backups::new();
+            s.set_up();
+            s.done(
+                "keep_catalog",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text(snapshots(["keep", "keep", "keep"])),
+                ],
+            );
+            for _ in 0..30 {
+                for which in ["hourly", "daily", "weekly", "monthly"] {
+                    s.done(
+                        "keep_fewer",
+                        vec![Value::resource(&s.root), Value::text(which)],
+                    );
+                }
+            }
+            s.done(
+                "show_place",
+                vec![Value::resource(&s.root), Value::text("retention")],
+            );
+            let window = s.window();
+            assert!(
+                says(
+                    window.tree(),
+                    "Nothing would be removed: the next backup keeps every snapshot."
+                ),
+                "the page says nothing would go"
+            );
+        }
+
+        phase the_destination_says_what_it_holds;
+        {
+            let s = Backups::new();
+            s.set_up();
+            s.done(
+                "keep_catalog",
+                vec![Value::resource(&s.root), Value::text(catalog_json())],
+            );
+            s.done(
+                "show_place",
+                vec![Value::resource(&s.root), Value::text("destination")],
+            );
+            let window = s.window();
+            let facts: Vec<String> = of_kind(window.tree(), "ui.Property")
+                .iter()
+                .map(|node| format!("{}: {}", prop(node, "label"), prop(node, "value")))
+                .collect();
+            assert!(facts.iter().any(|fact| fact == "Capacity: 500 GB"), "{facts:?}");
+            assert!(facts.iter().any(|fact| fact == "Free: 188 GB"), "{facts:?}");
+            assert!(
+                facts.iter().any(|fact| fact == "Encrypted: No"),
+                "{facts:?}"
+            );
+            // A snapshot says where it is stored and how a restore goes.
+            s.done(
+                "show_place",
+                vec![Value::resource(&s.root), Value::text("all")],
+            );
+            s.done(
+                "open_snapshot",
+                vec![
+                    Value::resource(&s.root),
+                    Value::resource(&s.records(&s.root, "snapshots")[0]),
+                ],
+            );
+            let window = s.window();
+            let facts: Vec<String> = of_kind(window.tree(), "ui.Property")
+                .iter()
+                .map(|node| format!("{}: {}", prop(node, "label"), prop(node, "value")))
+                .collect();
+            assert!(
+                facts
+                    .iter()
+                    .any(|fact| fact == "Stored on: backup-drive"),
+                "{facts:?}"
+            );
+            assert!(
+                says(
+                    window.tree(),
+                    "The whole snapshot is restored into a new or empty folder you choose, and every file is checked. Nothing that already exists is replaced."
+                ),
+                "the sheet says how a restore goes"
             );
         }
 
