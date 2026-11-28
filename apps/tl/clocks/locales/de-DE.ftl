@@ -93,10 +93,10 @@ d-5b7nw57j = Sekunden
     .doc = Wie lange er herunterzählt, in Sekunden.
 
 d-6anly4z4 = Endet um
-    .doc = Der Zeitpunkt, an dem er endet; leer, solange er pausiert.
+    .doc = Der Zeitpunkt, an dem er endet; leer, solange er pausiert oder abgelaufen ist.
 
 d-ufpse6mi = Übrig
-    .doc = Was ihm pausiert übrig bleibt, in Sekunden.
+    .doc = Was ihm pausiert übrig bleibt, in Sekunden; null, sobald er geklingelt hat, sodass er erledigt steht, bis er neu startet.
 
 d-oprnqjx3-filter-seconds = Sekunden
 
@@ -160,6 +160,7 @@ d-ppcjxruc-filter-stopwatch = Stoppuhr
 d-ppcjxruc-filter-active = Aktiv
 
 d-ofkzixdx = Weltuhr hinzufügen
+    .did = hat eine Stadt hinzugefügt
     .doc = Fügt die Uhr einer Stadt zum Arbeitsbereich hinzu.
 
 d-ofkzixdx-city = Stadt
@@ -167,11 +168,20 @@ d-ofkzixdx-city = Stadt
 d-ofkzixdx-zone = Zeitzone
 
 d-tp56af3m = Weltuhr entfernen
+    .did = hat eine Stadt entfernt
     .doc = Entfernt die Uhr einer Stadt.
 
 d-tp56af3m-w = W
 
+d-5jfhqxwe = Umbenennen
+    .doc = Gibt der Uhr einer Stadt die Worte, mit denen die Person sie kennt.
+    .did = hat eine Stadt umbenannt
+    .w-a-city-needs-a-name = Eine Stadt braucht einen Namen
+
+d-5jfhqxwe-city = Stadt
+
 d-aozz4wlf = Neuer Wecker
+    .did = hat einen Wecker hinzugefügt
     .doc = Stellt einen Wecker: zur Tageszeit `when`, an den Tagen, an denen er sich wiederholt, klingelnd auf `rings_on`, auf jedem Gerät der Person, wenn nichts genannt ist.
     .w-an-alarm-rings-at-an-hour = Ein Wecker klingelt zu einer Stunde von 0 bis 23
     .w-an-alarm-rings-at-a-minute = Ein Wecker klingelt zu einer Minute von 0 bis 59
@@ -187,7 +197,8 @@ d-aozz4wlf-days = Tage
 d-aozz4wlf-rings_on = Klingelt auf
 
 d-fivi3e67 = Wecker bearbeiten
-    .doc = Ändert die Worte, die Zeit und die Tage eines Weckers.
+    .did = hat einen Wecker geändert
+    .doc = Ändert die Worte, die Zeit und die Tage eines Weckers. Ein Snooze wird dabei zurückgenommen.
     .w-an-alarm-rings-at-an-hour = Ein Wecker klingelt zu einer Stunde von 0 bis 23
     .w-an-alarm-rings-at-a-minute = Ein Wecker klingelt zu einer Minute von 0 bis 59
 
@@ -204,33 +215,40 @@ d-x2tarjxv = Wecker hinzufügen~present
 d-u4chxfdj = Wecker bearbeiten~present
 
 d-sqirq543 = Wecker ein- oder ausschalten
+    .did = hat einen Wecker ein- oder ausgeschaltet
     .doc = Schaltet einen Wecker ein oder aus: aus klingelt er nicht; ein klingelt er als Nächstes zu seiner Zeit.
 
 d-sqirq543-enabled = Aktiviert
 
 d-uxdphvkl = Gerät des Weckers
+    .did = hat gewählt, wo ein Wecker klingelt
     .doc = Nennt das Gerät, auf dem ein Wecker klingelt: die Kennung eines Geräts oder nichts für jedes Gerät der Person.
 
 d-uxdphvkl-rings_on = Klingelt auf
 
 d-eencngbt = Tag umschalten
+    .did = hat die Tage eines Weckers geändert
     .doc = Wiederholt einen Wecker an `d` oder hört damit auf: ein genannter Tag klingelt, ein nicht genannter wird übersprungen.
 
 d-eencngbt-d = T
 
 d-mgfcysje = Wecker entfernen
+    .did = hat einen Wecker entfernt
     .doc = Entfernt einen Wecker.
 
 d-mgfcysje-a = W
 
 d-2uk2bvmz = 5 Minuten snoozen
+    .did = hat einen Wecker gesnoozt
     .doc = Snoozt den jetzt klingelnden Wecker: er klingelt in fünf Minuten erneut.
 
 d-7lw2tfxp = Wecker jetzt klingeln lassen
-    .doc = Lässt einen Wecker klingeln, wenn sein Moment kommt, auf dem genannten Gerät, mit oder ohne Fenster.
+    .did = hat einen Wecker klingeln lassen
+    .doc = Lässt einen Wecker klingeln, wenn sein Moment kommt, auf dem genannten Gerät, mit oder ohne Fenster. Ein Wecker, der nach dem Klingeln snoozt wurde, klingelt noch einmal, obwohl er aus ist.
     .w-it-is = Es ist { $hour }:{ $pad2 }
 
 d-7anuyebc = Timer starten
+    .did = hat einen Timer gestartet
     .doc = Startet einen Timer über `seconds`.
     .w-a-timer-needs-a-duration-greater = Ein Timer braucht eine Dauer größer als null
 
@@ -239,33 +257,49 @@ d-7anuyebc-label = Bezeichnung
 d-7anuyebc-seconds = Sekunden
 
 d-latbht2w = Timer pausieren
+    .did = hat einen Timer pausiert
     .doc = Pausiert einen laufenden Timer, wo er steht.
 
 d-2n5kbb4o = Timer fortsetzen
-    .doc = Setzt einen pausierten Timer fort oder startet einen abgelaufenen neu.
+    .did = hat einen Timer fortgesetzt
+    .doc = Setzt einen pausierten Timer fort, wo er stand; ein abgelaufener startet mit seiner vollen Dauer neu.
 
 d-eepdn3h5 = Minute hinzufügen
-    .doc = Fügt einem Timer eine Minute hinzu, laufend oder pausiert.
+    .did = hat einem Timer eine Minute hinzugefügt
+    .doc = Fügt einem Timer eine Minute hinzu: ein laufender endet eine Minute später, ein pausierter hat eine Minute mehr, und ein abgelaufener startet mit einer einzigen Minute neu.
 
 d-nwtaannw = Timer entfernen
+    .did = hat einen Timer entfernt
     .doc = Entfernt einen Timer.
 
 d-nwtaannw-t = T
 
 d-gidp5so6 = Timer klingeln lassen
-    .doc = Lässt einen Timer klingeln, wenn er endet, auf jedem Gerät der Person, mit oder ohne Fenster.
+    .did = hat einen Timer klingeln lassen
+    .doc = Lässt einen Timer klingeln, wenn er endet, auf jedem Gerät der Person, mit oder ohne Fenster. Danach steht der Timer erledigt, ohne Restzeit, bis er neu startet.
     .w-the-timer-finished = Der Timer ist abgelaufen
 
+d-hy5lrtz6 = Umbenennen
+    .doc = Gibt einem Timer die Worte, mit denen die Person ihn kennt.
+    .did = hat einen Timer umbenannt
+    .w-a-timer-needs-a-name = Ein Timer braucht eine Bezeichnung
+
+d-hy5lrtz6-label = Bezeichnung
+
 d-knkom4sf = Stoppuhr starten
+    .did = hat die Stoppuhr gestartet
     .doc = Startet die Stoppuhr.
 
 d-kcycaaaa = Stoppuhr pausieren
+    .did = hat die Stoppuhr pausiert
     .doc = Pausiert die Stoppuhr, wo sie steht.
 
 d-7twb2otm = Runde
+    .did = hat eine Runde festgehalten
     .doc = Nimmt eine Runde: die Zeit, bei der die Stoppuhr steht.
 
 d-qcjegi7p = Stoppuhr zurücksetzen
+    .did = hat die Stoppuhr zurückgesetzt
     .doc = Setzt die Stoppuhr zurück: sie steht auf null und ist gestoppt, ohne Runden.
 
 d-kyp2iaaw = Tagesname
@@ -293,6 +327,10 @@ d-unepyab3 = Wiederholungstext
     .w-every-day = Jeden Tag
 
 d-tv3yomxx = Timer hinzufügen~present
+
+d-zuavyju4 = Weltuhr umbenennen~present
+
+d-pkrureu6 = Timer umbenennen~present
 
 d-qobxx5dl = Uhrenseite
     .w-clocks = Uhren
@@ -335,6 +373,8 @@ d-inqk2nou = Weckerseite
     .w-all-of-yours = Alle deine
     .w-on = an
     .w-off = aus
+    .w-turn-off = Ausschalten
+    .w-turn-on = Einschalten
 
 d-g2agvnl7 = Timerseite
     .w-no-timers-yet = Noch keine Timer
@@ -354,8 +394,10 @@ d-g2agvnl7 = Timerseite
     .w-use-whole-numbers-hours-0-99 = Nutze ganze Zahlen: Stunden 0–99 und Minuten und Sekunden 0–59.
     .w-start-timer = Timer starten
     .w-paused = Angehalten
+    .w-done = Erledigt
     .w-1-min = +1 Min.
     .w-resume = Fortsetzen
+    .w-restart = Neu starten
     .w-pause = Pause
     .w-remove = Entfernen
 
@@ -371,6 +413,7 @@ d-hnwcprw3 = Aktiv
 
 d-z3jkw2zq = Live
     .w-resume = Fortsetzen
+    .w-restart = Neu starten
     .w-pause = Pause
     .w-add-a-minute = Eine Minute dazu
     .w-remove = Entfernen

@@ -73,20 +73,27 @@ mod cases {
             view
         }
 
-        /// The window on its alarms place, where the alarms and the form that sets one stand.
-        fn alarms_view(&self) -> tilolang_runtime::ViewInstance {
+        /// The window on one of its places, where that place's cards stand.
+        fn place(&self, label: &str) -> tilolang_runtime::ViewInstance {
             let mut view = self.view();
             view.poll_patches().unwrap();
-            let alarms = of_kind(view.tree(), "ui.NavItem")
+            let item = of_kind(view.tree(), "ui.NavItem")
                 .iter()
-                .find(|item| item.props.get("label") == Some(&Value::text("Alarms")))
-                .map(|item| item.key.clone())
-                .expect("the window offers its alarms");
-            view.fire(&alarms, "select").unwrap();
+                .find(|item| item.props.get("label") == Some(&Value::text(label)))
+                .map_or_else(
+                    || panic!("the window offers its {label} place"),
+                    |item| item.key.clone(),
+                );
+            view.fire(&item, "select").unwrap();
             view.poll_patches().unwrap();
             view.set_lazy_rows(false).unwrap();
             view.poll_patches().unwrap();
             view
+        }
+
+        /// The window on its alarms place, where the alarms and the form that sets one stand.
+        fn alarms_view(&self) -> tilolang_runtime::ViewInstance {
+            self.place("Alarms")
         }
     }
 
@@ -227,6 +234,227 @@ mod cases {
                 Value::resource(&t.root),
                 Value::resource(&timer),
             ]);
+        }
+
+        phase a_finished_timer_says_done_and_starts_over;
+        {
+            let t = Clocks::new();
+            let timer = returned_ref(t.call("add_timer", vec![
+                Value::resource(&t.root),
+                Value::text("Tea"),
+                Value::Int(300),
+            ]));
+            // It rings: nothing is left to count, so it stands done rather than running.
+            t.call("ring_timer", vec![Value::resource(&timer)]);
+            assert_eq!(
+                t.rt.read(&timer, "ends_at").unwrap(),
+                Value::Opt(None),
+                "a timer that has rung counts nothing more"
+            );
+            assert_eq!(
+                t.rt.read(&timer, "left").unwrap(),
+                Value::Opt(Some(Box::new(Value::Int(0)))),
+                "no time is left"
+            );
+            // The window says so and offers to start it over, not to pause it.
+            let mut view = t.view();
+            view.poll_patches().unwrap();
+            assert!(any_prop_text(view.tree(), "Done"), "the card says it is done");
+            assert!(button_named(view.tree(), "Pause").is_none(), "nothing is running");
+            let restart = button_named(view.tree(), "Restart")
+                .expect("a timer that has rung starts over");
+            view.fire(&restart, "press").unwrap();
+            assert!(
+                matches!(t.rt.read(&timer, "ends_at").unwrap(), Value::Opt(Some(_))),
+                "restarting counts down again"
+            );
+            assert_eq!(t.rt.read(&timer, "left").unwrap(), Value::Opt(None));
+            // It rings again; a minute more gives it a minute, counting down again.
+            t.call("ring_timer", vec![Value::resource(&timer)]);
+            t.call("add_minute", vec![Value::resource(&timer)]);
+            assert_eq!(
+                t.rt.read(&timer, "left").unwrap(),
+                Value::Opt(Some(Box::new(Value::Int(60)))),
+                "a minute more of a timer that has rung is a minute"
+            );
+            t.call("resume_timer", vec![Value::resource(&timer)]);
+            assert!(matches!(t.rt.read(&timer, "ends_at").unwrap(), Value::Opt(Some(_))));
+        }
+
+        phase a_city_and_a_timer_take_the_words_the_person_gives_them;
+        {
+            let t = Clocks::new();
+            let tokyo = returned_ref(t.call("add_world_clock", vec![
+                Value::resource(&t.root),
+                Value::text("Tokyo"),
+                Value::text("Asia/Tokyo"),
+            ]));
+            t.call("rename_world_clock", vec![
+                Value::resource(&tokyo),
+                Value::text("  Tokyo HQ  "),
+            ]);
+            assert_eq!(t.rt.read(&tokyo, "city").unwrap(), Value::text("Tokyo HQ"));
+            let timer = returned_ref(t.call("add_timer", vec![
+                Value::resource(&t.root),
+                Value::text("Tea"),
+                Value::Int(300),
+            ]));
+            t.call("rename_timer", vec![
+                Value::resource(&timer),
+                Value::text("Oven"),
+            ]);
+            assert_eq!(t.rt.read(&timer, "label").unwrap(), Value::text("Oven"));
+            // A name of no words is refused, by the action's own rule.
+            let refused = t
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        t.app.action("rename_timer").as_str(),
+                        vec![Value::resource(&timer), Value::text("   ")],
+                    ),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("needs a name"), "{refused}");
+            // What the person renamed reads back from history as its own change.
+            let did = |name: &str| {
+                t.app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .and_then(|action| action.did.clone())
+            };
+            assert_eq!(did("rename_world_clock").as_deref(), Some("renamed a city"));
+            assert_eq!(did("rename_timer").as_deref(), Some("renamed a timer"));
+            // The window's world place offers each city's rename.
+            let world = t.place("World");
+            assert!(any_prop_text(world.tree(), "Tokyo HQ"), "the city reads its new name");
+            assert!(
+                button_named(world.tree(), "Rename").is_some(),
+                "the city can be renamed again"
+            );
+        }
+
+        phase an_alarm_turns_off_and_on_from_its_own_card;
+        {
+            let t = Clocks::new();
+            let alarm = returned_ref(t.call("add_alarm", vec![
+                Value::resource(&t.root),
+                Value::text("Wake up"),
+                Value::Int(7),
+                Value::Int(0),
+            ]));
+            let mut view = t.alarms_view();
+            let off = button_named(view.tree(), "Turn off")
+                .expect("an alarm that is on offers to turn it off");
+            view.fire(&off, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(t.rt.read(&alarm, "enabled").unwrap(), Value::Bool(false));
+            let on = button_named(view.tree(), "Turn on")
+                .expect("an alarm that is off offers to turn it on");
+            view.fire(&on, "press").unwrap();
+            assert_eq!(t.rt.read(&alarm, "enabled").unwrap(), Value::Bool(true));
+        }
+
+        phase every_clock_action_says_what_it_did;
+        {
+            let t = Clocks::new();
+            let did = |name: &str| {
+                t.app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .and_then(|action| action.did.clone())
+            };
+            for (action, words) in [
+                ("add_world_clock", "added a city"),
+                ("remove_world_clock", "removed a city"),
+                ("rename_world_clock", "renamed a city"),
+                ("add_alarm", "added an alarm"),
+                ("edit_alarm", "changed an alarm"),
+                ("set_alarm_enabled", "turned an alarm on or off"),
+                ("set_alarm_device", "chose where an alarm rings"),
+                ("toggle_day", "changed the days an alarm repeats on"),
+                ("remove_alarm", "removed an alarm"),
+                ("snooze_alarm", "snoozed an alarm"),
+                ("ring_alarm", "rang an alarm"),
+                ("add_timer", "started a timer"),
+                ("rename_timer", "renamed a timer"),
+                ("pause_timer", "paused a timer"),
+                ("resume_timer", "resumed a timer"),
+                ("add_minute", "added a minute to a timer"),
+                ("remove_timer", "removed a timer"),
+                ("ring_timer", "rang a timer"),
+                ("start_stopwatch", "started the stopwatch"),
+                ("pause_stopwatch", "paused the stopwatch"),
+                ("lap", "kept a lap"),
+                ("reset_stopwatch", "reset the stopwatch"),
+            ] {
+                assert_eq!(did(action).as_deref(), Some(words), "{action} in history");
+            }
+        }
+
+        phase a_snoozed_alarm_rings_once_more_and_editing_takes_the_snooze_back;
+        {
+            let t = Clocks::new();
+            let alarm = returned_ref(t.call("add_alarm", vec![
+                Value::resource(&t.root),
+                Value::text("Wake up"),
+                Value::Int(7),
+                Value::Int(0),
+            ]));
+            // It rings once and turns itself off.
+            t.call("ring_alarm", vec![Value::resource(&alarm)]);
+            assert_eq!(t.rt.read(&alarm, "enabled").unwrap(), Value::Bool(false));
+            assert_eq!(t.rt.read(&alarm, "at").unwrap(), Value::Opt(None));
+            // Snoozed, it is pending once more though it is off...
+            t.call("snooze_alarm", vec![Value::resource(&alarm)]);
+            assert_eq!(t.rt.read(&alarm, "snoozed").unwrap(), Value::Bool(true));
+            assert!(matches!(t.rt.read(&alarm, "at").unwrap(), Value::Opt(Some(_))));
+            // ...and its moment rings it that once more, leaving nothing pending.
+            t.call("ring_alarm", vec![Value::resource(&alarm)]);
+            assert_eq!(t.rt.read(&alarm, "snoozed").unwrap(), Value::Bool(false));
+            assert_eq!(t.rt.read(&alarm, "at").unwrap(), Value::Opt(None));
+            assert_eq!(t.rt.read(&alarm, "enabled").unwrap(), Value::Bool(false));
+            // Editing a snoozed alarm takes the snooze back and keeps it on, with its days.
+            let gym = returned_ref(t.call("add_alarm", vec![
+                Value::resource(&t.root),
+                Value::text("Gym"),
+                Value::Int(18),
+                Value::Int(30),
+                Value::List(vec![t.weekday("Weekday.mon")]),
+            ]));
+            t.call("snooze_alarm", vec![Value::resource(&gym)]);
+            t.call("edit_alarm", vec![
+                Value::resource(&gym),
+                Value::text("Workout"),
+                Value::Int(7),
+                Value::Int(15),
+                Value::List(vec![t.weekday("Weekday.mon"), t.weekday("Weekday.wed")]),
+            ]);
+            assert_eq!(t.rt.read(&gym, "snoozed").unwrap(), Value::Bool(false));
+            assert_eq!(t.rt.read(&gym, "enabled").unwrap(), Value::Bool(true));
+            assert_eq!(t.rt.read(&gym, "label").unwrap(), Value::text("Workout"));
+            assert_eq!(
+                t.rt.read(&gym, "days").unwrap(),
+                Value::List(vec![t.weekday("Weekday.mon"), t.weekday("Weekday.wed")]),
+            );
+            assert!(matches!(t.rt.read(&gym, "at").unwrap(), Value::Opt(Some(_))));
+            // The edit form keeps the days the alarm had, so saving its words loses none.
+            let mut view = t.alarms_view();
+            let edit = button_named(view.tree(), "Edit").expect("the alarm offers its edit form");
+            view.fire(&edit, "press").unwrap();
+            view.poll_patches().unwrap();
+            let save = button_named(view.tree(), "Save changes").expect("the form saves");
+            view.fire(&save, "press").unwrap();
+            assert_eq!(
+                t.rt.read(&gym, "days").unwrap(),
+                Value::List(vec![t.weekday("Weekday.mon"), t.weekday("Weekday.wed")]),
+                "saving the form keeps the days the alarm repeats on"
+            );
         }
 
         phase the_stopwatch_counts_laps_and_resets;

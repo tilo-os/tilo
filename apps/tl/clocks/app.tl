@@ -65,9 +65,10 @@ type Timer (untitled: "Timer") {
     label: Text
     /// How long it counts down, in seconds.
     seconds: Int = 300
-    /// The instant it finishes; none while it is paused.
+    /// The instant it finishes; none while it is paused or has finished.
     ends_at: Option<Time> = .none
-    /// What it has left while it is paused, in seconds.
+    /// What it has left while it is paused, in seconds; zero once it has rung, so it stands done
+    /// until it starts over.
     left: Option<Int> = .none
 }
 
@@ -178,7 +179,10 @@ fn anything_running(c: Clocks) -> Bool {
 }
 
 /// Adds a city's clock to the workspace.
-action add_world_clock(c: Clocks, city: Text, zone: Text) -> WorldClock (icon: .globe) {
+action add_world_clock(c: Clocks, city: Text, zone: Text) -> WorldClock (
+    icon: .globe,
+    did: "added a city",
+) {
     if let seen = c.world_clocks.find(w -> w.zone == zone) {
         return seen
     }
@@ -186,8 +190,21 @@ action add_world_clock(c: Clocks, city: Text, zone: Text) -> WorldClock (icon: .
 }
 
 /// Removes a city's clock.
-destructive action remove_world_clock(c: Clocks, w: WorldClock) (icon: .trash) {
+destructive action remove_world_clock(c: Clocks, w: WorldClock) (
+    icon: .trash,
+    did: "removed a city",
+) {
     c.world_clocks.remove(w)
+}
+
+/// Gives a city's clock the words the person knows it by.
+action rename_world_clock(w: WorldClock, city: Text) (
+    icon: .pencil,
+    label: "Rename",
+    did: "renamed a city",
+) {
+    require city.trim() != "" "A city needs a name"
+    w.city = city.trim()
 }
 
 /// Sets an alarm: at the time of day `when` names, on the days it repeats on, ringing on
@@ -200,7 +217,7 @@ action add_alarm(
     minute: Int,
     days: List<Weekday> = [],
     rings_on: Text = "",
-) -> Alarm uses time (icon: .alarm_clock, label: "New alarm") {
+) -> Alarm uses time (icon: .alarm_clock, label: "New alarm", did: "added an alarm") {
     require hour >= 0 and hour <= 23 "An alarm rings at an hour from 0 to 23"
     require minute >= 0 and minute <= 59 "An alarm rings at a minute from 0 to 59"
     let made = c.alarms.insert(
@@ -219,14 +236,14 @@ action add_alarm(
 }
 
 /// Changes an alarm's words, time and days. Its on/off state stays as it was, and one that is on
-/// rings next at the time it now names.
+/// rings next at the time it now names. A snooze it was given is taken back.
 action edit_alarm(
     a: Alarm,
     label: Text,
     hour: Int,
     minute: Int,
     days: List<Weekday> = [],
-) uses time (icon: .pencil, label: "Edit alarm") {
+) uses time (icon: .pencil, label: "Edit alarm", did: "changed an alarm") {
     require hour >= 0 and hour <= 23 "An alarm rings at an hour from 0 to 23"
     require minute >= 0 and minute <= 59 "An alarm rings at a minute from 0 to 59"
     a.label = label
@@ -242,10 +259,15 @@ action edit_alarm(
     if a.enabled {
         a.at = next_ring(hour, minute, days, now)
     }
+    // Changing an alarm's time or days takes back the snooze it was given.
+    a.snoozed = false
 }
 
 /// Turns an alarm on or off: off, it does not ring; on, it rings next at its time.
-action set_alarm_enabled(a: Alarm, enabled: Bool = not a.enabled) uses time (icon: .bell) {
+action set_alarm_enabled(a: Alarm, enabled: Bool = not a.enabled) uses time (
+    icon: .bell,
+    did: "turned an alarm on or off",
+) {
     a.enabled = enabled
     if enabled {
         a.at = next_ring(a.hour, a.minute, days_of(a), now)
@@ -256,13 +278,19 @@ action set_alarm_enabled(a: Alarm, enabled: Bool = not a.enabled) uses time (ico
 }
 
 /// Names the device an alarm rings on: one device's id, or none for every device of the person's.
-action set_alarm_device(a: Alarm, rings_on: Text) (icon: .monitor) {
+action set_alarm_device(a: Alarm, rings_on: Text) (
+    icon: .monitor,
+    did: "chose where an alarm rings",
+) {
     a.rings_on = rings_on
 }
 
 /// Repeats an alarm on `d`, or stops repeating on it: a day it names rings, a day it does not
 /// skips. Its next ring moves to the next day it names.
-action toggle_day(a: Alarm, d: Weekday) uses time (icon: .calendar) {
+action toggle_day(a: Alarm, d: Weekday) uses time (
+    icon: .calendar,
+    did: "changed the days an alarm repeats on",
+) {
     if a.days.contains(d) { a.days.remove(d) } else { a.days.add(d) }
     if a.enabled {
         a.at = next_ring(a.hour, a.minute, days_of(a), now)
@@ -270,20 +298,29 @@ action toggle_day(a: Alarm, d: Weekday) uses time (icon: .calendar) {
 }
 
 /// Removes an alarm.
-destructive action remove_alarm(c: Clocks, a: Alarm) (icon: .trash) {
+destructive action remove_alarm(c: Clocks, a: Alarm) (icon: .trash, did: "removed an alarm") {
     c.alarms.remove(a)
 }
 
 /// Snoozes the alarm ringing now: it rings again in five minutes.
-action snooze_alarm(a: Alarm) uses time (icon: .clock, label: "Snooze 5 minutes") {
+action snooze_alarm(a: Alarm) uses time (
+    icon: .clock,
+    label: "Snooze 5 minutes",
+    did: "snoozed an alarm",
+) {
     a.at = .some(now + 5m)
     a.snoozed = true
 }
 
 /// Rings an alarm when its moment comes, on the device it names, window or no window. A repeating
-/// alarm rings again the next day it names; one that rings once turns itself off.
-action ring_alarm(a: Alarm) uses notify, time (icon: .alarm_clock, label: "Ring the alarm now") {
-    if not a.enabled {
+/// alarm rings again the next day it names; one that rings once turns itself off. An alarm snoozed
+/// after it rang rings again once more, though it is off.
+action ring_alarm(a: Alarm) uses notify, time (
+    icon: .alarm_clock,
+    label: "Ring the alarm now",
+    did: "rang an alarm",
+) {
+    if not a.enabled and not a.snoozed {
         return
     }
     let who: Option<Actor> = if let made = created(a) { .some(made.who) } else { .none }
@@ -314,6 +351,7 @@ trigger alarm_rings(a: Alarm) at a.at on a.rings_on: ring_alarm(a)
 action add_timer(c: Clocks, label: Text, seconds: Int) -> Timer uses time (
     icon: .timer,
     label: "Start a timer",
+    did: "started a timer",
 ) {
     require seconds > 0 "A timer needs a duration greater than zero"
     let made = c.timers.insert(
@@ -323,8 +361,23 @@ action add_timer(c: Clocks, label: Text, seconds: Int) -> Timer uses time (
     made
 }
 
+/// Whether a timer has rung: it has no time left, so it stands done until it starts over.
+fn done(t: Timer) -> Bool {
+    t.ends_at == .none and t.left == .some(0)
+}
+
+/// Gives a timer the words the person knows it by.
+action rename_timer(t: Timer, label: Text) (
+    icon: .pencil,
+    label: "Rename",
+    did: "renamed a timer",
+) {
+    require label.trim() != "" "A timer needs a name"
+    t.label = label.trim()
+}
+
 /// Pauses a running timer where it stands.
-action pause_timer(t: Timer) uses time (icon: .pause) {
+action pause_timer(t: Timer) uses time (icon: .pause, did: "paused a timer") {
     if let ends = t.ends_at {
         t.left = .some((ends - now).seconds())
         t.ends_at = .none
@@ -333,22 +386,34 @@ action pause_timer(t: Timer) uses time (icon: .pause) {
     c.active = anything_running(c)
 }
 
-/// Resumes a paused timer, or starts a finished one over.
-action resume_timer(t: Timer) uses time (icon: .play) {
-    if t.ends_at != .none {
-        return
+/// Resumes a paused timer where it stood; a timer that has rung starts over from its whole
+/// duration.
+action resume_timer(t: Timer) uses time (icon: .play, did: "resumed a timer") {
+    if let ends = t.ends_at {
+        // A timer already counting does nothing: there is nothing to resume.
+        if ends > now {
+            return
+        }
+        t.ends_at = .some(now + Duration(t.seconds))
+    } else {
+        let left = t.left ?? t.seconds
+        let kept = if left > 0 { left } else { t.seconds }
+        t.left = .none
+        t.ends_at = .some(now + Duration(kept))
     }
-    let left = Duration(t.left ?? t.seconds)
-    t.left = .none
-    t.ends_at = .some(now + left)
     let c = root Clocks
     c.active = anything_running(c)
 }
 
-/// Adds a minute to a timer, running or paused.
-action add_minute(t: Timer) uses time (icon: .plus) {
+/// Adds a minute to a timer: a running one ends a minute later, a paused one has a minute more,
+/// and one that has rung starts over with a single minute.
+action add_minute(t: Timer) uses time (icon: .plus, did: "added a minute to a timer") {
     if let ends = t.ends_at {
-        t.ends_at = .some(ends + 1m)
+        if ends > now {
+            t.ends_at = .some(ends + 1m)
+        } else {
+            t.ends_at = .some(now + 1m)
+        }
     } else if let left = t.left {
         t.left = .some(left + 60)
     } else {
@@ -359,24 +424,31 @@ action add_minute(t: Timer) uses time (icon: .plus) {
 }
 
 /// Removes a timer.
-destructive action remove_timer(c: Clocks, t: Timer) (icon: .trash) {
+destructive action remove_timer(c: Clocks, t: Timer) (icon: .trash, did: "removed a timer") {
     c.timers.remove(t)
     c.active = anything_running(c)
 }
 
-/// Rings a timer when it finishes, on every device of the person's, window or no window.
-action ring_timer(t: Timer) uses notify (icon: .bell) {
+/// Rings a timer when it finishes, on every device of the person's, window or no window. The
+/// timer then stands done, with no time left, until it starts over.
+action ring_timer(t: Timer) uses notify (icon: .bell, did: "rang a timer") {
     let who: Option<Actor> = if let made = created(t) { .some(made.who) } else { .none }
     if let told = who {
         notify(to: told, title: t.label, body: "The timer finished", opens: t)
     }
+    t.ends_at = .none
+    t.left = .some(0)
 }
 
 /// Rings a timer when it finishes, once for the whole workspace.
 trigger timer_rings(t: Timer) at t.ends_at: ring_timer(t)
 
 /// Starts the stopwatch.
-action start_stopwatch(c: Clocks) uses time (icon: .play, label: "Start the stopwatch") {
+action start_stopwatch(c: Clocks) uses time (
+    icon: .play,
+    label: "Start the stopwatch",
+    did: "started the stopwatch",
+) {
     if c.stopwatch.since == .none {
         c.stopwatch.since = .some(now)
     }
@@ -384,7 +456,11 @@ action start_stopwatch(c: Clocks) uses time (icon: .play, label: "Start the stop
 }
 
 /// Pauses the stopwatch where it stands.
-action pause_stopwatch(c: Clocks) uses time (icon: .pause, label: "Pause the stopwatch") {
+action pause_stopwatch(c: Clocks) uses time (
+    icon: .pause,
+    label: "Pause the stopwatch",
+    did: "paused the stopwatch",
+) {
     if let since = c.stopwatch.since {
         c.stopwatch.elapsed += (now - since).seconds()
         c.stopwatch.since = .none
@@ -393,14 +469,18 @@ action pause_stopwatch(c: Clocks) uses time (icon: .pause, label: "Pause the sto
 }
 
 /// Keeps a lap: the time the stopwatch stands at.
-action lap(c: Clocks) uses time (icon: .flag, label: "Lap") {
+action lap(c: Clocks) uses time (icon: .flag, label: "Lap", did: "kept a lap") {
     if let since = c.stopwatch.since {
         c.stopwatch.laps.insert(Lap(at: c.stopwatch.elapsed + (now - since).seconds()))
     }
 }
 
 /// Resets the stopwatch: it is at zero and stopped, with no laps.
-action reset_stopwatch(c: Clocks) (icon: .rotate_ccw, label: "Reset the stopwatch") {
+action reset_stopwatch(c: Clocks) (
+    icon: .rotate_ccw,
+    label: "Reset the stopwatch",
+    did: "reset the stopwatch",
+) {
     c.stopwatch.elapsed -= c.stopwatch.elapsed
     c.stopwatch.since = .none
     let kept = c.stopwatch.laps.filter(lap -> true)
@@ -541,6 +621,7 @@ view world_place(c: Clocks) {
                     stack(gap: .related) {
                         ui.Clock(zone: w.zone, facts: true, role: .title)
                         row {
+                            button(rename_world_clock(w))
                             spacer()
                             button(remove_world_clock(c, w))
                         }
@@ -563,6 +644,7 @@ view alarms_place(c: Clocks) {
     state edit_label: Text = ""
     state edit_hour: Float = 7.0
     state edit_minute: Float = 30.0
+    state edit_days: List<Weekday> = []
     page {
         stack(gap: .section) {
             if c.alarms.is_empty() {
@@ -619,10 +701,15 @@ view alarms_place(c: Clocks) {
                                         set(edit_minute, a.minute.to_float()),
                                     )
                                     .then(
+                                        set(edit_days, days_of(a)),
+                                    )
+                                    .then(
                                         set(editing, .some(a)),
                                     ),
                             )
-                            button(set_alarm_enabled(a))
+                            ui.Button(if a.enabled { "Turn off" } else { "Turn on" }) {
+                                on press: set_alarm_enabled(a)
+                            }
                             button(remove_alarm(c, a))
                         }
                     }
@@ -650,6 +737,19 @@ view alarms_place(c: Clocks) {
                                 suffix: "min",
                             )
                         }
+                        ui.Text("Repeat days", role: .caption, secondary: true)
+                        row(gap: .tight) {
+                            for d in weekdays() {
+                                ui.Button(
+                                    day_name(d),
+                                    role: .plain,
+                                    toggled: edit_days.contains(d),
+                                    accessible_name: "Repeat on {day_name(d)}",
+                                ) {
+                                    on press: set(edit_days, toggled_day(edit_days, d))
+                                }
+                            }
+                        }
                         row(gap: .related) {
                             ui.Button("Save changes", role: .primary) {
                                 on press: edit_alarm(
@@ -657,6 +757,7 @@ view alarms_place(c: Clocks) {
                                         if edit_label.is_empty() { a.label } else { edit_label },
                                         edit_hour.to_int(),
                                         edit_minute.to_int(),
+                                        edit_days,
                                     )
                                     .then(set(editing, .none))
                             }
@@ -737,21 +838,27 @@ view timers_place(c: Clocks) {
                             ui.Countdown(at: ends, total: t.seconds.to_float(), label: t.label)
                         } else {
                             text(left_text(t.left), role: .display)
-                            text("Paused", secondary: true)
+                            text(if done(t) { "Done" } else { "Paused" }, secondary: true)
                         }
                         row(gap: .related) {
                             ui.Button("+1 min") {
                                 on press: add_minute(t)
                             }
-                            if t.ends_at == .none {
-                                ui.Button("Resume", role: .primary) {
-                                    on press: resume_timer(t)
-                                }
-                            } else {
+                            if t.ends_at != .none {
                                 ui.Button("Pause", role: .primary) {
                                     on press: pause_timer(t)
                                 }
+                            } else if done(t) {
+                                // A timer that has rung starts over from its whole duration.
+                                ui.Button("Restart", icon: .rotate_ccw, role: .primary) {
+                                    on press: resume_timer(t)
+                                }
+                            } else {
+                                ui.Button("Resume", role: .primary) {
+                                    on press: resume_timer(t)
+                                }
                             }
+                            button(rename_timer(t))
                             ui.Button("Remove", role: .destructive) {
                                 on press: remove_timer(c, t)
                             }
@@ -878,7 +985,11 @@ view live(c: Clocks) {
                         ui.Text(left_text(t.left), role: .caption, secondary: true, numeric: true)
                     }
                 }
-                if t.ends_at == .none {
+                if t.ends_at == .none and done(t) {
+                    ui.Button("Restart", icon: .rotate_ccw, icon_only: true, role: .plain) {
+                        on press: resume_timer(t)
+                    }
+                } else if t.ends_at == .none {
                     ui.Button("Resume", icon: .play, icon_only: true, role: .plain) {
                         on press: resume_timer(t)
                     }
