@@ -204,9 +204,16 @@ async fn follow_one(
         .watch(named)
         .await
         .map_err(|error| error.to_string())?;
+    // A resource found before it is published reads as no reading yet, which is not the same as
+    // one that ended: a workspace listed just as its standing is being published, or founded by
+    // this session, must keep its follower waiting for the value rather than leave it empty.
+    let mut held = false;
     loop {
         let reading = readings.read().await.map_err(|error| error.to_string())?;
-        let ended = reading.reading.is_none();
+        let ended = reading.reading.is_none() && held;
+        if reading.reading.is_some() {
+            held = true;
+        }
         if view.apply(named, reading.reading.as_deref())? {
             wake();
         }

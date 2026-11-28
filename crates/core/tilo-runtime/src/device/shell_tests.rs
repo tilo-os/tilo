@@ -111,3 +111,61 @@ fn an_apps_share_of_a_node_is_the_workspaces_own_grants() {
         "nothing of the share is left in the workspace"
     );
 }
+
+/// A follower that subscribed before a workspace existed reads its standing once it is founded: a
+/// shell that opened before the workspace did is never left believing the device holds nothing.
+#[test]
+fn a_follower_reads_a_workspace_founded_after_it_subscribed() {
+    let (service, _directory, _key, cert, _lock) = tilo_rt::app()
+        .block_on(ServiceWorkspaces::test_of_person())
+        .expect("the fixture opens");
+    let standing = Standing::new(service.copies().clone(), cert.clone(), service.signer());
+    standing.follow();
+    let id = tilo_action_policy::roles::person_workspace_id(&cert.user_public_key);
+    let workspace = WorkspaceId::parse(&id).expect("the person's workspace names a workspace");
+    let named = resource(&id);
+    let (sink, mut events) = mpsc::unbounded_channel();
+    let caller = tilo_app_host::services::Caller {
+        app_id: "tilo.test".to_owned(),
+        workspace: String::new(),
+    };
+    let _watch = standing
+        .watch(&caller, &named, sink)
+        .expect("the standing watches");
+    // Nothing publishes the workspace yet: the follower's first event says it reads nothing.
+    let first = tilo_rt::app()
+        .block_on(events.recv())
+        .expect("the runtime runs");
+    assert!(
+        matches!(
+            first,
+            Some(Event::Reading { ref reading, .. }) if reading.is_none()
+        ),
+        "a workspace not held yet reads nothing"
+    );
+    // Founding it publishes its standing, and a follower subscribed before that reads it.
+    tilo_rt::app()
+        .block_on(service.found(workspace, "Home"))
+        .expect("the runtime runs")
+        .expect("the workspace is founded");
+    let reading = tilo_rt::app()
+        .block_on(async {
+            loop {
+                match events.recv().await {
+                    Some(Event::Reading {
+                        reading: Some(bytes),
+                        ..
+                    }) => break bytes,
+                    Some(_) => {}
+                    None => panic!("the standing's stream ended before the workspace's reading"),
+                }
+            }
+        })
+        .expect("the runtime runs");
+    let reading: tilo_peer_state::workspace_view::WorkspaceReading =
+        serde_json::from_slice(&reading).expect("a standing reads");
+    assert_eq!(
+        reading.id, id,
+        "the follower reads the workspace it waited for"
+    );
+}

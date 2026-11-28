@@ -882,16 +882,22 @@ impl Standing {
             move |_| written(),
             lagged,
         ));
-        {
-            let taken = copies.members_held();
-            let took = tell(&self.changed);
-            tilo_rt::app().spawn(async move {
-                loop {
-                    taken.notified().await;
-                    took();
-                }
-            });
-        }
+        let (taken, took) = (copies.members_held(), tell(&self.changed));
+        tilo_rt::app().spawn(async move {
+            loop {
+                taken.notified().await;
+                took();
+            }
+        });
+        // A workspace founded here is held here for the first time: its standing is published as
+        // it is held, so a follower of its resource reads it the moment the workspace exists.
+        let told = tell(&self.changed);
+        let mut founded = copies.holds_changed();
+        tilo_rt::app().spawn(async move {
+            while founded.changed().await.is_ok() {
+                told();
+            }
+        });
         let standing = Arc::downgrade(self);
         let changed = Arc::clone(&self.changed);
         tilo_rt::app().spawn(async move {
