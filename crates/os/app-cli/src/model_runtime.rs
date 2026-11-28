@@ -126,7 +126,7 @@ fn fetch_into(
     check: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<PathBuf, String> {
     let mut refusals = Vec::new();
-    for registry in crate::config::load_registries().enabled() {
+    for registry in crate::config::load_registries()?.enabled() {
         let offer = match crate::runtime_offer(runtime, &registry.name) {
             Ok(Some(offer)) => offer,
             Ok(None) => continue,

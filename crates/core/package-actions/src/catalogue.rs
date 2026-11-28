@@ -91,7 +91,7 @@ pub fn reading(id: &str, arguments: &Map<String, Value>) -> Option<Result<Value,
 /// device last accepted from it, read without the network.
 fn catalogue(registry: &str, fresh: bool) -> Result<Vec<VerifiedEntry>, ReadError> {
     system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
-    let configured = app_cli::config::load_registries();
+    let configured = app_cli::config::load_registries().map_err(ReadError::Failed)?;
     if fresh {
         catalogue_from(&configured, registry, app_cli::client::fetch_entries)
     } else {
@@ -180,7 +180,7 @@ fn runtime_offer(registry: &str, runtime: &str) -> Result<Value, String> {
     if runtime.is_empty() || runtime.len() > 256 || runtime.chars().any(char::is_control) {
         return Err("invalid runtime".into());
     }
-    enabled(&app_cli::config::load_registries(), registry)?;
+    enabled(&app_cli::config::load_registries()?, registry)?;
     let offer = app_cli::runtime_offer(runtime, registry)?;
     let answer = json!({ "offer": offer });
     if answer.to_string().len() > MAX_OFFER_BYTES {

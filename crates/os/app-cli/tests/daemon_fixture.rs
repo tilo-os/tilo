@@ -138,6 +138,15 @@ fn serve(stream: UnixStream, state: &Arc<State>) {
         let Ok(request) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if request.get("jsonrpc").is_none() {
+            let Some(refused) = wire_refusal(line.as_bytes()) else {
+                continue;
+            };
+            if writeln!(writer, "{refused}").is_err() || writer.flush().is_err() {
+                return;
+            }
+            continue;
+        }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let reply = answer(state, &request);
         let reply = match reply {
@@ -163,6 +172,23 @@ fn serve(stream: UnixStream, state: &Arc<State>) {
             return;
         }
     }
+}
+
+/// What the workspace answers every call over the daemon's action wire (`app --workspace <id>
+/// …`) here: the refusal an agent's call gets on a device the workspace does not let it change
+/// apps from.
+pub(crate) const AGENT_REFUSAL: &str =
+    "the agent runs only on a member's own device, not on one the workspace caps";
+
+/// The line refusing the action-wire frame `line` as [`AGENT_REFUSAL`]; `None` for a line that
+/// asks nothing.
+fn wire_refusal(line: &[u8]) -> Option<String> {
+    let frame = tilo_actions::remote::RemoteActionFrame::decode(line).ok()?;
+    let refused = tilo_actions::remote::refuse(
+        &frame.message,
+        tilo_actions::remote::ActionCallError::refused(AGENT_REFUSAL),
+    )?;
+    Some(tilo_action_line::frame_line(refused))
 }
 
 /// What `request` asks, as the daemon answers it.
@@ -342,7 +368,7 @@ fn fetch_offered(
     surface: &str,
     content: &Path,
 ) -> Result<(Vec<u8>, String), String> {
-    let registries = app_cli::config::load_registries();
+    let registries = app_cli::config::load_registries()?;
     for registry in registries.enabled() {
         let Ok(offers) = app_cli::version_offers(app, &registry.name) else {
             continue;
@@ -402,7 +428,7 @@ fn keep_runtimes(state: &Arc<State>, bytes: &[u8]) -> Result<(), String> {
         app_cli::install::fetch_verified(&offer, staged.path(), &mut |_| {})
             .map_err(|error| error.user_message())?;
         let bytes = std::fs::read(staged.path()).map_err(|error| error.to_string())?;
-        let payload_from = app_cli::config::load_registries()
+        let payload_from = app_cli::config::load_registries()?
             .enabled()
             .find(|registry| registry.name == offer.registry)
             .map(|registry| registry.base_url.clone());

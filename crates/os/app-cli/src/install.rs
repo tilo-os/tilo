@@ -353,6 +353,7 @@ pub fn tapp_manifest(path: &Path) -> Result<tilo_app_package::Manifest, InstallE
 /// payload blobs of the packages it reviewed.
 pub fn payload_source(app: &CatalogueApp) -> Option<String> {
     crate::config::load_registries()
+        .ok()?
         .registries
         .into_iter()
         .find(|registry| registry.name == app.registry)

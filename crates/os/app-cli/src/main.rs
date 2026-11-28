@@ -999,7 +999,14 @@ fn update(query: Option<&str>, tolerate_unreachable: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let repositories = app_cli::config::load_registries()
+    let repositories = match app_cli::config::load_registries() {
+        Ok(registries) => registries,
+        Err(refused) => {
+            eprintln!("app: the repositories could not be read: {refused}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let repositories = repositories
         .enabled()
         .map(|registry| registry.name.clone())
         .collect::<Vec<_>>();

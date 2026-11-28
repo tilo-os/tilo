@@ -201,7 +201,7 @@ pub fn prefer_installed_runtime<'a>(
 /// of one of its runtime packages that provides exactly that runtime for
 /// this machine.
 pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<CatalogueApp>, String> {
-    let registries = config::load_registries();
+    let registries = config::load_registries()?;
     let registry = registries
         .enabled()
         .find(|registry| registry.name == registry_name)
@@ -258,7 +258,7 @@ pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<Catalo
 /// repository that offers it, in the user's repository order.
 pub fn runtime_offer_from_enabled(runtime: &str) -> Result<Option<CatalogueApp>, String> {
     let mut last_error = None;
-    for registry in config::load_registries().enabled() {
+    for registry in config::load_registries()?.enabled() {
         match runtime_offer(runtime, &registry.name) {
             Ok(Some(offer)) => return Ok(Some(offer)),
             Ok(None) => {}
@@ -328,7 +328,7 @@ fn app_for_version(
 /// this machine on its channel, newest first. Older versions come from the
 /// entry's signed version index when the registry serves compact snapshots.
 pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<CatalogueApp>, String> {
-    let registries = config::load_registries();
+    let registries = config::load_registries()?;
     let registry = registries
         .enabled()
         .find(|registry| registry.name == registry_name)
@@ -652,11 +652,28 @@ pub struct Offered {
 /// computer, and a bot whose program they add to a workspace. Blocking, but enabled registries
 /// are fetched concurrently so one slow mirror does not serially delay every healthy source.
 /// Results are still folded in configuration order, preserving the user's registry priority.
+/// What a listing names in place of a registry when the list of registries itself could not be
+/// read: "repository list unreachable", with why.
+const REPOSITORY_LIST: &str = "list";
+
 #[must_use]
 pub fn offered() -> Offered {
     // Invoking the public app/store client is an explicit request to use the
     // store, so materialize the signed official source on first use.
-    let registries = config::load_registries();
+    let registries = match config::load_registries() {
+        Ok(registries) => registries,
+        // No repository was asked: the listing says why, never that they offered nothing.
+        Err(refused) => {
+            return Offered {
+                apps: Vec::new(),
+                bots: Vec::new(),
+                unreachable: vec![UnreachableRegistry {
+                    name: REPOSITORY_LIST.to_owned(),
+                    detail: refused,
+                }],
+            };
+        }
+    };
     let enabled: Vec<RegistryConfig> = registries.enabled().cloned().collect();
     #[allow(
         clippy::needless_collect,
@@ -729,10 +746,13 @@ pub fn all_offers() -> CatalogueListing {
 /// without writing anything: for a reader that must not wait (desktop
 /// search), which follows [`last_accepted_directories`] to read it again.
 /// A registry never listed, or whose kept catalogue no longer verifies,
-/// offers nothing here.
+/// offers nothing here, and so does every registry when the list of them does not read: this
+/// reader has no one to say it to, and the next listing says it.
 #[must_use]
 pub fn last_accepted_offers() -> Vec<CatalogueApp> {
-    let registries = config::load_registries();
+    let Ok(registries) = config::load_registries() else {
+        return Vec::new();
+    };
     let apps = registries
         .enabled()
         .filter_map(|registry| {

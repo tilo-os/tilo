@@ -1131,7 +1131,7 @@ fn registry_of(app: &str, wanted: &str) -> Result<app_cli::RegistryConfig, Strin
         Some(wanted.to_owned())
     }
     .ok_or_else(|| "The app's registry is unavailable.".to_owned())?;
-    app_cli::config::load_registries()
+    app_cli::config::load_registries()?
         .registries
         .into_iter()
         .find(|registry| registry.enabled && registry.name == name)

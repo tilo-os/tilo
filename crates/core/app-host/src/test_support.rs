@@ -233,7 +233,7 @@ impl WorkspaceAuthority for WorkspaceTreeHandle {
     /// A test tree keeps no workspace document: its registry list is the one the test writes
     /// as `registries.toml` under `TILO_STORE_CONFIG_DIR`.
     fn package_registries(&self, _workspace: &str) -> Option<serde_json::Value> {
-        let listed = app_cli::config::load_registries();
+        let listed = app_cli::config::load_registries().ok()?;
         Some(serde_json::json!({
             "registries": listed.registries.iter().map(|registry| serde_json::json!({
                 "name": registry.name,

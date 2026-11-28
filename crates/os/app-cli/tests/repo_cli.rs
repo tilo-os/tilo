@@ -258,3 +258,28 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+// An agent asks for a workspace's apps from a device that workspace does not let it change apps
+// from: the search and the update say the workspace refused reading its repositories, never that
+// no app matched, which would send it looking for an app the store does offer.
+#[test]
+fn an_agents_refused_registry_read_says_it_was_refused() {
+    let device = Device::new(None, &[]);
+    let _daemon = Daemon::start(device.apps.path());
+    for asked in [&["search", "chat"][..], &["update", "so.tilo.chat"]] {
+        let out = Command::new(tilo_test_env::package_binary!("app"))
+            // The workspace's own record answers, not a test's registries file.
+            .env_remove("TILO_STORE_CONFIG_DIR")
+            .args(["--workspace", "30e84abe-9bea-479d-96a5-2d5b3a6a9dd3"])
+            .args(asked)
+            .output_locked()
+            .unwrap();
+        let said = text(&out);
+        assert!(!out.status.success(), "{asked:?} fails: {said}");
+        assert!(
+            said.contains("refused") && said.contains(crate::daemon_fixture::AGENT_REFUSAL),
+            "{asked:?} says the workspace refused it: {said}"
+        );
+        assert!(!said.contains("no apps matched"), "{asked:?}: {said}");
+    }
+}

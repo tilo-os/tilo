@@ -225,30 +225,34 @@ pub fn cache_dir() -> Option<PathBuf> {
 ///
 /// A process acting in a workspace it names (`tilo -w <workspace> app …`) reads
 /// that workspace's registries, as `app repo list` does, rather than those of
-/// the computer's own workspace, which lists none.
+/// the computer's own workspace, which lists none. A reading the workspace
+/// refuses (an agent's, on a device the workspace does not let it change apps
+/// from) is said as a refusal: an empty list in its place would read as a
+/// workspace whose repositories offer nothing.
 ///
 /// `TILO_STORE_CONFIG_DIR` names a `registries.toml` a test or a development
 /// build reads instead; production reads the workspace alone.
-#[must_use]
-pub fn load_registries() -> RegistriesFile {
+///
+/// # Errors
+/// The workspace refused the reading, its daemon could not be reached, or the
+/// registries do not read.
+pub fn load_registries() -> Result<RegistriesFile, String> {
     if let Some(registries) = ONCE_FOR_THIS_CALL.with(|slot| slot.borrow().clone()) {
-        return registries;
+        return Ok(registries);
     }
     if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
-        let path = PathBuf::from(dir).join("registries.toml");
-        return fs::read_to_string(path)
-            .ok()
-            .and_then(|text| toml::from_str::<RegistriesFile>(&text).ok())
-            .unwrap_or_default();
+        return registries_file_at(&PathBuf::from(dir).join("registries.toml"))
+            .map(Option::unwrap_or_default)
+            .map_err(|error| error.to_string());
     }
     #[cfg(any(unix, windows))]
     if crate::device::named().is_some() {
-        return crate::device::registries("registry.list", &serde_json::json!({}))
-            .ok()
-            .and_then(|value| registries_from_rows(&value))
-            .unwrap_or_default();
+        let value = crate::device::registries("registry.list", &serde_json::json!({}))
+            .map_err(|refused| format!("the workspace refused reading them: {refused}"))?;
+        return registries_from_rows(&value)
+            .ok_or_else(|| format!("the workspace's answer names no repositories: {value}"));
     }
-    RegistriesFile {
+    Ok(RegistriesFile {
         registries: tilo_control::packages::registries()
             .into_iter()
             .map(|registry| RegistryConfig {
@@ -259,7 +263,7 @@ pub fn load_registries() -> RegistriesFile {
                 channel: channel(&registry.channel),
             })
             .collect(),
-    }
+    })
 }
 
 fn channel(channel: &str) -> tilo_app_package::version::ReleaseChannel {
