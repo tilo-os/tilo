@@ -605,13 +605,16 @@ impl Seats {
     }
 
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
+    /// A part that starts again serves the person it starts as, and the links made from here are
+    /// that part's: a request waiting for them hears the one that runs now.
     pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
         self.shells.send_if_modified(|served| {
-            let first = matches!(served, Services::Starting);
-            if first {
-                *served = Services::Running(shells);
+            // A part that ran once keeps serving after a later start fails.
+            if matches!(served, Services::Failed(_)) {
+                return false;
             }
-            first
+            *served = Services::Running(shells);
+            true
         });
     }
 
@@ -1022,6 +1025,7 @@ impl Seats {
                 };
                 (person, shells)
             };
+            let admitted = seats.seat_admits(uid, pid, person, admitted);
             if !Self::acts_as(&shells, admitted, person) {
                 return refusal("this account does not act as the seat's person now".to_owned());
             }
@@ -1081,6 +1085,26 @@ impl Seats {
             }
         };
         shells.hand_processes(seat.uid, &secret, packets)
+    }
+
+    /// What the seat `(uid, pid)` asking for `person`'s link acts as: its account's admission, or
+    /// `person` when this daemon admitted the seat as theirs — the session that made or joined
+    /// them, kept here or in the profile — though its key is not certified yet. No other program
+    /// of the account holds a seat.
+    fn seat_admits(&self, uid: u32, pid: u32, person: [u8; 32], account: Admitted) -> Admitted {
+        let kept = self
+            .links
+            .lock_recover()
+            .get(&seat_key(uid, pid))
+            .and_then(|link| match link {
+                SeatLink::Person { person: held, .. } => Some(*held),
+                SeatLink::Founding => None,
+            });
+        if kept.or_else(|| self.recorded_seat(uid, pid)) == Some(person) {
+            Admitted::Person(person)
+        } else {
+            account
+        }
     }
 
     /// Whether a connection admitted as `admitted` acts as `person` now, as `shells` serves them:
@@ -1360,14 +1384,20 @@ impl Seats {
             Services::Running(shells) => Some(shells),
             Services::Starting | Services::Failed(_) => None,
         };
-        let token = served.and_then(|shells| {
-            shells
-                .token(importing)
-                .inspect_err(|error| {
-                    tracing::warn!(%error, "the person who signed in has no token for their shell");
-                })
-                .ok()
-        });
+        // The secret names the person these services serve, and the account acts as theirs: a
+        // secret made for another person's services is one this account's link is refused. So
+        // none is handed until they serve this account's person, which the sign-in is answered
+        // again for.
+        let token = served
+            .filter(|shells| shells.serves(held.person))
+            .and_then(|shells| {
+                shells
+                    .token(importing)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the person who signed in has no token for their shell");
+                    })
+                    .ok()
+            });
         let shell = token.is_some();
         Ok(json!({
             "person": hex::encode(held.person),
