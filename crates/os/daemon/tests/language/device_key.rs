@@ -307,8 +307,8 @@ fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
 
 /// A session whose certificate is due asks the daemon to renew it, through the client every
 /// program uses: the person's root is sealed with the device key, so the daemon, which alone
-/// took the key, opens it and reissues the certificate. The session reads only the person's
-/// public record and their certificates.
+/// took the key, opens it and reissues the certificate, and names the person when asked. The
+/// session reads only the person's public record and their certificates.
 #[test]
 fn the_daemon_renews_a_due_certificate_a_session_asks_it_to() {
     host::in_own_process(|profile| {
@@ -363,6 +363,16 @@ fn the_daemon_renews_a_due_certificate_a_session_asks_it_to() {
             0,
             "nothing is due once renewed"
         );
+        // The person's name and picture are the daemon's to write too: their record is sealed with
+        // the device key.
+        actions
+            .act(
+                tilo_device_identity::login::SET_PROFILE,
+                serde_json::json!({"name": "Ada", "photo": null}),
+            )
+            .expect("the daemon names the person");
+        let named = tilo_identity::store::load_metadata_from_path(&record).unwrap();
+        assert_eq!(named.display_name, "Ada");
         running.stop().unwrap();
     });
 }

@@ -14,7 +14,8 @@
 //!   root where it is kept and asked of them there;
 //! - [`SIGN`]: a message the device signs, for a program that proves it is this device;
 //! - [`RENEW_CERTIFICATES`]: this device's certificates of the asking account's person renewed
-//!   with the root kept here, which is sealed with the device key.
+//!   with the root kept here, which is sealed with the device key;
+//! - [`SET_PROFILE`]: the asking account's person's name and picture, in their identity record.
 //!
 //! The daemon answers these from the moment it took the key, before its person's services run
 //! or any workspace is admitted: what the key signs depends on neither.
@@ -26,7 +27,7 @@ use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_device_identity::login::{
     CHECK_CALLER_PROOF, ENDORSE_IMAGE, MALFORMED_ASK, OPEN_VAULT, RENEW_CERTIFICATES, SEAL_VAULT,
-    SEALED_BY_ANOTHER_KEY, SET_UP_UNLOCK, SIGN,
+    SEALED_BY_ANOTHER_KEY, SET_PROFILE, SET_UP_UNLOCK, SIGN,
 };
 use tilo_user_identity::ImageEndorsement;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
@@ -45,6 +46,7 @@ pub(crate) fn asked_of_the_key(action: &str) -> bool {
     FOR_A_PERSON.contains(&action)
         || FOR_THE_SYSTEM.contains(&action)
         || action == RENEW_CERTIFICATES
+        || action == SET_PROFILE
 }
 
 /// Why one of these actions was not done: its stable code, and its words.
@@ -231,6 +233,14 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
             "Renew this computer's certificates for my person that are due, with my root kept \
              here.",
             &[],
+        ),
+        descriptor(
+            SET_PROFILE,
+            "Give my person a name or picture, in the identity this computer keeps for my account.",
+            &[
+                ActionParam::optional("name", ParamType::Text, "The name."),
+                ActionParam::optional("photo", ParamType::Object, "The picture, or null for none."),
+            ],
         ),
         descriptor(
             SET_UP_UNLOCK,

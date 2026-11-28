@@ -3299,6 +3299,12 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
         !why.contains("may make one or join one"),
         "the session that made the person is still held to its setup: {why}"
     );
+    // Another account of the computer, which the device does not serve, changes no person here.
+    let (refused, why) = call(ADA + 1, "devices#setProfile", json!({"name": "Mallory"}));
+    assert!(
+        refused,
+        "an account the device does not serve named a person: {why}"
+    );
     // The same seat certifies the key its person's root made it, with no new sign-in: the seat
     // is that person's from now on.
     let (failed, said) = call(ADA, "seats#certified", json!({}));

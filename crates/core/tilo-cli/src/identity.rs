@@ -276,7 +276,14 @@ pub fn keep_name(person: &mut Person, name: &str) -> Result<()> {
     if name.is_empty() || !person.name.is_empty() {
         return Ok(());
     }
-    tilo_identity::store::rename_active_identity(&dir()?, name)?;
+    // The record is sealed with the device key, so the device's daemon writes it.
+    tilo_device_identity::login::daemon::DeviceActions::of_this_computer()
+        .map_err(anyhow::Error::msg)?
+        .act(
+            tilo_device_identity::login::SET_PROFILE,
+            serde_json::json!({ "name": name }),
+        )
+        .map_err(anyhow::Error::msg)?;
     name.clone_into(&mut person.name);
     Ok(())
 }

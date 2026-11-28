@@ -670,49 +670,21 @@ pub fn rename_active_identity(dir: &std::path::Path, display_name: &str) -> io::
     update_identity_profile(dir, &id, display_name, colour).map(drop)
 }
 
-/// Publish name, colour and canonical pixels together under the identity lifecycle
-/// lock, preserving signing/provider ownership. A failed durability acknowledgement
-/// must still be treated as a failed save by the caller.
-pub fn update_identity_presentation(
+/// Give this account's active identity `photo`, or none.
+///
+/// # Errors
+/// No identity is active in `dir`, or as [`update_identity_photo`].
+pub fn set_active_photo(
     dir: &std::path::Path,
-    id: &str,
-    display_name: &str,
-    avatar_color: [u8; 3],
     photo: Option<tilo_identity_client::ProfilePhoto>,
-) -> io::Result<IdentityMetadata> {
-    let display_name = display_name.trim();
-    if display_name.is_empty()
-        || display_name.len() > 1024
-        || display_name.chars().any(char::is_control)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity display name must be nonempty, bounded and free of control characters",
-        ));
-    }
-    let _lock = IdentityLock::acquire(dir)?;
-    let path = identity_path(dir, id)?;
-    secure_record_unlocked(dir, &path)?;
-    let mut record = read_record(&path)?;
-    if !record.threshold_identity.secret_bytes.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity profile updates require secured metadata",
-        ));
-    }
-    display_name.clone_into(&mut record.display_name);
-    record.avatar_color = avatar_color;
-    record.profile_photo = photo;
-    let bytes = serde_json::to_vec(&record)?;
-    if bytes.len() as u64 > MAX_RECORD_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "identity profile exceeds the metadata size bound",
-        ));
-    }
-    replace(&path, &bytes, Privacy::OwnerOnly)?;
-    load_metadata_from_path(&path)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+) -> io::Result<()> {
+    let active = resolve_active_identity(dir);
+    let id = active
+        .as_deref()
+        .and_then(std::path::Path::file_stem)
+        .and_then(std::ffi::OsStr::to_str);
+    let id = id.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no active identity"))?;
+    update_identity_photo(dir, id, photo).map(drop)
 }
 
 /// Change the canonical public photo while preserving identity and provider ownership.
@@ -1721,46 +1693,6 @@ mod tests {
             }
             assert!(update_identity_profile(dir.path(), "../personal", "Name", [0; 3]).is_err());
             assert_eq!(fs::read(&path).unwrap(), accepted);
-        }
-
-        phase complete_presentation_publication_preserves_signer_and_refuses_invalid_name;
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = import_identity(dir.path(), "personal", &record_bytes("Ada", 37)).unwrap();
-            let signer = load_from_path(path.clone()).unwrap();
-            let proof = signer.sign(b"complete-presentation").unwrap();
-            let before: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
-            let metadata = update_identity_presentation(
-                dir.path(),
-                "personal",
-                "Grace",
-                [1, 2, 3],
-                Some(photo.clone()),
-            )
-            .unwrap();
-            assert_eq!(metadata.display_name, "Grace");
-            assert_eq!(metadata.profile_photo, Some(photo));
-            assert_eq!(metadata.group_public_key, signer.group_public_key());
-            assert_eq!(
-                load_from_path(path.clone())
-                    .unwrap()
-                    .sign(b"complete-presentation")
-                    .unwrap(),
-                proof
-            );
-            let after: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            for field in [
-                "secret_ref",
-                "threshold_identity",
-                "created_at",
-                "schema_version",
-            ] {
-                assert_eq!(after[field], before[field]);
-            }
-            let saved = fs::read(&path).unwrap();
-            assert!(update_identity_presentation(dir.path(), "personal", "", [0; 3], None).is_err());
-            assert_eq!(fs::read(&path).unwrap(), saved);
         }
 
         phase canonical_photo_updates_preserve_ownership_and_invalid_imports_write_nothing;

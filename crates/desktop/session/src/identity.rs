@@ -226,13 +226,18 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// Name this person's identity `name` : their active identity record takes it, so their own desktop
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
-    let dir =
-        tilo_identity::store::account_identity_dir_from_env().map_err(|error| error.to_string())?;
-    tilo_identity::store::rename_active_identity(&dir, name).map_err(|error| error.to_string())?;
-    // This process wrote the identity: it reads it now, rather than going on with the name it
-    // replaced until the watch over the directory says so.
+    set_profile(serde_json::json!({ "name": name }))?;
+    // The daemon wrote the identity: this process reads it now, rather than going on with the
+    // name it replaced until the watch over the directory says so.
     ::collaboration::local_identity::refresh();
     Ok(())
+}
+
+/// Have the device's daemon give the person `profile`: their record is sealed with the device key.
+fn set_profile(profile: serde_json::Value) -> Result<(), String> {
+    tilo_device_identity::login::daemon::DeviceActions::of_this_computer()?
+        .act(tilo_device_identity::login::SET_PROFILE, profile)
+        .map(drop)
 }
 
 /// The person's own picture as a `data:` URL a view draws, or empty when they chose none: their
@@ -274,20 +279,10 @@ pub(crate) fn own_photo_url() -> String {
 /// active identity record keeps it, and every face that shows them reads it from there. Says
 /// what stopped it when it could not.
 pub(crate) fn set_photo(bytes: Option<&[u8]>) -> Result<(), String> {
-    let dir =
-        tilo_identity::store::account_identity_dir_from_env().map_err(|error| error.to_string())?;
-    let active = tilo_identity::store::resolve_active_identity(&dir)
-        .ok_or_else(|| "this device keeps no identity to give a picture".to_owned())?;
-    let id = active
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .ok_or_else(|| "the identity record has no id".to_owned())?
-        .to_owned();
     let photo = bytes.map(bounded_picture).transpose()?;
-    tilo_identity::store::update_identity_photo(&dir, &id, photo)
-        .map_err(|error| error.to_string())?;
-    // This process wrote the identity: it reads it now, rather than going on with the picture it
-    // replaced until the watch over the directory says so.
+    set_profile(serde_json::json!({ "photo": photo }))?;
+    // The daemon wrote the identity: this process reads it now, rather than going on with the
+    // picture it replaced until the watch over the directory says so.
     ::collaboration::local_identity::refresh();
     Ok(())
 }

@@ -1214,11 +1214,7 @@ impl DeviceOnly {
         &self,
         invocation: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(uid) = self
-            .1
-            .as_ref()
-            .and_then(|seated| seated.seat.admitted.served().then_some(seated.seat.uid))
-        else {
+        let Some(uid) = self.served_account() else {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "only an account this device serves renews its certificates".into(),
             }));
@@ -1227,6 +1223,42 @@ impl DeviceOnly {
         let update = match super::services::renew_certificates(uid, device) {
             Ok(renewed) => succeeded(invocation, serde_json::json!({ "renewed": renewed })),
             Err(error) => failed(invocation, &error),
+        };
+        Pending::ready(Ok(InvocationState::new(invocation, update).receipt()))
+    }
+
+    /// The account asking, when it is one this device serves.
+    fn served_account(&self) -> Option<u32> {
+        let seated = self.1.as_ref()?;
+        seated.seat.admitted.served().then_some(seated.seat.uid)
+    }
+
+    /// Give the asking account's own person the `name` and/or `photo` asked, in its identity
+    /// record here: the record is sealed with the device key only this process holds.
+    fn set_profile(
+        &self,
+        invocation: InvocationId,
+        argument: &InvokeArgument,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (Some(uid), InvokeArgument::Json(argument)) = (self.served_account(), argument) else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "only an account this device serves changes its person's profile".into(),
+            }));
+        };
+        let set = || -> std::io::Result<()> {
+            let dir = super::services::account_identity_dir(uid)?;
+            if let Some(name) = argument.get("name").and_then(Value::as_str) {
+                tilo_identity::store::rename_active_identity(&dir, name)?;
+            }
+            if let Some(photo) = argument.get("photo") {
+                let photo = serde_json::from_value(photo.clone()).map_err(std::io::Error::other)?;
+                tilo_identity::store::set_active_photo(&dir, photo)?;
+            }
+            Ok(())
+        };
+        let update = match set() {
+            Ok(()) => succeeded(invocation, Value::Object(argument.clone())),
+            Err(error) => failed(invocation, &error.to_string()),
         };
         Pending::ready(Ok(InvocationState::new(invocation, update).receipt()))
     }
@@ -1433,6 +1465,9 @@ impl ActionProvider for DeviceOnly {
         }
         if address.action == tilo_device_identity::login::RENEW_CERTIFICATES {
             return self.renew_certificates(invocation);
+        }
+        if address.action == tilo_device_identity::login::SET_PROFILE {
+            return self.set_profile(invocation, &request.argument);
         }
         match address.action.as_str() {
             // The id a development build of an app runs under: the device's own, as installing

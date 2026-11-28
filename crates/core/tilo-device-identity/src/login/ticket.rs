@@ -128,6 +128,10 @@ pub const SIGN: &str = "sign";
 /// The root is sealed with the device key, so only the daemon opens it. Answers `renewed`, how
 /// many were.
 pub const RENEW_CERTIFICATES: &str = "renewCertificates";
+/// The action a person's session asks the device's daemon: give the asking account's person the
+/// `name` and/or `photo` (a picture, or `null` for none) in the identity record kept for that
+/// account. The record is sealed with the device key, so only the daemon writes it.
+pub const SET_PROFILE: &str = "setProfile";
 /// The actions a daemon answers the person about the identities it keeps: listing them without
 /// secrets, and using (new apps sign in as it), removing and protecting (its key moves into
 /// protected storage) identity `id`, each change with `confirm`.
