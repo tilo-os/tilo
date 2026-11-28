@@ -362,6 +362,54 @@ impl App {
         Some(targets)
     }
 
+    /// Tell the shell what the frame just drawn shows of this window: the controls it offers where
+    /// that frame placed them, and the tree assistive technology reads of it. A pass that sends
+    /// between frames runs before the next paint, so a window that only told the shell then was
+    /// always a frame behind: the page it listed was the one before the one on screen.
+    ///
+    /// The tree is read as the frame drew it. A sync still owed belongs to the next frame, which
+    /// tells again, so a pending change never holds back what this frame presented.
+    #[cfg(feature = "native")]
+    pub(super) fn tell_shell_the_drawn_frame(&mut self) {
+        // A frame that moved nothing the tree is read from says what the shell was already told:
+        // a window drawing damage alone walks nothing.
+        let changed = !self.semantic_tree_current()
+            || self
+                .floating
+                .window_targets_told
+                .is_none_or(|(_, layouts)| layouts != self.layout.layouts);
+        if !changed {
+            return;
+        }
+        let Some(mut client) = self.floating.client.take() else {
+            return;
+        };
+        let instance = crate::shell_tabs::launch_instance();
+        let targets = self.window_targets();
+        let told = if self.floating.window_targets_sent.was(&targets) {
+            Ok(())
+        } else {
+            self.floating.window_targets_sent = Told::Was(targets.clone());
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::WindowTargets {
+                    targets,
+                    instance,
+                },
+            )
+        };
+        let told = told.and_then(|()| self.send_accessibility_tree(&mut client, instance));
+        if let Err(error) = told {
+            tracing::warn!(%error, "the window could not tell the shell what it drew");
+            self.reattach_after_floating_service_loss();
+            return;
+        }
+        self.floating.window_targets_told = Some((
+            self.accessibility.semantic_tree_revision,
+            self.layout.layouts,
+        ));
+        self.floating.client = Some(client);
+    }
+
     /// A surface app's window, which the session places itself and reaches
     /// over the surface's actions socket rather than a `shell-ui` connection
     /// ([`crate::surface_peer`]): it is told what the window offers by name,

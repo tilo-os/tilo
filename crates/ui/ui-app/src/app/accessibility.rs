@@ -1778,7 +1778,7 @@ impl App {
     /// motion), nothing a component's published resources were read from
     /// outside it moved, and no presentation the change tracking does not follow (the
     /// palette, the close dialog, a History review) is up.
-    fn semantic_tree_current(&self) -> bool {
+    pub(super) fn semantic_tree_current(&self) -> bool {
         !self.accessibility.semantic_tree_stale
             && self.accessibility.semantic_tree_presentation
                 == tilo_ui_base::widget::resource_presentation_epoch()

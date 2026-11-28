@@ -41,7 +41,7 @@ pub const APPS: [&str; 9] = [
 /// The apps a test installs into a session of its own, beside [`APPS`]: no development session
 /// starts them, and a session a test gave one opens it as a person's device opens an app it
 /// installed.
-pub const EXTRA: [&str; 2] = ["shortcuts", "gallery"];
+pub const EXTRA: [&str; 3] = ["shortcuts", "gallery", "clocks"];
 
 /// The tree's `apps/tl` .
 fn packages() -> PathBuf {

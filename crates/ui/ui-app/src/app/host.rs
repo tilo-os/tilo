@@ -660,6 +660,11 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
     // now repaints whole on its own account.
     app.note_frame_drawn();
     publish_accessibility(app);
+    // What the shell lists and presses of this window is what the frame it just presented shows:
+    // the pass that sends between frames runs before the next paint, so a window that told the
+    // shell only then was a page behind the one on screen.
+    #[cfg(feature = "native")]
+    app.tell_shell_the_drawn_frame();
     #[cfg(feature = "model")]
     {
         app.finish_history_return_frame();

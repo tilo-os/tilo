@@ -317,6 +317,8 @@ mod styles;
 mod surface_input_frames;
 #[path = "surface_lifted.rs"]
 mod surface_lifted;
+#[path = "targets_of_the_drawn_page.rs"]
+mod targets_of_the_drawn_page;
 #[path = "test_control.rs"]
 mod test_control;
 #[path = "theme_package.rs"]

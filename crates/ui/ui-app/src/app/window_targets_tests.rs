@@ -484,6 +484,26 @@ fn an_icon_only_button_in_a_composer_row_is_listed_by_its_label() {
     );
 }
 
+/// The frame that drew the window tells the shell its controls as it completes: a window that
+/// only told a pass between frames was a page behind what it presented, because that pass runs
+/// before the next paint.
+#[test]
+fn a_drawn_frame_tells_the_shell_the_controls_it_drew() {
+    let (_app, mut shell, _) = window();
+    let told = sent(&mut shell)
+        .into_iter()
+        .filter_map(|message| match message {
+            FloatingSurfaceClientMessage::WindowTargets { targets, .. } => Some(targets),
+            _ => None,
+        })
+        .next_back()
+        .expect("a drawn frame tells the shell the controls it drew");
+    assert!(
+        told.iter().any(|target| target.name == "Go"),
+        "the button the frame drew is one of the controls told: {told:?}"
+    );
+}
+
 /// A tree with a change no frame has drawn is not told: the shell keeps the controls of the
 /// frame the person sees until a frame draws this tree.
 #[test]
