@@ -142,6 +142,103 @@ fn a_task_checked_off_on_the_page_is_done_in_the_workspace() {
     );
 }
 
+/// The numbered element a press on the page reaches for the control showing `words`, and the
+/// semantic target it names: a menu button shows its words on the bar or in a row.
+fn pressable_words(body: &str, words: &str) -> (u32, Option<String>) {
+    let at = body
+        .find(&format!(">{words}<"))
+        .unwrap_or_else(|| panic!("the page shows {words}"));
+    let before = body.get(..at).expect("the words start on a character");
+    let tag_start = before.rfind('<').expect("the words are in a tag");
+    let tag_end = at
+        + body
+            .get(at..)
+            .and_then(|rest| rest.find('>'))
+            .expect("the tag closes");
+    let tag = body
+        .get(tag_start..tag_end)
+        .expect("the tag is whole characters");
+    let attr = |text: &str, name: &str| {
+        let key = format!("{name}=\"");
+        let value = text.get(text.rfind(&key)? + key.len()..)?;
+        Some(value.get(..value.find('"')?)?.to_owned())
+    };
+    let id = attr(tag, "data-p")
+        .and_then(|id| id.parse().ok())
+        .expect("a numbered element holds the control");
+    (id, attr(tag, "data-t"))
+}
+
+/// A menu opened by a press on the page stands in that press's own answer: the rows it lists
+/// are elements the page can number, drawn on the layer over the window as the window shows
+/// them.
+#[test]
+fn a_menu_a_press_opens_on_the_page_is_in_that_answer() {
+    let _settled = ui::motion::testing::settled();
+    let surface = package(package_of(TASKS))
+        .surface()
+        .expect("the package has a surface");
+    collab_types::app_surface::register_package(TASKS, &surface);
+    let mut session = Session::tasks();
+    choose(&mut session, "New task");
+    let said = "Water the plants";
+    session.window.type_text(said);
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    // The task's own page, where its menus stand.
+    let anchor = {
+        let host = session.instance_host();
+        let root = host.root_of(TASKS).expect("the root");
+        let items = match host.runtime().read(&root, "items") {
+            Ok(tilolang_tilo::runtime::Value::List(items)) => items,
+            other => panic!("the workspace lists its tasks: {other:?}"),
+        };
+        items
+            .into_iter()
+            .find_map(|item| match item {
+                tilolang_tilo::runtime::Value::Ref(item)
+                    if matches!(
+                        host.runtime().read(&item.target, "title"),
+                        Ok(tilolang_tilo::runtime::Value::Text(title)) if title == said
+                    ) =>
+                {
+                    Some(format!("tl:{TASKS}:{}", item.target.id_string()))
+                }
+                _ => None,
+            })
+            .expect("the task the list shows")
+    };
+    session.instance_mut().reveal(anchor);
+    session.settle();
+    let mut page = ShownOnPage::new();
+    let opened = page.open(session.window.harness(), None);
+    assert!(
+        !opened.body.contains("No estimate"),
+        "the menu stands closed on the page"
+    );
+    let (id, target) = pressable_words(&opened.body, "Estimate");
+    let patches = page.act(
+        session.window.harness(),
+        id,
+        target.as_deref(),
+        ui::composition::page::PageAction::Activate,
+    );
+    let answered: String = patches
+        .iter()
+        .filter_map(|patch| match patch {
+            ui::composition::page::Patch::Replace { html, .. }
+            | ui::composition::page::Patch::Insert { html, .. } => Some(html.as_str()),
+            ui::composition::page::Patch::Remove { .. } => None,
+        })
+        .collect();
+    assert!(
+        answered.contains("No estimate"),
+        "the menu a press opened stands in that press's answer: {answered}"
+    );
+}
+
 /// How many tasks the large page is opened over: what a person who has used Tasks for years
 /// keeps.
 const SEEDED_ON_PAGE: usize = 10_000;
