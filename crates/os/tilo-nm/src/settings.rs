@@ -113,6 +113,18 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// Write a string map (`a{ss}`): a profile's `user.data`, where a setting of Tilo's own is
+    /// kept beside `NetworkManager`'s, which it neither reads nor refuses.
+    pub fn set_string_map<'v>(
+        &mut self,
+        setting: &str,
+        key: &str,
+        entries: impl IntoIterator<Item = (&'v str, &'v str)>,
+    ) {
+        let map: HashMap<&str, &str> = entries.into_iter().collect();
+        self.set(setting, key, map);
+    }
+
     pub fn set<'v>(&mut self, setting: &str, key: &str, value: impl Into<Value<'v>>) {
         if let Some(value) = owned(value.into()) {
             self.0
@@ -126,6 +138,12 @@ impl Settings {
         if let Some(properties) = self.0.get_mut(setting) {
             properties.remove(key);
         }
+    }
+
+    /// Remove a whole setting, where its last property went: `NetworkManager` refuses a setting
+    /// that holds nothing, such as a `user` whose data map is empty.
+    pub fn remove_setting(&mut self, setting: &str) {
+        self.0.remove(setting);
     }
 
     #[must_use]

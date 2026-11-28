@@ -475,6 +475,8 @@ pub struct VpnProfileSettings {
     pub peer_public_key: Option<String>,
     /// Seconds between keepalives (`WireGuard`); `None` sends none.
     pub keepalive: Option<u32>,
+    /// This profile's traffic is routed over Tor.
+    pub tor: bool,
 }
 
 pub fn vpn_profile_settings(uuid: &str) -> Result<VpnProfileSettings, String> {
@@ -500,6 +502,10 @@ fn vpn_settings_of(profile: &Settings) -> Result<VpnProfileSettings, String> {
         addresses: profile.addresses(IpFamily::V4),
         dns: profile.dns(IpFamily::V4),
         mtu: profile.uint("wireguard", "mtu").filter(|mtu| *mtu > 0),
+        tor: profile
+            .string_map("user", "data")
+            .get(TOR_PREFERENCE_KEY)
+            .is_some_and(|value| value == "1"),
         ..VpnProfileSettings::default()
     };
     if let Some(peer) = profile.wireguard_peers().into_iter().next() {
@@ -522,6 +528,11 @@ fn vpn_settings_of(profile: &Settings) -> Result<VpnProfileSettings, String> {
 /// `OpenConnect`, L2TP, PPTP, SSTP and Fortinet, vpnc's `IPSec gateway`, strongSwan's `address` and
 /// Libreswan's `right`.
 const SERVER_KEYS: [&str; 5] = ["remote", "gateway", "IPSec gateway", "address", "right"];
+
+/// The key of the profile's `user.data` holding whether its traffic is routed over Tor: Tilo's
+/// own setting, kept in the profile `NetworkManager` holds so it follows the profile and never
+/// leaves the device in plain text anywhere else.
+const TOR_PREFERENCE_KEY: &str = "tilo-tor";
 
 /// The longest host name DNS allows.
 const MAX_HOST_BYTES: usize = 253;
@@ -578,6 +589,8 @@ pub struct VpnProfilePatch {
     pub endpoint: Option<String>,
     pub allowed_ips: Option<Vec<String>>,
     pub keepalive: Option<Option<u32>>,
+    /// Whether this profile's traffic is routed over Tor.
+    pub tor: Option<bool>,
 }
 
 impl VpnProfilePatch {
@@ -615,6 +628,24 @@ fn apply_vpn_patch(
     }
     if let Some(on) = patch.autoconnect {
         settings.set("connection", "autoconnect", on);
+    }
+    if let Some(tor) = patch.tor {
+        let mut data = settings.string_map("user", "data");
+        if tor {
+            data.insert(TOR_PREFERENCE_KEY.to_owned(), "1".to_owned());
+        } else {
+            data.remove(TOR_PREFERENCE_KEY);
+        }
+        if data.is_empty() {
+            settings.remove_setting("user");
+        } else {
+            settings.set_string_map(
+                "user",
+                "data",
+                data.iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            );
+        }
     }
     if let Some(all) = patch.all_traffic {
         settings.set("ipv4", "never-default", !all);
@@ -1511,6 +1542,110 @@ pub fn export_wireguard(uuid: &str) -> Result<Zeroizing<String>, String> {
     .config()
 }
 
+// ---------------------------------------------------------------------------------------------
+// A tunnel's telemetry and the device's Tor service: what the profile page's Activity view
+// reads, and the routing that sends everything through Tor.
+// ---------------------------------------------------------------------------------------------
+
+/// Whether `interface` is a Linux interface name a counter can be read for: no path separators,
+/// at most `IFNAMSIZ - 1` bytes.
+fn valid_interface(interface: &str) -> bool {
+    !interface.is_empty()
+        && interface.len() <= 15
+        && interface
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && interface != "."
+        && interface != ".."
+}
+
+/// The bytes `interface` received and sent, as the kernel counts them: its sysfs counters, or
+/// `/proc/net/dev` where no sysfs is mounted. `None` when the interface is not there.
+pub fn interface_transfer(interface: &str) -> Option<(u64, u64)> {
+    if !valid_interface(interface) {
+        return None;
+    }
+    let counter = |name: &str| {
+        std::fs::read_to_string(format!("/sys/class/net/{interface}/statistics/{name}"))
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+    };
+    if let (Some(received), Some(sent)) = (counter("rx_bytes"), counter("tx_bytes")) {
+        return Some((received, sent));
+    }
+    parse_proc_net_dev(&std::fs::read_to_string("/proc/net/dev").ok()?, interface)
+}
+
+/// The bytes an interface received and sent in `/proc/net/dev`: a row `name: rx_bytes rx_packets
+/// … (8 receive columns) tx_bytes …`.
+fn parse_proc_net_dev(text: &str, interface: &str) -> Option<(u64, u64)> {
+    text.lines().find_map(|line| {
+        let (name, counters) = line.split_once(':')?;
+        if name.trim() != interface {
+            return None;
+        }
+        let mut columns = counters.split_whitespace();
+        let received = columns.next()?.parse().ok()?;
+        let sent = columns.nth(7)?.parse().ok()?;
+        Some((received, sent))
+    })
+}
+
+/// Seconds since `interface`'s last successful `WireGuard` handshake, read from `wg show
+/// <interface> latest-handshakes`. `None` when the tunnel reports none: it is not `WireGuard`,
+/// it is down, or `wg` is not installed.
+pub fn vpn_handshake_secs(interface: &str) -> Option<u64> {
+    if !valid_interface(interface) {
+        return None;
+    }
+    let output =
+        crate::process::run_capture("wg", &["show", interface, "latest-handshakes"]).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    latest_handshake_age(&output, now)
+}
+
+/// The age, in seconds, of the newest handshake in `wg show … latest-handshakes`: one line per
+/// peer, `<public key>\t<unix seconds>`, where `0` is a peer that never completed one.
+fn latest_handshake_age(text: &str, now: u64) -> Option<u64> {
+    let newest = text
+        .lines()
+        .filter_map(|line| {
+            let mut columns = line.split_whitespace();
+            columns.next()?;
+            columns.next()?.parse::<u64>().ok()
+        })
+        .filter(|at| *at > 0)
+        .max()?;
+    Some(now.saturating_sub(newest))
+}
+
+/// Whether this device has a Tor service to route through.
+pub fn tor_available() -> bool {
+    crate::process::which("systemctl")
+        && crate::process::run_capture("systemctl", &["list-unit-files", "tor.service"])
+            .is_ok_and(|output| output.contains("tor.service"))
+}
+
+/// Whether this device's Tor service is running now, so every connection goes through it.
+pub fn tor_active() -> bool {
+    tor_available()
+        && crate::process::run_capture("systemctl", &["is-active", "tor.service"])
+            .is_ok_and(|output| output.trim() == "active")
+}
+
+/// Start or stop this device's Tor service, which routes every connection through it. The
+/// person asked first; a service that is not installed says so instead.
+pub fn set_tor(on: bool) -> Result<(), String> {
+    if !tor_available() {
+        return Err("This device has no Tor service to route through".into());
+    }
+    let action = if on { "start" } else { "stop" };
+    crate::process::run("systemctl", &[action, "tor.service"])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1944,4 +2079,84 @@ PublicKey = kP8x2yQ1mZ7vR3nL9fH0sJtW6cB4dE5gA1iU2oXyz0=
 Endpoint = home.example:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 ";
+
+    #[test]
+    fn a_tunnels_counters_and_last_handshake_read_from_the_kernels_forms() {
+        // `/proc/net/dev` is the fallback where no sysfs is mounted: the receive columns, then
+        // the send ones, the eighth of which is the sent byte count.
+        let dev = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:   3    0    0    0    0     0          0         0     4    0    0    0    0     0       0          0
+  wg0:  1024   8    0    0    0     0          0         0  2048    8    0    0    0     0       0          0
+";
+        assert_eq!(parse_proc_net_dev(dev, "wg0"), Some((1024, 2048)));
+        assert_eq!(parse_proc_net_dev(dev, "lo"), Some((3, 4)));
+        assert_eq!(parse_proc_net_dev(dev, "tun0"), None);
+        assert_eq!(parse_proc_net_dev("not a table", "wg0"), None);
+
+        // Two peers, the newest handshake the one the tunnel reports; a peer that completed
+        // none says `0` and is no handshake.
+        let handshakes = "\
+Zm9vYmFyMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=\t1000
+YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t1300
+";
+        assert_eq!(latest_handshake_age(handshakes, 1400), Some(100));
+        assert_eq!(
+            latest_handshake_age("key=\t0\n", 1400),
+            None,
+            "a peer that never handshook is no handshake"
+        );
+        assert_eq!(latest_handshake_age("", 1400), None);
+
+        // Only an interface name reaches the counter paths.
+        assert!(valid_interface("wg0"));
+        assert!(valid_interface("tun-home_1"));
+        assert!(!valid_interface(""));
+        assert!(!valid_interface("../../etc/passwd"));
+        assert!(!valid_interface("a/b"));
+    }
+
+    #[test]
+    fn a_profiles_tor_preference_is_kept_in_its_own_settings() {
+        let mut settings = wireguard_file_settings();
+        let current = vpn_settings_of(&settings).expect("the profile reads");
+        assert!(!current.tor, "a profile routes over Tor only when asked");
+        apply_vpn_patch(
+            &mut settings,
+            &current,
+            &VpnProfilePatch {
+                tor: Some(true),
+                ..VpnProfilePatch::default()
+            },
+        )
+        .expect("the preference is kept");
+        assert!(
+            vpn_settings_of(&settings).expect("the profile reads").tor,
+            "the preference is read back from the profile NetworkManager holds"
+        );
+        let current = vpn_settings_of(&settings).expect("the profile reads");
+        apply_vpn_patch(
+            &mut settings,
+            &current,
+            &VpnProfilePatch {
+                tor: Some(false),
+                ..VpnProfilePatch::default()
+            },
+        )
+        .expect("the preference is taken back");
+        assert!(!vpn_settings_of(&settings).expect("the profile reads").tor);
+        assert!(
+            !settings.has("user"),
+            "the setting that held nothing goes, so NetworkManager still accepts the profile"
+        );
+    }
+
+    /// The settings of a `WireGuard` profile from [`WIREGUARD_FILE`].
+    fn wireguard_file_settings() -> Settings {
+        let mut settings = wireguard_settings(WIREGUARD_FILE).expect("the configuration reads");
+        settings.set("connection", "id", "Home");
+        settings.set("connection", "uuid", "11111111-2222-4333-8444-555555555555");
+        settings
+    }
 }

@@ -3,7 +3,7 @@
 
 d-so-tilo-settings = Einstellungen
 
-d-so-tilo-settings-keywords = Einstellungen, Präferenzen, Konfiguration, einstellungen, system, optionen
+d-so-tilo-settings-keywords = Einstellungen, Präferenzen, Konfiguration, einstellungen, system, optionen, design, designs, farben, aussehen, hintergrund, hintergrundbild, anpassen, personalisieren, schriftarten, farbschema
 
 d-7eg6gmz4 = Settings
     .doc = Die Wurzel des Fensters.
@@ -500,6 +500,7 @@ d-i67tvpqg = Settings window
     .w-updates = Aktualisierungen
     .w-about = Über
     .w-could-not-be-read = { $what } konnte nicht gelesen werden
+    .w-people-and-access = Personen und Zugriff
 
 d-xl4iwqcj = Billing pane
     .w-billing = Abrechnung
@@ -1328,7 +1329,6 @@ d-c4tbp74f = Network pane
     .w-let-it-out = Ihn hinauslassen
     .w-lift-the-block = Die Sperre aufheben
     .w-name = Bis
-    .w-wireguard = WireGuard
     .w-openvpn = OpenVPN
     .w-kind = Art
     .w-the-configuration = Die Konfiguration
@@ -1440,6 +1440,27 @@ d-c4tbp74f = Network pane
     .w-one-that-does-not-say-its = Eines, das seinen Namen nicht sendet
     .w-advanced = Erweitert
     .w-enterprise-networks-and-checks = Unternehmensnetze und Prüfungen
+    .w-profiles = Profile
+    .w-activity = Aktivität
+    .w-received = Empfangen
+    .w-sent = Gesendet
+    .w-last-handshake = Letzter Handschlag
+    .w-tor = Tor
+    .w-routed-over-tor = Über Tor geleitet
+    .w-could-not-connect = Verbindung fehlgeschlagen
+    .w-dismiss = Verwerfen
+    .w-every-connection-through-tor = Jede Verbindung über Tor
+    .w-on-every-connection-on-this-device = Ein; jede Verbindung dieses Geräts geht über Tor
+    .w-over-tor = Über Tor
+    .w-route-everything-through-tor = Alles über Tor leiten
+    .w-every-connection-on-this-device-goes = Jede Verbindung dieses Geräts geht über seinen Tor-Dienst
+    .w-this-device-has-no-tor-service = Dieses Gerät hat keinen Tor-Dienst, also kann hier keine Verbindung über Tor geleitet werden.
+    .w-on-this-device = Auf diesem Gerät
+    .w-this-device-s-profile = Profil dieses Geräts
+    .w-its-keys-are-kept-by-this = Seine Schlüssel werden vom Netzwerkdienst dieses Geräts gehalten, der das Profil hält, das diese Seite ändert; die Seite hält keine Kopie davon.
+    .w-route-it-over-tor = Über Tor leiten
+    .w-on-its-traffic-goes-through-this = Ein; sein Verkehr geht über den Tor-Dienst dieses Geräts
+    .w-no-tor-service-on-this-device = Kein Tor-Dienst auf diesem Gerät
 
 d-g2tvylph = Arbeitsidentität
     .w-work-or-school-identity = Identität bei der Arbeit oder Schule
@@ -1923,8 +1944,10 @@ d-zrm56aft = Kontowörter
 
 d-m6ittnmf = VPN-Statuswörter
     .w-connected = Verbunden
-    .w-wireguard = WireGuard
-    .w-off = Aus
+    .w-connecting = Verbinden…
+    .w-disconnecting = Trennen…
+    .w-down-wireguard = Aus · WireGuard
+    .w-down = Aus
 
 d-h7s2w2w6 = VPN-Wörter
     .w-none-set-up = Nichts eingerichtet
@@ -2618,6 +2641,7 @@ d-vjrdgx4p = Bereichstitel
     .w-apps = Apps
     .w-about = Über
     .w-appearance = Erscheinungsbild
+    .w-people-and-access = Personen und Zugriff
 
 d-oxzjl6j3 = Ruhetage
     .w-every-day = jeden Tag
@@ -2810,3 +2834,61 @@ d-fitxnaxo = Vor gesagt
     .w-min-ago = vor { $value } Min.
     .w-h-ago = vor { $value } Std.
     .w-d-ago = vor { $value } Tagen
+
+
+d-4dz3r5ir = Geschwindigkeitswörter
+    .w-b-s = { $to_int } B/s
+    .w-kb-s = { $tenths_of } kB/s
+    .w-mb-s = { $tenths_of } MB/s
+    .w-gb-s = { $tenths_of } GB/s
+
+d-brqrqv6t = Byte-Wörter
+    .w-b = { $bytes } B
+    .w-kb = { $tenths_of } kB
+    .w-mb = { $tenths_of } MB
+    .w-gb = { $tenths_of } GB
+
+d-cpiulmpf = Zeitangaben
+    .w-s-ago = { $seconds } s zuvor
+    .w-min-ago = { $value } min zuvor
+    .w-hr-ago = { $value } Std. zuvor
+    .w-days-ago = { $value } Tage zuvor
+
+d-zsgf3wtd = Personenname
+    .w-you = Du
+
+d-wroxf6o2 = Personenwörter
+    .w-the-workspace-is-theirs = { $role_name } · der Arbeitsbereich gehört ihnen
+    .w-administrator = { $role_name } · Administrator
+
+d-mmzcwnbx = Agentenwörter
+    .w-this-workspace-s-model = { $agent_state_words } · das Modell dieses Arbeitsbereichs
+
+d-nxduld2m = Agentenzustand
+    .w-active = Aktiv
+    .w-paused = Pausiert
+    .w-retired = Ausgemustert
+
+d-6cpnqhk5 = Arbeitsbereichsseite
+    .w-people = Personen
+    .w-their-role-says-what-they-may = Ihre Rolle sagt, was sie hier tun dürfen. Der Arbeitsbereich gehört dem Eigentümer; seine Rolle ist eine Tatsache, keine Wahl.
+    .w-their-role-says-what-they-may-2 = Ihre Rolle sagt, was sie hier tun dürfen. Sie zu ändern gehört dem, der diesen Arbeitsbereich verwaltet.
+    .w-owner = Eigentümer
+    .w-change-s-role = Rolle von { $person_name } ändern
+    .w-remove = { $person_name } entfernen
+    .w-no-workspace-is-open = Kein Arbeitsbereich ist geöffnet
+    .w-the-people-and-their-roles-belong = Die Personen und ihre Rollen gehören zum Arbeitsbereich im Vordergrund; öffne einen, und sie erscheinen hier.
+    .w-agents = Agenten
+    .w-the-workspace-s-agents-could-not = Die Agenten des Arbeitsbereichs konnten nicht gelesen werden
+    .w-no-agent-works-in-this-workspace = Noch arbeitet kein Agent in diesem Arbeitsbereich.
+    .w-an-agent-acts-as-the-person = Ein Agent handelt als die Person, für die er arbeitet. Was er hier tun darf, sind die Berechtigungen des Arbeitsbereichs auf ihn, unter „Berechtigungen“ aufgeführt.
+    .w-permissions = Berechtigungen
+    .w-what-the-workspace-grants-beyond-a = Was der Arbeitsbereich über eine Rolle hinaus gewährt: jeweils mit dem, was es erlaubt und wem, und dem Weg, es zurückzunehmen. Nur ein Eigentümer oder Administrator darf.
+    .w-the-workspace-grants-nothing-beyond-its = Der Arbeitsbereich gewährt nichts über seine Rollen und seine eigenen Dokumente hinaus.
+    .w-take-it-back = Zurücknehmen
+    .w-default-apps = Standard-Apps
+    .w-which-app-opens-each-kind-of = Welche App jede Art von Datei oder Link hier öffnet. Die Wahl des Arbeitsbereichs gilt für alle; deine ist deine allein.
+    .w-here-yours = Hier: { $workspace } · Deine: { $yours }
+    .w-everyone = Alle
+    .w-mine = Meine
+    .w-the-workspace-s-access-can-t = Der Zugriff des Arbeitsbereichs kann hier noch nicht gelesen werden; öffne den Arbeitsbereich, und er erscheint.

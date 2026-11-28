@@ -80,7 +80,7 @@ fn page_icon(slug: &str) -> Option<tilo_ui_base::icons::Icon> {
         "pointing" => Icon::Mouse,
         "spelling" => Icon::Type,
         "time_date" => Icon::Calendar,
-        "users" => Icon::Users,
+        "users" | "workspace" => Icon::Users,
         "printers" => Icon::Printer,
         "power" => Icon::Battery,
         "appearance" => Icon::Palette,

@@ -29,6 +29,7 @@ use tilo_desktop_model::Workspace;
 use tilo_dialogs::chosen::{AppKey, ChosenTable, Kind as ChosenKind};
 use tilo_service::{Service, Started};
 use tilo_session_client::daemon_documents::DaemonWritesFeed;
+use tilo_session_core::desktop::authority::WorkspaceAuthority as _;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::workspace_settings::{
     AppDirectory, apply_revoke, listed_permissions, may_revoke,
@@ -48,6 +49,14 @@ pub(crate) const REVOKE: &str = "revoke";
 /// The action that lets an app reach outside the workspace through one capability, or stops it.
 #[cfg(test)]
 pub(crate) const SET_OUTSIDE: &str = "set-outside";
+
+/// The action that gives a member another role, by its id.
+#[cfg(test)]
+pub(crate) const SET_ROLE: &str = "set-role";
+
+/// The action that removes a member, by its id.
+#[cfg(test)]
+pub(crate) const REMOVE_MEMBER: &str = "remove-member";
 
 /// What the workspace's access list offers: taking a grant or a chosen file back, and turning
 /// one of an app's outside capabilities off or back on.
@@ -79,6 +88,41 @@ pub enum AccessEffect {
         /// Whether the app may carry it out.
         #[param("Whether the app may carry it out.")]
         allowed: bool,
+    },
+    /// Give a member of the workspace in front another role.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-set-role")]
+    SetRole {
+        /// The member, by their person id in the list.
+        #[param("The member, by their person id in the list.")]
+        person: String,
+        /// `viewer`, `commenter`, `editor` or `moderator`.
+        #[param("viewer, commenter, editor or moderator")]
+        role: String,
+    },
+    /// Remove a member from the workspace in front.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-remove-member")]
+    RemoveMember {
+        /// The member, by their person id in the list.
+        #[param("The member, by their person id in the list.")]
+        person: String,
+    },
+    /// Have the next app open a kind of file or link for everyone in the workspace in front.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-next-default")]
+    NextDefault {
+        /// The kind, by the key the list names it (`ext:pdf`).
+        #[param("The kind of file or link, by the key the list names it.")]
+        resource: String,
+    },
+    /// Have the next app open a kind of file or link for you in the workspace in front.
+    #[effect(kind = "outside")]
+    #[effect(label = "session-access-next-personal-default")]
+    NextPersonalDefault {
+        /// The kind, by the key the list names it (`ext:pdf`).
+        #[param("The kind of file or link, by the key the list names it.")]
+        resource: String,
     },
 }
 
@@ -399,6 +443,155 @@ impl Served {
         ))
     }
 
+    /// Give `person` the role `role` in the workspace in front: the workspace's own rule decides,
+    /// so a change the person may not make is refused whatever the page offered.
+    fn set_role(&self, person: &str, role: &str) -> Result<Started, ApiError> {
+        let Some(role) = tilo_action_policy::Role::parse(role) else {
+            return Err(ApiError::InvalidArguments(format!(
+                "`{role}` is no role a workspace hands out"
+            )));
+        };
+        let person = person.to_owned();
+        let answer = serde_json::json!({ "role": person });
+        self.change_in_front(
+            move |workspace, actor| {
+                tilo_session_core::desktop::workspace_settings::set_member_role(
+                    workspace, actor, &person, role,
+                )
+            },
+            answer,
+        )
+    }
+
+    /// Remove `person` from the workspace in front.
+    fn remove_member(&self, person: &str) -> Result<Started, ApiError> {
+        let person = person.to_owned();
+        let answer = serde_json::json!({ "removed": person });
+        self.change_in_front(
+            move |workspace, actor| {
+                tilo_session_core::desktop::workspace_settings::remove_member(
+                    workspace, actor, &person,
+                )
+            },
+            answer,
+        )
+    }
+
+    /// Have the next app open `resource` for everyone in the workspace in front.
+    fn next_default(&self, resource: &str) -> Result<Started, ApiError> {
+        let Some(kind) = desktop_policy::ResourceKind::parse(resource) else {
+            return Err(ApiError::InvalidArguments(format!(
+                "`{resource}` is no kind of file or link"
+            )));
+        };
+        let candidates = crate::app_icons::app_lists()
+            .unwrap_or_default()
+            .candidates
+            .clone();
+        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+        let mut tree = self.handle.read(Clone::clone);
+        let person = self.person.clone();
+        let Some(workspace) = tree.active_workspace_mut() else {
+            return Err(ApiError::Failed(t("session-workspace-access-no-workspace")));
+        };
+        let next = tilo_session_core::desktop::workspace_settings::next_workspace_default(
+            workspace.default_apps.policy.get(&kind),
+            &kind,
+            &candidates,
+        );
+        if workspace.default_apps.policy.get(&kind) != Some(&next) {
+            let answer = kind.as_str().to_owned();
+            workspace
+                .set_default_app_policy_as(&person, kind, next, &resolver)
+                .map_err(|error| ApiError::Failed(error.to_string()))?;
+            self.handle.replace_tree(tree);
+            return Ok(Started::Done(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({ "default": answer })),
+                resources: Vec::new(),
+            }));
+        }
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
+    /// Have the next app open `resource` for this person, in the workspace in front.
+    fn next_personal_default(&self, resource: &str) -> Result<Started, ApiError> {
+        let Some(kind) = desktop_policy::ResourceKind::parse(resource) else {
+            return Err(ApiError::InvalidArguments(format!(
+                "`{resource}` is no kind of file or link"
+            )));
+        };
+        let candidates = crate::app_icons::app_lists()
+            .unwrap_or_default()
+            .candidates
+            .clone();
+        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+        let mut tree = self.handle.read(Clone::clone);
+        let person = self.person.clone();
+        let Some(workspace) = tree.active_workspace_mut() else {
+            return Err(ApiError::Failed(t("session-workspace-access-no-workspace")));
+        };
+        let current = workspace
+            .default_apps
+            .user_choices
+            .get(&person)
+            .and_then(|choices| choices.get(&kind))
+            .cloned();
+        let next = tilo_session_core::desktop::workspace_settings::next_user_default(
+            current.as_ref(),
+            &kind,
+            &candidates,
+        );
+        if current.as_ref() != Some(&next) {
+            let answer = kind.as_str().to_owned();
+            workspace
+                .set_default_app_choice_as(&person, &person, kind, next, &resolver)
+                .map_err(|error| ApiError::Failed(error.to_string()))?;
+            self.handle.replace_tree(tree);
+            return Ok(Started::Done(tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({ "default": answer })),
+                resources: Vec::new(),
+            }));
+        }
+        Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+
+    /// Apply `change` to the workspace in front, as the person at this desktop, and write what it
+    /// changed through the workspace's governance: what a role change and a removal answer.
+    fn change_in_front(
+        &self,
+        change: impl Fn(
+            &mut Workspace,
+            &str,
+        ) -> Result<
+            tilo_session_core::desktop::workspace_settings::PolicyEdit,
+            tilo_action_policy::Refusal,
+        >,
+        answer: Value,
+    ) -> Result<Started, ApiError> {
+        let mut tree = self.handle.read(Clone::clone);
+        let person = self.person.clone();
+        let Some(workspace) = tree.active_workspace_mut() else {
+            return Err(ApiError::Failed(t("session-workspace-access-no-workspace")));
+        };
+        let edit =
+            change(workspace, &person).map_err(|refusal| ApiError::Failed(refusal.to_string()))?;
+        let workspace_id = workspace.id();
+        let view = self.view.clone();
+        let written = view.as_ref().map(|view| {
+            crate::membership::Membership::of(&**view, workspace_id).changes(workspace, &edit)
+        });
+        Ok(self.write(
+            tree,
+            workspace_id,
+            view,
+            written,
+            tilo_actions::ActionOutput {
+                value: Some(answer),
+                resources: Vec::new(),
+            },
+        ))
+    }
+
     /// Write what `edit` changed in `workspace` through `view`'s governance, or keep it here when
     /// this session holds none: what a revoke and an outside capability's toggle both answer.
     fn write(
@@ -528,6 +721,10 @@ impl Service for Served {
                 }
                 self.set_outside(&workspace, &app, &capability, allowed)
             }
+            AccessEffect::SetRole { person, role } => self.set_role(&person, &role),
+            AccessEffect::RemoveMember { person } => self.remove_member(&person),
+            AccessEffect::NextDefault { resource } => self.next_default(&resource),
+            AccessEffect::NextPersonalDefault { resource } => self.next_personal_default(&resource),
         }
     }
 }
@@ -613,12 +810,97 @@ fn reading_of(
         .iter()
         .filter_map(|workspace| outside_of(workspace, person, outside, now))
         .collect();
+    let governance = tree
+        .active_workspace()
+        .map(|workspace| governance_of(tree, workspace, person, now));
+    let defaults = tree
+        .active_workspace()
+        .map(|workspace| defaults_of(workspace, person));
     serde_json::json!({
         "known": !tree.workspaces.is_empty(),
         "workspaces": workspaces,
         "outside": outside,
         "shares": shares,
+        "governance": governance,
+        "defaults": defaults,
     })
+}
+
+/// The workspace in front's people and roles, as its page lists them: each person's role, whether
+/// the workspace is theirs, and what the person at this desktop may change of theirs.
+fn governance_of(
+    tree: &tilo_desktop_model::Layout,
+    workspace: &Workspace,
+    person: &str,
+    now: u64,
+) -> Value {
+    use tilo_action_policy::roles::governance;
+    let names = tilo_session_core::desktop::people::PeopleNames::of(tree, person, None);
+    let can_set_role = workspace
+        .policy
+        .may_change_at(person, governance::SET_ROLE, now);
+    let can_remove = workspace
+        .policy
+        .may_change_at(person, governance::REMOVE_MEMBER, now);
+    let people: Vec<Value> = workspace
+        .policy
+        .people()
+        .into_iter()
+        .map(|(user, role)| {
+            let member = tilo_member_types::MemberId::person(user.clone());
+            let owns = workspace.policy.is_owner(&user);
+            let theirs = user == person;
+            serde_json::json!({
+                "person": user,
+                "name": names.get(&member).unwrap_or_default(),
+                "role": role.key(),
+                "role_name": role.name(),
+                "owner": owns,
+                "administrator": workspace.policy.is_administrator(&user),
+                "you": theirs,
+                "can_change": can_set_role && !theirs && !owns,
+                "can_remove": can_remove && !theirs && !owns,
+            })
+        })
+        .collect();
+    let roles: Vec<Value> = tilo_action_policy::Role::ASSIGNABLE
+        .iter()
+        .map(|role| serde_json::json!({"id": role.key(), "name": role.name()}))
+        .collect();
+    serde_json::json!({
+        "workspace": workspace.id().to_string(),
+        "name": workspace.name,
+        "you": person,
+        "owner": workspace.policy.owner.clone().unwrap_or_default(),
+        "can_govern": can_set_role,
+        "roles": roles,
+        "people": people,
+    })
+}
+
+/// Which app opens each kind of file or link in the workspace in front, for the workspace and for
+/// this person, each as the tab shows it.
+fn defaults_of(workspace: &Workspace, person: &str) -> Value {
+    let candidates = crate::app_icons::app_lists()
+        .unwrap_or_default()
+        .candidates
+        .clone();
+    let rows: Vec<Value> = tilo_session_core::desktop::workspace_settings::default_app_choices(
+        workspace,
+        person,
+        &candidates,
+    )
+    .into_iter()
+    .map(|choice| {
+        serde_json::json!({
+            "resource": choice.resource.as_str(),
+            "label": choice.label,
+            "workspace": choice.workspace,
+            "yours": choice.yours,
+        })
+    })
+    .collect();
+    Value::Array(rows)
 }
 
 /// One part of a workspace shared out, as the overview lists it: the row's own fields, with the
@@ -938,6 +1220,104 @@ mod tests {
         assert_eq!(empty["workspaces"], serde_json::json!([]));
         let unread = reading_of(&Layout::default(), "ada", &[], &[], &mut paths(), 0);
         assert_eq!(unread["known"], serde_json::json!(false));
+    }
+
+    /// The workspace in front reads its people with their roles, the owner's role a fact of the
+    /// workspace, and the roles a member may be given.
+    #[test]
+    fn the_workspace_in_front_reads_its_people_and_their_roles() {
+        let mut tree = workspace_owned_by("bo");
+        tree.active = tree.workspaces[0].id();
+        tree.workspaces[0].name = "Harbour".to_owned();
+        tree.workspaces[0]
+            .policy
+            .members
+            .insert("cy".to_owned(), tilo_action_policy::Role::Editor.into());
+        tree.workspaces[0].members.push(collab_types::Member::named(
+            tilo_member_types::MemberId::person("cy"),
+            "Cy",
+        ));
+        let read = reading_of(&tree, "bo", &[], &[], &mut paths(), 0);
+        let governance = &read["governance"];
+        assert_eq!(
+            governance["workspace"],
+            serde_json::json!(tree.workspaces[0].id().to_string())
+        );
+        assert_eq!(governance["name"], serde_json::json!("Harbour"));
+        assert_eq!(governance["owner"], serde_json::json!("bo"));
+        assert_eq!(governance["can_govern"], serde_json::json!(true));
+        let roles: Vec<&str> = governance["roles"]
+            .as_array()
+            .expect("the roles")
+            .iter()
+            .filter_map(|role| role["id"].as_str())
+            .collect();
+        assert_eq!(roles, ["viewer", "commenter", "editor", "moderator"]);
+        let people = governance["people"].as_array().expect("the people");
+        assert_eq!(people.len(), 2, "the owner and Cy");
+        assert_eq!(people[0]["person"], serde_json::json!("bo"));
+        assert_eq!(people[0]["role"], serde_json::json!("owner"));
+        assert_eq!(
+            people[0]["can_change"],
+            serde_json::json!(false),
+            "the owner's role is a fact of the workspace"
+        );
+        assert_eq!(people[1]["person"], serde_json::json!("cy"));
+        assert_eq!(people[1]["name"], serde_json::json!("Cy"));
+        assert_eq!(people[1]["role"], serde_json::json!("editor"));
+        assert_eq!(people[1]["can_change"], serde_json::json!(true));
+        assert_eq!(people[1]["can_remove"], serde_json::json!(true));
+    }
+
+    /// A role change and a removal are the workspace's own: the reading shows the change, and a
+    /// member the person may not touch is refused by the workspace's rule.
+    #[test]
+    fn a_members_role_and_membership_change_through_the_workspace() {
+        let mut tree = workspace_owned_by("ada");
+        tree.active = tree.workspaces[0].id();
+        tree.workspaces[0]
+            .policy
+            .members
+            .insert("cy".to_owned(), tilo_action_policy::Role::Viewer.into());
+        let handle = DesktopHandle::new(tree, 1);
+        let mut served = Served::new(
+            handle,
+            "ada".into(),
+            None,
+            None,
+            no_outside(),
+            MountMoves::default(),
+        );
+        let set_role = Map::from_iter([
+            ("person".to_owned(), serde_json::json!("cy")),
+            ("role".to_owned(), serde_json::json!("editor")),
+        ]);
+        served
+            .invoke(RESOURCE, SET_ROLE, &set_role)
+            .expect("the role changes");
+        let read = served.read(RESOURCE).expect("the reading");
+        let cy = read["governance"]["people"]
+            .as_array()
+            .expect("the people")
+            .iter()
+            .find(|person| person["person"] == serde_json::json!("cy"))
+            .cloned()
+            .expect("cy");
+        assert_eq!(cy["role"], serde_json::json!("editor"));
+
+        let remove = Map::from_iter([("person".to_owned(), serde_json::json!("cy"))]);
+        served
+            .invoke(RESOURCE, REMOVE_MEMBER, &remove)
+            .expect("the member is removed");
+        let read = served.read(RESOURCE).expect("the reading");
+        assert_eq!(
+            read["governance"]["people"]
+                .as_array()
+                .expect("the people")
+                .len(),
+            1,
+            "only the owner is left"
+        );
     }
 
     /// A device-record choice is listed in the workspace it was chosen in, with the app that holds

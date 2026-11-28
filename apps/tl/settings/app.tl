@@ -2,7 +2,7 @@ app so.tilo.settings "Settings" (
     icon: .settings,
     category: .system,
     tagline: "This device, your workspace and the accounts they keep",
-    keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options", "vpn", "wireguard", "openvpn", "tunnel", "proxy", "privacy", "secure connection", "ipsec", "exit node", "anonymous"],
+    keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options", "vpn", "wireguard", "openvpn", "tunnel", "proxy", "privacy", "secure connection", "ipsec", "exit node", "anonymous", "theme", "themes", "colors", "colours", "appearance", "wallpaper", "fonts", "accent", "icons", "styling", "skin", "look and feel", "customize", "personalise", "personalize"],
     windows: .personal,
 )
 
@@ -136,6 +136,9 @@ view settings_window(s: Settings) {
                     }
                 }
                 ui.NavSection("Workspace") {
+                    ui.NavItem("workspace", "People and access", icon: .users) {
+                        on select: open_pane("workspace")
+                    }
                     ui.NavItem("content", "Content limits", icon: .database) {
                         on select: open_pane("content")
                     }
@@ -321,6 +324,10 @@ view settings_window(s: Settings) {
                         }
                     } else if s.pane == "permissions" {
                         permissions_pane()
+                    } else if s.pane == "workspace" {
+                        read_pane(of: workspace.access, what: what) {
+                            workspace_pane()
+                        }
                     } else if s.pane == "about" {
                         read_pane(of: device.host_info, what: what) {
                             about_pane()
@@ -377,6 +384,8 @@ fn pane_title(pane: Text) -> Text {
         "Date and time"
     } else if pane == "content" {
         "Content limits"
+    } else if pane == "workspace" {
+        "People and access"
     } else if pane == "accounts" {
         "Accounts"
     } else if pane == "billing" {

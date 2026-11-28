@@ -9,8 +9,8 @@ use os_actions::{EnterpriseEapMethod, EnterpriseWifiConfiguration};
 use crate::device::{Change, Device, Readings};
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Link, LinkKind, Metered, Mobile, MobileProfile, Modem,
-    ModemUnit, Nearby, Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi,
-    WifiNetwork, Wired,
+    ModemUnit, Nearby, Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, VpnState,
+    Wifi, WifiNetwork, Wired,
 };
 use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, Preferences, TETHERING, VPN};
 
@@ -419,6 +419,7 @@ fn apply_vpn(vpn: &mut Vpn, change: &Change) {
         Change::ForgetVpn { profile } => {
             vpn.profiles.retain(|saved| saved.id != *profile);
         }
+        Change::SetTor { on } => vpn.tor = *on,
         Change::EditVpn { profile, patch } => {
             for saved in &mut vpn.profiles {
                 if saved.id != *profile {
@@ -447,6 +448,9 @@ fn apply_vpn(vpn: &mut Vpn, change: &Change) {
                 }
                 if let Some(keepalive) = patch.keepalive {
                     saved.keepalive = keepalive;
+                }
+                if let Some(tor) = patch.tor {
+                    saved.tor = tor;
                 }
             }
         }
@@ -992,7 +996,7 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
     );
     assert_eq!(
         child_actions(&service, "vpn-profile:uuid-work"),
-        ["connect", "edit", "forget"]
+        ["connect", "edit", "dismiss", "forget"]
     );
     service
         .invoke("bluetooth-accessory:AA:BB", "connect", &Map::new())
@@ -1106,7 +1110,7 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
     assert!(!read(&service, VPN).to_string().contains("very-secret"));
     assert_eq!(
         child_actions(&service, "vpn-profile:uuid-Home"),
-        ["connect", "edit", "forget"]
+        ["connect", "edit", "dismiss", "forget"]
     );
     service
         .invoke("vpn-profile:uuid-Home", "forget", &Map::new())
@@ -1316,6 +1320,99 @@ fn a_vpn_profile_changes_its_settings() {
 
     edit(&mut service, json!({"dns": []}));
     assert_eq!(read(&service, VPN)["profiles"][0]["dns"], json!([]));
+
+    edit(&mut service, json!({"tor": true}));
+    assert_eq!(
+        read(&service, VPN)["profiles"][0]["tor"],
+        json!(true),
+        "the profile's traffic is routed over Tor where the reading says"
+    );
+}
+
+/// A tunnel says where it stands, when it got there, what passed through it and
+/// when it last handshook; a failed attempt is said on its own row until the
+/// person dismisses it.
+#[test]
+fn a_tunnel_says_its_state_its_traffic_and_what_went_wrong() {
+    let fake = Fake::laptop();
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        let profile = &mut readings.vpn.profiles[0];
+        profile.received = 4_096;
+        profile.sent = 1_024;
+        profile.handshake = Some(34);
+        readings.vpn.tor_available = true;
+    }
+    let mut service = service(&fake);
+
+    // A connection the device refuses says so on the profile, and the person
+    // takes the words away when they have read them.
+    *fake.refuse.lock().expect("refuse") = Some("The tunnel is down on this device".into());
+    service
+        .invoke("vpn-profile:uuid-work", "connect", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, VPN)["profiles"][0]["notice"],
+        json!("The tunnel is down on this device")
+    );
+    service
+        .invoke("vpn-profile:uuid-work", "dismiss", &Map::new())
+        .expect("taken");
+    assert_eq!(read(&service, VPN)["profiles"][0]["notice"], json!(null));
+
+    // Brought up, it says where it stands, since when, what it carried and when
+    // it last handshook.
+    *fake.refuse.lock().expect("refuse") = None;
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.vpn.profiles[0].connected = true;
+        readings.vpn.profiles[0].state = VpnState::Connected;
+    }
+    service.refresh();
+    service.settle();
+    let vpn = read(&service, VPN);
+    assert_eq!(vpn["profiles"][0]["state"], json!("connected"));
+    assert_eq!(vpn["profiles"][0]["received"], json!(4_096));
+    assert_eq!(vpn["profiles"][0]["sent"], json!(1_024));
+    assert_eq!(vpn["profiles"][0]["handshake"], json!(34));
+    assert!(
+        vpn["profiles"][0]["since"].as_i64().unwrap_or(0) > 0,
+        "when it entered the state it is in: {}",
+        vpn["profiles"][0]["since"]
+    );
+}
+
+/// Every connection on this device goes through Tor when the person asks, and
+/// the reading says whether the device has a Tor service to do it.
+#[test]
+fn every_connection_is_routed_over_tor_when_the_person_asks() {
+    let fake = Fake::laptop();
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.vpn.tor_available = true;
+    }
+    let mut service = service(&fake);
+    service
+        .invoke(VPN, "set-tor", &arguments(json!({"on": true})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(fake.changes().last(), Some(&Change::SetTor { on: true }));
+    assert_eq!(read(&service, VPN)["tor"], json!(true));
+}
+
+/// A device without a Tor service refuses to route anything over one, and says why.
+#[test]
+fn a_device_without_tor_offers_no_tor_routing() {
+    let fake = Fake::laptop();
+    let mut service = service(&fake);
+    let refused = service.invoke(VPN, "set-tor", &arguments(json!({"on": true})));
+    assert!(
+        matches!(refused, Err(ApiError::Unavailable { .. })),
+        "no Tor service, no routing over one: {refused:?}"
+    );
+    assert!(fake.changes().is_empty());
+    assert_eq!(read(&service, VPN)["tor-available"], json!(false));
 }
 
 /// Every connectivity resource is published as a surface a view compiles

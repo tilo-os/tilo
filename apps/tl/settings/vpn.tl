@@ -2,52 +2,138 @@
 /// of its own to change; and the ways to add one: a configuration pasted in, or a profile of an
 /// installed kind.
 view vpn_pane(page: State<Text>, chosen: State<Text>, s: Settings) {
+    state listing: Text = "profiles"
     let vpn = device.vpn
-    ui.Section("VPN") {
-        ui.ListRow("Back", icon: .chevron_left) {
-            on activate: set(page, "")
+    ui.ToggleGroup(selected: if listing == "activity" { 1 } else { 0 }, label: "VPN") {
+        ui.Segment("Profiles") {
+            on press: set(listing, "profiles")
         }
-        if vpn.profiles.is_empty() {
-            ui.EmptyState("No VPN profile", icon: .shield, inline: true)
+        ui.Segment("Activity") {
+            on press: set(listing, "activity")
         }
-        for p in vpn.profiles {
-            ui.ListRow(
-                p.name,
-                secondary: vpn_state_words(p),
-                icon: if p.connected { .shield_check } else { .shield },
-                selected: p.connected,
-            ) {
-                on activate: set(chosen, p.id).then(set(page, "vpn-profile"))
-                trailing: {
-                    row(gap: .tight, align: .center) {
-                        ui.Button(if p.connected { "On" } else { "Off" }, toggled: p.connected) {
-                            on press: if p.connected { p.disconnect() } else { p.connect() }
+    }
+    if listing == "activity" {
+        ui.Section("Activity") {
+            ui.ListRow("Back", icon: .chevron_left) {
+                on activate: set(page, "")
+            }
+            if vpn.profiles.is_empty() {
+                ui.EmptyState("No VPN profile", icon: .shield, inline: true)
+            }
+            for p in vpn.profiles {
+                ui.ListRow(
+                    p.name,
+                    secondary: vpn_row_words(p),
+                    icon: if p.state == .connected { .shield_check } else { .shield },
+                ) {
+                    trailing: {
+                        if p.state == .connected {
+                            ui.Chip("Connected", tone: .success)
+                        } else {
+                            ui.Chip(vpn_state_words(p), tone: .neutral)
                         }
-                        ui.Button(
-                            "This VPN",
-                            icon: .chevron_right,
-                            icon_only: true,
-                            role: .plain,
-                            size: .small,
-                        ) {
-                            on press: set(chosen, p.id).then(set(page, "vpn-profile"))
+                    }
+                }
+                if p.state == .connected {
+                    ui.PropertyList {
+                        ui.Property(
+                            "Received",
+                            "{rate_words(p.received_rate)} · {bytes_words(p.received)}",
+                        )
+                        ui.Property("Sent", "{rate_words(p.sent_rate)} · {bytes_words(p.sent)}")
+                        if let seconds = p.handshake {
+                            ui.Property("Last handshake", "{ago_words(seconds)}")
+                        }
+                        if p.tor {
+                            ui.Property("Tor", "Routed over Tor")
                         }
                     }
                 }
             }
         }
-        ui.Button("Add a VPN", icon: .plus) {
-            on press: set(page, "vpn-add")
-        }
-        ui.ListRow(
-            "Your devices",
-            secondary: "Route through them, or let them route through this one",
-            icon: .monitor_smartphone,
-        ) {
-            on activate: set(page, "vpn-devices")
-        }
         if let problem = vpn.problem {
             ui.StatusLine(problem, status: .error)
+        }
+    } else {
+        ui.Section("VPN") {
+            ui.ListRow("Back", icon: .chevron_left) {
+                on activate: set(page, "")
+            }
+            if vpn.profiles.is_empty() {
+                ui.EmptyState("No VPN profile", icon: .shield, inline: true)
+            }
+            for p in vpn.profiles {
+                ui.ListRow(
+                    p.name,
+                    secondary: vpn_row_words(p),
+                    icon: if p.state == .connected { .shield_check } else { .shield },
+                    selected: p.state == .connected,
+                ) {
+                    on activate: set(chosen, p.id).then(set(page, "vpn-profile"))
+                    trailing: {
+                        row(gap: .tight, align: .center) {
+                            if p.state == .connecting or p.state == .disconnecting {
+                                ui.Chip(vpn_state_words(p), tone: .neutral)
+                            } else {
+                                ui.Button(
+                                    if p.state == .connected { "On" } else { "Off" },
+                                    toggled: p.state == .connected,
+                                ) {
+                                    on press: if p.state == .connected {
+                                        p.disconnect()
+                                    } else { p.connect() }
+                                }
+                            }
+                            ui.Button(
+                                "This VPN",
+                                icon: .chevron_right,
+                                icon_only: true,
+                                role: .plain,
+                                size: .small,
+                            ) {
+                                on press: set(chosen, p.id).then(set(page, "vpn-profile"))
+                            }
+                        }
+                    }
+                }
+                if let notice = p.notice {
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Chip("Could not connect", tone: .warning)
+                        ui.Text(notice, role: .caption)
+                        ui.Button("Dismiss", icon: .x, size: .small, role: .plain) {
+                            on press: p.dismiss()
+                        }
+                    }
+                }
+            }
+            ui.Button("Add a VPN", icon: .plus) {
+                on press: set(page, "vpn-add")
+            }
+            ui.ListRow(
+                "Your devices",
+                secondary: "Route through them, or let them route through this one",
+                icon: .monitor_smartphone,
+            ) {
+                on activate: set(page, "vpn-devices")
+            }
+            if vpn.tor_available {
+                ui.ListRow(
+                    "Every connection through Tor",
+                    secondary: if vpn.tor {
+                        "On; every connection on this device goes through Tor"
+                    } else { "Off" },
+                    icon: .globe,
+                ) {
+                    trailing: {
+                        ui.Toggle(shown: vpn.tor, label: "Over Tor") {
+                            on check(on): device.set_tor(device.vpn, on: on)
+                        }
+                    }
+                }
+            }
+            if let problem = vpn.problem {
+                ui.StatusLine(problem, status: .error)
+            }
         }
     }
 }
@@ -196,11 +282,29 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
             ui.ListRow(
                 "Connected",
                 secondary: vpn_state_words(p),
-                icon: if p.connected { .shield_check } else { .shield },
+                icon: if p.state == .connected { .shield_check } else { .shield },
             ) {
                 trailing: {
-                    ui.Button(if p.connected { "On" } else { "Off" }, toggled: p.connected) {
-                        on press: if p.connected { p.disconnect() } else { p.connect() }
+                    if p.state == .connecting or p.state == .disconnecting {
+                        ui.Chip(vpn_state_words(p), tone: .neutral)
+                    } else {
+                        ui.Button(
+                            if p.state == .connected { "On" } else { "Off" },
+                            toggled: p.state == .connected,
+                        ) {
+                            on press: if p.state == .connected {
+                                p.disconnect()
+                            } else { p.connect() }
+                        }
+                    }
+                }
+            }
+            if let notice = p.notice {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Chip("Could not connect", tone: .warning)
+                    ui.Text(notice, role: .caption)
+                    ui.Button("Dismiss", icon: .x, size: .small, role: .plain) {
+                        on press: p.dismiss()
                     }
                 }
             }
@@ -209,6 +313,16 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                     ui.Property("This device's address", p.addresses.join(", "))
                 }
             }
+        }
+        ui.Section("On this device") {
+            ui.PropertyList {
+                ui.Property("This device's profile", p.id)
+            }
+            ui.Text(
+                "Its keys are kept by this device's network service, which holds the profile this page changes; the page keeps no copy of them.",
+                role: .caption,
+                secondary: true,
+            )
         }
         ui.Section("Settings") {
             ui.TextInput(bind: name, placeholder: p.name)
@@ -234,6 +348,23 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                 trailing: {
                     ui.Button(if p.all_traffic { "On" } else { "Off" }, toggled: p.all_traffic) {
                         on press: p.edit(all_traffic: not p.all_traffic)
+                    }
+                }
+            }
+            ui.ListRow(
+                "Route it over Tor",
+                secondary: if p.tor {
+                    "On; its traffic goes through this device's Tor service"
+                } else { "Off" },
+                icon: .globe,
+            ) {
+                trailing: {
+                    if vpn.tor_available {
+                        ui.Toggle(shown: p.tor, label: "Route it over Tor") {
+                            on check(on): p.edit(tor: on)
+                        }
+                    } else {
+                        ui.Chip("No Tor service on this device", tone: .neutral)
                     }
                 }
             }
@@ -356,9 +487,78 @@ fn without_entry(entries: List<Text>, entry: Text) -> List<Text> {
     entries.filter(x -> x != trimmed)
 }
 
-/// What a VPN profile says of itself.
+/// Where a VPN profile's tunnel stands, in the words a person reads: a tunnel coming up or going
+/// down says so and is not pressed again until it rests.
 fn vpn_state_words(p: device.VpnProfile) -> Text {
-    if p.connected { "Connected" } else if p.kind == "wireguard" { "WireGuard" } else { "Off" }
+    if p.state == .connecting {
+        "Connecting…"
+    } else if p.state == .disconnecting {
+        "Disconnecting…"
+    } else if p.state == .connected {
+        "Connected"
+    } else if p.kind == "wireguard" { "Down · WireGuard" } else { "Down" }
+}
+
+/// A profile's row under its name: where it stands, and the server it reaches without the port
+/// or transport the tunnel dials.
+fn vpn_row_words(p: device.VpnProfile) -> Text {
+    if let server = p.endpoint {
+        let host = server_host(server)
+        if host == "" { vpn_state_words(p) } else { "{vpn_state_words(p)} · {host}" }
+    } else { vpn_state_words(p) }
+}
+
+/// The host of a server as a profile writes it, without its port or transport: `home.example`,
+/// `10.0.0.1`, `2001:db8::1`.
+fn server_host(server: Text) -> Text {
+    let first = server.split(" ").at(0) ?? server
+    if first.starts_with("[") {
+        (first.split("]").at(0) ?? first).replace("[", "")
+    } else if first.contains(":") and first.contains("::") {
+        first
+    } else { first.split(":").at(0) ?? first }
+}
+
+/// A rate of bytes per second, split into its value and its unit: `6.7 MB/s`.
+fn rate_words(bytes_per_second: Float) -> Text {
+    if bytes_per_second < 1000.0 {
+        "{bytes_per_second.to_int()} B/s"
+    } else if bytes_per_second < 1000000.0 {
+        "{tenths_of(bytes_per_second, 1000.0)} kB/s"
+    } else if bytes_per_second < 1000000000.0 {
+        "{tenths_of(bytes_per_second, 1000000.0)} MB/s"
+    } else {
+        "{tenths_of(bytes_per_second, 1000000000.0)} GB/s"
+    }
+}
+
+/// `value` in units of `unit`, to a tenth when it is not whole: `1.5`, `1`.
+fn tenths_of(value: Float, unit: Float) -> Text {
+    let parts = (value / unit * 10.0 + 0.5).to_int()
+    let rest = parts - parts / 10 * 10
+    if rest == 0 { "{parts / 10}" } else { "{parts / 10}.{rest}" }
+}
+
+/// A count of bytes as a person reads it: `999 B`, `1.5 kB`, `84.2 MB`.
+fn bytes_words(bytes: Int) -> Text {
+    if bytes < 1000 {
+        "{bytes} B"
+    } else if bytes < 1000000 {
+        "{tenths_of(bytes.to_float(), 1000.0)} kB"
+    } else if bytes < 1000000000 {
+        "{tenths_of(bytes.to_float(), 1000000.0)} MB"
+    } else {
+        "{tenths_of(bytes.to_float(), 1000000000.0)} GB"
+    }
+}
+
+/// How long ago a count of seconds names: `34 s ago`, `3 min ago`, `2 hr ago`.
+fn ago_words(seconds: Int) -> Text {
+    if seconds < 60 {
+        "{seconds} s ago"
+    } else if seconds < 3600 {
+        "{seconds / 60} min ago"
+    } else if seconds < 86400 { "{seconds / 3600} hr ago" } else { "{seconds / 86400} days ago" }
 }
 
 /// The VPNs in one word for the network page's row.
@@ -367,7 +567,7 @@ fn vpn_words() -> Text {
     if vpn.profiles.is_empty() {
         "None set up"
     } else {
-        let joined = vpn.profiles.find(p -> p.connected)
+        let joined = vpn.profiles.find(p -> p.state == .connected)
         if let p = joined { "Through {p.name}" } else { "Off" }
     }
 }
@@ -378,6 +578,7 @@ view vpn_devices_page(page: State<Text>) {
     state other: Text = ""
     state profile: Text = ""
     let dv = settings.device_vpn
+    let vpn = device.vpn
     ui.Section("Your devices") {
         ui.ListRow("Back", icon: .chevron_left) {
             on activate: set(page, "vpn")
@@ -387,6 +588,22 @@ view vpn_devices_page(page: State<Text>) {
             "The person's other devices come out at this one",
         ) {
             ui.Toggle(bind: dv.exit)
+        }
+        if vpn.tor_available {
+            setting(
+                "Route everything through Tor",
+                "Every connection on this device goes through its Tor service",
+            ) {
+                ui.Toggle(shown: vpn.tor, label: "Over Tor") {
+                    on check(on): device.set_tor(device.vpn, on: on)
+                }
+            }
+        } else {
+            ui.Text(
+                "This device has no Tor service, so no connection can be routed over Tor here.",
+                role: .caption,
+                secondary: true,
+            )
         }
         ui.Text("Route through another of your devices", role: .caption, secondary: true)
         row(gap: .related, align: .center, wrap: true) {

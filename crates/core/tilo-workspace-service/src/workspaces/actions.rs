@@ -5019,6 +5019,35 @@ mod surface_tests {
                     { "name": "allowed", "required": true, "schema": { "type": "boolean" } },
                 ],
             },
+            {
+                "id": "set-role",
+                "kind": "outside",
+                "params": [
+                    { "name": "person", "required": true, "schema": { "type": "string" } },
+                    { "name": "role", "required": true, "schema": { "type": "string" } },
+                ],
+            },
+            {
+                "id": "remove-member",
+                "kind": "outside",
+                "params": [
+                    { "name": "person", "required": true, "schema": { "type": "string" } },
+                ],
+            },
+            {
+                "id": "next-default",
+                "kind": "outside",
+                "params": [
+                    { "name": "resource", "required": true, "schema": { "type": "string" } },
+                ],
+            },
+            {
+                "id": "next-personal-default",
+                "kind": "outside",
+                "params": [
+                    { "name": "resource", "required": true, "schema": { "type": "string" } },
+                ],
+            },
         ]);
         resource["fields"] = json!([
             { "path": "known", "type": "bool", "readonly": true },
@@ -5037,11 +5066,25 @@ mod surface_tests {
                 "type": { "list": { "named": "SharedOut" } },
                 "readonly": true,
             },
+            {
+                "path": "governance",
+                "type": { "option": { "named": "Governance" } },
+                "readonly": true,
+            },
+            {
+                "path": "defaults",
+                "type": { "option": { "list": { "named": "DefaultApp" } } },
+                "readonly": true,
+            },
         ]);
         resource["types"] = access_types();
     }
 
     /// The types the access reading's grants and outside capabilities are listed in.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one description of every type the access reading names"
+    )]
     fn access_types() -> Value {
         json!([
             {
@@ -5131,6 +5174,52 @@ mod surface_tests {
                     { "name": "capability", "type": "text", "title": "The capability, as the app's package names it." },
                     { "name": "allowed", "type": "bool", "title": "Whether the app may carry it out now." },
                     { "name": "can_change", "type": "bool", "title": "Whether the viewer may turn it." },
+                ],
+            },
+            {
+                "name": "Governance",
+                "doc": "The workspace in front: its people and their roles, and who may change whom.",
+                "fields": [
+                    { "name": "workspace", "type": "text", "title": "The workspace, by its id." },
+                    { "name": "name", "type": "text", "title": "What the workspace is called." },
+                    { "name": "you", "type": "text", "title": "The person reading it, by their person id." },
+                    { "name": "owner", "type": "text", "title": "The owner's person id, whose role is a fact of the workspace." },
+                    { "name": "can_govern", "type": "bool", "title": "Whether the person reading it changes its roles." },
+                    { "name": "roles", "type": { "list": { "named": "RoleChoice" } }, "title": "The roles a member may be given, least to most." },
+                    { "name": "people", "type": { "list": { "named": "Person" } }, "title": "Everyone in the workspace, owner first." },
+                ],
+            },
+            {
+                "name": "RoleChoice",
+                "doc": "One role a member may be given.",
+                "fields": [
+                    { "name": "id", "type": "text", "title": "The role as a change names it: viewer, commenter, editor, moderator." },
+                    { "name": "name", "type": "text", "title": "What the role is called, in the person's words." },
+                ],
+            },
+            {
+                "name": "Person",
+                "doc": "One person in the workspace, with their role.",
+                "fields": [
+                    { "name": "person", "type": "text", "title": "Their person id." },
+                    { "name": "name", "type": "text", "title": "What the workspace calls them." },
+                    { "name": "role", "type": "text", "title": "Their role, by the key a change names it." },
+                    { "name": "role_name", "type": "text", "title": "Their role, in the person's words." },
+                    { "name": "owner", "type": "bool", "title": "Whether the workspace is theirs." },
+                    { "name": "administrator", "type": "bool", "title": "Whether the workspace made them an administrator." },
+                    { "name": "you", "type": "bool", "title": "Whether they are the person reading it." },
+                    { "name": "can_change", "type": "bool", "title": "Whether the person reading it may change their role." },
+                    { "name": "can_remove", "type": "bool", "title": "Whether the person reading it may remove them." },
+                ],
+            },
+            {
+                "name": "DefaultApp",
+                "doc": "One kind of file or link, and which app opens it in this workspace and for this person.",
+                "fields": [
+                    { "name": "resource", "type": "text", "title": "The kind, as a change names it: ext:pdf, mime:text/html, scheme:https." },
+                    { "name": "label", "type": "text", "title": "The kind, in the person's words." },
+                    { "name": "workspace", "type": "text", "title": "The app the workspace chose, or that it follows each person's own." },
+                    { "name": "yours", "type": "text", "title": "The app the person chose, or that they follow the workspace." },
                 ],
             },
         ])

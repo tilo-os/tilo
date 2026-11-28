@@ -47,7 +47,7 @@ use effects::{
     BluetoothAccessoryAction, BluetoothAction, BluetoothNearbyAction, ModemAction, NetworkAction,
     SavedNetworkAction, TetheringAction, VpnAction, VpnProfileAction, WifiNetworkAction,
 };
-use model::{Bluetooth, Modem, Network, Tethering, Vpn};
+use model::{Bluetooth, Modem, Network, Tethering, Vpn, VpnState};
 
 /// The resources' ids.
 pub const NETWORK: &str = "network";
@@ -166,6 +166,8 @@ pub struct Connectivity {
     /// service is the one that changes it, so the settings are read once, where the loop never
     /// waits for them.
     asking: bool,
+    /// When the last reading was taken, so a tunnel's counters make a rate.
+    last_read: Option<std::time::Instant>,
     worker: Worker<dyn Device, Landed>,
 }
 
@@ -204,6 +206,7 @@ impl Connectivity {
             readings: Readings::default(),
             asking: preferences.ask_before_open_networks(),
             preferences,
+            last_read: None,
             worker: Worker::spawn("tilo-connectivity", device, wake)?,
         };
         service.refresh();
@@ -280,6 +283,9 @@ impl Connectivity {
                 // of the same thing.
                 if part == Part::Network {
                     self.say_why(&action, subject.as_deref(), result.as_ref().err());
+                }
+                if part == Part::Vpn {
+                    self.say_why_vpn(subject.as_deref(), result.as_ref().err());
                 }
                 let (pending, problem) = self.status(part);
                 if let Some(at) = pending.iter().position(|id| *id == action) {
@@ -372,16 +378,49 @@ impl Connectivity {
 
     /// Take a fresh reading, keeping what is the service's own: the actions
     /// pending, the last problem and the person's network policy.
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a tunnel's byte counters stay far below f64's exact range"
+    )]
     fn take(&mut self, mut readings: Readings) {
+        let now = std::time::Instant::now();
+        let elapsed = self
+            .last_read
+            .map(|last| now.duration_since(last).as_secs_f64())
+            .filter(|seconds| *seconds > 0.0);
+        self.last_read = Some(now);
+        let now_ms = unix_millis();
         let old = &mut self.readings;
+        // A tunnel's own account: when its state last changed, how fast its counters moved
+        // since the reading before, and what the last change to it said.
+        for profile in &mut readings.vpn.profiles {
+            let Some(held) = old.vpn.profiles.iter().find(|held| held.id == profile.id) else {
+                profile.since = now_ms;
+                continue;
+            };
+            profile.notice.clone_from(&held.notice);
+            profile.since = if held.state == profile.state {
+                held.since
+            } else {
+                now_ms
+            };
+            if let Some(elapsed) = elapsed
+                && held.state == VpnState::Connected
+                && profile.state == VpnState::Connected
+            {
+                profile.received_rate =
+                    (profile.received.saturating_sub(held.received)) as f64 / elapsed;
+                profile.sent_rate = (profile.sent.saturating_sub(held.sent)) as f64 / elapsed;
+            }
+        }
+        readings.vpn.pending = std::mem::take(&mut old.vpn.pending);
+        readings.vpn.problem = old.vpn.problem.take();
         readings.network.pending = std::mem::take(&mut old.network.pending);
         readings.network.problem = old.network.problem.take();
         readings.bluetooth.pending = std::mem::take(&mut old.bluetooth.pending);
         readings.bluetooth.problem = old.bluetooth.problem.take();
         readings.modem.pending = std::mem::take(&mut old.modem.pending);
         readings.modem.problem = old.modem.problem.take();
-        readings.vpn.pending = std::mem::take(&mut old.vpn.pending);
-        readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
         readings.network.ask_before_open_networks = self.asking;
@@ -440,6 +479,7 @@ impl Connectivity {
         let subject = match &change {
             Change::Join { network, .. } => Some(network.clone()),
             Change::Enterprise { config, .. } => Some(config.ssid.clone()),
+            Change::Vpn { profile, .. } | Change::EditVpn { profile, .. } => Some(profile.clone()),
             _ => None,
         };
         if part == Part::Network {
@@ -480,6 +520,21 @@ impl Connectivity {
             && let Some(row) = wifi.networks.iter_mut().find(|row| row.name == name)
         {
             row.problem = why.cloned();
+        }
+    }
+
+    /// Say what a VPN change refused on the profile's own row, where the person
+    /// looks for it; a change that landed clears what the last one said.
+    fn say_why_vpn(&mut self, profile: Option<&str>, why: Option<&String>) {
+        if let Some(id) = profile
+            && let Some(row) = self
+                .readings
+                .vpn
+                .profiles
+                .iter_mut()
+                .find(|row| row.id == id)
+        {
+            row.notice = why.cloned();
         }
     }
 
@@ -754,12 +809,21 @@ impl Connectivity {
         self.start(Part::Bluetooth, id, change)
     }
 
-    fn vpn(&mut self, action: VpnAction) -> Started {
+    fn vpn(&mut self, action: VpnAction) -> Result<Started, ApiError> {
         let id = action.id();
         let change = match action {
             VpnAction::ImportVpn { kind, name, text } => Change::ImportVpn { kind, name, text },
+            VpnAction::SetTor { on } => {
+                if !self.readings.vpn.tor_available {
+                    return Err(ApiError::Unavailable {
+                        code: "no_tor".into(),
+                        reason: "This device has no Tor service".into(),
+                    });
+                }
+                Change::SetTor { on }
+            }
         };
-        self.start(Part::Vpn, id, change)
+        Ok(self.start(Part::Vpn, id, change))
     }
 
     /// `action` on the VPN profile whose id is `profile`.
@@ -781,6 +845,18 @@ impl Connectivity {
             }
             VpnProfileAction::Connect => Change::Vpn { profile, on: true },
             VpnProfileAction::Disconnect => Change::Vpn { profile, on: false },
+            VpnProfileAction::Dismiss => {
+                if let Some(row) = self
+                    .readings
+                    .vpn
+                    .profiles
+                    .iter_mut()
+                    .find(|p| p.id == profile)
+                {
+                    row.notice = None;
+                }
+                return Ok(Started::Done(ActionOutput::default()));
+            }
             VpnProfileAction::Forget => Change::ForgetVpn { profile },
             VpnProfileAction::Edit {
                 name,
@@ -791,6 +867,7 @@ impl Connectivity {
                 endpoint,
                 allowed_ips,
                 keepalive,
+                tor,
             } => Change::EditVpn {
                 profile,
                 patch: os_actions::network_settings::VpnProfilePatch {
@@ -802,6 +879,7 @@ impl Connectivity {
                     endpoint,
                     allowed_ips,
                     keepalive: keepalive.map(|seconds| (seconds != 0).then_some(seconds)),
+                    tor,
                 },
             },
         };
@@ -837,6 +915,15 @@ pub struct Follow {
 
 fn refresh(jobs: &Jobs<dyn Device, Landed>) {
     jobs.run(|device| Landed::Read(Box::new(device.read())));
+}
+
+/// Now, in Unix milliseconds: when a tunnel entered the state it is in.
+fn unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// A child resource's id: its kind and its key.
@@ -1337,10 +1424,18 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
 /// The `vpn` resource reading `vpn`.
 #[must_use]
 pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
-    let resource = offer::<VpnAction>(tilo_resource::typed_resource::<VpnReading>(
+    let mut resource = offer::<VpnAction>(tilo_resource::typed_resource::<VpnReading>(
         VPN,
         crate::i18n::name("so.tilo.connectivity.vpn", "VPN"),
     ));
+    if !vpn.tor_available {
+        unavailable(
+            &mut resource,
+            "set-tor",
+            "no_tor",
+            "This device has no Tor service",
+        );
+    }
     let children = vpn.profiles.iter().filter_map(|profile| {
         let id = child_id(VPN_PROFILE, &profile.id)?;
         let action = if profile.connected {
@@ -1351,6 +1446,7 @@ pub fn vpn_resource(vpn: &Vpn) -> ResourceSpec {
         let bindings = tilo_resource::RowBindings::new()
             .bind(action, NO_ARGUMENTS)
             .bind(VpnProfileAction::EDIT, NO_ARGUMENTS)
+            .bind(VpnProfileAction::DISMISS, NO_ARGUMENTS)
             .bind(VpnProfileAction::FORGET, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<VpnProfileRow>(
@@ -1453,7 +1549,7 @@ impl Service for Connectivity {
             }
             VPN => {
                 let action = decode::<VpnAction>(&published, resource, action, arguments)?;
-                Ok(self.vpn(action))
+                self.vpn(action)
             }
             VPN_PROFILE => {
                 let action = decode::<VpnProfileAction>(&published, resource, action, arguments)?;

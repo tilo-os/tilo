@@ -165,6 +165,19 @@ impl ActiveState {
             _ => Self::Unknown,
         }
     }
+
+    /// The `NMActiveConnectionState` value this is, as `NetworkManager` reports it: 0 unknown,
+    /// 1 activating, 2 activated, 3 deactivating, 4 deactivated.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        match self {
+            Self::Unknown => 0,
+            Self::Activating => 1,
+            Self::Activated => 2,
+            Self::Deactivating => 3,
+            Self::Deactivated => 4,
+        }
+    }
 }
 
 /// Whether an active connection going down for `reason`

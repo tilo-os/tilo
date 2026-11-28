@@ -431,9 +431,7 @@ pub struct Nearby {
 
 /// The `vpn` resource: the VPN profiles this device has, and the kinds it
 /// can set up besides `WireGuard`.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Vpn {
     pub profiles: Vec<VpnProfile>,
@@ -445,6 +443,42 @@ pub struct Vpn {
     pub generated_key: Option<String>,
     pub pending: Vec<String>,
     pub problem: Option<String>,
+    /// This device routes every connection over Tor.
+    pub tor: bool,
+    /// This device has a Tor service to route through.
+    pub tor_available: bool,
+}
+
+/// Where one VPN profile's tunnel stands on this device.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum VpnState {
+    /// Nothing is up: it never came up, or it went down.
+    #[default]
+    Down,
+    /// `NetworkManager` is bringing it up.
+    Connecting,
+    /// The tunnel carries its traffic.
+    Connected,
+    /// `NetworkManager` is taking it down.
+    Disconnecting,
+}
+
+impl VpnState {
+    /// The state `NetworkManager`'s active state's raw value names
+    /// (`NMActiveConnectionState`): 1 activating, 2 activated, 3 deactivating,
+    /// 4 deactivated.
+    #[must_use]
+    pub const fn of(raw: u32) -> Self {
+        match raw {
+            1 => Self::Connecting,
+            2 => Self::Connected,
+            3 => Self::Disconnecting,
+            _ => Self::Down,
+        }
+    }
 }
 
 /// One kind of VPN this device can set up.
@@ -459,9 +493,11 @@ pub struct VpnPluginKind {
 }
 
 /// One VPN profile, with the settings its own page changes.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each switch is one of the profile's own independent settings"
 )]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct VpnProfile {
     /// The profile as the resource it is (`vpn-profile:<id>`): what its own actions
@@ -493,6 +529,27 @@ pub struct VpnProfile {
     pub peer_public_key: Option<String>,
     /// Seconds between keepalives; `None` sends none.
     pub keepalive: Option<u32>,
+    /// Where its tunnel stands on this device now.
+    pub state: VpnState,
+    /// When it entered `state`, in Unix milliseconds: `0` while it never moved
+    /// in this service's memory.
+    pub since: i64,
+    /// What went wrong the last time it was asked to come up, until the person
+    /// dismisses it.
+    pub notice: Option<String>,
+    /// Bytes it received since it came up.
+    pub received: u64,
+    /// Bytes it sent since it came up.
+    pub sent: u64,
+    /// Bytes per second it received, as the last two readings measured.
+    pub received_rate: f64,
+    /// Bytes per second it sent, as the last two readings measured.
+    pub sent_rate: f64,
+    /// Seconds since its last successful `WireGuard` handshake, where the
+    /// tunnel reports one.
+    pub handshake: Option<u64>,
+    /// Its traffic is routed over Tor.
+    pub tor: bool,
 }
 
 /// The `tethering` resource: sharing this device's connection.
@@ -708,6 +765,7 @@ impl From<&os_actions::VpnConnectionInfo> for VpnProfile {
             id: vpn.uuid.clone(),
             kind: vpn.kind.clone(),
             connected: vpn.active,
+            state: VpnState::of(vpn.state),
             ..Self::default()
         }
     }

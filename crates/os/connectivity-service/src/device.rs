@@ -125,6 +125,10 @@ pub enum Change {
         profile: String,
         patch: os_actions::network_settings::VpnProfilePatch,
     },
+    /// Route every connection over Tor, or stop.
+    SetTor {
+        on: bool,
+    },
     /// How a saved network gets its IPv4 address.
     Ipv4 {
         profile: String,
@@ -203,7 +207,7 @@ pub enum Change {
 }
 
 /// What the device reads now.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Readings {
     pub network: Network,
     pub bluetooth: Bluetooth,
@@ -292,6 +296,7 @@ fn with_vpn_settings(mut profile: VpnProfile) -> VpnProfile {
     profile.allowed_ips = settings.allowed_ips;
     profile.peer_public_key = settings.peer_public_key;
     profile.keepalive = settings.keepalive;
+    profile.tor = settings.tor;
     profile
 }
 
@@ -379,6 +384,10 @@ fn nearby() -> Vec<Nearby> {
 }
 
 impl Device for OsDevice {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read of every resource this device publishes, in the order it reads them"
+    )]
     fn read(&self) -> Readings {
         let radios = read_or_log("radios", os_actions::get_radio_state()).unwrap_or_default();
         let networks = if radios.wifi_enabled {
@@ -405,12 +414,27 @@ impl Device for OsDevice {
             (None, None)
         };
         let link = read_or_log("link", os_actions::get_link_status()).map(|link| Link::from(&link));
-        let profiles = read_or_log("vpn profiles", os_actions::list_vpn_connections())
-            .unwrap_or_default()
+        let vpn_profiles =
+            read_or_log("vpn profiles", os_actions::list_vpn_connections()).unwrap_or_default();
+        let mut profiles: Vec<VpnProfile> = vpn_profiles
             .iter()
             .map(VpnProfile::from)
             .map(with_vpn_settings)
             .collect();
+        // The tunnel's own telemetry, read from the interface it crosses: its counters and,
+        // for WireGuard, how long ago it last handshook.
+        for (profile, info) in profiles.iter_mut().zip(&vpn_profiles) {
+            let Some(interface) = &info.interface else {
+                continue;
+            };
+            if let Some((received, sent)) =
+                os_actions::network_settings::interface_transfer(interface)
+            {
+                profile.received = received;
+                profile.sent = sent;
+            }
+            profile.handshake = os_actions::network_settings::vpn_handshake_secs(interface);
+        }
         let adapter = os_actions::bluez::has_adapter();
         let bluetooth_on =
             adapter && read_or_log("bluetooth", os_actions::bluez::is_powered()).unwrap_or(false);
@@ -475,6 +499,8 @@ impl Device for OsDevice {
                     .iter()
                     .map(VpnPluginKind::from)
                     .collect(),
+                tor_available: os_actions::network_settings::tor_available(),
+                tor: os_actions::network_settings::tor_active(),
                 ..Vpn::default()
             },
             tethering: tethering(radios.wifi_available, radios.hotspot_active),
@@ -577,6 +603,7 @@ impl Device for OsDevice {
             Change::EditVpn { profile, patch } => {
                 os_actions::network_settings::configure_vpn_profile(profile, patch)
             }
+            Change::SetTor { on } => os_actions::network_settings::set_tor(*on),
             Change::Ipv4 { profile, config } => os_actions::configure_ipv4(profile, config),
             Change::Ipv6 { profile, config } => {
                 os_actions::network_settings::configure_ipv6(profile, config)

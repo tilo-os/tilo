@@ -473,6 +473,18 @@ pub enum VpnAction {
         #[param(secret, "The configuration's text")]
         text: String,
     },
+    /// Route every connection on this device over Tor, or stop.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "globe",
+        keywords = "tor, anonymous, onion, privacy, exit node"
+    )]
+    SetTor {
+        #[param("Whether every connection goes over Tor")]
+        on: bool,
+    },
 }
 
 /// A VPN profile's own actions, called on its address
@@ -521,7 +533,13 @@ pub enum VpnProfileAction {
         allowed_ips: Option<Vec<String>>,
         #[param("Seconds between keepalives; 0 sends none")]
         keepalive: Option<u32>,
+        #[param("Whether its traffic is routed over Tor")]
+        tor: Option<bool>,
     },
+    /// Dismiss what the last attempt to bring it up said.
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "x", on = VpnProfileRow)]
+    Dismiss,
     /// Remove the profile from this device.
     #[effect(kind = "outside")]
     #[effect(own_device, row, destructive, icon = "trash-2", on = VpnProfileRow)]

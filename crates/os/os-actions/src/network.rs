@@ -97,6 +97,12 @@ pub struct VpnConnectionInfo {
     pub uuid: String,
     pub active: bool,
     pub kind: String,
+    /// How `NetworkManager` says the tunnel stands now, as its active state's raw value
+    /// (`NMActiveConnectionState`): 0 brings nothing up, 1 activating, 2 activated, 3
+    /// deactivating, 4 deactivated.
+    pub state: u32,
+    /// The interface the tunnel's traffic crosses while it is up, for its counters.
+    pub interface: Option<String>,
 }
 
 pub fn get_radio_state() -> Result<RadioState, String> {
@@ -290,14 +296,26 @@ pub fn list_vpn_connections() -> Result<Vec<VpnConnectionInfo>, String> {
     with_nm(|nm| async move {
         let profiles = nm.profiles().await?;
         let active = nm.active_connections().await.unwrap_or_default();
+        let interfaces = nm
+            .devices()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|device| (device.path, device.interface))
+            .collect::<std::collections::HashMap<_, _>>();
         Ok(profiles
             .into_iter()
             .filter(|profile| tilo_nm::is_vpn_type(&profile.settings.kind()))
             .map(|profile| {
                 let uuid = profile.settings.uuid();
+                let running = active.iter().find(|connection| connection.uuid == uuid);
                 VpnConnectionInfo {
                     name: profile.settings.id(),
-                    active: active.iter().any(|connection| connection.uuid == uuid),
+                    active: running.is_some(),
+                    state: running.map_or(0, |connection| connection.state.raw()),
+                    interface: running
+                        .and_then(|connection| connection.devices.first())
+                        .and_then(|path| interfaces.get(path).cloned()),
                     uuid,
                     kind: profile.settings.kind(),
                 }

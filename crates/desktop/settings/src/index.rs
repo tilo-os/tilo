@@ -335,6 +335,7 @@ pub const PAGES: &[Page] = &[
     Page {
         slug: "permissions",
     },
+    Page { slug: "workspace" },
     Page { slug: "storage" },
     Page { slug: "updates" },
     Page { slug: "about" },
