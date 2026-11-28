@@ -126,7 +126,11 @@ impl KeyDirectory for Directory {
         _: &str,
         _: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        if self.policy.unknown_documents.load(Ordering::SeqCst) {
+        // A workspace whose governance is not known here names no reader of its documents, as a
+        // device that reads none of it answers none.
+        if self.policy.unknown.load(Ordering::SeqCst)
+            || self.policy.unknown_documents.load(Ordering::SeqCst)
+        {
             return None;
         }
         Some(self.policy.document_readers.lock().unwrap().clone())
@@ -166,6 +170,11 @@ impl KeyDirectory for Directory {
     }
     fn founds(&self, _: WorkspaceId) -> bool {
         self.founds.load(Ordering::SeqCst)
+    }
+    /// A test moves `unknown` to take a settle that reaches the service before it reads the
+    /// workspace.
+    fn reads(&self, _: WorkspaceId) -> bool {
+        !self.policy.unknown.load(Ordering::SeqCst)
     }
     fn policy_epoch(&self) -> Option<u64> {
         match &*self.policy.announces.lock().unwrap() {

@@ -262,6 +262,12 @@ impl KeyDirectory for Directory {
         self.workspaces.announce_at(at);
     }
 
+    /// A group of a reader set or a document reads its workspace, which is the one a settle
+    /// waits for.
+    fn reads(&self, workspace: WorkspaceId) -> bool {
+        self.workspaces.reads(self.carrier(workspace))
+    }
+
     /// A reader set's group, and a document's group its roles decide, is founded by whichever of
     /// its devices first needs its keys: two founded at once settle on the genesis with the lower
     /// digest, as any group's do. Left to the workspace's founder, a document whose roles that

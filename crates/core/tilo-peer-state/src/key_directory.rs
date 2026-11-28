@@ -27,6 +27,10 @@ pub trait KeyStates: MaybeSendSync {
         read: impl FnOnce(&StatePeer, Option<Follower>, Readers<'_>) -> R,
     ) -> Option<R>;
     fn founds(&self, workspace: WorkspaceId) -> bool;
+    /// Whether this device reads `workspace`'s state here now.
+    fn reads(&self, workspace: WorkspaceId) -> bool {
+        self.with_key_state(workspace, |_, _, _| ()).is_some()
+    }
     fn policy_epoch(&self) -> Option<u64> {
         None
     }
@@ -115,6 +119,10 @@ impl<S: KeyStates> KeyDirectory for StateDirectory<S> {
 
     fn founds(&self, workspace: WorkspaceId) -> bool {
         self.states.founds(workspace)
+    }
+
+    fn reads(&self, workspace: WorkspaceId) -> bool {
+        self.states.reads(workspace)
     }
 
     fn policy_epoch(&self) -> Option<u64> {

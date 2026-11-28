@@ -316,6 +316,13 @@ pub trait KeyDirectory: collab_types::signer::MaybeSendSync {
     /// Whether this device created `workspace` and so founds its group. Every
     /// other device waits for the genesis and joins by Welcome.
     fn founds(&self, workspace: WorkspaceId) -> bool;
+    /// Whether this device reads `workspace`'s state here now: a settle that arrives before it
+    /// does is kept ([`WorkspaceKeys::pump`]), never used up, so the pass after the workspace is
+    /// here judges what waited for the readers it names.
+    fn reads(&self, workspace: WorkspaceId) -> bool {
+        let _ = workspace;
+        true
+    }
 }
 
 /// The platform secret store's namespace holding a device's group vault
@@ -1322,7 +1329,16 @@ impl WorkspaceKeys {
             self.ask_waiting_now(now);
         }
         for workspace in settled {
-            self.recall_waiting(Some(workspace), now, wall);
+            // A settle can reach the pass before this device reads the workspace it is for: a
+            // founding or a join whose state comes after the news of its governance. It is kept
+            // for the pass that runs once the workspace is read here, which judges what waited
+            // for the readers it names and founds the group they read; used up now, everything
+            // kept for it waits with nothing left to wake the pass.
+            if self.directory.reads(workspace) {
+                self.recall_waiting(Some(workspace), now, wall);
+            } else {
+                self.settled.insert(workspace);
+            }
         }
         let reconcile_due = self
             .reconcile

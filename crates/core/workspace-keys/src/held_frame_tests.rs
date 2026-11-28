@@ -228,3 +228,74 @@ fn a_documents_group_frame_the_policy_reads_none_of_is_refused() {
         "the stranger takes in nothing of a record it does not read"
     );
 }
+
+/// A workspace's settle can reach the key service before it reads the workspace: a founding or a
+/// join whose state comes after the news of its governance. It is kept for the pass that runs
+/// once the workspace is here, which judges what waited for the readers it names; used up in the
+/// pass before that, everything kept for it waits with nothing left to wake the pass.
+#[test]
+fn a_settle_that_arrives_before_the_workspace_is_kept_for_the_pass_that_reads_it() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = Policy::readers([1, 2]);
+    // The record's readers are its workspace's, as the policy names them.
+    *policy.document_readers.lock().unwrap() = [public(1), public(2)].into_iter().collect();
+    let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+    let mut founder = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut creator = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut now = Instant::now();
+    assert!(
+        ready_epoch(&create(&mut founder, workspace_id, now)).is_some(),
+        "the founding device is handed the workspace's keys"
+    );
+    drive(&mut [&mut founder, &mut creator], &mut now, 1);
+    let scope =
+        neighbour_wire::KeyScope::document(workspace_id, "so.tilo.notes", "notes.index", None)
+            .unwrap();
+    let group = scope.group();
+    // The record's group is made by the other device, and its frame reaches the founding device
+    // while its policy names no readers of the record yet.
+    assert!(matches!(
+        creator.service.access_scope(scope, now),
+        KeyAccess::Waiting
+    ));
+    creator.service.found(group, now, 1_000);
+    policy.unknown_documents.store(true, Ordering::SeqCst);
+    drive(&mut [&mut founder, &mut creator], &mut now, 1);
+    assert!(
+        !founder.service.waiting_scopes.is_empty(),
+        "the frame waits for the policy that names the record's readers"
+    );
+
+    // The workspace settles here before this device reads it: the news is kept, and nothing is
+    // judged for a workspace whose state is not here.
+    policy.unknown.store(true, Ordering::SeqCst);
+    policy.unknown_documents.store(false, Ordering::SeqCst);
+    founder.service.workspace_settled(workspace_id);
+    founder.service.pump(&founder.endpoint, now, 1_000);
+    assert!(
+        !founder.service.waiting_scopes.is_empty(),
+        "nothing is judged for a workspace this device does not read"
+    );
+    assert!(
+        founder.service.settled.contains(&workspace_id),
+        "the settle is kept for the pass that reads the workspace"
+    );
+
+    // The workspace is read here now: the pass that runs judges what waited, with no new settle
+    // and no timer to wake it.
+    policy.unknown.store(false, Ordering::SeqCst);
+    founder.service.pump(&founder.endpoint, now, 1_000);
+    assert!(
+        founder.service.waiting_scopes.is_empty(),
+        "the frame the policy now backs leaves the wait"
+    );
+    assert!(
+        founder.service.settled.is_empty(),
+        "the settle is used by the pass that judged what waited for it"
+    );
+    assert!(
+        founder.service.groups_seen.contains(&group),
+        "the founding device takes in the group the record's other device made"
+    );
+}
