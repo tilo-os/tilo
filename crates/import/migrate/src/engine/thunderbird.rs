@@ -31,7 +31,7 @@ use super::{Landed, Lander};
 pub const SOURCE: &str = "thunderbird";
 
 const IMPORT_VCARDS: &str = "contacts#import_vcard";
-const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
+const IMPORT_ICS: &str = "calendar#import_ics";
 /// The person's mail accounts on the server that keeps their workspace, which only they add to.
 pub const MAIL_ACCOUNTS: &str = "workspace/mail-accounts";
 
@@ -346,15 +346,31 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
             continue;
         }
         lander.open("calendar");
-        let events = crate::thunderbird::events(home, &profile.source_id, &calendar.source_id)
-            .map_err(|why| anyhow!(why))?;
-        for event in events {
-            let key = format!("event:{}", text(&event, "id"));
-            lander.once(&key, "events", |workspace, run| {
-                workspace.act(run, NEW_EVENT, json!({"event": event}))?;
+        let events =
+            crate::thunderbird::calendar_file(home, &profile.source_id, &calendar.source_id)
+                .map_err(|why| anyhow!(why))?;
+        let key = format!("calendar/{}", calendar.name);
+        lander.once_of(
+            &key,
+            "events",
+            count(calendar.events).max(1),
+            |workspace, run| {
+                // The calendar goes over as the file every calendar reads: Calendar imports its
+                // events, keeping one of each by its UID, so nothing here decides what an event
+                // means.
+                let content = workspace.put(events.as_bytes())?;
+                workspace.act(
+                    run,
+                    IMPORT_ICS,
+                    json!({"file": {
+                        "content": content,
+                        "name": format!("{}.ics", calendar.name),
+                        "media": "text/calendar",
+                    }}),
+                )?;
                 Ok(Landed::One)
-            })?;
-        }
+            },
+        )?;
     }
     Ok(())
 }

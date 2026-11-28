@@ -377,9 +377,13 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
         "its cards are in the workspace's content: {file}"
     );
     assert_eq!(file["media"], "text/vcard", "{file}");
-    assert_eq!(more.of("calendar/calendar.calendar#new-event").len(), 2);
-    // The book's two cards, counted as the review counted them.
+    // The calendar goes over the same way, as one iCalendar file Calendar imports whole.
+    let calendars = more.of("calendar#import_ics");
+    assert_eq!(calendars.len(), 1, "{:?}", more.actions);
+    assert_eq!(calendars[0]["file"]["media"], "text/calendar");
+    // The book's two cards and the calendar's two events, counted as the review counted them.
     assert_eq!(journal.brought.get("contacts"), Some(&2));
+    assert_eq!(journal.brought.get("events"), Some(&2));
 }
 
 #[test]

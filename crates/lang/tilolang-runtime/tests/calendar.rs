@@ -1217,6 +1217,42 @@ mod cases {
             assert_eq!(tasks[0]["fields"]["due"], "2026-11-26");
         }
 
+        phase a_calendar_imported_again_keeps_one_of_each_event;
+        // Another computer's mail program kept this calendar: its zone behind Thunderbird's own
+        // prefix, a long line folded and its commas escaped. Importing it twice keeps one event,
+        // the one its UID names.
+        {
+            let s = sheet();
+            let ics = "BEGIN:VCALENDAR\r\n\
+                   VERSION:2.0\r\n\
+                   BEGIN:VEVENT\r\n\
+                   UID:review-1@example.org\r\n\
+                   SUMMARY:Design review\\, with the whole team and every\r\n  guest\r\n\
+                   DTSTART;TZID=/mozilla.org/20050126_1/America/New_York:20261105T090000\r\n\
+                   DTEND;TZID=/mozilla.org/20050126_1/America/New_York:20261105T100000\r\n\
+                   END:VEVENT\r\n\
+                   END:VCALENDAR\r\n";
+            for _ in 0..2 {
+                let file = s
+                    .device
+                    .keeping("calendar.ics", "text/calendar", ics.as_bytes());
+                s.call(
+                    "import_ics",
+                    &[("c", Value::resource(&s.root)), ("file", Value::file(file))],
+                );
+            }
+            let events = s.projected(&s.root, "events");
+            assert_eq!(events.len(), 1, "{events:#?}");
+            let fields = &events[0]["fields"];
+            assert_eq!(
+                fields["title"],
+                "Design review, with the whole team and every guest"
+            );
+            assert_eq!(fields["key"], "review-1@example.org");
+            assert_eq!(fields["timezone"], "America/New_York");
+            assert_eq!(fields["start"], "2026-11-05T09:00:00");
+        }
+
         phase searching_the_window_narrows_what_a_place_lists;
         // The window's search narrows what a place lists.
         {

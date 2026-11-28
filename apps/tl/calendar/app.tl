@@ -2020,26 +2020,30 @@ action take_invitation(c: Calendars, text: Text) -> Text uses time (
 }
 
 /// Imports the events and tasks of an iCalendar file, and answers how many it took: what a
-/// person's own file offers, and what another calendar exported. A line naming a zone this
-/// build cannot read is read in the person's zone.
+/// person's own file offers, and what another calendar exported, such as the calendars another
+/// computer's mail program kept. An event the calendar holds already, by its `UID`, is kept
+/// once, so importing the same file again adds nothing. A line naming a zone this build cannot
+/// read is read in the person's zone.
 action import_ics(c: Calendars, file: File) -> Text uses time (
     icon: .upload,
     label: "Import calendar",
     opens: ["text/calendar", .ics, .ical],
 ) {
     let read = match file.text() {
-        .ok(text) => text,
+        .ok(text) => unfolded(text),
         .err(why) => {
             return std.say("Could not read {file.name}: {why}")
         }
     }
     // A calendar's parts, each a block between its BEGIN and END: what one event or task says,
     // read by its own lines. An event's own blocks (an alarm) end without each being one.
-    let events = read.split("END:VEVENT").filter(x -> x.contains("BEGIN:VEVENT"))
+    let events = read
+        .split("END:VEVENT")
+        .filter(x -> x.contains("BEGIN:VEVENT") and not ics_held(c, x))
     for segment in events {
         let chunk = segment.split("BEGIN:VEVENT").last() ?? ""
         let lines = chunk.split("\n")
-        let title = field(lines, "SUMMARY")
+        let title = ics_text(field(lines, "SUMMARY"))
         let all_day = chunk.find("DTSTART;VALUE=DATE") != .none
         let zone = import_zone(lines, "DTSTART")
         let start_wall = wall_text(field(lines, "DTSTART"))
@@ -2053,13 +2057,14 @@ action import_ics(c: Calendars, file: File) -> Text uses time (
             let until = rule_part(rule, "UNTIL")
             let made = c.events.insert(
                 Event(
+                    key: field(lines, "UID"),
                     title: title,
                     start: start_wall,
                     end: end_wall,
                     all_day: all_day,
                     timezone: zone,
-                    location: field(lines, "LOCATION"),
-                    body: RichText(field(lines, "DESCRIPTION")),
+                    location: ics_text(field(lines, "LOCATION")),
+                    body: RichText(ics_text(field(lines, "DESCRIPTION"))),
                     recurrence: frequency_in(rule),
                     repeat: repeat_in(rule),
                     recurrence_every: if every == "" { 1 } else { every.to_int() ?? 1 },
@@ -2120,13 +2125,42 @@ fn import_zone(lines: List<Text>, name: Text) -> Text {
 }
 
 /// The zone a line names in its `TZID` property (`TZID=Europe/Berlin`), or empty where it
-/// names none.
+/// names none. Thunderbird writes the zone's name behind a prefix of its own
+/// (`/mozilla.org/20050126_1/America/New_York`), which is left out.
 fn ics_zone(lines: List<Text>, name: Text) -> Text {
     let line = lines.find(x -> x.starts_with("{name};") and x.contains("TZID=")) ?? ""
     if let at = line.find("TZID=") {
         let rest = line.slice(at + 5, line.len())
-        if let colon = rest.find(":") { rest.slice(0, colon).trim() } else { rest.trim() }
+        let zone = if let colon = rest.find(":") {
+            rest.slice(0, colon).trim()
+        } else { rest.trim() }
+        if zone.starts_with("/mozilla.org/") {
+            let tail = zone.slice(13, zone.len())
+            if let slash = tail.find("/") { tail.slice(slash + 1, tail.len()) } else { zone }
+        } else { zone }
     } else { "" }
+}
+
+/// Whether the calendar holds the event a file's block describes already: one with its `UID`.
+fn ics_held(c: Calendars, block: Text) -> Bool {
+    let uid = field(block.split("\n"), "UID")
+    uid != "" and c.events.find(e -> e.key == uid) != .none
+}
+
+/// A calendar file's text with each long line whole again: a line it folded goes on in the
+/// next one, which starts with a space or a tab.
+fn unfolded(text: Text) -> Text {
+    text.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "")
+}
+
+/// A text value as a calendar file escapes it (`\,`, `\;`, `\n`), as it reads.
+fn ics_text(value: Text) -> Text {
+    value
+        .replace("\\n", "\n")
+        .replace("\\N", "\n")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
 }
 
 /// A wall time as a calendar line: `DTSTART:20261124T090000` for a floating one, with `Z` for

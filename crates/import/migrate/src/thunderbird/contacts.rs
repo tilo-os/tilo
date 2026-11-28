@@ -37,19 +37,3 @@ pub fn address_book(home: &Path, profile: &str, book: &str) -> Result<String, St
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "that address book holds no cards this reader understands".to_owned())
 }
-
-/// A UUID derived from `parts` with BLAKE3. The same parts always name the
-/// same UUID, so a re-import is idempotent and two peers agree.
-#[must_use]
-pub fn deterministic_id(parts: &[&str]) -> String {
-    let mut hasher = blake3::Hasher::new();
-    for part in parts {
-        hasher.update(&(part.len() as u64).to_le_bytes());
-        hasher.update(part.as_bytes());
-    }
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(bytes).to_string()
-}

@@ -105,27 +105,13 @@ fn an_address_book_is_read_as_the_vcard_text_contacts_imports() {
 }
 
 #[test]
-fn events_take_the_shape_the_calendar_app_reads() {
+fn a_calendar_goes_over_as_the_file_every_calendar_reads() {
     let (home, profile) = sample();
     let calendar = &profile.calendars[0];
-    let events = super::events(home.path(), &profile.source_id, &calendar.source_id).unwrap();
-    assert_eq!(events.len(), 2);
-    let review = events
-        .iter()
-        .find(|event| event["title"] == "Design review")
-        .expect("the review event");
-    assert_eq!(review["start"], "2026-11-05T09:00");
-    assert_eq!(review["end"], "2026-11-05T10:00");
-    assert_eq!(review["timezone"], "Europe/Berlin");
-    assert_eq!(review["rrule"], "FREQ=WEEKLY");
-    assert_eq!(review["recurrence_count"], 4);
-    let holiday = events
-        .iter()
-        .find(|event| event["title"] == "Company holiday")
-        .expect("the holiday event");
-    assert_eq!(holiday["all_day"], true);
-    assert_eq!(holiday["start"], "2026-12-24T00:00");
-    assert!(uuid::Uuid::parse_str(review["id"].as_str().unwrap()).is_ok());
+    let text = super::calendar_file(home.path(), &profile.source_id, &calendar.source_id).unwrap();
+    assert_eq!(text.matches("BEGIN:VEVENT").count(), 2, "{text}");
+    assert!(text.contains("SUMMARY:Design review"), "{text}");
+    assert!(text.contains("SUMMARY:Company holiday"), "{text}");
 }
 
 /// A home reached through a link, as Fedora Atomic's `/home` is a link to `/var/home`, is read

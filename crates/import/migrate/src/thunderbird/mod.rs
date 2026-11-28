@@ -31,7 +31,7 @@ pub mod mbox;
 pub mod personal_data;
 
 pub use contacts::address_book;
-pub use events::events;
+pub use events::calendar_file;
 pub use logins::{LoginsError, SavedLogin, password_for, saved_logins};
 pub use mbox::{MboxMessages, MessageTooLarge};
 
