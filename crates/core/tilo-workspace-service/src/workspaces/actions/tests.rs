@@ -691,7 +691,10 @@ async fn an_invitation_at_the_owners_place_makes_its_opener_the_owner() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = hosted(workspaces).await;
-    assert!(!workspaces.is_owner(&workspace, owner.user_public_key).await);
+    assert!(
+        workspaces.is_owner(&workspace, owner.user_public_key).await,
+        "the owner's place holds the workspace until the link hands it on"
+    );
 
     let issued = invoke(
         &host,
