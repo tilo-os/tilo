@@ -17,6 +17,7 @@ use tilo_workspace_records::vault as workspace_vault;
 use crate::fixtures::{admit, caller, settled};
 use crate::fixtures::{hosting_device, test_host};
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 /// The agent that asks here, by its id in the workspace.
 const AGENT: &str = "scout";
@@ -458,11 +459,7 @@ async fn ask_first(
         Answer::Ask,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    let request_id = *blake3::hash(rule.id.as_str().as_bytes()).as_bytes();
-    workspaces
-        .put_workspace_grants(workspace, owner, request_id, vec![rule])
-        .await
-        .unwrap();
+    given(workspaces, workspace, owner, vec![rule]).await;
 }
 
 /// `request`, carrying the approve of the asked record `record` its caller wrote itself.

@@ -12,6 +12,7 @@ pub(crate) use super::fixtures::{
     device_cert, entry_join, hosting_device, hosting_device_with, restricted_until, restriction,
     signed_pre_admission, test_host,
 };
+use crate::workspaces::fixtures::given;
 use tilo_peer_state::fixture::member_cert;
 
 pub(crate) mod admission_cost;
@@ -291,10 +292,7 @@ async fn every_settled_decision_is_announced_with_its_workspace() {
         Answer::Deny,
         Grantee::person(hex::encode(cert.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&created.workspace, &cert, [4; 32], vec![deny_outside])
-        .await
-        .unwrap();
+    given(workspaces, &created.workspace, &cert, vec![deny_outside]).await;
     let announced = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
         .await
         .unwrap()

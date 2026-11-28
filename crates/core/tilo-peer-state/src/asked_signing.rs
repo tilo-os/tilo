@@ -84,7 +84,15 @@ pub async fn signed_again(
     };
     let answered: WorkspaceMembershipCommand =
         serde_json::from_value(facts.change.clone()).map_err(|_| NOT_ASKED.to_owned())?;
-    if !asked_for(request, &arguments, &answered)? {
+    // A grant a device signs is its own person's to give.
+    let theirs = match &answered {
+        WorkspaceMembershipCommand::Grant { grant } => {
+            grant.granted_by
+                == tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key))
+        }
+        _ => true,
+    };
+    if !theirs || !asked_for(request, &arguments, &answered)? {
         return Err(NOT_ASKED.to_owned());
     }
     let changes = signed_on(facts, &answered, (cert, signer), now).await?;
@@ -141,6 +149,14 @@ fn asked_for(
             arguments.insert(name.to_owned(), value.into());
         }
         return answered.asked_by(verb, &arguments);
+    }
+    if tilo_actions::remote::asked::is_resolve(&request.target) {
+        return answered.asked_by(tilo_actions::remote::asked::RESOLVE, arguments);
+    }
+    if request.target.provider == tilo_actions::remote::VAULT_PROVIDER
+        && request.target.address.action == crate::signed_actions::VAULT_TAKE_BACK
+    {
+        return answered.asked_by(crate::signed_actions::VAULT_TAKE_BACK, arguments);
     }
     if request.target.address.action == tilo_server_protocol::workspaces::ADMINISTER_WORKSPACES {
         let asked = tilo_server_protocol::workspaces::administered_request(arguments)?;

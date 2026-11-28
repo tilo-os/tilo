@@ -25,6 +25,7 @@ use crate::page_logins;
 use crate::person_vault::vault_tests::ask;
 use crate::vault_release::AppProcess;
 use crate::vault_release::release_tests::{approve_and_grant, asked_records, refusal};
+use tilo_workspace_service::workspaces::fixtures::given;
 
 /// The app whose window shows the page.
 const BROWSER: &str = "so.tilo.browser";
@@ -226,22 +227,20 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
     assert_eq!(ungranted, page_logins::not_granted("scout"));
     assert!(!ungranted.contains(TYPED));
     let person_id = hex::encode(owner.user_public_key);
-    workspaces
-        .put_workspace_grants(
-            &workspace,
-            &owner,
-            [63; 32],
-            vec![tilo_action_policy::Grant::new(
-                "test:scout-fills-the-browsers-login",
-                tilo_action_policy::Grantee::agent("scout", person_id.clone()),
-                super::fill_node(&workspace, &kept.reference),
-                tilo_action_types::KindSet::ALL,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(person_id),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        workspaces,
+        &workspace,
+        &owner,
+        vec![tilo_action_policy::Grant::new(
+            "test:scout-fills-the-browsers-login",
+            tilo_action_policy::Grantee::agent("scout", person_id.clone()),
+            super::fill_node(&workspace, &kept.reference),
+            tilo_action_types::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person_id),
+        )],
+    )
+    .await;
     let filled: PageFilled = serde_json::from_value(
         asked_by(Some(&scout), &kept.reference)
             .await

@@ -24,14 +24,17 @@ use super::{
 };
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::Workspaces;
+use crate::workspaces::fixtures::given;
 use crate::workspaces::tests::{guest_device, hosting_device, is_banned, test_host};
 use tilo_server_protocol::WorkspaceId;
 
 pub(crate) use crate::workspaces::fixtures::{
-    Answering, admit, answered, caller, host_dispatch, hosted_permissions as hosted, request, settled,
+    Answering, admit, answered, caller, host_dispatch, hosted_permissions as hosted, request,
+    settled,
 };
 
-async fn grant(
+/// `person` given the governance action `action` in `workspace`, as `owner` gives it.
+pub(crate) async fn grant(
     workspaces: &Workspaces,
     workspace: &str,
     owner: &DeviceCert,
@@ -47,11 +50,7 @@ async fn grant(
         Answer::Allow,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    let request_id = *blake3::hash(grant.id.as_str().as_bytes()).as_bytes();
-    workspaces
-        .put_workspace_grants(workspace, owner, request_id, vec![grant])
-        .await
-        .unwrap();
+    given(workspaces, workspace, owner, vec![grant]).await;
 }
 
 /// The verbs `caller` is offered on the workspace `workspace_id` carries.
@@ -652,11 +651,7 @@ async fn an_administrator_is_an_editor_the_invitation_also_governs() {
         &who,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    let request_id = *blake3::hash(administrator.id.as_str().as_bytes()).as_bytes();
-    workspaces
-        .put_workspace_grants(&workspace, &owner, request_id, vec![administrator])
-        .await
-        .unwrap();
+    given(workspaces, &workspace, &owner, vec![administrator]).await;
     invoke(
         &host,
         workspace_id,

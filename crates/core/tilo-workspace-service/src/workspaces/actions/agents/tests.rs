@@ -18,7 +18,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::tests::{Answering, admit, answered, caller, hosted, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
-use crate::workspaces::fixtures::{admitted_key, awaited_signature};
+use crate::workspaces::fixtures::{admitted_key, awaited_signature, given};
 use crate::workspaces::tests::{hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
@@ -97,10 +97,7 @@ async fn answer_moving(
         answer,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(workspace, owner, rand::random(), vec![grant])
-        .await
-        .unwrap();
+    given(workspaces, workspace, owner, vec![grant]).await;
 }
 
 #[tokio::test]

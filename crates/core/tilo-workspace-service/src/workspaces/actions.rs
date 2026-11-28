@@ -1710,7 +1710,7 @@ impl Workspaces {
     /// The certificate the workspace holds for `caller`'s device, when it holds one: the one a
     /// call the transport named no certificate for is read by, as the run the workspace
     /// admitted. `None` for a caller with no device of its own here.
-    async fn callers_certificate(
+    pub(super) async fn callers_certificate(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
@@ -2146,29 +2146,6 @@ impl Workspaces {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
-    }
-
-    /// Take back the grants `ids` of `workspace`, written as the host's change to it.
-    pub async fn revoke_grants(
-        &self,
-        workspace: &mut HostedWorkspace,
-        at: std::time::SystemTime,
-        ids: &[tilo_action_policy::GrantId],
-    ) -> Result<(), String> {
-        if !self.administers(workspace) {
-            return Err("this server's person does not host the workspace".to_owned());
-        }
-        let key = &self.inner.host.key;
-        let mut candidate = workspace.peer().clone();
-        if candidate
-            .governance_mut()
-            .remove_member_grants(ids, key, at)?
-        {
-            let state = workspace.collaboration().clone();
-            workspace.keep(candidate, key, at, |_, _| Ok(state))?;
-            self.settle(workspace).await?;
-        }
-        Ok(())
     }
 
     /// Whether `caller`, on the device `certificate` certifies, keeps this
@@ -4584,12 +4561,23 @@ mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
+/// The changes `request` carries signed by the calling device ([`signed_in`]).
+///
+/// # Errors
+/// They are not hex changes.
+pub fn signed_changes(request: &InvokeRequest) -> Result<Option<Vec<Vec<u8>>>, ActionCallError> {
+    match &request.argument {
+        InvokeArgument::Json(arguments) => signed_in(arguments),
+        _ => Ok(None),
+    }
+}
+
 /// The changes `arguments` carry signed by the calling device, once its host asked it to sign
 /// them ([`tilo_actions::remote::SIGNED_ARGUMENT`]): `None` before.
 ///
 /// # Errors
 /// They are not hex changes.
-fn signed_in(
+pub(super) fn signed_in(
     arguments: &serde_json::Map<String, Value>,
 ) -> Result<Option<Vec<Vec<u8>>>, ActionCallError> {
     let name = tilo_actions::remote::SIGNED_ARGUMENT;

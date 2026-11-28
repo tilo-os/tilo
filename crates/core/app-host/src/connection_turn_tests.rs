@@ -30,7 +30,7 @@ use tilo_workspace_service::work::{
     connection_call, connection_holder, takes_turn,
 };
 use tilo_workspace_service::workspaces::Workspaces;
-use tilo_workspace_service::workspaces::fixtures::{TestHost, device_cert};
+use tilo_workspace_service::workspaces::fixtures::{TestHost, device_cert, given};
 use tilo_workspace_service::workspaces::fixtures::{
     admit_scribe, member_service, persons_root, reach_device as reach, shared_with,
 };
@@ -331,23 +331,20 @@ async fn a_connection_runs_only_on_a_device_that_may_read_the_apps_sealed_record
     .await;
     let desktop_cert = desktop.workspaces().device_cert().clone();
     let laptop_person = hex::encode(laptop.workspaces().device_cert().user_public_key);
-    desktop
-        .workspaces()
-        .put_workspace_grants(
-            &workspace,
-            &desktop_cert,
-            [55; 32],
-            vec![Grant::new(
-                "no-mail",
-                Grantee::person(laptop_person),
-                TreePath::workspace(&workspace).app(MAIL),
-                KindSet::READ,
-                Answer::Deny,
-                Grantee::person(hex::encode(desktop_cert.user_public_key)),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        desktop.workspaces(),
+        &workspace,
+        &desktop_cert,
+        vec![Grant::new(
+            "no-mail",
+            Grantee::person(laptop_person),
+            TreePath::workspace(&workspace).app(MAIL),
+            KindSet::READ,
+            Answer::Deny,
+            Grantee::person(hex::encode(desktop_cert.user_public_key)),
+        )],
+    )
+    .await;
     // Wait until the laptop reads that its person may not read Mail's records, asking as the
     // device it is, without claiming anything.
     let laptop_device = laptop.workspaces().lease_device(&workspace).await;

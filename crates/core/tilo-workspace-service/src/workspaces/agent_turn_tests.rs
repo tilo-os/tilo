@@ -17,7 +17,7 @@ use super::super::Workspaces;
 use super::super::fixtures::{TestHost, device_cert};
 use super::super::fixtures::{member_service, persons_root, shared_with};
 use crate::work::{Actor, Ineligible, NotTaken, Turn, takes_turn};
-use crate::workspaces::fixtures::ActsAs;
+use crate::workspaces::fixtures::{ActsAs, given};
 
 const CHAT: &str = "so.tilo.chat";
 
@@ -158,23 +158,20 @@ async fn only_a_device_that_acts_as_the_agent_claims_what_it_may_open() {
     // Without the agent's key again, the device claims nothing while the grant reaches it.
     laptop.workspaces().run_agents(Arc::new(ActsAs::NoAgent));
     let (unopened, lease) = turn_in("messages-3");
-    desktop
-        .workspaces()
-        .put_workspace_grants(
-            &workspace,
-            &desktop_cert,
-            [42; 32],
-            vec![Grant::new(
-                "no-chat",
-                Grantee::person(hex::encode(reader)),
-                TreePath::workspace(&workspace).app(CHAT),
-                KindSet::READ,
-                Answer::Deny,
-                Grantee::person(hex::encode(desktop_cert.user_public_key)),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        desktop.workspaces(),
+        &workspace,
+        &desktop_cert,
+        vec![Grant::new(
+            "no-chat",
+            Grantee::person(hex::encode(reader)),
+            TreePath::workspace(&workspace).app(CHAT),
+            KindSet::READ,
+            Answer::Deny,
+            Grantee::person(hex::encode(desktop_cert.user_public_key)),
+        )],
+    )
+    .await;
     let (workspaces, place, that) = (
         laptop.workspaces().clone(),
         workspace.clone(),

@@ -17,7 +17,7 @@ use tilo_user_identity::DeviceCapabilities;
 
 use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 use tilo_workspace_service::workspaces::fixtures::{
-    device_cert, entry_join_as, hosting_device, record_grants, test_host,
+    device_cert, entry_join_as, given, hosting_device, record_grants, taken_back, test_host,
 };
 use tilo_workspace_service::workspaces::providers::Reach;
 
@@ -118,20 +118,18 @@ async fn a_grant_in_one_workspace_reads_nothing_of_another() {
     let granting = workspaces.create("Kitchen").await.unwrap().workspace;
     let other = workspaces.create("Garden").await.unwrap().workspace;
     let person = hex::encode(cert.user_public_key);
-    workspaces
-        .put_workspace_grants(
+    given(
+        workspaces,
+        &granting,
+        &cert,
+        vec![reads_all(
+            "bot:moderation",
+            Grantee::bot("moderation"),
             &granting,
-            &cert,
-            [6; 32],
-            vec![reads_all(
-                "bot:moderation",
-                Grantee::bot("moderation"),
-                &granting,
-                &person,
-            )],
-        )
-        .await
-        .expect("the kitchen grants the bot its reads");
+            &person,
+        )],
+    )
+    .await;
 
     // Run in the kitchen, the bot reads the garden on the garden's grants alone: it has none.
     let bot = Caller::local_bot("moderation").in_workspace(granting.clone());
@@ -153,20 +151,18 @@ async fn an_app_acting_for_someone_reads_no_more_than_they_may() {
         .unwrap();
     let workspace = workspaces.create("Kitchen").await.unwrap().workspace;
     let person = hex::encode(cert.user_public_key);
-    workspaces
-        .put_workspace_grants(
+    given(
+        workspaces,
+        &workspace,
+        &cert,
+        vec![reads_all(
+            "app:notes",
+            Grantee::app(NOTES),
             &workspace,
-            &cert,
-            [6; 32],
-            vec![reads_all(
-                "app:notes",
-                Grantee::app(NOTES),
-                &workspace,
-                &person,
-            )],
-        )
-        .await
-        .expect("the workspace grants Notes its reads");
+            &person,
+        )],
+    )
+    .await;
 
     // Notes may read the whole workspace, but the person it acts for here is no member: the
     // smaller grant, theirs, reads nothing.
@@ -201,7 +197,6 @@ struct Host {
     person: String,
     kitchen: String,
     garden: String,
-    asked: std::sync::atomic::AtomicU8,
 }
 
 async fn host() -> Host {
@@ -221,7 +216,6 @@ async fn host() -> Host {
         cert,
         kitchen,
         garden,
-        asked: std::sync::atomic::AtomicU8::new(10),
     };
     for workspace in [host.kitchen.clone(), host.garden.clone()] {
         for record in ["", "private"] {
@@ -258,13 +252,7 @@ impl Host {
 
     /// `workspace` keeps `grants`, as its person decided.
     async fn grant(&self, workspace: &str, grants: Vec<Grant>) {
-        let asked = self
-            .asked
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.workspaces()
-            .put_workspace_grants(workspace, &self.cert, [asked; 32], grants)
-            .await
-            .expect("the workspace keeps the grants");
+        given(self.workspaces(), workspace, &self.cert, grants).await;
     }
 
     /// Kitchen lets agent `scribe` read it, all but its private Notes record.
@@ -430,10 +418,7 @@ async fn a_grant_revoked_mid_read_cuts_the_copy_under_way_and_the_reads_that_fol
         &h.person,
     )
     .id;
-    h.workspaces()
-        .remove_workspace_grants(&h.kitchen, &h.cert, [99; 32], vec![grant])
-        .await
-        .expect("the workspace takes the grant back");
+    taken_back(h.workspaces(), &h.kitchen, &h.cert, vec![grant]).await;
     let address = ResourceAddress {
         workspace: h.kitchen.clone(),
         app: NOTES.to_owned(),

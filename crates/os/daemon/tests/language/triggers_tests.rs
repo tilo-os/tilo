@@ -16,7 +16,7 @@ use tilo_automation::dispatch::DocumentEvent;
 use tilo_workspace_service::agent_shortcuts;
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
-    ActsAs, declare_app, on_issue_change, save_signed,
+    ActsAs, declare_app, given, on_issue_change, save_signed,
 };
 
 use super::{Device, Write, mount, write};
@@ -396,10 +396,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&device.workspace, cert, [23; 32], vec![granted])
-        .await
-        .expect("the workspace grants the provider's bot its writing");
+    given(workspaces, &device.workspace, cert, vec![granted]).await;
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
         workspaces.clone(),

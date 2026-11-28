@@ -13,6 +13,7 @@
 use tilo_action_policy::{Answer, Context, Grant, GrantId, Grantee, TreePath, WorkspacePolicy};
 use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::remote::Caller;
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
 use tilo_server_protocol::servers::person_workspace_id;
 
 use super::Workspaces;
@@ -205,31 +206,32 @@ impl Workspaces {
         false
     }
 
-    /// Write `grants` into the person's own `workspace`.
+    /// Write `grants` into the person's own `workspace`, each a change this device signs.
     async fn put_controls(&self, workspace: &str, grants: Vec<Grant>) -> Result<(), String> {
-        if grants.is_empty() {
-            return Ok(());
+        for grant in grants {
+            self.own_control_change(workspace, Command::Grant { grant })
+                .await?;
         }
-        let cert = self.inner.host.cert.clone();
-        let request = request_digest(&grants).map_err(|error| error.to_string())?;
-        self.put_workspace_grants(workspace, &cert, request, grants)
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        Ok(())
     }
 
     /// Take back the grants `ids` from the person's own `workspace`.
     async fn remove_controls(&self, workspace: &str, ids: Vec<GrantId>) -> Result<(), String> {
-        if ids.is_empty() {
-            return Ok(());
+        for grant in ids {
+            // Reached from taking back an administrator's grant, which is what this change is
+            // for: boxed so the two paths are one finite future.
+            Box::pin(self.own_control_change(workspace, Command::Revoke { grant })).await?;
         }
+        Ok(())
+    }
+
+    /// Make `command` in the person's own `workspace`, as this device.
+    async fn own_control_change(&self, workspace: &str, command: Command) -> Result<(), String> {
+        let request = request_digest(&("servers", &command)).map_err(|error| error.to_string())?;
         let cert = self.inner.host.cert.clone();
-        let request = request_digest(&("servers", &ids)).map_err(|error| error.to_string())?;
-        // Reached from taking back an administrator's grant, which is what this write is for:
-        // boxed so the two paths are one finite future.
-        Box::pin(self.remove_workspace_grants(workspace, &cert, request, ids))
+        self.change(workspace, (&cert, request), command)
             .await
-            .map(|_| ())
+            .map(drop)
             .map_err(|error| error.to_string())
     }
 }

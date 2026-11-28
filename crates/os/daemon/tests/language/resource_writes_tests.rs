@@ -25,8 +25,8 @@ use tilo_workspace_service::workspaces::fixtures::ContentKeys;
 use tilo_actions::remote::CatalogueQuery;
 use tilo_app_host::services::ResourceRequestContext;
 use tilo_workspace_service::workspaces::fixtures::{
-    TestGroupKeys, TestHost, declare_app, guest_device, hosting_device_with, invitation_text,
-    member_device,
+    TestGroupKeys, TestHost, declare_app, given, guest_device, hosting_device_with,
+    invitation_text, member_device,
 };
 use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 
@@ -491,10 +491,7 @@ async fn assert_scribed_as_agent(
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(acted_for.clone()),
     );
-    workspaces
-        .put_workspace_grants(context.workspace_id(), cert, [23; 32], vec![grant])
-        .await
-        .unwrap();
+    given(workspaces, context.workspace_id(), cert, vec![grant]).await;
     workspaces
         .resource_command(
             &context.clone().serving(vec![(

@@ -33,6 +33,7 @@ use crate::fixtures::{admit, caller, hosted};
 use crate::hosted_use::HostedTurn;
 use crate::person_vault::vault_tests::{a_provider, ask, ask_at, files_holding, kept_item};
 use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_service::workspaces::fixtures::{given, taken_back};
 
 const PASSWORD: &str = "correct horse battery staple";
 const NAME: &str = "ada";
@@ -353,10 +354,7 @@ pub(crate) async fn always(
         Answer::Allow,
         Grantee::person(hex::encode(ada.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(workspace, owner, rand::random(), vec![grant])
-        .await
-        .unwrap();
+    given(workspaces, workspace, owner, vec![grant]).await;
 }
 
 /// The first use of an item by a turn the server carries out waits for its person and uses
@@ -783,10 +781,7 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         Answer::Deny,
         tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&workspace, &owner, [61; 32], vec![kept_from_vault])
-        .await
-        .unwrap();
+    given(workspaces, &workspace, &owner, vec![kept_from_vault]).await;
     assert_eq!(
         dispatched(workspaces, &turn(&scout), &adding).await,
         Err(NotPermitted),
@@ -803,17 +798,15 @@ async fn the_agents_own_grants_decide_what_its_turn_reaches_of_the_vault() {
         "another agent is not held by the grant: {facts:?}"
     );
 
-    workspaces
-        .remove_workspace_grants(
-            &workspace,
-            &owner,
-            [62; 32],
-            vec![tilo_action_policy::GrantId(
-                "test:scout-kept-from-vault".into(),
-            )],
-        )
-        .await
-        .unwrap();
+    taken_back(
+        workspaces,
+        &workspace,
+        &owner,
+        vec![tilo_action_policy::GrantId(
+            "test:scout-kept-from-vault".into(),
+        )],
+    )
+    .await;
     let facts = asks(dispatched(workspaces, &turn(&scout), &adding).await);
     assert!(
         asked_by(&facts, "scout", "Scout"),

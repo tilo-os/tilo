@@ -620,6 +620,15 @@ pub struct Resolve {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub edits: Vec<crate::DraftEdit>,
+    /// The grant the answer gives ([`AskedGrants`]), as the answering device signed it, each
+    /// change hex-encoded: sent once the host asked that device to sign it
+    /// ([`super::ActionCallError::SignatureRequired`]). Under [`super::SIGNED_ARGUMENT`].
+    #[serde(
+        default,
+        deserialize_with = "none_is_empty",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub signed: Vec<String>,
 }
 
 /// A list a caller left out as nothing (`null`, as a view passes an option it did not give)
@@ -872,16 +881,29 @@ pub trait AskedKeeping: Send + Sync {
 /// ([`Offer::ApproveAndGrant`]): an ordinary grant of the workspace's policy, shown and taken
 /// back as every grant is.
 pub trait AskedGrants: Send + Sync {
-    /// Write `grant` in `workspace`, given by `person` (their root key, hex).
+    /// Write `grant` in `workspace`, as `giving` gives it.
     ///
     /// # Errors
-    /// Why it was not written: refused where it reaches beyond what `person` may grant.
+    /// Why it was not written: refused where it reaches beyond what its person may grant, or
+    /// [`super::ActionCallError::SignatureRequired`] until the answering device signed it.
     fn grant(
         &self,
         workspace: &str,
-        person: &str,
+        giving: &Giving,
         grant: tilo_action_policy::Grant,
-    ) -> super::Pending<Result<(), String>>;
+    ) -> super::Pending<Result<(), super::ActionCallError>>;
+}
+
+/// Who gives a grant with their answer: the person, on the device they answered on, which signs
+/// it ([`Resolve::signed`]).
+#[derive(Clone, Debug)]
+pub struct Giving {
+    /// The person, their root key in hex.
+    pub person: String,
+    /// The person as they answered, on their device.
+    pub answering: super::Caller,
+    /// The grant as that device signed it, once it has.
+    pub signed: Vec<String>,
 }
 
 /// Where the call was pressed, when a person's press asked it.

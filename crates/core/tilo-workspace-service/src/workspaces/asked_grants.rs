@@ -1,88 +1,64 @@
 //! The grant a person gives with an approve of an asked record ("approve and grant"): an
-//! ordinary grant of the workspace's policy, written as this host's change, shown and taken
-//! back like every other grant.
+//! ordinary grant of the workspace's policy, a change of its member list that the device they
+//! answered on signs, shown and taken back like every other grant.
 //!
-//! This host writes it only for its own person, whose key it signs with, and only within what
-//! that person may do themselves: a grant never reaches beyond the one who gives it.
+//! The workspace's policy decides it as every grant its person gives: a grant never reaches
+//! beyond the one who gives it.
 
 use std::sync::Arc;
 
-use tilo_action_policy::{Answer, Context, Grant};
-use tilo_actions::remote::asked::AskedGrants;
-use tilo_actions::remote::{Pending, pending};
+use tilo_action_policy::{Grant, Grantee};
+use tilo_actions::remote::asked::{AskedGrants, Giving};
+use tilo_actions::remote::{ActionCallError, Pending, pending};
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 use super::weak::WeakWorkspaces;
-use super::{HostedWorkspace, Workspaces};
-
-/// What refuses a grant asked of this host for someone other than its own person.
-const NOT_OURS: &str = "this server writes grants only for the person it belongs to";
+use super::{SignedAsk, Workspaces};
 
 impl Workspaces {
-    /// Write `grant` in `workspace`, given by `person` (hex root key): refused unless `person`
-    /// is this host's own, this host serves the workspace, and `person` may take every kind
-    /// of action it grants at its node themselves.
+    /// Write `grant` in `workspace`, as `giving` gives it: the change the device its person
+    /// answered on signs, refused unless the grant names that person as its giver.
     ///
     /// # Errors
-    /// Why it was not written.
+    /// Why it was not written, or [`ActionCallError::SignatureRequired`] until that device
+    /// signed it.
     pub async fn give_asked_grant(
         &self,
         workspace: &str,
-        person: &str,
+        giving: &Giving,
         grant: Grant,
-    ) -> Result<(), String> {
-        if person != hex::encode(self.inner.host.cert.user_public_key)
-            || grant.granted_by != tilo_action_policy::Grantee::person(person.to_owned())
-        {
-            return Err(NOT_OURS.to_owned());
+    ) -> Result<(), ActionCallError> {
+        if grant.granted_by != Grantee::person(giving.person.clone()) {
+            return Err(ActionCallError::refused(
+                "a grant is written only by the person who gives it",
+            ));
         }
-        let hosted = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut hosted = hosted.lock().await;
-        let at = tilo_clock::wall();
-        let access = hosted
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, at)
-            .map_err(|error| error.to_string())?;
-        let now = Context::at(tilo_clock::unix_now_ms());
-        if access.person_id() != Some(person)
-            || grant
-                .kinds
-                .iter()
-                .any(|kind| access.answer(&grant.node, kind, &now) != Answer::Allow)
-        {
-            return Err("it would allow more than you may do yourself".to_owned());
+        let device = match collab_types::WorkspaceId::parse(workspace) {
+            Some(workspace_id) => {
+                self.callers_certificate(Some(workspace_id), &giving.answering)
+                    .await
+            }
+            None => None,
         }
-        drop(access);
-        let written = self
-            .put_grants(&mut hosted, at, std::slice::from_ref(&grant))
-            .await;
-        drop(hosted);
-        written
-    }
-
-    /// Write `grants` in `workspace`, as the host's change to it.
-    async fn put_grants(
-        &self,
-        workspace: &mut HostedWorkspace,
-        at: std::time::SystemTime,
-        grants: &[Grant],
-    ) -> Result<(), String> {
-        if !self.administers(workspace) {
-            return Err("this server's person does not host the workspace".to_owned());
-        }
-        let key = &self.inner.host.key;
-        let mut candidate = workspace.peer().clone();
-        if candidate
-            .governance_mut()
-            .put_member_grants(grants, key, at)?
-        {
-            let state = workspace.collaboration().clone();
-            workspace.keep(candidate, key, at, |_, _| Ok(state))?;
-            self.settle(workspace).await?;
-        }
-        Ok(())
+        .ok_or_else(|| ActionCallError::refused("the answering device is not in the workspace"))?;
+        // Nothing signed yet asks the device to sign it.
+        let signed = (!giving.signed.is_empty()).then(|| {
+            (
+                tilo_actions::remote::SIGNED_ARGUMENT.to_owned(),
+                giving.signed.clone().into(),
+            )
+        });
+        let signed = super::actions::signed_in(&signed.into_iter().collect())?;
+        let ask = SignedAsk {
+            device: &device,
+            request_id: rand::random(),
+            signed,
+        };
+        Self::signed_change(
+            self.govern(workspace, ask, &WorkspaceMembershipCommand::Grant { grant })
+                .await,
+        )
+        .map(drop)
     }
 
     /// What writes the grants this host's people give with an approve, on `runtime`.
@@ -104,21 +80,28 @@ struct HostGrants {
 }
 
 impl AskedGrants for HostGrants {
-    fn grant(&self, workspace: &str, person: &str, grant: Grant) -> Pending<Result<(), String>> {
+    fn grant(
+        &self,
+        workspace: &str,
+        giving: &Giving,
+        grant: Grant,
+    ) -> Pending<Result<(), ActionCallError>> {
         let (done, answer) = pending();
-        let (workspaces, workspace, person) = (
+        let (workspaces, workspace, giving) = (
             self.workspaces.clone(),
             workspace.to_owned(),
-            person.to_owned(),
+            giving.clone(),
         );
         self.runtime.spawn(async move {
             let Some(workspaces) = workspaces.upgrade() else {
-                done.complete(Err("this server no longer keeps its workspaces".to_owned()));
+                done.complete(Err(ActionCallError::unavailable(
+                    "this server no longer keeps its workspaces",
+                )));
                 return;
             };
             done.complete(
                 workspaces
-                    .give_asked_grant(&workspace, &person, grant)
+                    .give_asked_grant(&workspace, &giving, grant)
                     .await,
             );
         });

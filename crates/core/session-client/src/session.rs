@@ -4678,7 +4678,8 @@ async fn ask_signing(
     let tilo_actions::remote::RemoteActionMessage::Invoke(request) = message else {
         return Ok(frame);
     };
-    let Some((invocation, facts)) = tilo_peer_state::asked_signing::sign_asked_in(&frame) else {
+    let Some((invocation, mut facts)) = tilo_peer_state::asked_signing::sign_asked_in(&frame)
+    else {
         if tilo_peer_state::asked_signing::accepted_change(&request, &frame) {
             let (link, cert, workspace) = (link.clone(), cert.clone(), workspace.to_owned());
             n0_future::task::spawn(async move {
@@ -4687,20 +4688,35 @@ async fn ask_signing(
         }
         return Ok(frame);
     };
-    let asked_again = signed_and_asked(
-        link,
-        (cert, Arc::clone(&signer)),
-        (workspace, to),
-        &request,
-        &facts,
-    )
-    .await;
-    Ok(match asked_again {
-        Ok(answer) => tilo_peer_state::asked_signing::answered_as(answer?, invocation),
-        Err(reason) => {
-            tilo_peer_state::asked_signing::refused_frame(invocation, reason).unwrap_or(frame)
+    // A request that makes several changes (taking back several grants) is asked to sign each in
+    // turn.
+    loop {
+        let asked_again = signed_and_asked(
+            link,
+            (cert, Arc::clone(&signer)),
+            (workspace, to),
+            &request,
+            &facts,
+        )
+        .await;
+        let answer = match asked_again {
+            Ok(answer) => answer?,
+            Err(reason) => {
+                return Ok(
+                    tilo_peer_state::asked_signing::refused_frame(invocation, reason)
+                        .unwrap_or(frame),
+                );
+            }
+        };
+        match tilo_peer_state::asked_signing::sign_asked_in(&answer) {
+            Some((_, next)) if next != facts => facts = next,
+            _ => {
+                return Ok(tilo_peer_state::asked_signing::answered_as(
+                    answer, invocation,
+                ));
+            }
         }
-    })
+    }
 }
 
 /// `request` signed on `facts` by this device and asked of `to` again: the host's answer, or why

@@ -2005,6 +2005,52 @@ pub async fn made_as(
     as_device(device, |ask| workspaces.govern(workspace, ask, &command)).await
 }
 
+/// `grants` given in `workspace` as `device` gives them, each a change it makes ([`made_as`]).
+///
+/// # Panics
+///
+/// The workspace did not take one.
+pub async fn given(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+    grants: impl IntoIterator<Item = tilo_action_policy::Grant>,
+) {
+    for grant in grants {
+        made_as(
+            workspaces,
+            workspace,
+            device,
+            WorkspaceMembershipCommand::Grant { grant },
+        )
+        .await
+        .expect("the workspace takes the grant its member gives");
+    }
+}
+
+/// The grants `ids` taken back in `workspace` as `device` takes them back ([`made_as`]).
+///
+/// # Panics
+///
+/// The workspace did not take one back.
+pub async fn taken_back(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+    ids: impl IntoIterator<Item = tilo_action_policy::GrantId>,
+) {
+    for grant in ids {
+        made_as(
+            workspaces,
+            workspace,
+            device,
+            WorkspaceMembershipCommand::Revoke { grant },
+        )
+        .await
+        .expect("the workspace takes the grant back");
+    }
+}
+
 /// The key of `device`, when [`admit_device`] admitted it.
 pub fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
     ADMITTED

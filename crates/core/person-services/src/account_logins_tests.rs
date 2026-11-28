@@ -37,6 +37,7 @@ use crate::fixtures::{
 use crate::vault_release::AppProcess;
 use tilo_workspace_service::own_device::KeyService;
 use tilo_workspace_service::work::{HostConnections, Order, StartRefusal, Turn, takes_turn_in};
+use tilo_workspace_service::workspaces::fixtures::given;
 use tilo_workspace_service::workspaces::{MemberDevice, PreAdmitRequest};
 
 /// The mail account both members read.
@@ -311,10 +312,13 @@ impl Members {
         );
         // As every change of the workspace's rules is made: committed, then settled with its
         // members' devices.
-        self.owner
-            .put_workspace_grants(&self.workspace, &self.owner_cert, [41; 32], vec![refused])
-            .await
-            .unwrap();
+        given(
+            &self.owner,
+            &self.workspace,
+            &self.owner_cert,
+            vec![refused],
+        )
+        .await;
         assert!(
             self.owner
                 .using_vault(&self.workspace, &self.member_caller(), None, false)
@@ -1191,26 +1195,24 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
     // the one grant that names the app for the entry is what lets it read there.
     let owner = &members.owner;
     let person = hex::encode(members.owner_cert.user_public_key);
-    owner
-        .put_workspace_grants(
-            &workspace,
-            &members.owner_cert,
-            [73; 32],
-            vec![tilo_action_policy::Grant::new(
-                "test:mail-sign-in",
-                tilo_action_policy::Grantee::app(MAIL),
-                tilo_action_policy::TreePath::workspace(&workspace)
-                    .app(workspace_vault::PROVIDER)
-                    .kind(workspace_vault::ITEM_KIND)
-                    .resource(named.to_string())
-                    .action(workspace_vault::RELEASE),
-                tilo_action_types::KindSet::READ,
-                tilo_action_policy::Answer::Allow,
-                tilo_action_policy::Grantee::person(person),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        owner,
+        &workspace,
+        &members.owner_cert,
+        vec![tilo_action_policy::Grant::new(
+            "test:mail-sign-in",
+            tilo_action_policy::Grantee::app(MAIL),
+            tilo_action_policy::TreePath::workspace(&workspace)
+                .app(workspace_vault::PROVIDER)
+                .kind(workspace_vault::ITEM_KIND)
+                .resource(named.to_string())
+                .action(workspace_vault::RELEASE),
+            tilo_action_types::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person),
+        )],
+    )
+    .await;
     owner.run_connections(Arc::new(MailHeld));
     takes_turn_in(
         owner,

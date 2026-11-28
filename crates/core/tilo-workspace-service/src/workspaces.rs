@@ -21,7 +21,7 @@ pub mod actions;
 #[cfg(feature = "apps")]
 pub use actions::agents::FollowedAgents;
 /// The invitation actions a member asks a workspace for, beside its `invite`.
-pub use actions::{CANCEL_INVITATION, IF_ABSENT, INVITATIONS};
+pub use actions::{CANCEL_INVITATION, IF_ABSENT, INVITATIONS, signed_changes};
 /// The route a workspace's record is addressed at, as this service's record reads take it: a
 /// program answers with its app's route without naming the store's own crates.
 pub use tilo_peer_state::document_frame::DocumentRoute;

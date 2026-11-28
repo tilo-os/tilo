@@ -41,6 +41,8 @@ pub const REGISTRY_CHANNEL: &str = "registry.channel";
 pub const PUBLISH: &str = "publish";
 /// Taking the workspace out of the directory.
 pub const UNPUBLISH: &str = "unpublish";
+/// Taking back what may always use a vault item: the vault's `take-back`.
+pub const VAULT_TAKE_BACK: &str = "take-back";
 /// Settling the workspace's content policy: its owners'.
 pub const SET_CONTENT_POLICY: &str = "content.set-policy";
 
@@ -209,7 +211,33 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// The arguments do not name what `verb` needs.
     pub fn asked_by(&self, verb: &str, arguments: &Map<String, Value>) -> Result<bool, String> {
+        if verb == tilo_actions::remote::asked::RESOLVE {
+            return self.grants_as_answered(arguments);
+        }
+        // Taking back what may always use a vault item takes back its grants, one at a time.
+        if verb == VAULT_TAKE_BACK {
+            return Ok(matches!(self, Self::Revoke { .. }));
+        }
         Ok(Self::of_action(verb, arguments)?.as_ref() == Some(self))
+    }
+
+    /// Whether this is the grant a person's answer `arguments` to an asked record gives
+    /// ([`tilo_actions::remote::asked::Resolve`]): an approve and grant allows for good, an
+    /// approve allows once, and a decline refuses. The host lays out whom and what it reaches
+    /// from the record; the workspace's policy holds it to what the person may grant.
+    fn grants_as_answered(&self, arguments: &Map<String, Value>) -> Result<bool, String> {
+        use tilo_actions::remote::asked::{Offer, Resolve};
+        let answer: Resolve = serde_json::from_value(Value::Object(arguments.clone()))
+            .map_err(|error| format!("the answer does not read: {error}"))?;
+        let Self::Grant { grant } = self else {
+            return Ok(false);
+        };
+        let once = grant.lifetime == tilo_action_types::Lifetime::Once;
+        Ok(match answer.resolution {
+            Offer::ApproveAndGrant => grant.answer == tilo_action_policy::Answer::Allow && !once,
+            Offer::Approve => grant.answer == tilo_action_policy::Answer::Allow && once,
+            Offer::Decline => grant.answer == tilo_action_policy::Answer::Deny,
+        })
     }
 
     /// The change a page's `/workspaces` request asks for, as the page's device signs it. `None`

@@ -13,6 +13,7 @@ use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use crate::RuntimeServices as _;
 use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 const GRANTED_JOIN_TEST: &str = "device::live_speaking::tests::an_app_granted_the_call_joins_it_with_no_window_and_carries_audio_without_a_key";
 const ONCE_JOIN_TEST: &str = "device::live_speaking::tests::a_join_given_once_joins_the_call_once";
@@ -378,12 +379,12 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     // Approved once again from another of their questions and not yet used, the person approves
     // and grants this one: the grant given for good takes the place of the one given once.
     tilo_rt::app()
-        .block_on(workspaces.give_asked_grant(
+        .block_on(given(
+            &workspaces,
             &workspace,
-            &hex::encode(workspaces.device_cert().user_public_key),
-            once.clone(),
+            workspaces.device_cert(),
+            [once.clone()],
         ))
-        .unwrap()
         .expect("the approve given once is written");
     the_persons_answer(
         &workspaces,

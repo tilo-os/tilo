@@ -20,7 +20,8 @@ use zeroize::Zeroizing;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::asked::{
     Approval, ApprovalsHanded, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants,
-    AskedKeeping, AskedRecords, KeptAsk, Offer, RecordRef, Resolve, answering_person, asked_person,
+    AskedKeeping, AskedRecords, Giving, KeptAsk, Offer, RecordRef, Resolve, answering_person,
+    asked_person,
 };
 use tilo_actions::remote::secret_arguments::{
     SecretParameters, restore, secret_arguments, without_secrets,
@@ -528,26 +529,22 @@ impl AskedStore {
                     // The call ended with the dispatch that kept it: nothing runs it.
                     None => Ok(()),
                 };
-                let Some((grant, person)) = refusal else {
+                let Some((grant, giving)) = refusal else {
                     return Pending::ready(declined());
                 };
                 let Some(grants) = self.grants.get() else {
                     self.reopen(at);
                     return Pending::ready(Err(refused("No refusal can be written here")));
                 };
-                let written = grants.grant(&at.workspace, &person, grant);
+                let written = grants.grant(&at.workspace, &giving, grant);
                 let (done, answer) = pending();
                 let (store, at) = (Arc::clone(self), at.clone());
                 written.then(move |written| {
                     done.complete(match written {
                         Some(Ok(())) => declined(),
-                        Some(Err(why)) => {
+                        unwritten => {
                             store.reopen(&at);
-                            Err(refused(&format!("The refusal was not written: {why}")))
-                        }
-                        None => {
-                            store.reopen(&at);
-                            Err(refused("The refusal was not written"))
+                            Err(not_written("The refusal was not written", unwritten))
                         }
                     });
                 });
@@ -556,7 +553,7 @@ impl AskedStore {
             Ok(Admitted::Approved(caller, request, (dispatch, context))) => Pending::ready(
                 readmit(&self.dispatch(&dispatch), &caller, *request, &context),
             ),
-            Ok(Admitted::Granting(caller, request, (dispatch, context), grant, person)) => {
+            Ok(Admitted::Granting(caller, request, (dispatch, context), grant, giving)) => {
                 let dispatch = self.dispatch(&dispatch);
                 let Some(grants) = self.grants.get() else {
                     self.reopen(at);
@@ -564,23 +561,18 @@ impl AskedStore {
                         "No grant can be written here; approve it once instead",
                     )));
                 };
-                let written = grants.grant(&at.workspace, &person, grant);
+                let written = grants.grant(&at.workspace, &giving, grant);
                 let (done, answer) = pending();
                 let (store, at) = (Arc::clone(self), at.clone());
                 written.then(move |written| {
-                    let reopen = || store.reopen(&at);
                     let result = match written {
                         Some(Ok(())) => {
                             store.release_held(&at);
                             readmit(&dispatch, &caller, *request, &context)
                         }
-                        Some(Err(why)) => {
-                            reopen();
-                            Err(refused(&format!("The grant was not written: {why}")))
-                        }
-                        None => {
-                            reopen();
-                            Err(refused("The grant was not written"))
+                        unwritten => {
+                            store.reopen(&at);
+                            Err(not_written("The grant was not written", unwritten))
                         }
                     };
                     done.complete(result);
@@ -669,7 +661,16 @@ impl AskedStore {
             }
             _ => {}
         }
-        let grant = self.grant_answered(record, answer.resolution)?;
+        let grant = self
+            .grant_answered(record, answer.resolution)?
+            .map(|grant| {
+                let giving = Giving {
+                    person: person.to_owned(),
+                    answering: answering.clone(),
+                    signed: answer.signed.clone(),
+                };
+                (grant, giving)
+            });
         let caller = record.caller.clone();
         let dispatch = record.dispatch.clone();
         let context = record.context.clone();
@@ -677,12 +678,7 @@ impl AskedStore {
         let admitted = if answer.resolution == Offer::Decline {
             record.status = Status::Declined;
             record.held = None;
-            Admitted::Declined(
-                caller,
-                record.invocation,
-                dispatch,
-                grant.map(|grant| (grant, person.to_owned())),
-            )
+            Admitted::Declined(caller, record.invocation, dispatch, grant)
         } else if !record.sealed.is_empty() && held.is_none() {
             // Asked before this device started again: what it was asked with is gone, and it
             // never runs without it.
@@ -712,12 +708,12 @@ impl AskedStore {
                 ..Approval::new(at.clone(), answer.choice)
             }));
             match grant {
-                Some(grant) => Admitted::Granting(
+                Some((grant, giving)) => Admitted::Granting(
                     caller,
                     Box::new(request),
                     (dispatch, context),
                     grant,
-                    person.to_owned(),
+                    giving,
                 ),
                 None => Admitted::Approved(caller, Box::new(request), (dispatch, context)),
             }
@@ -981,13 +977,13 @@ impl AskedStore {
         }
     }
 
-    /// Put the record `at` back to asked where its answer could not go on (its grant was not
-    /// written): nothing of it ran.
+    /// Put the record `at` back to asked where its answer could not go on (its grant or refusal
+    /// was not written, or waits for the answering device to sign it): nothing of it ran.
     fn reopen(&self, at: &RecordRef) {
         let mut kept = self.kept.lock_recover();
         if let Some(record) = kept
             .find(at)
-            .filter(|record| record.status == Status::Running)
+            .filter(|record| matches!(record.status, Status::Running | Status::Declined))
         {
             record.status = Status::Asked;
             record.edited = None;
@@ -1008,7 +1004,7 @@ enum Admitted {
         Caller,
         InvocationId,
         String,
-        Option<(tilo_action_policy::Grant, String)>,
+        Option<(tilo_action_policy::Grant, Giving)>,
     ),
     /// Its sealed arguments are no longer held here ([`SECRET_GONE`]).
     Gone(Caller, InvocationId, String),
@@ -1018,7 +1014,7 @@ enum Admitted {
         Box<InvokeRequest>,
         KeptBy,
         tilo_action_policy::Grant,
-        String,
+        Giving,
     ),
 }
 
@@ -1093,6 +1089,16 @@ fn secret_gone(invocation: InvocationId) -> tilo_actions::InvocationUpdate {
             details: None,
             retryable: false,
         },
+    }
+}
+
+/// Why the grant an answer gives was not written, as `what` (the grant, or the refusal) says it:
+/// what its device signs it on goes back to that device as it is.
+fn not_written(what: &str, unwritten: Option<Result<(), ActionCallError>>) -> ActionCallError {
+    match unwritten {
+        Some(Err(asked @ ActionCallError::SignatureRequired(_))) => asked,
+        Some(Err(why)) => refused(&format!("{what}: {}", why.own_words())),
+        _ => refused(what),
     }
 }
 

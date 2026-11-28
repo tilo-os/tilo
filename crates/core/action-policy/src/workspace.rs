@@ -1222,9 +1222,9 @@ impl WorkspacePolicy {
         self.admit_grant_action(actor, grant, cx, approved)
     }
 
-    /// The revocation of a grant: its own person's to take back when they gave an app what they
-    /// reached, and otherwise the workspace's `revoke` action to allow. Nobody else ends another
-    /// person's app grant.
+    /// The revocation of a grant: its own person's to take back when they gave an app, or an
+    /// agent of their own, what they reached, and otherwise the workspace's `revoke` action to
+    /// allow. Nobody else ends another person's app or agent grant.
     fn admit_revoke(
         &self,
         actor_person: &str,
@@ -1235,7 +1235,12 @@ impl WorkspacePolicy {
     ) -> Result<Vec<GrantId>, Refusal> {
         let held = self.grants.iter().find(|grant| &grant.id == id);
         if held.is_some_and(|grant| {
-            matches!(grant.grantee, Grantee::App(_))
+            let their_own_party = matches!(grant.grantee, Grantee::App(_))
+                || grant
+                    .grantee
+                    .as_agent()
+                    .is_some_and(|(_, person)| person.as_str() == actor_person);
+            their_own_party
                 && grant.granted_by.person_id() == Some(actor_person)
                 && self.check_not_held_off(actor, cx).is_ok()
         }) {

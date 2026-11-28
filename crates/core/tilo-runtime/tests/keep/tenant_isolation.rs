@@ -40,6 +40,7 @@ use tilo_workspace_service::workspaces::{
 
 use crate::keep::common::{KEYS, Linked, TestDevice, TestUser, invitation, opened, redeem};
 use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 /// The app and record a tenant writes through its link, and the field it writes.
 const APP: &str = "test.app";
@@ -282,10 +283,7 @@ impl TwoTenants {
             Answer::Allow,
             Grantee::person(hex::encode(provider.user_pk)),
         );
-        workspaces
-            .put_workspace_grants(&acme.workspace, &host.cert, [0x11; 32], vec![grant])
-            .await
-            .unwrap();
+        given(workspaces, &acme.workspace, &host.cert, vec![grant]).await;
         admit(&server, &host, &bob_phone, &globex.workspace, Role::Editor).await;
         let carol_invitation = invitation(
             workspaces,

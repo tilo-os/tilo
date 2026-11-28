@@ -42,6 +42,7 @@ use crate::hosted_use::turn_use_tests::{
     approved, asks, dispatched, fact, narrowed_elsewhere, on_turn,
 };
 use crate::person_vault::vault_tests::ask_at;
+use tilo_workspace_service::workspaces::fixtures::{given, taken_back};
 
 const SCOUT: &str = "scout";
 
@@ -343,10 +344,7 @@ impl Team {
             Grantee::person(self.ada_id.clone()),
         );
         let id = grant.id.clone();
-        self.workspaces
-            .put_workspace_grants(&self.workspace, owner, rand::random(), vec![grant])
-            .await
-            .unwrap();
+        given(&self.workspaces, &self.workspace, owner, vec![grant]).await;
         id
     }
 }
@@ -719,10 +717,13 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
         Answer::Deny,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    team.workspaces
-        .put_workspace_grants(&team.workspace, &owner, [0x53; 32], vec![blocked.clone()])
-        .await
-        .unwrap();
+    given(
+        &team.workspaces,
+        &team.workspace,
+        &owner,
+        vec![blocked.clone()],
+    )
+    .await;
     assert!(refused_with(
         &team.takes(&turn, &planting).await,
         "workspace policy denies this action for the agent",
@@ -731,16 +732,10 @@ async fn always_covers_one_command_of_one_connection_until_its_person_takes_it_b
         calls(&service.seen()).is_empty(),
         "the deny takes precedence"
     );
-    team.workspaces
-        .remove_workspace_grants(&team.workspace, &owner, [0x54; 32], vec![blocked.id])
-        .await
-        .unwrap();
+    taken_back(&team.workspaces, &team.workspace, &owner, vec![blocked.id]).await;
 
     // Taken back, it asks again from the very next call.
-    team.workspaces
-        .remove_workspace_grants(&team.workspace, &owner, [0x51; 32], vec![permission])
-        .await
-        .expect("the workspace's grant was revoked");
+    taken_back(&team.workspaces, &team.workspace, &owner, vec![permission]).await;
     asked(team.takes(&turn, &planting).await);
     assert!(calls(&service.seen()).is_empty());
     assert!(calls(&another.seen()).is_empty());

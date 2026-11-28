@@ -19,7 +19,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
     ApprovalsHanded, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
-    KeptAsk, Named, Offer, RecordRef, Resolve, admit_frame,
+    Giving, KeptAsk, Named, Offer, RecordRef, Resolve, admit_frame,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, Pending,
@@ -80,14 +80,19 @@ struct Grants {
 }
 
 impl AskedGrants for Grants {
-    fn grant(&self, workspace: &str, person: &str, grant: Grant) -> Pending<Result<(), String>> {
+    fn grant(
+        &self,
+        workspace: &str,
+        giving: &Giving,
+        grant: Grant,
+    ) -> Pending<Result<(), ActionCallError>> {
         if let Some(refusal) = &self.refusal {
-            return Pending::ready(Err(refusal.clone()));
+            return Pending::ready(Err(ActionCallError::refused(refusal.clone())));
         }
         self.written
             .lock()
             .unwrap()
-            .push((workspace.to_owned(), person.to_owned(), grant));
+            .push((workspace.to_owned(), giving.person.clone(), grant));
         Pending::ready(Ok(()))
     }
 }

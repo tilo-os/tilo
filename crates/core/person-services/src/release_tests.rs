@@ -35,6 +35,7 @@ use crate::hosted_use::web_call_tests::logged;
 use crate::person_vault::vault_tests::{ask, ask_at, files_holding};
 use crate::vault_release::{self as release, AppProcess};
 use tilo_workspace_service::work::{HostConnections, Order, StartRefusal, Turn, takes_turn_in};
+use tilo_workspace_service::workspaces::fixtures::given;
 
 /// The app whose connection is released a token.
 const BRIDGE: &str = "so.tilo.bridge";
@@ -244,13 +245,34 @@ async fn a_held_connection_is_released_the_one_item_its_person_allowed() {
         "the question holds no token: {shown}"
     );
 
-    // Their "Approve and grant" lets the bridge read this one item, and nothing else.
-    let person = caller(&owner).in_workspace(&workspace);
-    let answered = crate::fixtures::settled(
-        workspaces.resolve_asked(&person, &approve_and_grant(&question.record)),
+    // Their "Approve and grant" lets the bridge read this one item, and nothing else. Given on
+    // their phone, the grant is the phone's to sign: the host asks it to, and writes nothing first.
+    let (phone_key, phone) = tilo_workspace_service::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+        "phone",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    workspaces
+        .enter(&workspace, (&phone, &phone_key))
+        .await
+        .unwrap();
+    let person = caller(&phone).in_workspace(&workspace);
+    let answer = approve_and_grant(&question.record);
+    let asked = crate::fixtures::settled(workspaces.resolve_asked(&person, &answer)).await;
+    let Err(ActionCallError::SignatureRequired(facts)) = asked else {
+        panic!("the phone is asked to sign the grant: {asked:?}");
+    };
+    let signed = tilo_peer_state::asked_signing::signed_again(
+        &answer,
+        &facts,
+        (&phone, &phone_key),
+        tilo_clock::wall(),
     )
     .await
-    .expect("their answer is taken");
+    .unwrap();
+    let answered = crate::fixtures::settled(workspaces.resolve_asked(&person, &signed))
+        .await
+        .expect("their answer is taken");
     assert!(
         matches!(answered.status, ReceiptStatus::Completed { .. }),
         "{answered:?}"
@@ -1351,10 +1373,7 @@ async fn a_read_given_once_releases_the_item_once() {
         tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
     )
     .with_lifetime(tilo_action_types::Lifetime::Once);
-    workspaces
-        .put_workspace_grants(&workspace, &owner, [0x71; 32], vec![once])
-        .await
-        .expect("the person's grant is written");
+    given(workspaces, &workspace, &owner, vec![once]).await;
 
     // Two releases decided at the same moment: the read given once releases one of them.
     let release = release_of(&token);

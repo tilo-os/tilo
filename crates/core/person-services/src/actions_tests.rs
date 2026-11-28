@@ -26,6 +26,7 @@ use crate::fixtures::{
     admit, ask_own, caller, hosted, hosting_device, request, settled, test_host,
 };
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -1019,22 +1020,20 @@ async fn an_agent_under_its_own_certified_key_reaches_mail_accounts_as_the_polic
         "the agent's own signed call waits for its person"
     );
 
-    workspaces
-        .put_workspace_grants(
-            &workspace,
-            &owner,
-            [63; 32],
-            vec![Grant::new(
-                "test:agent-kept-out",
-                Grantee::agent(&agent, hex::encode(owner.user_public_key)),
-                TreePath::workspace(&workspace),
-                KindSet::ALL,
-                Answer::Deny,
-                Grantee::person(hex::encode(owner.user_public_key)),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        workspaces,
+        &workspace,
+        &owner,
+        vec![Grant::new(
+            "test:agent-kept-out",
+            Grantee::agent(&agent, hex::encode(owner.user_public_key)),
+            TreePath::workspace(&workspace),
+            KindSet::ALL,
+            Answer::Deny,
+            Grantee::person(hex::encode(owner.user_public_key)),
+        )],
+    )
+    .await;
     assert!(
         !offered(certified.clone()).await,
         "the add is not offered once its person keeps the agent out"

@@ -12,7 +12,8 @@ use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesReq
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::PersonNames as _;
-use crate::workspaces::fixtures::made_as;
+use crate::workspaces::actions::tests::grant;
+use crate::workspaces::fixtures::{given, made_as};
 use crate::workspaces::tests::{guest_device, hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{
     IssueInvitationRequest, PreAdmitRequest, WaitListMail, WaitListSecrets, WaitListed, Workspaces,
@@ -62,29 +63,6 @@ async fn keyed_admit(
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     crate::workspaces::fixtures::remember_admitted(&cert, &key);
     (key, cert)
-}
-
-async fn grant(
-    workspaces: &Workspaces,
-    workspace: &str,
-    owner: &DeviceCert,
-    person: &DeviceCert,
-    action: &str,
-) {
-    let who = hex::encode(person.user_public_key);
-    let grant = Grant::new(
-        format!("test:{action}:{who}"),
-        Grantee::person(who),
-        roles::governance_action(workspace, action),
-        KindSet::ALL,
-        Answer::Allow,
-        Grantee::person(hex::encode(owner.user_public_key)),
-    );
-    let request_id = *blake3::hash(grant.id.as_str().as_bytes()).as_bytes();
-    workspaces
-        .put_workspace_grants(workspace, owner, request_id, vec![grant])
-        .await
-        .unwrap();
 }
 
 async fn set_role(
@@ -1311,10 +1289,7 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
         Answer::Allow,
         Grantee::person(hex::encode(owner.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&workspace, &owner, [60; 32], vec![legacy])
-        .await
-        .unwrap();
+    given(workspaces, &workspace, &owner, vec![legacy]).await;
     workspaces
         .issue(&workspace, &ada, invitation(61, Role::Editor))
         .await
@@ -1416,11 +1391,21 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
         )
         .await
         .unwrap();
-    // Her grants are the workspace's to change, so she may take them all back too.
-    workspaces
-        .put_workspace_grants(&workspace, &ada, [32; 32], Vec::new())
-        .await
-        .unwrap();
+    // Her grants are the workspace's to change, so she may take one back too.
+    let install = format!(
+        "test:{}:{}",
+        governance::INSTALL_APP,
+        hex::encode(ada.user_public_key)
+    );
+    let grant = tilo_action_policy::GrantId(install);
+    made_as(
+        workspaces,
+        &workspace,
+        &ada,
+        WorkspaceMembershipCommand::Revoke { grant },
+    )
+    .await
+    .unwrap();
 
     // What it does not, she does not.
     let reply = workspaces

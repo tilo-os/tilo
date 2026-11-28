@@ -42,6 +42,7 @@ use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_records::accounts::{
     self as workspace_accounts, AddMailAccount, AddMailWithItem, MailAccount,
@@ -53,6 +54,7 @@ use tilo_workspace_records::vault::{
     self as workspace_vault, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
     KeptItems, Revealed, VaultAction, part,
 };
+use tilo_workspace_service::workspaces::{SignedAsk, Signing};
 
 use collab_types::WorkspaceId;
 use tilo_workspace_service::workspaces::workspace_stores::{Reach, Store};
@@ -67,6 +69,13 @@ pub trait SecretClipboard: Send + Sync {
 
 /// What a person is told when this device has no clipboard of theirs to copy to.
 pub const NO_CLIPBOARD: &str = "This device has no clipboard to copy to";
+
+/// The grants a person takes back from a vault item (its agent's and its app's, each when
+/// named), and the change the device that asks signed last for it.
+type TakingBack<'a> = (
+    Option<(Option<&'a str>, Option<&'a str>)>,
+    Option<Vec<Vec<u8>>>,
+);
 
 impl crate::PersonServices {
     /// The item `workspace`'s vault keeps for what `asked` asked its person for: the newest
@@ -160,13 +169,19 @@ impl crate::PersonServices {
                     .await
             }
             VaultAction::Uses { item } => {
-                self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, None)
+                self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, (None, None))
                     .await
             }
             VaultAction::TakeBack { item, agent, app } => {
                 let taking = (agent.as_deref(), app.as_deref());
-                self.vault_uses_invoke((workspace_id, certificate), &workspace, &item, Some(taking))
-                    .await
+                let signed = tilo_workspace_service::workspaces::signed_changes(request)?;
+                self.vault_uses_invoke(
+                    (workspace_id, certificate),
+                    &workspace,
+                    &item,
+                    (Some(taking), signed),
+                )
+                .await
             }
             asked => {
                 self.vault_item_invoke(&workspace, caller, request, asked, &reach)
@@ -293,7 +308,7 @@ impl crate::PersonServices {
         (workspace_id, certificate): (Option<collab_types::WorkspaceId>, Option<&DeviceCert>),
         workspace: &str,
         item: &ItemRef,
-        taking: Option<(Option<&str>, Option<&str>)>,
+        (taking, signed): TakingBack<'_>,
     ) -> Result<Value, ActionCallError> {
         let workspace_id = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let cert = certificate.ok_or(ActionCallError::UnknownAction)?;
@@ -304,7 +319,7 @@ impl crate::PersonServices {
         let mut history =
             uses(&opened.items(), item).map_err(|err| ActionCallError::refused(err.to_string()))?;
         history.always = self
-            .vault_approvals(workspace_id, cert, item, taking)
+            .vault_approvals(workspace_id, cert, item, (taking, signed))
             .await?;
         answer(Ok(history))
     }
@@ -329,56 +344,66 @@ impl crate::PersonServices {
         }
     }
 
-    /// Read a vault item's grants, and revoke those the person chose to take back.
+    /// Read a vault item's grants, and revoke those the person chose to take back: each a change
+    /// the device that asks signs, one at a time, `signed` the one it signed last.
     async fn vault_approvals(
         &self,
         workspace: WorkspaceId,
         device: &DeviceCert,
         item: &ItemRef,
-        take_back: Option<(Option<&str>, Option<&str>)>,
+        (take_back, mut signed): TakingBack<'_>,
     ) -> Result<Vec<AlwaysUse>, ActionCallError> {
         let name = workspace.to_string();
-        let workspace = self
+        let held = self
             .workspace(&name)
             .await
             .map_err(|err| ActionCallError::refused(err.to_string()))?;
-        let mut workspace = workspace.lock().await;
-        let at = tilo_clock::wall();
-        let access = workspace
-            .peer()
-            .permissions(device.device_public_key, at)
-            .map_err(|_| ActionCallError::NotPermitted)?;
-        let person = hex::encode(device.user_public_key);
-        if !access.acting.is_person()
-            || access.person_id() != Some(person.as_str())
-            || access.policy.active_role(&person).is_none()
-        {
-            return Err(ActionCallError::NotPermitted);
-        }
-        let mut kept: Vec<_> = access
-            .policy
-            .grants
-            .iter()
-            .filter_map(|grant| Some((grant.clone(), vault_approval(grant, item)?)))
-            .collect();
-        drop(access);
-        if let Some((agent, app)) = take_back {
-            let mut ids = Vec::new();
-            kept.retain(|(grant, shown)| {
-                let other_agent = agent.is_some_and(|agent| agent != shown.agent);
-                let other_app = app.is_some_and(|app| app != shown.app);
-                if other_agent || other_app {
-                    return true;
-                }
-                ids.push(grant.id.clone());
-                false
-            });
-            if !ids.is_empty() {
-                self.revoke_grants(&mut workspace, at, &ids)
-                    .await
-                    .map_err(ActionCallError::refused)?;
+        let (workspace, kept) = loop {
+            let workspace = held.lock().await;
+            let at = tilo_clock::wall();
+            let access = workspace
+                .peer()
+                .permissions(device.device_public_key, at)
+                .map_err(|_| ActionCallError::NotPermitted)?;
+            let person = hex::encode(device.user_public_key);
+            if !access.acting.is_person()
+                || access.person_id() != Some(person.as_str())
+                || access.policy.active_role(&person).is_none()
+            {
+                return Err(ActionCallError::NotPermitted);
             }
-        }
+            let kept: Vec<_> = access
+                .policy
+                .grants
+                .iter()
+                .filter_map(|grant| Some((grant.clone(), vault_approval(grant, item)?)))
+                .collect();
+            drop(access);
+            let taken = take_back.and_then(|(agent, app)| {
+                kept.iter()
+                    .find(|(_, shown)| {
+                        agent.is_none_or(|agent| agent == shown.agent)
+                            && app.is_none_or(|app| app == shown.app)
+                    })
+                    .map(|(grant, _)| grant.id.clone())
+            });
+            let Some(grant) = taken else {
+                break (workspace, kept);
+            };
+            drop(workspace);
+            let ask = SignedAsk {
+                device,
+                request_id: rand::random(),
+                signed: signed.take(),
+            };
+            let revoked = self
+                .govern(&name, ask, &WorkspaceMembershipCommand::Revoke { grant })
+                .await
+                .map_err(|err| ActionCallError::refused(err.to_string()))?;
+            if let Signing::Sign(facts) = revoked {
+                return Err(ActionCallError::SignatureRequired(Box::new(facts)));
+            }
+        };
         let grants = kept
             .iter()
             .map(|(grant, _)| grant.clone())
@@ -541,10 +566,12 @@ pub(super) fn asked_of(request: &InvokeRequest) -> Result<VaultAction, ActionCal
     if workspace_vault::declaration(action).is_none() {
         return Err(ActionCallError::UnknownAction);
     }
-    let arguments = match &request.argument {
+    let mut arguments = match &request.argument {
         InvokeArgument::Json(arguments) => arguments.clone(),
         InvokeArgument::None | InvokeArgument::Text(_) => serde_json::Map::new(),
     };
+    // What its device signed for a take-back travels beside its arguments.
+    arguments.remove(tilo_actions::remote::SIGNED_ARGUMENT);
     workspace_vault::decoded(action, &arguments).map_err(ActionCallError::invalid_request)
 }
 

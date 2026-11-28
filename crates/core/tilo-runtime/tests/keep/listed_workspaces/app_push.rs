@@ -8,6 +8,7 @@ use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
 use tilo_action_types::KindSet;
 
 use super::*;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 /// The version of the fixture app's surface: the second adds a field.
 const V1: &str = "[[resources]]\nkind = \"fixture\"\nlabel = \"Fixture\"\nversion = 1\n\n\
@@ -85,22 +86,20 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     admit(&server, &host, &laptop, &workspace.workspace).await;
     admit(&server, &host, &phone, &workspace.workspace).await;
     let who = hex::encode(laptop.cert.user_public_key);
-    workspaces
-        .put_workspace_grants(
-            &workspace.workspace,
-            &host.cert,
-            [7; 32],
-            vec![Grant::new(
-                format!("developer:install-app:{who}"),
-                Grantee::person(who.clone()),
-                roles::governance_action(&workspace.workspace, governance::INSTALL_APP),
-                KindSet::ALL,
-                Answer::Allow,
-                Grantee::person(hex::encode(host.cert.user_public_key)),
-            )],
-        )
-        .await
-        .unwrap();
+    given(
+        workspaces,
+        &workspace.workspace,
+        &host.cert,
+        vec![Grant::new(
+            format!("developer:install-app:{who}"),
+            Grantee::person(who.clone()),
+            roles::governance_action(&workspace.workspace, governance::INSTALL_APP),
+            KindSet::ALL,
+            Answer::Allow,
+            Grantee::person(hex::encode(host.cert.user_public_key)),
+        )],
+    )
+    .await;
 
     // Bob's copy, from what the host holds; he edits with v1.
     let mut bob_link = Linked::open(&server, &phone, workspace.workspace_id)

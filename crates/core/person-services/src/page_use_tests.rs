@@ -28,6 +28,7 @@ use crate::hosted_use::{HostedTurn, PageField, PageFill, PageText};
 use crate::person_vault::vault_tests::{ask, files_holding};
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions as Service;
+use tilo_workspace_service::workspaces::fixtures::given;
 
 const PASSWORD: &str = "correct horse battery staple";
 const SITE: &str = "https://example.test";
@@ -600,10 +601,7 @@ async fn an_agents_own_key_fills_through_its_grants_and_another_members_private_
         Answer::Deny,
         tilo_action_policy::Grantee::person(hex::encode(ada.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&workspace, &owner, rand::random(), vec![private])
-        .await
-        .unwrap();
+    given(workspaces, &workspace, &owner, vec![private]).await;
     let his_agent = Caller::agent_key("helper", bob.user_public_key, [0x6d; 32])
         .in_workspace(workspace.as_str());
     let his = HostedTurn {

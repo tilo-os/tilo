@@ -27,6 +27,7 @@ use tilo_workspace_service::workspaces::person_workspace::{self, devices};
 use super::ticket::{OnThisDevice, Tickets};
 use super::ticket_tests::{ask_device, enrol, serve};
 use super::workspaces::ServiceWorkspaces;
+use tilo_workspace_service::workspaces::fixtures::{given, taken_back};
 
 /// Write the grant `servers add` gives an administrator, where it writes it (the person's own
 /// workspace, as the server holds it) and in this machine's own copy of that workspace, which its
@@ -74,10 +75,7 @@ async fn revoke_server_controls(
         &laptop.device_cert().device_public_key,
         admin,
     );
-    hosted
-        .remove_workspace_grants(person, server, [1; 32], vec![id.clone()])
-        .await
-        .expect("the person takes the grant back");
+    taken_back(hosted, person, server, vec![id.clone()]).await;
     // The machine's copy follows the person's workspace from the server, and may have the
     // removal already: it is taken back there too unless it has.
     let revoked = laptop
@@ -906,15 +904,13 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
 
     // Carol stops administering the studio: the controls she held go with that place.
     grant_server_controls(&hosted, &laptop.own, &own, &studio, &carol).await;
-    hosted
-        .remove_workspace_grants(
-            &studio,
-            &server_cert,
-            [2; 32],
-            vec![tilo_action_policy::roles::administrator_grant_id(&carol)],
-        )
-        .await
-        .expect("the studio unmakes Carol an administrator");
+    taken_back(
+        &hosted,
+        &studio,
+        &server_cert,
+        vec![tilo_action_policy::roles::administrator_grant_id(&carol)],
+    )
+    .await;
     let answer = ask_as(&carol_cert, &studio)
         .await
         .expect("the machine answers");
@@ -967,10 +963,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(root_hex.clone()),
     );
-    hosted
-        .put_workspace_grants(&own, &server_cert, [3; 32], vec![agent_grant])
-        .await
-        .expect("the person grants their agent the controls");
+    given(&hosted, &own, &server_cert, vec![agent_grant]).await;
     on_the_machine
         .invoke(&agent, request())
         .await

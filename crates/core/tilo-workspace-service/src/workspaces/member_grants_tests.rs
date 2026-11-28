@@ -11,7 +11,7 @@ use tilo_action_policy::{Answer, Grantee, TreePath};
 use tilo_action_types::KindSet;
 
 use super::OwnWorkspaceOffer;
-use super::fixtures::{hosting_device, test_host};
+use super::fixtures::{given, hosting_device, test_host};
 
 /// The person whose own workspace the server holds.
 const PERSON: [u8; 32] = [5; 32];
@@ -45,10 +45,7 @@ async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_admin
 
     // A workspace the server hosts takes the grant...
     let hosted = grant(&source);
-    workspaces
-        .put_workspace_grants(&source, &cert, [6; 32], vec![hosted.clone()])
-        .await
-        .expect("the server's own workspace takes its grant");
+    given(workspaces, &source, &cert, vec![hosted.clone()]).await;
     assert!(
         workspaces
             .workspace_grants(&source)
@@ -63,10 +60,7 @@ async fn grants_are_written_into_a_workspace_as_far_as_this_servers_person_admin
     // there. A list that gives its person no such place carries out nothing for the member
     // asking (see `authority::tests::a_server_without_a_place_on_the_member_list_carries_out_nothing`).
     let elsewhere = grant(&branch);
-    workspaces
-        .put_workspace_grants(&branch, &cert, [7; 32], vec![elsewhere.clone()])
-        .await
-        .expect("the branch's administrator takes its grant");
+    given(workspaces, &branch, &cert, vec![elsewhere.clone()]).await;
     assert!(
         workspaces
             .workspace_grants(&branch)

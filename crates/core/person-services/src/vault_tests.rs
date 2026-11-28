@@ -27,6 +27,7 @@ use crate::fixtures::{guest_device, hosting_device};
 use crate::fixtures::{install_app, revoke_grant, test_host, test_host_holding};
 use crate::hosted_use::turn_use_tests::asks;
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions;
+use tilo_workspace_service::workspaces::fixtures::given;
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -781,24 +782,22 @@ async fn a_workspace_grant_writes_nothing_into_the_vault() {
             owner_person.clone(),
         )
     };
-    workspaces
-        .put_workspace_grants(
-            &workspace,
-            &owner,
-            [62; 32],
-            vec![
-                everything(
-                    "test:agent-everywhere",
-                    Grantee::agent("assistant", hex::encode(stranger.user_public_key).clone()),
-                ),
-                everything(
-                    "test:stranger-everywhere",
-                    Grantee::person(hex::encode(stranger.user_public_key)),
-                ),
-            ],
-        )
-        .await
-        .unwrap();
+    given(
+        workspaces,
+        &workspace,
+        &owner,
+        vec![
+            everything(
+                "test:agent-everywhere",
+                Grantee::agent("assistant", hex::encode(stranger.user_public_key).clone()),
+            ),
+            everything(
+                "test:stranger-everywhere",
+                Grantee::person(hex::encode(stranger.user_public_key)),
+            ),
+        ],
+    )
+    .await;
 
     for (action, argument) in [
         (workspace_vault::ADD, a_login("https://attacker.example")),
@@ -2671,10 +2670,7 @@ async fn a_run_of_a_shortcut_her_agent_saved_is_kept_from_what_the_agent_is() {
         tilo_action_policy::Answer::Deny,
         tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
     );
-    workspaces
-        .put_workspace_grants(&workspace, &owner, [63; 32], vec![kept_from_vault])
-        .await
-        .unwrap();
+    given(workspaces, &workspace, &owner, vec![kept_from_vault]).await;
 
     for (who, asking) in [
         ("she", as_ada.clone()),
