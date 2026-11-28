@@ -718,6 +718,8 @@ fn first_frame(session: &mut Session) -> (u64, Value) {
             // beside it say where the time went.
             "first_frame_us": frame_cost_us(first),
             "first_frame_pump_us": first.pump_us,
+            "first_frame_pump_step": first.pump_step,
+            "first_frame_pump_step_us": first.pump_step_us,
             "first_frame_layout_us": u64::from(first.layout_us) + u64::from(first.surfaces_us),
             "first_frame_surfaces_us": first.surfaces_us,
             "first_frame_draw_us": u64::from(first.scene_us) + u64::from(first.submit_us),
@@ -771,6 +773,32 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
     for (reason, frames) in why {
         println!("  idle painted {frames} frames for: {reason}");
     }
+    // Where the passes an idle shell ran spent their time: the slowest named step of each, summed
+    // over the offered turns, so the fixed cost of a turn names itself.
+    let samples = session.compositor().recorded_frames();
+    let mut steps: std::collections::BTreeMap<&'static str, (usize, u64, u32)> =
+        std::collections::BTreeMap::new();
+    for sample in &samples {
+        let step = steps.entry(sample.pump_step).or_default();
+        step.0 = step.0.saturating_add(1);
+        step.1 = step.1.saturating_add(u64::from(sample.pump_step_us));
+        step.2 = step.2.max(sample.pump_step_us);
+    }
+    let mut ranked: Vec<(&str, (usize, u64, u32))> = steps.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    for (name, (turns, sum, max)) in ranked.into_iter().take(8) {
+        println!("  idle pump {name:?}: {turns} turns, {sum} µs together, {max} µs most");
+    }
+    let pump: u64 = samples.iter().map(|sample| u64::from(sample.pump_us)).sum();
+    println!(
+        "  idle pump {:.1} µs a turn, surfaces {:.1} µs",
+        pump as f64 / offered as f64,
+        samples
+            .iter()
+            .map(|sample| u64::from(sample.surfaces_us))
+            .sum::<u64>() as f64
+            / offered as f64
+    );
     (offered, painted.len(), wall_us / offered as f64)
 }
 
@@ -820,9 +848,11 @@ fn run_arriving(_marks: &Marks, json_path: Option<String>, device: &str) {
     println!("device {device}, profile arriving");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
     println!(
-        "first frame      {:>8.2} ms   pump {} µs, surfaces {} µs, draw {} µs",
+        "first frame      {:>8.2} ms   pump {} µs ({} {} µs), surfaces {} µs, draw {} µs",
         first["first_frame_us"].as_u64().unwrap_or_default() as f64 / 1000.0,
         first["first_frame_pump_us"],
+        first["first_frame_pump_step"],
+        first["first_frame_pump_step_us"],
         first["first_frame_surfaces_us"],
         first["first_frame_draw_us"],
     );
