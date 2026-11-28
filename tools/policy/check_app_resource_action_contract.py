@@ -119,7 +119,7 @@ CONTROL_CALLBACKS = frozenset(
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_person",
         "on_remove", "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
-        "on_section_action", "on_select", "on_station", "on_submit",
+        "on_section_action", "on_select", "on_shift_submit", "on_station", "on_submit",
         "on_toggle", "on_undo", "on_undo_band", "on_confirm", "on_decline",
     }
 )

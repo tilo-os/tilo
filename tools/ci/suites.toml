@@ -1140,6 +1140,7 @@ inputs = [
   "crates/ui/ui-base/locales/",
   "scripts/headless-examples/agent-tilolang/release.json",
   "crates/core/workspace-records/accounts-surface.json",
+  "crates/lang/tilolang-runtime/tests/fixtures/",
 ]
 readers = [
   "crates/lang/tilolang-process/examples/process_cost.rs",

@@ -112,8 +112,8 @@ client_side = [
     "tilo-local-time",          # the person's zone and local time
     "tilo-lock",
     "tilo-member-types",       # who acts: a person, a member, an actor and the app one acts in
+    "tilo-mime",               # what a MIME type is, by its parts
     "tilo-paths",
-    "tilo-permissions",        # who may do what, as a window asks it
     "tilo-platform-caps",
     "tilo-presence",           # who is where, their hue and their status, as plain values
     "tilo-resource",           # a resource's fields, as an app publishes them
