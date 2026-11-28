@@ -47,7 +47,8 @@ class ParseTests(unittest.TestCase):
             self.assertIn("os/tests/containerfile_copy_invariants.sh", manifest.suites())
             self.assertIn("os/tests/internal_bundle_test.py", manifest.suites())
             self.assertEqual(
-                manifest.unrequired_checks["os/containers/tilo-lounge/test-e2e.sh"], "e2e")
+                manifest.unrequired_checks["os/containers/tilo-lounge/test-e2e.sh"],
+                "tilo-sh-e2e/signin")
         with self.subTest(phase='rejects duplicates unknown keys and unsafe paths'):
             for text in (
                 MANIFEST + '[[unrequired]]\nsuite = "os/tests/a.sh"\nreason = "again"\n',

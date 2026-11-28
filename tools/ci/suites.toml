@@ -1920,8 +1920,8 @@ check = "image-web-entry"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-e2e.sh"
-reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
-check = "e2e"
+reason = "the tilo-sh-e2e checks run it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
+check = "tilo-sh-e2e/signin"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-program.sh"
