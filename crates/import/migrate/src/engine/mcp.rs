@@ -247,9 +247,10 @@ impl Workspace for Mcp {
             .as_mut()
             .ok_or_else(|| anyhow!("the person's own session did not open"))?;
         let action = format!("{path}#{action}");
-        // The same step asked again is the same invocation, which the workspace runs once: a
-        // call that waits in its asked record keeps that record, and its answer is read from it.
-        let invocation = step_id("person", &action, &args);
+        // Each call is an invocation of its own: the workspace answers an id it ran with what it
+        // answered then, so a list read again after an add would be the list from before. While
+        // it waits in its asked record, this call asks again under its id and reads its answer.
+        let invocation = uuid::Uuid::new_v4().to_string();
         let wait = u64::try_from(ASK_WAIT.as_millis()).unwrap_or(u64::MAX);
         let call =
             json!({"path": action, "args": args, "wait_ms": wait, "invocation_id": invocation});
@@ -438,6 +439,25 @@ mod tests {
             ids[0], ids[1],
             "the same call, which the workspace runs once"
         );
+    }
+
+    /// The same read asked twice is two calls: the second answers what the workspace holds then.
+    #[test]
+    fn a_persons_read_asked_again_is_a_call_of_its_own() {
+        let ok = json!({"content": [], "isError": false, "structuredContent": {"status": "ok"}});
+        let (mut workspace, calls) = reached_as_the_person(Vec::new(), vec![ok.clone(), ok]);
+        for _ in 0..2 {
+            workspace
+                .person("workspace/mail-accounts", "list", json!({}))
+                .expect("listed");
+        }
+        let calls = calls.lock().expect("the calls").clone();
+        let id = |at: usize| {
+            calls[at]
+                .pointer("/params/arguments/invocation_id")
+                .cloned()
+        };
+        assert_ne!(id(0), id(1), "a read is never answered from an earlier one");
     }
 
     /// A person who says no ends the call declined: the step reads that as the account being
