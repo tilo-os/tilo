@@ -32,6 +32,16 @@ impl Instance {
             .map(|shown| resource_id(&self.app, &shown.target.id_string()))
     }
 
+    /// The published resource of each level the window shows (its root's and, when a row went
+    /// somewhere, its detail's): what a view's declared state is kept by, so another view of that
+    /// resource reads it. Not the rows a level's view lists: their state is the view's own.
+    #[must_use]
+    pub fn level_resources(&self) -> BTreeSet<String> {
+        self.shown()
+            .map(|shown| resource_id(&self.app, &shown.target.id_string()))
+            .collect()
+    }
+
     /// The published resources the window shows, as the app publishes them
     /// (`tl:so.tilo.lang.tasks:root-fjqi4yze`): each level's own, every resource the view it
     /// shows refers to, and the items of the rows its lists hold — a row's actions are published

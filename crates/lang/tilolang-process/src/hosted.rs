@@ -3086,8 +3086,9 @@ impl Hosted {
             }
         });
         // What the person changed of their own state is kept in its document, as theirs: the
-        // window's own slots and, per resource it shows, the ones another view of it reads.
-        let shown = self.instance.shown_resources();
+        // window's own slots and, per level's resource it shows, the ones another view of it
+        // reads.
+        let shown = self.instance.level_resources();
         let keeps = self
             .instance
             .take_personal(self.personal.state(), self.spec.instance, &shown);
