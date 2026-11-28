@@ -3119,9 +3119,11 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 ) {
     let command = command_modifier(conventions);
     // The window lists the app, the task the entry made and that stands on
-    // screen as a resource, and the actions a person can take on it, once each.
-    // An action that asks for more than a row collects (Assign to…, Place in
-    // board, Move to) stays where it lives, and no row repeats another: the
+    // screen as a resource, and the actions a person can take on it, once each,
+    // as many as the palette shows of a group before a word narrows it; the
+    // app's own history verbs and each one's Copy link among them. An action
+    // that asks for more than a row collects (Assign to…, Place in board,
+    // Move to) stays where it lives, and no row repeats another: the
     // app's row opens its document and the task's row opens the task, so no
     // bare Open stands beside them.
     session
@@ -3144,18 +3146,18 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         [
             "Tasks",
             "Water the plants",
+            "Copy link",
             "New task",
             "New project",
+            "Undo",
+            "Redo",
+            "Checkpoint",
             "Task summary",
+            "Copy link",
+            "Rename…",
+            "Status…",
             "Complete",
-            "Today",
-            "Tomorrow",
-            "Next week",
-            "Pick date…",
-            "Set time…",
-            "No date",
-            "Remind me…",
-            "Remind",
+            "Add subtask…",
         ],
         "the window's palette"
     );

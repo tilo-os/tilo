@@ -2167,21 +2167,22 @@ impl ActionSpec {
     /// address, is taken by callers that name them (agents, scripts, the
     /// controls bound to where the person is), never from a row.
     pub fn takes_a_row_answer(&self) -> bool {
-        let mut required = self.params.iter().filter(|param| param.required);
-        match (required.next(), required.next()) {
-            (None, _) => true,
-            (Some(param), None) => {
-                matches!(self.input(), ActionInput::Prompted { .. })
-                    && matches!(
-                        param.ty,
-                        ParamType::Text
-                            | ParamType::Integer
-                            | ParamType::Number
-                            | ParamType::DateTime
-                            | ParamType::Secret
-                    )
-            }
-            (Some(_), Some(_)) => false,
+        if self.params.iter().filter(|param| param.required).count() > 1 {
+            return false;
+        }
+        // What the row prompts for is its primary parameter, asked even where it is optional
+        // (a task's `Move to` asks where, though it may be left out): a row answers it only
+        // with a line of words.
+        match (self.input(), primary_param(&self.params)) {
+            (ActionInput::Prompted { .. }, Some(param)) => matches!(
+                param.ty,
+                ParamType::Text
+                    | ParamType::Integer
+                    | ParamType::Number
+                    | ParamType::DateTime
+                    | ParamType::Secret
+            ),
+            _ => self.params.iter().all(|param| !param.required),
         }
     }
 
