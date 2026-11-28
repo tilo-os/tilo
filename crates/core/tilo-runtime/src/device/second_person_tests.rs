@@ -397,6 +397,54 @@ fn add_as_editor(daemon: &Daemon, person: &str, tag: u8) -> Result<(), String> {
     .map_err(|error| error.to_string())
 }
 
+const ROOT_APP_TEST: &str = "device::services::second_person_tests::a_root_connection_that_runs_a_launched_app_is_served_as_that_app";
+
+/// An app the daemon started runs as root in an image whose daemon is the system's own, and the
+/// launch record is what answers for it: its connection reaches its workspace's actions, never
+/// the device's own, which reach no workspace. A connection with no record is still the device's.
+#[test]
+fn a_root_connection_that_runs_a_launched_app_is_served_as_that_app() {
+    let Some(root) = isolated_root(ROOT_APP_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let keys = tilo_api::calls::device_keys();
+    let device = DeviceOnly::new(
+        tilo_device_identity::persist::load_device_key(&keys).unwrap(),
+        tilo_device_identity::login::Place::here(keys).unwrap(),
+    );
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true),
+    ));
+    let socket = root.join("native.sock");
+    crate::daemon::serve_for_test(&daemon, device, test_peer, admission, &socket).unwrap();
+    let listing = "/v1/workspaces";
+    let answered = |socket: &Path| {
+        let calls = std::sync::Arc::new(tilo_api::calls::Calls::in_workspace(
+            std::sync::Arc::new(line_client(socket, 0)),
+            &daemon.workspace,
+        ));
+        let asking = std::sync::Arc::clone(&calls);
+        block_on_owned(async move { asking.request("GET", listing, Vec::new(), Vec::new()).await })
+            .map_or_else(|error| error, |_| String::new())
+    };
+    // The same account with no launch record is the device's own: its API reaches no workspace.
+    let device_only = answered(&socket);
+    assert!(
+        device_only.contains("reaches no workspace"),
+        "a connection that runs no app is the device's: {device_only:?}"
+    );
+    // Recorded as the app this process runs, it is that app's, whose API reaches its workspace.
+    daemon
+        .apps()
+        .record_started(std::process::id(), "so.tilo.discord", &daemon.workspace);
+    let app = answered(&socket);
+    assert!(
+        !app.contains("reaches no workspace"),
+        "an app the daemon launched reaches its workspace: {app:?}"
+    );
+}
+
 const ROOTS_SERVED_TEST: &str = "device::services::second_person_tests::people_founded_while_the_daemon_serves_have_their_roots_served_here";
 
 /// People founded while this daemon serves have each one's root kept and served here without

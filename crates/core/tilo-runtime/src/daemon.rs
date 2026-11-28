@@ -1818,14 +1818,12 @@ impl Native {
         // that runs as root (a container's, a sandbox's) serves root as its own account.
         // The session a sign-in answered a founding link reaches the device's own actions about
         // the person it makes or joins, and nothing of a person's.
-        if !seated.seat.admitted.served()
-            || matches!(seated.seat.admitted, Admitted::Founding { .. })
-            || (seated.seat.uid == ROOT && self.seats.system())
-        {
-            return self.device_only(stream, slot, seated);
-        }
         // A process the daemon started is the app it runs, and reaches that app's own actions
-        // alone: never the person's MCP projection or their device's actions.
+        // alone: never the person's MCP projection or their device's actions. The launch record
+        // is what decides it, and it decides it whatever account the process runs as: an app's
+        // held connection is started by the daemon's own app host, so it runs as the daemon's
+        // account, and the device's rule below would otherwise answer it with the device's
+        // actions, which reach no workspace of the app's.
         if let Some(app) = seated.seat.app.clone() {
             let Some(take) = self.app() else {
                 // The app's services are not up: it reaches nothing until they are, never the
@@ -1837,6 +1835,15 @@ impl Native {
                 return Ok(());
             };
             return take(stream, slot, seated, app);
+        }
+        // The device's own account, under the system's unit, asks the device's actions; a
+        // founding link asks what makes or joins a person. This stands for every connection no
+        // launch record names, which is narrower than the app's own frames and never wider.
+        if !seated.seat.admitted.served()
+            || matches!(seated.seat.admitted, Admitted::Founding { .. })
+            || (seated.seat.uid == ROOT && self.seats.system())
+        {
+            return self.device_only(stream, slot, seated);
         }
         // The session a sign-in answered a founding link reaches the device's setup actions
         // about its person, whatever it acts as now: making one, joining one, what the device is.
