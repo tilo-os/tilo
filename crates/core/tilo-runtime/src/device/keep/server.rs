@@ -534,8 +534,17 @@ impl Server {
                 handler.environments.clone(),
                 Some(handler.clone()),
             ));
-        // A server enrolled into its person's identity: a host of theirs alone.
-        let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
+        // A server enrolled into its person's identity: a host of theirs. One of theirs that
+        // also lets the people they share a workspace with connect names them beside its own
+        // person, and stays theirs: a list that names its person is no public server's policy.
+        let own = hex::encode(identity.user_public_key);
+        let enrolled_server = match &cfg.trust_policy {
+            TrustPolicy::AllowMatchingUser => true,
+            TrustPolicy::AllowAny => false,
+            TrustPolicy::AllowList { users } => {
+                users.iter().any(|user| user.eq_ignore_ascii_case(&own))
+            }
+        };
         // The pages this host serves are served their tickets by the device's one set of
         // tickets, which keeps each device a page's ticket adds in its person's record here.
         hosted.action_service().tickets().serve_pages(Arc::new(
