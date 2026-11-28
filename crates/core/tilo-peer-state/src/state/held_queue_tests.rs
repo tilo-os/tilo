@@ -161,7 +161,8 @@ tilo_test_env::scenario! {
             "another writer's held write is never pushed out: {let_go:?}"
         );
         assert_eq!(receiver.pending_count(), MAX_HELD_INPUTS);
-        // Its certificate arrives: the member's write held all along is taken in.
+        // Its certificate arrives: the member's write held all along is taken in, with nothing
+        // else admitted beside it.
         receiver
             .receive_from(
                 TransportOrigin::UntrustedPresence(member.device_public_key),
@@ -173,6 +174,7 @@ tilo_test_env::scenario! {
                 now,
             )
             .unwrap();
+        assert_eq!(value(&receiver, "late").as_deref(), Some("late"));
         let admitted = receiver
             .receive_from_report(crate::fixture::origin(&owner_key), filler, now)
             .unwrap();

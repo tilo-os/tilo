@@ -477,7 +477,7 @@ impl StatePeer {
             }
             return Ok(report);
         }
-        self.receive_identity_hello(source, cert, revocations, now)
+        self.receive_identity_hello(source, cert, revocations, now, strict_report)
     }
 
     pub(super) fn receive_with_context(
@@ -603,6 +603,7 @@ impl StatePeer {
         cert: &DeviceCert,
         revocations: Vec<tilo_user_identity::RevocationEntry>,
         now: SystemTime,
+        strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         if cert.device_public_key != source {
             return Err(crate::AdmissionError::forbidden(
@@ -657,10 +658,16 @@ impl StatePeer {
             ));
         }
         self.core.certificates.insert(source, verified);
-        Ok(AdmissionReport::metadata(ReceiveOutcome {
+        let mut report = AdmissionReport::metadata(ReceiveOutcome {
             metadata_changed,
             ..Default::default()
-        }))
+        });
+        // A write the device sent before its certificate arrived waited for it: the certificate
+        // is here, so what waited on it is decided now, as it is when a placed device's arrives.
+        if metadata_changed && !self.core.pending.is_empty() {
+            self.retry_held(&mut report, now, strict_report);
+        }
+        Ok(report)
     }
     /// Take in the certificate of `source`, a device placed for records of this
     /// workspace alone ([`tilo_user_identity::DeviceCapabilities::records`]),
