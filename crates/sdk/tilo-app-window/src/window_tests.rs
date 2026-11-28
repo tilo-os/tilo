@@ -3860,6 +3860,87 @@ fn a_part_shows_what_each_patch_changed_as_its_whole_view_draws_it() {
     );
 }
 
+/// A text field the view leaves empty is named by the words it shows — whether the frame that
+/// draws it is the window's first or one a patch brought when a person picks another place. A
+/// person, a walk and a screen reader reach the field by those words.
+#[test]
+fn a_fields_words_name_it_in_the_first_frame_and_in_one_a_patch_brings() {
+    let field = |key: &str| {
+        let mut field = UiNode::empty("ui.TextInput", key);
+        field.props.insert("bind".to_owned(), Value::text("value"));
+        field.props.insert(
+            "placeholder".to_owned(),
+            Value::text("What is this alarm for?"),
+        );
+        field.binding = Some(crate::Binding {
+            field: None,
+            kind: None,
+            name: String::new(),
+        });
+        field
+    };
+    let place = |key: &str, title: &str| {
+        let mut page = UiNode::empty("page", &format!("{key}-page"));
+        let mut heading = UiNode::empty("ui.Text", &format!("{key}-title"));
+        heading.props.insert("value".to_owned(), Value::text(title));
+        page.children.push(heading);
+        page.children.push(field(&format!("{key}-field")));
+        let mut embed = UiNode::empty("embed", key);
+        embed.children.push(page);
+        embed
+    };
+    let mut places = UiNode::empty("fragment", "places");
+    places.children = vec![place("timers", "Timers")];
+    let mut tree = UiNode::empty("stack", "shell");
+    tree.children.push(places);
+
+    let (mut app, end) = local::pair();
+    let mut part = AppWindow::part(Box::new(end));
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: tree.clone(),
+            front: None,
+            capture_protected: false,
+        }],
+    );
+    part.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(part), (1280, 800));
+    harness.relayout();
+    node_named(&harness, "What is this alarm for?");
+
+    // Another place: the pane the person was in is taken away and the next one inserted, as the
+    // app's window patches the place a person picks.
+    let path = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+    let patches = vec![
+        wire::Patch::Remove {
+            parent: path(&["places"]),
+            key: "timers".to_owned(),
+        },
+        wire::Patch::Insert {
+            parent: path(&["places"]),
+            index: 0,
+            node: place("alarms", "Alarms"),
+        },
+    ];
+    for patch in &patches {
+        patch.clone().apply(&mut tree).expect("the patch applies");
+    }
+    send(
+        &mut app,
+        &[ToUi::Patch {
+            level: Level::Root,
+            patches,
+        }],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    node_named(&harness, "Alarms");
+    node_named(&harness, "What is this alarm for?");
+}
+
 /// What an app's run waits on a person for is asked on the system's own permission prompt, naming
 /// the action and who asked for it, and the person's choice there is the answer the app hears.
 #[test]

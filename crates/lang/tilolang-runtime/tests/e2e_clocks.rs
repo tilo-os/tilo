@@ -6,7 +6,7 @@ mod cases {
     use crate::common::*;
     use std::collections::BTreeMap;
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, UiNode, Value,
+        AmStore, BindTarget, EnumValue, InvokeOutcome, ResourceRef, Runtime, UiNode, Value,
     };
 
     const APP: &str = concat!(
@@ -445,9 +445,19 @@ mod cases {
             assert_eq!(t.rt.read(&gym, "snoozed").unwrap(), Value::Bool(false));
             assert_eq!(t.rt.read(&gym, "enabled").unwrap(), Value::Bool(true));
             assert_eq!(t.rt.read(&gym, "label").unwrap(), Value::text("Workout"));
-            assert_eq!(
-                t.rt.read(&gym, "days").unwrap(),
-                Value::List(vec![t.weekday("Weekday.mon"), t.weekday("Weekday.wed")]),
+            // A set has no order of its own: the two days are the ones it holds.
+            let repeats = |days: Value| match days {
+                Value::List(items) => {
+                    items.len() == 2
+                        && items.contains(&t.weekday("Weekday.mon"))
+                        && items.contains(&t.weekday("Weekday.wed"))
+                }
+                _ => false,
+            };
+            assert!(
+                repeats(t.rt.read(&gym, "days").unwrap()),
+                "the edit keeps the two days: {:?}",
+                t.rt.read(&gym, "days").unwrap()
             );
             assert!(matches!(t.rt.read(&gym, "at").unwrap(), Value::Opt(Some(_))));
             // The edit form keeps the days the alarm had, so saving its words loses none.
@@ -457,10 +467,10 @@ mod cases {
             view.poll_patches().unwrap();
             let save = button_named(view.tree(), "Save changes").expect("the form saves");
             view.fire(&save, "press").unwrap();
-            assert_eq!(
-                t.rt.read(&gym, "days").unwrap(),
-                Value::List(vec![t.weekday("Weekday.mon"), t.weekday("Weekday.wed")]),
-                "saving the form keeps the days the alarm repeats on"
+            assert!(
+                repeats(t.rt.read(&gym, "days").unwrap()),
+                "saving the form keeps the days the alarm repeats on: {:?}",
+                t.rt.read(&gym, "days").unwrap()
             );
         }
 
@@ -511,6 +521,21 @@ mod cases {
         {
             let t = Clocks::new();
             let mut view = t.alarms_view();
+            // The New alarm card's field says what to type, as the window names it to a reader,
+            // and edits the form's draft.
+            let field = of_kind(view.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| {
+                    field.props.get("placeholder").and_then(Value::as_text)
+                        == Some("What is this alarm for?")
+                })
+                .unwrap_or_else(|| panic!("the form's field says what to type:\n{}", dump(view.tree())));
+            let binding = field.binding.as_ref().expect("the field is bound");
+            assert!(
+                matches!(&binding.target, BindTarget::State { name, .. } if name == "draft_label"),
+                "the field edits the form's draft: {:?}",
+                binding.target
+            );
             // The New alarm card's chips set the days the alarm is made with.
             let monday = button_named(view.tree(), "Mon").expect("the new alarm offers Monday");
             view.fire(&monday, "press").unwrap();
