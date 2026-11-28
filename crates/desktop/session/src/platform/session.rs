@@ -1423,7 +1423,16 @@ impl Session {
         tilo_startup_metrics::mark("control-socket-open");
         // The person's own programs on this computer are each let act as them by the person's yes
         // to that program, asked on the same sheet the MCP server asks on.
-        let api_programs = crate::app_socket::Programs::new(questions.clone());
+        let api_programs = crate::app_socket::Programs::new(
+            questions.clone(),
+            options
+                .desktop
+                .as_ref()
+                .and_then(|desktop| desktop.consents())
+                .map_or_else(tilo_peer_state::DeviceGrants::unkept, |consents| {
+                    consents.grants().clone()
+                }),
+        );
         let server = crate::mcp_server::mount_named(
             &options,
             questions,

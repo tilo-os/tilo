@@ -138,7 +138,7 @@ impl Sources for ThisMachine {
     fn answers(&self) -> Vec<tilo_peer_state::Kept> {
         self.consents
             .as_ref()
-            .map(tilo_portal::consent::Consents::kept)
+            .map(tilo_portal::consent::Consents::standing)
             .unwrap_or_default()
     }
 
@@ -630,9 +630,11 @@ fn media_kind(cap: Capability) -> Option<os_actions::MediaKind> {
     match cap {
         Capability::Camera => Some(os_actions::MediaKind::Camera),
         Capability::Microphone => Some(os_actions::MediaKind::Microphone),
-        Capability::Screen | Capability::Location | Capability::Input | Capability::SystemAudio => {
-            None
-        }
+        Capability::Screen
+        | Capability::Location
+        | Capability::Input
+        | Capability::SystemAudio
+        | Capability::Api => None,
     }
 }
 
@@ -645,6 +647,7 @@ fn capability_of_device(cap: tilo_permissions::caps::DeviceCap) -> Option<Capabi
         DeviceCap::Screen => Some(Capability::Screen),
         DeviceCap::Input => Some(Capability::Input),
         DeviceCap::SystemAudio => Some(Capability::SystemAudio),
+        DeviceCap::Api => Some(Capability::Api),
         _ => None,
     }
 }
@@ -669,6 +672,7 @@ const fn capability_name(cap: Capability) -> &'static str {
         Capability::Location => "location",
         Capability::Input => "input",
         Capability::SystemAudio => "system-audio",
+        Capability::Api => "api",
     }
 }
 

@@ -256,6 +256,39 @@ impl DeviceGrants {
         taken
     }
 
+    /// Every answer that stands: this device's for this session, and every one the person kept,
+    /// on any of their devices.
+    #[must_use]
+    pub fn standing(&self) -> Vec<Kept> {
+        let (device, device_label) = self.store.get().map_or_else(Default::default, |store| {
+            let this = Self::this_device(store);
+            let label = (store.devices)()
+                .into_iter()
+                .find(|cert| hex::encode(cert.device_public_key) == this)
+                .map(|cert| cert.device_label)
+                .unwrap_or_default();
+            (this, label)
+        });
+        let mut standing: Vec<Kept> = self
+            .session
+            .lock_recover()
+            .iter()
+            .map(|((app, cap), answer)| Kept {
+                answer: DeviceAnswer {
+                    device: device.clone(),
+                    app: app.clone(),
+                    cap: *cap,
+                    answer: *answer,
+                    lifetime: Lifetime::Session,
+                },
+                device_label: device_label.clone(),
+                this_device: true,
+            })
+            .collect();
+        standing.extend(self.kept());
+        standing
+    }
+
     /// Every answer the person kept that still stands, on any of their devices.
     #[must_use]
     pub fn kept(&self) -> Vec<Kept> {

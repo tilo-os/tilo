@@ -79,6 +79,7 @@ mod tests {
             uid,
             pid: Some(1),
             exe: Some(PathBuf::from("/usr/bin/tilo-session")),
+            started: None,
             namespaces: Namespaces::Shared,
         }
     }

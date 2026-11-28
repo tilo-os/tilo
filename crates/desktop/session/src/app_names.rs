@@ -30,6 +30,13 @@ pub(crate) fn app_name(app_id: &str) -> String {
     if let Some(name) = listed_name(id) {
         return name;
     }
+    // A program outside Tilo is the executable it runs, called by its file's name.
+    if let Some((exe, _, _)) = tilo_permissions::caps::program_of(id) {
+        return exe.file_name().map_or_else(
+            || exe.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+    }
     tilo_desktop_search::names::app_name(id)
 }
 

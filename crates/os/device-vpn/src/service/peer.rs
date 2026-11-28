@@ -31,6 +31,7 @@ mod tests {
             uid: 1000,
             pid: Some(1),
             exe: Some(PathBuf::from("/usr/bin/tilo-session")),
+            started: None,
             namespaces: Namespaces::Shared,
         };
         assert_eq!(decide(&seat, &shell), Ok(Caller { uid: 1000 }));

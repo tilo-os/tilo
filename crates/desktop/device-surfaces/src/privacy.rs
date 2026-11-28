@@ -39,6 +39,8 @@ pub enum Capability {
     Input,
     /// The sound the machine plays.
     SystemAudio,
+    /// Acting as the person through Tilo's API: a program of theirs outside Tilo.
+    Api,
 }
 
 /// Whether the machine's own switch lets its camera or microphone be used.

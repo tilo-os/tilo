@@ -13,6 +13,8 @@
 
 use std::sync::Arc;
 
+use tilo_permissions::caps::DeviceCap;
+
 use tilo_lock::MutexRecover as _;
 
 use tilo_app_host::collab_app_broker::seat;
@@ -76,48 +78,62 @@ pub(crate) struct ProgramAsked {
     pub(crate) program: String,
 }
 
-/// Which programs of this login the person said yes to, and how they are asked about the others.
+/// Which runs of programs of this login the person said yes to, and how they are asked about the
+/// others.
 ///
-/// A program is the executable the kernel names for the process at the other end of its
-/// connection, pinned by the connection's pidfd ([`peer_facts`]). Being a program of this
-/// login admits nothing by itself: only the person's yes to that program does, given on the
-/// system's own sheet as an asked record ([`crate::program_asks`]) and never by anything the
-/// program says. A yes is kept for that program alone, and no longer than this session runs.
+/// A program is the process at the other end of its connection, as the kernel names it while the
+/// connection's pidfd pins it ([`peer_facts::Process`]): its pid, when it started and the
+/// executable it runs. Being a program of this login admits nothing by itself: only the person's
+/// yes to that run of it does, given on the system's own sheet as an asked record
+/// ([`crate::program_asks`]) and never by anything the program says. A yes stands for that one
+/// process while it runs that executable, and no longer than this session: another process of the
+/// same program, one a launcher starts, or this one once it runs another executable, is asked
+/// about again. Each yes is the person's answer about this device ([`DeviceCap::Api`]), which
+/// Settings lists and takes back.
 pub(crate) struct Programs {
     questions: Option<tilo_service::AskSender>,
-    /// Allowed while this session runs.
-    session: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>>,
-    /// The connections of each program the person is being asked about, waiting for the answer.
-    waiting: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<Told>>>,
+    /// The person's answers about this device: a yes to a run of a program stands there for this
+    /// session.
+    grants: tilo_peer_state::DeviceGrants,
+    /// The connections of each run the person is being asked about, waiting for the answer.
+    waiting: std::sync::Mutex<std::collections::HashMap<peer_facts::Process, Vec<Told>>>,
 }
 
 /// Where one waiting connection of a program is told the person's answer.
 type Told = tokio::sync::oneshot::Sender<Result<(), String>>;
 
 impl Programs {
-    /// The programs the person allowed, asked about through `questions`.
-    pub(crate) fn new(questions: Option<tilo_service::AskSender>) -> Arc<Self> {
+    /// The runs of programs the person allowed, kept in `grants`, asked about through `questions`.
+    pub(crate) fn new(
+        questions: Option<tilo_service::AskSender>,
+        grants: tilo_peer_state::DeviceGrants,
+    ) -> Arc<Self> {
         Arc::new(Self {
             questions,
-            session: std::sync::Mutex::default(),
+            grants,
             waiting: std::sync::Mutex::default(),
         })
     }
 
     /// Whether the person lets `program` act as them: at once when they said so before, else
-    /// once they answer the question put to them. Connections of one program that come while
-    /// it is asked about wait for that one answer.
+    /// once they answer the question put to them. Connections of one run that come while it is
+    /// asked about wait for that one answer.
     ///
     /// # Errors
     /// What the program is told: the person declined it, or nobody here can be asked.
-    async fn admit(&self, program: &std::path::Path) -> Result<(), String> {
-        if self.session.lock_recover().contains(program) {
+    async fn admit(&self, program: &peer_facts::Process) -> Result<(), String> {
+        self.forget_ended();
+        let allowed = self
+            .grants
+            .given(&answers_of(program), DeviceCap::Api)
+            .is_some_and(|(answer, _)| answer == tilo_action_policy::Answer::Allow);
+        if allowed {
             return Ok(());
         }
         let (told, answer) = tokio::sync::oneshot::channel();
         let first = {
             let mut waiting = self.waiting.lock_recover();
-            let asked = waiting.entry(program.to_owned()).or_default();
+            let asked = waiting.entry(program.clone()).or_default();
             asked.push(told);
             let first = asked.len() == 1;
             drop(waiting);
@@ -139,20 +155,41 @@ impl Programs {
             .unwrap_or_else(|_| Err(tilo_sheets::word("api-program-declined")))
     }
 
-    /// Put `program` to the person and keep their answer as long as they chose.
-    async fn ask(&self, program: &std::path::Path) -> Result<(), String> {
+    /// Take back the yes to each run that ended, or runs another executable now: nothing can use
+    /// it any more, and Settings lists it no longer.
+    fn forget_ended(&self) {
+        for (app, cap) in self.grants.allowed_here() {
+            let ended = cap == DeviceCap::Api
+                && tilo_permissions::caps::program_of(&app).is_some_and(|(exe, pid, started)| {
+                    !peer_facts::Process {
+                        pid,
+                        started,
+                        exe: exe.to_owned(),
+                    }
+                    .runs()
+                });
+            if ended {
+                self.grants.revoke_here(&app, cap);
+            }
+        }
+    }
+
+    /// Put `program` to the person and keep their yes for as long as they chose, at most this
+    /// session.
+    async fn ask(&self, program: &peer_facts::Process) -> Result<(), String> {
         let Some(questions) = &self.questions else {
             return Err(tilo_sheets::word("api-program-nobody-asked"));
         };
-        let label = program.file_name().map_or_else(
-            || program.display().to_string(),
+        let exe = &program.exe;
+        let label = exe.file_name().map_or_else(
+            || exe.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
         let details = serde_json::to_value(ProgramAsked {
-            program: program.display().to_string(),
+            program: exe.display().to_string(),
         })
         .unwrap_or_default();
-        tracing::info!(program = %program.display(), "API: asking the person about a program");
+        tracing::info!(program = %exe.display(), pid = program.pid, "API: asking the person about a program");
         let answer = questions
             .ask(tilo_service::Question {
                 handle: format!("api-program:{}", uuid::Uuid::new_v4().simple()),
@@ -170,16 +207,26 @@ impl Programs {
             Some(tilo_action_types::Lifetime::Once | tilo_action_types::Lifetime::Until(_)) => {
                 Ok(())
             }
-            // The question offers nothing kept beyond this session: a yes until it is taken back
-            // is the person's grant, which only the grants they can see and revoke keep.
+            // The question offers nothing beyond this session: a yes that lasts is a key the
+            // person gives the program, which the grants they can see and revoke keep.
             Some(
                 tilo_action_types::Lifetime::Session | tilo_action_types::Lifetime::UntilRevoked,
             ) => {
-                self.session.lock_recover().insert(program.to_owned());
+                self.grants.answer(
+                    &answers_of(program),
+                    DeviceCap::Api,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_types::Lifetime::Session,
+                );
                 Ok(())
             }
         }
     }
+}
+
+/// What the person's answer about the run `program` is kept under.
+fn answers_of(program: &peer_facts::Process) -> String {
+    tilo_permissions::caps::program_answers(&program.exe, program.pid, program.started)
 }
 
 /// Take the connections the person's own programs (the `tilo` command, the SDKs, scripts) make
@@ -261,15 +308,15 @@ async fn hand_api(
         let programs = Arc::clone(&programs);
         tokio::task::spawn_local(async move {
             // The program is its executable, as the kernel names it for the process the
-            // connection's pidfd pins: one the kernel does not name is no program the person can
-            // be asked about.
-            let Some(program) = facts.ok().and_then(|facts| facts.exe) else {
+            // connection's pidfd pins, run by the process it pins: one the kernel does not name in
+            // full is no program the person can be asked about.
+            let Some(program) = facts.ok().and_then(|facts| facts.process()) else {
                 tracing::warn!("API: a program the kernel does not name is refused");
                 refuse(stream, &tilo_sheets::word("api-program-unidentified")).await;
                 return;
             };
             if let Err(why) = programs.admit(&program).await {
-                tracing::info!(program = %program.display(), %why, "API: a program is not let act as the person");
+                tracing::info!(program = %program.exe.display(), %why, "API: a program is not let act as the person");
                 refuse(stream, &why).await;
                 return;
             }
@@ -280,7 +327,7 @@ async fn hand_api(
                     return;
                 }
             };
-            let program = runtime_collab::wire::shell::VouchedProgram { exe: program };
+            let program = runtime_collab::wire::shell::VouchedProgram { exe: program.exe };
             if let Err(error) = shell.hand_api(connection, program).await {
                 tracing::error!(%error, "the device's daemon did not take a program's API connection");
             }

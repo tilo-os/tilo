@@ -860,6 +860,7 @@ mod tests {
                 uid,
                 pid,
                 exe: Some(PathBuf::from("/usr/bin/tilo-session")),
+                started: None,
                 namespaces,
             }
         }

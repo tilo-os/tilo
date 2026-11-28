@@ -2423,6 +2423,7 @@ d-3peadj4s = Fähigkeitstitel
     .w-location = Standort
     .w-keyboard-and-pointer = Tastatur und Zeiger
     .w-sound-the-machine-plays = Ton, den die Maschine spielt
+    .w-acting-as-you = Als du handeln
 
 d-btcjbs5z = Zustandswörter
     .w-this-machine-can-t-tell-where = Diese Maschine kann nicht sagen, wo sie ist
@@ -2443,6 +2444,7 @@ d-6z3numlh = Antwortwörter
     .w-may-not-use-the-screen = Darf den Bildschirm nicht nutzen
     .w-may-not-use-the-keyboard-and = Darf Tastatur und Zeiger nicht nutzen
     .w-may-not-use-the-location = Darf den Standort nicht nutzen
+    .w-may-not-act-as-you = Darf nicht als du handeln
     .w-may-not-use-the-sound-the = Darf den Ton, den die Maschine spielt, nicht nutzen
     .w-on-this-device = auf diesem Gerät
     .w-on-another-of-your-devices = auf einem anderen deiner Geräte

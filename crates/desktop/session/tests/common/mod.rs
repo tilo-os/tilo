@@ -1986,6 +1986,15 @@ pub fn person_answers(session: &mut Session, answer: tilo_service::Answer) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
+/// The person answers the question asked under `handle` with `answer`, as they answer it on the
+/// system's sheet: whether it was waiting.
+pub fn person_answers_to(handle: &str, answer: tilo_service::Answer) -> bool {
+    ASKED
+        .with(|person| person.borrow().clone())
+        .expect("the session is started with `person_asked`")
+        .answer(handle, answer)
+}
+
 /// The person declines the question asked under `handle`: whether it was waiting.
 pub fn person_declines(handle: &str) -> bool {
     ASKED

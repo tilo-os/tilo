@@ -52,7 +52,7 @@ view permissions_pane() {
     }
     ui.Section("Your answers") {
         ui.Text(
-            "What you answered when an application asked for the camera, the microphone, the screen or the keyboard and pointer. An answer holds only on the device it names.",
+            "What you answered when an application asked for the camera, the microphone, the screen or the keyboard and pointer, or a program asked to act as you. An answer holds only on the device it names.",
             role: .caption,
             secondary: true,
         )
@@ -69,7 +69,9 @@ view permissions_pane() {
                     .mic
                 } else if answered.capability == .screen {
                     .monitor
-                } else if answered.capability == .location { .map_pin } else { .keyboard },
+                } else if answered.capability == .location {
+                    .map_pin
+                } else if answered.capability == .api { .terminal } else { .keyboard },
             ) {
                 trailing: {
                     row(gap: .tight, align: .center, wrap: true) {
@@ -203,7 +205,9 @@ fn capability_title(capability: device.Capability) -> Text {
         "Screen"
     } else if capability == .location {
         "Location"
-    } else if capability == .input { "Keyboard and pointer" } else { "Sound the machine plays" }
+    } else if capability == .input {
+        "Keyboard and pointer"
+    } else if capability == .api { "Acting as you" } else { "Sound the machine plays" }
 }
 
 /// Whether a device is blocked by a switch, as the reading says.
@@ -251,6 +255,8 @@ fn answer_words(answered: device.Answer) -> Text {
         "May not use the keyboard and pointer"
     } else if answered.capability == .location {
         "May not use the location"
+    } else if answered.capability == .api {
+        "May not act as you"
     } else {
         "May not use the sound the machine plays"
     }

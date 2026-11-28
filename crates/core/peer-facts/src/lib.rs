@@ -33,9 +33,57 @@ pub struct PeerFacts {
     /// The peer's executable, `None` when the kernel does not name it, or the pid is no longer
     /// the process that connected.
     pub exe: Option<PathBuf>,
+    /// When the peer started, in the kernel's clock ticks since boot (`/proc/<pid>/stat`), read
+    /// while the connection's pidfd pins it: with the pid, it names this one process even once
+    /// the pid is another's. `None` where the kernel does not say, or the pid is no longer the
+    /// process that connected.
+    pub started: Option<u64>,
     /// Which of this process's namespaces the peer shares, when the kernel shows it and the pid
     /// is still the process that connected.
     pub namespaces: Namespaces,
+}
+
+impl PeerFacts {
+    /// The one process at the other end, by its pid, when it started and the executable it runs,
+    /// where the kernel named all three while the connection pinned it.
+    #[must_use]
+    pub fn process(&self) -> Option<Process> {
+        Some(Process {
+            pid: self.pid?,
+            started: self.started?,
+            exe: self.exe.clone()?,
+        })
+    }
+}
+
+/// One run of a program: a process, named by its pid and when it started, which no later process
+/// with the same pid is, running the executable `exe`. The same process after it runs another
+/// executable (an exec) is another program, and so another `Process`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Process {
+    pub pid: u32,
+    /// When it started, in the kernel's clock ticks since boot.
+    pub started: u64,
+    pub exe: PathBuf,
+}
+
+impl Process {
+    /// Whether this process still runs this executable.
+    #[must_use]
+    pub fn runs(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            let dir = PathBuf::from(format!("/proc/{}", self.pid));
+            let exe = fs::read_link(dir.join("exe")).ok();
+            // Read again after the executable: a process that ended in between, its pid taken by
+            // another, starts at another time.
+            started_at(&dir) == Some(self.started) && exe.as_deref() == Some(self.exe.as_path())
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            false
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +186,7 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
     let exe = proc_dir
         .as_ref()
         .and_then(|dir| fs::read_link(dir.join("exe")).ok());
+    let started = proc_dir.as_ref().and_then(|dir| started_at(dir));
     let namespaces = proc_dir
         .as_ref()
         .map_or(Namespaces::NotShown, |dir| namespaces_at(dir));
@@ -160,6 +209,7 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
         uid: cred.uid,
         pid,
         exe: exe.filter(|_| still_same),
+        started: started.filter(|_| still_same),
         // A process that is gone is not one whose namespaces are still known.
         namespaces: if still_same {
             namespaces
@@ -176,6 +226,15 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
 const SO_PEERPIDFD: libc::c_int = libc::SO_PEERPIDFD;
 #[cfg(target_os = "android")]
 const SO_PEERPIDFD: libc::c_int = 77;
+
+/// When the process at `proc_dir` started, in the kernel's clock ticks since boot: the 22nd field
+/// of its `stat`, counted after its name, which may hold spaces and parentheses itself.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn started_at(proc_dir: &Path) -> Option<u64> {
+    let stat = fs::read_to_string(proc_dir.join("stat")).ok()?;
+    let (_, after_name) = stat.rsplit_once(')')?;
+    after_name.split_whitespace().nth(19)?.parse().ok()
+}
 
 /// Which of this process's namespaces the process at `proc_dir` shares.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -248,6 +307,7 @@ pub fn facts(stream: &impl std::os::fd::AsRawFd) -> std::io::Result<PeerFacts> {
             .filter(|pid| *pid > 0)
             .filter(|_| read == 0),
         exe: None,
+        started: None,
         namespaces: Namespaces::Shared,
     })
 }
@@ -273,6 +333,7 @@ mod tests {
             uid,
             pid: Some(1234),
             exe: Some(PathBuf::from("/usr/bin/tilo-session")),
+            started: None,
             namespaces: Namespaces::Shared,
         }
     }

@@ -483,15 +483,75 @@ fn api_program() {
     let Some(socket) = std::env::var_os(PROGRAM_AT) else {
         return;
     };
-    match api_account(
-        std::path::Path::new(&socket),
-        "account/workspaces",
-        "list",
-        &json!({}),
-    ) {
+    let socket = std::path::PathBuf::from(socket);
+    say_what_the_api_answered(&socket);
+    // Asked to go on, it connects again as the same run, or runs another program in its place.
+    let Some(then) = std::env::var_os(THEN) else {
+        return;
+    };
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .expect("the test says when to go on");
+    if then == AGAIN {
+        say_what_the_api_answered(&socket);
+    } else {
+        use std::os::unix::process::CommandExt as _;
+        let failed = program_command(std::path::Path::new(&then), &socket)
+            .env_remove(THEN)
+            .exec();
+        panic!("the program runs another in its place: {failed}");
+    }
+}
+
+/// What a program says after it went on ([`THEN`]): connect again ([`AGAIN`]), or run the program
+/// at this path in its own place, in the same process.
+const THEN: &str = "TILO_TEST_OWN_API_THEN";
+const AGAIN: &str = "again";
+
+/// Ask the API socket at `socket` what a program asks first, and say what came back.
+fn say_what_the_api_answered(socket: &std::path::Path) {
+    match api_account(socket, "account/workspaces", "list", &json!({})) {
         Ok(answer) => println!("answered {answer}"),
         Err(why) => println!("refused {why}"),
     }
+}
+
+/// Where [`launcher_program`] starts the programs it is asked to, when a copy of this test's
+/// program is started as it.
+const LAUNCHER_AT: &str = "TILO_TEST_OWN_API_LAUNCHER_AT";
+
+/// A program that starts commands for others, as a launcher of the login does (`systemd-run
+/// --user`, a terminal started on request): each line it reads names a program, which it starts
+/// asking the API socket, saying what that program says.
+#[test]
+fn launcher_program() {
+    let Some(socket) = std::env::var_os(LAUNCHER_AT) else {
+        return;
+    };
+    for line in std::io::stdin().lines().map_while(Result::ok) {
+        let started = program_command(std::path::Path::new(&line), std::path::Path::new(&socket))
+            .stdout(std::process::Stdio::inherit())
+            .status();
+        assert!(started.is_ok_and(|ran| ran.success()), "{line} ran");
+    }
+}
+
+/// `program`, a copy of this test's program, run as [`api_program`] asking the API socket at
+/// `api`.
+fn program_command(program: &std::path::Path, api: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command
+        .args([
+            "--exact",
+            "own_api::api_program",
+            "--nocapture",
+            "--test-threads",
+            "1",
+            "-q",
+        ])
+        .env(PROGRAM_AT, api);
+    command
 }
 
 /// This test's program copied to `name` under `root`: another program, by the executable the
@@ -508,16 +568,7 @@ fn program_at(root: &std::path::Path, name: &str) -> std::path::PathBuf {
 
 /// `program` asking the API socket at `api`, running.
 fn asking(program: &std::path::Path, api: &std::path::Path) -> std::process::Child {
-    std::process::Command::new(program)
-        .args([
-            "--exact",
-            "own_api::api_program",
-            "--nocapture",
-            "--test-threads",
-            "1",
-            "-q",
-        ])
-        .env(PROGRAM_AT, api)
+    program_command(program, api)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn_locked()
@@ -595,5 +646,271 @@ fn a_program_nobody_confirmed_is_refused_and_acts_as_no_one() {
     assert_eq!(
         said, "refused You didn’t let this program act as you. (not_allowed)",
         "the program is refused, in words, and answered nothing as the person"
+    );
+}
+
+/// [`session_with_api`] as a person's login runs it: with its desktop services on the session bus
+/// `bus`, whose answers about this device Settings lists.
+fn login_with_api(
+    root: &std::path::Path,
+    api: &std::path::Path,
+    bus: &tilo_test_env::PrivateBus,
+) -> tilo_session::Session {
+    crate::common::on_its_daemon_with(
+        &[tilo_compositor::OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |device| {
+            let wake = tilo_service::LoopWake::default();
+            let (side, link) = tilo_session::portal_link::channel(wake.handle());
+            let desktop = std::rc::Rc::new(
+                tilo_session::desktop_services::DesktopServices::start(
+                    &tilo_session::desktop_services::Buses {
+                        session: tilo_session::desktop_services::Bus::Address(
+                            bus.address().to_owned(),
+                        ),
+                        system: tilo_session::desktop_services::Bus::None,
+                    },
+                    &wake.handle(),
+                    std::sync::Arc::new(tilo_portal::NoCapture),
+                    &side,
+                    None,
+                )
+                .expect("the login's desktop services start"),
+            );
+            let mut services = crate::common::seeded_apps_of(device);
+            services.extend(desktop.services());
+            let portal = desktop
+                .portal()
+                .map(|serving| link.with_captures(serving.input_captures().clone()));
+            Options {
+                collab: false,
+                state: Some(root.join("state")),
+                services,
+                wake,
+                desktop: Some(desktop),
+                portal,
+                asks: Some(crate::common::person_asked()),
+                app_socket: tilo_session::AppSocket::At(root.join("app_wire.sock")),
+                api_socket: Some(api.to_owned()),
+                ..Options::default()
+            }
+        },
+    )
+}
+
+/// A program running, and the lines it says as it says them.
+struct Running {
+    program: std::process::Child,
+    said: std::sync::mpsc::Receiver<String>,
+}
+
+impl Running {
+    /// `command` started, told when to go on through its standard input.
+    fn start(mut command: std::process::Command) -> Self {
+        use std::io::BufRead as _;
+        let mut program = command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn_locked()
+            .expect("the program starts");
+        let out = program.stdout.take().expect("its output");
+        let (says, said) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if says.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { program, said }
+    }
+
+    /// What the program was answered next: `answered …` or `refused …`.
+    fn answered(&self, session: &mut tilo_session::Session) -> String {
+        crate::common::wait_for(session, "the program to say what it was answered", |_| {
+            self.said
+                .try_iter()
+                .find(|line| line.starts_with("answered ") || line.starts_with("refused "))
+        })
+    }
+
+    /// Tell the program to go on, with `line`.
+    fn go_on(&mut self, line: &str) {
+        use std::io::Write as _;
+        let input = self.program.stdin.as_mut().expect("its input");
+        writeln!(input, "{line}").expect("the program reads");
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.program.kill();
+        let _ = self.program.wait();
+    }
+}
+
+/// `program` asking the API socket at `api`, then going on as `then` says ([`THEN`]).
+fn running(program: &std::path::Path, api: &std::path::Path, then: &std::path::Path) -> Running {
+    let mut command = program_command(program, api);
+    command.env(THEN, then);
+    Running::start(command)
+}
+
+/// The question the person is asked about the program at `path`, once it is asked.
+fn asked_about(
+    session: &mut tilo_session::Session,
+    path: &std::path::Path,
+) -> tilo_service::Question {
+    crate::common::wait_for(session, "the program's question", |_| {
+        crate::common::person_asked_now()
+            .into_iter()
+            .find(|question| {
+                question.kind == "session.api-program"
+                    && question.details["program"] == json!(path.display().to_string())
+            })
+    })
+}
+
+/// The person's answer about a run of the program at `program`, as Settings lists it
+/// (`session:privacy`), once one stands: the row "Take back" is pressed on.
+fn answer_for(session: &mut tilo_session::Session, program: &std::path::Path) -> serde_json::Value {
+    let run = format!("binary:{}@", program.display());
+    crate::common::wait_for(session, "the program's answer in Settings", |session| {
+        session.settle_services();
+        session
+            .read("session:privacy")?
+            .get("answers")?
+            .as_array()?
+            .iter()
+            .find(|answer| {
+                answer["app"]
+                    .as_str()
+                    .is_some_and(|app| app.starts_with(&run))
+            })
+            .cloned()
+    })
+}
+
+/// What a program the person said no to is told.
+const DECLINED: &str = "refused You didn’t let this program act as you. (not_allowed)";
+
+/// The person's yes to a program stands for that run of it, for this session, and Settings lists it
+/// beside their other answers about this device. Taken back there, the same run is asked about
+/// again.
+#[test]
+fn a_programs_yes_stands_for_its_run_and_settings_takes_it_back() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let program = program_at(root.path(), "listed-program");
+    let bus = tilo_test_env::PrivateBus::start();
+    let mut session = login_with_api(root.path(), &api, &bus);
+    served(&mut session, &api);
+
+    let mut run = running(&program, &api, std::path::Path::new(AGAIN));
+    let asked = asked_about(&mut session, &program);
+    assert!(crate::common::person_answers_to(
+        &asked.handle,
+        crate::common::allowed_for(1)
+    ));
+    let said = run.answered(&mut session);
+    assert!(said.starts_with("answered "), "{said}");
+
+    let answer = answer_for(&mut session, &program);
+    assert_eq!(answer["capability"], json!("api"), "{answer}");
+    assert_eq!(answer["allowed"], json!(true), "{answer}");
+    assert_eq!(answer["standing"], json!("session"), "{answer}");
+    assert_eq!(answer["name"], json!("listed-program"), "{answer}");
+    assert_eq!(answer["this_device"], json!(true), "{answer}");
+
+    // Taken back, as Settings' "Take back" takes it: the same run is asked about again.
+    let consent = answer["$address"]
+        .as_str()
+        .expect("the answer names the consent it is")
+        .to_owned();
+    session
+        .invoke(&consent, "forget", &serde_json::Map::new())
+        .expect("the answer is taken back");
+    run.go_on("");
+    let asked = asked_about(&mut session, &program);
+    assert!(crate::common::person_declines(&asked.handle));
+    assert_eq!(run.answered(&mut session), DECLINED);
+}
+
+/// A yes is the person's for the program the process ran when they gave it: the same process, once
+/// it runs another executable in its place (`tilo`, here), is asked about again, and refused when
+/// they say no.
+#[test]
+fn a_run_said_yes_to_that_execs_another_program_is_asked_again() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let first = program_at(root.path(), "first-program");
+    let tilo = program_at(root.path(), "tilo");
+    let mut session = session_with_api(root.path(), &api);
+    served(&mut session, &api);
+
+    let mut run = running(&first, &api, &tilo);
+    let asked = asked_about(&mut session, &first);
+    assert!(crate::common::person_answers_to(
+        &asked.handle,
+        crate::common::allowed_for(1)
+    ));
+    let said = run.answered(&mut session);
+    assert!(said.starts_with("answered "), "{said}");
+
+    run.go_on("");
+    let asked = asked_about(&mut session, &tilo);
+    assert!(crate::common::person_declines(&asked.handle));
+    assert_eq!(run.answered(&mut session), DECLINED);
+}
+
+/// A program a launcher starts for another, in the same login, is a run of its own: the person's
+/// yes to one run of a program lets no other run of it in, however it was started. The run they
+/// said yes to is still let in.
+#[test]
+fn a_launchers_run_of_a_program_gets_nothing_from_another_runs_yes() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let api = root.path().join("api.sock");
+    let tilo = program_at(root.path(), "tilo");
+    let launcher = program_at(root.path(), "launcher");
+    let mut session = session_with_api(root.path(), &api);
+    served(&mut session, &api);
+
+    let mut run = running(&tilo, &api, std::path::Path::new(AGAIN));
+    let asked = asked_about(&mut session, &tilo);
+    assert!(crate::common::person_answers_to(
+        &asked.handle,
+        crate::common::allowed_for(1)
+    ));
+    let said = run.answered(&mut session);
+    assert!(said.starts_with("answered "), "{said}");
+
+    let mut launching = std::process::Command::new(&launcher);
+    launching
+        .args([
+            "--exact",
+            "own_api::launcher_program",
+            "--nocapture",
+            "--test-threads",
+            "1",
+            "-q",
+        ])
+        .env(LAUNCHER_AT, &api);
+    let mut by_the_launcher = Running::start(launching);
+    by_the_launcher.go_on(&tilo.display().to_string());
+    let asked = asked_about(&mut session, &tilo);
+    assert!(crate::common::person_declines(&asked.handle));
+    assert_eq!(by_the_launcher.answered(&mut session), DECLINED);
+
+    run.go_on("");
+    let said = run.answered(&mut session);
+    assert!(
+        said.starts_with("answered "),
+        "the run the person said yes to is still let in: {said}"
     );
 }

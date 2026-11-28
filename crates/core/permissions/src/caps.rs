@@ -123,11 +123,39 @@ pub enum DeviceCap {
     /// The desktop's actions beyond the app's own workspace. Kept here until
     /// it becomes an action grant.
     DesktopControl,
+    /// Tilo's API as the person: a program of theirs outside Tilo that acts
+    /// as them, named by its executable.
+    Api,
+}
+
+/// How the person's answers name a program outside Tilo ([`DeviceCap::Api`]): one run of it,
+/// after this, as [`program_answers`] writes it.
+pub const PROGRAM_PREFIX: &str = "binary:";
+
+/// The app the person's answer about one run of a program is kept under: the executable `exe`
+/// run by the process `pid` that started at `started` (in the kernel's clock ticks since boot).
+/// Another process of the same program, or this one once it runs another executable, is
+/// another app, which the answer says nothing about.
+#[must_use]
+pub fn program_answers(exe: &std::path::Path, pid: u32, started: u64) -> String {
+    format!("{PROGRAM_PREFIX}{}@{pid}.{started}", exe.display())
+}
+
+/// The run of a program an answer was kept for ([`program_answers`]), as `(exe, pid, started)`.
+#[must_use]
+pub fn program_of(app: &str) -> Option<(&std::path::Path, u32, u64)> {
+    let (exe, run) = app.strip_prefix(PROGRAM_PREFIX)?.rsplit_once('@')?;
+    let (pid, started) = run.split_once('.')?;
+    Some((
+        std::path::Path::new(exe),
+        pid.parse().ok()?,
+        started.parse().ok()?,
+    ))
 }
 
 impl DeviceCap {
     /// Every device, in the order a prompt lists them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Camera,
         Self::Microphone,
         Self::Screen,
@@ -142,6 +170,7 @@ impl DeviceCap {
         Self::Gpu,
         Self::Clipboard,
         Self::DesktopControl,
+        Self::Api,
     ];
 
     /// The name a capability is stored and shown under.
@@ -162,6 +191,7 @@ impl DeviceCap {
             Self::Gpu => "gpu",
             Self::Clipboard => "clipboard",
             Self::DesktopControl => "desktop-control",
+            Self::Api => "api",
         }
     }
 
@@ -172,14 +202,14 @@ impl DeviceCap {
     }
 
     /// Whether only the person at the device answers for it: the camera, the
-    /// microphone, the screen and the input. A workspace may refuse these to
+    /// microphone, the screen, the input and acting as them. A workspace may refuse these to
     /// the apps in it, but never allows them on a member's device: the
     /// person's own answer, kept for that device, does.
     #[must_use]
     pub const fn is_personal(self) -> bool {
         matches!(
             self,
-            Self::Camera | Self::Microphone | Self::Screen | Self::Input
+            Self::Camera | Self::Microphone | Self::Screen | Self::Input | Self::Api
         )
     }
 
@@ -193,7 +223,8 @@ impl DeviceCap {
             | Self::Printer
             | Self::HostShell
             | Self::Clipboard
-            | Self::DesktopControl => Access::Write,
+            | Self::DesktopControl
+            | Self::Api => Access::Write,
             _ => Access::Read,
         }
     }

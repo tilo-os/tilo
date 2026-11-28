@@ -767,7 +767,7 @@ pub(crate) trait Published {
 
 impl Published for Consents {
     fn resources(&self) -> Vec<ResourceSpec> {
-        self.kept()
+        self.standing()
             .into_iter()
             .map(|kept| {
                 offer::<ConsentEffect>(tilo_resource::typed_resource::<ConsentRow>(
@@ -786,7 +786,7 @@ impl Published for Consents {
 
     fn read(&self, resource: &str) -> Option<Value> {
         resource.strip_prefix(CONSENT_PREFIX)?;
-        self.kept()
+        self.standing()
             .into_iter()
             .find(|kept| consent_resource(&kept.answer) == resource)
             .and_then(|kept| serde_json::to_value(kept).ok())
@@ -804,7 +804,7 @@ impl Published for Consents {
         Some(
             decode(published, resource, action, arguments).and_then(|ConsentEffect::Forget| {
                 let kept = self
-                    .kept()
+                    .standing()
                     .into_iter()
                     .find(|kept| consent_resource(&kept.answer) == resource)
                     .ok_or_else(unknown)?;
@@ -853,7 +853,7 @@ impl Service for Portal {
             return Some(serde_json::json!({
                 "consents": self
                     .consents
-                    .kept()
+                    .standing()
                     .into_iter()
                     .map(|kept| {
                         let mut read = reading(&kept);

@@ -131,6 +131,12 @@ impl Consents {
         self.grants.kept()
     }
 
+    /// Every answer that stands: this device's for the session, and the kept ones.
+    #[must_use]
+    pub fn standing(&self) -> Vec<Kept> {
+        self.grants.standing()
+    }
+
     /// Take back what `app_id` was answered of `device` on the device whose key
     /// is `on` (in hex); `false` when it was answered nothing.
     pub fn forget(&self, on: &str, app_id: &str, device: DeviceCap) -> bool {
