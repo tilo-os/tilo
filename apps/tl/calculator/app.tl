@@ -61,7 +61,7 @@ primary action calculate(
     in_degrees: Bool = false,
     answer: Float = 0.0,
     memory: Float = 0.0,
-) -> Calculation (icon: .hash, label: "Calculate") {
+) -> Calculation (icon: .hash, label: "Calculate", did: "calculated") {
     require outcome(expr, in_degrees, answer, memory) != "" "That expression is not one this calculator can work out"
     let result = outcome(expr, in_degrees, answer, memory)
     let kept = c.calculations.insert(Calculation(expr: expr, result: result))
@@ -82,12 +82,20 @@ fn outcome(text: Text, degrees: Bool, answer: Float, memory: Float) -> Text {
 }
 
 /// Puts `text` on the person's clipboard, as the system's copy does.
-action copy_text(text: Text) uses clipboard (icon: .copy, label: "Copy") {
+action copy_text(text: Text) uses clipboard (
+    icon: .copy,
+    label: "Copy",
+    did: "copied from the calculator",
+) {
     clipboard.copy(text)
 }
 
 /// Adds a curve to the 2D graph.
-action add_curve(c: Calculator, formula: Text = "") -> Curve (icon: .plus, label: "Add curve") {
+action add_curve(c: Calculator, formula: Text = "") -> Curve (
+    icon: .plus,
+    label: "Add curve",
+    did: "added a curve",
+) {
     c.curves.insert(Curve(expr: formula))
 }
 
@@ -95,27 +103,40 @@ action add_curve(c: Calculator, formula: Text = "") -> Curve (icon: .plus, label
 action add_surface(c: Calculator, formula: Text = "") -> Surface (
     icon: .plus,
     label: "Add surface",
+    did: "added a surface",
 ) {
     c.surfaces.insert(Surface(expr: formula))
 }
 
 /// Takes a curve off the 2D graph.
-destructive action delete_curve(x: Curve) (icon: .trash, label: "Delete") {
+destructive action delete_curve(x: Curve) (icon: .trash, label: "Delete", did: "deleted a curve") {
     calculator.curves.remove(x)
 }
 
 /// Takes a surface off the 3D graph.
-destructive action delete_surface(x: Surface) (icon: .trash, label: "Delete") {
+destructive action delete_surface(x: Surface) (
+    icon: .trash,
+    label: "Delete",
+    did: "deleted a surface",
+) {
     calculator.surfaces.remove(x)
 }
 
 /// Takes one calculation out of the record.
-destructive action forget(x: Calculation) (icon: .trash, label: "Delete") {
+destructive action forget(x: Calculation) (
+    icon: .trash,
+    label: "Delete",
+    did: "removed a calculation",
+) {
     calculator.calculations.remove(x)
 }
 
 /// Clears the record of everything worked out so far.
-destructive action clear(c: Calculator) (icon: .trash, label: "Clear calculations") {
+destructive action clear(c: Calculator) (
+    icon: .trash,
+    label: "Clear calculations",
+    did: "cleared the calculations",
+) {
     c.calculations.remove_where(x -> true)
 }
 
@@ -631,6 +652,23 @@ view past(c: Calculator, expr: State<Text>, fresh: State<Bool>) {
     }
 }
 
+/// An amount as the Convert page reads it: six significant digits, without the trailing zeros a
+/// float sum leaves (`131.234`, `0.621371`). A number past what a float keeps whole reads as it is.
+fn amount_text(v: Float) -> Text {
+    if v.is_nan() {
+        return ""
+    }
+    if not v.is_finite() {
+        return "—"
+    }
+    if v == 0.0 {
+        return "0"
+    }
+    let places = 5.0 - v.abs().log10().floor().to_float()
+    let scale = 10.0.pow(places)
+    said((v * scale).round(0) / scale)
+}
+
 /// Unit conversion, from the fixed table: a quantity, an amount, and two units of it. Nothing is
 /// fetched, so it works with the network off; money is not here, since a rate is a fact about the
 /// moment and a stale one would lie.
@@ -673,13 +711,13 @@ view convert_face(
                 }
             }
             ui.TextInput(
-                text: if converted.is_nan() { "" } else { said(converted) },
+                text: if converted.is_nan() { "" } else { amount_text(converted) },
                 read_only: true,
                 placeholder: "Result",
             )
             if not converted.is_nan() {
                 ui.Text(
-                    "{said(value)} {src} = {said(converted)} {dst}",
+                    "{amount_text(value)} {src} = {amount_text(converted)} {dst}",
                     role: .caption,
                     secondary: true,
                 )

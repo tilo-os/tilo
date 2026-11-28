@@ -77,6 +77,7 @@ d-e4notqqc = Daten
 d-d46t4e64 = Währung
 
 d-qh2jrzar = Berechnen
+    .did = hat gerechnet
     .doc = Rechnet einen Ausdruck aus und hält das Ergebnis im Verlauf fest.
     .w-that-expression-is-not-one-this = Diesen Ausdruck kann der Rechner nicht berechnen
 
@@ -89,30 +90,37 @@ d-qh2jrzar-answer = Letztes Ergebnis
 d-qh2jrzar-memory = Speicher
 
 d-fvu56cw4 = Kopieren
+    .did = hat aus dem Rechner kopiert
     .doc = Legt `text` in die Zwischenablage der Person, wie es das Kopieren des Systems tut.
 
 d-fvu56cw4-text = Text
 
 d-3vaurhz5 = Kurve hinzufügen
+    .did = hat eine Kurve hinzugefügt
     .doc = Fügt dem 2D-Graphen eine Kurve hinzu.
 
 d-3vaurhz5-formula = Formel
 
 d-wq7vc4cq = Fläche hinzufügen
+    .did = hat eine Fläche hinzugefügt
     .doc = Fügt dem 3D-Graphen eine Fläche hinzu.
 
 d-wq7vc4cq-formula = Formel
 
 d-tnpcw6th = Löschen
+    .did = hat eine Kurve gelöscht
     .doc = Nimmt eine Kurve aus dem 2D-Graphen.
 
 d-yxj5i5yd = Löschen
+    .did = hat eine Fläche gelöscht
     .doc = Nimmt eine Fläche aus dem 3D-Graphen.
 
 d-omv5xphz = Löschen
+    .did = hat eine Rechnung entfernt
     .doc = Nimmt eine Rechnung aus dem Verlauf.
 
 d-zwbiewmm = Rechnungen löschen
+    .did = hat die Rechnungen gelöscht
     .doc = Löscht den Verlauf aller bisherigen Rechnungen.
 
 d-5ddg7yoi = Berechnen

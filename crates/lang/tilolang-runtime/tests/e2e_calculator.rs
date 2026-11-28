@@ -531,6 +531,22 @@ mod cases {
             assert_eq!(rows, ["3+3", "2+2", "1+1"], "newest first");
         }
 
+        phase a_second_window_lists_the_first_windows_calculations;
+        {
+            let c = Calc::new();
+            c.calculate("6*7").unwrap();
+            // The record is the workspace's: a window opened beside the first lists the same work.
+            let first = c.window();
+            let second = c.window();
+            for view in [&first, &second] {
+                let rows: Vec<String> = of_kind(view.tree(), "ui.ListRow")
+                    .iter()
+                    .map(|row| text_prop(row, "title"))
+                    .collect();
+                assert_eq!(rows, ["6*7"], "{:?}", dump(view.tree()));
+            }
+        }
+
         phase conversion_turns_one_unit_into_another;
         {
             let c = Calc::new();
@@ -539,16 +555,57 @@ mod cases {
             let view = c.window();
             // Each quantity starts at a pair of its own: a metre to feet, and then mass's own.
             assert!(
-                texts(view.tree()).iter().any(|t| t.as_str() == "1 m = 3.280839895 ft"),
+                texts(view.tree()).iter().any(|t| t.as_str() == "1 m = 3.28084 ft"),
                 "the conversion reads:\n{}",
                 dump(view.tree())
             );
             assert_eq!(of_kind(view.tree(), "ui.Dropdown").len(), 2, "from and to");
+            // An amount keeps six significant digits, as a person typing one reads it.
+            let mut view = c.window();
+            let amount = of_kind(view.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| {
+                    field.props.get("placeholder") == Some(&Value::text("Amount"))
+                })
+                .unwrap_or_else(|| panic!("the amount field:\n{}", dump(view.tree())))
+                .key
+                .clone();
+            view.edit(&amount, &Value::text("40")).unwrap();
+            view.poll_patches().unwrap();
+            assert!(
+                texts(view.tree()).iter().any(|t| t.as_str() == "40 m = 131.234 ft"),
+                "an amount reads six significant digits:\n{}",
+                dump(view.tree())
+            );
+            view.edit(&amount, &Value::text("1")).unwrap();
+            view.poll_patches().unwrap();
+            // Swapping exchanges the pair, and the amount reads in the other unit.
+            let swap = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| button.props.get("label") == Some(&Value::text("Swap")))
+                .unwrap_or_else(|| panic!("the swap button:\n{}", dump(view.tree())))
+                .key
+                .clone();
+            view.fire(&swap, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert!(
+                texts(view.tree()).iter().any(|t| t.as_str() == "1 ft = 0.3048 m"),
+                "swapping reads the pair the other way:\n{}",
+                dump(view.tree())
+            );
+            let swap = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| button.props.get("label") == Some(&Value::text("Swap")))
+                .unwrap()
+                .key
+                .clone();
+            view.fire(&swap, "press").unwrap();
+            view.poll_patches().unwrap();
             // And chooses the quantity from the window's own segments.
             c.press_segment("Mass");
             let mass = c.window();
             assert!(
-                texts(mass.tree()).iter().any(|t| t.as_str() == "1 kg = 2.2046226218 lb"),
+                texts(mass.tree()).iter().any(|t| t.as_str() == "1 kg = 2.20462 lb"),
                 "mass converts kilograms to pounds:\n{}",
                 dump(mass.tree())
             );
@@ -702,6 +759,30 @@ mod cases {
                 ["-10", "10", "-22.5", "7.5"],
                 "the y range followed the hand up, and x did not move"
             );
+        }
+        phase every_calculation_action_says_what_it_did;
+        {
+            let c = Calc::new();
+            let did = |name: &str| {
+                c.app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .and_then(|action| action.did.clone())
+            };
+            for (action, words) in [
+                ("calculate", "calculated"),
+                ("copy_text", "copied from the calculator"),
+                ("add_curve", "added a curve"),
+                ("add_surface", "added a surface"),
+                ("delete_curve", "deleted a curve"),
+                ("delete_surface", "deleted a surface"),
+                ("forget", "removed a calculation"),
+                ("clear", "cleared the calculations"),
+            ] {
+                assert_eq!(did(action).as_deref(), Some(words), "{action} in history");
+            }
         }
     }
 }
