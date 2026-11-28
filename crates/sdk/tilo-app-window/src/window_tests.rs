@@ -1547,6 +1547,9 @@ fn a_moved_command_runs_on_its_new_keys_and_not_on_the_apps() {
         }],
         "the new keys run the command through the button the app declared it on"
     );
+    // The app ran it: keys nothing takes no longer wait for its answer.
+    send(&mut app, &[ToUi::Took { fired: 1 }]);
+    drawn_window(&mut harness).receive();
 
     drawn_window(&mut harness).set_moved_commands(vec![("new".to_owned(), None)]);
     assert_eq!(
