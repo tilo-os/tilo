@@ -1576,6 +1576,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ShellMemberChange" = "struct"
 "ShellMemberChange.change" = "#0 [u8; 32]"
 "ShellMemberChange.message" = "#1 String"
+"ShellMemberChange.subjects" = "#3 Vec<String>"
 "ShellMemberChange.time" = "#2 i64"
 "ShellPresence" = "struct deny_unknown_fields"
 "ShellPresence.activity" = "#5 Option<String>"
