@@ -711,7 +711,7 @@ pub use {
 mod activation;
 mod dismissal;
 #[cfg(feature = "model")]
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "model")]
 pub use activation::take_presses;
 pub use {activation::Interaction, activation::paint_disabled, activation::paint_focus_ring};
 pub mod media_card;
