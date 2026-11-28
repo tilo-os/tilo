@@ -241,6 +241,31 @@ class RealLink(unittest.TestCase):
                 self.assertEqual(direct.returncode, 0, direct.stderr)
                 self.assertEqual(direct.stderr.count("stand-in glib loaded"), 1, direct.stderr)
 
+    def test_an_app_binary_loads_glib_only_on_first_use(self):
+        # The program every tilolang app runs is an executable, not a dylib:
+        # it links the media framework as the runtime does, so a program that
+        # plays nothing maps nothing.
+        self.cc("-c", "-fPIC", "app.c", "-o", "app.o")
+        linked = subprocess.run([sys.executable, str(SCRIPT), "app.o", "runtime.o", "-L.",
+                                 "-lgstreamer-1.0", "-lglib-2.0", "-pthread", "-o", "media-app"],
+                                cwd=self.directory, capture_output=True, text=True,
+                                env=dict(os.environ, TILO_LAZY_LINK_CC="cc", TILO_LAZY_LINK_ROLE="app"))
+        self.assertEqual(linked.returncode, 0, linked.stderr)
+        app = self.directory / "media-app"
+        needed = subprocess.run(["readelf", "-dW", str(app)], capture_output=True, text=True).stdout
+        self.assertNotIn("libglib", needed)
+        self.assertNotIn("libgstreamer", needed)
+        lazy = subprocess.run(["readelf", "-W", "-p", LAZY.SECTION, str(app)],
+                              capture_output=True, text=True).stdout
+        self.assertIn("libgstreamer-1.0.so.0", lazy)
+        self.assertIn("libglib-2.0.so.0", lazy)
+        plain = self.run_app("media-app")
+        self.assertEqual((plain.returncode, plain.stdout), (0, "plain 42\n"), plain.stderr)
+        self.assertNotIn("stand-in glib loaded", plain.stderr)
+        media = self.run_app("media-app", "media")
+        self.assertEqual(media.returncode, 0, media.stderr)
+        self.assertEqual(media.stderr.count("stand-in glib loaded"), 1, media.stderr)
+
     def test_a_library_without_a_function_aborts_at_first_use_and_names_it(self):
         # A missing library would fall back to the host's own GLib, so take
         # the function away instead: the stand-in now exports nothing.
