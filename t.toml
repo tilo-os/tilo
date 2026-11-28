@@ -1263,13 +1263,13 @@ timeout_secs = 900
 
 # Every menu of a page in the image's Chromium (CHROME), in both themes and set in the faces the
 # page serves: no label is cut short once its menu has arrived. The page lays a menu's rows out
-# itself, so only a browser measures them in the face it draws (crates/ui/ui-core/examples/
+# itself, so only a browser measures them in the face it draws (crates/ui/ui-app/examples/
 # page_menus.rs writes the page, tools/web/page-menus.mjs opens its menus). The web cuts come from
 # the font-seed check's pins, so nothing reaches the network for a font.
 [[check]]
 name = "page-menus"
 on = ["idle", "stable"]
-run = "set -euo pipefail\nout=/tmp/page-menus\nrm -rf \"$out\"\ncargo run --locked -p tilo-ui --example page-menus -- \"$out\"\npython3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts \"$out/catalog\" --scope web --offline\nmkdir -p \"$out/fonts\"\nfind \"$out/catalog\" -name '*.woff2' -exec cp {} \"$out/fonts/\" ';'\nnode tools/web/page-menus.mjs \"$out\"\n"
+run = "set -euo pipefail\nout=/tmp/page-menus\nrm -rf \"$out\"\ncargo run --locked -p tilo-ui-app --example page-menus -- \"$out\"\npython3 -I tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts \"$out/catalog\" --scope web --offline\nmkdir -p \"$out/fonts\"\nfind \"$out/catalog\" -name '*.woff2' -exec cp {} \"$out/fonts/\" ';'\nnode tools/web/page-menus.mjs \"$out\"\n"
 needs = ["font-seed"]
 env = { TILO_FONT_IMAGE_SEED = "/target/font-seed" }
 requires = ["arch=x86_64"]
@@ -1802,7 +1802,7 @@ heavy = true
 name = "identity-accounts-build"
 on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib tilo-device-identity tilo_device_identity identity-device-identity\nbinary_target tilo-files parent_provision identity-files\nbinary_lib tilo-files tilo_files identity-files-lib\nbinary_lib windows-vm windows_vm identity-windows-vm\nbinary_lib tilo-secrets tilo_secrets identity-secrets\nbinary_lib tilo-runtime-portal runtime_portal identity-runtime-portal\nbinary_lib linux-vm linux_vm identity-linux-vm\nbinary_lib tilo-identity tilo_identity identity-tilo-identity\nbinary_lib launcher launcher identity-launcher\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\nbinary_target() {\n  package=$1\n  target=$2\n  name=$3\n  # Read every message before selecting: closing cargo's pipe early makes it\n  # fail with a broken pipe while it is still writing build messages.\n  executable=$(cargo test --locked -p \"$package\" --test \"$target\" --no-run --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$target\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib() {\n  package=$1\n  lib=$2\n  name=$3\n  shift 3\n  executable=$(cargo test --locked -p \"$package\" --lib --no-run \"$@\" --message-format json | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m[\"executable\"] for m in messages if m.get(\"reason\") == \"compiler-artifact\" and m.get(\"executable\") and m[\"target\"][\"name\"] == sys.argv[1]))' \"$lib\")\n  cp \"$executable\" \"$CARGO_TARGET_DIR/vm/$name\"\n}\nbinary_lib tilo-device-identity tilo_device_identity identity-device-identity\nbinary_target tilo-files parent_provision identity-files\nbinary_lib tilo-files tilo_files identity-files-lib\nbinary_lib windows-vm windows_vm identity-windows-vm\nbinary_lib tilo-secrets tilo_secrets identity-secrets --features host-keyring\nbinary_lib tilo-runtime-portal runtime_portal identity-runtime-portal\nbinary_lib linux-vm linux_vm identity-linux-vm\nbinary_lib tilo-identity tilo_identity identity-tilo-identity\nbinary_lib launcher launcher identity-launcher\n"
 requires = ["arch=x86_64"]
 outputs = ["/target/vm/identity-device-identity", "/target/vm/identity-files", "/target/vm/identity-files-lib", "/target/vm/identity-windows-vm", "/target/vm/identity-secrets", "/target/vm/identity-runtime-portal", "/target/vm/identity-linux-vm", "/target/vm/identity-tilo-identity", "/target/vm/identity-launcher"]
 heavy = true
@@ -2203,7 +2203,7 @@ git = true
 # prepares it, rather than trying the store.
 needs = ["font-seed"]
 env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSET_CACHE = "/target/font-artifacts", TILO_FONT_ASSETS_OFFLINE = "1" }
-run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\nout=$(cargo test --locked -p tilo-session --test it origin_connector::an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector test did not run'; exit 1; }"
+run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\n# The test starts the launcher the session's tests expect beside the daemon, which nextest's\n# session-siblings setup builds; a plain cargo run builds it here as that setup would.\nbash tools/build-sibling-binaries.sh launcher:tilo-launcher=launcher/dev-overrides\nout=$(cargo test --locked -p tilo-session --test it origin_connector::an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector test did not run'; exit 1; }"
 
 [[check]]
 name = "perf-fs"
@@ -7938,6 +7938,9 @@ run = "cargo build --locked -p tilo-local && cargo build --locked -p tilo-cli --
 needs = ["font-seed"]
 env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
 outputs = ["/target/debug/tilo-local", "/target/debug/tilo", "/target/debug/tilo-runtime"]
+# The binaries are native, and their only consumer runs them on x86_64: named here so a job on
+# another architecture never builds them and hands them to it.
+requires = ["arch=x86_64"]
 default = false
 
 # `cargo daemon --check` (tools/tilo-local): a device daemon started on a fresh state directory

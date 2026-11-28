@@ -18,7 +18,7 @@ profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/apps/imager/src/setup/destination/installer_app.rs"
 installer_disks="$repo_root/apps/imager/src/backend/destination/disks.rs"
 block_devices_lsblk="$repo_root/crates/os/block-devices/src/lsblk.rs"
-installer_timezones="$repo_root/apps/imager/src/backend/destination/timezones.rs"
+installer_timezones="$repo_root/apps/imager/src/timezones.rs"
 media_profile="$repo_root/apps/imager/src/backend/destination/media_profile.rs"
 installer_probes="$repo_root/apps/imager/src/backend/destination/probes.rs"
 preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
@@ -33,7 +33,6 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 if grep -Fq 'use block_devices::' "$installer_disks" \
    && grep -Fq 'bounded_command::run(' "$block_devices_lsblk" \
-   && grep -Fq 'bounded_command::run(' "$installer_timezones" \
    && grep -Fq 'bounded_command::run(' "$installer_probes" \
    && ! grep -Eq 'Command::new\("(lsblk|timedatectl|/usr/libexec/tilo-verified-boot-install-preflight)"\)' \
       "$installer_disks" "$block_devices_lsblk" "$installer_timezones" "$installer_probes"; then

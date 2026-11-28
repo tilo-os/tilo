@@ -705,6 +705,7 @@ impl FabricClockCore {
 /// This device's `CLOCK_MONOTONIC` in microseconds: the clock the device
 /// fabric exchanges for peer clock estimation, and the one `PipeWire` schedules
 /// audio against.
+#[cfg(unix)]
 #[must_use]
 pub fn fabric_monotonic_us() -> u64 {
     let mut time = libc::timespec {
@@ -721,6 +722,16 @@ pub fn fabric_monotonic_us() -> u64 {
         .unwrap_or_default()
         .saturating_mul(1_000_000)
         .saturating_add(u64::try_from(time.tv_nsec).unwrap_or_default() / 1_000)
+}
+
+/// This device's monotonic clock in microseconds, on a system with no
+/// `CLOCK_MONOTONIC`: a process-wide anchor on the standard library's monotonic
+/// `Instant`, which no fabric peer outlives.
+#[cfg(not(unix))]
+#[must_use]
+pub fn fabric_monotonic_us() -> u64 {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    u64::try_from(ANCHOR.get_or_init(Instant::now).elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 fn fabric_clock_state() -> &'static Mutex<FabricClockCore> {
