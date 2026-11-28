@@ -2469,6 +2469,24 @@ impl Workspaces {
         }
     }
 
+    /// The sequence number this device's next write of `record` of `app` in `workspace` takes:
+    /// from the line's durable reservation, past `floor`
+    /// ([`tilo_peer_state::store::Store::reserve_sequence`]).
+    pub(crate) fn reserve_sequence(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        author: [u8; 32],
+        floor: u64,
+        count: u64,
+    ) -> Result<u64, tilo_peer_state::owner::WriteRefusal> {
+        self.inner
+            .records
+            .reserve_sequence(workspace, app, document, author, floor, count)
+            .map_err(tilo_peer_state::owner::WriteRefusal::Refused)
+    }
+
     /// Each write to a record a workspace held here took in: a member's write to
     /// a workspace hosted here, and every write the device serving a
     /// member copy here sends it, and this device's own writes into a member
