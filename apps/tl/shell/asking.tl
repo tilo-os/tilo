@@ -647,14 +647,16 @@ view asker(a: invocations.Asked) {
                 } else if a.by.program != .none { .terminal } else { .app_window },
             )
         }
+        // A long name says less rather than pushing the workspace out of the card: each line
+        // takes the room it is given and ends in an ellipsis.
         stack(gap: .tight, min: 6rem) {
-            ui.Text(asker_name(a), role: .caption)
+            ui.Text(asker_name(a), role: .caption, lines: 1, truncate)
             if let author = a.by.app?.author {
-                ui.Text(author.name, role: .caption, secondary: true)
+                ui.Text(author.name, role: .caption, secondary: true, lines: 1, truncate)
             }
         }
         spacer
-        ui.Text(a.workspace_name, role: .caption, secondary: true)
+        ui.Text(a.workspace_name, role: .caption, secondary: true, lines: 1, truncate)
     }
 }
 
