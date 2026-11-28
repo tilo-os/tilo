@@ -42,6 +42,9 @@ pub struct CallMember {
     /// Someone a bridge carries into the call from another service: which service, what it
     /// calls them, and their picture there. `None` for someone in the call here.
     pub bridged: Option<Bridged>,
+    /// Whether it is the person looking, whose call another of their devices handed to this one
+    /// and who took it here: the view joins it the way its app joins a call.
+    pub handed: bool,
 }
 
 /// A microphone the system's call can send from, as `call_inputs(r)` reads them
@@ -1887,6 +1890,7 @@ impl Runtime {
                                 .map(|b| b.avatar.clone())
                                 .unwrap_or_default(),
                         ),
+                        Value::Bool(m.handed),
                     ])
                 })
                 .collect(),

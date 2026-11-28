@@ -1031,7 +1031,9 @@ template view composer_draft<D>(
 /// stored; who may speak or listen is the workspace's, and the microphone, camera and screen are
 /// asked for through the system's prompts.
 ///
-/// Joining is joining muted: the person listens, and nothing is captured until they unmute.
+/// Joining is joining muted: the person listens, and nothing is captured until they unmute. A
+/// call the person moved here from another of their devices joins on its own, through `join`, and
+/// comes in as it stood there.
 /// `join` is what the Join button runs, when the app does more on joining than `join_call(of)`
 /// (playing each person at the level this device keeps for them). `hearing` draws, beside each
 /// other person, how this device plays them: the app keeps that for the device, so the call
@@ -1107,6 +1109,12 @@ view call<R>(of: R, join: Option<Action> = .none, hearing: (host.CallMember) -> 
                                 on press: leave_call(of)
                             }
                         } else {
+                            // The person took here the call another of their devices handed
+                            // over: it is joined the way the Join button joins it, and comes in
+                            // as it stood there.
+                            if people.any(m -> m.handed) {
+                                after 0s: join ?? join_call(of)
+                            }
                             ui.Button(phrase("tilolang-call-join"), icon: .phone, role: .primary) {
                                 on press: join ?? join_call(of)
                             }

@@ -1116,10 +1116,21 @@ mod tests {
         };
 
         use super::sources;
-        use crate::call_card::{CallCard, Open};
+        use crate::call_card::{Around, CallCard, Open, Pressed};
 
         const APP: &str = "so.tilo.chat";
         const PLACE: &str = "voice/lounge";
+
+        /// The call named Lounge, with the person's phone online beside this device.
+        fn lounge(moving: Option<&'static str>) -> Around<'static> {
+            static PHONE: std::sync::LazyLock<[(String, String); 1]> =
+                std::sync::LazyLock::new(|| [("ab".repeat(32), "Ada's phone".to_owned())]);
+            Around {
+                name: "Lounge",
+                devices: PHONE.as_slice(),
+                moving,
+            }
+        }
 
         /// A carrier that puts this device into any channel at once, with one microphone.
         struct Carrier;
@@ -1223,20 +1234,37 @@ mod tests {
             );
 
             // While the person looks at Chat, no card stands over it.
-            assert_eq!(card.pass(&board, &media, "Lounge", |_| true), None);
+            assert_eq!(card.pass(&board, &media, lounge(None), |_| true), None);
             assert!(row(&live).is_none(), "no card over the call's own window");
 
-            // Looking elsewhere, the call's card stands over the windows with its controls.
-            card.pass(&board, &media, "Lounge", |_| false);
+            // Looking elsewhere, the call's card stands over the windows with its controls, and
+            // offers to continue the call on the person's phone.
+            card.pass(&board, &media, lounge(None), |_| false);
             let (shown, controls) = row(&live).expect("the call's card");
             assert_eq!(shown.title, "Lounge");
             assert_eq!(shown.source, "Chat");
             assert!(shown.floats && shown.card, "it stands over the windows");
+            let phone = format!("continue:{}", "ab".repeat(32));
+            assert_eq!(
+                controls,
+                ["mute", "deafen", "leave", "open", phone.as_str()]
+            );
+
+            // Continue on the phone asks the session to move the call there; while it moves, the
+            // card says so and offers no second move.
+            live.press(&shown.key, &phone).expect("the card's continue");
+            assert_eq!(
+                card.pass(&board, &media, lounge(None), |_| false),
+                Some(Pressed::Continue("ab".repeat(32)))
+            );
+            card.pass(&board, &media, lounge(Some("Ada's phone")), |_| false);
+            let (moving, controls) = row(&live).expect("the call's card");
+            assert_eq!(moving.value, "Moving to Ada's phone");
             assert_eq!(controls, ["mute", "deafen", "leave", "open"]);
 
             // Mute on the card mutes the call, and says so.
             live.press(&shown.key, "mute").expect("the card's mute");
-            card.pass(&board, &media, "Lounge", |_| false);
+            card.pass(&board, &media, lounge(None), |_| false);
             assert!(media.own_call().expect("in the call").muted);
             let (_, controls) = row(&live).expect("the call's card");
             assert_eq!(controls[0], "unmute", "the card offers to unmute");
@@ -1253,20 +1281,20 @@ mod tests {
             // Open names the call's place, in the app that holds it.
             live.press(&shown.key, "open").expect("the card's open");
             assert_eq!(
-                card.pass(&board, &media, "Lounge", |_| false),
-                Some(Open {
+                card.pass(&board, &media, lounge(None), |_| false),
+                Some(Pressed::Open(Open {
                     workspace: "the-workspace".to_owned(),
                     app: APP.to_owned(),
                     record: "chat-record".to_owned(),
                     resource: format!("tl:{APP}:{PLACE}"),
-                })
+                }))
             );
 
             // Leave ends the call, and the card goes with it.
-            card.pass(&board, &media, "Lounge", |_| false);
+            card.pass(&board, &media, lounge(None), |_| false);
             let (shown, _) = row(&live).expect("the call's card");
             live.press(&shown.key, "leave").expect("the card's leave");
-            card.pass(&board, &media, "Lounge", |_| false);
+            card.pass(&board, &media, lounge(None), |_| false);
             assert!(media.own_call().is_none(), "the call is over");
             assert!(row(&live).is_none(), "and its card is gone");
         }

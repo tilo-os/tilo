@@ -1949,6 +1949,7 @@ impl Session {
             vpn,
             devices: crate::devices::press::Devices::default(),
             continuity: continuity_offers,
+            call_move: std::cell::RefCell::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             tethering: crate::tethering::Tethering::new(options.wifi_sharing.clone()),
             remote_uses: crate::remote_use::RemoteUses::new(

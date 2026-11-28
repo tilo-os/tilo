@@ -574,6 +574,20 @@ call-card-reconnecting = Reconnecting
 call-card-muted = Muted
 call-card-deafened = Deafened
 call-card-connected = Connected
+call-card-continue = Continue on { $device }
+call-card-moving = Moving to { $device }
+call-move-app = Calls
+call-move-ask-title = Take the call from { $device }?
+call-move-ask-body = You stay in the { $app } call: it comes over as it is, with your microphone and camera as they were, and leaves { $device } once it's live here.
+call-move-ask-take = Take call
+call-move-ask-decline = Not now
+call-move-stayed-title = The call stayed on this device
+call-move-reason-declined = It wasn't taken on { $device }.
+call-move-reason-no-answer = { $device } didn't answer in time.
+call-move-reason-late = It was taken on { $device } too late.
+call-move-reason-not-live = The call couldn't start on { $device }.
+call-move-not-taken-title = The call couldn't start here
+call-move-not-taken-body = You're still in it on { $device }.
 
 ## What the window names
 session-resource-keyboard = On-screen keyboard

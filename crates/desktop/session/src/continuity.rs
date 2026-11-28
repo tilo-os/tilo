@@ -242,8 +242,12 @@ impl Across {
             .get()
             .continuity
             .iter()
+            // A call handed here is asked about first ([`crate::call_move`]), never opened.
             .filter(|(_, kept)| {
-                kept.to == local && kept.shown_at(now_ms) && kept.answer_of(&local).is_none()
+                kept.to == local
+                    && !kept.call.is_call()
+                    && kept.shown_at(now_ms)
+                    && kept.answer_of(&local).is_none()
             })
             .map(|(_, kept)| kept.clone())
             .filter(|kept| self.opened.insert((kept.from.clone(), kept.shown_ms)))
@@ -432,6 +436,11 @@ impl crate::Shared {
     /// them, when the front window or the resource it shows moved: the app, the resource and the
     /// view it shows it through.
     pub(crate) fn offer_front(&self) {
+        // The record holds one offer of this device's: while it hands a call to another device,
+        // the front window does not replace it.
+        if self.call_move.borrow().moving().is_some() {
+            return;
+        }
         let tab = self.tab_in_front();
         let resources = self.layout.borrow().window_resources();
         let resource = tab

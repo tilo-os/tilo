@@ -243,6 +243,51 @@ pub struct ContinuityOffer {
     /// The workspace it was shown in, by id: the device it is made to opens it there when it holds
     /// it; empty for its workspace in front.
     pub workspace: String,
+    /// The call it hands to [`Self::to`], as it stands on the device it is on; no call while its
+    /// channel is empty. The device it is made to asks its person first, and says it took it once
+    /// the call is live there, which is when the device it is on leaves it.
+    pub call: HandedCall,
+}
+
+/// A call one of the person's devices hands to another: the app's record and voice channel it is
+/// held on (the app and workspace are the offer's own), and how it stands there, which is how it
+/// comes in on the device that takes it.
+#[derive(
+    Model,
+    Default,
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "muted, deafened, camera and screen are each their own switch of the call"
+)]
+pub struct HandedCall {
+    /// The app's record the call is held on, by id.
+    pub record: String,
+    /// The voice channel of that record; empty for no call.
+    pub channel: String,
+    /// The microphone is off.
+    pub muted: bool,
+    /// Nothing of the call is heard.
+    pub deafened: bool,
+    /// The camera shows in the call.
+    pub camera: bool,
+    /// The screen is shared in the call.
+    pub screen: bool,
+}
+
+impl HandedCall {
+    /// Whether it hands a call at all.
+    #[must_use]
+    pub const fn is_call(&self) -> bool {
+        !self.channel.is_empty()
+    }
 }
 
 impl ContinuityOffer {
@@ -764,6 +809,7 @@ impl Devices {
             to: offer.to.clone(),
             output: offer.output.clone(),
             workspace: offer.workspace.clone(),
+            call: offer.call.clone(),
         })
     }
 
@@ -1050,6 +1096,9 @@ pub struct OfferShown {
     /// The workspace it was shown in, by id.
     #[serde(default)]
     pub workspace: String,
+    /// The call it hands to the device it is made to; no call when left out.
+    #[serde(default)]
+    pub call: HandedCall,
 }
 
 /// A window to show on another device: the app, the record it shows and the workspace it is in.
@@ -1892,6 +1941,7 @@ impl Devices {
             to,
             output,
             workspace,
+            call,
         } = offer;
         validate_key(&from)?;
         if !self.devices.contains(&Id::from_raw(from.clone())) {
@@ -1927,6 +1977,18 @@ impl Devices {
                 "an offer names the resource the app showed, in up to 512 bytes, and its view",
             ));
         }
+        if (call.is_call() || !call.record.is_empty())
+            && (to.is_empty()
+                || resource.is_empty()
+                || call.record.is_empty()
+                || [&call.record, &call.channel]
+                    .into_iter()
+                    .any(|value| value.len() > 160 || value.chars().any(char::is_control)))
+        {
+            return Err(Refusal::new(
+                "a call is handed to one device, on the record and channel it is held on",
+            ));
+        }
         if shown_ms <= 0
             || until_ms <= shown_ms
             || until_ms.saturating_sub(shown_ms) > MAX_CONTINUITY_SHOWN_MS
@@ -1947,6 +2009,7 @@ impl Devices {
             to,
             output,
             workspace,
+            call,
         };
         match self.continuity.get_mut(&id) {
             Some(kept) => *kept = offer,
@@ -2029,6 +2092,7 @@ impl Devices {
             to: device,
             output: output.unwrap_or_default(),
             workspace: window.workspace,
+            call: HandedCall::default(),
         })
     }
 
@@ -3313,6 +3377,101 @@ mod tests {
         let answer = kept.answered_by(&phone_key).expect("the phone answered");
         assert!(!answer.taken);
         assert_eq!(answer.reason, "Files isn't installed on the phone");
+    }
+
+    /// A call is handed to one other device, on the record and voice channel it is held on and
+    /// as it stands: an offer every device would draw, or one naming no place, hands no call.
+    #[test]
+    fn a_call_is_handed_to_one_other_device_as_it_stands() {
+        let (laptop, phone) = ([1; 32], [2; 32]);
+        let (laptop_key, phone_key) = (hex::encode(laptop), hex::encode(phone));
+        let mut devices = tilo_resource::Replica::<Devices>::new().in_app("so.tilo.model", "Model");
+        for key in [&laptop_key, &phone_key] {
+            devices
+                .apply(Devices::KEEP_DEVICE.with((key.clone(), "00".to_owned())))
+                .expect("the device is kept");
+        }
+        let call = HandedCall {
+            record: "chat-record".into(),
+            channel: "voice/lounge".into(),
+            muted: false,
+            deafened: false,
+            camera: true,
+            screen: false,
+        };
+        let offer = ContinuityOffer {
+            from: laptop_key.clone(),
+            app_id: "so.tilo.chat".into(),
+            app_name: "Chat".into(),
+            resource: "tl:so.tilo.chat:voice/lounge".into(),
+            shown_ms: 1_000,
+            until_ms: 61_000,
+            to: phone_key.clone(),
+            workspace: "work".into(),
+            call: call.clone(),
+            ..ContinuityOffer::default()
+        };
+        for (refused, why) in [
+            (
+                ContinuityOffer {
+                    to: String::new(),
+                    ..offer.clone()
+                },
+                "an offer to every device",
+            ),
+            (
+                ContinuityOffer {
+                    resource: String::new(),
+                    ..offer.clone()
+                },
+                "an offer of no place",
+            ),
+            (
+                ContinuityOffer {
+                    call: HandedCall {
+                        record: String::new(),
+                        ..call.clone()
+                    },
+                    ..offer.clone()
+                },
+                "a call on no record",
+            ),
+        ] {
+            assert!(
+                devices
+                    .apply(Devices::offering_continuity(&refused))
+                    .is_err(),
+                "{why} hands no call"
+            );
+        }
+        devices
+            .apply(Devices::offering_continuity(&offer))
+            .expect("the laptop hands its call to the phone");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key.clone()))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(kept.call, call, "the call comes as it stands");
+        devices
+            .apply(Devices::answering_continuity(
+                &laptop_key,
+                1_000,
+                &phone,
+                true,
+                None,
+            ))
+            .expect("the phone says it took the call");
+        let kept = devices
+            .state()
+            .unwrap()
+            .continuity
+            .get(&Id::from_raw(laptop_key))
+            .cloned()
+            .expect("the offer is kept");
+        assert_eq!(kept.answer_of(&phone_key), Some(true));
     }
 
     #[test]

@@ -701,3 +701,55 @@ async fn the_systems_step_does_not_make_the_apps_next_one_stale() {
         "no call is left to leave"
     );
 }
+
+/// A call another of the person's devices handed here is said to its app's record alone, which
+/// joins it as it declares joining: the call comes in heard and on camera, as it stood there, and
+/// is no longer said to be waiting. One dropped before its app joined is said to nobody.
+#[tokio::test]
+async fn a_handed_call_waits_for_its_app_and_comes_in_as_it_stood() {
+    let service = service(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+    let elsewhere = Caller {
+        record: "another".to_owned(),
+        ..caller(Arc::new(AtomicBool::new(true)))
+    };
+    let handed = super::OwnCall {
+        workspace: who.workspace.clone(),
+        app: who.app.clone(),
+        record: who.record.clone(),
+        channel: "c_voice".to_owned(),
+        camera: true,
+        screen: false,
+        muted: false,
+        deafened: false,
+        state: State::Live,
+    };
+    service.hand_in(handed.clone());
+    let status = send(&service, &who, request(0, Command::Status)).expect("the record's status");
+    assert_eq!(status.handed.as_deref(), Some("c_voice"));
+    assert!(
+        status.valid(),
+        "a status that says so is one the wire carries"
+    );
+    let other = send(&service, &elsewhere, request(0, Command::Status)).expect("another status");
+    assert_eq!(other.handed, None, "another record is handed nothing");
+
+    send(&service, &who, request(1, join("c_voice"))).expect("the app joins as it declares");
+    let live = settled(&service, &who).await;
+    assert!(!live.muted, "the call is heard here as it was there");
+    assert!(live.capture_active);
+    assert!(live.camera, "the camera it showed there shows here");
+    assert_eq!(live.handed, None, "joined, nothing waits any more");
+    assert_eq!(service.handed(), None);
+
+    // Dropped before its app joined: nothing is said, and a join is an ordinary one.
+    send(&service, &who, request(2, Command::Leave)).expect("the call ends");
+    service.hand_in(handed);
+    service.drop_handed();
+    let status = send(&service, &who, request(0, Command::Status)).expect("the record's status");
+    assert_eq!(status.handed, None);
+    send(&service, &who, request(3, join("c_voice"))).expect("an ordinary join");
+    let live = settled(&service, &who).await;
+    assert!(live.muted, "an ordinary join listens muted");
+    assert!(!live.camera);
+}

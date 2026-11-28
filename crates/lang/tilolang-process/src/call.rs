@@ -574,6 +574,7 @@ impl Calls {
                                 .map(|hash| format!("tilo-blob://{hash}"))
                                 .unwrap_or_default(),
                         }),
+                    handed: false,
                 });
             out.entry(roster.channel_id.clone())
                 .or_default()
@@ -585,6 +586,23 @@ impl Calls {
             out.entry(joined.clone())
                 .or_default()
                 .insert(0, self.own(Some(snapshot)));
+        }
+        // The call another of the person's devices handed here, while this device has not
+        // joined it: the person shows in it as handed, which is what the view joins it on.
+        if let Some(handed) = snapshot.handed.as_ref().filter(|_| self.joined.is_none()) {
+            let people = out.entry(handed.clone()).or_default();
+            let me = Actor::Member(MemberId::person(self.me.as_str()));
+            match people.iter_mut().find(|member| member.who == me) {
+                Some(member) => member.handed = true,
+                None => people.insert(
+                    0,
+                    CallMember {
+                        mine: false,
+                        handed: true,
+                        ..self.own(Some(snapshot))
+                    },
+                ),
+            }
         }
         out
     }
@@ -609,6 +627,7 @@ impl Calls {
                 })
                 .unwrap_or(100),
             bridged: None,
+            handed: false,
         }
     }
 }
@@ -691,6 +710,7 @@ mod tests {
             cameras: Vec::new(),
             camera_id: None,
             pictures_local: false,
+            handed: None,
         }
     }
 
@@ -1019,6 +1039,39 @@ mod tests {
                 panic!("the window takes the call's pictures");
             };
             assert!(shown.is_empty() && pictures.is_empty());
+        }
+
+        phase a_call_handed_here_shows_the_person_as_handed_until_this_device_joins;
+        {
+            let mut calls = Calls::new(ME);
+            let mut line = Line::default();
+            sent(&mut calls, &mut line);
+            let watch = line.correlation_of(|request| matches!(request.command, Command::Watch { .. }));
+            let mut handed = snapshot(State::Idle, Roster {
+                people: vec![ADA.to_owned(), ME.to_owned()],
+                ..channel_call(false, false)
+            });
+            handed.muted = true;
+            handed.capture_active = false;
+            handed.handed = Some(PLACE.to_owned());
+            answer(&mut calls, watch, handed);
+            let members = calls.members();
+            let me = Actor::Member(MemberId::person(ME));
+            let shown = members[PLACE].iter().find(|member| member.who == me).expect("the person shows");
+            assert!(shown.handed, "the person's call is handed here");
+            assert!(!shown.mine, "and not yet joined from this device");
+            assert_eq!(
+                members[PLACE].iter().filter(|member| member.handed).count(),
+                1,
+                "only the person is handed"
+            );
+
+            let id = joined(&mut calls, &mut line);
+            answer(&mut calls, id, snapshot(State::Joining, channel_call(false, false)));
+            assert!(
+                calls.members()[PLACE].iter().all(|member| !member.handed),
+                "joined from here, nothing waits"
+            );
         }
     }
 }

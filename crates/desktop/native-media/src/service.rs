@@ -119,6 +119,9 @@ struct Entry {
     muted_before_deafen: bool,
     /// The person asked to be heard before the call was live: it is, once it is.
     heard_when_live: bool,
+    /// The call as it stood on the device that handed it here: the camera and screen it showed
+    /// there come back once the call is live here.
+    restore: Option<OwnCall>,
 }
 
 /// What a watcher of a call sees change between ticks.
@@ -170,6 +173,9 @@ struct Shared {
     rosters: Mutex<BTreeMap<(String, String, String), Vec<Roster>>>,
     /// Woken whenever a status may have changed: what a `Watch` waits on.
     changed: tokio::sync::Notify,
+    /// The call another of this person's devices handed here, which the person took: its app
+    /// joins it the way it declares joining, and it comes in as it stood there.
+    handed: Mutex<Option<OwnCall>>,
 }
 
 /// The voice channel this device is in.
@@ -217,7 +223,31 @@ impl NativeMediaService {
             calls: Mutex::new(Calls::default()),
             rosters: Mutex::new(BTreeMap::new()),
             changed: tokio::sync::Notify::new(),
+            handed: Mutex::new(None),
         }))
+    }
+
+    /// Take in `call`, which another of this person's devices handed here and the person took:
+    /// every status its app's record reads says so ([`Snapshot::handed`]), so the app joins it
+    /// the way it declares it joins a call, and the join brings it in as it stood there: heard
+    /// or muted, deafened, on camera, sharing the screen. A newer hand-off replaces this one.
+    pub fn hand_in(&self, call: OwnCall) {
+        *self.0.handed.lock_recover() = Some(call);
+        self.0.changed.notify_waiters();
+    }
+
+    /// The call handed here that its app has not joined yet.
+    #[must_use]
+    pub fn handed(&self) -> Option<OwnCall> {
+        self.0.handed.lock_recover().clone()
+    }
+
+    /// Stop waiting for the app to join the call handed here: the hand-off ran out or was turned
+    /// down, and the call stays on the device it was on.
+    pub fn drop_handed(&self) {
+        if self.0.handed.lock_recover().take().is_some() {
+            self.0.changed.notify_waiters();
+        }
     }
 
     /// Hand the calls their carrier: what joins a channel, and who is in
@@ -410,7 +440,23 @@ impl NativeMediaService {
                     .calls
                     .lock()
                     .map_err(|_| "native media unavailable")?;
-                Ok(calls.entries.get(&key).map_or_else(idle, Shared::snapshot))
+                let mut snapshot = calls.entries.get(&key).map_or_else(idle, Shared::snapshot);
+                drop(calls);
+                // A call handed here waits for its app's record to join it, while that is in no
+                // call.
+                if matches!(snapshot.state, State::Idle | State::Ended) {
+                    snapshot.handed = self
+                        .0
+                        .handed
+                        .lock_recover()
+                        .as_ref()
+                        .filter(|call| {
+                            (&call.workspace, &call.app, &call.record)
+                                == (&key.workspace, &key.app, &key.record)
+                        })
+                        .map(|call| call.channel.clone());
+                }
+                Ok(snapshot)
             }
             Command::SetMuted { muted: false } | Command::SetDeafened { deafened: false } => {
                 self.unmute(&key, intent)
@@ -498,6 +544,20 @@ impl NativeMediaService {
         if calls.entries.len() >= MAX_CALLS {
             return Err("native media capacity reached".into());
         }
+        // The call another device handed here comes in as it stood there.
+        let restore = {
+            let mut handed = self.0.handed.lock_recover();
+            if handed.as_ref().is_some_and(|call| {
+                call.workspace == target.workspace
+                    && call.app == target.app
+                    && call.record == target.record
+                    && call.channel == target.channel
+            }) {
+                handed.take()
+            } else {
+                None
+            }
+        };
         calls.next = calls
             .next
             .checked_add(1)
@@ -505,6 +565,7 @@ impl NativeMediaService {
         let generation = calls.next;
         let mut snapshot = idle();
         snapshot.state = State::Joining;
+        snapshot.deafened = restore.as_ref().is_some_and(|call| call.deafened);
         let factory = self
             .0
             .factory
@@ -522,8 +583,11 @@ impl NativeMediaService {
                 backend: None,
                 worker: None,
                 seen: None,
-                muted_before_deafen: true,
-                heard_when_live: false,
+                muted_before_deafen: restore.as_ref().is_none_or(|call| call.muted),
+                heard_when_live: restore
+                    .as_ref()
+                    .is_some_and(|call| !call.muted && !call.deafened),
+                restore,
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -1012,6 +1076,28 @@ impl Shared {
         }
     }
 
+    /// Show in the live call `entry` the camera and screen `call` showed on the device that
+    /// handed it here: each is asked of the carrier as the person turning it on would, and one
+    /// this device cannot show says why and stays off.
+    fn show_as(entry: &mut Entry, call: &OwnCall) {
+        let Some(backend) = entry.backend.clone() else {
+            return;
+        };
+        let mut backend = backend.lock_recover();
+        if call.camera {
+            match backend.set_camera(true) {
+                Ok(()) => entry.snapshot.camera = true,
+                Err(issue) => entry.snapshot.issue = Some(issue),
+            }
+        }
+        if call.screen {
+            match backend.set_screen(true) {
+                Ok(()) => entry.snapshot.screen = true,
+                Err(issue) => entry.snapshot.issue = Some(issue),
+            }
+        }
+    }
+
     fn stop_entry(entry: &mut Entry) {
         Shared::stop_capture(entry);
         if let Some(worker) = entry.worker.take() {
@@ -1055,6 +1141,11 @@ impl Shared {
                 entry.snapshot.state = state;
                 if state == State::Live && entry.heard_when_live {
                     Shared::hear(entry);
+                }
+                if state == State::Live
+                    && let Some(call) = entry.restore.take()
+                {
+                    Shared::show_as(entry, &call);
                 }
                 let seen = Some(Seen::of(entry));
                 if entry.seen != seen {

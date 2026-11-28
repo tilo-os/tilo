@@ -190,6 +190,17 @@ impl Publisher {
             .collect()
     }
 
+    /// The person's other devices on a session with this one now, by key and what they call it,
+    /// as last published: where the call card offers to move a call.
+    pub(crate) fn other_devices(&self) -> Vec<(String, String)> {
+        self.seen
+            .iter()
+            .flatten()
+            .filter(|device| !device.local && device.online)
+            .map(|device| (device.device.clone(), device.label.clone()))
+            .collect()
+    }
+
     /// Publish `devices`, `local` (hex) among them this one, unless it is what was published last.
     /// Whether they changed: the window menu follows them even where Settings' copy is not written.
     fn publish(&mut self, local: &str, devices: Vec<PersonDevice>) -> bool {

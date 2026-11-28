@@ -580,6 +580,20 @@ call-card-reconnecting = Verbindung wird wiederhergestellt
 call-card-muted = Stumm
 call-card-deafened = Ton aus
 call-card-connected = Verbunden
+call-card-continue = Auf { $device } fortsetzen
+call-card-moving = Wechselt zu { $device }
+call-move-app = Anrufe
+call-move-ask-title = Anruf von { $device } übernehmen?
+call-move-ask-body = Du bleibst im Anruf in { $app }: Er kommt so herüber, wie er ist, mit Mikrofon und Kamera wie zuvor, und verlässt { $device }, sobald er hier läuft.
+call-move-ask-take = Anruf übernehmen
+call-move-ask-decline = Nicht jetzt
+call-move-stayed-title = Der Anruf bleibt auf diesem Gerät
+call-move-reason-declined = Er wurde auf { $device } nicht übernommen.
+call-move-reason-no-answer = { $device } hat nicht rechtzeitig geantwortet.
+call-move-reason-late = Er wurde auf { $device } zu spät übernommen.
+call-move-reason-not-live = Der Anruf konnte auf { $device } nicht starten.
+call-move-not-taken-title = Der Anruf konnte hier nicht starten
+call-move-not-taken-body = Du bist auf { $device } weiterhin im Anruf.
 
 ## What the window names
 session-resource-keyboard = Bildschirmtastatur

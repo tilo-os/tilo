@@ -843,6 +843,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "The address of their picture on that service; empty when it has none, or for someone in the call here.",
             ),
+            (
+                "handed",
+                "Bool",
+                "Whether it is the person looking, whose call another of their devices handed to this one and who took it here: the call view joins it the way its app joins a call.",
+            ),
         ],
     },
     ValueType {

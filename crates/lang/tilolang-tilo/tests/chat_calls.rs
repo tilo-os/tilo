@@ -25,6 +25,7 @@ fn member(name: &str, mine: bool, speaking: bool) -> CallMember {
         screen: false,
         volume: 100,
         bridged: None,
+        handed: false,
     }
 }
 
@@ -227,5 +228,37 @@ fn how_loud_someone_plays_is_this_devices_own_and_plays_at_once_and_on_joining()
             }
         ],
         "joining asks no unmute, and plays bo as this device keeps them"
+    );
+}
+
+/// A call the person moved here from another of their devices joins on its own, the way Chat
+/// joins a call: the voice channel's view runs Chat's own join, levels and all, once, and a call
+/// that is not handed joins only on a press.
+#[test]
+fn a_call_handed_from_another_device_joins_the_way_chat_joins() {
+    let (ada, _) = Replica::on_device("ada", "ada-phone", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let channel = lounge(&ada, &[member("bo", false, true)]);
+    let mut voice = ada.host.open_resource(&target(&channel), None).unwrap();
+    assert!(
+        voice.tree().of_kind("ui.Timer").is_empty(),
+        "a call nobody handed here waits for a press"
+    );
+
+    let mut handed = member("ada", false, false);
+    handed.handed = true;
+    ada.host.runtime().set_call(
+        &tilolang_runtime::platform::call_place(&target(&channel)),
+        &[handed, member("bo", false, true)],
+    );
+    voice.poll_patches().unwrap();
+    let timers = voice.tree().of_kind("ui.Timer");
+    assert_eq!(timers.len(), 1, "the handed call is joined on its own");
+    let clock = timers[0].key.clone();
+    voice.fire(&clock, "tick").unwrap();
+    ada.commit();
+    assert_eq!(
+        steps(&mut voice),
+        vec![CallStep::Join],
+        "the call is joined through Chat's own join"
     );
 }

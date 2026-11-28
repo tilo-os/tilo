@@ -227,6 +227,10 @@ pub(crate) struct Shared {
     /// device offers of its own, and what the bar's chip offers to continue.
     #[cfg(target_os = "linux")]
     pub(crate) continuity: crate::continuity::Shared,
+    /// Moving the person's call between their devices: the call this device hands over, and the
+    /// calls handed here.
+    #[cfg(target_os = "linux")]
+    pub(crate) call_move: RefCell<crate::call_move::CallMoves>,
     /// Moving a Bluetooth accessory between the person's devices: what the
     /// panel asked for, what their other devices said, and the Bluetooth
     /// work the move needs.

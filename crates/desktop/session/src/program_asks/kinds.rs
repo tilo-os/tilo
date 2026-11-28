@@ -373,6 +373,8 @@ pub(crate) fn put(
         #[cfg(target_os = "linux")]
         crate::remote_use::KIND => remote_use(details)?,
         #[cfg(target_os = "linux")]
+        crate::call_move::KIND => take_call(details)?,
+        #[cfg(target_os = "linux")]
         crate::app_sheets::ADD_KIND => add_app(details)?,
         #[cfg(target_os = "linux")]
         crate::app_sheets::UNINSTALL_KIND => uninstall(details)?,
@@ -617,6 +619,27 @@ fn remote_use(details: Value) -> Kind {
     );
     facts.verb = crate::i18n::t("session-remote-ask-allow");
     facts.decline = Some(crate::i18n::t("session-remote-ask-decline"));
+    facts.by = desktop();
+    Some((facts, Reply::Confirm))
+}
+
+/// "Take the call from Ada's laptop?": another of the person's devices hands this one the call it
+/// is in, which comes in here as it stood there on their yes.
+#[cfg(target_os = "linux")]
+fn take_call(details: Value) -> Kind {
+    let asked: crate::call_move::TakeQuestion = serde_json::from_value(details).ok()?;
+    let mut facts = asking(
+        crate::i18n::t_args(
+            "call-move-ask-title",
+            &[("device", tilo_ui_base::i18n::ArgValue::Text(asked.device))],
+        ),
+        Some(crate::i18n::t_args(
+            "call-move-ask-body",
+            &[("app", tilo_ui_base::i18n::ArgValue::Text(asked.call))],
+        )),
+    );
+    facts.verb = crate::i18n::t("call-move-ask-take");
+    facts.decline = Some(crate::i18n::t("call-move-ask-decline"));
     facts.by = desktop();
     Some((facts, Reply::Confirm))
 }

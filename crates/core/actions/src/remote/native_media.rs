@@ -446,6 +446,12 @@ pub struct Snapshot {
     /// The camera the call sends from, or would once the camera is on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_id: Option<String>,
+    /// The voice channel of the app's record whose call another of this person's devices handed
+    /// to this one, and the person took here: the app joins it the way it declares it joins a
+    /// call, and the call comes in as it stood there (heard or muted, deafened, camera, screen).
+    /// `None` once the call is joined here, or while nothing is handed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed: Option<String>,
 }
 
 /// How loud this device plays one member of a call, in percent of as they arrive
@@ -689,6 +695,7 @@ impl Snapshot {
             cameras: Vec::new(),
             camera_id: None,
             pictures_local: false,
+            handed: None,
         }
     }
 
@@ -739,6 +746,7 @@ impl Snapshot {
                 })
             }
             && self.camera_id.as_deref().is_none_or(identifier)
+            && self.handed.as_deref().is_none_or(identifier)
             && self.volumes.iter().all(|volume| {
                 person_valid(&volume.member) && volume.percent <= MAX_VOLUME_PERCENT
             })

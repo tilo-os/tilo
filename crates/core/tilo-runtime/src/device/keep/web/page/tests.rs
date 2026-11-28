@@ -484,6 +484,7 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
             cameras: Vec::new(),
             camera_id: None,
             pictures_local: false,
+            handed: None,
         };
         ask(
             &mut browser,

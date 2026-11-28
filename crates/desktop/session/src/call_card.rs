@@ -1,7 +1,9 @@
 //! The card of this device's call, over the windows while the person is not looking at the call:
-//! its channel, whether this device is heard, and Mute, Deafen, Leave and Open (back to the call in
-//! its app). An app draws only inside its window, so the system stands the card for every app's
-//! call, from the call service's own state ([`tilo_native_media::NativeMediaService::own_call`]).
+//! its channel, whether this device is heard, and Mute, Deafen, Leave, Open (back to the call in
+//! its app) and Continue on each other device of the person's that is online, which moves the call
+//! there ([`crate::call_move`]). An app draws only inside its window, so the system stands the
+//! card for every app's call, from the call service's own state
+//! ([`tilo_native_media::NativeMediaService::own_call`]).
 //!
 //! The card is an activity on the live board, under [`APP`], beside every other activity the
 //! shell draws: the bar's pill and quick settings list it, and its controls come back here. A
@@ -26,6 +28,26 @@ pub(crate) struct CallCard {
     shown: Option<Value>,
 }
 
+/// What a press on the card asks of the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Pressed {
+    /// Show the call's place in its app.
+    Open(Open),
+    /// Move the call to the person's device by this key.
+    Continue(String),
+}
+
+/// What stands around the call as the card shows it.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Around<'a> {
+    /// What the call's place is called; the app's name when empty.
+    pub(crate) name: &'a str,
+    /// The person's other devices that are online, by key and name: where the call can move.
+    pub(crate) devices: &'a [(String, String)],
+    /// The device the call is moving to, by name, while it is.
+    pub(crate) moving: Option<&'a str>,
+}
+
 /// What the card's Open asks: the call's place, shown in the app the call is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Open {
@@ -38,15 +60,16 @@ pub(crate) struct Open {
 
 impl CallCard {
     /// Take what was pressed on the card since the last pass, then show the call as it stands
-    /// now: named `name`, on the board while `looking` says the person is not looking at it, and
-    /// off it when there is no call. What Open asked, when it was pressed.
+    /// now, with what stands `around` it: on the board while `looking` says the person is not
+    /// looking at it, and off it when there is no call. What Open or Continue asked, when one was
+    /// pressed.
     pub(crate) fn pass(
         &mut self,
         board: &runtime_collab::LiveActivities,
         media: &NativeMediaService,
-        name: &str,
+        around: Around<'_>,
         looking: impl FnOnce(&OwnCall) -> bool,
-    ) -> Option<Open> {
+    ) -> Option<Pressed> {
         let mut open = None;
         if let Some((serial, controls)) = board.pressed_controls(APP, self.pressed) {
             self.pressed = serial;
@@ -64,10 +87,10 @@ impl CallCard {
         }
         let activity = media
             .own_call()
-            .filter(|call| open.is_none() && !looking(call))
+            .filter(|call| !matches!(open, Some(Pressed::Open(_))) && !looking(call))
             .and_then(|call| {
                 serde_json::to_value(Published {
-                    summary: Some(summary(&call, name)),
+                    summary: Some(summary(&call, around)),
                     overlay: true,
                     announce: None,
                 })
@@ -82,8 +105,11 @@ impl CallCard {
     }
 }
 
-/// Carry out the card's `command` on `call`: what Open asks, for Open.
-fn press(media: &NativeMediaService, call: &OwnCall, command: &str) -> Option<Open> {
+/// Carry out the card's `command` on `call`: what Open and Continue ask, for those.
+fn press(media: &NativeMediaService, call: &OwnCall, command: &str) -> Option<Pressed> {
+    if let Some(device) = command.strip_prefix(CONTINUE) {
+        return Some(Pressed::Continue(device.to_owned()));
+    }
     let asked = match command {
         "mute" => Command::SetMuted { muted: true },
         "unmute" => Command::SetMuted { muted: false },
@@ -91,12 +117,12 @@ fn press(media: &NativeMediaService, call: &OwnCall, command: &str) -> Option<Op
         "undeafen" => Command::SetDeafened { deafened: false },
         "leave" => Command::Leave,
         "open" => {
-            return Some(Open {
+            return Some(Pressed::Open(Open {
                 workspace: call.workspace.clone(),
                 app: call.app.clone(),
                 record: call.record.clone(),
                 resource: tilolang_tilo::naming::resource_id(&call.app, &call.channel),
-            });
+            }));
         }
         other => {
             tracing::debug!(command = other, "a call card control nothing answers");
@@ -109,10 +135,18 @@ fn press(media: &NativeMediaService, call: &OwnCall, command: &str) -> Option<Op
     None
 }
 
-/// The card of `call`, named `name`: where it stands, and its controls.
-fn summary(call: &OwnCall, name: &str) -> Summary {
+/// The control id that moves the call to a device, the device's key after it.
+const CONTINUE: &str = "continue:";
+
+/// The card of `call`, with what stands `around` it: where it stands, and its controls.
+fn summary(call: &OwnCall, around: Around<'_>) -> Summary {
     let t = crate::i18n::t;
+    let name = around.name;
     let value = match call.state {
+        _ if around.moving.is_some() => crate::i18n::t_args(
+            "call-card-moving",
+            &[("device", around.moving.unwrap_or_default().into())],
+        ),
         State::Joining => t("call-card-joining"),
         State::Reconnecting => t("call-card-reconnecting"),
         _ if call.deafened => t("call-card-deafened"),
@@ -130,7 +164,7 @@ fn summary(call: &OwnCall, name: &str) -> Summary {
         ("deafen", t("call-card-deafen"), "headphones")
     };
     let app = crate::app_names::app_name(&call.app);
-    Summary::new(
+    let mut summary = Summary::new(
         Kind::Call,
         if name.is_empty() {
             app.clone()
@@ -153,7 +187,21 @@ fn summary(call: &OwnCall, name: &str) -> Summary {
     )
     .with_control(
         Control::new("open", t("call-card-open"), ControlKind::Primary).with_icon("maximize-2"),
-    )
+    );
+    // A call on its way to another device is not offered to move again.
+    if around.moving.is_none() {
+        for (key, device) in around.devices {
+            summary = summary.with_control(
+                Control::new(
+                    format!("{CONTINUE}{key}"),
+                    crate::i18n::t_args("call-card-continue", &[("device", device.clone().into())]),
+                    ControlKind::Secondary,
+                )
+                .with_icon("monitor-smartphone"),
+            );
+        }
+    }
+    summary
 }
 
 impl crate::Session {
@@ -176,18 +224,36 @@ impl crate::Session {
                         .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(id, &call.app))
             })
         };
-        let open = app_wire
+        let devices = self.published_displays.other_devices();
+        let moving = self.shared.call_move.borrow().moving().map(str::to_owned);
+        let around = Around {
+            name,
+            devices: &devices,
+            moving: moving.as_deref(),
+        };
+        let pressed = app_wire
             .call_card
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pass(self.shared.activities.board(), media, name, looking);
-        if let (Some(open), Some(apps)) = (open, apps) {
-            let reference = tilo_reference::ResourceRef::whole("", open.resource, "");
-            if let Err(error) =
-                apps.open_reference(&open.workspace, &open.app, Some(&open.record), &reference)
-            {
-                tracing::warn!(%error, "the call card could not open the call");
+            .pass(self.shared.activities.board(), media, around, looking);
+        let continue_on = match pressed {
+            Some(Pressed::Open(open)) => {
+                if let Some(apps) = apps {
+                    let reference = tilo_reference::ResourceRef::whole("", open.resource, "");
+                    if let Err(error) = apps.open_reference(
+                        &open.workspace,
+                        &open.app,
+                        Some(&open.record),
+                        &reference,
+                    ) {
+                        tracing::warn!(%error, "the call card could not open the call");
+                    }
+                }
+                None
             }
-        }
+            Some(Pressed::Continue(device)) => Some(device),
+            None => None,
+        };
+        self.follow_call_moves(media, continue_on);
     }
 }
