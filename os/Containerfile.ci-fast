@@ -62,12 +62,15 @@ RUN export SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}" \
 # device VPN's network namespaces, which drive ip and nft) and the C linker
 # cargo needs when
 # the app lints compile tilolang-cli (`cc` is Fedora's alternatives symlink to gcc).
+# The SDK suites run the device daemon, which links GStreamer and GLib; the
+# runtime libraries are here so the image that hosts those suites carries them.
 # Baked in so those jobs neither wait on nor depend on a Fedora mirror; a
 # separate layer keeps the base cached.
 RUN export SOURCE_DATE_EPOCH="${TILO_BUILD_EPOCH}" \
     && dnf install -y --setopt=install_weak_deps=False \
       gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts bubblewrap \
       dosfstools systemd-udev util-linux iproute nftables \
+      glib2 gstreamer1 gstreamer1-plugins-base \
     && dnf clean all \
     && bwrap --version \
     && test -x /usr/bin/cc \
