@@ -468,7 +468,15 @@ async fn accept(
                     process,
                 } => {
                     let name = format!("launch {}", app.ticket);
-                    launches.recorded(app.ticket).await;
+                    if !launches.recorded(app.ticket).await {
+                        // Error, not warning: the app ends for this, and its window says it
+                        // could not open.
+                        tracing::error!(
+                            app = %name,
+                            "an app's connection is vouched for by no launch the daemon recorded"
+                        );
+                        return;
+                    }
                     shell
                         .vouch(connection, Some((app, process)))
                         .await

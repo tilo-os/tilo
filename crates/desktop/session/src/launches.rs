@@ -131,7 +131,7 @@ pub struct Launches {
     /// The launches whose process the daemon has not answered for yet ([`Self::started_as`]):
     /// a connection vouched for with the ticket waits for that answer ([`Self::recorded`]), as
     /// the daemon admits it only once the process is bound to the launch.
-    recording: Mutex<BTreeMap<u64, tokio::sync::watch::Receiver<bool>>>,
+    recording: Mutex<BTreeMap<u64, tokio::sync::watch::Receiver<Option<bool>>>>,
     /// The launches the device's daemon ordered of this session for a caller of its own (an
     /// app's, an agent's), waiting for the pass that starts them.
     ordered: Mutex<Vec<runtime_collab::wire::shell::LaunchOrder>>,
@@ -201,42 +201,73 @@ impl Launches {
     /// from the process is vouched for with the ticket from now on, and the daemon is told,
     /// without this session waiting for its answer. It binds the process to the launch it
     /// recorded, which only its bookkeeping waits on, never the start.
+    ///
+    /// A process the daemon did not record is ended: nothing would vouch for its connections,
+    /// so it could never open, and its end is what its tab says.
     pub(crate) fn started_as(&self, ticket: u64, pid: u32) {
+        // Whether the daemon recorded the process is known before any connection of it is
+        // vouched for: until it answers, a connection waits ([`Self::recorded`]).
+        let (answered, waiting) = tokio::sync::watch::channel(None);
+        self.recording.lock_recover().insert(ticket, waiting);
         self.tickets.lock_recover().insert(pid, ticket);
+        let unrecorded = |why: &str| {
+            tracing::error!(ticket, pid, %why, "the daemon did not record a launch's process");
+            let _ = answered.send(Some(false));
+            end_unrecorded(tilo_app_launch::kept::pidfd(pid).as_ref());
+        };
         let Some(shell) = self.shell.get().cloned() else {
+            // No daemon gave this ticket: nothing vouches for the process, which this session
+            // did not start for one.
+            tracing::error!(
+                ticket,
+                pid,
+                "a launch ticket came to a session no daemon links"
+            );
+            let _ = answered.send(Some(false));
             return;
         };
         let runtime = match tilo_rt::try_app() {
             Ok(runtime) => runtime,
             Err(error) => {
-                tracing::error!(ticket, pid, %error, "the daemon is not told of a launch's process");
+                unrecorded(&error.to_string());
                 return;
             }
         };
-        let Some(pinned) = tilo_app_launch::kept::pidfd(pid) else {
-            // The process ended already: its end is what the daemon hears of it.
-            tracing::warn!(ticket, pid, "a started launch's process cannot be pinned");
+        let (Some(pinned), ending) = (
+            tilo_app_launch::kept::pidfd(pid),
+            tilo_app_launch::kept::pidfd(pid),
+        ) else {
+            unrecorded("the process ended before it could be pinned");
             return;
         };
-        let (answered, waiting) = tokio::sync::watch::channel(false);
-        self.recording.lock_recover().insert(ticket, waiting);
         runtime.spawn(async move {
-            if let Err(error) = shell.started(ticket, pid, pinned).await {
-                tracing::error!(ticket, pid, %error, "the daemon did not record a launch's process");
-            }
-            let _ = answered.send(true);
+            let recorded = match shell.started(ticket, pid, pinned).await {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::error!(ticket, pid, %error, "the daemon did not record a launch's process");
+                    end_unrecorded(ending.as_ref());
+                    false
+                }
+            };
+            let _ = answered.send(Some(recorded));
         });
     }
 
-    /// Wait until the daemon answered for the process of the launch `ticket`
-    /// ([`Self::started_as`]): a connection vouched for with the ticket before then reaches a
-    /// daemon that holds the launch as ordered only, and is refused.
-    pub(crate) async fn recorded(&self, ticket: u64) {
+    /// Whether the daemon recorded the process of the launch `ticket` ([`Self::started_as`]),
+    /// waiting until it answered: a connection vouched for with the ticket before then reaches a
+    /// daemon that holds the launch as ordered only. A launch whose process the daemon did not
+    /// record is vouched for by nothing. A ticket this session bound no process to itself (a
+    /// window of a launch, an adopted app) was answered when its ticket was given.
+    pub(crate) async fn recorded(&self, ticket: u64) -> bool {
         let waiting = self.recording.lock_recover().get(&ticket).cloned();
-        if let Some(mut waiting) = waiting {
-            let _ = waiting.wait_for(|answered| *answered).await;
-            self.recording.lock_recover().remove(&ticket);
-        }
+        let Some(mut waiting) = waiting else {
+            return true;
+        };
+        let answer = waiting
+            .wait_for(Option::is_some)
+            .await
+            .map(|answer| *answer);
+        matches!(answer, Ok(Some(true)))
     }
 
     /// Start what the device's daemon orders of this session from now on: each order is a launch
@@ -388,6 +419,7 @@ impl Launches {
             self.tickets
                 .lock_recover()
                 .retain(|_, held| *held != ticket);
+            self.recording.lock_recover().remove(&ticket);
         }
         let Some(shell) = self.shell.get().cloned() else {
             return;
@@ -1018,6 +1050,18 @@ fn start_time(pid: u32) -> Option<u64> {
     )
 }
 
+/// End the process `pinned` pins, a launch the daemon did not record: the launch ends as one that
+/// ended before its window could open, and says so in its tab.
+fn end_unrecorded(pinned: Option<&std::os::fd::OwnedFd>) {
+    if let Some(pinned) = pinned
+        && let Err(error) =
+            rustix::process::pidfd_send_signal(pinned, rustix::process::Signal::TERM)
+        && error != rustix::io::Errno::SRCH
+    {
+        tracing::error!(%error, "a launch the daemon did not record could not be ended");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1124,6 +1168,10 @@ mod tests {
                     .launch_ticket,
                 Some(41),
                 "a launch the daemon decided is vouched for with its ticket"
+            );
+            assert!(
+                !tilo_rt::block_on(launches.recorded(41)).unwrap(),
+                "a launch no daemon recorded is vouched for by nothing"
             );
         }
 
