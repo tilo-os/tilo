@@ -3639,7 +3639,7 @@ impl Widget for TabBar {
         }
         self.advance_changed = false;
         self.face_demand_stale = false;
-        // The row's rects before this solve: a change of them animates the whole row from where
+        // The row's rects before this solve: a selection move animates the whole row from where
         // it stood, every pill by the one progress, so a tab's place, its close and its underline
         // move together.
         let stood: Vec<(u64, Rect)> = self
@@ -3797,7 +3797,10 @@ impl Widget for TabBar {
         let running = self.layout_anim_started.is_some_and(|started| {
             crate::time::now().saturating_duration_since(started) < layout_anim()
         });
-        if moved && !running && stood.len() == self.tabs.len() {
+        // A selection move animates the row from where it stood. Other movements — titles measured
+        // for the first time, a pill opening under the pointer, a list change — take their own
+        // springs or none, so the bar never slides from a layout no one saw.
+        if moved && !running && self.selection_move.is_some() && stood.len() == self.tabs.len() {
             self.prev_tab_rects_by_id = stood.into_iter().collect();
             self.layout_anim_started = Some(crate::time::now());
         }
@@ -4427,15 +4430,20 @@ impl TabBar {
         let tab_ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
         let mut animated: Vec<f64> = Vec::with_capacity(tab_ids.len());
         // The row's widths follow one layout: a pill opening under the pointer grows in its own
-        // spring, but a pill whose zone moved because the tab in front changed takes the row's
-        // rect, so the whole row moves on the one progress. The leaving pill's zone closes at
-        // once rather than pushing its neighbours for a frame.
+        // spring, but in a selection move a pill whose zone moved because the tab in front changed
+        // takes the row's rect, so the whole row moves on the one progress. The leaving pill's zone
+        // closes at once rather than pushing its neighbours for a frame.
+        let row_moves = self.selection_move.is_some();
         for (i, &id) in tab_ids.iter().enumerate() {
             let target = self.reserve_of(i, self.target_reveal(i));
             let resting = self.reserve_of(i, self.resting_reveal(i));
             let spring = self.advance_reveal(id, target);
             let opening = (target - resting).abs() > f64::EPSILON;
-            animated.push(if opening { spring } else { resting });
+            animated.push(if opening || !row_moves {
+                spring
+            } else {
+                resting
+            });
         }
         let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
         for (i, t) in self.tabs.iter().enumerate() {
