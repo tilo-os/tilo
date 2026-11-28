@@ -41,9 +41,14 @@ d-hhqtcu4c = Zeilen
 
 d-jgmjny63 = Fertig
 
+d-m3krkqoe = Gestoppt
+    .doc = Die Person hat es gestoppt; das bereits Geladene bleibt im Image-Speicher.
+
 d-wektgccg = Fehlgeschlagen
 
 d-uk5fnglc-filter-done = Fertig
+
+d-uk5fnglc-filter-stopped = Gestoppt
 
 d-et2qb7wr = Container
     .doc = Der eigene Eintrag der App: der Entwurf für einen neuen Container und die hier gestarteten Downloads.
@@ -89,6 +94,18 @@ d-3zircjtu-text = Text
 d-ojpmjsas = Container anlegen
     .doc = Führt ein Image als neuen Container aus dem Entwurf aus und leert das Formular, wenn die Engine ihn angenommen hat.
     .w-an-image-is-needed-to-run = Ein Image wird gebraucht, um einen Container auszuführen
+
+d-pgwyi64n = Container zeigen
+    .doc = Zeigt, was die Engine von einer Art hält.
+
+d-ijt6urg5 = Images zeigen
+
+d-k2tjtdvx = Volumes zeigen
+
+d-syp6cif7 = Distroboxen zeigen
+
+d-3uis6yzh = Neuer Container
+    .doc = Öffnet das Formular für einen neuen Container, wie es `n` aus dem Fenster tut.
 
 d-sv4joym2 = Volume anlegen
     .doc = Legt ein Volume an.
@@ -177,6 +194,14 @@ d-lexzqqtm = Verwendet von
     .w-used-by-1-container = Von 1 Container verwendet
     .w-used-by-containers = Von { $count } Containern verwendet
 
+d-2q7ehgyb = Image-Übersicht
+    .w-one-image-uses-of-disk-space = Ein Image belegt { $size_words } Speicherplatz.
+    .w-images-use-of-disk-space = { $count } Images belegen { $size_words } Speicherplatz.
+
+d-6inrmjr5 = Volume-Übersicht
+    .w-1-of-volumes-is-in-use = 1 von { $total } Volumes wird verwendet.
+    .w-of-volumes-are-in-use = { $in_use } von { $total } Volumes werden verwendet.
+
 d-l5th2rd2 = Eingabetitel
     .w-new-volume = Neues Volume
     .w-pull-an-image = Ein Image laden
@@ -194,11 +219,6 @@ d-juqarauo = Eingabeverb
     .w-add-tag = Tag hinzufügen
     .w-remove = Entfernen
     .w-ok = OK
-
-d-eqfidwbc = Bestätigungstitel
-    .w-remove-this-container = Diesen Container entfernen?
-    .w-remove-this-image = Dieses Image entfernen?
-    .w-remove-this-volume = Dieses Volume entfernen?
 
 d-vqxvzopi = Container anlegen~present
 
@@ -218,7 +238,7 @@ d-khvbvqhn = Fenster
     .w-new-container = Neuer Container
     .w-read-the-engine-again = Die Engine neu lesen
     .w-no-containers = Keine Container
-    .w-run-an-image-to-make-one = Führe ein Image aus, um einen anzulegen.
+    .w-create-a-container-from-an-image = Lege aus einem Image einen Container an, um ihn hier auszuführen.
     .w-remove = Entfernen
     .w-detail = Detail
     .w-logs = Protokoll
@@ -228,8 +248,7 @@ d-khvbvqhn = Fenster
     .w-no-container-selected = Kein Container ausgewählt
     .w-choose-a-container-to-see-its = Wähle einen Container, um sein Protokoll, seine Auslastung und seine Einstellungen zu sehen.
     .w-no-images = Keine Images
-    .w-pull-an-image-to-have-something = Lade ein Image, um etwas auszuführen.
-    .w-images-holding = { $len } Images mit { $size_words }
+    .w-pull-an-image-to-create-containers = Lade ein Image, um daraus Container anzulegen.
     .w-pull-again = Erneut laden
     .w-add-a-tag = Tag hinzufügen
     .w-pull-an-image = Ein Image laden
@@ -253,13 +272,14 @@ d-khvbvqhn = Fenster
     .w-pgdata-var-lib-postgresql-data = pgdata:/var/lib/postgresql/data
     .w-command = Befehl
     .w-empty-to-run-the-image-s = Leer, um den Standard des Images auszuführen.
-    .w-the-container-is-removed-it-is = Der Container wird entfernt. Er ist endgültig weg.
-    .w-the-image-is-removed-from-this = Das Image wird von diesem Computer entfernt. Container, die es verwenden, laufen weiter.
-    .w-the-volume-and-everything-it-kept = Das Volume und alles, was es behalten hat, werden entfernt.
+    .w-remove-this-container = Diesen Container entfernen?
+    .w-the-container-and-the-changes-made = Der Container und die darin gemachten Änderungen werden gelöscht. Seine Volumes bleiben.
+    .w-the-image-is-deleted-from-this = Das Image wird von diesem Computer gelöscht. Du kannst es später erneut laden.
+    .w-the-volume-and-the-data-stored = Das Volume und die darin gespeicherten Daten werden gelöscht.
 
 d-c5zef5ks = Engine fehlt
     .w-podman-isn-t-available = Podman ist nicht verfügbar
-    .w-this-computer-has-no-container-engine = Dieser Computer hat keine Container-Engine zum Lesen, oder podman hat nicht geantwortet. Installiere podman und versuche es erneut.
+    .w-install-podman-or-start-its-user = Installiere Podman oder starte seinen Benutzerdienst, um hier Container zu verwalten.
     .w-try-again = Erneut versuchen
 
 d-omimf7ko = Lebenslauf-Schaltflächen
@@ -310,24 +330,13 @@ d-p3ynizc6 = Terminalbereich
 
 d-72k7h2qu = Download-Banner
     .w-pulling = { $image } wird geladen
-    .w-the-image-is-ready = Das Image ist bereit.
+    .w-stopped-what-had-been-fetched-stays = Gestoppt. Was bereits geladen wurde, bleibt im Image-Speicher.
+    .w-the-image-is-ready-to-create = Das Image ist bereit, um Container daraus anzulegen.
     .w-the-engine-is-fetching-the-image = Die Engine lädt das Image.
     .w-stop-this-pull = Diesen Download stoppen
     .w-close = Schließen
 
 d-vrra64ga = Distrobox-Seite
     .w-no-distroboxes = Keine Distroboxen
-    .w-distrobox-runs-another-distribution-s-tools = Distrobox führt die Werkzeuge einer anderen Distribution in einem Container aus.
+    .w-create-a-box-with-distrobox-to = Lege mit distrobox eine Box an, um sie hier auszuführen.
     .w-enter = Betreten
-
-d-pgwyi64n = Container zeigen
-    .doc = Zeigt, was die Engine von einer Art hält.
-
-d-ijt6urg5 = Images zeigen
-
-d-k2tjtdvx = Volumes zeigen
-
-d-syp6cif7 = Distroboxen zeigen
-
-d-3uis6yzh = Neuer Container
-    .doc = Öffnet das Formular für einen neuen Container, wie es `n` aus dem Fenster tut.

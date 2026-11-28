@@ -2,7 +2,7 @@ app so.tilo.containers "Containers" (
     icon: .box,
     category: .development,
     tagline: "Linux containers, images, volumes and distroboxes on this computer",
-    keywords: ["containers", "podman", "docker", "images", "volumes", "distrobox", "container", "virtualisierung"],
+    keywords: ["containers", "podman", "docker", "oci", "images", "compose", "virtualization", "volumes", "distrobox", "container", "virtualisierung"],
     splash_budget: 250,
 )
 
@@ -52,6 +52,8 @@ type Pull (readers: author) {
     /// The engine's output, newest last.
     lines: List<Text>
     done: Bool = false
+    /// The person stopped it; what had been fetched stays in the image store.
+    stopped: Bool = false
     failed: Text = ""
 }
 
@@ -106,6 +108,26 @@ fn used_by(count: Int) -> Text {
     } else if count == 1 {
         std.say("Used by 1 container")
     } else { std.say("Used by {count} containers") }
+}
+
+/// What the images take together, as one sentence.
+fn images_summary(count: Int, bytes: Int) -> Text {
+    if count == 1 {
+        std.say("One image uses {size_words(bytes)} of disk space.")
+    } else {
+        std.say("{count} images use {size_words(bytes)} of disk space.")
+    }
+}
+
+/// How many of the volumes hold a container's data, as one sentence.
+fn volumes_summary(volumes: List<device.Volume>) -> Text {
+    let total = volumes.len()
+    let in_use = volumes.filter(volume -> volume.in_use_by > 0).len()
+    if in_use == 1 {
+        std.say("1 of {total} volumes is in use.")
+    } else {
+        std.say("{in_use} of {total} volumes are in use.")
+    }
 }
 
 /// An image as one written reference, `repository:tag`.
@@ -276,6 +298,7 @@ action cancel_pull(c: Containers, p: Pull) {
         engine.cancel(p.job)
         p.job = ""
         p.done = true
+        p.stopped = true
     }
 }
 
@@ -414,7 +437,7 @@ view window(c: Containers) {
 view engine_missing(engine_now: device.Containers) {
     ui.EmptyState(
         "Podman isn't available",
-        message: "This computer has no container engine to read, or podman did not answer. Install podman and try again.",
+        message: "Install Podman or start its user service to manage containers here.",
         icon: .box,
         action: "Try again",
     ) {
@@ -439,7 +462,11 @@ view containers_page(
     split(side: .leading, collapse: .stack) {
         primary(min: 16rem) {
             if engine_now.containers.is_empty() {
-                ui.EmptyState("No containers", message: "Run an image to make one.", icon: .box)
+                ui.EmptyState(
+                    "No containers",
+                    message: "Create a container from an image to run it here.",
+                    icon: .box,
+                )
             }
             scroll {
                 stack(gap: .none) {
@@ -690,8 +717,10 @@ view pull_banner(c: Containers, pull: Pull) {
         "Pulling {pull.image}",
         message: if pull.failed != "" {
             pull.failed
+        } else if pull.stopped {
+            "Stopped. What had been fetched stays in the image store."
         } else if pull.job == "" {
-            "The image is ready."
+            "The image is ready to create containers from."
         } else { "The engine is fetching the image." },
         kind: if pull.failed != "" { .error } else { .info },
         icon: .download,
@@ -715,12 +744,12 @@ view images_page(c: Containers, engine_now: device.Containers, prompt: State<Tex
     if engine_now.images.is_empty() {
         ui.EmptyState(
             "No images",
-            message: "Pull an image to have something to run.",
+            message: "Pull an image to create containers from it.",
             icon: .layers,
         )
     } else {
         ui.Text(
-            "{engine_now.images.len()} images holding {size_words(image_bytes(engine_now.images, 0))}",
+            images_summary(engine_now.images.len(), image_bytes(engine_now.images, 0)),
             role: .caption,
             secondary: true,
         )
@@ -767,9 +796,11 @@ view volumes_page(c: Containers, engine_now: device.Containers, prompt: State<Te
     if engine_now.volumes.is_empty() {
         ui.EmptyState(
             "No volumes",
-            message: "A volume keeps a container's data across restarts.",
+            message: "A volume keeps a container's data when the container is removed.",
             icon: .hard_drive,
         )
+    } else {
+        ui.Text(volumes_summary(engine_now.volumes), role: .caption, secondary: true)
     }
     stack(gap: .none) {
         for volume in engine_now.volumes {
@@ -805,7 +836,7 @@ view distrobox_page(engine_now: device.Containers) {
     if engine_now.distroboxes.is_empty() {
         ui.EmptyState(
             "No distroboxes",
-            message: "Distrobox runs another distribution's tools in a container.",
+            message: "Create a box with distrobox to run it here.",
             icon: .terminal,
         )
     }
@@ -926,11 +957,9 @@ view prompt_dialog(prompt: State<Text>, typed: State<Text>) {
                     ui.TextInput(bind: typed, placeholder: prompt_label(prompt), autofocus: true)
                 }
                 if prompt.starts_with("remove-image:") {
-                    ui.Text(
-                        "The image is removed from this computer. Containers using it keep running.",
-                    )
+                    ui.Text("The image is deleted from this computer. You can pull it again later.")
                 } else if prompt.starts_with("remove-volume:") {
-                    ui.Text("The volume and everything it kept are removed.")
+                    ui.Text("The volume and the data stored in it are deleted.")
                 }
             }
             on act_primary: prompt_run(prompt, typed).then(set(prompt, ""))
@@ -940,35 +969,21 @@ view prompt_dialog(prompt: State<Text>, typed: State<Text>) {
     }
 }
 
-/// What a removal confirms.
-fn confirm_title(confirm: Text) -> Text {
-    if confirm.starts_with("container:") {
-        std.say("Remove this container?")
-    } else if confirm.starts_with("image:") {
-        std.say("Remove this image?")
-    } else { std.say("Remove this volume?") }
-}
-
-/// The confirmation a removal asks for: the container, image or volume, and the two answers.
+/// The confirmation removing the chosen container asks for. An image or a volume asks in its
+/// own prompt, where the person gave what to remove.
 view confirm_dialog(confirm: State<Text>) {
     if confirm != "" {
         ui.ModalDialog(
-            title: confirm_title(confirm),
+            title: "Remove this container?",
             open: true,
             primary: "Remove",
             secondary: "Cancel",
             destructive: true,
         ) {
             body: {
-                if confirm.starts_with("container:") {
-                    ui.Text("The container is removed. It is gone for good.")
-                } else if confirm.starts_with("image:") {
-                    ui.Text(
-                        "The image is removed from this computer. Containers using it keep running.",
-                    )
-                } else {
-                    ui.Text("The volume and everything it kept are removed.")
-                }
+                ui.Text(
+                    "The container and the changes made inside it are deleted. Its volumes stay.",
+                )
             }
             on act_primary: confirm_run(confirm).then(set(confirm, ""))
             on act_secondary: set(confirm, "")

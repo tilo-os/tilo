@@ -705,7 +705,139 @@ fn a_pull_runs_in_the_apps_engine_and_its_output_shows() {
     let words = shown(&window);
     assert!(words.iter().any(|text| text == "Done"), "{words:?}");
     assert!(
-        words.iter().any(|text| text == "The image is ready."),
+        words
+            .iter()
+            .any(|text| text == "The image is ready to create containers from."),
+        "{words:?}"
+    );
+}
+
+/// A computer whose engine is there and holds nothing.
+const EMPTY: &str = r#"{
+  "serving": true,
+  "connection": "Podman 5.4, rootless",
+  "live": true,
+  "containers": [], "images": [], "volumes": [], "distroboxes": [],
+  "pending": [], "problem": null
+}"#;
+
+/// The first node of `kind` in `view`.
+fn of_kind<'a>(view: &'a ViewInstance, kind: &str) -> Option<&'a tilolang_runtime::UiNode> {
+    fn walk<'a>(
+        node: &'a tilolang_runtime::UiNode,
+        kind: &str,
+        found: &mut Option<&'a tilolang_runtime::UiNode>,
+    ) {
+        if node.kind == kind && found.is_none() {
+            *found = Some(node);
+        }
+        for child in &node.children {
+            walk(child, kind, found);
+        }
+    }
+    let mut found = None;
+    walk(view.tree(), kind, &mut found);
+    found
+}
+
+/// The button labelled `label` in `view`.
+fn button<'a>(view: &'a ViewInstance, label: &str) -> &'a tilolang_runtime::UiNode {
+    fn walk<'a>(
+        node: &'a tilolang_runtime::UiNode,
+        label: &str,
+        found: &mut Option<&'a tilolang_runtime::UiNode>,
+    ) {
+        if node.kind == "ui.Button" && node.props.get("label") == Some(&Value::text(label)) {
+            *found = Some(node);
+        }
+        for child in &node.children {
+            walk(child, label, found);
+        }
+    }
+    let mut found = None;
+    walk(view.tree(), label, &mut found);
+    found.unwrap_or_else(|| panic!("no {label} button: {:?}", shown(view)))
+}
+
+#[test]
+fn what_the_images_and_volumes_take_is_one_sentence() {
+    let app = Installed::new(READING);
+    let images = app.window_showing(&[("place", "images")]);
+    assert!(
+        has(&images, "One image uses 50 MB of disk space."),
+        "{:?}",
+        shown(&images)
+    );
+    let volumes = app.window_showing(&[("place", "volumes")]);
+    assert!(
+        has(&volumes, "1 of 1 volumes is in use."),
+        "{:?}",
+        shown(&volumes)
+    );
+    // Each empty place says what makes the first one.
+    let app = Installed::new(EMPTY);
+    for (place, hint) in [
+        (
+            "containers",
+            "Create a container from an image to run it here.",
+        ),
+        ("images", "Pull an image to create containers from it."),
+        (
+            "volumes",
+            "A volume keeps a container's data when the container is removed.",
+        ),
+        ("distrobox", "Create a box with distrobox to run it here."),
+    ] {
+        let window = app.window_showing(&[("place", place)]);
+        assert!(has(&window, hint), "{place}: {:?}", shown(&window));
+    }
+}
+
+#[test]
+fn removing_a_container_says_its_volumes_stay() {
+    let app = Installed::new(READING);
+    let mut window = app.window_showing(&[
+        ("place", "containers"),
+        ("chosen", "9f3c1a7be4d2c0118af26b5d4e9f01a2"),
+    ]);
+    let remove = button(&window, "Remove");
+    window
+        .fire(&remove.key, "press")
+        .expect("the removal asks first");
+    window.poll_patches().expect("the window answers");
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "Remove this container?"),
+        "{words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text
+            == "The container and the changes made inside it are deleted. Its volumes stay."),
+        "{words:?}"
+    );
+}
+
+#[test]
+fn a_stopped_pull_says_what_it_left() {
+    let app = Installed::new(READING).with_engine();
+    app.call(
+        "begin_pull",
+        vec![app.root_value(), Value::text("nginx:alpine")],
+    );
+    let mut window = app.window_showing(&[("place", "containers")]);
+    let banner = of_kind(&window, "ui.Banner").expect("the pull shows as a banner");
+    assert_eq!(
+        banner.props.get("action"),
+        Some(&Value::text("Stop this pull")),
+        "the banner offers the way to stop it"
+    );
+    window.fire(&banner.key, "act").expect("the pull stops");
+    window.poll_patches().expect("the window answers");
+    let words = shown(&window);
+    assert!(
+        words
+            .iter()
+            .any(|text| text == "Stopped. What had been fetched stays in the image store."),
         "{words:?}"
     );
 }
