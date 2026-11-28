@@ -985,7 +985,7 @@ impl super::Source for Clouds {
         format!("Bring {} from {}", names.join(", "), row.title)
     }
 
-    fn files_under(&self, row: &'static Source) -> Option<&'static str> {
+    fn files_under(&self, row: &'static Source, _: &super::state::Review) -> Option<&'static str> {
         Some(row.title)
     }
 

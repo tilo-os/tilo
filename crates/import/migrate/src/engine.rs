@@ -182,9 +182,10 @@ pub trait Source: Sync {
     /// What a run of the chosen items of `review` brings, for its History entry.
     fn summary(&self, row: &'static Row, review: &Review) -> String;
 
-    /// The folder of the workspace's files a run's files go under, for a source of files.
-    fn files_under(&self, row: &'static Row) -> Option<&'static str> {
-        let _ = row;
+    /// The folder of the workspace's files a run of `review` puts its files under, when it
+    /// copies files.
+    fn files_under(&self, row: &'static Row, review: &Review) -> Option<&'static str> {
+        let _ = (row, review);
         None
     }
 
@@ -471,7 +472,7 @@ pub fn start(
     // Files are written into the workspace's folder here when it has one; only uploads need the
     // workspace's session.
     let sink = engine
-        .files_under(row)
+        .files_under(row, &review)
         .map(|under| files::sink(cx.folders, asking.workspace, asking.hosted, under))
         .transpose();
     let sink = match sink {

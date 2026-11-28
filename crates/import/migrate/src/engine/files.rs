@@ -332,7 +332,7 @@ impl super::Source for Folders {
         summary(review, row.title)
     }
 
-    fn files_under(&self, _: &'static super::registry::Row) -> Option<&'static str> {
+    fn files_under(&self, _: &'static super::registry::Row, _: &Review) -> Option<&'static str> {
         Some("")
     }
 

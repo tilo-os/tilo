@@ -74,6 +74,7 @@ mod in_person;
 mod invocations;
 mod joining;
 mod keeping_pages;
+mod migrate_disk;
 mod migrate_engine;
 mod migrate_walk;
 mod migrate_window;

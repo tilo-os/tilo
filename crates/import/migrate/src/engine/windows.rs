@@ -80,7 +80,7 @@ impl Source for Windows {
         files::summary(review, row.title)
     }
 
-    fn files_under(&self, _: &'static Row) -> Option<&'static str> {
+    fn files_under(&self, _: &'static Row, _: &super::state::Review) -> Option<&'static str> {
         Some("")
     }
 

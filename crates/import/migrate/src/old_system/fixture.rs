@@ -3,11 +3,6 @@
 
 use std::path::Path;
 
-/// The bookmark Chrome kept on the disk.
-pub const BOOKMARK: &str = "https://example.org/kept";
-/// The page Chrome's history holds.
-pub const VISITED: &str = "https://example.org/visited";
-
 /// A disk Windows ran from: Ada's home with her documents, pictures, a `OneDrive` folder, an
 /// Outlook archive, and Chrome's default profile; and the system's own accounts beside hers.
 ///

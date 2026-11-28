@@ -40,7 +40,7 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
     std::fs::create_dir_all(root).unwrap();
     let store = root.join("apps");
     #[cfg(target_os = "linux")]
-    let mut env = runtime_bundles(root, &store);
+    let (mut env, engines) = runtime_bundles(root, &store);
     #[cfg(target_os = "macos")]
     let mut env = {
         let _ = data;
@@ -73,7 +73,10 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
         )
         .unwrap_or_else(|error| panic!("{app} builds: {error}"));
         // The app is built last, after the packages it is made with; only it is installed.
-        install_tapp(&store, &built.last().unwrap().tapp);
+        let app = built.last().unwrap();
+        #[cfg(target_os = "linux")]
+        engines.bring(&store, &app.manifest);
+        install_tapp(&store, &app.tapp);
     }
     // Installing compiles the machine code each app runs, into the device's own cache: what a
     // computer that installs an app does, so its first open does not compile it.
@@ -146,10 +149,39 @@ fn install_tapp(store: &Path, tapp: &Path) {
         .unwrap_or_else(|error| panic!("{} installs: {error}", tapp.display()));
 }
 
-/// The runtime bundles the apps name, under the device store's runtimes, signed by a publisher of `root`'s:
-/// answers the environment that names the launcher and that publisher.
+/// What a further runtime an app names beside the Tilo runtime is bundled from.
 #[cfg(target_os = "linux")]
-fn runtime_bundles(root: &Path, store: &Path) -> Vec<(&'static str, OsString)> {
+struct Engines {
+    signer: PathBuf,
+    libs: Vec<PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl Engines {
+    /// The runtimes the app whose manifest is at `manifest` names that the store lacks (the
+    /// browser's web engine is one), each a bundle of the Tilo runtime's own libraries: the app
+    /// opens and its actions run, which is what a test of them reaches, and nothing starts the
+    /// engine itself.
+    fn bring(&self, store: &Path, manifest: &Path) {
+        let manifest = std::fs::read_to_string(manifest).unwrap();
+        let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&manifest).unwrap();
+        let package = &manifest.package;
+        for runtime in package.runtime.iter().chain(&package.required_runtimes) {
+            let Some((_, version)) = runtime.split_once('/') else {
+                continue;
+            };
+            if !store.join("runtimes").join(version).exists() {
+                bundle(store, version, &self.signer, &self.libs, &[]);
+            }
+        }
+    }
+}
+
+/// The runtime bundles the apps name, under the device store's runtimes, signed by a publisher of `root`'s:
+/// answers the environment that names the launcher and that publisher, and what a further
+/// runtime an app names is bundled from.
+#[cfg(target_os = "linux")]
+fn runtime_bundles(root: &Path, store: &Path) -> (Vec<(&'static str, OsString)>, Engines) {
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
 
@@ -184,13 +216,16 @@ fn runtime_bundles(root: &Path, store: &Path) -> Vec<(&'static str, OsString)> {
     );
     let trusted = root.join("trusted-publishers.txt");
     std::fs::write(&trusted, format!("{}\n", bundles.public_key_hex())).unwrap();
-    vec![
-        ("TILO_LAUNCHER_BIN", launcher.into()),
-        (
-            launcher::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
-            trusted.into(),
-        ),
-    ]
+    (
+        vec![
+            ("TILO_LAUNCHER_BIN", launcher.into()),
+            (
+                launcher::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
+                trusted.into(),
+            ),
+        ],
+        Engines { signer, libs },
+    )
 }
 
 /// This build's pinned font catalog under a directory named `fonts`, which is what a runtime

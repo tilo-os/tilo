@@ -248,8 +248,9 @@ impl Source for Disk {
         format!("Bring {} from {}", what.join(", "), review.handle)
     }
 
-    fn files_under(&self, _: &'static Row) -> Option<&'static str> {
-        Some("")
+    /// Only a run that copies folders needs somewhere to put them.
+    fn files_under(&self, _: &'static Row, review: &Review) -> Option<&'static str> {
+        (!folders(review).chosen().is_empty()).then_some("")
     }
 
     fn acts(&self, review: &Review) -> bool {

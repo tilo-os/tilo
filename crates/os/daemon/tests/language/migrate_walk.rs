@@ -30,13 +30,13 @@ use crate::language::migrate_window::{agent_does, answer, engine};
 const MIGRATE: &str = "so.tilo.migrate";
 
 /// What a step answered, and every line it said on the way, the questions asked included.
-struct Stepped {
-    answer: Value,
+pub(crate) struct Stepped {
+    pub(crate) answer: Value,
     said: Vec<String>,
 }
 
 /// The step `action` of the device's migrations with `args`, as `tilo migrate` takes it.
-async fn step(steps: &Arc<Steps>, action: &str, args: Value) -> Stepped {
+pub(crate) async fn step(steps: &Arc<Steps>, action: &str, args: Value) -> Stepped {
     step_saying(steps, action, args, &Arc::default()).await
 }
 
@@ -107,7 +107,7 @@ async fn refused(steps: &Arc<Steps>, action: &str, args: Value) -> String {
 }
 
 /// What `tilo_ls` of `path` lists in `workspace`, as the person's agent reads it there.
-async fn listed_in(host: &host::Host, workspace: &str, path: &str) -> String {
+pub(crate) async fn listed_in(host: &host::Host, workspace: &str, path: &str) -> String {
     let (text, failed) = said(
         &host
             .agent_in(workspace)
@@ -149,7 +149,7 @@ async fn kept_accounts(agent: &host::Agent) -> Vec<String> {
 }
 
 /// The device's key, as its migrations' address names it (`devices/<key>/migrate`).
-fn device_of(engine: &str) -> [u8; 32] {
+pub(crate) fn device_of(engine: &str) -> [u8; 32] {
     let hex = engine
         .strip_prefix("devices/")
         .and_then(|rest| rest.strip_suffix("/migrate"))
