@@ -2482,10 +2482,13 @@ RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselec
 # tilo-ddc.conf modules-load snippet (copied with the remote-camera one)
 # makes i2c-dev expose them as /dev/i2c-N.
 #
+# 70-tilo-uinput.rules hands /dev/uinput to the active session, which plugs
+# in a virtual game pad for a controller another of the person's devices sends.
+#
 # 72-joycond.rules hands raw Joy-Con halves to joycond (installed with the
 # desktop binaries), which presents a pair as one combined controller;
 # Pro/SNES/N64 controllers stay with hid-nintendo and Steam.
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules os/usr/lib/udev/rules.d/72-joycond.rules /usr/lib/udev/rules.d/
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules os/usr/lib/udev/rules.d/70-tilo-uinput.rules os/usr/lib/udev/rules.d/72-joycond.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the

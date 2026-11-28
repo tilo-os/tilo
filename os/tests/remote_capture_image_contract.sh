@@ -86,4 +86,12 @@ else
   bad 'image does not install the remote camera module configuration overlay'
 fi
 
+uinput_rule="$repo/os/usr/lib/udev/rules.d/70-tilo-uinput.rules"
+if grep -Fq 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess"' "$uinput_rule" \
+    && grep -Fq 'os/usr/lib/udev/rules.d/70-tilo-uinput.rules' "$containerfile"; then
+  ok 'the signed-in person may create the virtual pad a sent controller plays through'
+else
+  bad 'a sent game controller has no /dev/uinput access in the image'
+fi
+
 exit "$fail"

@@ -543,6 +543,7 @@ GUEST_TESTS=(
   "os/tests/native_atspi_smoke.sh native-atspi-smoke.sh"
   "os/tests/projection-boot-check.sh projection-boot-check.sh"
   "os/tests/live-update-check.sh live-update-check.sh"
+  "os/tests/remote-use-boot-check.sh remote-use-boot-check.sh"
 )
 
 # Each call copies GUEST_TESTS from this checkout into a private directory in

@@ -217,6 +217,10 @@ fi
 "$vm" ssh "/usr/libexec/tilo-session-report --render-check $render_budgets"
 
 "$vm" test projection-boot-check.sh
+# Another of the person's devices can use this one's camera, microphone,
+# scanner and game controller: the virtual camera exists from boot and the
+# session may write into it and create a virtual pad.
+"$vm" test remote-use-boot-check.sh
 # H.264 decode names the element the image really chose. Reported, not guarding:
 # the clip it decodes is written by an encoder only the opt-in codec pack
 # carries, so a stock guest has no subject and the check fails saying so. Run

@@ -15,7 +15,8 @@
 #            overlay of the same disk, and both share one private LAN
 #   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh),
 #            whose guest-side checks are os/tests/boot_units_check.sh,
-#            os/tests/projection-boot-check.sh, os/tests/h264-boot-check.py,
+#            os/tests/projection-boot-check.sh, os/tests/remote-use-boot-check.sh,
+#            os/tests/h264-boot-check.py,
 #            os/tests/session-context-check.sh, os/tests/input-hotplug-check.sh,
 #            os/tests/installed-admin-actions.sh, os/tests/installed_atspi_apps.sh,
 #            os/tests/native_atspi_smoke.sh, os/tests/recovery-boot-check.sh,
