@@ -61,7 +61,10 @@ def steps(story: Story) -> None:
 
         def logs_in():
             # The second computer spends the ticket: the first certifies its
-            # key, and it enters Ada's workspace as one of her devices.
+            # key, and it enters Ada's workspace as one of her devices. Its
+            # daemon is started here as its service would run it: this machine
+            # has no service manager for `tilo login` to start it through.
+            second.start_daemon()
             said = second.ok("login", shared["ticket"], "--label", second.label)
             if "Logged in" not in said:
                 raise Failed(f"the second computer did not say it logged in: {said[-1200:]}")

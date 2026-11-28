@@ -59,6 +59,10 @@ def steps(story: Story) -> None:
                    "home server", asks)
 
         def joins():
+            # The server's daemon is started here as its service would run it:
+            # this machine has no service manager for `tilo login` to start it
+            # through.
+            server.start_daemon()
             said = server.ok("login", shared["ticket"], "--label", server.label)
             if "Logged in" not in said:
                 raise Failed(f"the home server did not say it logged in: {said[-1200:]}")
