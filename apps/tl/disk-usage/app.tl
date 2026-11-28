@@ -342,9 +342,19 @@ view places_page(a: Analyzer) {
                 } as choose_folder
             }
             ui.Section(title: "Places") {
-                place_row(a, "~")
-                place_row(a, "/var/workspace")
-                place_row(a, "/")
+                // The rows stand in the section itself: a section lays out the rows it holds,
+                // and a row a view builds for it takes no height of its own.
+                for path in ["~", "/var/workspace", "/"] {
+                    ui.ListRow(
+                        place_label(path),
+                        secondary: path,
+                        icon: if path == "~" {
+                            .home
+                        } else if path == "/" { .hard_drive } else { .folder },
+                    ) {
+                        on activate: open_place(a, path)
+                    }
+                }
             }
             if not recent.is_empty() {
                 ui.Section(title: "Recent") {
@@ -356,17 +366,6 @@ view places_page(a: Analyzer) {
                 }
             }
         }
-    }
-}
-
-/// One place, pressed to measure it.
-view place_row(a: Analyzer, path: Text) {
-    ui.ListRow(
-        place_label(path),
-        secondary: path,
-        icon: if path == "~" { .home } else if path == "/" { .hard_drive } else { .folder },
-    ) {
-        on activate: open_place(a, path)
     }
 }
 

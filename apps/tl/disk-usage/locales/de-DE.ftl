@@ -229,12 +229,9 @@ d-aemnj3c7 = Analysieren~present
 d-bmoxtaea = Analyse
 
 d-atuiqpvv = Ortsseite
-    .w-places = Orte
     .w-choose-a-folder = Ordner wählen
-    .w-var-workspace = /var/workspace
+    .w-places = Orte
     .w-recent = Zuletzt gemessen
-
-d-5lotm23o = Ortszeile
 
 d-5ffhl3w4 = Messseite
     .w-measuring = Messe { $label }
