@@ -224,7 +224,21 @@ d-mcisoxmg = Alle als vCard 3.0 exportieren
     .export = vCard 3.0
     .doc = Jeder Kontakt als eine vCard-3.0-Datei, die ein Adressbuch öffnet, das keine 4.0-Karte liest.
 
-d-btp4fqga = vCards importieren
+d-tf7lcwop = Importe
+    .doc = Der Import, der gerade läuft, falls einer läuft: Seine Zeile sagt, wie weit die Datei gelesen wurde.
+
+d-6bgl3vfx = Import starten~present
+
+d-jxsjnwj2 = vCards importieren
+    .doc = Startet den Import einer vCard-Datei: Die Datei bleibt als der laufende Import, und die Zeile des Fensters zeigt, wo er steht, während `step_import` seine Karten satzweise übernimmt.
+    .w-the-file-is-larger-than-the = Die Datei ist größer als die 8 MB, die diese App importiert
+
+d-jxsjnwj2-file = Datei
+
+d-4ywckc76 = Die nächsten Karten eines Imports übernehmen
+    .doc = Übernimmt den laufenden Import: liest die Datei einmal und dann einen Satz ihrer Karten, damit das Fenster zwischen den Sätzen zeichnet.
+
+d-btp4fqga = vCards jetzt importieren
     .doc = Importiert die Kontakte, die eine vCard-Datei enthält, ins Buch, jede neue Karte ein eigener Kontakt, und antwortet, was er getan hat. Eine Karte, deren Kennung das Buch schon unverändert führt, ist niemand Neues; eine, die etwas anderes über die Person sagt, wartet in der Prüfung des Buchs, und der Kontakt bleibt, wie er ist, bis jemand sagt, welche Karte die eigene ist. Eine Datei über dem, was diese App liest, wird ganz abgelehnt: die Ablehnung sagt, warum.
     .did = hat Kontakte importiert
     .w-the-file-is-larger-than-the = Die Datei ist größer als die 8 MB, die diese App importiert
@@ -335,6 +349,9 @@ d-dd4gcdnc = vCard importieren~present
 d-6o6vmpkz = Adressbuchfenster
     .w-to-review = Zur Prüfung
     .w-dismiss = Schließen
+    .w-importing = { $filename } wird importiert
+    .w-reading-the-file = Die Datei wird gelesen…
+    .w-of-cards = { $done } von { $total } Karten
     .w-sort = Sortieren
     .w-by-name = Nach Name
     .w-by-organization = Nach Organisation
@@ -546,6 +563,49 @@ d-5zvrpq56-filter-awaiting = Zu prüfen
 d-5zvrpq56-filter-skipped = Nicht gelesen
 
 d-5zvrpq56-filter-seen = Gesehen
+
+d-i7k6s5iv = Importlauf
+    .doc = Ein Import, der seine Datei liest und ihre Karten übernimmt, damit das Fenster zeigt, wo er steht: ein Satz Karten nach dem anderen, die Wörter der Datei nur bis zur letzten Karte behalten.
+    .noun = { $count ->
+        [one] Importlauf
+       *[other] Importläufe
+    }
+
+d-gb4ogkr2 = Dateiname
+    .doc = Wie die Datei heißt, wie die Zeile des Fensters sie nennt.
+
+d-lsfbimes = Datei
+    .doc = Die Datei, die gelesen wird.
+
+d-3nstjakm = Karten
+    .doc = Die Karten, die die Datei enthält; leer, bis sie gelesen wurde.
+
+d-rojyhv53 = Gesamt
+    .doc = Wie viele Karten die Datei enthält: `-1`, bis die Datei gelesen wurde.
+
+d-frkp37sw = Erledigt
+    .doc = Wie viele Karten übernommen wurden.
+
+d-qd4vubqa = Importiert
+    .doc = Was bis jetzt aus ihnen wurde.
+
+d-hqshoqch = Unverändert
+
+d-sd56tbl5 = Wartend
+
+d-p3ealiag = Nicht gelesen
+
+d-i7k6s5iv-filter-total = Gesamt
+
+d-i7k6s5iv-filter-done = Erledigt
+
+d-i7k6s5iv-filter-imported = Importiert
+
+d-i7k6s5iv-filter-unchanged = Unverändert
+
+d-i7k6s5iv-filter-awaiting = Wartend
+
+d-i7k6s5iv-filter-skipped = Nicht gelesen
 
 d-etcwj7o5-filter-last_import = Letzter Import
 

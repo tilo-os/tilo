@@ -101,6 +101,26 @@ type ImportReport {
     seen: Bool = false
 }
 
+/// An import reading its file and taking its cards, so the window says where it is: one card
+/// set at a time, the file's words kept only until the last card is dealt with.
+type ImportRun {
+    /// What the file is called, as the window's row says it.
+    filename: Text
+    /// The file being read.
+    file: File
+    /// The cards the file holds; empty until it was read.
+    cards: List<Text>
+    /// How many cards the file holds: `-1` until the file was read.
+    total: Int = -1
+    /// How many cards were dealt with.
+    done: Int merge counter = 0
+    /// What became of them so far.
+    imported: Int merge counter = 0
+    unchanged: Int merge counter = 0
+    awaiting: Int merge counter = 0
+    skipped: Int merge counter = 0
+}
+
 /// What one card of a file is to the book.
 enum CardFate {
     /// The card is a contact now.
@@ -139,6 +159,8 @@ type Book {
     review: Collection<ImportCard>
     /// What the last import did, until the person has read it.
     last_import: ImportReport
+    /// The import running now, if one is: its row says how far the file was read.
+    imports: Collection<ImportRun>
 }
 
 root book: Book
@@ -621,15 +643,96 @@ fn max_review_cards() -> Int {
     64
 }
 
-/// Imports the contacts a vCard file holds into the book, each new card a contact of its own, and
-/// answers what it did. A card whose id the book already holds unchanged is nobody new; one that
-/// says something else about the person waits in the book's review, and the contact stays as it
-/// is until someone says which card is theirs. A file beyond what this app reads is refused whole:
-/// what the refusal says is why.
-action import_vcard(book: Book, file: File) -> ImportReport (
+/// Starts importing a vCard file: the file is kept as the import running now, and the window's
+/// row says where it stands while `step_import` deals its cards a set at a time. A file beyond
+/// what this app reads is refused whole: what the refusal says is why.
+action begin_import(book: Book, file: File) (
     icon: .file_plus,
     label: "Import vCards",
     opens: ["text/vcard", "text/x-vcard", .vcf, .vcard],
+) {
+    require file.size <= max_import_bytes() "The file is larger than the 8 MB this app imports"
+    for old in book.imports.map(run -> run) {
+        book.imports.remove(old)
+    }
+    book.imports.insert(ImportRun(filename: file.name, file: file))
+}
+
+/// Deals the import running now: reads the file once, then takes a set of its cards, so the
+/// window paints where it stands between sets. What the view runs while its row shows.
+action step_import(book: Book) uses time, random (label: "Take the next cards of an import") {
+    if let run = book.imports.first() {
+        if run.total < 0 {
+            match run.file.text() {
+                .ok(text) => {
+                    run.cards = cards_of(text)
+                    run.total = run.cards.len()
+                }
+                // The file's bytes could be read a moment ago and not now: no card was taken.
+                .err(_) => {
+                    book.imports.remove(run)
+                    report_import(book, 0, 0, 0, 1)
+                }
+            }
+            return
+        }
+        for card in rest_of(run.cards, run.done).take(200) {
+            let fate = file_card(book, card)
+            run.done += 1
+            if fate == .taken {
+                run.imported += 1
+            }
+            if fate == .held {
+                run.unchanged += 1
+            }
+            if fate == .review {
+                run.awaiting += 1
+            }
+            if fate == .skipped {
+                run.skipped += 1
+            }
+        }
+        if run.done >= run.total {
+            report_import(book, run.imported, run.unchanged, run.awaiting, run.skipped)
+            book.imports.remove(run)
+        }
+    }
+}
+
+/// The cards a vCard file's words hold, as each card's own text: one that ends no card is kept
+/// as the empty card, which the importer refuses.
+fn cards_of(text: Text) -> List<Text> {
+    let out: List<Text> = []
+    for piece in text.split("BEGIN:VCARD") {
+        let card = piece.trim()
+        if not card.is_empty() {
+            let whole = if card.contains("END:VCARD") { card } else { "" }
+            out = [out, [whole]].flat_map(x -> x)
+        }
+    }
+    out
+}
+
+/// What is left of `items` from `from` on.
+fn rest_of(items: List<Text>, from: Int) -> List<Text> {
+    let out: List<Text> = []
+    let at: Int = 0
+    for item in items {
+        if at >= from {
+            out = [out, [item]].flat_map(x -> x)
+        }
+        at = at + 1
+    }
+    out
+}
+
+/// Imports the contacts a vCard file holds into the book, each new card a contact of its own, and
+/// answers what it did. A card whose id the book already holds unchanged is nobody new; one that
+/// says something else about the person waits in the book's review, and the contact stays as it
+/// is until someone says which card is theirs.
+action import_vcard(book: Book, file: File) -> ImportReport (
+    icon: .file_plus,
+    label: "Import vCards now",
     did: "imported contacts",
 ) {
     require file.size <= max_import_bytes() "The file is larger than the 8 MB this app imports"
@@ -1465,7 +1568,7 @@ view book_window(book: Book) {
             ui.MenuButton("File", icon: .file_plus) {
                 ui.MenuItem("Import vCards…", icon: .file_plus) {
                     on choose: file.choose(
-                        import_vcard(book),
+                        begin_import(book),
                         accept: ["text/vcard", "text/x-vcard"],
                     )
                 }
@@ -1487,6 +1590,20 @@ view book_window(book: Book) {
                     }
                 }
                 stack(fill, gap: .none) {
+                    // A file being read and taken: the row says where it stands, and the timer
+                    // deals its next set of cards so the window paints between them.
+                    if let run = book.imports.first() {
+                        stack(padding: .related) {
+                            ui.ListRow(
+                                title: "Importing {run.filename}",
+                                secondary: if run.total < 0 {
+                                    "Reading the file…"
+                                } else { "{run.done} of {run.total} cards" },
+                                icon: .file_plus,
+                            )
+                        }
+                        every 1s: step_import(book)
+                    }
                     // What the last import did, until the person answers it: the cards the book
                     // took, the ones it already held, and the ones waiting for review.
                     if import_shows(book) {
