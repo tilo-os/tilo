@@ -2124,7 +2124,6 @@ impl WorkspaceKeys {
         let Some(request) = entry.request.clone() else {
             return;
         };
-        entry.retry.fired(now, REQUEST_LONGEST);
         tracing::debug!(%workspace, device = ?request.device, issued = request.issued_at, "key access asked");
         self.delivery = self.delivery.wrapping_add(1);
         let message = NeighbourMsg::MlsAccessRequest {
@@ -2132,7 +2131,12 @@ impl WorkspaceKeys {
             request: Box::new(request),
             delivery: self.delivery,
         };
-        let _ = transport.publish(message);
+        // A transport that could not take the request, as a page's whose link to its workspace is
+        // still coming up, has not asked: the request stays due, and the pass the link's coming up
+        // wakes asks with it at once rather than after the backoff.
+        if transport.publish(message) {
+            entry.retry.fired(now, REQUEST_LONGEST);
+        }
     }
 
     /// Start taking part in `group`: wait for access, and for the group to

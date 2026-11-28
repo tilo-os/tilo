@@ -3181,6 +3181,15 @@ impl Task {
                 });
             }
         }
+        // Its governance names the readers of its records: what a record's group kept for them is
+        // judged in the pass this wakes, and a frame whose readers still cannot be named here
+        // waits for the next change that may name them. It travels as the inbound work the pump
+        // takes, as a host's settle does, never as a call that holds the service's lock here.
+        if let Some(governance) = &self.governance {
+            governance.inbound.lock_recover().push(
+                tilo_workspace_keys::InboundGovernance::Settled(workspace_id),
+            );
+        }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its key group unopened.
         let unopened: Vec<DocumentRoute> = self.held.lock().keys().cloned().collect();
