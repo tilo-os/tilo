@@ -128,6 +128,10 @@ pub struct Launches {
     /// and of each process a window of one came from, by pid: what a connection from it, or from
     /// a process below it, is vouched for with.
     tickets: Mutex<BTreeMap<u32, u64>>,
+    /// The launches whose process the daemon has not answered for yet ([`Self::started_as`]):
+    /// a connection vouched for with the ticket waits for that answer ([`Self::recorded`]), as
+    /// the daemon admits it only once the process is bound to the launch.
+    recording: Mutex<BTreeMap<u64, tokio::sync::watch::Receiver<bool>>>,
     /// The launches the device's daemon ordered of this session for a caller of its own (an
     /// app's, an agent's), waiting for the pass that starts them.
     ordered: Mutex<Vec<runtime_collab::wire::shell::LaunchOrder>>,
@@ -214,11 +218,25 @@ impl Launches {
             tracing::warn!(ticket, pid, "a started launch's process cannot be pinned");
             return;
         };
+        let (answered, waiting) = tokio::sync::watch::channel(false);
+        self.recording.lock_recover().insert(ticket, waiting);
         runtime.spawn(async move {
             if let Err(error) = shell.started(ticket, pid, pinned).await {
                 tracing::error!(ticket, pid, %error, "the daemon did not record a launch's process");
             }
+            let _ = answered.send(true);
         });
+    }
+
+    /// Wait until the daemon answered for the process of the launch `ticket`
+    /// ([`Self::started_as`]): a connection vouched for with the ticket before then reaches a
+    /// daemon that holds the launch as ordered only, and is refused.
+    pub(crate) async fn recorded(&self, ticket: u64) {
+        let waiting = self.recording.lock_recover().get(&ticket).cloned();
+        if let Some(mut waiting) = waiting {
+            let _ = waiting.wait_for(|answered| *answered).await;
+            self.recording.lock_recover().remove(&ticket);
+        }
     }
 
     /// Start what the device's daemon orders of this session from now on: each order is a launch
