@@ -374,6 +374,21 @@ class HoldingAWalkToItsBaseline(unittest.TestCase):
         self.assertEqual([r["step"] for r in walk.compare(slow, before)["regressions"]],
                          ["open"])
 
+    def test_a_theme_redraw_the_baseline_never_waited_for_is_said_and_no_regression(self):
+        before = found(("signed-in", True, 900), ("open", True, 800))
+        now = found(("signed-in", True, 2400), ("open", True, 4000))
+        now["versions"]["rust"]["steps"]["signed-in"]["theme_wait_ms"] = 1200
+        now["versions"]["rust"]["steps"]["open"]["theme_wait_ms"] = 300
+        comparison = walk.compare(now, before)
+        self.assertEqual([r["step"] for r in comparison["regressions"]], ["open"])
+        self.assertEqual([r["step"] for r in comparison["theme_redraws"]], ["signed-in"])
+        self.assertIn("1200 ms", comparison["theme_redraws"][0]["why"])
+        # A baseline that waited too holds the wait: the step is held to all of its time.
+        waited = found(("signed-in", True, 900))
+        waited["versions"]["rust"]["steps"]["signed-in"]["theme_wait_ms"] = 300
+        self.assertEqual([r["step"] for r in walk.compare(now, waited)["regressions"]],
+                         ["signed-in"])
+
     def test_the_replacement_is_held_to_what_a_person_got_on_main(self):
         """The tilolang shell, after the Rust one is deleted, is held to the
         Rust shell's baseline: the walk is of the switcher, not of a binary."""

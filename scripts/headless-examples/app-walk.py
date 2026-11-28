@@ -1647,6 +1647,9 @@ class Walk:
         # op is held against, so asking for the theme already shown changes nothing.
         self.dark: bool | None = None
         self.darks: dict[str, bool | None] = {}
+        # How long the walk has waited for the shell to draw a theme it switched to: part of a
+        # step's time a baseline that never waited for it does not hold.
+        self.theme_waited_ms = 0
         # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
         self.kept: dict = {}
         # The controls the step's last op looked at, where it looked at all of them: the
@@ -1869,6 +1872,7 @@ class Walk:
         before = []
         switched = self.set_dark(dark, lambda: before.append(self.session.presented_frames()))
         if switched:
+            waited = time.monotonic()
             try:
                 until_value(
                     f"the session to draw the {'dark' if dark else 'light'} theme",
@@ -1876,6 +1880,7 @@ class Walk:
                     and self.session.presented_frames() > before[0], 20, 0.02)
             except Failed:
                 pass
+            self.theme_waited_ms += round((time.monotonic() - waited) * 1000)
         return switched
 
     def theme_shot(self, name: str, dark: bool, spent=None) -> str:
@@ -3579,6 +3584,7 @@ class Walk:
 
     def step(self, index: int, step: dict) -> dict:
         began = time.monotonic()
+        theme_waited_before = self.theme_waited_ms
         record = {"id": step["id"], "said": step["said"], "ops": [], "found": []}
         dark = step.get("dark", False)
         ops = step.get("ops") or []
@@ -3637,6 +3643,7 @@ class Walk:
                     spent("back_to_light", part_began)
             record["shots_ms"] = round((time.monotonic() - shots_began) * 1000)
             record["shots_spent"] = shots_spent
+            record["theme_wait_ms"] = self.theme_waited_ms - theme_waited_before
             budget = step.get("budget_ms")
             took = round((time.monotonic() - began) * 1000)
             if budget is not None and took > budget:
@@ -4129,6 +4136,8 @@ def summary(report: dict) -> dict:
                     step["id"]: {
                         "walked": "failed" not in step,
                         "took_ms": step.get("took_ms"),
+                        **({"theme_wait_ms": step["theme_wait_ms"]}
+                           if "theme_wait_ms" in step else {}),
                         **({"failed": step["failed"]} if "failed" in step else {}),
                         **({"controls": step["controls"]} if "controls" in step else {}),
                         **({"catalogue": step["catalogue"]} if "catalogue" in step else {}),
@@ -4172,6 +4181,7 @@ def compare(now: dict, before: dict) -> dict:
     them, for the person reading the shots; across two versions they are named
     differently, so they are listed only between runs of the same version."""
     regressions: list[dict] = []
+    redrawn: list[dict] = []
     gone: list[dict] = []
     elsewhere = moved()
     held: dict = {}
@@ -4203,8 +4213,17 @@ def compare(now: dict, before: dict) -> dict:
                 regressions.append({**where, "why": f"walked before, now: {step.get('failed')}"})
                 continue
             took, took_before = step.get("took_ms") or 0, was.get("took_ms") or 0
-            if took > max(took_before * SLOWER_FACTOR, took_before + SLOWER_MARGIN_MS):
+            slower = max(took_before * SLOWER_FACTOR, took_before + SLOWER_MARGIN_MS)
+            # A baseline from before the walk waited for the shell to draw each theme it
+            # switched to holds no such wait: that part of the step is a redraw it never
+            # measured, not the step getting slower.
+            unmeasured = (step.get("theme_wait_ms") or 0) if "theme_wait_ms" not in was else 0
+            if took - unmeasured > slower:
                 regressions.append({**where, "why": f"slower: {took} ms, was {took_before} ms"})
+            elif took > slower:
+                redrawn.append({**where, "why": f"{took} ms, was {took_before} ms: {unmeasured} ms "
+                                "of it waits for the shell to draw each theme of the light and "
+                                "dark shots, which the baseline did not wait for"})
             if "catalogue" in was:
                 have = set(step.get("catalogue") or {})
                 for key in sorted(set(was["catalogue"]) - have):
@@ -4223,7 +4242,8 @@ def compare(now: dict, before: dict) -> dict:
              if step.get("walked")
              and not before["versions"][against]["steps"].get(sid, {}).get("walked", False)]
     return {"walk": now["walk"], "held_to": held, "baseline_commit": before.get("commit"),
-            "regressions": regressions, "controls_gone": gone, "now_walked": fixed}
+            "regressions": regressions, "theme_redraws": redrawn, "controls_gone": gone,
+            "now_walked": fixed}
 
 
 def write_comparison(comparison: dict, out: Path) -> Path:
@@ -4234,6 +4254,11 @@ def write_comparison(comparison: dict, out: Path) -> Path:
     lines += ["", f"## Regressions ({len(comparison['regressions'])})", ""]
     lines += [f"- {r['version']} `{r['step']}`: {r['why']}" for r in comparison["regressions"]] \
         or ["None."]
+    if comparison.get("theme_redraws"):
+        lines += ["", "## Slower only by the theme redraw the walk now waits for (no regression)",
+                  ""]
+        lines += [f"- {r['version']} `{r['step']}`: {r['why']}"
+                  for r in comparison["theme_redraws"]]
     lines += ["", "## Controls drawn before and not now (same version; read the shots)", ""]
     lines += [f"- {g['version']} `{g['step']}`: {', '.join(g['controls'])}"
               for g in comparison["controls_gone"]] or ["None."]
