@@ -30,16 +30,47 @@ pub fn tag_named(name: &str) -> String {
     format!("tilo-told-{name}")
 }
 
+/// Where the home-screen widget reads what to show, under the phone's data, as its Android half
+/// opens it.
+pub const WIDGET_FILE: &str = "tilo/widget.json";
+/// The most things the widget shows: a home-screen card reads as much.
+const WIDGET_ITEMS: usize = 3;
+
 /// One notification as it stands on the phone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Shown {
     tag: String,
     title: String,
     body: String,
+    /// When it was first told: the widget shows the newest first.
+    at_ms: u64,
     /// The buttons it offers, by label.
     buttons: Vec<String>,
     /// How often it was raised: a thing that insists takes a new notification each time.
     raised: u32,
+}
+
+/// What the home-screen widget shows of the person's log: the things that wait, newest first. It
+/// holds the words a notification holds ([`person_telling::words_outside`]), so a phone on a
+/// table shows no more than its lock screen.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    #[serde(default)]
+    pub items: Vec<Item>,
+}
+
+/// One thing the widget shows, and what a tap on it opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Item {
+    pub title: String,
+    pub body: String,
+    /// The name this device knows the thing by, as its notification is named: what a push says it
+    /// by, so a push and a reading of the log are one thing here.
+    #[serde(default)]
+    pub tag: String,
+    /// The link a tap opens, as a notification's; empty for a thing only a push named.
+    #[serde(default)]
+    pub link: String,
 }
 
 /// A tap on one of the phone's notifications: what it is about, and the button pressed where one
@@ -109,6 +140,8 @@ impl Watching {
         if !told.waits() || !told.reaches {
             if self.shown.remove(&told.id).is_some() {
                 self.about.remove(&told.id);
+                // The widget is drawn as the notice goes, and reads what is written before.
+                self.published();
                 let _ = notifier.withdraw(&tag);
             }
             return;
@@ -128,6 +161,7 @@ impl Watching {
             tag: tag.clone(),
             title: title.clone(),
             body: body.clone(),
+            at_ms: told.at_ms,
             buttons: buttons.clone(),
             raised,
         };
@@ -157,8 +191,12 @@ impl Watching {
         if silent {
             notice = notice.quietly();
         }
-        if notifier.show(&notice).is_ok() {
-            self.shown.insert(told.id.clone(), stands);
+        // The home-screen widget is drawn as the notice is shown, and reads what is written
+        // before: the thing stands on it while it stands on the phone.
+        self.shown.insert(told.id.clone(), stands);
+        self.published();
+        if notifier.show(&notice).is_err() {
+            self.shown.remove(&told.id);
         }
     }
 
@@ -199,6 +237,94 @@ impl Watching {
     #[must_use]
     pub fn about_of(&self, id: &str) -> Option<&About> {
         self.about.get(id)
+    }
+
+    /// What the widget shows now: the things that wait, newest first.
+    #[must_use]
+    pub fn snapshot(&self) -> Snapshot {
+        let mut open: Vec<(&String, &Shown)> = self.shown.iter().collect();
+        open.sort_by_key(|(_, shown)| std::cmp::Reverse(shown.at_ms));
+        Snapshot {
+            items: open
+                .iter()
+                .take(WIDGET_ITEMS)
+                .map(|(id, shown)| Item {
+                    title: shown.title.clone(),
+                    body: shown.body.clone(),
+                    tag: shown.tag.clone(),
+                    link: format!("{LINK}{}", hex::encode(id.as_bytes())),
+                })
+                .collect(),
+        }
+    }
+
+    /// Write what the widget shows where its reader is: the Android widget opens this file, and
+    /// is asked to draw again as each notice stands or goes.
+    pub fn published(&self) {
+        let Some(data) = tilo_paths::data_dir() else {
+            return;
+        };
+        if let Err(error) = self.snapshot().write(&data.join(WIDGET_FILE)) {
+            tracing::debug!(%error, "what the widget shows is not written");
+        }
+    }
+}
+
+impl Snapshot {
+    /// What a push says the widget shows: the thing it names stands first, or is taken away where
+    /// it waits no more, under the name the log's own reading writes.
+    pub fn pushed(&mut self, push: &crate::unified_push::Push) {
+        // The name a push's notification stands under is the one its log's reading writes.
+        let tag = tag_named(&push.tag);
+        self.items.retain(|item| item.tag != tag);
+        if !push.gone {
+            self.items.insert(
+                0,
+                Item {
+                    title: push.title.clone(),
+                    body: push.body.clone(),
+                    tag,
+                    // A push says nothing of where the thing is: a tap opens the app.
+                    link: String::new(),
+                },
+            );
+            self.items.truncate(WIDGET_ITEMS);
+        }
+    }
+
+    /// Take what a push says into the snapshot kept at `path`. The app is closed when a push
+    /// comes, so this is what keeps the widget showing what waits.
+    ///
+    /// # Errors
+    /// The snapshot at `path` is not written.
+    pub fn remember(
+        path: &std::path::Path,
+        push: &crate::unified_push::Push,
+    ) -> Result<(), String> {
+        let mut snapshot = Self::read(path);
+        snapshot.pushed(push);
+        snapshot.write(path)
+    }
+
+    /// The snapshot kept at `path`, or nothing where none is.
+    #[must_use]
+    pub fn read(path: &std::path::Path) -> Self {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Keep `self` at `path`.
+    ///
+    /// # Errors
+    /// The snapshot does not encode, or the file is not written.
+    pub fn write(&self, path: &std::path::Path) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+        }
+        let text = serde_json::to_vec(self).map_err(|error| error.to_string())?;
+        std::fs::write(path, text).map_err(|error| error.to_string())
     }
 }
 

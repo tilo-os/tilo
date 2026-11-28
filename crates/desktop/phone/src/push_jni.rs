@@ -34,6 +34,12 @@ pub extern "system" fn Java_so_tilo_android_TiloPush_nativePush<'local>(
     }
 }
 
+/// What the push says the home-screen widget shows, kept where the widget reads it: the app is
+/// closed, so nothing else of the phone writes it.
+fn remember(data: &Path, push: &crate::unified_push::Push) -> Result<(), String> {
+    crate::telling::Snapshot::remember(&data.join(crate::telling::WIDGET_FILE), push)
+}
+
 fn open<'local>(
     env: &mut JNIEnv<'local>,
     files: &JString<'local>,
@@ -50,6 +56,11 @@ fn open<'local>(
         .map_err(|error| error.to_string())?;
     let plain = key.open(&body)?;
     let push = crate::unified_push::Push::read(&plain)?;
+    // The home-screen widget shows what a push says too; the app may not run to write it, and a
+    // widget that cannot be written is no reason to lose the notice.
+    if let Err(error) = remember(&data, &push) {
+        tracing::warn!(%error, "a push is not kept for the widget");
+    }
     let tag = crate::telling::tag_named(&push.tag);
     let mut fields = vec![tag.clone()];
     if push.gone {

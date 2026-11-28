@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The card the home screen offers: a small one and a medium one, resized freely. It is drawn
+     when what the person was told changes, never on a timer of the system's. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="160dp"
+    android:minHeight="100dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:maxResizeWidth="420dp"
+    android:maxResizeHeight="320dp"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:description="@string/tilo_widget_description"
+    android:initialLayout="@layout/tilo_widget"
+    android:updatePeriodMillis="0" />

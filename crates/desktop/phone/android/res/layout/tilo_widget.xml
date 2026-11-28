@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home screen's card: what waits for the person. Its words are set by TiloWidget from the
+     snapshot the app writes; it draws in the system's light or dark. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tilo_widget"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/tilo_widget_ground">
+
+    <TextView android:id="@+id/header" style="@style/heading" />
+
+    <LinearLayout android:id="@+id/row0" style="@style/row">
+        <TextView android:id="@+id/row0_title" style="@style/title" />
+        <TextView android:id="@+id/row0_body" style="@style/body" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/row1" style="@style/row">
+        <TextView android:id="@+id/row1_title" style="@style/title" />
+        <TextView android:id="@+id/row1_body" style="@style/body" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/row2" style="@style/row">
+        <TextView android:id="@+id/row2_title" style="@style/title" />
+        <TextView android:id="@+id/row2_body" style="@style/body" />
+    </LinearLayout>
+
+    <TextView android:id="@+id/empty" style="@style/body" android:layout_marginTop="8dp" />
+</LinearLayout>

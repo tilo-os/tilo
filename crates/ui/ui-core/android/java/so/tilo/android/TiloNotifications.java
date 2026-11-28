@@ -38,6 +38,8 @@ public final class TiloNotifications {
             String activation,
             String[] buttonLabels,
             String[] buttonLinks) {
+        // The home screen's card shows the same things: it is drawn again with them.
+        TiloWidget.refresh(context);
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) {
             return "this device has no notification service";
@@ -102,6 +104,8 @@ public final class TiloNotifications {
     }
 
     public static String withdraw(Context context, String tag) {
+        // The home screen's card shows the same things: it is drawn again without this one.
+        TiloWidget.refresh(context);
         NotificationManager manager = context.getSystemService(NotificationManager.class);
         if (manager == null) {
             return "this device has no notification service";

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the home screen says of the card where the person picks one. -->
+<resources>
+    <string name="tilo_widget_description">What waits for you</string>
+</resources>

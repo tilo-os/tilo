@@ -5038,6 +5038,10 @@ fn parse_environment(source: &[u8]) -> Vec<(OsString, OsString)> {
 }
 
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a feature the app's own metadata declares, and reads as one where used"
+)]
 struct AppPackageSpec {
     app_dir: PathBuf,
     cargo_package: String,
@@ -5051,6 +5055,10 @@ struct AppPackageSpec {
     /// Whether its Android build takes pushes from a `UnifiedPush` distributor, as its Cargo
     /// metadata declares (`[package.metadata.tilo-app] unified-push = true`).
     unified_push: bool,
+    /// Whether its Android build offers a home-screen widget, as its Cargo metadata declares
+    /// (`[package.metadata.tilo-app] home-widget = true`): the manifest carries the receiver
+    /// then, drawing from the snapshot the app writes.
+    home_widget: bool,
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
@@ -5625,13 +5633,18 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .get("dependencies")
         .and_then(|dependencies| dependencies.get("runtime-dylib"))
         .is_some();
-    let unified_push = cargo
+    let android_app = cargo
         .get("package")
         .and_then(|package| package.get("metadata"))
-        .and_then(|metadata| metadata.get("tilo-app"))
-        .and_then(|app| app.get("unified-push"))
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false);
+        .and_then(|metadata| metadata.get("tilo-app"));
+    let declared = |name: &str| {
+        android_app
+            .and_then(|app| app.get(name))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false)
+    };
+    let unified_push = declared("unified-push");
+    let home_widget = declared("home-widget");
 
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
@@ -5685,6 +5698,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         thin_feature,
         links_toolkit_dylib,
         unified_push,
+        home_widget,
     })
 }
 

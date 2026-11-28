@@ -236,6 +236,22 @@ fn what_waits_reaches_it_while_it_runs(
         "a notification is named as a push names it: {tag}"
     );
 
+    // The home-screen widget shows the same thing: the words a notification shows, and the link
+    // that opens it, written where the phone's Android half reads it.
+    let widget = widget_snapshot();
+    assert_eq!(widget.items.len(), 1, "one thing waits: {widget:?}");
+    let waiting = widget.items.first().expect("one thing waits");
+    assert_eq!(waiting.title, "Deploy");
+    assert_eq!(waiting.body, "The deploy is waiting");
+    assert_eq!(
+        waiting.link,
+        format!(
+            "{}{}",
+            tilo_phone::telling::LINK,
+            hex::encode(told.id.as_bytes())
+        )
+    );
+
     // Answered on another device of theirs, it is taken away from the phone.
     tilo_person_services::PersonServices::of(&server.workspaces())
         .acknowledge_told(
@@ -253,6 +269,19 @@ fn what_waits_reaches_it_while_it_runs(
         "a thing answered elsewhere waits no more: {:?}",
         recorder.notifications()
     );
+    assert!(
+        widget_snapshot().items.is_empty(),
+        "the widget shows nothing that waits no more"
+    );
+}
+
+/// What the home-screen widget was written: the file its Android half reads.
+fn widget_snapshot() -> tilo_phone::telling::Snapshot {
+    tilo_phone::telling::Snapshot::read(
+        &tilo_paths::data_dir()
+            .expect("the phone's data directory")
+            .join(tilo_phone::telling::WIDGET_FILE),
+    )
 }
 
 /// With the phone's daemon stopped, what waits for its person is pushed to the endpoint it handed
@@ -318,6 +347,18 @@ fn pushed_while_it_is_closed(
         "the thing's id is in no push: {}",
         String::from_utf8_lossy(&plain)
     );
+    // The home-screen widget shows what the push says while the app is closed: the receiver's own
+    // call, which the JNI entry makes with the push it opened.
+    tilo_phone::telling::Snapshot::remember(
+        &data.join(tilo_phone::telling::WIDGET_FILE),
+        &told_push,
+    )
+    .expect("the push is kept for the widget");
+    let widget = widget_snapshot();
+    let pushed = widget.items.first().expect("the push's thing shows");
+    assert_eq!(pushed.title, "Build");
+    assert_eq!(pushed.body, "The build is red");
+    assert_eq!(pushed.tag, tilo_phone::telling::tag_named(&told_push.tag));
 
     // Answered, a push that shows nothing names it as gone.
     tilo_person_services::PersonServices::of(&server.workspaces())
@@ -337,4 +378,10 @@ fn pushed_while_it_is_closed(
     let gone = Push::read(&gone).expect("the push says what it is");
     assert!(gone.gone, "a thing taken back is pushed as gone");
     assert_eq!(gone.tag, told_push.tag);
+    tilo_phone::telling::Snapshot::remember(&data.join(tilo_phone::telling::WIDGET_FILE), &gone)
+        .expect("the gone push is kept for the widget");
+    assert!(
+        widget_snapshot().items.is_empty(),
+        "the widget takes away what waits no more"
+    );
 }

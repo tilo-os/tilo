@@ -903,6 +903,9 @@ pub struct AndroidMetadata {
     /// person installed: the app's manifest declares the connector's receiver then, and nothing
     /// of it is in an app that does not.
     pub unified_push: bool,
+    /// Whether the home screen offers a card of what waits for the person: the app's manifest
+    /// declares the widget's receiver then, drawn from the snapshot the app writes.
+    pub home_widget: bool,
 }
 
 impl AndroidMetadata {
@@ -914,6 +917,7 @@ impl AndroidMetadata {
         let id = &manifest.package.id;
         Ok(Self {
             unified_push,
+            home_widget: false,
             package: package.to_owned(),
             application_id: application_id(id)?,
             label: manifest
@@ -1098,6 +1102,29 @@ fn unified_push_entries(unified_push: bool) -> (&'static str, &'static str) {
     (queries, push)
 }
 
+/// The receiver of the home screen's card of what waits for the person, or nothing: an app whose
+/// metadata declares `home-widget` draws it from the snapshot its own code writes.
+fn home_widget_entries(home_widget: bool) -> &'static str {
+    if !home_widget {
+        return "";
+    }
+    r#"
+        <!-- The home screen's card of what waits for the person and what their agent is working
+             on: the same reading of their telling log their notifications show, drawn again
+             whenever a notice stands or goes. -->
+        <receiver
+            android:name="so.tilo.android.TiloWidget"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/tilo_widget_info" />
+        </receiver>
+"#
+}
+
 /// The `<uses-permission>` lines of the permissions an app's metadata asks for.
 fn uses_permissions(permissions: &[&str]) -> String {
     permissions
@@ -1126,6 +1153,7 @@ pub fn android_manifest(
     let permissions = uses_permissions(&app.permissions);
     let documents = workspace_files_provider(workspace_files, &id);
     let (queries, push) = unified_push_entries(app.unified_push);
+    let widget = home_widget_entries(app.home_widget);
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -1200,13 +1228,14 @@ pub fn android_manifest(
             android:authorities="{id}.tilo.files"
             android:exported="false"
             android:grantUriPermissions="true" />
-{documents}{push}    </application>
+{documents}{push}{widget}    </application>
 </manifest>
 "#,
         code = app.version_code,
         name = xml_escape(&app.version_name),
         label = xml_escape(&app.label),
         push = push,
+        widget = widget,
         queries = queries,
         documents = documents,
     )
@@ -1639,8 +1668,9 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
     let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
-    let metadata =
+    let mut metadata =
         AndroidMetadata::from_manifest(&spec.cargo_package, &manifest, spec.unified_push)?;
+    metadata.home_widget = spec.home_widget;
     check_library_entry(&app_dir)?;
     super::validate_profile_name(&request.profile)?;
 
@@ -1740,6 +1770,8 @@ struct StagedApk {
     manifest: PathBuf,
     assets: PathBuf,
     icon: PathBuf,
+    /// What the app's own `android/res` compiled to: its layouts, its values and its drawables.
+    resources: Vec<PathBuf>,
     content: PathBuf,
 }
 
@@ -1821,6 +1853,7 @@ fn stage_apk(
     write_signed_manifest(app_dir, &content, &assets, packed > 0)
         .with_context(|| format!("writing the manifest of {}", app_dir.display()))?;
     let icon = compile_icon(tools, app_dir, metadata, stage)?;
+    let resources = compile_resources(tools, app_dir, stage)?;
     let debuggable = matches!(request.signing, Signing::Debug);
     let manifest_path = stage.join("AndroidManifest.xml");
     std::fs::write(
@@ -1839,6 +1872,7 @@ fn stage_apk(
         manifest: manifest_path,
         assets,
         icon,
+        resources,
         content,
     })
 }
@@ -2189,6 +2223,34 @@ fn compile_icon(
     Ok(compiled.join("mipmap-xxxhdpi_ic_launcher.png.flat"))
 }
 
+/// The app's own resources under `android/res`, compiled: the layouts, values and drawables its
+/// Java names, such as the home screen's card. An app that carries none compiles nothing.
+fn compile_resources(tools: &Toolchain, app_dir: &Path, stage: &Path) -> Result<Vec<PathBuf>> {
+    let res = app_dir.join("android").join("res");
+    let mut sources = Vec::new();
+    if res.is_dir() {
+        collect_files(&res, &mut sources)?;
+    }
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    sources.sort();
+    let compiled = stage.join("compiled-res");
+    std::fs::create_dir_all(&compiled)?;
+    run_quiet(
+        Command::new(tools.build_tool("aapt2")?)
+            .arg("compile")
+            .arg("-o")
+            .arg(&compiled)
+            .args(&sources),
+    )
+    .context("compiling the app's resources")?;
+    let mut flats = Vec::new();
+    collect_files(&compiled, &mut flats)?;
+    flats.sort();
+    Ok(flats)
+}
+
 /// The generated launcher icon's edge and disc radius, in doubled pixel
 /// coordinates so pixel centres are integers.
 const ICON_SIZE: i64 = 192;
@@ -2251,7 +2313,8 @@ fn aapt2_link(
         .args(["--target-sdk-version", &TARGET_SDK.to_string()])
         .arg("-A")
         .arg(&staged.assets)
-        .arg(&staged.icon);
+        .arg(&staged.icon)
+        .args(&staged.resources);
     if proto {
         command.arg("--proto-format");
     }
@@ -3207,6 +3270,14 @@ type = "gui"
             assert!(xml.contains("org.unifiedpush.android.connector.MESSAGE"));
             assert!(xml.contains("org.unifiedpush.android.connector.NEW_ENDPOINT"));
             assert!(xml.contains(r#"android:name="so.tilo.unified-push" android:value="true""#));
+            // The home screen's card only where the app declares one, and then its own resources.
+            assert!(!xml.contains("so.tilo.android.TiloWidget"));
+            let mut carded = pushing;
+            carded.home_widget = true;
+            let xml = android_manifest(&carded, "field_notes", false, false);
+            assert!(xml.contains(r#"android:name="so.tilo.android.TiloWidget""#));
+            assert!(xml.contains("android.appwidget.action.APPWIDGET_UPDATE"));
+            assert!(xml.contains(r#"android:resource="@xml/tilo_widget_info""#));
         }
 
         phase the_default_icon_is_a_disc_in_the_ids_colour;

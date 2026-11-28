@@ -20,6 +20,9 @@ workspace-files = true
 # Pushes reach the phone while its app is closed, through a UnifiedPush distributor: the APK's
 # manifest declares the connector's receiver, and its Rust opens every push with the device's key.
 unified-push = true
+# The home screen offers a card of what waits for the person, drawn from the snapshot the app
+# writes: its resources are under `android/res`.
+home-widget = true
 
 [features]
 # A thin build links the toolkit dynamically, so `tilolang dev` reloads the app in place.
