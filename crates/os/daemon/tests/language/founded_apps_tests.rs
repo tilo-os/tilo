@@ -32,7 +32,6 @@ const ROOTED: &[&str] = &[
 fn a_founded_workspace_takes_the_first_write_of_each_installed_default_app() {
     host::run_deciding(INSTALLED, |host| async move {
         let workspace = host.workspace().to_owned();
-        let person = host.person().to_owned();
         let daemon = host.daemon();
         let workspaces = daemon.workspaces();
         let mut refused = Vec::new();
@@ -61,7 +60,7 @@ fn a_founded_workspace_takes_the_first_write_of_each_installed_default_app() {
             refused.push(format!("the Files tree: {error}"));
         }
         for app in ROOTED {
-            if let Err(error) = workspaces.root_app(&workspace, app, None, &person).await {
+            if let Err(error) = workspaces.root_app(&workspace, app, None).await {
                 refused.push(format!("{app}'s root: {error}"));
             }
         }

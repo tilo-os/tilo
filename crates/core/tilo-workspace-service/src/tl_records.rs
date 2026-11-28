@@ -783,10 +783,15 @@ impl Workspaces {
         .map_err(|error| ApiError::Failed(error.to_string()))?
     }
 
-    /// Make `app`'s root in `workspace`'s record of it where it has none yet, empty, as
-    /// `person`, through `package`, the app's package as this device has it (`None` for the one
-    /// this build carries): what the app's actions on its whole are invoked on. A record no
-    /// device wrote yet has its channel founded here first, as a window opening it would.
+    /// Make `app`'s root in `workspace`'s record of it where it has none yet, empty, through
+    /// `package`, the app's package as this device has it (`None` for the one this build
+    /// carries): what the app's actions on its whole are invoked on. A record no device wrote
+    /// yet has its channel founded here first, as a window opening it would.
+    ///
+    /// The root is this device's own change, made as its own person: no caller signed a call
+    /// that makes it, and a device writes a change for another person only with the call they
+    /// signed. Whoever's ask or install wanted it, the workspace decides it as a write of this
+    /// device's person (on a server that made the workspace for someone, an administrator's).
     ///
     /// # Errors
     /// The app is neither built in nor installed here, its package does not load, or the record
@@ -796,8 +801,8 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         package: Option<&Package>,
-        person: &str,
     ) -> Result<(), String> {
+        let person = hex::encode(self.device_person());
         let records = self.running(app)?;
         let route = tilo_peer_state::document_frame::DocumentRoute {
             app_id: app.to_owned(),
@@ -809,9 +814,9 @@ impl Workspaces {
         if let Some(Err(error)) = self.own_route_keys(&route, true).await {
             tracing::debug!(%error, app, "the record's channel is not founded here");
         }
-        let record = self.tl_record(workspace, app, person)?;
+        let record = self.tl_record(workspace, app, &person)?;
         let policy = self.policy_of(workspace).await.map(Arc::new);
-        let (person, app, package) = (person.to_owned(), app.to_owned(), package.cloned());
+        let (app, package) = (app.to_owned(), package.cloned());
         tokio::task::spawn_blocking(move || {
             records.root(record, policy, &person, &app, package.as_ref())
         })

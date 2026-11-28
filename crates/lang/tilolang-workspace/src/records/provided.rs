@@ -165,7 +165,7 @@ impl BuiltInRecords {
             .may_read_record(caller, workspace, self.app, "")
             .await
             .map_err(|refused| refused.to_string())?;
-        self.rooted(workspace, person).await?;
+        self.rooted(workspace).await?;
         // The action is read where its address says, by running the app's program as a page is
         // read ([`Self::query`]): never every row of the record.
         let offered = {
@@ -215,17 +215,17 @@ impl BuiltInRecords {
 
     /// Make the app's root in `workspace`'s record where it has none yet, as a window of the app
     /// makes it when it opens: what the app's actions on its whole (Chat's `write_to` on its
-    /// conversations) are invoked on, on a device where nobody opened the app.
+    /// conversations) are invoked on, on a device where nobody opened the app. It is this
+    /// device's own change ([`Workspaces::root_app`]), never one made for the caller who asked:
+    /// their ask carries no call of theirs that makes it.
     ///
     /// # Errors
     /// The record could not be opened or written.
-    async fn rooted(&self, workspace: &str, person: &str) -> Result<(), String> {
+    async fn rooted(&self, workspace: &str) -> Result<(), String> {
         if self.rooted.lock_recover().contains(workspace) {
             return Ok(());
         }
-        self.workspaces
-            .root_app(workspace, self.app, None, person)
-            .await?;
+        self.workspaces.root_app(workspace, self.app, None).await?;
         self.rooted.lock_recover().insert(workspace.to_owned());
         Ok(())
     }
@@ -269,7 +269,7 @@ impl ActionProvider for BuiltInRecords {
                 done.complete(Err(refused));
                 return;
             }
-            if let Err(error) = records.rooted(&workspace, &person).await {
+            if let Err(error) = records.rooted(&workspace).await {
                 tracing::warn!(app = records.app, %workspace, %error, "a built-in app's record has no root");
             }
             // The page is read by running the app's program, whose reads can wait for the
@@ -336,7 +336,7 @@ pub mod calls {
 
     use super::{
         Admitted, Arc, BuiltInRecords, Caller, InvokeArgument, InvokeRequest, RESOURCE_PROVIDER,
-        Workspaces, person_of,
+        Workspaces,
     };
 
     /// Run the first `action` `app`'s record offers `caller`, with `arguments`, through the
@@ -358,8 +358,7 @@ pub mod calls {
             rooted: Arc::default(),
         };
         let workspace = caller.workspace().expect("a caller in a workspace");
-        let person = person_of(caller).expect("a caller acting as a person");
-        records.rooted(workspace, &person).await?;
+        records.rooted(workspace).await?;
         let offered: Vec<_> = records
             .rows(caller)
             .into_iter()
@@ -462,7 +461,7 @@ mod tests {
     ) -> InvokeRequest {
         // What a caller is offered is read once the record has its root, as a query reads it.
         records
-            .rooted(caller.workspace().unwrap(), &person_of(caller).unwrap())
+            .rooted(caller.workspace().unwrap())
             .await
             .expect("Chat's root is made");
         let offered: Vec<_> = records
@@ -792,6 +791,63 @@ mod tests {
         server.shutdown().await;
     }
 
+    /// A page's caller is a person other than the server's own, in a workspace the server made
+    /// for them: the first page of a built-in app's record makes its root as the server's own
+    /// change, which the workspace takes, and offers what the app publishes on its whole.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_pages_caller_finds_a_built_in_apps_root_made_by_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
+        declare_chat(&workspaces);
+        let (ada_key, ada) = tilo_workspace_service::workspaces::fixtures::guest_device();
+        let workspace = workspaces
+            .create_for("Ada's", None, ada.user_public_key)
+            .await
+            .unwrap()
+            .workspace;
+        workspaces
+            .enter(&workspace, (&ada, &ada_key))
+            .await
+            .expect("Ada's page enters the workspace made for her");
+        register(&workspaces);
+
+        let page = Caller::authenticated(ada.user_public_key, ada.device_public_key)
+            .in_workspace(workspace.clone());
+        let offered = records(&workspaces)
+            .query(&page, tilo_actions::remote::CatalogueQuery::default())
+            .await
+            .expect("the page is answered")
+            .expect("the record reads");
+        assert!(
+            offered
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .any(|action| action.address.action == "write_to"),
+            "Chat offers write_to on its whole: {:?}",
+            offered.rows
+        );
+        let route = DocumentRoute {
+            app_id: CHAT.to_owned(),
+            cluster_id: workspace.clone(),
+            document: String::new(),
+        };
+        assert!(
+            !workspaces
+                .record_changes(&workspace, &route, &hex::encode(ada.user_public_key))
+                .unwrap_or_default()
+                .is_empty(),
+            "the workspace took Chat's root, and Ada reads it"
+        );
+        server.shutdown().await;
+    }
+
     /// This device writes a record's changes itself, so the record's own authority is what
     /// stops an agent: one its delegation does not give a write is refused, and nothing of it
     /// reaches the store; the same agent with the delegation writes, and the change is stamped
@@ -823,7 +879,7 @@ mod tests {
         // Chat's record is in use before the workspace narrows its agent, its channel's keys
         // made as a workspace's are when it starts.
         records
-            .rooted(&workspace, &person)
+            .rooted(&workspace)
             .await
             .expect("Chat's root is made");
 
@@ -1020,7 +1076,7 @@ mod tests {
             rooted: Arc::default(),
         };
         tasks_records
-            .rooted(workspace, ada_person)
+            .rooted(workspace)
             .await
             .expect("Tasks' record has its root");
         let ada = member(tilo_actions::MemberId::person(ada_person.to_owned()));
