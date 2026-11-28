@@ -88,9 +88,11 @@ pub fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
 
 /// [`may_act_in`], what the caller reads decided at `node` (a record's, for an agent of one app).
 pub fn may_act_at(caller: &Caller, workspace: &Workspace, node: &TreePath, now: u64) -> bool {
+    // An agent its person narrowed with their answers takes part though it reads no node whole.
     let reads = || {
-        BrokerActor::for_caller(caller).answer_in(workspace, node, ActionKind::Read, now)
-            != Answer::Deny
+        let actor = BrokerActor::for_caller(caller);
+        actor.answer_in(workspace, node, ActionKind::Read, now) != Answer::Deny
+            || actor.takes_part_in(workspace, now)
     };
     // A placed device's caller takes part in no workspace's actions: it reads its records
     // where records are read, and nothing here.

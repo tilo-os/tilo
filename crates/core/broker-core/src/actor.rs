@@ -563,6 +563,34 @@ impl BrokerActor {
     pub fn reads_in(&self, workspace: &Workspace, now: u64) -> bool {
         self.answer_in(workspace, &workspace.policy.node(), ActionKind::Read, now) != Answer::Deny
     }
+
+    /// Whether this actor takes part in `workspace` at `now`, as a caller confined to it does:
+    /// it reads the workspace ([`Self::reads_in`]), or it is an agent its person narrowed with
+    /// their answers ([`tilo_action_policy::WorkspacePolicy::answers_narrow`]). Such an agent
+    /// takes only what those answers name, which is never the whole workspace, so it takes part
+    /// unless something denies it the workspace (its person's stop, a rule of the workspace's
+    /// naming it) or the people it acts for may not read it. What it may do at each node is
+    /// still its answers' alone.
+    pub fn takes_part_in(&self, workspace: &Workspace, now: u64) -> bool {
+        if self.reads_in(workspace, now) {
+            return true;
+        }
+        let acting = self.acting();
+        let Some((agent, person)) = acting.member_id().and_then(MemberId::as_agent) else {
+            return false;
+        };
+        let cx = tilo_action_policy::Context::at_secs(now);
+        if !workspace.policy.answers_narrow(agent, person.as_str(), &cx) {
+            return false;
+        }
+        let access = self.access_in(workspace);
+        let verdict = access.verdict(&workspace.policy.node(), ActionKind::Read, &cx);
+        let Some((own, people)) = verdict.parts.split_last() else {
+            return false;
+        };
+        matches!(own.basis, tilo_action_policy::Basis::NoGrant)
+            && people.iter().all(|part| part.answer != Answer::Deny)
+    }
 }
 
 #[cfg(test)]
