@@ -4702,7 +4702,11 @@ impl ActionProvider for Governing {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let workspace_id = addressed_workspace(&request.target.address);
+        // A call of the person's own providers (`tilo.telling`, `tilo.account`) names its
+        // resource, never a workspace: it is made in the workspace the caller is in, and
+        // answered there, as a call naming a workspace's action is answered in that one.
+        let workspace_id = addressed_workspace(&request.target.address)
+            .or_else(|| caller.workspace().and_then(WorkspaceId::parse));
         self.of(workspace_id, caller).invoke(caller, request)
     }
 

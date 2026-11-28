@@ -7781,6 +7781,11 @@ impl ActionProvider for RuntimeActionProvider {
             // Their answer to an asked record is the record's own action, which this device's
             // asked dispatch answers below: never one of the providers it serves.
             && !tilo_actions::remote::asked::is_resolve(&request.target)
+            // What the workspace's host keeps for the person — their log of what they were
+            // told, their vault, accounts and models — is the host's to answer, wherever the
+            // workspace is kept: a device asks it there ([`Self::admitted_session`]), never
+            // from a copy of its own.
+            && !tilo_action_services::kept_by_workspace_host(&request.target.provider)
             // The workspace's own tree is no action of this computer's: it is decided by the
             // workspace's grants for the device, which this person's own call carries below
             // ([`Self::admitted_session`]) as one of their devices'.
