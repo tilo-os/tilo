@@ -606,6 +606,7 @@ fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
         Point::new(-1.0, -1.0),
         false,
         false,
+        false,
         None,
     );
     let danger = theme.tokens.colors.semantic.danger.to_rgba8();
@@ -618,4 +619,90 @@ fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
         })
     });
     assert!(has_danger, "error glyph is painted in the danger colour");
+}
+
+tilo_test_env::scenario! {
+    /// An empty state's hint: a quieter line under the action, and a route of its own when it
+    /// carries one.
+    fn the_empty_state_hint_shows_and_its_route_runs;
+
+    phase a_hint_under_the_action_says_what_the_action_alone_does_not;
+    {
+        let mut es = EmptyState::new("No conversations yet")
+            .with_message("Add people in Contacts to start a conversation.")
+            .with_action("Open Contacts")
+            .with_hint("Add the people you message in Contacts");
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+        assert!(
+            es.hint_rect().width() > 0.0 && es.hint_rect().height() > 0.0,
+            "the hint stands under the action: {:?}",
+            es.hint_rect()
+        );
+        assert!(es.hint_rect().y0 >= es.action_rect().y1, "under the action");
+        // A hint that only explains the action is a sentence: no button, and it is read with
+        // the state's description.
+        assert!(!es.hint_acts());
+        let node = Widget::accessibility(&es).expect("the state is semantic");
+        assert_eq!(node.children.len(), 1, "only the action is a button");
+        assert_eq!(node.children[0].name.as_deref(), Some("Open Contacts"));
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|said| said.contains("Add the people you message in Contacts")),
+            "{:?}",
+            node.description
+        );
+    }
+
+    phase pressing_the_hint_runs_its_own_route_and_not_the_actions;
+    {
+        let opened = Rc::new(std::cell::Cell::new(0));
+        let acted = Rc::new(std::cell::Cell::new(0));
+        let (hint, action) = (Rc::clone(&opened), Rc::clone(&acted));
+        let mut es = EmptyState::new("No conversations yet")
+            .with_action("Open Contacts")
+            .with_hint("Add the people you message in Contacts")
+            .on_click(move || action.set(action.get() + 1))
+            .on_hint_open(move || hint.set(hint.get() + 1));
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        let target = es.hint_rect().center();
+        dispatch(&mut es, &cursor(target));
+        assert!(
+            dispatch(&mut es, &mouse_press()),
+            "the hint takes the press"
+        );
+        assert_eq!(opened.get(), 1, "the hint's route runs");
+        assert_eq!(acted.get(), 0, "and the action does not");
+
+        // The action still fires where it stands.
+        let target = es.action_rect().center();
+        dispatch(&mut es, &cursor(target));
+        assert!(dispatch(&mut es, &mouse_press()));
+        assert_eq!(acted.get(), 1, "the action runs");
+        assert_eq!(opened.get(), 1, "and the hint does not run again");
+
+        // Assistive technology reaches the hint as a button of its own, after the action.
+        let node = Widget::accessibility(&es).expect("the state is semantic");
+        assert_eq!(node.children.len(), 2, "the action and the hint");
+        assert_eq!(node.children[1].role, tilo_ui_base::a11y::Role::Button);
+        assert_eq!(
+            node.children[1].name.as_deref(),
+            Some("Add the people you message in Contacts")
+        );
+        assert_eq!(es.synthetic_accessibility_rect(&[1]), Some(es.hint_rect()));
+
+        let mut doc = AutoCommit::new();
+        let hint_id = es.hint_control_id();
+        assert!(Widget::perform_semantic_action(
+            &mut es,
+            &hint_id,
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(opened.get(), 2, "Activate reaches the hint's route");
+    }
 }

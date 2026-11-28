@@ -974,6 +974,7 @@ d-3ku6ypy7 = Niemand
     .w-no-conversations-yet = Noch keine Unterhaltungen
     .w-add-people-in-contacts-to-start = Füge in Kontakte Personen hinzu, um eine Unterhaltung zu beginnen.
     .w-open-contacts = Kontakte öffnen
+    .w-add-the-people-you-message-in = Füge die Personen, denen du schreibst, in Kontakte hinzu
     .w-choose-a-person = Person wählen
     .w-your-conversations-stay-separate-for-each = Unterhaltungen bleiben je Dienst und Konto getrennt.
 

@@ -85,6 +85,9 @@ pub struct EmptyStateContent<'a> {
     /// A quiet line under the action: the other way in ("Or drop a file
     /// here"), never a step of its own.
     pub hint: Option<&'a str>,
+    /// Whether the hint is a route of its own to press, rather than a sentence about this one:
+    /// drawn as a link-like line and announcing a button.
+    pub hint_action: bool,
     pub error: bool,
 }
 
@@ -99,6 +102,7 @@ impl std::fmt::Debug for EmptyStateContent<'_> {
             .field("documents", &self.documents.len())
             .field("action_label", &self.action_label)
             .field("hint", &self.hint)
+            .field("hint_action", &self.hint_action)
             .field("error", &self.error)
             .finish()
     }
@@ -116,6 +120,7 @@ impl<'a> EmptyStateContent<'a> {
             documents: &[],
             action_label: None,
             hint: None,
+            hint_action: false,
             error: false,
         }
     }
@@ -128,7 +133,9 @@ impl<'a> EmptyStateContent<'a> {
     /// The accessibility of a state painted with [`EmptyState::paint`]: a
     /// group over `rect` named by the title and described by the message,
     /// what the thing said, and its action as a button where it was drawn (`action`, the rect
-    /// `paint` returned), answering `action_target`. A widget that paints
+    /// `paint` returned), answering `action_target`. A hint that is a route of its own
+    /// (`hint_action`) is a button where it was drawn too (`hint`, answering `hint_target`);
+    /// one that only explains the action is part of the description. A widget that paints
     /// an empty state itself adds this node, so what is drawn is also there
     /// for assistive technology and agents.
     pub fn access_node(
@@ -136,22 +143,38 @@ impl<'a> EmptyStateContent<'a> {
         rect: Rect,
         action: Option<Rect>,
         action_target: &str,
+        hint: Option<Rect>,
+        hint_target: &str,
     ) -> tilo_ui_base::a11y::AccessNode {
         use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = AccessNode::new(Role::Group)
             .with_name(self.title)
             .with_bounds(rect);
-        if let Some(described) = described(self.message, self.hint, self.quote()) {
+        let said_hint = self.hint.filter(|_| !self.hint_action);
+        if let Some(described) = described(self.message, said_hint, self.quote()) {
             node = node.with_description(described);
         }
+        let mut children = Vec::new();
         if let (Some(label), Some(action)) = (self.action_label, action) {
-            node = node.with_children(vec![
+            children.push(
                 AccessNode::new(Role::Button)
                     .with_name(label)
                     .with_bounds(action)
                     .with_state(AccessState::new().focusable(true))
                     .with_action_target(action_target),
-            ]);
+            );
+        }
+        if let (Some(label), Some(hint)) = (self.hint.filter(|_| self.hint_action), hint) {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_bounds(hint)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_action_target(hint_target),
+            );
+        }
+        if !children.is_empty() {
+            node = node.with_children(children);
         }
         node
     }
@@ -676,6 +699,7 @@ fn shown_content<'a>(
         documents: content.documents,
         action_label: content.action_label.filter(|_| waiting.keeps_action()),
         hint: content.hint,
+        hint_action: content.hint_action,
         error: false,
     }
 }
@@ -686,6 +710,7 @@ fn paint_empty_state(
     content: &EmptyStateContent<'_>,
     hover: Point,
     action_focused: bool,
+    hint_focused: bool,
     inline: bool,
     spinner: Option<&mut crate::widget::Spinner>,
 ) -> PaintedStack {
@@ -829,13 +854,34 @@ fn paint_empty_state(
         }
     }
     if let (Some(line), Some(rect)) = (content.hint, hint) {
+        // A hint that is only a sentence about the action is tertiary ink, never a step of its
+        // own. One that is a route says so: it stands in the same place, one ink up, and takes
+        // the primary ink under the pointer and while a reader has it.
+        let ink = if content.hint_action {
+            if rect.contains(hover) || hint_focused {
+                theme.text_primary
+            } else {
+                theme.text_dim
+            }
+        } else {
+            theme.text_tertiary
+        };
         ctx.text(
             line,
             &style.hint,
-            theme.text_tertiary,
+            ink,
             Point::new(rect.x0, rect.y0),
             Some(metrics.inner_width),
         );
+        if hint_focused {
+            crate::widget::paint_focus_ring(
+                ctx.scene,
+                transform,
+                rect,
+                f64::from(theme.tokens.radii.control),
+                theme,
+            );
+        }
     }
     painted.action = action;
     painted
@@ -1090,6 +1136,13 @@ pub struct EmptyState {
     action_enabled: bool,
     handler: Option<Handler>,
     engine: Option<crate::widget::Button>,
+    /// A quieter line under the action, and how to run it when it is a route of its own.
+    hint: Option<String>,
+    hint_resolved: Option<String>,
+    hint_handler: Option<Handler>,
+    hint_engine: Option<crate::widget::Button>,
+    hint_rect: Rect,
+    hint_focused: bool,
     rect: Rect,
     action_rect: Rect,
     /// What the action's target must reach to be pressed.
@@ -1122,6 +1175,8 @@ struct Painted {
     rect: Rect,
     action_hovered: bool,
     action_focused: bool,
+    hint_hovered: bool,
+    hint_focused: bool,
     enabled: bool,
     details_hovered: bool,
     details_open: bool,
@@ -1152,6 +1207,12 @@ impl EmptyState {
             action_enabled: true,
             handler: None,
             engine: None,
+            hint: None,
+            hint_resolved: None,
+            hint_handler: None,
+            hint_engine: None,
+            hint_rect: Rect::ZERO,
+            hint_focused: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
             input: InteractionEnvironment::POINTER,
@@ -1185,6 +1246,8 @@ impl EmptyState {
             action_hovered: self.action_label.is_some()
                 && self.action_rect.contains(self.last_cursor),
             action_focused: self.action_focused,
+            hint_hovered: self.hint_handler.is_some() && self.hint_rect.contains(self.last_cursor),
+            hint_focused: self.hint_focused,
             enabled: self.is_enabled(),
             details_hovered: self.details.is_some() && self.details_rect.contains(self.last_cursor),
             details_open: self.details_open,
@@ -1250,8 +1313,8 @@ impl EmptyState {
         let details = self.details.clone();
         let open = self.details_open;
         let content = self.content();
-        let (action, disclosure, lines) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            (Rect::ZERO, Rect::ZERO, Vec::new())
+        let (action, disclosure, lines, hint) = if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            (Rect::ZERO, Rect::ZERO, Vec::new(), Rect::ZERO)
         } else {
             let waiting = tilo_ui_base::workspace_sync::waiting();
             let content = shown_content(&content, waiting.as_ref());
@@ -1288,10 +1351,16 @@ impl EmptyState {
                     }
                     _ => Vec::new(),
                 };
-                (placed.action.unwrap_or(Rect::ZERO), disclosure, lines)
+                (
+                    placed.action.unwrap_or(Rect::ZERO),
+                    disclosure,
+                    lines,
+                    placed.hint.unwrap_or(Rect::ZERO),
+                )
             })
         };
         self.action_rect = action;
+        self.hint_rect = hint;
         self.details_rect = disclosure;
         if self.copy_hovered.is_some_and(|line| line >= lines.len()) {
             self.copy_hovered = None;
@@ -1299,6 +1368,9 @@ impl EmptyState {
         self.details_lines = lines;
         if let Some(engine) = &mut self.engine {
             engine.apply_layout_external(self.action_rect);
+        }
+        if let Some(engine) = &mut self.hint_engine {
+            engine.apply_layout_external(self.hint_rect);
         }
     }
 
@@ -1514,6 +1586,47 @@ impl EmptyState {
         self.on_click(f)
     }
 
+    /// A quieter line under the action, when its label alone does not say enough: "Add the
+    /// people you message in Contacts". Without a hint action it is a sentence; with one it is
+    /// a route of its own to press.
+    #[must_use]
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.set_hint(Some(hint.into()));
+        self
+    }
+
+    /// Replace the hint; `None` takes it away.
+    pub fn set_hint(&mut self, hint: Option<String>) {
+        if hint != self.hint {
+            self.hint = hint;
+            self.resolve();
+            self.layout_dirty = true;
+            self.drawn = None;
+        }
+    }
+
+    /// Run the hint's route when the line is pressed or activated.
+    #[must_use]
+    pub fn on_hint_action(mut self, binding: impl crate::Bind<()>) -> Self {
+        self.hint_handler = Some(Handler::Binding(crate::Bind::bound(binding)));
+        self.rebuild_hint_engine();
+        self
+    }
+
+    /// Run `f` when the hint is pressed or activated.
+    #[must_use]
+    pub fn on_hint_click(mut self, f: impl FnMut() + 'static) -> Self {
+        self.hint_handler = Some(Handler::Press(Rc::new(RefCell::new(Box::new(f)))));
+        self.rebuild_hint_engine();
+        self
+    }
+
+    /// A hint press that opens or shows something; the same as [`Self::on_hint_click`].
+    #[must_use]
+    pub fn on_hint_open(self, f: impl FnMut() + 'static) -> Self {
+        self.on_hint_click(f)
+    }
+
     /// The control id the action is addressed and tested by:
     /// [`Self::with_action_id`], or one derived from the title.
     pub fn action_control_id(&self) -> String {
@@ -1537,14 +1650,53 @@ impl EmptyState {
         });
     }
 
+    fn rebuild_hint_engine(&mut self) {
+        let (Some(handler), Some(label)) = (self.hint_handler.clone(), self.hint_resolved.clone())
+        else {
+            self.hint_engine = None;
+            return;
+        };
+        let id = self.hint_control_id();
+        let button = crate::widget::Button::new(&id, &label)
+            .role(crate::widget::ButtonRole::Plain)
+            .with_enabled(self.action_enabled);
+        self.hint_engine = Some(match handler {
+            Handler::Binding(binding) => button.on_action(binding),
+            Handler::Press(f) => button.on_click(move || (f.borrow_mut())()),
+        });
+    }
+
+    /// Whether the hint is a route of its own, not only a sentence about the action.
+    fn hint_acts(&self) -> bool {
+        self.hint_handler.is_some()
+    }
+
+    fn hint_control_id(&self) -> String {
+        format!("{}:hint", self.action_control_id())
+    }
+
+    /// The rect the hint answers a press in (empty until laid out or without a hint).
+    pub fn hint_rect(&self) -> Rect {
+        self.hint_rect
+    }
+
+    fn fire_hint(&mut self, state: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
+        if let Some(engine) = &mut self.hint_engine {
+            let _ = engine.perform_action(&tilo_ui_base::a11y::Action::Activate, &[], state, path);
+        }
+    }
+
     fn resolve(&mut self) {
         let resolved = (
             widget_text(&self.title),
             self.message.as_deref().map(|m| widget_text(m)),
             self.action_label.as_deref().map(|a| widget_text(a)),
         );
-        if resolved != self.resolved {
+        let hint = self.hint.as_deref().map(|h| widget_text(h));
+        if resolved != self.resolved || hint != self.hint_resolved {
             self.resolved = resolved;
+            self.hint_resolved = hint;
+            self.rebuild_hint_engine();
             self.layout_dirty = true;
             self.drawn = None;
         }
@@ -1665,7 +1817,7 @@ impl EmptyState {
         content: &EmptyStateContent<'_>,
         hover: Point,
     ) -> (Option<Rect>, Vec<Rect>) {
-        let painted = paint_empty_state(ctx, rect, content, hover, false, false, None);
+        let painted = paint_empty_state(ctx, rect, content, hover, false, false, false, None);
         (painted.action, painted.documents)
     }
 
@@ -1688,7 +1840,7 @@ impl EmptyState {
         hover: Point,
         focused: bool,
     ) -> (Option<Rect>, Vec<Rect>) {
-        let painted = paint_empty_state(ctx, rect, content, hover, focused, false, None);
+        let painted = paint_empty_state(ctx, rect, content, hover, focused, false, false, None);
         (painted.action, painted.documents)
     }
 
@@ -1716,7 +1868,8 @@ impl EmptyState {
             quote: self.quote.as_deref(),
             documents: &[],
             action_label: self.resolved.2.as_deref(),
-            hint: None,
+            hint: self.hint_resolved.as_deref(),
+            hint_action: self.hint_handler.is_some(),
             error: self.error,
         }
     }
@@ -1873,6 +2026,7 @@ impl Widget for EmptyState {
             (rect.y1 - details_h).max(rect.y0),
         );
         let mut spinner = self.spinner.take();
+        let hint_focused = self.hint_focused;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         paint_empty_state(
             &mut ctx,
@@ -1880,6 +2034,7 @@ impl Widget for EmptyState {
             &self.content(),
             hover,
             focused,
+            hint_focused,
             inline,
             spinner.as_mut(),
         );
@@ -1918,6 +2073,17 @@ impl Widget for EmptyState {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
+            } if self.is_enabled()
+                && self.hint_acts()
+                && self.hint_rect.contains(self.last_cursor) =>
+            {
+                self.fire_hint(&mut ctx.state, ctx.path);
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
             } if self.details.is_some() && self.details_rect.contains(self.last_cursor) => {
                 self.toggle_details();
                 *ctx.handled = true;
@@ -1928,6 +2094,7 @@ impl Widget for EmptyState {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if (self.action_label.is_some() && self.action_target().contains(point))
+            || (self.hint_acts() && self.hint_rect.contains(point))
             || (self.details.is_some() && self.details_rect.contains(point))
             || self.copy_at(point).is_some()
         {
@@ -1949,6 +2116,9 @@ impl Widget for EmptyState {
     fn set_focus(&mut self, focused: bool) {
         self.action_focused = focused && self.action_label.is_some();
         self.details_focused = focused && self.action_label.is_none() && self.details.is_some();
+        if !focused {
+            self.hint_focused = false;
+        }
     }
 
     fn is_focused(&self) -> bool {
@@ -2010,6 +2180,15 @@ impl Widget for EmptyState {
         {
             return self.copy_line(line);
         }
+        if self.hint_acts()
+            && self.hint_control_id() == target
+            && self.is_enabled()
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
+        {
+            let (state, path) = tilo_ui_base::doc::document(state, path);
+            self.fire_hint(state, path);
+            return true;
+        }
         self.action_label.is_some()
             && self.action_control_id() == target
             && self.perform_action(action, &[], state, path)
@@ -2061,8 +2240,12 @@ impl Widget for EmptyState {
             },
         );
         let mut node = AccessNode::new(Role::Group).with_name(title.clone());
-        if let Some(described) = described(message.map(String::as_str), None, self.quote.as_deref())
-        {
+        let said_hint = self.hint_resolved.as_deref().filter(|_| !self.hint_acts());
+        if let Some(described) = described(
+            message.map(String::as_str),
+            said_hint,
+            self.quote.as_deref(),
+        ) {
             node = node.with_description(described);
         }
         if busy {
@@ -2131,6 +2314,20 @@ impl Widget for EmptyState {
                 );
             }
         }
+        if let Some(hint) = self.hint_resolved.as_deref().filter(|_| self.hint_acts()) {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(hint.to_owned())
+                    .with_bounds(self.hint_rect)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.hint_focused)
+                            .disabled(!self.is_enabled()),
+                    )
+                    .with_action_target(self.hint_control_id()),
+            );
+        }
         if !children.is_empty() {
             node = node.with_children(children);
         }
@@ -2138,24 +2335,46 @@ impl Widget for EmptyState {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match (path, self.lists_action()) {
-            ([0], true) => Some(self.action_rect),
-            ([0], false) | ([1], true) if self.details.is_some() => Some(self.details_rect),
-            _ => None,
+        let mut index = 0;
+        if self.lists_action() {
+            if path == [index] {
+                return Some(self.action_rect);
+            }
+            index += 1;
         }
+        if self.details.is_some() {
+            if path == [index] {
+                return Some(self.details_rect);
+            }
+            index += 1;
+        }
+        if self.hint_acts() && path == [index] {
+            return Some(self.hint_rect);
+        }
+        None
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let action = self.lists_action();
-        if matches!(path, [0]) && action && self.is_enabled() {
-            self.action_focused = true;
-            true
-        } else if matches!(path, [0]) && !action && self.details.is_some() {
-            self.details_focused = true;
-            true
-        } else {
-            false
+        let mut index = 0;
+        if self.lists_action() {
+            if path == [index] {
+                self.action_focused = self.is_enabled();
+                return self.action_focused;
+            }
+            index += 1;
         }
+        if self.details.is_some() {
+            if path == [index] {
+                self.details_focused = true;
+                return true;
+            }
+            index += 1;
+        }
+        if self.hint_acts() && path == [index] && self.is_enabled() {
+            self.hint_focused = true;
+            return true;
+        }
+        false
     }
 }
 

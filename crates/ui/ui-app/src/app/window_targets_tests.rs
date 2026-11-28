@@ -174,6 +174,58 @@ fn an_empty_states_message_is_described_beside_its_title() {
     assert_eq!(action.actions, vec![TargetAction::Activate]);
 }
 
+/// A hint under an empty state's action: a sentence when it only explains the action, and a
+/// control of its own where it carries a route, both on the window beside the title.
+#[test]
+fn an_empty_states_hint_is_read_beside_its_title_and_pressed_where_it_acts() {
+    let said = crate::widget::EmptyState::new("No notes yet")
+        .with_message("Write the first one from the box above.")
+        .with_action("New note")
+        .with_hint("Or import a note from a file");
+    let mut app = app_with_root(crate::State::new(), Box::new(said));
+    layout(&mut app);
+    let (app_side, mut shell) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    let targets = described(&mut app, &mut shell).expect("the window describes what it shows");
+    let shown: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    // A hint that only explains the action is read with the message it follows, as words.
+    let hint = targets
+        .iter()
+        .find(|target| {
+            target
+                .name
+                .contains("Write the first one from the box above.")
+                && target.name.contains("Or import a note from a file")
+        })
+        .unwrap_or_else(|| panic!("the hint is read beside the title: {shown:?}"));
+    assert!(
+        hint.actions.is_empty(),
+        "a hint that only explains the action answers no press: {:?}",
+        hint.actions
+    );
+
+    let routed = crate::widget::EmptyState::new("No conversations yet")
+        .with_action("Open Contacts")
+        .with_hint("Add the people you message in Contacts")
+        .on_hint_open(|| {});
+    let mut app = app_with_root(crate::State::new(), Box::new(routed));
+    layout(&mut app);
+    let (app_side, mut shell) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    let targets = described(&mut app, &mut shell).expect("the window describes what it shows");
+    let shown: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+    let hint = targets
+        .iter()
+        .find(|target| target.name == "Add the people you message in Contacts")
+        .unwrap_or_else(|| panic!("the hint is a control where it acts: {shown:?}"));
+    assert_eq!(hint.actions, vec![TargetAction::Activate]);
+    assert!(
+        hint.rect[2] > hint.rect[0] && hint.rect[3] > hint.rect[1],
+        "the hint is described where it is drawn: {:?}",
+        hint.rect
+    );
+}
+
 /// What the shell presses on the window: the control `name` of `role`, as an
 /// assistive technology acts on it.
 fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {

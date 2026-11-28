@@ -18,6 +18,10 @@ pub struct EmptyStateProps {
     pub icon: Option<Icon>,
     /// The label of the one action that fills it: "New note".
     pub action: Option<String>,
+    /// One quieter line under the action, when its label alone does not say enough: "Add the
+    /// people you message in Contacts". With `hint_act` it is a route of its own to press, not
+    /// only a sentence.
+    pub hint: Option<String>,
     /// Sit within the content, as a list without rows, rather than fill the window.
     pub inline: bool,
     /// Something failed: the glyph takes the danger colour and the message reads as an error.
@@ -25,6 +29,9 @@ pub struct EmptyStateProps {
     /// The action was pressed.
     #[component(event(press))]
     pub act: Event,
+    /// The hint was pressed: the same way out, said in a sentence.
+    #[component(event(press))]
+    pub hint_act: Event,
 }
 
 impl Described for EmptyState {
@@ -36,9 +43,11 @@ impl Described for EmptyState {
             message,
             icon,
             action,
+            hint,
             inline,
             error,
             act,
+            hint_act,
         } = props;
         let mut state = Self::new(title).with_id(key);
         if let Some(message) = message {
@@ -56,6 +65,14 @@ impl Described for EmptyState {
                 Event::View(intent) => state.on_open(intent.sender()),
             };
         }
+        if let Some(hint) = hint {
+            state = state.with_hint(hint);
+            state = match hint_act {
+                Event::None => state,
+                Event::Action(binding) => state.on_hint_action(binding),
+                Event::View(intent) => state.on_hint_open(intent.sender()),
+            };
+        }
         if inline { state.inline() } else { state }
     }
 
@@ -65,9 +82,11 @@ impl Described for EmptyState {
             message,
             icon,
             action,
+            hint,
             inline,
             error,
             act,
+            hint_act,
         } = props;
         self.title = title;
         self.message = message;
@@ -77,6 +96,14 @@ impl Described for EmptyState {
         self.action_id = action.as_ref().map(|_| self.id.clone().unwrap_or_default());
         self.action_label = action;
         self.handler = match act {
+            Event::None => None,
+            Event::Action(binding) => Some(super::Handler::Binding(binding)),
+            Event::View(intent) => Some(super::Handler::Press(std::rc::Rc::new(
+                std::cell::RefCell::new(Box::new(intent.sender())),
+            ))),
+        };
+        self.hint = hint;
+        self.hint_handler = match hint_act {
             Event::None => None,
             Event::Action(binding) => Some(super::Handler::Binding(binding)),
             Event::View(intent) => Some(super::Handler::Press(std::rc::Rc::new(

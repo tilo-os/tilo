@@ -2918,6 +2918,13 @@
           }
         },
         {
+          "name": "hint",
+          "doc": "One quieter line under the action, when its label alone does not say enough: \"Add the people you message in Contacts\". With `hint_act` it is a route of its own to press, not only a sentence.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "inline",
           "doc": "Sit within the content, as a list without rows, rather than fill the window.",
           "type": "bool"
@@ -2932,6 +2939,11 @@
         {
           "name": "act",
           "doc": "The action was pressed.",
+          "press": true
+        },
+        {
+          "name": "hint_act",
+          "doc": "The hint was pressed: the same way out, said in a sentence.",
           "press": true
         }
       ],

@@ -460,6 +460,7 @@ fn words(node: &UiNode, into: &mut Vec<String>) {
         "label",
         "message",
         "action",
+        "hint",
         "description",
         "said",
         "secondary",
@@ -581,6 +582,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
     assert_shows(&shown, "No conversations yet");
     assert_shows(&shown, "Add people in Contacts to start a conversation.");
     assert_shows(&shown, "Open Contacts");
+    assert_shows(&shown, "Add the people you message in Contacts");
     window.call("open_contacts", vec![window.root()]);
     let opened = window.asked.last_args("open-app");
     assert!(
@@ -588,6 +590,25 @@ fn with_nobody_yet_the_window_says_how_to_start() {
             .iter()
             .any(|(_, value)| *value == Value::text("so.tilo.contacts")),
         "Open Contacts opens Contacts: {opened:?}"
+    );
+
+    // The hint under the action is a route of its own: pressing it opens Contacts too.
+    let mut states = Vec::new();
+    nodes_of(shown.tree(), "EmptyState", &mut states);
+    let empty = states.first().expect("the window's empty state");
+    let outcome = shown
+        .fire(&empty.key, "hint_act")
+        .expect("the hint's route runs");
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "the hint opens Contacts: {outcome:?}"
+    );
+    let opened = window.asked.last_args("open-app");
+    assert!(
+        opened
+            .iter()
+            .any(|(_, value)| *value == Value::text("so.tilo.contacts")),
+        "the hint opens Contacts as the action does: {opened:?}"
     );
 }
 

@@ -1832,8 +1832,10 @@ view nobody(m: Messages, members: List<Actor>, people: List<contacts.Person>) {
             icon: .message_circle,
             message: "Add people in Contacts to start a conversation.",
             action: "Open Contacts",
+            hint: "Add the people you message in Contacts",
         ) {
             on act: open_contacts(m)
+            on hint_act: open_contacts(m)
         }
     } else {
         ui.EmptyState(
