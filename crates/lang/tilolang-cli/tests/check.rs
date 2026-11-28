@@ -134,6 +134,42 @@ fn a_word_the_source_dropped_is_reported_until_its_translation_drops_it() {
     assert!(passed, "every translated word is the source's:\n{stderr}");
 }
 
+/// What a check reports of a translation depends on the committed files alone: two writes that
+/// each mint a fresh id for a message the lock lacks report the same stale words.
+#[test]
+fn a_stale_words_report_is_the_same_however_ids_are_minted() {
+    let scratch = tempfile::tempdir().unwrap();
+    let dir = scratch.path().join("counter");
+    copy_package(&packages().join("counter"), &dir);
+    drop_decrement(&dir);
+    // A message the committed lock does not hold yet: the write below minting its id afresh is
+    // what the report must not depend on.
+    let source = dir.join("app.tl");
+    let text = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        &source,
+        format!("{text}\n/// A mark the package keeps, a word the lock lacks.\ntype Mark (label: \"Mark\") {{\n    name: Text\n}}\n"),
+    )
+    .unwrap();
+    let stale = |said: &str| {
+        said.lines()
+            .filter(|line| line.contains("translates words the source does not have"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (_, first) = check(&dir, true);
+    let (_, second) = check(&dir, true);
+    assert!(
+        !stale(&first).is_empty(),
+        "the dropped word is reported:\n{first}"
+    );
+    assert_eq!(
+        stale(&first),
+        stale(&second),
+        "the report is the same before and after the minted id is committed:\n{first}\n---\n{second}"
+    );
+}
+
 /// A word no message of the source has ever had is its translator's own mistake: writing the ids
 /// lock leaves it where its translator put it, and it stays reported until they remove it.
 #[test]

@@ -133,7 +133,18 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                 println!("[]");
             }
             let mut current = true;
-            for b in &built {
+            // Reports read a build whose ids come from the committed lock and, for a message the
+            // lock lacks, from a fixed seed: what a check reports depends on the committed files
+            // alone, so two runs — and two devices — say the same. What is written to the lock
+            // below is minted at random, so two packages never share one.
+            let seeded;
+            let reported: &[BuiltPackage] = if o.write_ids {
+                seeded = build_all(dir, o, &mut SeededEntropy(0)).ok();
+                seeded.as_deref().unwrap_or(&built)
+            } else {
+                &built
+            };
+            for b in reported {
                 // What the compiler writes into the catalogue is what a screen reader says: a name written as
                 // an identifier is read out one letter at a time.
                 for (name, words) in crate::messages::views_named_as_code(&b.compiled.meta) {
@@ -159,8 +170,10 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                         current = false;
                     }
                 }
-                let changes = lock_changes(b);
-                if o.write_ids {
+            }
+            if o.write_ids {
+                for b in &built {
+                    let changes = lock_changes(b);
                     if write_ids(b)? {
                         if changes.is_empty() {
                             eprintln!(
@@ -171,25 +184,28 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                             explain(b, &changes, "updated");
                         }
                     }
-                    continue;
                 }
-                if changes.is_empty() && ids_current(b) {
-                    continue;
+            } else {
+                for b in &built {
+                    let changes = lock_changes(b);
+                    if changes.is_empty() && ids_current(b) {
+                        continue;
+                    }
+                    if changes.is_empty() {
+                        // The same entries, written another way (out of the tool's order): a build would rewrite the
+                        // file, so the lock is not what the sources say it is.
+                        eprintln!(
+                            "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolang check --write-ids`, and commit it with the sources",
+                            b.dir.display()
+                        );
+                    } else {
+                        explain(b, &changes, "is out of date");
+                        eprintln!(
+                            "  write it with `tilolang check --write-ids`, and commit it with the sources"
+                        );
+                    }
+                    current = false;
                 }
-                if changes.is_empty() {
-                    // The same entries, written another way (out of the tool's order): a build would rewrite the
-                    // file, so the lock is not what the sources say it is.
-                    eprintln!(
-                        "{}: the ids lock is not what the tool writes (its entries in another order); write it with `tilolang check --write-ids`, and commit it with the sources",
-                        b.dir.display()
-                    );
-                } else {
-                    explain(b, &changes, "is out of date");
-                    eprintln!(
-                        "  write it with `tilolang check --write-ids`, and commit it with the sources"
-                    );
-                }
-                current = false;
             }
             for b in &built {
                 for (id, name, other) in ids_held_elsewhere(b) {
