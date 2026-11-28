@@ -7,7 +7,8 @@
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    ActionCallError, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget,
 };
 use tilo_server_protocol::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER,
@@ -16,6 +17,18 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use crate::service::{WorkspaceService, local_caller};
+
+/// Why the host did not answer one of its own operations.
+#[derive(Debug, thiserror::Error)]
+pub enum OwnError {
+    /// It was never admitted, for the reason the host gave: a typed refusal of its own
+    /// operations carries an `AdminRefusal`.
+    #[error("refused: {0}")]
+    Refused(ActionCallError),
+    /// It ran and failed, or did not finish.
+    #[error("{0}")]
+    Failed(String),
+}
 
 impl WorkspaceService {
     /// Ask this host its own operation `action` with `arguments`, as
@@ -29,7 +42,7 @@ impl WorkspaceService {
         caller: &DeviceCert,
         action: &str,
         arguments: Map<String, Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, OwnError> {
         self.ask(
             caller,
             // The provider is named: no catalogue lists it.
@@ -49,7 +62,7 @@ impl WorkspaceService {
         caller: &DeviceCert,
         target: RemoteActionTarget,
         arguments: Map<String, Value>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, OwnError> {
         let pending = self
             .actions()
             .serve_host(
@@ -57,7 +70,9 @@ impl WorkspaceService {
                 caller,
                 RemoteActionMessage::Invoke(invocation(target, arguments)),
             )
-            .ok_or("this workspace service does not answer in process")?;
+            .ok_or_else(|| {
+                OwnError::Failed("this workspace service does not answer in process".into())
+            })?;
         answered(pending).await
     }
 
@@ -91,8 +106,11 @@ impl WorkspaceService {
         let mut arguments = Map::new();
         arguments.insert("name".into(), name.into());
         arguments.insert("workspace".into(), workspace.into());
-        let created: CreatedWorkspace =
-            answer(self.ask_own(caller, CREATE_WORKSPACE, arguments).await?)?;
+        let created: CreatedWorkspace = answer(
+            self.ask_own(caller, CREATE_WORKSPACE, arguments)
+                .await
+                .map_err(|error| error.to_string())?,
+        )?;
         if created.workspace.workspace != workspace {
             return Err("this device's host made another workspace than the workspace's".into());
         }
@@ -131,18 +149,19 @@ impl WorkspaceService {
 }
 
 /// What the service answered `pending` with: the value the operation answered, or why it did not.
-async fn answered(pending: Pending<RemoteActionMessage>) -> Result<Value, String> {
+async fn answered(pending: Pending<RemoteActionMessage>) -> Result<Value, OwnError> {
+    let failed = |why: &str| Err(OwnError::Failed(why.to_owned()));
     match pending.await {
         Some(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
-            ReceiptStatus::Rejected { error } => Err(format!("refused: {error}")),
-            ReceiptStatus::Failed { error } => Err(error.message),
+            ReceiptStatus::Rejected { error } => Err(OwnError::Refused(error)),
+            ReceiptStatus::Failed { error } => Err(OwnError::Failed(error.message)),
             ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-                Err("the request did not finish".into())
+                failed("the request did not finish")
             }
         },
-        Some(_) => Err("the workspace service answered with something else".into()),
-        None => Err("the workspace service dropped the request".into()),
+        Some(_) => failed("the workspace service answered with something else"),
+        None => failed("the workspace service dropped the request"),
     }
 }
 
@@ -173,6 +192,33 @@ mod tests {
     use super::*;
     use crate::workspaces::tests::{hosting_device, test_host};
     use tilo_actions::remote::ActionProvider as _;
+
+    /// A branch the host refuses reaches its caller as the host's own refusal, typed, so the
+    /// caller says the case it is rather than that the host could not be reached.
+    #[tokio::test]
+    async fn a_refused_branch_answers_the_hosts_typed_refusal() {
+        use tilo_server_protocol::workspaces::{AdminRefusal, BRANCH_OWN_WORKSPACE};
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = hosting_device();
+        let server = test_host(dir.path(), &key, &cert).await;
+        let mut arguments = Map::new();
+        let nobodys = uuid::Uuid::new_v4().to_string();
+        arguments.insert("workspace".into(), nobodys.into());
+        arguments.insert("name".into(), "Contracts: Acme".into());
+        let refused = server
+            .host()
+            .ask_own(&cert, BRANCH_OWN_WORKSPACE, arguments)
+            .await
+            .expect_err("no workspace of the person's is branched");
+        let OwnError::Refused(ActionCallError::Refused { reason }) = &refused else {
+            panic!("the host refuses the branch: {refused}");
+        };
+        assert_eq!(
+            AdminRefusal::from_reason(reason),
+            Some(AdminRefusal::NotYourOwn)
+        );
+        server.shutdown().await;
+    }
 
     /// An agent another of the person's devices handed its session to asks this device's
     /// dispatch as any agent does: an action this device does not offer is unknown to it.

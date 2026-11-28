@@ -76,6 +76,8 @@ pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
+pub use own_workspaces::OwnError;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
 /// What a state directory's workspaces hold where their types' readers are not: counts an
 /// operator reads, without writing or repairing anything.

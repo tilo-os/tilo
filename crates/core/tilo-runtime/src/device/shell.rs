@@ -604,7 +604,8 @@ async fn ask(
         return workspaces
             .service()
             .ask_own(&cert, &address.action, arguments)
-            .await;
+            .await
+            .map_err(|error| error.to_string());
     }
     let workspace = tilo_actions::remote::workspace_governance_operation(address)
         .map(|(workspace, _)| workspace.to_owned())

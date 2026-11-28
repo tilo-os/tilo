@@ -6000,11 +6000,19 @@ fn unavailable(why: impl std::fmt::Display) -> ServerError {
     ServerError::Unavailable(why.to_string())
 }
 
-/// The workspace service's answer, read as `T`.
+/// The workspace service's answer, read as `T`: a refusal of its own operations said as the
+/// refusal it is.
 fn answer<T: serde::de::DeserializeOwned>(
-    answered: Result<Value, String>,
+    answered: Result<Value, tilo_workspace_service::OwnError>,
 ) -> Result<T, ServerError> {
-    let value = answered.map_err(unavailable)?;
+    use tilo_workspace_service::OwnError;
+    let value = answered.map_err(|error| match &error {
+        OwnError::Refused(ActionCallError::Refused { reason }) => {
+            tilo_server_protocol::workspaces::AdminRefusal::from_reason(reason)
+                .map_or_else(|| unavailable(&error), ServerError::RefusedWorkspace)
+        }
+        _ => unavailable(error),
+    })?;
     serde_json::from_value(value).map_err(|error| {
         ServerError::Unavailable(format!("the host answered unexpectedly: {error}"))
     })
@@ -6601,7 +6609,12 @@ impl RuntimeActionProvider {
         let invocation = request.invocation;
         tilo_rt::app().spawn(async move {
             let cert = workspaces.device_cert().clone();
-            let status = match workspaces.service().ask_own(&cert, &step, arguments).await {
+            let status = match workspaces
+                .service()
+                .ask_own(&cert, &step, arguments)
+                .await
+                .map_err(|error| error.to_string())
+            {
                 Ok(value) => ReceiptStatus::Completed {
                     output: tilo_actions::ActionOutput {
                         value: Some(value),
