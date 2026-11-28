@@ -7,8 +7,8 @@ use tilo_session_core::surface::{
     LayerPose, Scroll, ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
 
+use tilo_ui_render::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use ui::headless::Driver;
-use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;

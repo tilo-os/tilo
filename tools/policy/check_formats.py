@@ -82,6 +82,7 @@ SCOPES += (
     Path("crates/ui/ui-charts"),
     Path("crates/ui/ui-map"),
     Path("crates/ui/ui-core"),
+    Path("crates/ui/ui-render"),
     Path("crates/ui/ui-math"),
     Path("crates/ui/ui-kms"),
     Path("crates/ui/ui-macros"),

@@ -212,25 +212,14 @@ pub mod component_catalogue;
 pub mod component_lifecycle;
 pub mod composition;
 pub mod content;
-pub mod cpu_raster;
 pub mod device_local_api;
-/// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
-#[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
-pub mod dmabuf_import;
 pub mod edge_slots;
 pub mod element_pictures;
 pub mod files;
 pub mod floating_layer;
 pub mod floating_surface;
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub use cpu_raster::CpuCanvas;
-
 #[cfg(any(test, feature = "test-support"))]
 pub mod frame_probe;
-/// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
-/// to RGB in a shader.
-pub mod gpu_video;
 #[cfg(feature = "model")]
 pub mod harness_device;
 pub mod history_api;
@@ -264,11 +253,6 @@ pub mod personal_dictionary;
 pub mod pick;
 pub mod pick_wire;
 pub mod pictures;
-/// The app's own vello pipelines, kept across launches in its cache directory.
-#[cfg(feature = "native")]
-pub mod pipeline_cache;
-/// The session's read-only vello pipeline cache every app starts from.
-pub mod pipeline_seed;
 pub mod pointer_replay;
 pub mod published;
 pub mod served_content;
@@ -304,13 +288,9 @@ pub mod widgets {
 pub use tilo_lock::deferred;
 pub mod close_admission;
 pub mod reader_hud;
-pub mod render_bump_recovery;
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-pub mod render_thread;
 #[cfg(feature = "model")]
 pub mod resource;
 pub mod retained_present;
-pub mod retained_raster;
 pub mod text_assistance;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
@@ -323,7 +303,6 @@ pub mod shared_selection;
 pub mod shell_cards;
 pub mod shell_tabs;
 pub mod state;
-pub mod strip_layers;
 /// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
 /// is no surface, and no session places its window.
 #[cfg(all(feature = "native", feature = "model", feature = "local-daemons"))]
@@ -542,7 +521,6 @@ pub mod application;
 pub mod application_view;
 #[cfg(feature = "model")]
 pub mod invocation_scope;
-pub mod native_scenario;
 #[cfg(feature = "native")]
 pub mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
@@ -554,9 +532,6 @@ pub mod semantic_outline;
 
 pub mod bound_dispatch;
 pub mod retained_widgets;
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-mod presentation_feedback;
 
 pub mod focus_navigation;
 

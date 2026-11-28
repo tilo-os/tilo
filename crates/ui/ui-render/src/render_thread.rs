@@ -1402,7 +1402,7 @@ mod admission_tests {
             // The primary is the sole owner of this retained root's update/sync;
             // auxiliary painting observes its Text projection rather than syncing.
             struct Root {
-                text: crate::widget::Text,
+                text: tilo_ui::widget::Text,
                 pending: Option<&'static str>,
             }
             impl Widget for Root {
@@ -1469,7 +1469,7 @@ mod admission_tests {
                 }
             }
             let mut root = Root {
-                text: crate::widget::Text::from_document_string("label"),
+                text: tilo_ui::widget::Text::from_document_string("label"),
                 pending: Some("initial"),
             };
             let mut doc = automerge::AutoCommit::new();

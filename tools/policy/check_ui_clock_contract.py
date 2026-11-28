@@ -58,6 +58,7 @@ from rust_source import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (
     Path("crates/ui/ui-core"),
+    Path("crates/ui/ui-render"),
     Path("crates/ui/tilo-rich-edit"),
     Path("crates/ui/ui-charts"),
     Path("crates/ui/ui-map"),

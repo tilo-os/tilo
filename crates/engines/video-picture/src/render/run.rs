@@ -157,9 +157,11 @@ impl crate::gpu::FrameSource for PlanarWarmUp {
             ],
             colorimetry: media::Colorimetry::BT709_LIMITED,
         };
-        let planes = ui::gpu_video::upload_planar(device, queue, &image, SIDE, SIDE)?;
-        let mut converter =
-            ui::gpu_video::YuvConverter::new(device, vello::wgpu::TextureFormat::Rgba8Unorm);
+        let planes = tilo_ui_render::gpu_video::upload_planar(device, queue, &image, SIDE, SIDE)?;
+        let mut converter = tilo_ui_render::gpu_video::YuvConverter::new(
+            device,
+            vello::wgpu::TextureFormat::Rgba8Unorm,
+        );
         let texture = converter.convert(device, queue, &planes).clone();
         let view = Arc::new(texture.create_view(&vello::wgpu::TextureViewDescriptor::default()));
         Some(crate::gpu::SourceTexture {

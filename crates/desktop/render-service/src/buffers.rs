@@ -163,7 +163,7 @@ pub enum Memory {
 #[cfg(target_os = "linux")]
 pub struct Dmabuf {
     /// The import aliasing the allocation; dropped before it.
-    pub target: ui::dmabuf_import::ImportedRenderTarget,
+    pub target: tilo_ui_render::dmabuf_import::ImportedRenderTarget,
     pub fd: OwnedFd,
     _bo: gbm::BufferObject<()>,
 }
@@ -306,10 +306,10 @@ impl BufferSet {
                 offset: bo.offset(0),
                 stride: bo.stride_for_plane(0),
             };
-            let target = ui::dmabuf_import::import_copy_target(
+            let target = tilo_ui_render::dmabuf_import::import_copy_target(
                 device,
-                &ui::dmabuf_import::DmabufRef {
-                    planes: &[ui::dmabuf_import::PlaneRef {
+                &tilo_ui_render::dmabuf_import::DmabufRef {
+                    planes: &[tilo_ui_render::dmabuf_import::PlaneRef {
                         fd: fd.as_fd(),
                         offset: plane.offset,
                         stride: plane.stride,
@@ -318,7 +318,7 @@ impl BufferSet {
                     modifier: DRM_FORMAT_MOD_LINEAR,
                     width,
                     height,
-                    colorimetry: ui::dmabuf_import::Colorimetry::default(),
+                    colorimetry: tilo_ui_render::dmabuf_import::Colorimetry::default(),
                 },
             )
             .map_err(|error| BufferError::Allocate(error.to_string()))?;

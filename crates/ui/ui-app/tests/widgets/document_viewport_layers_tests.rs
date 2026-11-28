@@ -1,5 +1,5 @@
 //! A pan in a [`DocumentViewport`] drawn as layers
-//! ([`tilo_ui_app::strip_layers::LayerRecording`]) and presented from retained layer textures, as
+//! ([`tilo_ui_render::strip_layers::LayerRecording`]) and presented from retained layer textures, as
 //! an app's render worker presents it: the backdrop is never rasterised again, the content
 //! only where the pan uncovered it, the chrome only where it changed, and every frame
 //! captured from the target equals a full render of the frame.
@@ -29,9 +29,6 @@ use tilo_ui_app::headless::*;
 use tilo_ui_app::kurbo::*;
 use tilo_ui_app::kurbo::{Affine, Rect};
 use tilo_ui_app::retained_present::*;
-use tilo_ui_app::strip_layers::{
-    ChromeDamage, LayerPresenter, LayerRecording, QueuedRaster, WorkspaceWork, tiles,
-};
 use tilo_ui_app::testing::*;
 use tilo_ui_app::vello::Scene;
 use tilo_ui_app::vello::peniko::Fill;
@@ -52,6 +49,9 @@ use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::*;
+use tilo_ui_render::strip_layers::{
+    ChromeDamage, LayerPresenter, LayerRecording, QueuedRaster, WorkspaceWork, tiles,
+};
 use vello::wgpu;
 use winit::event::*;
 use winit::event::{MouseScrollDelta, WindowEvent};

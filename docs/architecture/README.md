@@ -117,7 +117,8 @@ names are stable even when directories move.
 | --- | --- |
 | App SDK: the public facade apps depend on (as `ui`) | `crates/sdk/tilo-app` |
 | Resources, actions and their macros | `crates/core/tilo-resource`, `crates/core/tilo-resource-macros` |
-| UI toolkit: widgets, layout, text, rendering, headless testing | `crates/ui/ui-core` |
+| UI toolkit: widgets, layout, text, headless testing | `crates/ui/ui-core` |
+| The toolkit's rendering pipeline: render worker, retained raster targets, strips, GPU video | `crates/ui/ui-render` |
 | History, search | `crates/sdk/tilo-history`, `crates/platform/search` |
 | Example apps, one idea each | `examples/apps` |
 | First-party apps | `apps/` ([list](../../apps/README.md)) |

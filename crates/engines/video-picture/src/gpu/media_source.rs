@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use media::{EngineConfig, Frame, FramePayload, SessionPool};
-use ui::gpu_video::{YuvConverter, upload_planar};
+use tilo_ui_render::gpu_video::{YuvConverter, upload_planar};
 use vello::wgpu;
 
 use video_edit::model::{MediaId, Project};

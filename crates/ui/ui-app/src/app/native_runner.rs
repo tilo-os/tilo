@@ -56,7 +56,7 @@ fn create_accessibility_adapter(
 }
 
 /// wgpu's context, surface and vello renderer live on a dedicated worker thread
-/// ([`crate::render_thread`]); this struct keeps only the channel ends that ship frames and recycle
+/// ([`tilo_ui_render::render_thread`]); this struct keeps only the channel ends that ship frames and recycle
 /// scene buffers.
 /// Surfaces an Android window may lose in a row, with no frame presented between them, before the
 /// app ends: past it the surface Android gives back never presents.
@@ -77,10 +77,10 @@ struct AppHandler {
     /// read answers, or at this instant when its frame budget runs out.
     held_frame: Option<crate::time::Instant>,
     /// The state passes of the window while it takes no frame.
-    undrawn: crate::render_thread::retry::UndrawnTicks,
+    undrawn: tilo_ui_render::render_thread::retry::UndrawnTicks,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
-    native_scenario: Option<crate::native_scenario::Scenario>,
+    native_scenario: Option<tilo_ui_render::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
     physical_input_trace: Option<crate::physical_input_trace::Trace>,
     native_input_origin: Option<Instant>,
@@ -141,7 +141,7 @@ struct AppHandler {
     /// their damage does not describe; the next frame must erase it.
     top_layer_drawn: bool,
     /// A view panned in the last frame: the next is drawn as layers
-    /// (`crate::strip_layers`), so its worker pans the view by copying.
+    /// (`tilo_ui_render::strip_layers`), so its worker pans the view by copying.
     panning: bool,
     /// The generation of the last frame drawn as layers and whether it was the frame submitted just
     /// before: what the next one's chrome damage is measured from.
@@ -153,7 +153,7 @@ struct AppHandler {
     /// beneath peer marks still copy ([`peer_marks`]).
     mark_bounds: tilo_ui_base::scene_parts::DrawBounds,
     last_primary_frame_presented: u64,
-    primary_retry: crate::render_thread::retry::RenderRetryState,
+    primary_retry: tilo_ui_render::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
     /// until that exact-or-newer frame is reported Presented by the worker.
     floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
@@ -781,8 +781,8 @@ fn create_window_render(
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
     // Drawn by the workspace's render service: no device in this process.
-    if crate::render_thread::remote::requested() {
-        match crate::render_thread::remote::spawn(
+    if tilo_ui_render::render_thread::remote::requested() {
+        match tilo_ui_render::render_thread::remote::spawn(
             window.clone(),
             transparent,
             render_ready_wake(window.id(), proxy.clone()),
@@ -796,7 +796,7 @@ fn create_window_render(
     create_window_render_prepared(window, transparent, None, None, proxy)
 }
 
-pub(crate) use crate::render_thread::PreparedRenderer;
+pub(crate) use tilo_ui_render::render_thread::PreparedRenderer;
 
 /// Something the launch made for the primary window before the app was
 /// constructed (`startup`), judged against what the app wants.
@@ -926,7 +926,7 @@ fn create_window_render_prepared(
     let (render_cx, surface, renderer) =
         prepare_window_render(window, transparent, prepared, prepared_surface)?;
     // After this, every GPU call happens on its render worker.
-    let render = crate::render_thread::spawn_render_thread_for_window(
+    let render = tilo_ui_render::render_thread::spawn_render_thread_for_window(
         render_cx,
         surface,
         renderer,
@@ -1008,7 +1008,7 @@ fn create_native_renderer(
 pub(super) struct NativeRendererPlan {
     options: RendererOptions,
     deferral: vello::PipelineDeferral,
-    pipelines: Option<crate::pipeline_cache::AppPipelineCache>,
+    pipelines: Option<tilo_ui_render::pipeline_cache::AppPipelineCache>,
     software: bool,
 }
 
@@ -1024,7 +1024,7 @@ impl NativeRendererPlan {
             .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
         tilo_startup_metrics::mark("window-vello-init-start");
         // This app's own pipelines from its last launch, else the session's.
-        let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
+        let pipelines = tilo_ui_render::pipeline_cache::AppPipelineCache::open(device_handle);
         // The first frame waits for this: build only what it dispatches and let the render worker
         // start the rest after that frame is presented. Nothing is on that path for a software
         // adapter, which rasterizes on the CPU and draws only backdrop blurs.
@@ -1084,10 +1084,10 @@ impl NativeRendererPlan {
         // An app whose first frame drew a backdrop blur builds at once, default-path pipelines
         // first, so that frame waits on a build under way. A first frame the CPU rasterizes waits
         // on nothing and constructs without LLVM compiling beside it.
-        if self.software && crate::pipeline_cache::first_frame_backdrop::expected() {
+        if self.software && tilo_ui_render::pipeline_cache::first_frame_backdrop::expected() {
             renderer.start_deferred_pipelines(
                 &device_handle.device,
-                crate::pipeline_cache::persist_unsaved,
+                tilo_ui_render::pipeline_cache::persist_unsaved,
             );
         }
         #[cfg(all(windows, feature = "dx12-shader-cache"))]
@@ -1263,7 +1263,7 @@ impl AppHandler {
         {
             // Drawn by the workspace's render service: the launch prepared its
             // connection, not a device (`startup::prepare_native_renderer`).
-            if crate::render_thread::remote::requested() {
+            if tilo_ui_render::render_thread::remote::requested() {
                 #[cfg(feature = "host")]
                 {
                     self.app.startup_renderer = None;
@@ -1283,7 +1283,7 @@ impl AppHandler {
             {
                 let worker_window = window.clone();
                 let transparent = !self.app.root_widget.paints_ground();
-                self.render = Some(crate::render_thread::spawn_render_thread_deferred(
+                self.render = Some(tilo_ui_render::render_thread::spawn_render_thread_deferred(
                     move || {
                         let startup =
                             tilo_startup_metrics::span("native-render-prepare-wait", || {
@@ -1513,7 +1513,7 @@ impl AppHandler {
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        match crate::render_thread::prepare_frame(
+        match tilo_ui_render::render_thread::prepare_frame(
             &mut render.retry,
             &mut render.buffers,
             crate::time::now(),
@@ -2114,7 +2114,7 @@ impl AppHandler {
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        match crate::render_thread::prepare_frame(
+        match tilo_ui_render::render_thread::prepare_frame(
             &mut render.retry,
             &mut render.buffers,
             crate::time::now(),
@@ -2435,7 +2435,7 @@ impl AppHandler {
             }
         }
         if surface_gone {
-            let reason = crate::render_thread::take_surface_loss()
+            let reason = tilo_ui_render::render_thread::take_surface_loss()
                 .unwrap_or_else(|| "its drawing surface was lost".to_owned());
             // The activity lives on while Android replaces its window's surface (a keyboard
             // opening, a resize): the window draws again on the surface it has now, as it does
@@ -2456,7 +2456,7 @@ impl AppHandler {
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
         // is available. Worker completion wakes this window if admission defers.
-        match crate::render_thread::prepare_frame(
+        match tilo_ui_render::render_thread::prepare_frame(
             &mut self.primary_retry,
             &mut render.buffers,
             crate::time::now(),
@@ -2745,7 +2745,7 @@ impl AppHandler {
         // its worker copies what the pan keeps of the view and rasterises
         // only what it uncovered, under chrome it keeps too.
         let layer_recording = (culls && std::mem::take(&mut self.panning))
-            .then(crate::strip_layers::LayerRecording::begin);
+            .then(tilo_ui_render::strip_layers::LayerRecording::begin);
         let mut culling =
             (culls && layer_recording.is_none()).then(|| std::mem::take(&mut app.layout.cull));
         let culled = culling.is_some();
@@ -2828,7 +2828,7 @@ impl AppHandler {
         }
 
         let mut native_main_stages =
-            crate::render_thread::timing::enabled().then(MainStages::default);
+            tilo_ui_render::render_thread::timing::enabled().then(MainStages::default);
         record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
 
         // Folds in any `handle_event` time banked since last frame.
@@ -2837,7 +2837,7 @@ impl AppHandler {
             record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
             if !self.native_input_ids.is_empty() {
                 let cpu_frame_id = p.history().back().map(|sample| sample.frame);
-                crate::native_scenario::log::emit_json(
+                tilo_ui_render::native_scenario::log::emit_json(
                     "tilo-native-frame",
                     serde_json::json!({
                         "cpu_frame_id": cpu_frame_id,
@@ -2891,7 +2891,7 @@ impl AppHandler {
             });
             // A view drawn whole (a canvas its own closure draws) offers no
             // copy, but says when it panned.
-            let panned = crate::strip_layers::take_panned();
+            let panned = tilo_ui_render::strip_layers::take_panned();
             self.panning = panned || !offers.is_empty();
             // Widget damage is logical, like the spinner's slot once the
             // scale is taken out of it; both are scaled back together.
@@ -2998,7 +2998,11 @@ impl AppHandler {
                 .is_some_and(tilo_ui_base::draw_cull::Frame::skipped_any);
             let holds = left_out
                 && !full_redraw_required
-                && crate::render_thread::renders_damage_alone(width, height, &damage_regions)
+                && tilo_ui_render::render_thread::renders_damage_alone(
+                    width,
+                    height,
+                    &damage_regions,
+                )
                 && cull_frame
                     .as_ref()
                     .is_some_and(|frame| frame.holds(Some(&damage_regions)));
@@ -3066,7 +3070,7 @@ impl AppHandler {
                 );
             }
         }
-        let presents = crate::render_thread::retry::submit_redraw_frame(
+        let presents = tilo_ui_render::render_thread::retry::submit_redraw_frame(
             full_redraw_required,
             !damage_regions.is_empty() || !scroll_copies.is_empty(),
         );
@@ -3103,7 +3107,7 @@ impl AppHandler {
                         .with_search_evidence(app.native_input_snapshot()),
                 )
             {
-                crate::native_scenario::log::emit_json("tilo-physical-frame", row);
+                tilo_ui_render::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
 
             let key_resource = tilo_ui_base::input_frame::submitted(if full_redraw_required {
@@ -3115,9 +3119,12 @@ impl AppHandler {
                 let (generation, consecutive) = self.layers_drawn;
                 let generation = generation.wrapping_add(1);
                 let chrome_damage = (consecutive && !full_redraw_required).then(|| {
-                    crate::strip_layers::ChromeDamage {
+                    tilo_ui_render::strip_layers::ChromeDamage {
                         since: generation.wrapping_sub(1),
-                        rects: crate::strip_layers::tiles(&damage_regions, (width, height)),
+                        rects: tilo_ui_render::strip_layers::tiles(
+                            &damage_regions,
+                            (width, height),
+                        ),
                     }
                 });
                 let cache = recording.finish(&mut scene, width, generation, chrome_damage)?;
@@ -3130,7 +3137,7 @@ impl AppHandler {
             // A floating surface recorded what lay below it in the frame's
             // chrome alone: what is under the chrome goes under that.
             if let Some(cache) = layers.as_ref() {
-                crate::strip_layers::put_under(cache, &mut backdrop);
+                tilo_ui_render::strip_layers::put_under(cache, &mut backdrop);
             }
             let req = RenderRequest::Frame {
                 cpu_frame_id,
@@ -3156,7 +3163,7 @@ impl AppHandler {
             if let Some((origin, entered)) = native_redraw_entry {
                 // All three values use the input timeline's monotonic origin.
                 // This is a CPU submit attempt, not GPU/display completion.
-                crate::native_scenario::log::emit_json(
+                tilo_ui_render::native_scenario::log::emit_json(
                     "tilo-native-redraw",
                     serde_json::json!({
                         "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
@@ -3177,17 +3184,17 @@ impl AppHandler {
             self.undrawn.presented();
             frame_demand::submitted(full_redraw_required.then_some(repaint_why));
             let submit_phase = slow_event::phase("submit");
-            let (send_result, send_bounds) = crate::render_thread::timing::around(
-                crate::render_thread::timing::enabled(),
+            let (send_result, send_bounds) = tilo_ui_render::render_thread::timing::around(
+                tilo_ui_render::render_thread::timing::enabled(),
                 || render.render_tx.send(req),
             );
             drop(submit_phase);
             if let Some(bounds) = send_bounds {
-                crate::native_scenario::log::emit_timing_json(
+                tilo_ui_render::native_scenario::log::emit_timing_json(
                     "tilo-native-send",
                     serde_json::json!({
                         "cpu_frame_id": send_cpu_frame_id,
-                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "host_clock": tilo_ui_render::native_scenario::host_clock::CLOCK_NAME,
                         "before_host_lo_s": bounds.before.map(|b| b.lo_s),
                         "before_host_hi_s": bounds.before.map(|b| b.hi_s),
                         "after_host_lo_s": bounds.after.map(|b| b.lo_s),
@@ -3197,13 +3204,13 @@ impl AppHandler {
                 );
             }
             if let Some(stages) = native_main_stages {
-                crate::native_scenario::log::emit_timing_json(
+                tilo_ui_render::native_scenario::log::emit_timing_json(
                     "tilo-native-main-stages",
                     stages.row(send_cpu_frame_id),
                 );
             }
             if send_result.is_err() {
-                let reason = crate::render_thread::take_surface_loss()
+                let reason = tilo_ui_render::render_thread::take_surface_loss()
                     .unwrap_or_else(|| "its render thread stopped".to_owned());
                 stop_abnormally(&self.closing, reason);
                 return;
@@ -3492,7 +3499,7 @@ impl AppHandler {
                 "shift": modifiers.shift_key(), "control": modifiers.control_key(),
                 "alt": modifiers.alt_key(), "super": modifiers.super_key(),
             });
-            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+            tilo_ui_render::native_scenario::log::emit_json("tilo-physical-input", row);
         }
     }
 }
@@ -3587,7 +3594,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             UserEvent::NativeScenarioInput(packet) => {
                 if self.native_input_origin.is_none() {
                     let size = window.inner_size();
-                    crate::native_scenario::log::emit_json(
+                    tilo_ui_render::native_scenario::log::emit_json(
                         "tilo-native-window",
                         serde_json::json!({
                             "scale_factor": window.scale_factor(),
@@ -3599,8 +3606,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
                 self.native_input_origin.get_or_insert(packet.origin);
-                let (now, dispatch_host) = crate::native_scenario::host_clock::sample();
-                crate::native_scenario::log::emit_json(
+                let (now, dispatch_host) = tilo_ui_render::native_scenario::host_clock::sample();
+                tilo_ui_render::native_scenario::log::emit_json(
                     "tilo-native-input",
                     serde_json::json!({
                         "id": packet.id,
@@ -3609,7 +3616,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "scheduled_us": packet.scheduled_at.duration_since(packet.origin).as_micros(),
                         "sent_us": packet.sent_at.duration_since(packet.origin).as_micros(),
                         "dispatch_start_us": now.duration_since(packet.origin).as_micros(),
-                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "host_clock": tilo_ui_render::native_scenario::host_clock::CLOCK_NAME,
                         "sent_host_lo_s": packet.sent_host.map(|bounds| bounds.lo_s),
                         "sent_host_hi_s": packet.sent_host.map(|bounds| bounds.hi_s),
                         "dispatch_host_lo_s": dispatch_host.map(|bounds| bounds.lo_s),
@@ -3627,7 +3634,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.injected_window_event(window_id, event);
                 }
                 if let Some(before) = before {
-                    crate::native_scenario::log::emit_json(
+                    tilo_ui_render::native_scenario::log::emit_json(
                         "tilo-native-effect",
                         serde_json::json!({
                             "id": packet.id, "before": before, "after": self.part_bar.with_search_evidence(self.app.native_input_snapshot()),
@@ -4157,7 +4164,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.last_primary_frame_presented > 0
             && let Some(scenario) = self.native_scenario.take()
         {
-            crate::native_scenario::log::emit_json(
+            tilo_ui_render::native_scenario::log::emit_json(
                 "tilo-native-scenario",
                 serde_json::json!({
                     "name": scenario.name, "steps": scenario.steps.len(),
@@ -4166,12 +4173,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }),
             );
             let proxy = self.a11y_proxy.clone();
-            if let Err(error) = crate::native_scenario::spawn(scenario, move |packet| {
+            if let Err(error) = tilo_ui_render::native_scenario::spawn(scenario, move |packet| {
                 proxy
                     .send_event(UserEvent::NativeScenarioInput(packet))
                     .is_ok()
             }) {
-                crate::native_scenario::log::emit_json(
+                tilo_ui_render::native_scenario::log::emit_json(
                     "tilo-native-scenario",
                     serde_json::json!({"event":"failed", "error":error}),
                 );
@@ -4595,7 +4602,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Widget deadlines are serviced by sync/redraw. While occluded they can
         // be delayed by at most the 250ms probe cap; independent history, record,
         // autosave and collaboration work above continues on its existing APIs.
-        let demand = crate::render_thread::retry::WakeDemand {
+        let demand = tilo_ui_render::render_thread::retry::WakeDemand {
             typing: typing_active,
             tooltip: tooltip_pending,
             widget_due: widget_still_due,
@@ -4604,7 +4611,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             retry_due: retry_due || auxiliary_retry_due,
             frame_interval: self.animation_schedule.interval(),
         };
-        let deadline = crate::render_thread::retry::next_wake(
+        let deadline = tilo_ui_render::render_thread::retry::next_wake(
             crate::time::now(),
             primary_blocked_until,
             any_render_available,
@@ -5355,7 +5362,7 @@ impl App {
             clippy::panic,
             reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
         )]
-        let native_scenario = crate::native_scenario::load_from_env()
+        let native_scenario = tilo_ui_render::native_scenario::load_from_env()
             .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
         assert!(
             native_scenario.is_none() || self.profiler.is_some(),
@@ -5548,7 +5555,7 @@ impl App {
     fn into_handler<F>(
         mut self,
         proxy: &EventLoopProxy<UserEvent>,
-        native_scenario: Option<crate::native_scenario::Scenario>,
+        native_scenario: Option<tilo_ui_render::native_scenario::Scenario>,
         setup: F,
     ) -> AppHandler
     where
@@ -5645,8 +5652,8 @@ impl App {
             presence_layer: tilo_ui_base::presence::PresenceLayer::new(),
             mark_bounds: tilo_ui_base::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
-            primary_retry: crate::render_thread::retry::RenderRetryState::default(),
-            undrawn: crate::render_thread::retry::UndrawnTicks::default(),
+            primary_retry: tilo_ui_render::render_thread::retry::RenderRetryState::default(),
+            undrawn: tilo_ui_render::render_thread::retry::UndrawnTicks::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: tilo_ui_base::interaction::TouchPointerEmulator::default(),
@@ -5791,7 +5798,7 @@ fn sync_safe_area(app: &mut App, window: &Arc<Window>) {
 fn present_hook(
     reload: Option<super::DevReloadTiming>,
     key: Option<Box<dyn FnOnce() + Send>>,
-) -> Option<crate::render_thread::PresentHook> {
+) -> Option<tilo_ui_render::render_thread::PresentHook> {
     if reload.is_none() && key.is_none() {
         return None;
     }

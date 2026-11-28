@@ -93,7 +93,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
 }
 
 /// `scene` replayed on the CPU the way a display with no working GPU draws it
-/// (`ui::retained_raster`'s CPU canvas, `tilo_cpu_raster` replaying the vello scene):
+/// (`tilo_ui_render::retained_raster`'s CPU canvas, `tilo_cpu_raster` replaying the vello scene):
 /// premultiplied RGBA8 over `base`.
 fn cpu_frame(
     scene: &ui::vello::Scene,
@@ -101,12 +101,12 @@ fn cpu_frame(
     height: u32,
     base: ui::vello::peniko::Color,
 ) -> Vec<u8> {
-    let mut raster = ui::retained_raster::RetainedRaster::new(true);
+    let mut raster = tilo_ui_render::retained_raster::RetainedRaster::new(true);
     assert!(
         raster.on_cpu(),
         "the CPU canvas is the one this test draws with"
     );
-    let frame = ui::retained_raster::FrameContent {
+    let frame = tilo_ui_render::retained_raster::FrameContent {
         scene,
         width,
         height,

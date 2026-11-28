@@ -19723,6 +19723,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-ui-base",
+ "tilo-ui-render",
  "tilo-vello",
  "tracing",
  "workspace-hack",
@@ -19812,6 +19813,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-graph",
  "tilo-ui-math",
+ "tilo-ui-render",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
@@ -20640,6 +20642,7 @@ dependencies = [
  "tilo-tray",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-render",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-wallpapers",
@@ -21447,7 +21450,6 @@ version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_android",
- "ash",
  "base64 0.22.1",
  "blake3",
  "ed25519-dalek 3.0.0",
@@ -21528,7 +21530,6 @@ dependencies = [
  "tilo-process-services",
  "tilo-reference",
  "tilo-registry-types",
- "tilo-render-protocol",
  "tilo-resource",
  "tilo-rt",
  "tilo-runtime-collab",
@@ -21550,6 +21551,7 @@ dependencies = [
  "tilo-ui-graph",
  "tilo-ui-macros",
  "tilo-ui-paint",
+ "tilo-ui-render",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-webview",
@@ -21569,7 +21571,6 @@ dependencies = [
  "url",
  "uuid",
  "wat",
- "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "workspace-hack",
@@ -21639,6 +21640,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-charts",
  "tilo-ui-map",
+ "tilo-ui-render",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21879,6 +21881,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-render"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "blake3",
+ "hex",
+ "libc",
+ "pollster",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-automerge-fork",
+ "tilo-cpu-raster",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-presentation",
+ "tilo-process-services",
+ "tilo-render-protocol",
+ "tilo-rt",
+ "tilo-startup-metrics",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-wgpu",
+ "tilo-winit",
+ "tracing",
+ "uuid",
+ "wgpu-hal",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-unlock-helper"
 version = "0.1.0"
 dependencies = [
@@ -22033,6 +22071,7 @@ dependencies = [
  "tilo-resource",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-ui-render",
  "tilo-vello",
  "tilo-video-edit",
  "tracing",

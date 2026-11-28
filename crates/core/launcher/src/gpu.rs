@@ -25,13 +25,13 @@ pub fn granted(
 pub const EGL_VENDOR_ENV: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
 
 /// Name of the session's pipeline cache directory under `$XDG_RUNTIME_DIR/tilo/` (see
-/// `ui::pipeline_seed`).
+/// `tilo_ui_render::pipeline_seed`).
 pub const PIPELINE_SEED_DIR_NAME: &str = "pipeline-seed";
 
 /// Where that directory appears inside a sandbox, read-only.
 pub const SANDBOX_PIPELINE_SEED_DIR: &str = "/run/tilo/pipeline-seed";
 
-/// Names [`SANDBOX_PIPELINE_SEED_DIR`] to the app; `ui::pipeline_seed` reads it.
+/// Names [`SANDBOX_PIPELINE_SEED_DIR`] to the app; `tilo_ui_render::pipeline_seed` reads it.
 pub const PIPELINE_SEED_ENV: &str = "TILO_PIPELINE_SEED_DIR";
 
 /// The session's pipeline cache directory on this host, if one was published.

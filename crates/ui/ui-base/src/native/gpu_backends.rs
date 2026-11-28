@@ -41,7 +41,7 @@ pub(crate) fn backends_for(vulkan_pinned: bool, render_node: bool) -> BackendCho
 /// compositor opened the display's device: OpenGL only once no other backend offers an adapter, which
 /// is asked when the first frame is drawn, after the compositor became the device's master. Whatever
 /// its GPU, this process's frames go to its compositor in dma-bufs a Vulkan device drew
-/// (`ui::dmabuf_import`): an OpenGL adapter would draw them on the CPU just the same.
+/// (`tilo_ui_render::dmabuf_import`): an OpenGL adapter would draw them on the CPU just the same.
 pub(crate) const fn beside_the_display() -> BackendChoice {
     WITHOUT_OPENGL
 }

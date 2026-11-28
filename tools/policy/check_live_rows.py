@@ -72,6 +72,7 @@ FRAMEWORK = (
     "crates/core/tilo-resource",
     "crates/ui/ui-base",
     "crates/ui/ui-core",
+    "crates/ui/ui-render",
     "crates/ui/ui-charts",
     "crates/ui/ui-map",
     "crates/ui/ui-math",

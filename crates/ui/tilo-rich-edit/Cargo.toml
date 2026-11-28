@@ -50,6 +50,8 @@ tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 [dev-dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-ui = { version = "0.1.0", path = "../ui-core", features = ["test-support", "model"] }
+# The retained frames the window-damage test replays.
+tilo-ui-render = { version = "0.1.0", path = "../ui-render", default-features = false }
 # The note tests mount the editor in the app runner and its headless driver.
 tilo-ui-app = { version = "0.1.0", path = "../ui-app", features = ["test-support", "model"] }
 tilo-test-env = { path = "../../../tools/test-env" }

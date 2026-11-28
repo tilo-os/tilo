@@ -79,6 +79,7 @@ allowed = [
     "tilo-ui-graph",
     "tilo-ui-macros",
     "tilo-ui-paint",
+    "tilo-ui-render",
     "tilo-vello",
     "tilo-vello-encoding",
     "tilo-vello-shaders",

@@ -193,6 +193,8 @@ zeroize.workspace = true
 jiff.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui-app", path = "../../ui/ui-app", default-features = false, features = ["model"] }
+# The retained raster target and dma-buf import a hosted surface's frame is drawn with.
+tilo-ui-render = { version = "0.1.0", path = "../../ui/ui-render", features = ["dmabuf-import"], default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 # The sheets the desktop shows over everything: the offers an action

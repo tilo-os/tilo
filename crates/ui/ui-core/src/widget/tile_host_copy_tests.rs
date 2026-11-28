@@ -1,6 +1,6 @@
 //! A scroll in an app a window shows, drawn for a host that keeps what it presented and can move it
 //! (the web's canvas, [`tilo_ui_base::scroll_copy::HostCopies`]): the window hands over what moved, the
-//! host copies it ([`crate::retained_raster::RetainedFrames::repaint_copying`]) and repaints the
+//! host copies it ([`tilo_ui_render::retained_raster::RetainedFrames::repaint_copying`]) and repaints the
 //! strip the scroll exposed, and every presented frame equals a full render of the scene, the shell
 //! under the window included.
 #![allow(
@@ -15,11 +15,11 @@
 )]
 
 use super::*;
-use crate::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::prelude::TaffyMaxContent;
 use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_render::retained_raster::{Repaint, RetainedFrames, TargetKey};
 
 /// The scene, in logical pixels.
 const SCENE: (f64, f64) = (720.0, 540.0);

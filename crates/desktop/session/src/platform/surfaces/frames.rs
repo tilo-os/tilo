@@ -246,7 +246,7 @@ fn prefer_render_node(node: &std::path::Path) {
 /// Whether `adapter` is the GPU behind the compositor's render node.
 fn on_compositors_gpu(adapter: &wgpu::Adapter) -> bool {
     COMPOSITORS_GPU.get().is_some_and(|node| {
-        ui::dmabuf_import::vulkan_drm_adapter_identity(adapter)
+        tilo_ui_render::dmabuf_import::vulkan_drm_adapter_identity(adapter)
             .is_some_and(|identity| identity.render == Some(*node))
     })
 }
@@ -301,7 +301,7 @@ impl Gpu {
             tracing::warn!(?node, "hosted frames: no device node to draw on");
             return None;
         };
-        if !ui::dmabuf_import::is_on_render_node(&device, numbers) {
+        if !tilo_ui_render::dmabuf_import::is_on_render_node(&device, numbers) {
             tracing::warn!(adapter = %adapter.name, ?node, "hosted frames: the renderer is not on the compositor's GPU");
             return None;
         }

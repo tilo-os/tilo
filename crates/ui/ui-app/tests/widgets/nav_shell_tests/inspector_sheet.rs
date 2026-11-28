@@ -303,9 +303,9 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
         settle(&mut h, W, H);
         h.root_mut::<NavShell>().open_inspector();
         settle(&mut h, W, H);
-        let mut canvas = tilo_ui_app::CpuCanvas::new();
+        let mut canvas = tilo_ui_render::cpu_raster::CpuCanvas::new();
         canvas
-            .rasterize(&tilo_ui_app::retained_raster::FrameContent {
+            .rasterize(&tilo_ui_render::retained_raster::FrameContent {
                 scene: h.scene(),
                 width: W,
                 height: H,

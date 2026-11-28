@@ -127,8 +127,8 @@ fn begin_renderer() -> Option<Begun> {
     }
     // Frames drawn by the workspace's render service: connect to it while the app
     // constructs instead of opening a device. The early window is still made.
-    if crate::render_thread::remote::requested() {
-        crate::render_thread::remote::prepare();
+    if tilo_ui_render::render_thread::remote::requested() {
+        tilo_ui_render::render_thread::remote::prepare();
         let (offer, unwanted) = mpsc::channel();
         let (_never, result) = mpsc::channel();
         return Some(Begun {

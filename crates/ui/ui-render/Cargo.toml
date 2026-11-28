@@ -1,0 +1,95 @@
+[package]
+name = "tilo-ui-render"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo UI toolkit's rendering pipeline: the render worker, retained raster targets, layered strips, GPU video and dma-buf import, software rasterization and pipeline caches."
+
+[package.metadata.cargo-machete]
+# wgpu-hal is referenced through vello's wgpu re-export; the direct optional
+# dependency marks `presentation-feedback`, which uses the Metal observer of
+# the patched HAL (vendor/wgpu-hal).
+ignored = ["wgpu-hal"]
+
+[features]
+default = ["native"]
+# The native render worker, the app's pipeline cache and the presentation observer: the parts a
+# window's own process drives. Without it the crate is the raster, strip and pipeline layer a host
+# (a render service, a browser page) draws a frame with.
+native = ["tilo-ui-base/native", "tilo-process-services/native"]
+# Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory (`dmabuf_import`), which the
+# WebView's rendered pages and the video decoder's hardware frames hand over. It needs Tilo's
+# wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off for apps built on the
+# published SDK.
+dmabuf-import = ["dep:ash", "tilo-ui-base/dmabuf-import"]
+# Zero-copy GPU video frames: the dma-buf import above for a hardware decoder's output. Plane upload
+# and the YUV->RGB conversion (`gpu_video`) are always built; without this, frames are uploaded
+# instead.
+gpu-video = ["dmabuf-import", "tilo-ui-base/gpu-video"]
+presentation-feedback = ["dep:wgpu-hal", "tilo-ui-base/presentation-feedback"]
+
+[dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# Host services: the clock, the paths a cache lives in, background work and the process environment.
+tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services", default-features = false }
+# Software fine rasterization, which every host draws a software adapter's frames through.
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
+# Frames drawn by the workspace's render service instead of a GPU in the app
+# (`render_thread::remote`); its transport exists only on Linux, its vocabulary everywhere.
+tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
+# Frame crops and the next frame's damage, which the worker hands the presenter.
+tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
+# The first-frame marks the worker records.
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
+tilo-rt.workspace = true
+# Shared media layer: the planar frames and dma-buf layouts `gpu_video` uploads and converts.
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
+# Crash-safe writes of the app's pipeline cache and the render service's socket.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+vello.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tracing.workspace = true
+libc.workspace = true
+# The scenario session's identifier and the cache's content hash.
+uuid.workspace = true
+blake3.workspace = true
+
+# Match wgpu-hal's ash version so Vulkan handles can pass through `create_texture_from_hal`.
+ash = { version = "0.38", optional = true }
+
+[dev-dependencies]
+# A widget stands in for the app's root in the worker's admission tests.
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+tilo-test-env = { path = "../../../tools/test-env" }
+# The admission tests' document and widget tree.
+automerge.workspace = true
+taffy = { workspace = true, features = ["content_size"] }
+tempfile.workspace = true
+# Deterministic swapchain lifecycle tests, without a display or GPU.
+wgpu = { workspace = true, features = ["custom", "noop"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { version = "29", default-features = false, features = ["metal"], optional = true }
+
+# wasm32 without atomics runs on one thread; this lets the renderer keep its compile-time `Send`
+# checks. The browser host must still render on the page's thread.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }

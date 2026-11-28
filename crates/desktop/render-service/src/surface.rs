@@ -4,7 +4,7 @@
 //! A frame updates layers (new content, new placement, gone), is composed
 //! into one scene in layer order, and is rasterized into the surface's
 //! retained target exactly as the app's own render worker would have done
-//! it (`ui::render_thread::RetainedRaster`): damage only, scroll copies
+//! it (`tilo_ui_render::retained_raster::RetainedRaster`): damage only, scroll copies
 //! first, backdrops blurred. Then what changed is copied into a buffer the
 //! app is not holding — what changed since that buffer last held a frame, so
 //! a buffer two frames old gets two frames of damage — and the app attaches
@@ -16,7 +16,7 @@ use tilo_render_protocol::control::DmabufFormat;
 use tilo_render_protocol::frame::{Frame, LayerChange};
 use tilo_render_protocol::scene::Resources;
 use tilo_render_protocol::{ImageId, LayerId, WireError};
-use ui::render_thread::{FrameContent, RetainedRaster, RetainedTarget};
+use tilo_ui_render::retained_raster::{FrameContent, RetainedRaster, RetainedTarget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -185,7 +185,7 @@ impl Surface {
         // A scene that holds only what its damage needs cannot be drawn whole: the target keeps
         // the last frame, and the app sends this one whole.
         if frame.damage_only && full_redraw {
-            return Err(ui::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+            return Err(tilo_ui_render::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
         }
         let damage_only = frame.damage_only;
         let damage_rects: Vec<Rect> = frame.damage.iter().map(|rect| kurbo_rect(*rect)).collect();

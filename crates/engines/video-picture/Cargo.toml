@@ -22,6 +22,8 @@ media = { package = "tilo-media", path = "../tilo-media", default-features = fal
 thumbnail = { package = "tilo-thumbnail", path = "../thumbnail" }
 # The frame's GPU pipeline and the host clock a source waits by.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", default-features = false }
+# The GPU upload and YUV->RGB conversion a decoder's planar frames are drawn with.
+tilo-ui-render = { version = "0.1.0", path = "../../ui/ui-render", default-features = false }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-actions = { path = "../../core/actions" }

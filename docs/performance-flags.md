@@ -54,7 +54,7 @@ or troubleshooting control, not an optimization recommendation.
 | `VELLO_ZERO_GRADIENT_REUSE`  | Default-on         | Reuses an engine-owned zero-gradient texture for scenes without gradient ramps.                                                                                                                                            |
 
 Sources: [offscreen.rs](../crates/ui/ui-base/src/offscreen.rs),
-[render_thread.rs](../crates/ui/ui-core/src/render_thread.rs),
+[render_thread.rs](../crates/ui/ui-render/src/render_thread.rs),
 [wgpu_engine.rs](../vendor/vello/src/wgpu_engine.rs),
 [shaders.rs](../vendor/vello/src/shaders.rs),
 [Vello renderer](../vendor/vello/src/lib.rs).

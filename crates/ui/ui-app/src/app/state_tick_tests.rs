@@ -35,8 +35,8 @@ fn a_window_that_is_never_drawn_still_runs_a_woken_state_pass() {
 /// run without one.
 #[test]
 fn a_surface_that_hears_no_frame_callback_answers_an_invoked_action() {
-    use crate::render_thread::retry::{UNDRAWN_TICK_INTERVAL, UndrawnTicks};
     use std::sync::atomic::Ordering;
+    use tilo_ui_render::render_thread::retry::{UNDRAWN_TICK_INTERVAL, UndrawnTicks};
     let (widget, calls, _) = deferred_fixture();
     widget.resources.borrow_mut()[0].actions[0]
         .type_mut()

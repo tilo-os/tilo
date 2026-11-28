@@ -735,6 +735,7 @@ LIBRARY_SKIP += (
     "crates/ui/ui-charts/",
     "crates/ui/ui-map/",
     "crates/ui/ui-core/",
+    "crates/ui/ui-render/",
     "crates/ui/ui-math/",
     "crates/ui/ui-kms/",
     "crates/ui/ui-macros/",

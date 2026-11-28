@@ -1,11 +1,5 @@
 use crate::floating_surface::FloatingSurfaceWidgetExt as _;
 #[cfg(feature = "native")]
-use crate::render_thread::RenderThreadHandle;
-#[cfg(feature = "native")]
-use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
-#[cfg(feature = "native")]
-use crate::render_thread::{FrameOutcome, RenderRequest};
-#[cfg(feature = "native")]
 use std::sync::{Arc, mpsc};
 use taffy::AvailableSpace;
 #[cfg(feature = "native")]
@@ -16,6 +10,12 @@ use tilo_ui_base::platform::resolve_app_id;
 use tilo_ui_base::widget::AudiencePresentationWidgetExt as _;
 #[cfg(feature = "native")]
 use tilo_ui_base::widget::FullscreenWidgetExt as _;
+#[cfg(feature = "native")]
+use tilo_ui_render::render_thread::RenderThreadHandle;
+#[cfg(feature = "native")]
+use tilo_ui_render::render_thread::timing::{MainStage, MainStages, record_main_stage};
+#[cfg(feature = "native")]
+use tilo_ui_render::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
 use vello::{Renderer, RendererOptions, peniko::Color};
 use vello::{Scene, kurbo::Affine, kurbo::Point};
@@ -219,7 +219,7 @@ pub enum UserEvent {
     /// Keyboard press and release routed through the ordinary window handler.
     Key(winit::keyboard::Key),
     /// Opt-in workload input with an absolute schedule and stable input identity.
-    NativeScenarioInput(crate::native_scenario::Packet),
+    NativeScenarioInput(tilo_ui_render::native_scenario::Packet),
     RenderReady(winit::window::WindowId),
     /// Delivered to [`tilo_ui_base::widget::Widget::on_external_event`] rather than translated to a
     /// `WindowEvent` (e.g.
@@ -2922,7 +2922,7 @@ mod occlusion_probe_event_tests {
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
         let pointer = tilo_ui_base::synthetic_input::cursor_moved(10.0, 20.0);
         assert!(render_probe_event(&pointer));
-        let mut retry = crate::render_thread::retry::RenderRetryState::default();
+        let mut retry = tilo_ui_render::render_thread::retry::RenderRetryState::default();
         assert!(
             !retry.request_probe(),
             "ordinary pointer motion adds no redraw"

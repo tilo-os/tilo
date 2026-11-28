@@ -67,12 +67,12 @@ impl Trace {
             self.redraw_until = None;
         }
         self.pending.push(id);
-        let (_, time) = crate::native_scenario::host_clock::sample();
+        let (_, time) = tilo_ui_render::native_scenario::host_clock::sample();
         Some(serde_json::json!({
-            "id": id, "kind": kind, "process_id": std::process::id(), "observer_session": crate::native_scenario::observer_session_id(),
+            "id": id, "kind": kind, "process_id": std::process::id(), "observer_session": tilo_ui_render::native_scenario::observer_session_id(),
             "wayland_serial": stamp.map(|stamp| stamp.0),
             "wayland_time_ms": stamp.map(|stamp| stamp.1),
-            "clock": crate::native_scenario::host_clock::CLOCK_NAME,
+            "clock": tilo_ui_render::native_scenario::host_clock::CLOCK_NAME,
             "dispatch_lo_s": time.map(|time| time.lo_s),
             "dispatch_hi_s": time.map(|time| time.hi_s),
             "key_category": key_category,
@@ -100,7 +100,7 @@ impl Trace {
         }
         self.redraws_remaining = self.redraws_remaining.saturating_sub(1);
         Some(serde_json::json!({
-            "cpu_frame_id": cpu_frame_id, "process_id": std::process::id(), "observer_session": crate::native_scenario::observer_session_id(),
+            "cpu_frame_id": cpu_frame_id, "process_id": std::process::id(), "observer_session": tilo_ui_render::native_scenario::observer_session_id(),
             "input_ids": self.drawn_inputs,
             "state": safe_snapshot(snapshot),
         }))

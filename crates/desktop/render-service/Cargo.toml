@@ -12,6 +12,8 @@ description = "A workspace's render service: the one process that draws toolkit 
 tilo-render-protocol = { path = "../../ui/tilo-render-protocol" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["dmabuf-import", "model"], default-features = false }
+# The retained raster target and dma-buf import the service draws and imports with.
+tilo-ui-render = { version = "0.1.0", path = "../../ui/ui-render", features = ["dmabuf-import"], default-features = false }
 vello.workspace = true
 pollster.workspace = true
 serde.workspace = true

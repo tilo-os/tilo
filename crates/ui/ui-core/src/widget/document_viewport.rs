@@ -1200,7 +1200,7 @@ impl Widget for DocumentViewport {
             Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
         };
         let canvas_xf = compose(transform, self.state.content_to_canvas());
-        if !crate::strip_layers::draw_strip(scene, transform, rect, pan, |canvas| {
+        if !tilo_ui_render::strip_layers::draw_strip(scene, transform, rect, pan, |canvas| {
             draw_content(canvas, canvas_xf);
         }) {
             draw_content(scene, content_xf);

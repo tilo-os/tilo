@@ -12,12 +12,9 @@ homepage.workspace = true
 description = "The Tilo UI toolkit: the retained-mode widgets and components, built on tilo-ui-base and drawn with vello."
 
 [package.metadata.cargo-machete]
-# wgpu-hal is referenced through vello's wgpu re-export; the direct optional
-# dependency marks `presentation-feedback`, which uses the Metal observer of
-# the patched HAL (vendor/wgpu-hal).
 # getrandom02 only selects the browser entropy backend for transitive crypto.
 # serde_bytes is named only inside `#[serde(with = "serde_bytes")]`.
-ignored = ["wgpu-hal", "getrandom02"]
+ignored = ["getrandom02"]
 
 [features]
 default = ["native"]
@@ -37,7 +34,7 @@ model = ["dep:tilo-permissions", "dep:runtime-collab", "dep:collaboration", "dep
 # host supplies its own `ui::process::ProcessServices`. The session's daemons
 # (`local-daemons`), the `WebView` widget (`webview`) and the device's content
 # store (`content`) are features of their own, which `host` turns on.
-native = ["collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "syntax-definitions", "settings-store?/watch", "tilo-ui-base/native"]
+native = ["collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "syntax-definitions", "settings-store?/watch", "tilo-ui-base/native", "tilo-ui-render/native"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -96,7 +93,7 @@ realtime-video = ["media/realtime"]
 # backend. A host that draws a declared `ui.VideoPlayer` enables this so the video a person
 # opened actually plays; a build without it (layout checks, the web) leaves the decoder out.
 decode = ["media/decode"]
-presentation-feedback = ["dep:wgpu-hal", "tilo-ui-base/presentation-feedback"]
+presentation-feedback = ["tilo-ui-render/presentation-feedback"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
 # for apps built on the published SDK.
@@ -112,18 +109,14 @@ webview-adblock = ["webview", "tilo-webview/webview-adblock"]
 # shared runtime every app maps leaves adblock-rust out; any other build links
 # the compiler.
 lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
-# Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
-# (`dmabuf_import`). Shared by the WebView's rendered pages and the video
-# decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
-# `ash` for the raw-Vulkan interop, so it stays opt-in for builds that need
-# neither. It needs Tilo's wgpu-hal (vendor/wgpu-hal) for the queue's wait semaphores and foreign
-# external memory, which crates.io does not have, so it stays off for apps built on the
+# Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory, which the WebView's rendered
+# pages and the video decoder's hardware frames hand over (`tilo-ui-render`). Pulls `ash` and Tilo's
+# wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off for apps built on the
 # published SDK.
-dmabuf-import = ["dep:ash", "tilo-ui-base/dmabuf-import"]
-# Zero-copy GPU video frames: the dmabuf import above for a hardware
-# decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)
-# are always built; without this, frames are uploaded instead.
-gpu-video = ["dmabuf-import", "tilo-ui-base/gpu-video"]
+dmabuf-import = ["tilo-ui-render/dmabuf-import"]
+# Zero-copy GPU video frames: the dma-buf import above for a hardware decoder's output. Plane upload
+# and the YUV->RGB conversion are always built; without this, frames are uploaded instead.
+gpu-video = ["tilo-ui-render/gpu-video"]
 # System media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
@@ -145,6 +138,9 @@ host-portals = ["tilo-process-services/host-portals"]
 tilo-permissions = { workspace = true, optional = true }
 tilo-member-types.workspace = true
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
+# The frame pipeline: the render worker, retained raster targets, layered strips, GPU video, dma-buf
+# import and the pipeline caches the toolkit draws through.
+tilo-ui-render = { version = "0.1.0", path = "../ui-render", default-features = false }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # shell's start module large.
@@ -194,13 +190,6 @@ tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional 
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 # Browser processes on one profile meet at one Chromium host (`webview::chromium`).
 tilo-presentation = { version = "0.1.0", path = "../../platform/tilo-presentation", features = ["gpu-damage"] }
-# Frames drawn by the workspace's render service instead of a GPU in the app
-# (`render_thread::remote`); its transport exists only on Linux, its vocabulary
-# everywhere.
-tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
-# A software adapter's frames are rasterized on the CPU and uploaded, native
-# or in a page (`crate::cpu_raster`).
-tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The content store a host lends a component (`ProcessContext::content`), in every
 # build.
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
@@ -234,8 +223,6 @@ url.workspace = true
 # x-www-form-urlencoded dialect that also reads `+` as a space.
 percent-encoding.workspace = true
 form_urlencoded.workspace = true
-# First-frame marks are shared with the greeter's startup metrics capture.
-tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 # Opens the engine libraries the toolkit uses on first use (`lazy-*`).
 tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", optional = true }
 # runtime-collab is the collaboration wire and its client. Its vocabulary
@@ -267,12 +254,8 @@ cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.44.0"
-pollster.workspace = true
 rustc-hash.workspace = true
 
-# Match wgpu-hal's ash version so Vulkan handles can pass through
-# `create_texture_from_hal`.
-ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
 tilo-rt.workspace = true
 vello.workspace = true
@@ -411,6 +394,11 @@ tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 [dev-dependencies]
 # The external-moderation endpoint answers on the broker worker's runtime.
 tokio = { workspace = true, features = ["macros", "rt"] }
+# The widget tests rasterize a drawn scene where a pixel is the assertion.
+tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
+# The startup probes wait on a device and mark the first frames they draw.
+pollster.workspace = true
+tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
 # Its own tests drive a page without Chromium.
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
@@ -486,7 +474,6 @@ winit = { workspace = true, features = ["android-native-activity"] }
 accesskit_android = { version = "0.8.0", optional = true, features = ["embedded-dex"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu-hal = { version = "29", default-features = false, features = ["metal"], optional = true }
 # The menu bar and title-bar search field History and Search live in
 # (`host_chrome/macos.rs`). The generation arboard already brings in.
 objc2 = { version = "0.6", optional = true }

@@ -181,7 +181,7 @@ pub fn requested_texture_limit() -> u32 {
     Limits::default().max_texture_dimension_2d
 }
 
-/// Whether a host on this adapter rasterizes its frames on the CPU (`crate::cpu_raster`) and uploads
+/// Whether a host on this adapter rasterizes its frames on the CPU (`tilo_ui_render::cpu_raster`) and uploads
 /// the pixels, instead of running vello's compute pipelines on an emulated GPU: a SwiftShader page
 /// draws its first frame this way before any pipeline compiles.
 pub fn rasterizes_on_cpu(adapter: &AdapterInfo) -> bool {

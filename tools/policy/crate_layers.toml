@@ -23,6 +23,10 @@ reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-c
   why = "the toolkit's own renderer rasterizes a surface's scene where no GPU can run vello's compute pipeline"
 
   [[rule.allow]]
+  package = "tilo-ui-render"
+  why = "the pipeline's retained target and offscreen canvas rasterize a surface's scene where no GPU can run vello's compute pipeline"
+
+  [[rule.allow]]
   package = "tilo-ui-kms"
   why = "the toolkit's KMS host keeps one rasterizer across frames and copies only the damaged regions into dumb buffers, which ui-core's offscreen renderer does not expose"
 

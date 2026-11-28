@@ -237,6 +237,7 @@ toolkit_reaches = [
     "tilo-ui-graph",                    # crates/ui/ui-graph
     "tilo-ui-macros",                   # crates/ui/ui-macros
     "tilo-ui-paint",                    # crates/ui/ui-paint
+    "tilo-ui-render",                   # crates/ui/ui-render
     "tilo-user-identity",               # crates/core/tilo-user-identity
     "tilo-vello",                       # vendor/vello
     "tilo-vello-encoding",              # vendor/vello_encoding
