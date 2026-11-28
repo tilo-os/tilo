@@ -1223,6 +1223,65 @@ mod cases {
             assert_eq!(editor.text(&editor.root, "server"), "");
         }
 
+        phase a_definition_outside_the_project_opens_where_it_stands;
+        {
+            let editor = Editor::new();
+            editor.call(
+                "open_folder",
+                vec![Value::resource(&editor.root), Value::text("/p")],
+            );
+            let rust = editor
+                .records(&editor.root, "files")
+                .into_iter()
+                .find(|f| editor.text(f, "name") == "main.rs")
+                .expect("the file the device listed");
+            editor.call(
+                "check",
+                vec![Value::resource(&editor.root), Value::resource(&rust)],
+            );
+            editor.call(
+                "definition",
+                vec![
+                    Value::resource(&editor.root),
+                    Value::resource(&rust),
+                    Value::Int(0),
+                    Value::Int(0),
+                ],
+            );
+            // The server names a declaration in a file the project does not hold: another
+            // crate's source on this device.
+            let answer = serde_json::json!({
+                "what": "definition",
+                "locations": [{"path": "/deps/README.md", "line": 3, "column": 0}],
+            });
+            let said = serde_json::json!({
+                "state": "ready",
+                "server": "rust-analyzer",
+                "failure": "",
+                "progress": null,
+                "diagnostics": {},
+                "answer": answer.to_string(),
+            });
+            editor.servers.say("Rust:/p", &said.to_string());
+            let mut window = editor.window();
+            let row = of_kind(window.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|row| text_prop(row, "title") == "/deps/README.md")
+                .unwrap_or_else(|| panic!("the place is listed: {}", dump(window.tree())))
+                .key
+                .clone();
+            window.fire(&row, "activate").unwrap();
+            window.poll_patches().unwrap();
+            let opened = editor
+                .records(&editor.root, "files")
+                .into_iter()
+                .find(|f| editor.text(f, "disk") == "/deps/README.md")
+                .expect("the file the definition names is open");
+            assert_eq!(editor.text(&opened, "text"), "# demo\n");
+            assert_eq!(editor.number(&opened, "reveal_line"), 3);
+            assert_eq!(editor.text(&editor.root, "trouble"), "");
+        }
+
         phase a_server_that_cannot_start_says_why;
         {
             let editor = Editor::new();

@@ -1624,33 +1624,6 @@ fn digits(one: Text) -> Bool {
 
 /// Brings the caret to the place an item of a command's output names: the file is read if the
 /// project does not hold it yet, and the page shows it.
-action reveal_item(p: Project, path: Text, line: Int = 0) uses files (
-    icon: .locate_fixed,
-    label: "Go to it",
-) {
-    require path != "" "That line names no file"
-    let at = canonical(path)
-    if let known = file_at(p, at) {
-        p.trouble = ""
-        reveal_line(known, line, 0)
-    } else if let found = find_file_named(p, path) {
-        p.trouble = ""
-        reveal_line(found, line, 0)
-    } else {
-        p.trouble = "{at} is not a file of this project"
-    }
-}
-
-fn canonical(path: Text) -> Text {
-    path
-}
-
-fn find_file_named(p: Project, path: Text) -> Option<Entry> {
-    p.files.find(
-        e -> e.kind == .file and (e.disk == path or e.name == path or e.disk.ends_with(path)),
-    )
-}
-
 /// Shows `line` of `entry`, counted from 0: the editor scrolls it into view with the caret on it.
 action reveal_line(entry: Entry, line: Int = 0, column: Int = 0) (
     icon: .locate_fixed,
@@ -2515,7 +2488,7 @@ view terminal_panel(p: Project, panel: State<Text>) {
                         }
                         for item in c.items.take(8) {
                             ui.Button(item.text, icon: .locate_fixed) {
-                                on press: reveal_item(p, item.path, item.line)
+                                on press: open_hit(p, item.path, item.line)
                             }
                         }
                     }
@@ -2610,7 +2583,9 @@ template view status_line(p: Project, e: Entry) {
     if not places.is_empty() {
         ui.Section("Definitions") {
             for place in places {
-                ui.ListRow(title: place.path, meta: "line {place.line + 1}", icon: .locate_fixed)
+                ui.ListRow(title: place.path, meta: "line {place.line + 1}", icon: .locate_fixed) {
+                    on activate: open_hit(p, place.path, place.line)
+                }
             }
         }
     }

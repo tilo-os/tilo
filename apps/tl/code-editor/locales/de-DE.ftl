@@ -970,9 +970,6 @@ d-o5c4jbiz = Gesucht
 
 d-o5c4jbiz-j = J
 
-d-mqipns37 = Go to it
-    .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.
-    .w-that-line-names-no-file = That line names no file
 
 d-a7tfyjpe = Suchen the project
     .doc = Suchenes every file of the project for `needle`, the case of its letters aside unless `case` says otherwise.
@@ -1149,7 +1146,6 @@ d-qfnk3hny = Ausführen~present
 
 d-enlvxjgl = Stopp~present
 
-d-unzcdvgw = Reveal item~present
 
 d-pxdbowga = Formatieren file~present
 
@@ -1283,9 +1279,7 @@ d-albctzgc = Zum Symbol springen
 
 d-vmmfvt6f-answer = Antwort
 
-d-mqipns37-path = Pfad
 
-d-mqipns37-line = Zeile
 
 d-373nszrk = Zu Zeile springen
     .doc = Zeigt `line` von `entry`, ab 0 gezählt: der Editor scrollt sie ins Bild, mit dem Cursor darauf.
