@@ -2843,6 +2843,20 @@ pub fn describe(
     let document = peer.admitted_workspace()?;
     let mut described = tilo_desktop_model::Workspace::new(workspace, name.to_owned());
     tilo_peer_state::workspace::adopt_workspace(&mut described, document, &[]);
+    // Each app the workspace runs keeps its own records by being installed, which its apps
+    // resource says and the document need not: a founded workspace's default apps are named
+    // there alone. The rights the description's checks read are those the copy decides by.
+    let running = peer.governance().member_policy().ok()?;
+    let is_app_records = tilo_action_policy::roles::is_app_records_grant;
+    described
+        .policy
+        .grants
+        .retain(|grant| !is_app_records(grant));
+    described
+        .policy
+        .grants
+        .extend(running.grants.into_iter().filter(is_app_records));
+    described.policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
     described.sandbox = peer.governance().member_sandbox().ok()?;
     // When each grant was given, from the signed change that wrote it: what a view listing what
     // the workspace shares out says of when it arrived.

@@ -40,9 +40,12 @@ pub(super) struct Reading {
     described: Arc<std::sync::Mutex<Option<Described>>>,
 }
 
-/// A workspace's description, and the heads of the document it was built from.
+/// A workspace's description, and the heads of the document and the apps it was built from.
 struct Described {
     heads: Option<Vec<automerge::ChangeHash>>,
+    /// The apps the copy read the workspace running, which its description's rights name and
+    /// which change without the document's heads moving.
+    apps: Arc<tilo_peer_state::WorkspaceApps>,
     workspace: Option<Arc<tilo_desktop_model::Workspace>>,
 }
 
@@ -236,12 +239,16 @@ impl HostedWorkspace {
 impl Reading {
     /// The workspace `id` as its document describes it now ([`super::describe`]). Its document's
     /// heads are read under the replica's lock; the description is built again only when they
-    /// moved, from the replica borrowed, never a copy of it.
+    /// or the apps the copy read it running moved, from the replica borrowed, never a copy of it.
     fn described(&self, id: WorkspaceId) -> Option<Arc<tilo_desktop_model::Workspace>> {
         let peer = self.replica.lock();
         let heads = peer.workspace_heads();
+        let apps = peer.apps();
         let mut described = self.described.lock_recover();
-        if let Some(kept) = described.as_ref().filter(|kept| kept.heads == heads) {
+        if let Some(kept) = described
+            .as_ref()
+            .filter(|kept| kept.heads == heads && Arc::ptr_eq(&kept.apps, &apps))
+        {
             return kept.workspace.clone();
         }
         let name = peer.governance().workspace_name().unwrap_or_default();
@@ -249,6 +256,7 @@ impl Reading {
         drop(peer);
         *described = Some(Described {
             heads,
+            apps,
             workspace: workspace.clone(),
         });
         workspace

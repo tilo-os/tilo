@@ -235,6 +235,46 @@ mod tests {
     }
 
     #[test]
+    fn the_workspace_its_members_open_apps_in_runs_the_apps_it_was_founded_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = hosting_device();
+        let defaults = vec![release("so.tilo.files"), release("so.tilo.poker")];
+        let workspace = HostedWorkspace::create(
+            dir.path(),
+            "Team",
+            &cert,
+            &key,
+            Some(&crate::workspaces::fixtures::founding_device()),
+            (&[], &defaults),
+            SystemTime::now(),
+        )
+        .unwrap();
+        // What an open is decided on: an app the workspace runs keeps its own records there, so
+        // opening it installs nothing, whoever opens it.
+        let described =
+            crate::workspaces::describe(workspace.workspace_id(), "Team", &workspace.peer())
+                .unwrap();
+        for release in &defaults {
+            let given = tilo_action_policy::roles::app_records_grant_id(&release.app);
+            assert!(
+                described
+                    .policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id == given),
+                "{} keeps its own records in the workspace it was founded running: {:?}",
+                release.app,
+                described.policy.grants
+            );
+        }
+        assert!(
+            !described.policy.grants.iter().any(|grant| grant.id
+                == tilo_action_policy::roles::app_records_grant_id("so.tilo.writer")),
+            "an app it does not run keeps nothing there"
+        );
+    }
+
+    #[test]
     fn a_new_workspace_records_the_registries_it_fetches_apps_from_as_its_founders() {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = hosting_device();
