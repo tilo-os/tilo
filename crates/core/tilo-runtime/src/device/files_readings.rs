@@ -29,11 +29,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::local_files::Folders;
 
-/// The key a reading answers under when the folder cannot be read
-/// (`tilolang_runtime::store::UNREADABLE`): a view reads what it says with `unreadable(r)`
-/// rather than drawing every field as its type starts.
-const UNREADABLE: &str = "$unreadable";
-
 /// The folders of the workspaces this device keeps, as it publishes them.
 pub(crate) struct Readings {
     folders: Arc<dyn Folders>,
@@ -113,10 +108,12 @@ fn with_changed_as_times(mut listing: Value) -> Value {
 }
 
 /// The bytes a reading travels as: what the folder holds, or why it does not read.
-fn encoded(reading: Result<Value, String>) -> Option<Vec<u8>> {
+fn encoded(reading: Result<Value, String>, folder: &str) -> Option<Vec<u8>> {
     let value = match reading {
         Ok(value) => value,
-        Err(why) => serde_json::json!({ UNREADABLE: why }),
+        // A folder that does not read says why in its own field: a view draws that reason,
+        // where a reading that has not arrived yet reads as the folder it has not filled.
+        Err(why) => serde_json::json!({ "folder": folder, "error": why }),
     };
     match serde_json::to_vec(&value) {
         Ok(bytes) => Some(bytes),
@@ -164,12 +161,15 @@ impl PublishedResources for Readings {
         }
         let folders = Arc::clone(&self.folders);
         let caller = caller.clone();
+        let folder = tree::folder_of_reading(resource)
+            .unwrap_or_default()
+            .to_owned();
         let resource = resource.to_owned();
         let revision = self.edits.load(Ordering::Relaxed);
         // The tree is read on a thread of its own, as the broker's listing reads it: its read
         // waits for the workspace's records, which this device's runtime serves meanwhile.
         std::thread::spawn(move || {
-            let reading = encoded(reading(&*folders, &caller, &resource));
+            let reading = encoded(reading(&*folders, &caller, &resource), &folder);
             let _ = answer.send(Ok((revision, reading)));
         });
         answered
@@ -189,6 +189,9 @@ impl PublishedResources for Readings {
         let folders = Arc::clone(&self.folders);
         let edits = Arc::clone(&self.edits);
         let caller = caller.clone();
+        let folder = tree::folder_of_reading(resource)
+            .unwrap_or_default()
+            .to_owned();
         let resource: Arc<str> = Arc::from(resource);
         let task = tilo_rt::app().handle().spawn(async move {
             // Follow the workspace's writes before reading it, so a change between the two is
@@ -198,11 +201,16 @@ impl PublishedResources for Readings {
                 // The tree is read on a thread of its own, as the broker's listing reads it:
                 // its read waits for the workspace's records, which the runtime serves meanwhile.
                 let (read, read_now) = oneshot::channel();
-                let (keeper, asked, at) = (Arc::clone(&folders), caller.clone(), resource.clone());
+                let (keeper, asked, at, named) = (
+                    Arc::clone(&folders),
+                    caller.clone(),
+                    resource.clone(),
+                    folder.clone(),
+                );
                 let spawned = std::thread::Builder::new()
                     .name("tilo-folder-reading".to_owned())
                     .spawn(move || {
-                        let _ = read.send(encoded(reading(&*keeper, &asked, &at)));
+                        let _ = read.send(encoded(reading(&*keeper, &asked, &at), &named));
                     });
                 let held = match spawned {
                     Ok(_) => read_now.await.ok().flatten(),

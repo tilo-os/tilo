@@ -1559,11 +1559,13 @@ view files(f: Files) {
                     } else if s.here == "applications" {
                         applications(f)
                     } else if tree {
-                        if let why = unreadable(workspace_folder(s.here)) {
+                        // A folder that cannot be read says why; one whose reading is still on
+                        // its way reads as the folder it has not filled yet.
+                        if workspace_folder(s.here).error != "" {
                             ui.EmptyState(
                                 "Couldn’t open “{name_of(s.here)}”",
                                 icon: .folder,
-                                message: why,
+                                message: workspace_folder(s.here).error,
                                 error: true,
                             ) {
                                 on act: refresh(f)

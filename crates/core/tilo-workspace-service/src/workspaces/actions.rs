@@ -5423,6 +5423,7 @@ mod surface_tests {
             { "path": "from", "type": "int", "readonly": true },
             { "path": "next", "type": { "option": "int" }, "readonly": true },
             { "path": "total", "type": "int", "readonly": true },
+            { "path": "error", "type": "text", "readonly": true },
         ]);
         resource["types"] = json!([
             {
@@ -5434,6 +5435,7 @@ mod surface_tests {
                     { "name": "from", "type": "int", "title": "Where this page starts among all the folder holds." },
                     { "name": "next", "type": { "option": "int" }, "title": "Where the next page starts, while there is more." },
                     { "name": "total", "type": "int", "title": "How many entries the folder holds in all." },
+                    { "name": "error", "type": "text", "title": "Why the folder does not read, in words a person reads; empty when it does." },
                 ],
             },
             {
