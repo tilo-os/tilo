@@ -171,7 +171,10 @@ view strips_view(a: Layout, lists: Bool) {
             start_cards()
         } else {
             scroll(axis: .both) {
-                workspace_rows(a, workspace.key, lists, fill(1))
+                // The room the person sees is this view's, not the scrolled content's: `space`
+                // inside the scroll is the room the content could take, so the phone's one
+                // window is chosen here and carried down.
+                workspace_rows(a, workspace.key, lists, space.compact, fill(1))
             }
         }
     } else {
@@ -289,10 +292,10 @@ view start_cards() {
 
 /// The rows of one workspace, filling the room the shell gives them: a workspace's rows stand
 /// under one another, each the height of its share of the shell.
-view workspace_rows(a: Layout, workspace: Text, lists: Bool) {
+view workspace_rows(a: Layout, workspace: Text, lists: Bool, compact: Bool) {
     stack(gap: .group, fill) {
         for held in rows_of(a, workspace) {
-            rows_of_the_shell(a, held, lists, fill(1))
+            rows_of_the_shell(a, held, lists, compact, fill(1))
         }
     }
 }
@@ -306,11 +309,11 @@ view workspace_rows(a: Layout, workspace: Text, lists: Bool) {
 ///
 /// A row is not named here: the strip a person is in is what the bar's strip pill says, and the
 /// row itself carries no label of its own (docs/design-language.md, `BarChip`).
-view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
+view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool, compact: Bool) {
     let strips = strips_of(a, held.key)
     let front = strips.find(s -> s.key == strip_in_front(a)) ?? strips.last()
     stack(gap: .related, fill) {
-        if space.compact {
+        if compact {
             if let s = front {
                 strip_window(a, s, lists, fill(1))
             } else {
