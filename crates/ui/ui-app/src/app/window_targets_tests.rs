@@ -143,6 +143,37 @@ fn a_map_and_its_sentence_are_described_though_nothing_is_pressed_on_them() {
     assert_eq!(go.actions, vec![TargetAction::Activate]);
 }
 
+/// A place that holds nothing is a group named by its title and described by its message: what a
+/// person reads under the title is what a caller reads beside it, and the action stays a control.
+#[test]
+fn an_empty_states_message_is_described_beside_its_title() {
+    let state = crate::widget::EmptyState::new("No notes yet")
+        .with_message("Write the first one from the box above.")
+        .with_action("New note");
+    let mut app = app_with_root(crate::State::new(), Box::new(state));
+    layout(&mut app);
+    let (app_side, mut shell) = UnixStream::pair().unwrap();
+    app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
+    let targets = described(&mut app, &mut shell).expect("the window describes what it shows");
+    let shown: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
+
+    let title = targets
+        .iter()
+        .find(|target| target.name == "No notes yet")
+        .unwrap_or_else(|| panic!("the title is what the region says it is: {shown:?}"));
+    assert!(title.actions.is_empty(), "a region answers no press");
+    let message = targets
+        .iter()
+        .find(|target| target.name == "Write the first one from the box above.")
+        .unwrap_or_else(|| panic!("the message is described under the title: {shown:?}"));
+    assert!(message.actions.is_empty(), "a sentence answers no press");
+    let action = targets
+        .iter()
+        .find(|target| target.name == "New note")
+        .expect("the region's action is a control a press reaches");
+    assert_eq!(action.actions, vec![TargetAction::Activate]);
+}
+
 /// What the shell presses on the window: the control `name` of `role`, as an
 /// assistive technology acts on it.
 fn press(shell: &mut UnixStream, name: &str, role: &str, action: TargetAction) {

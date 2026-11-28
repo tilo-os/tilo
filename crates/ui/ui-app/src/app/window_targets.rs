@@ -104,24 +104,11 @@ impl App {
                     .into_iter()
                     .filter(|action| described.supports_action(action.accesskit()))
                     .collect();
-            // A control is what a person operates, whatever it currently answers: a role a press
-            // reaches (a button with nothing to send yet is still the person's Send), a field that
-            // takes what is typed into it, or anything else that answers an assistive technology.
-            // A control that answers no press is still listed where it says what it does: a field
-            // edits a record without one, and the person reaches it by a point.
-            let operable = tilo_ui_base::a11y::pressable_role(described.role())
-                || [
-                    crate::accesskit::Action::Click,
-                    crate::accesskit::Action::ShowContextMenu,
-                    crate::accesskit::Action::Focus,
-                    crate::accesskit::Action::SetValue,
-                ]
-                .into_iter()
-                .any(|action| described.supports_action(action));
-            if !operable && identity.is_none() {
-                if let Some(name) = name
-                    && says
-                {
+            // What a region says — a heading, a sentence, a place that holds nothing — is words
+            // however it is reached: a region that can hold the focus is still no control, and
+            // its line under the title is what a person reads there.
+            if identity.is_none() && says {
+                if let Some(name) = name {
                     words.push(WindowTarget {
                         role: format!("{:?}", described.role()),
                         name: name.to_owned(),
@@ -131,6 +118,23 @@ impl App {
                         level: described.level(),
                         selected: false,
                     });
+                    // What a region says stands there beyond its name — an empty state's
+                    // message under its title — is what a person reads there, so a caller
+                    // reads it too.
+                    if let Some(said) = described.description() {
+                        let said = said.trim();
+                        if !said.is_empty() && said != name {
+                            words.push(WindowTarget {
+                                role: format!("{:?}", described.role()),
+                                name: said.to_owned(),
+                                identity: None,
+                                rect: [bounds.x0, bounds.y0, bounds.x1, bounds.y1],
+                                actions: Vec::new(),
+                                level: described.level(),
+                                selected: false,
+                            });
+                        }
+                    }
                 }
                 continue;
             }
