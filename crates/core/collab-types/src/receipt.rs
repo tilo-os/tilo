@@ -824,10 +824,17 @@ pub fn check_claims_by_kind(
     let surface_for = |named: Option<&str>| surface_for(named.or(content));
     let surface_for: &SurfaceFor<'_> = &surface_for;
     // What each change may write, before it is split by kind: a change over records of two
-    // kinds writes what the surface of each of them lets it.
+    // kinds writes what the surface of each of them lets it. A claim that names no kind is
+    // measured by the kind [`by_kind`] decides it under, never by the document id's alone.
+    let fallback = kind
+        .map(str::to_owned)
+        .or_else(|| claimed_kind(claims).map(str::to_owned));
     let mut allowed: BTreeMap<[u8; 32], Vec<UnitPath>> = BTreeMap::new();
     for claim in claims {
-        allowed.insert(claim.change, claim_units(claim, surface_for));
+        allowed.insert(
+            claim.change,
+            claim_units(claim, fallback.as_deref(), surface_for),
+        );
     }
     let groups = by_kind(kind, claims.to_vec());
     // Every group's surface, before any claim is decided: a change over records of two kinds is
@@ -885,11 +892,16 @@ impl ReceiptSurface for AllowedUnits<'_> {
 }
 
 /// What `claim` may write across the surfaces of every kind it names ([`per_kind`]): one for a
-/// claim of one kind, each of a group of them.
-fn claim_units(claim: &ChangeClaim, surface_for: &SurfaceFor<'_>) -> Vec<UnitPath> {
+/// claim of one kind, each of a group of them; a claim naming no kind is measured by `kind`.
+fn claim_units(
+    claim: &ChangeClaim,
+    kind: Option<&str>,
+    surface_for: &SurfaceFor<'_>,
+) -> Vec<UnitPath> {
     let mut units: Vec<UnitPath> = Vec::new();
     for piece in per_kind(claim.clone()) {
-        let Some(surface) = surface_for(claimed_kind(std::slice::from_ref(&piece))) else {
+        let named = claimed_kind(std::slice::from_ref(&piece)).or(kind);
+        let Some(surface) = surface_for(named) else {
             continue;
         };
         for unit in surface.footprint(&piece.action) {

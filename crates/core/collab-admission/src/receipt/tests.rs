@@ -1172,3 +1172,31 @@ fn a_content_documents_change_that_names_no_kind_is_decided_against_the_kind_its
     assert_eq!(kinds.get(&native.hash().0), Some(&note));
     assert_eq!(kinds.get(&stamped.hash().0), Some(&note));
 }
+
+/// A record whose document id names a kind its app declares nowhere is measured by its own kind.
+#[test]
+fn a_record_whose_document_names_another_kind_is_measured_by_its_own() {
+    let notes = Kinds::new([TestKind("tl.notes.Note", true, None)]);
+    let moved = WrittenDocument {
+        workspace: WORKSPACE,
+        app: APP,
+        document: "*/tl.notes.Page/n1~0",
+    };
+    let surface_for = |kind: Option<&str>| notes.surface(&moved, kind, None);
+    assert_eq!(
+        check_claims_by_kind(
+            &[claim(
+                1,
+                ClaimedAction::whole_resource_edit(String::new()),
+                vec![Vec::new()],
+            )],
+            &moved,
+            Some("tl.notes.Note"),
+            false,
+            &surface_for,
+            &|_, _, _| true,
+        ),
+        Ok(Receipt::Admit),
+        "the kind the record names is the one it is decided and measured by"
+    );
+}
