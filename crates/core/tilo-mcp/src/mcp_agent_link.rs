@@ -269,8 +269,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// the person's: a session making many changes in one document opens it
     /// once.
     pub(super) async fn changed_shown(&self, provider: &str, value: &Value) -> Shown {
+        // The link comes with the change itself, whatever provider made it.
+        let link = link_of(value);
         if !tilo_actions::remote::names_app(provider) {
-            return Shown::default();
+            return Shown {
+                link,
+                not_shown: None,
+            };
+        }
+        // A provider no app of this session names is a device's own (`tilo.seats`,
+        // `tilo.wifi`): its call changed no document, so it shows no window and none is said
+        // missing from the person's layout.
+        if self.surface_bytes(provider).await.is_none() {
+            return Shown {
+                link,
+                not_shown: None,
+            };
         }
         let first = {
             let mut showed = self.showed.lock_recover();
@@ -286,10 +300,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         } else {
             None
         };
-        Shown {
-            link: link_of(value),
-            not_shown,
-        }
+        Shown { link, not_shown }
     }
 
     /// Show the record `provider` names as a window on the person's layout, as a member's
