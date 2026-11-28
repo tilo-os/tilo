@@ -10,14 +10,12 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open Books on an empty shelf",
+      "said": "Open Books on an empty shelf, letting it use the internet when it asks",
       "ops": [
         {
           "theme": false
         },
-        {
-          "launch": true
-        },
+        {"launch": {"answer": "Allow"}},
         {
           "wait_for": "actions"
         },

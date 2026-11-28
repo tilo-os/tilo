@@ -8,14 +8,12 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open Music for the first time",
+      "said": "Open Music for the first time, letting it use the internet when it asks",
       "ops": [
         {
           "theme": false
         },
-        {
-          "launch": true
-        },
+        {"launch": {"answer": "Allow"}},
         {
           "wait_for": "window"
         },
