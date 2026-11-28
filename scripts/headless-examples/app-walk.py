@@ -1228,6 +1228,80 @@ def drawn(target: dict) -> bool:
     return w > 0 and h > 0 and x >= 0 and y >= 0
 
 
+def png_rows(path: Path) -> tuple[int, int, int, list[bytes]]:
+    """A screenshot's pixels: `(width, height, channels, rows)` of an 8-bit RGB or RGBA PNG, read
+    with the standard library alone, as the session writes its snapshots."""
+    import struct
+    import zlib
+    data = path.read_bytes()
+    pos, idat, head = 8, [], None
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            head = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat.append(body)
+    if head is None or head[2] != 8 or head[3] not in (2, 6) or head[6] != 0:
+        raise Failed(f"{path} is no 8-bit RGB(A) PNG the walk reads: {head}")
+    width, height, channels = head[0], head[1], 4 if head[3] == 6 else 3
+    raw = zlib.decompress(b"".join(idat))
+    stride = width * channels
+    rows: list[bytes] = []
+    prev, at = bytearray(stride), 0
+    for _ in range(height):
+        kind = raw[at]
+        line = bytearray(raw[at + 1:at + 1 + stride])
+        at += 1 + stride
+        for i in range(stride):
+            a = line[i - channels] if i >= channels else 0
+            b = prev[i]
+            c = prev[i - channels] if i >= channels else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 255
+            elif kind == 2:
+                line[i] = (line[i] + b) & 255
+            elif kind == 3:
+                line[i] = (line[i] + ((a + b) >> 1)) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        rows.append(bytes(line))
+        prev = line
+    return width, height, channels, rows
+
+
+#: The share of a window's pixels under its bar, in percent, that must differ from its most common
+#: colour: below it, the window's place shows one flat colour, the shell's background where the
+#: app's surface is not drawn. Pages of real apps measure 19% and more; an undrawn window measures
+#: half a percent, the shell's own controls behind it.
+WINDOW_DRAWN_PERCENT = 2.0
+
+
+def window_pixels(path: Path, rect: list) -> dict | None:
+    """What the window at `rect` in the screenshot at `path` shows under its bar: how much of it,
+    in percent, is drawn on its most common colour (`drawn_percent`), and whether that colour is a
+    dark one (`ground_dark`); `None` for a rect the shot holds none of."""
+    width, height, channels, rows = png_rows(path)
+    x, y, w, h = (int(v) for v in rect)
+    x0, y0 = max(x + 8, 0), max(y + 48, 0)
+    x1, y1 = min(x + w - 8, width), min(y + h - 8, height)
+    counts: dict[bytes, int] = {}
+    for row in rows[y0:y1:2]:
+        for at in range(x0 * channels, x1 * channels, 2 * channels):
+            pixel = row[at:at + 3]
+            counts[pixel] = counts.get(pixel, 0) + 1
+    total = sum(counts.values())
+    if total == 0:
+        return None
+    ground, most = max(counts.items(), key=lambda item: item[1])
+    luminance = (0.2126 * ground[0] + 0.7152 * ground[1] + 0.0722 * ground[2]) / 255
+    return {"drawn_percent": round(100 * (total - most) / total, 2),
+            "ground": ground.hex(), "ground_dark": luminance < 0.5}
+
+
 def row_of(session: Session, window: dict | None, name: str) -> dict | None:
     """The row `name` in the app window's own sidebar: a control with those words
     drawn in the window's leading column, below its header — never the desktop's
@@ -1658,6 +1732,8 @@ class Walk:
         self.mail: LocalMailServer | None = None
         # The frames a step's window drew when its `window_frames` first ran.
         self.frames_seen: dict[str, int] = {}
+        # What stood where the app's window is at each shot of the step: see `shot`.
+        self.shots_held: list[dict] = []
         # The stand-in services this walk started beside the session (op `serve`),
         # stopped when its session goes.
         self.services: list = []
@@ -1764,6 +1840,17 @@ class Walk:
     def shot(self, name: str) -> str:
         path = self.shots / f"{name}.png"
         self.session.snapshot(path)
+        # What stood where the app's window is when the shot was taken: the window as the shell
+        # and the compositor hold it, and the appearance the session wears. A shot that shows
+        # something other than the app says from this why.
+        if self.v.get("id") is not None:
+            mode, draws_dark = self.dark_now()
+            window = self.window_of()
+            shown = None
+            if window is not None and window.get("active") is True and window.get("rect"):
+                shown = window_pixels(path, window["rect"])
+            self.shots_held.append({"shot": name, "window": window, "pixels": shown,
+                                    "mode": mode, "draws_dark": draws_dark})
         return str(path)
 
     def require_shown(self, targets: list[dict] | None = None) -> None:
@@ -3691,6 +3778,7 @@ class Walk:
         self.catalogued = None
         self.listed = None
         self.frames_seen = {}
+        self.shots_held = []
         self.step_on = step.get("on")
         try:
             for op in ops:
@@ -3738,6 +3826,28 @@ class Walk:
                         self.set_dark(False)
                     spent("back_to_light", part_began)
             record["shots_ms"] = round((time.monotonic() - shots_began) * 1000)
+            record["shots_held"] = self.shots_held
+            # A window the accessibility tree reads whole can still show something else: the
+            # display shows the shell's background where its surface should be, or a frame the
+            # app drew in the appearance before. Every shot of the step looks at the pixels
+            # where the window stands.
+            for held in self.shots_held:
+                shown = held.get("pixels")
+                if shown is None:
+                    continue
+                surface = (held.get("window") or {}).get("surface")
+                if shown["drawn_percent"] < WINDOW_DRAWN_PERCENT:
+                    raise Failed(
+                        f"shot {held['shot']}: the window of {self.v.get('id')} shows one flat "
+                        f"colour ({shown['drawn_percent']:.2f}% drawn on it): its surface is not "
+                        f"on the display; the compositor holds {json.dumps(surface)}")
+                said = held.get("draws_dark")
+                if said is not None and said != shown["ground_dark"]:
+                    raise Failed(
+                        f"shot {held['shot']}: the window of {self.v.get('id')} says it draws "
+                        f"{'dark' if said else 'light'}, and the display shows it on "
+                        f"#{shown['ground']}: a frame from the appearance before; the "
+                        f"compositor holds {json.dumps(surface)}")
             record["shots_spent"] = shots_spent
             record["theme_wait_ms"] = self.theme_waited_ms - theme_waited_before
             budget = step.get("budget_ms")
