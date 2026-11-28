@@ -171,28 +171,9 @@ pub struct Store {
     /// This device's own writes of each workspace no other device keeping it has taken in yet,
     /// and those refused ([`crate::reach`]).
     reach: crate::reach::Ledgers,
-    /// How far this device reserved the sequence numbers of its own lines, by workspace and line
-    /// ([`Store::reserve_sequence`]): the numbers it hands out next, and the end of the block it
-    /// has made durable.
-    sequences: std::sync::Mutex<BTreeMap<(WorkspaceId, Lineage), Reserved>>,
+    /// The next number each of this device's own lines takes here, by workspace and line.
+    sequences: std::sync::Mutex<BTreeMap<(WorkspaceId, Lineage), u64>>,
 }
-
-/// The numbers of one line this store hands out: those it reserved.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Reserved {
-    /// Whether the line's reservation was read back from disk (or was made) here: a line this
-    /// store has handed no number of yet starts past what it holds and what it is told.
-    loaded: bool,
-    /// The next number the line takes.
-    next: u64,
-    /// The end of the block whose numbers are on disk: a device that stops starts past it.
-    end: u64,
-}
-
-/// How many sequence numbers of a line this device reserves at once: its block's end is written
-/// before any number inside it is handed out, so a write costs one file write a block and a
-/// device that stops mid-block skips what it never used when it starts again.
-const SEQUENCE_BLOCK: u64 = 32;
 
 /// Where a store's files are: a directory of its backend.
 pub(crate) struct Disk {
@@ -860,57 +841,25 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// The next `count` sequence numbers of `lineage`, `author`'s line of one record of
-    /// `workspace`, the first of them: what a device numbers its own writes under. None is at or
-    /// below `floor`, the last number the record gave the line. The block whose numbers they come
-    /// from is made durable here before any of them is returned, so a device that stops before it
-    /// sends a write skips the rest of the block when it starts again instead of taking a number
-    /// another device already holds for it; a block lasts [`SEQUENCE_BLOCK`] writes.
-    ///
-    /// # Errors
-    ///
-    /// The block could not be written.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the reservation is held while its block is written, so a block is handed out once"
-    )]
+    /// The next `count` numbers of `lineage`, the first, none at or below `floor` nor one the
+    /// store holds for the line: a device that restarts never repeats one.
     pub fn reserve_sequence(
         &self,
         workspace: WorkspaceId,
         lineage: Lineage,
         floor: u64,
         count: u64,
-    ) -> Result<u64, StoreError> {
-        let mut reserved = self.sequences.lock_recover();
-        let entry = reserved
-            .entry((workspace, lineage))
-            .or_insert_with(Reserved::default);
-        if !entry.loaded {
-            // Past everything already durable for the line: the block a device reserved before it
-            // stopped, and the frames the store or the workspace's record still hold for it.
-            let kept = self
-                .state(&sequence_state_name(workspace, lineage))?
-                .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-                .map_or(0, u64::from_le_bytes);
-            let stood = self
-                .stands(workspace)
+    ) -> u64 {
+        let mut sequences = self.sequences.lock_recover();
+        let next = *sequences.entry((workspace, lineage)).or_insert_with(|| {
+            self.stands(workspace)
                 .into_iter()
                 .find(|(cursor, _)| cursor.lineage == lineage)
-                .map_or(0, |(cursor, _)| cursor.after_seq);
-            let after = kept.max(stood);
-            entry.next = after.saturating_add(1);
-            entry.end = after;
-            entry.loaded = true;
-        }
-        let start = entry.next.max(floor.saturating_add(1));
-        let last = start.saturating_add(count.saturating_sub(1));
-        if last > entry.end {
-            let end = last.max(start.saturating_add(SEQUENCE_BLOCK.saturating_sub(1)));
-            self.keep_state(&sequence_state_name(workspace, lineage), &end.to_le_bytes())?;
-            entry.end = end;
-        }
-        entry.next = last.saturating_add(1);
-        Ok(start)
+                .map_or(1, |(cursor, _)| cursor.after_seq.saturating_add(1))
+        });
+        let start = next.max(floor.saturating_add(1));
+        sequences.insert((workspace, lineage), start.saturating_add(count));
+        start
     }
 
     /// Keep `frame` for `workspace`, unless the store holds that frame of
@@ -2423,17 +2372,6 @@ pub fn gaps(cursors: &[Cursor], replay: &Replay) -> Vec<Floor> {
 
 const WORKSPACES: &str = "workspaces";
 
-/// Where the end of the block of sequence numbers reserved for `lineage` of `workspace` is kept:
-/// state of the device's own, beside its frames ([`Store::reserve_sequence`]).
-fn sequence_state_name(workspace: WorkspaceId, lineage: Lineage) -> String {
-    format!(
-        "sequences/{}/{}-{}",
-        workspace,
-        hex::encode(lineage.record),
-        hex::encode(lineage.author)
-    )
-}
-
 /// The layout of the frames a store keeps: segments of records, each frame one
 /// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
 /// covers, and whose identity hello may name a placed device's certificate or a placement grant
@@ -3432,54 +3370,38 @@ mod tests {
         Cursor { lineage, after_seq }
     }
 
-    /// A device's own line is numbered from the block the store made durable, past what the
-    /// record gave it and past what the store itself holds: a store that starts again continues
-    /// after the block it reserved before, never at a number another device already holds.
+    /// A device's line takes numbers past what the record gave it and past the frames the store
+    /// holds for it, and two of its writers never take one: a store that starts again continues
+    /// from what it holds, never repeating a number that left the device.
     #[test]
-    fn reserved_sequences_continue_past_their_block_across_a_restart() {
+    fn reserved_sequences_are_unique_and_continue_past_what_the_store_holds() {
         let dir = tempfile::tempdir().unwrap();
-        let lineage = Lineage::of(APP, RECORD, [3; 32]);
+        let key = device(4);
+        let lineage = Lineage::of(APP, RECORD, key.verifying_key().to_bytes());
+        let keep = |store: &Store, seq: u64| {
+            let authored = frame(&key, seq, ContentRetention::Delta);
+            assert_eq!(store.retain(workspace(), &authored).unwrap(), Retained::New);
+        };
         {
             let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
+            keep(&store, 1);
+            assert_eq!(store.reserve_sequence(workspace(), lineage, 0, 1), 2);
             assert_eq!(
-                store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
-                1
+                store.reserve_sequence(workspace(), lineage, 0, 1),
+                3,
+                "two of the device's writers take different numbers"
             );
             assert_eq!(
-                store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
-                2,
-                "the numbers of a block come out in order"
-            );
-            assert_eq!(
-                store
-                    .reserve_sequence(workspace(), lineage, 100, 2)
-                    .unwrap(),
+                store.reserve_sequence(workspace(), lineage, 100, 2),
                 101,
                 "a record that gave the line a higher number is numbered past it"
             );
+            keep(&store, 3);
         }
+        // The device stopped without a clean keep: the numbers it sent are in its store, and the
+        // next it takes continues past them.
         let store = Store::open(dir.path(), Appetite::StoreAll).unwrap();
-        assert_eq!(
-            store.reserve_sequence(workspace(), lineage, 0, 1).unwrap(),
-            133,
-            "the block reserved before the restart is skipped"
-        );
-    }
-
-    /// The frames a store holds on a device's own line are where its numbering starts, as a
-    /// device that lost its own state resumes from what the devices keeping the workspace hold.
-    #[test]
-    fn reserved_sequences_start_past_the_frames_the_store_holds() {
-        let (_dir, store) = open();
-        let key = device(4);
-        let authored = frame(&key, 50, ContentRetention::Delta);
-        assert_eq!(store.retain(workspace(), &authored).unwrap(), Retained::New);
-        assert_eq!(
-            store
-                .reserve_sequence(workspace(), authored.lineage, 0, 1)
-                .unwrap(),
-            51
-        );
+        assert_eq!(store.reserve_sequence(workspace(), lineage, 0, 1), 4);
     }
 
     tilo_test_env::scenario! {

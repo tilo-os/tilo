@@ -73,9 +73,8 @@ pub(super) fn settling(
     tickets: &Arc<super::ticket::Tickets>,
     cert: &DeviceCert,
 ) -> super::first_workspace::Settling {
-    // A device that comes to hold their own workspace after its daemon started — one that logged
-    // in through another device, whose copy arrives later — is settled by that hold, not only by
-    // a call that reaches the workspace: the hold is what lists it with their others.
+    // A device that comes to hold their own workspace after its daemon started — one whose copy
+    // arrives later — is settled by that hold, not only by a call that reaches the workspace.
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         runtime.spawn(super::first_workspace::settle_as_workspaces_arrive(
             Arc::clone(first),

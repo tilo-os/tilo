@@ -248,13 +248,7 @@ fn refuse(
     reason: ValidationError,
     now: SystemTime,
 ) -> Delivery {
-    tracing::warn!(
-        app = %document.app_id,
-        record = %document.document_id,
-        author = %hex::encode(document.envelope.author.as_bytes()),
-        seq = document.envelope.seq,
-        "collab_broker (net): dropping invalid signed op: {reason}",
-    );
+    tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
     if let Ok(mut ch) = channels.lock() {
         ch.audit.record(
             document.envelope.artifact,

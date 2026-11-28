@@ -1692,10 +1692,6 @@ impl Workspaces {
         .map_err(Unkept::Refused)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one resource batch: numbered, its keys read, each part admitted, in the order it happens"
-    )]
     async fn admit_resource_write(
         &self,
         hosted: &HostedWorkspace,
@@ -1708,7 +1704,6 @@ impl Workspaces {
         ),
     ) -> Result<Vec<collab_types::SignedOp>, Unkept> {
         use neighbour_wire::NeighbourMsg;
-
         let write = writes.first().ok_or("a resource write writes no change")?;
         let document = &write.doc;
         let author = device.device();
@@ -1717,32 +1712,12 @@ impl Workspaces {
         let mut envelopes = hosted
             .draft_resource_document(candidate, device, app, writes, action)
             .await?;
-        // One number per device key: a resource write takes its numbers from its line's durable
-        // reservation too, as this device's document writes do
-        // ([`tilo_peer_state::store::Store::reserve_sequence`]), so two of its writers never
-        // share one and a number another device already holds is never taken again after a
-        // restart.
-        if let Some(first) = envelopes.first() {
-            let floor = first.seq.saturating_sub(1);
-            let start = self
-                .reserve_sequence(
-                    hosted.workspace_id(),
-                    app,
-                    document,
-                    author,
-                    floor,
-                    u64::try_from(envelopes.len()).unwrap_or(u64::MAX),
-                )
-                .map_err(|refusal| refusal.to_string())?;
-            for (drafted, envelope) in envelopes.iter_mut().enumerate() {
-                let seq = start.saturating_add(u64::try_from(drafted).unwrap_or(u64::MAX));
-                if envelope.seq != seq {
-                    envelope.seq = seq;
-                    collab_types::sign_op(envelope, &*device.signer)
-                        .map_err(|error| error.to_string())?;
-                }
-            }
-        }
+        self.number_envelopes(
+            candidate,
+            (hosted.workspace_id(), app, document, author),
+            &*device.signer,
+            &mut envelopes,
+        )?;
         let named = (collab_types::is_store_document(document)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
@@ -1751,8 +1726,7 @@ impl Workspaces {
             .as_ref()
             .ok_or("this device holds no group keys")?;
         let scoped = hosted.peer().requires_document_keys(app, document, now)?;
-        // The draft found the keys of the document's group, so they are looked up, not waited
-        // for under the workspace's lock.
+        // The draft found the group's keys: they are looked up, not waited for under the lock.
         let keys = super::sealed_documents::read_document_keys_for(
             device_keys,
             hosted.workspace(),

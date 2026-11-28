@@ -2469,22 +2469,38 @@ impl Workspaces {
         }
     }
 
-    /// The sequence number this device's next write of `record` of `app` in `workspace` takes:
-    /// from the line's durable reservation, past `floor`
-    /// ([`tilo_peer_state::store::Store::reserve_sequence`]).
-    pub(crate) fn reserve_sequence(
+    /// `envelopes`, this device's write of `record`, numbered from its line's reservation.
+    ///
+    /// # Errors
+    ///
+    /// The device could not sign.
+    pub(crate) fn number_envelopes(
         &self,
-        workspace: WorkspaceId,
-        app: &str,
-        document: &str,
-        author: [u8; 32],
-        floor: u64,
-        count: u64,
-    ) -> Result<u64, tilo_peer_state::owner::WriteRefusal> {
-        self.inner
-            .records
-            .reserve_sequence(workspace, app, document, author, floor, count)
-            .map_err(tilo_peer_state::owner::WriteRefusal::Refused)
+        peer: &tilo_peer_state::StatePeer,
+        (workspace, app, document, author): (WorkspaceId, &str, &str, [u8; 32]),
+        signer: &dyn collab_types::signer::DeviceSigner,
+        envelopes: &mut [collab_types::SignedOp],
+    ) -> Result<(), String> {
+        let floor = peer
+            .replay_floors()
+            .into_iter()
+            .find(|(a, r, k, _)| a == app && r == document && *k == author)
+            .map_or(0, |(_, _, _, seq)| seq);
+        let count = u64::try_from(envelopes.len()).unwrap_or(u64::MAX);
+        let start = self.inner.store.reserve_sequence(
+            workspace,
+            tilo_peer_state::store::Lineage::of(app, document, author),
+            floor,
+            count,
+        );
+        for (drafted, envelope) in envelopes.iter_mut().enumerate() {
+            let seq = start.saturating_add(u64::try_from(drafted).unwrap_or(u64::MAX));
+            if envelope.seq != seq {
+                envelope.seq = seq;
+                collab_types::sign_op(envelope, signer).map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
     }
 
     /// Each write to a record a workspace held here took in: a member's write to

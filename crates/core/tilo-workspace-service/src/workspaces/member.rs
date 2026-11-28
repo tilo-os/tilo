@@ -1835,28 +1835,23 @@ impl Workspaces {
                 "the document's signer differs from this device".into(),
             ));
         }
-        // The number a device's own write takes is drawn here, from its line's durable
-        // reservation ([`tilo_peer_state::store::Store::reserve_sequence`]), never from the copy's
-        // floor alone: past the record's own floor, so a write the record already holds is never
-        // numbered again, and past the block reserved before a restart, so a device that stopped
-        // continues rather than repeats one. Several of a device's writers sign before the turn
-        // orders them; each takes a number no other took.
         let state = self
             .workspace(workspace)
             .await
             .map_err(|_| WriteRefusal::Waiting(MissingPrerequisite::Workspace))?;
-        let floor = {
+        {
             let hosted = state.lock().await;
-            hosted
-                .peer()
-                .document_floor(app, document, device.device())
-                .unwrap_or(0)
-        };
-        let seq = self.reserve_sequence(workspace_id, app, document, device.device(), floor, 1)?;
-        if envelope.seq != seq {
-            envelope.seq = seq;
-            collab_types::sign_op(&mut envelope, &*device.signer)
-                .map_err(|error| WriteRefusal::Unsigned(error.to_string()))?;
+            let mut envelopes = vec![envelope];
+            self.number_envelopes(
+                &hosted.peer(),
+                (workspace_id, app, document, device.device()),
+                &*device.signer,
+                &mut envelopes,
+            )
+            .map_err(WriteRefusal::Refused)?;
+            envelope = envelopes
+                .pop()
+                .ok_or_else(|| WriteRefusal::Refused("a write that carries no frame".into()))?;
         }
         let member = self.is_member(workspace).await?;
         if !member && !self.hosts_here(workspace_id).await {

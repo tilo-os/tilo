@@ -24,20 +24,16 @@ pub(crate) type Settling = Arc<
         + Sync,
 >;
 
-/// Settle the person's workspace each time this device comes to hold one it did not, as the
-/// daemon's start settles one it finds: a device whose own workspace arrives after it started is
-/// listed with their others then. Runs until the service stops, or until it settled.
+/// Settle the person's workspace as this device comes to hold one it did not: the arrival lists
+/// it with their others and serves their root's asks, as the start settles one it finds.
 pub(crate) async fn settle_as_workspaces_arrive(
     first: Arc<FirstWorkspace>,
     copies: tilo_workspace_service::workspaces::Workspaces,
 ) {
     let mut holds = copies.holds_changed();
     while holds.changed().await.is_ok() {
-        if first.settled.initialized() {
-            return;
-        }
         if let Err(error) = first.settle().await {
-            tracing::warn!(%error, "the person's workspace is not settled as it comes to be held");
+            tracing::warn!(%error, "the person's workspace is not settled as it arrives");
         }
     }
 }
