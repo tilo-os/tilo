@@ -18,6 +18,16 @@ use tilo_session_client::membership::{Membership, project};
 
 const WORKSPACE: &str = testing::WORKSPACE;
 
+/// This device's engine, holding the workspaces it keeps under `state` .
+fn engine_at(state: &std::path::Path, identity: DeviceIdentity) -> Engine {
+    let path = state.join("tilo").join("workspaces.json");
+    std::fs::create_dir_all(path.parent().expect("a state directory"))
+        .expect("this device's state directory");
+    let owner = tilo_peer_state::owner::open_file(&tilo_peer_state::owner::owner_file_of(&path))
+        .expect("this device's workspaces");
+    Engine::holding(owner, identity)
+}
+
 /// The identity of the device certified as `cert` , signing with `key` .
 fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceIdentity {
     DeviceIdentity::kept(cert.clone(), key.clone())
@@ -32,8 +42,7 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     let cert = primary_cert(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
     let identity = identity(&cert, &person_key);
-    let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
-        .expect("this device's engine opens");
+    let engine = engine_at(directory.path(), identity);
     let admitting = TestWorkspace::empty_interactive(cert.clone(), person_key.clone(), WORKSPACE)
         .expect("this device hosts its workspace");
     let mut admitting = testing::enroll_into(admitting, engine.owner(), &person_key, &cert)
@@ -146,12 +155,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
     let admitting = TestWorkspace::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
         .expect("the workspace's owner hosts it");
     let a_state = tempfile::TempDir::new().expect("a state directory");
-    let a_engine = Engine::open(
-        identity(&a_cert, &a_key),
-        Some(a_state.path()),
-        std::iter::empty(),
-    )
-    .expect("the owner's engine opens");
+    let a_engine = engine_at(a_state.path(), identity(&a_cert, &a_key));
     let mut admitting = testing::enroll_into(admitting, a_engine.owner(), &a_key, &a_cert)
         .expect("the workspace is the owner's");
     // The person at this session joins it as their own device, and so does another member.
@@ -159,12 +163,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
     let b_key = SigningKey::from_bytes(&[54; 32]);
     let b_cert = primary_cert(&b_root, &b_key, "This session");
     let b_state = tempfile::TempDir::new().expect("this session's state directory");
-    let b_engine = Engine::open(
-        identity(&b_cert, &b_key),
-        Some(b_state.path()),
-        [workspace_id],
-    )
-    .expect("this session's engine opens");
+    let b_engine = engine_at(b_state.path(), identity(&b_cert, &b_key));
     admitting = testing::enroll_into(admitting, b_engine.owner(), &b_key, &b_cert)
         .expect("the workspace admits this session");
     let her_root = SigningKey::from_bytes(&[55; 32]);
@@ -978,8 +977,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     let her_key = SigningKey::from_bytes(&[0x64; 32]);
     let her = primary_cert(&her_root, &her_key, "ada");
     {
-        let engine = Engine::open(identity(&cert, &key), Some(state.path()), [workspace_id])
-            .expect("this computer's engine opens");
+        let engine = engine_at(state.path(), identity(&cert, &key));
         the_fixture_hosts(&engine, workspace_id);
         let admitting =
             TestWorkspace::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
@@ -1205,11 +1203,9 @@ fn a_second_device(
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
     let her = primary_cert(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
-    let hers = Engine::open(identity(&her, &her_key), Some(her_state), [workspace_id])
-        .expect("her engine opens");
+    let hers = engine_at(her_state, identity(&her, &her_key));
     // This computer's device hosts the workspace, and admits her.
-    let mine = Engine::open(identity(cert, key), Some(state), [workspace_id])
-        .expect("this computer's engine opens");
+    let mine = engine_at(state, identity(cert, key));
     // The workspace the session made is this computer's own already: a fixture host serves it
     // from here, and admits her device into it.
     the_fixture_hosts(&mine, workspace_id);
@@ -1337,8 +1333,7 @@ fn her_device_takes(
     person: &str,
     now: tilo_clock::time::SystemTime,
 ) -> Option<Role> {
-    let mine = Engine::open(identity(cert, key), Some(state), [workspace_id])
-        .expect("this computer's engine opens");
+    let mine = engine_at(state, identity(cert, key));
     let written = mine
         .owner()
         .frames(workspace_id)
@@ -1523,8 +1518,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
     let identity = crate::sync::device_identity().expect("this computer is a device");
     // And nobody was added to the workspace it asked for.
     drop(session);
-    let mine = Engine::open(identity, Some(state.path()), [workspace_id])
-        .expect("this computer's engine opens");
+    let mine = engine_at(state.path(), identity);
     assert!(
         mine.people(&workspace_id.to_string())
             .expect("the workspace's people")

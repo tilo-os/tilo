@@ -169,9 +169,9 @@ pub fn workspace_founded_on_this_device_then(
     then: impl AsyncFnOnce(&tilo_workspace_service::service::WorkspaceService),
 ) {
     let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
-    let owner = owner::open_file(
-        &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-    )
+    let owner = owner::open_file(&owner::owner_file_of(
+        &state.join("tilo").join("workspaces.json"),
+    ))
     .expect("an owner for this device's workspace");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

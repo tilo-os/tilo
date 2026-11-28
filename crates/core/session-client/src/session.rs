@@ -508,7 +508,6 @@ fn session_engine(
 ) -> Arc<crate::engine::Engine> {
     Arc::new(crate::engine::Engine::holding(
         owner.clone(),
-        Arc::default(),
         tilo_identity::identity_store::DeviceIdentity::kept(
             config.cert.clone(),
             Arc::clone(signer),

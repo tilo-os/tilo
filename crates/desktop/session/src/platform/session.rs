@@ -50,7 +50,6 @@ pub use crate::run::{Backend, Reach};
 pub use crate::search::{AppActions, SearchOptions};
 pub use crate::setup::BeforeShell;
 pub use crate::vpn::Vpn;
-pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
 use crate::search::SessionSearch;

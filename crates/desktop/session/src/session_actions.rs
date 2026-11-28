@@ -895,9 +895,9 @@ mod tests {
             .expect("this device's certificate")
             .expect("the owner's certificate");
         drop(taken_key);
-        let owner = tilo_peer_state::owner::open_file(
-            &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),
-        )
+        let owner = tilo_peer_state::owner::open_file(&tilo_peer_state::owner::owner_file_of(
+            &state.join("tilo").join("workspaces.json"),
+        ))
         .expect("an owner for this device's workspace");
         let workspace_id =
             tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace id");

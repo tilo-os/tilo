@@ -88,36 +88,3 @@ impl DeviceWrites for EngineWrites {
         )
     }
 }
-
-/// `engine`'s replica of `workspace` as a page holds it: the workspace service's document core,
-/// read as the device the replica is held as (the device a copied machine was copied from, until
-/// the workspace admits it), with the device's keys as its own workspace service asks them.
-/// `None` while the engine holds no such workspace.
-#[cfg(test)]
-pub(crate) fn page_holder(
-    engine: &Arc<Engine>,
-    workspace: WorkspaceId,
-) -> Option<tilo_workspace_service::documents::HeldDocuments> {
-    let replica = engine.owner().replica(workspace).ok()?;
-    let reader = engine
-        .owner()
-        .with_current(workspace, |view| Ok(view.device().device_public_key))
-        .ok()?;
-    let handed = Arc::downgrade(engine);
-    let keys = tilo_workspace_service::own_device::key_groups(
-        engine.keys(),
-        Some(Box::new(move |workspace| {
-            WorkspaceId::parse(workspace).and_then(|id| handed.upgrade()?.handed_keys(id))
-        })),
-        None,
-        None,
-    )
-    .keys;
-    Some(tilo_workspace_service::documents::HeldDocuments::over(
-        &workspace.to_string(),
-        replica,
-        reader,
-        None,
-        Some(keys),
-    ))
-}

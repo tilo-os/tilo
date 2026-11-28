@@ -52,6 +52,11 @@ pub mod way_in;
 pub mod workspace_keys;
 pub mod workspace_view;
 
+// Workspace admission decodes peer bytes in automerge worker processes started from this test
+// binary; this serves them.
+#[cfg(all(test, unix))]
+tilo_automerge_isolate::test_worker!();
+
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
