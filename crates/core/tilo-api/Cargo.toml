@@ -86,6 +86,8 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# A device's daemon as a test's machine runs it, for the login tests.
+tilo-device-identity = { path = "../tilo-device-identity", features = ["test-support"] }
 # The people, devices and workspaces the tests tell their stories with.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
