@@ -1204,6 +1204,46 @@ fn drop_on_folder(app: &Files, folder: &str, dragged: &[&str]) {
 }
 
 #[test]
+fn a_drag_that_rests_on_a_folders_row_opens_it() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Downloads/report.pdf", "report");
+    write(&home, "Downloads/Archive/old.txt", "old");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Downloads")]);
+
+    let mut window = app.window();
+    let target = nodes_of(&mut window, "ui.DropTarget")
+        .into_iter()
+        .find(|node| {
+            let mut said = Vec::new();
+            words(node, &mut said);
+            said.iter().any(|word| word == "Archive")
+        })
+        .expect("the folder's row takes a drop")
+        .key;
+    window
+        .fire_with(&target, "hover", None)
+        .unwrap_or_else(|why| panic!("the row rested on runs its spring: {why:?}"));
+
+    // The folder opened under the hand: what is inside it is what the window shows now.
+    let mut window = app.window();
+    let shown: Vec<String> = nodes_of(&mut window, "ui.ListItem")
+        .into_iter()
+        .filter_map(|node| match node.props.get("value") {
+            Some(Value::Text(path)) => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        shown
+            .iter()
+            .any(|path| path == "~/Downloads/Archive/old.txt"),
+        "the folder's own entries are what the window lists now: {shown:?}"
+    );
+}
+
+#[test]
 fn entries_dragged_onto_a_folders_row_move_into_it() {
     let app = Files::new();
     let home = app.disk.home.clone();

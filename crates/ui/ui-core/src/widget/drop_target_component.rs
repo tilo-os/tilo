@@ -34,6 +34,12 @@ pub struct DropTargetProps {
     /// them into its folder.
     #[component(event(value = Vec<String>, at = Vec<i64>))]
     pub drop_files: Event,
+    /// A drag has rested on it while still held: no value. It fires once per drag, after the drag
+    /// has stayed on the target for a moment, so a view can open what the target stands for — a
+    /// folder's row opens its folder under the pointer carrying a file, and the person lets go
+    /// inside it.
+    #[component(event)]
+    pub hover: Event,
 }
 
 impl Described for DropTarget {
@@ -44,13 +50,16 @@ impl Described for DropTarget {
             content,
             drop,
             drop_files,
+            hover,
         } = props;
         let empty = || {
             Box::new(tilo_ui_base::widget::Spacer::token(
                 tilo_ui_base::tokens::SpacingStep::S0,
             )) as Element
         };
-        Self::new(key, content.unwrap_or_else(empty), drop).with_files(drop_files)
+        Self::new(key, content.unwrap_or_else(empty), drop)
+            .with_files(drop_files)
+            .with_spring(hover)
     }
 
     fn set_props(&mut self, props: DropTargetProps) -> bool {
@@ -58,8 +67,10 @@ impl Described for DropTarget {
             content,
             drop,
             drop_files,
+            hover,
         } = props;
         self.set_content(content, drop, drop_files);
+        self.set_spring(hover);
         true
     }
 

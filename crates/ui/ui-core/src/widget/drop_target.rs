@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use crate::time::{Duration, Instant};
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use winit::event::WindowEvent;
@@ -26,6 +27,11 @@ enum Dropped {
     Resource(String),
     Files(Vec<String>),
 }
+
+/// How long a drag rests on a target before the target says so: enough for a pointer carrying an
+/// entry across a row to pass, short enough that a folder opens under a person's hand. A target
+/// that opens a folder after it is what a file manager's spring-loaded folders are.
+pub const SPRING: Duration = Duration::from_millis(700);
 
 /// What a payload carries, when it is something a target takes: a
 /// [resource](super::drag_source::RESOURCE_PAYLOAD) drag's id, a run item's
@@ -63,6 +69,12 @@ pub struct DropTarget {
     drop: Event,
     /// What a drop of a source's device files reports.
     drop_files: Event,
+    /// What a drag that rests on the target reports, once, while it still holds it: a folder's
+    /// row opens its folder from here.
+    spring: Event,
+    /// When the drag that is over the target now has rested on it long enough to be said
+    /// (`SPRING`), while one is.
+    spring_at: Option<Instant>,
     /// The key this target is known by on the bus.
     key: String,
     rect: Rect,
@@ -88,6 +100,8 @@ impl DropTarget {
             hovered: None,
             drop,
             drop_files: Event::default(),
+            spring: Event::default(),
+            spring_at: None,
             key: key.into(),
             rect: Rect::ZERO,
             cursor: Point::ZERO,
@@ -103,6 +117,14 @@ impl DropTarget {
         self
     }
 
+    /// What a drag that has rested on the target for [`SPRING`] reports, once per drag: a folder
+    /// whose row opens under the hand carrying a file or another entry.
+    #[must_use]
+    pub fn with_spring(mut self, spring: Event) -> Self {
+        self.spring = spring;
+        self
+    }
+
     /// Take new content and what a drop reports, as a rebuilt view gives them.
     pub(crate) fn set_content(&mut self, content: Option<Element>, drop: Event, drop_files: Event) {
         if let Some(content) = content {
@@ -110,6 +132,11 @@ impl DropTarget {
         }
         self.drop = drop;
         self.drop_files = drop_files;
+    }
+
+    /// Take what a drag that rests on the target reports, as a rebuilt view gives it.
+    pub(crate) fn set_spring(&mut self, spring: Event) {
+        self.spring = spring;
     }
 
     /// Where a drop may land: this widget's own box.
@@ -124,6 +151,7 @@ impl DropTarget {
     fn take(&mut self) -> Option<(Dropped, Point)> {
         let landed = crate::widget::drag_bus::take(&self.key, self.rect)?;
         let dropped = dropped_of(&landed.payload)?;
+        self.spring_at = None;
         self.dirty = true;
         Some((dropped, landed.pointer - self.rect.origin().to_vec2()))
     }
@@ -192,6 +220,10 @@ impl Decorator for DropTarget {
         let over = self.over_now();
         if over != self.hovered {
             self.hovered = over;
+            // A drag that has just come over the target rests on it from now: the moment it has
+            // rested long enough is the deadline the loop wakes the target at. A drag that has
+            // gone takes the deadline with it.
+            self.spring_at = self.hovered.as_ref().map(|_| crate::time::now() + SPRING);
             self.dirty = true;
             changed = true;
         }
@@ -270,6 +302,30 @@ impl Decorator for DropTarget {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.column.needs_redraw()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let inner = self.column.next_wake_deadline();
+        match (self.spring_at, inner) {
+            (Some(rested), Some(inner)) => Some(rested.min(inner)),
+            (rested, inner) => rested.or(inner),
+        }
+    }
+
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        let mut changed = self.column.serve_deadline(now);
+        if let Some(rested) = self.spring_at
+            && now >= rested
+        {
+            self.spring_at = None;
+            // The drag may have ended between the deadline and this pass: only a drag the target
+            // holds now has rested on it.
+            if self.over_now().is_some() {
+                self.spring.fire(None);
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
@@ -360,3 +416,7 @@ impl tilo_ui_base::component::PartViews for DropTarget {
         let _ = self.column.replace(index, view);
     }
 }
+
+#[cfg(test)]
+#[path = "drop_target_tests.rs"]
+mod tests;

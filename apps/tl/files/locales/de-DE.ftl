@@ -214,9 +214,11 @@ d-q3fr2sid = Geändert
     .doc = Läuft, wenn sich ein beobachteter Ordner ändert: liest den gezeigten Ordner erneut.
 
 d-mrkltxcn = Gehen
-    .doc = Geht zum Ort `place` und liest ihn: einen Ordner, den Papierkorb, die zuletzt geöffneten Dateien oder die Apps.
+    .doc = Geht zum Ort `place` und liest ihn: einen Ordner, den Papierkorb, die zuletzt geöffneten Dateien oder die Apps. `carrying` ist ein Ziehen, das auf der Zeile oder Karte des Orts geruht hat: der Ordner öffnet sich unter der Hand, und die Auswahl bleibt, weil das Ziehen sie noch trägt.
 
 d-mrkltxcn-place = Ort
+
+d-mrkltxcn-carrying = Trägt
 
 d-cj9hqb9z = Zurück
     .doc = Geht zurück zu dem Ort, von dem die Person kam.

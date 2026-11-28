@@ -426,8 +426,10 @@ fn previews_waiting(s: Session) -> Bool {
 }
 
 /// Goes to the place `place`, reading it: a folder of the workspace's tree, one picked on this
-/// device, the trash, the recent files or the apps.
-action go(f: Files, place: Text) uses files, time {
+/// device, the trash, the recent files or the apps. `carrying` is a drag that has rested on the
+/// place's row or card: the spring-loaded folder opens under the hand, and what was chosen stays
+/// chosen, since the drag still carries it to be let go inside.
+action go(f: Files, place: Text, carrying: Bool = false) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if s.here != place {
         s.went = s.went + [s.here]
@@ -435,7 +437,9 @@ action go(f: Files, place: Text) uses files, time {
     }
     s.here = place
     s.selected = ""
-    s.chosen = []
+    if not carrying {
+        s.chosen = []
+    }
     s.opening = ""
     s.openers = []
     s.preview = .none
@@ -2618,6 +2622,9 @@ view entry_list(
                     if e.folder {
                         ui.DropTarget {
                             on drop_files(paths: List<Text>): drop_into(f, paths, e.path)
+                            // Held over the row, the folder opens under the hand carrying the
+                            // file, so it can be let go among what is inside.
+                            on hover: go(f, e.path, carrying: true)
                             entry_row(f, e, s.zoom == 0)
                         }
                     } else {
@@ -2745,6 +2752,9 @@ view entry_grid(f: Files, s: Session, entries: List<Entry>) {
                                             paths,
                                             e.path,
                                         )
+                                        // The card opens under a hand that rests on it too, as
+                                        // the row does.
+                                        on hover: go(f, e.path, carrying: true)
                                         entry_card(s, e)
                                     }
                                 } else {

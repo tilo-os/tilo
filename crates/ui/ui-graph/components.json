@@ -2580,6 +2580,10 @@
           "at": {
             "list": "int"
           }
+        },
+        {
+          "name": "hover",
+          "doc": "A drag has rested on it while still held: no value. It fires once per drag, after the drag has stayed on the target for a moment, so a view can open what the target stands for — a folder's row opens its folder under the pointer carrying a file, and the person lets go inside it."
         }
       ],
       "semantics": {
