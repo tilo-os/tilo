@@ -75,7 +75,7 @@ view shell_parts(g: Gallery) {
         }
         part(
             "Tab strip",
-            "A frame's tabs: the one in front lifted, who is at each, and a changed one marked.",
+            "A frame's tabs: the one in front lifted, who is at each, who opened one, and a changed one marked.",
         ) {
             ui.TabStrip(g.chrome_apps.first(), focused: true) {
                 for pinned in g.chrome_apps {
@@ -85,7 +85,14 @@ view shell_parts(g: Gallery) {
                         icon: pinned.kind.icon(),
                         modified: pinned.title == "Tasks",
                     ) {
-                        ui.TabFace(invoker, name: "Ada Lovelace")
+                        presence: {
+                            ui.TabFace(invoker, name: "Ada Lovelace")
+                        }
+                        author: {
+                            if pinned.title == "Mail" {
+                                ui.TabAuthor("Bo Brandt", colour: "#2f9e8f")
+                            }
+                        }
                     }
                 }
             }
