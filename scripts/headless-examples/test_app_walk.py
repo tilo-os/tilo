@@ -266,6 +266,35 @@ class TheAsksAWalkReads(unittest.TestCase):
         self.assertEqual(walk.asked_rows({"records": [{"value": {}}]}), [])
 
 
+class TheAppRootAWalkReads(unittest.TestCase):
+    """An app publishes a read on every record it draws, and Calendar draws a contacts book
+    beside its own: the walk's read of the app's own record is the one on its root
+    (`tl:<app>:root-…`), never the first read the app lists."""
+
+    def test_the_root_is_the_apps_own_not_a_record_it_draws_beside_it(self):
+        def row(resource):
+            return {"action": {"address": {"resource": resource, "action": "read"}}}
+
+        class Session:
+            def actions(self, app=None):
+                return [
+                    row("tl:so.tilo.contacts:root-abc"),
+                    row("tl:so.tilo.calendar:root-def"),
+                    row("tl:so.tilo.calendar:root-def/k1"),
+                ]
+
+        self.assertEqual(walk.own_resource(Session(), "so.tilo.calendar"),
+                         "tl:so.tilo.calendar:root-def")
+
+    def test_an_app_naming_no_root_is_the_steps_finding(self):
+        class Session:
+            def actions(self, app=None):
+                return []
+
+        with self.assertRaises(walk.Failed):
+            walk.own_resource(Session(), "so.tilo.calendar")
+
+
 class TheListTheMachinesDaemonEnforces(unittest.TestCase):
     """The machine's files daemon enforces a list the session decides, and keeps what it was
     told for its next start. In a walk that list lives in the walk's state, seeded from the
