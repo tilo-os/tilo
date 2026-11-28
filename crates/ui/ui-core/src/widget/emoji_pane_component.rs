@@ -151,6 +151,15 @@ impl Widget for EmojiPane {
         self.rect
     }
 
+    /// The input the window is reached with reaches the picker: its search field and card grow to
+    /// the target the person presses.
+    fn set_interaction_environment(
+        &mut self,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
+    ) {
+        self.picker.set_interaction_environment(environment);
+    }
+
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,

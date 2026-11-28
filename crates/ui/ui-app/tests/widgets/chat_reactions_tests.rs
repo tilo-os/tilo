@@ -237,3 +237,38 @@ fn choosing_a_face_on_a_described_strip_reports_who_reacted() {
     assert_eq!(name, "Leo");
     assert_eq!(*identity, person("u_leo", "Leo").identity);
 }
+
+/// The emoji pane a view declares is the picker the person reads: the input the window is
+/// reached with reaches the picker, so its search field stands a finger high on a phone.
+#[test]
+fn a_touch_on_the_emoji_panes_search_field_is_a_fingers_target() {
+    use tilo_ui_app::widget::{EmojiPane, EmojiPaneProps};
+    let mut driver = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        Box::new(<EmojiPane as Described>::from_props(
+            "emoji",
+            EmojiPaneProps {
+                open: true,
+                ..EmojiPaneProps::default()
+            },
+        )),
+        (390, 844),
+        Theme::dark(),
+    );
+    driver.set_interaction_environment(InteractionEnvironment::TOUCH);
+    driver.relayout();
+    let side = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    let root = &driver.inspection().root;
+    let field = root
+        .nodes()
+        .into_iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .flat_map(|semantics| std::iter::once(semantics).chain(semantics.children.iter()))
+        .find(|node| node.role == Role::TextInput)
+        .expect("the picker's search field");
+    let bounds = field.bounds.expect("its bounds").to_rect();
+    assert!(
+        bounds.height() >= side - 0.5,
+        "a finger types in a field it can hit: {bounds:?}"
+    );
+}
