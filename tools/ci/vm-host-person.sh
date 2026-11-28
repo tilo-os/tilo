@@ -4,12 +4,17 @@
 # daemon as the person's service, so it runs in the background for as long as the check does;
 # its log goes to $1.
 set -euo pipefail
-tilo login --new-identity >/dev/null
+# The daemon first: this micro-VM has no systemd user manager, so the CLI cannot start one as
+# the person's service and a login alone fails saying so. Running it here for as long as the
+# check does leaves the login finding a daemon that answers, which is what founds the person.
 setsid -f tilo-runtime >"$1" 2>&1 </dev/null
 for _ in $(seq 150); do
-  tilo device key >/dev/null 2>&1 && exit 0
+  tilo device key >/dev/null 2>&1 && break
   sleep 0.2
 done
-echo "the session user's Tilo daemon did not answer within 30s; its log:" >&2
-cat "$1" >&2
-exit 1
+if ! tilo device key >/dev/null 2>&1; then
+  echo "the session user's Tilo daemon did not answer within 30s; its log:" >&2
+  cat "$1" >&2
+  exit 1
+fi
+tilo login --new-identity >/dev/null
