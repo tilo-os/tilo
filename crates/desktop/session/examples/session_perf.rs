@@ -778,7 +778,7 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
     let samples = session.compositor().recorded_frames();
     let mut steps: std::collections::BTreeMap<&'static str, (usize, u64, u32)> =
         std::collections::BTreeMap::new();
-    for sample in &samples {
+    for sample in samples {
         let step = steps.entry(sample.pump_step).or_default();
         step.0 = step.0.saturating_add(1);
         step.1 = step.1.saturating_add(u64::from(sample.pump_step_us));
