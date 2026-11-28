@@ -415,7 +415,8 @@ pub struct AppActionBroker {
 }
 
 /// An app's own calls on the device's socket, decided by the workspace's broker for the app: it
-/// holds what the workspace grants it, never the person's own rights.
+/// holds what the workspace grants it, never the person's own rights, except for a step of an
+/// invocation it is serving, decided as whoever asked for that.
 struct AppCalls(Arc<AppBrokerState>);
 
 impl tilo_actions::remote::ActionProvider for AppCalls {
@@ -436,7 +437,7 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
-        self.0.action_invoke(caller, None, None, &request)
+        self.0.app_line_invoke(caller, &request)
     }
 
     fn observe(

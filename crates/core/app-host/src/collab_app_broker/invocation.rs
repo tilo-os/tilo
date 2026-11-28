@@ -98,6 +98,75 @@ impl AppBrokerState {
         workspace: &str,
         running: tilo_actions::InvocationId,
     ) -> Result<tilo_actions::remote::Caller, String> {
+        let (peer_id, original) = self.running_original(app, workspace, running)?;
+        if original.through_app_api() {
+            return Ok(tilo_actions::remote::Caller::local_app(app).in_workspace(workspace));
+        }
+        self.continuing_caller(peer_id, running)
+            .ok_or_else(|| "whoever asked for this call is no longer admitted".into())
+    }
+
+    /// An app's own call on the device's socket, as its connection there asks it. One that
+    /// continues an invocation (`on_behalf_of`) delivered to that app in its workspace, and
+    /// still running, is that invocation's step: decided as whoever asked for it, reaching no
+    /// further than they were admitted to, as a child call on the app's window connection is.
+    /// One naming any other invocation is refused, never decided as the app instead. One naming
+    /// none, or continuing one the app asked for itself, is the app's own.
+    pub(crate) fn app_line_invoke(
+        self: &Arc<Self>,
+        caller: &tilo_actions::remote::Caller,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
+    > {
+        let Some(running) = request.on_behalf_of else {
+            return self.action_invoke(caller, None, None, request);
+        };
+        let continued = match (caller.launched_app(), caller.workspace()) {
+            (Some(app), Some(workspace)) => self
+                .running_original(app.as_str(), workspace, running)
+                .and_then(|(peer_id, original)| {
+                    if original.through_app_api() {
+                        return Ok(None);
+                    }
+                    let asked = self
+                        .child_caller(peer_id, running)
+                        .ok_or("whoever asked for this call is no longer admitted")?;
+                    Ok(Some((
+                        asked,
+                        original.launch_child_caller(request.invocation),
+                    )))
+                }),
+            _ => Err("only an app's own connection continues its invocations".to_owned()),
+        };
+        match continued {
+            Ok(Some((asked, origin))) => {
+                self.action_invoke_with_origin(&asked, None, None, Some(&origin), request)
+            }
+            Ok(None) => self.action_invoke(caller, None, None, request),
+            Err(why) => {
+                tracing::info!(%why, "an app's call continues no running invocation of its own");
+                tilo_actions::remote::Pending::ready(Err(
+                    tilo_actions::remote::ActionCallError::NotPermitted,
+                ))
+            }
+        }
+    }
+
+    /// The invocation `running` this broker delivered to a connection of application `app` in
+    /// `workspace` and that still runs: the connection it was delivered to, and what it was.
+    fn running_original(
+        &self,
+        app: &str,
+        workspace: &str,
+        running: tilo_actions::InvocationId,
+    ) -> Result<
+        (
+            u64,
+            Arc<super::published_invocation::OriginalInvocationData>,
+        ),
+        String,
+    > {
         let matches = self
             .pending_invocations
             .lock()
@@ -120,11 +189,7 @@ impl AppBrokerState {
         if !original.delivered_to(app, workspace) {
             return Err("the call this names is another app's".into());
         }
-        if original.through_app_api() {
-            return Ok(tilo_actions::remote::Caller::local_app(app).in_workspace(workspace));
-        }
-        self.continuing_caller(peer_id, running)
-            .ok_or_else(|| "whoever asked for this call is no longer admitted".into())
+        Ok((peer_id, original))
     }
 
     /// The caller of the invocation `running` that this broker delivered to

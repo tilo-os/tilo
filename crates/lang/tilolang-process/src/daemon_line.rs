@@ -77,12 +77,20 @@ pub fn call(target: RemoteActionTarget, argument: Map<String, Value>) -> Result<
 
 /// Call the action at the settled address `address` (`so.tilo.notes/notes/n1#find`) with
 /// `argument`: the daemon walks the address as an agent's call and the command line do, and
-/// calls the target that walk finds as this process's app.
+/// calls the target that walk finds. A call made while this process serves the invocation
+/// `serving` continues it, decided as whoever asked for it; with none it is this process's app's
+/// own.
 ///
 /// # Errors
 /// As [`call`], and an address the walk does not resolve.
-pub fn call_at(address: &str, argument: Map<String, Value>) -> Result<Value, String> {
-    ask(InvokeRequest::at_path(address, argument))
+pub fn call_at(
+    address: &str,
+    argument: Map<String, Value>,
+    serving: Option<tilo_actions::InvocationId>,
+) -> Result<Value, String> {
+    let mut request = InvokeRequest::at_path(address, argument);
+    request.on_behalf_of = serving;
+    ask(request)
 }
 
 /// Ask `request` on the daemon's line, as this process's app, and read its receipt.

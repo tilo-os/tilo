@@ -5662,12 +5662,15 @@ impl Invoker for Apis {
         self.calls.invoke(invocation)
     }
 
-    /// One action at the settled address, called on the daemon's line as this app.
+    /// One action at the settled address, called on the daemon's line. It continues the
+    /// invocation this thread serves, decided as its caller's, as a child call does; with none
+    /// being served it is this app's own.
     fn call(&self, address: &str, arguments: &Json) -> Result<Json, String> {
         let Some(arguments) = arguments.as_object().cloned() else {
             return Err("`call` takes its arguments as one object, by name".to_owned());
         };
-        crate::daemon_line::call_at(address, arguments)
+        let serving = SERVING.with(|served| served.borrow().as_ref().map(|s| s.invocation));
+        crate::daemon_line::call_at(address, arguments, serving)
     }
 
     /// What the window showing `address` keeps of its `state`, from the person's record: only

@@ -513,11 +513,11 @@ async fn tree_keeps(
 fn files_presses_change_the_workspaces_own_folder() {
     host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
-        // The workspace has Files installed, as a person's has: the tree is Files' own records,
-        // which its presses change as the app.
+        // The workspace has Files installed, as a person's has, and the person presses its
+        // window: each press changes the tree as them.
         host.install_app("so.tilo.file-explorer").await;
-        let agent = host.agent();
-        let session = Session::Agent(&agent);
+        let key = host.key("Desktop");
+        let session = Session::Key(&key);
         let opened = view(&session, &workspace).await;
         assert!(opened.contains("This folder is empty"), "{opened}");
 
@@ -568,5 +568,80 @@ fn files_presses_change_the_workspaces_own_folder() {
             !folder_at(tree, "", "Plans (2)") && folder_at(tree, "Plans", "Notes")
         })
         .await;
+    });
+}
+
+/// A press of the window is decided as whoever pressed it, never as Files: an agent the
+/// workspace does not let change its files presses New folder, the window says why, and the
+/// tree holds no such folder.
+#[test]
+fn a_press_by_a_member_who_may_change_no_files_is_refused_and_changes_nothing() {
+    host::run_with(&["files"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        host.install_app("so.tilo.file-explorer").await;
+        let agent = host.turn_agent("viewer", "Files reader");
+        let owner = host.person().to_owned();
+        let tree = collab_types::document_node(
+            &workspace,
+            fs_protocol::tree::FILES_APP,
+            &fs_protocol::tree::document_id(),
+        );
+        let refused = tilo_action_policy::Grant::new(
+            "the-agent-changes-no-files",
+            tilo_action_policy::Grantee::agent("viewer", &owner),
+            tree,
+            tilo_action_types::KindSet::UNDOABLE,
+            tilo_action_policy::Answer::Deny,
+            tilo_action_policy::Grantee::person(&owner),
+        );
+        tilo_workspace_service::workspaces::fixtures::answer_grant(
+            host.daemon().workspaces(),
+            &workspace,
+            refused,
+        )
+        .await
+        .expect("the person refuses their agent changes to the files");
+        let window = tilo_action_policy::Grant::new(
+            "the-agent-keeps-its-window",
+            tilo_action_policy::Grantee::agent("viewer", &owner),
+            tilo_action_policy::TreePath::workspace(&workspace).app(fs_protocol::tree::FILES_APP),
+            tilo_action_types::KindSet::READ_UNDOABLE,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(&owner),
+        );
+        tilo_workspace_service::workspaces::fixtures::answer_grant(
+            host.daemon().workspaces(),
+            &workspace,
+            window,
+        )
+        .await
+        .expect("the person lets their agent open the window");
+
+        let session = Session::Agent(&agent);
+        view(&session, &workspace).await;
+        runs(
+            &session,
+            &workspace,
+            "files#new_folder",
+            json!({"name": "Drafts"}),
+        )
+        .await;
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let lines = view(&session, &workspace).await;
+            if lines.contains("Couldn’t make the folder") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the window never says why: {lines}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let kept = tree_if_kept(&host, &workspace).await;
+        assert!(
+            kept.is_none_or(|tree| !folder_at(&tree, "", "Drafts")),
+            "a refused press changes nothing of the tree",
+        );
     });
 }
