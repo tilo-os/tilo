@@ -702,6 +702,9 @@ fn start(
     // is a large read) in front of everything the session says to its first client.
     let _warmup = tilo_ui_base::warmup::spawn_warmup();
     let wake = tilo_service::LoopWake::default();
+    // The person's settings, installed as this process's before anything reads or watches them:
+    // the desktop services' portal follows the appearance in them, and the config below reads them.
+    let settings = tilo_session::SessionSettings::install();
     // The person's settings, read once here: the power policy they resolve is part of them.
     let config = tilo_session::SessionConfig::load();
     tilo_startup_metrics::mark("settings-read");
@@ -795,6 +798,7 @@ fn start(
         admin_control,
         hosted_browser,
         wifi_sharing,
+        settings: Some(settings),
         ..device_options(machine, config)
     };
     options.host_desktop = host_desktop;

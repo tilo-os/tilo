@@ -208,6 +208,12 @@ pub struct Options {
     /// front of a login it did not start shows as the cause. `None`: no refusal to show.
     #[cfg(unix)]
     pub shell_link_refusal: Option<String>,
+    /// The person's settings, installed as this process's by whoever starts the session before it
+    /// reads any of them: the desktop services and the session's own config read them before the
+    /// session is built, and a watch on the settings follows only a source installed when it is
+    /// made. `None`: the session installs them first thing as it starts.
+    #[cfg(target_os = "linux")]
+    pub settings: Option<crate::SessionSettings>,
     /// What keeps the daemon that made [`Self::shell_link`] running, ended only after the session
     /// is: a test's daemon in its own process, with the profile it serves. `None` for a session
     /// the daemon started.
@@ -405,6 +411,8 @@ impl Default for Options {
             shell_link: None,
             #[cfg(unix)]
             shell_link_refusal: None,
+            #[cfg(target_os = "linux")]
+            settings: None,
             #[cfg(unix)]
             shell_daemon: None,
             #[cfg(target_os = "linux")]

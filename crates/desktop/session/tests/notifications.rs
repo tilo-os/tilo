@@ -103,3 +103,44 @@ fn an_apps_notification_is_a_banner_and_the_persons_choice_comes_back() {
         ("new-mail".to_owned(), tilo_notify::CloseReason::Dismissed)
     );
 }
+
+/// The person turns Do Not Disturb on after the session started (from Settings, or on another of
+/// their devices): the session follows the settings it keeps, so a notification that arrives
+/// afterwards is kept in the centre and raises no banner.
+#[test]
+fn do_not_disturb_turned_on_while_the_session_runs_holds_the_next_banner() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, app, _home) = session();
+    for _ in 0..5 {
+        session
+            .step(std::time::Duration::from_millis(2))
+            .expect("a pass");
+    }
+    settings_store::notification_policy::NotificationPolicy::save_do_not_disturb(true)
+        .expect("do not disturb saved");
+    for _ in 0..5 {
+        session
+            .step(std::time::Duration::from_millis(2))
+            .expect("a pass");
+    }
+    app.show(&AppNotification::new(
+        "quiet-mail",
+        "Bo wrote",
+        "Later is fine",
+    ))
+    .expect("the session took it");
+    crate::common::until(&mut session, "the notification in the centre", |session| {
+        let notifications = session.notifications();
+        let log = notifications.log.log.borrow();
+        log.active()
+            .iter()
+            .chain(log.history())
+            .any(|banner| banner.title == "Bo wrote")
+    });
+    let notifications = session.notifications();
+    let log = notifications.log.log.borrow();
+    assert!(
+        !log.active().iter().any(|banner| banner.title == "Bo wrote"),
+        "Do Not Disturb holds the banner: the session followed the setting the person changed"
+    );
+}

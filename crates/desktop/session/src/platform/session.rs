@@ -107,6 +107,12 @@ impl Session {
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, crate::Error> {
         tilo_startup_metrics::mark("session-build-start");
+        // The settings everything in this process reads: the workspace's, once the daemon holds
+        // the person's. They are in place before anything below reads them or watches them change.
+        let settings = options
+            .settings
+            .take()
+            .unwrap_or_else(crate::session_settings::SessionSettings::install);
         // The words a notice or a query resolves later, in the person's
         // language, are read now: the loop that shows them reads no file.
         crate::i18n::ensure();
@@ -698,9 +704,6 @@ impl Session {
         published.add(Rc::clone(&lists_surface));
         // The chrome above the windows: its own tree, beside the shell's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        // The settings everything in this process reads: the workspace's, once the daemon holds
-        // the person's.
-        let settings = crate::session_settings::SessionSettings::install();
         // A write the daemon takes to a layout or a view has it read again off the loop.
         desktops.follow_writes(daemon_writes.clone());
         let view = crate::options::open_view(&daemon_link, &options);

@@ -397,6 +397,8 @@ pub mod session_package;
 #[cfg(target_os = "linux")]
 mod session_settings;
 #[cfg(target_os = "linux")]
+pub use session_settings::SessionSettings;
+#[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;

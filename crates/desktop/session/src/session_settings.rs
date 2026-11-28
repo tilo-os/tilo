@@ -29,7 +29,7 @@ pub(crate) fn persons_workspace(person: &[u8; 32]) -> String {
 }
 
 /// The session's settings, and when it last looked at what moved in the store.
-pub(crate) struct SessionSettings {
+pub struct SessionSettings {
     settings: Arc<WorkspaceSettings>,
     attached: Cell<bool>,
     looked: Cell<Option<Instant>>,
@@ -57,7 +57,8 @@ struct Publication {
 impl SessionSettings {
     /// The settings of this session, installed as this process's: everything the session runs
     /// in its own process reads them.
-    pub(crate) fn install() -> Self {
+    #[must_use]
+    pub fn install() -> Self {
         let settings = Arc::new(
             settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING))
                 .map_or_else(WorkspaceSettings::new, WorkspaceSettings::kept_in),
