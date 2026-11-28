@@ -261,6 +261,11 @@
           "press_any": [
             "Export as PowerPoint"
           ]
+        },
+        {
+          "choose": {
+            "name": "deck.pptx"
+          }
         }
       ]
     },
