@@ -121,59 +121,59 @@ fn a_documents_group_frame_waits_for_the_policy_that_names_its_readers() {
     *policy.document_readers.lock().unwrap() = [public(1), public(2)].into_iter().collect();
     let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
     let mut founder = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
-    let mut reader = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut creator = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
     let mut now = Instant::now();
     assert!(
         ready_epoch(&create(&mut founder, workspace_id, now)).is_some(),
         "the founding device is handed the workspace's keys"
     );
-    drive(&mut [&mut founder, &mut reader], &mut now, 1);
+    drive(&mut [&mut founder, &mut creator], &mut now, 1);
     let scope =
         neighbour_wire::KeyScope::document(workspace_id, "so.tilo.notes", "notes.index", None)
             .unwrap();
     let group = scope.group();
 
-    // The founder makes the record's group, and its frame reaches the reader while the reader's
-    // policy names no readers of the record yet.
+    // The lowest of the record's devices makes its group, and its frame reaches the founding
+    // device while the policy there names no readers of the record yet.
     assert!(matches!(
-        founder.service.access_scope(scope, now),
+        creator.service.access_scope(scope, now),
         KeyAccess::Waiting
     ));
-    founder.service.found(group, now, 1_000);
+    creator.service.found(group, now, 1_000);
     assert!(
-        matches!(founder.service.access(group, now), KeyAccess::Ready(_)),
-        "the founder is handed the record's group"
+        matches!(creator.service.access(group, now), KeyAccess::Ready(_)),
+        "the lowest of the record's devices is handed the record's group"
     );
     policy.unknown_documents.store(true, Ordering::SeqCst);
-    drive(&mut [&mut founder, &mut reader], &mut now, 1);
+    drive(&mut [&mut founder, &mut creator], &mut now, 1);
     assert!(
-        reader.service.waiting_scopes.iter().any(|waiting| {
+        founder.service.waiting_scopes.iter().any(|waiting| {
             matches!(waiting, super::WaitingScope::Frame(scope, _) if scope.group() == group)
         }),
         "the frame waits for the policy that names the record's readers"
     );
     assert!(
-        !reader.service.groups_seen.contains(&group),
+        !founder.service.groups_seen.contains(&group),
         "the frame it could not judge founds no group of its own"
     );
 
     // The policy names the record's readers, but no pass judges what waits on its own: it is
     // the workspace settling that does.
     policy.unknown_documents.store(false, Ordering::SeqCst);
-    drive(&mut [&mut reader], &mut now, 2);
+    drive(&mut [&mut founder], &mut now, 2);
     assert!(
-        !reader.service.waiting_scopes.is_empty(),
+        !founder.service.waiting_scopes.is_empty(),
         "what waits is judged by a settling workspace, never by a pass that comes on its own"
     );
-    reader.service.workspace_settled(workspace_id);
-    reader.service.pump(&reader.endpoint, now, 1_000);
+    founder.service.workspace_settled(workspace_id);
+    founder.service.pump(&founder.endpoint, now, 1_000);
     assert!(
-        reader.service.waiting_scopes.is_empty(),
+        founder.service.waiting_scopes.is_empty(),
         "the frame the policy now backs leaves the wait"
     );
     assert!(
-        reader.service.groups_seen.contains(&group),
-        "the reader takes in the group the founder made"
+        founder.service.groups_seen.contains(&group),
+        "the founding device takes in the group the record's lowest device made"
     );
 }
 
