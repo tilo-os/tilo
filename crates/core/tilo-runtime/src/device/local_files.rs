@@ -68,7 +68,11 @@ impl LocalFiles {
         Self { folders }
     }
 
-    /// Take the folder's calls from now on, on this device alone.
+    /// Take the folder's calls from now on: the workspace's folder is answered wherever the tree
+    /// it changes is kept, so a put from a page, an agent, a command or another device of the
+    /// workspace reaches the device that holds it, decided by the workspace's grants for Files
+    /// in each case. A device that keeps no tree for the workspace refuses with that said, and
+    /// the folder's reads stay the workspace's listing.
     pub(crate) fn register(
         self: &Arc<Self>,
         providers: &tilo_workspace_service::workspaces::providers::Providers,
@@ -76,7 +80,7 @@ impl LocalFiles {
         use tilo_workspace_service::workspaces::providers::Reach;
         let answers: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
             Arc::new(self.clone());
-        providers.provide(wire::PROVIDER, wire::APP, Reach::ThisDevice, answers);
+        providers.provide(wire::PROVIDER, wire::APP, Reach::Devices, answers);
     }
 
     fn descriptor(action: &str) -> ActionDescriptor {
