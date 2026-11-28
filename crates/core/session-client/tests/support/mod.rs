@@ -738,7 +738,7 @@ pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
     peer.status()
         .key_state
         .lines()
-        .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
+        .any(|line| line.starts_with(&prefix) && line.contains(": ready"))
 }
 
 /// Wait until a member of the workspace admitted `peer` to `route`'s channel.
