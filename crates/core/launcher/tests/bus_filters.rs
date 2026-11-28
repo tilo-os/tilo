@@ -296,6 +296,10 @@ fn launched(
 /// screencast: a notification call from its window reaches the portal, and a screencast call is
 /// refused by the bus proxy before the portal sees it.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one launch, every grant and name it does and does not open"
+)]
 fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
