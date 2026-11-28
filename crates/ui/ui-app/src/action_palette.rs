@@ -37,6 +37,9 @@ use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";
 
+/// The group header for the history verbs of the record the app shows.
+pub const HISTORY_KIND: &str = "History";
+
 /// Row-id prefix for search-provider (navigable content) rows, so a content
 /// row can never collide with a flattened action key.
 const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
@@ -106,11 +109,20 @@ mod answers;
 /// The palette's hits ranked and grouped as every search ranks them, the actions after
 /// every other kind.
 fn rank_and_group(query: &str, mut rows: Vec<SearchResult>) -> Vec<crate::search::SearchGroup> {
+    // The record's history (undo, redo, a checkpoint) is the system's, not the app's: a group of
+    // its own after the app's, so it takes none of the rows the app's actions are shown in.
+    for row in &mut rows {
+        let verb = row.action_id.rsplit(tilo_actions::KEY_SEP).next();
+        if row.kind == ACTIONS_KIND && verb.is_some_and(collab_types::history::verbs::is_edit) {
+            HISTORY_KIND.clone_into(&mut row.kind);
+        }
+    }
     crate::search::rank_results(query, &mut rows);
-    let (actions, mut held): (Vec<_>, Vec<_>) = crate::search::group_results(rows, PER_GROUP_CAP)
+    let (mut last, mut held): (Vec<_>, Vec<_>) = crate::search::group_results(rows, PER_GROUP_CAP)
         .into_iter()
-        .partition(|group| group.kind == ACTIONS_KIND);
-    held.extend(actions);
+        .partition(|group| group.kind == ACTIONS_KIND || group.kind == HISTORY_KIND);
+    last.sort_by_key(|group| group.kind == HISTORY_KIND);
+    held.extend(last);
     held
 }
 

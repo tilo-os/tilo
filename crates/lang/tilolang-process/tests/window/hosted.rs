@@ -3120,8 +3120,9 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     let command = command_modifier(conventions);
     // The window lists the app, the task the entry made and that stands on
     // screen as a resource, and the actions a person can take on it, once each,
-    // as many as the palette shows of a group before a word narrows it; the
-    // app's own history verbs and each one's Copy link among them. An action
+    // as many as the palette shows of a group before a word narrows it, each
+    // one's Copy link among them; the record's history follows in a group of
+    // its own. An action
     // that asks for more than a row collects (Assign to…, Place in board,
     // Move to) stays where it lives, and no row repeats another: the
     // app's row opens its document and the task's row opens the task, so no
@@ -3149,15 +3150,18 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Copy link",
             "New task",
             "New project",
-            "Undo",
-            "Redo",
-            "Checkpoint",
             "Task summary",
             "Copy link",
             "Rename…",
             "Status…",
             "Complete",
             "Add subtask…",
+            "Remove empty step",
+            "Today",
+            "Tomorrow",
+            "Undo",
+            "Redo",
+            "Checkpoint",
         ],
         "the window's palette"
     );
