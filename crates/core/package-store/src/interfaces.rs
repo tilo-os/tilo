@@ -49,18 +49,21 @@ pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, Interf
         })
 }
 
-/// Parse a declaration's TOML.
+/// Parse a declaration's TOML: one number per interface, or the list an older image wrote.
 ///
 /// # Errors
 ///
-/// Returns the reason when `raw` is not a declaration, names a malformed
-/// interface, service or version, lists a runtime service under a name that
-/// is an interface of its own, lists runtime services without serving the
-/// runtime interface, or names an oldest runtime version it does not serve.
+/// Returns the reason when `raw` is not a declaration, or names an interface, service or version it
+/// cannot serve.
 pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
     let provided: ProvidedInterfaces = toml::from_str(raw).map_err(|error| error.to_string())?;
-    for (name, version) in &provided.interfaces {
-        InterfaceRequirement::new(name, *version).map_err(|error| error.to_string())?;
+    for (name, versions) in &provided.interfaces {
+        let Some((oldest, current)) = versions.range() else {
+            return Err(format!("{name} is served at no version"));
+        };
+        for version in [oldest, current] {
+            InterfaceRequirement::new(name, version).map_err(|error| error.to_string())?;
+        }
     }
     for service in &provided.runtime.services {
         if !tilo_app_package::interfaces::valid_interface_name(service) {
@@ -80,10 +83,7 @@ pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
         return Err("runtime services are listed but the runtime interface is not".into());
     }
     if let Some(oldest) = provided.runtime.oldest {
-        let current = provided
-            .interfaces
-            .get(tilo_app_package::interfaces::RUNTIME_INTERFACE)
-            .copied();
+        let current = provided.version(tilo_app_package::interfaces::RUNTIME_INTERFACE);
         if oldest == 0 || current.is_none_or(|current| oldest > current) {
             return Err(format!(
                 "the runtime interface's oldest served version {oldest} is not a version this \
@@ -160,6 +160,9 @@ fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The declaration a pre-a572950cc8f image ships, listing each interface's versions.
+    const LISTED_DECLARATION: &str = include_str!("../tests/data/system-interfaces-list-form.toml");
 
     const SETTINGS: &str = r#"
 [package]
@@ -250,10 +253,13 @@ system = "required@2"
             let ranged = read_interfaces(&path).unwrap().unwrap();
             assert_eq!(ranged.served("collab"), Some((1, 2)));
 
+            // A daemon newer than the image it runs on reads that image's declaration.
+            std::fs::write(&path, LISTED_DECLARATION).unwrap();
+            let listed = read_interfaces(&path).unwrap().unwrap();
+            assert_eq!(listed.served("app-host"), Some((1, 1)));
+
             for bad in [
                 "system = 1\n",
-                "[interfaces]\nsystem = [1]\n",
-                "[interfaces]\nsystem = [1, 2]\n",
                 "[interfaces]\nsystem = 0\n",
                 "[interfaces]\n\"Sys tem\" = 1\n",
                 "[interfaces]\nsystem = \"1\"\n",

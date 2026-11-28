@@ -211,7 +211,7 @@ mod tests {
     fn an_unreadable_system_declaration_refuses_saying_the_system_needs_an_update() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("system-interfaces.toml");
-        std::fs::write(&path, "[interfaces]\nsystem = [1]\nshell-ui = [1]\n").unwrap();
+        std::fs::write(&path, "[interfaces]\nsystem = \"one\"\n").unwrap();
         let refused = system_declaration_readable(&path).unwrap_err();
         assert!(
             matches!(&refused, ReadError::Refused(Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
@@ -224,7 +224,7 @@ mod tests {
 
         std::fs::write(
             &path,
-            "[interfaces]\nsystem = 1\nshell-ui = 11\nruntime = 2\n",
+            "[interfaces]\nsystem = [1]\nshell-ui = [11]\nruntime = [2]\n",
         )
         .unwrap();
         assert!(system_declaration_readable(&path).is_ok());

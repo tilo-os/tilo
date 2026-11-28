@@ -8,6 +8,7 @@ description = "The typed device actions and component manifest shared by tilo-vm
 
 [dependencies]
 hex.workspace = true
+registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

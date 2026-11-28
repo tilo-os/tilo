@@ -15,6 +15,7 @@ pub mod profile;
 
 use std::collections::BTreeMap;
 
+use registry_types::interfaces::ProvidedInterfaces;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -490,18 +491,12 @@ pub fn tree_interfaces(root: &std::path::Path) -> BTreeMap<String, u32> {
         .unwrap_or_default()
 }
 
-/// The `[interfaces]` table of a `system-interfaces.toml`, each interface's one version. Empty
-/// when the text is not such a file.
+/// The versions the `[interfaces]` table of a `system-interfaces.toml` serves, each interface's
+/// current one. Empty when the text is not such a file.
 #[must_use]
 pub fn system_interfaces(text: &str) -> BTreeMap<String, u32> {
-    #[derive(Deserialize)]
-    struct File {
-        #[serde(default)]
-        interfaces: BTreeMap<String, u32>,
-    }
-    toml::from_str::<File>(text)
-        .map(|file| file.interfaces)
-        .unwrap_or_default()
+    let versions = Declaration::parse(text).versions().cloned();
+    versions.unwrap_or_default()
 }
 
 /// What a `system-interfaces.toml` declares, as this code reads it.
@@ -513,7 +508,7 @@ pub enum Declaration {
     /// There is one, but in a form this code does not read: it was written for another version
     /// of the system.
     Unreadable { detail: String },
-    /// Each interface's one version.
+    /// Each interface's current version.
     Versions { versions: BTreeMap<String, u32> },
 }
 
@@ -521,13 +516,13 @@ impl Declaration {
     /// The declaration in `text`, a `system-interfaces.toml`.
     #[must_use]
     pub fn parse(text: &str) -> Self {
-        #[derive(Deserialize)]
-        struct File {
-            interfaces: BTreeMap<String, u32>,
-        }
-        match toml::from_str::<File>(text) {
-            Ok(file) => Self::Versions {
-                versions: file.interfaces,
+        match toml::from_str::<ProvidedInterfaces>(text) {
+            Ok(provided) => Self::Versions {
+                versions: provided
+                    .interfaces
+                    .into_iter()
+                    .filter_map(|(name, versions)| Some((name, versions.range()?.1)))
+                    .collect(),
             },
             Err(error) => Self::Unreadable {
                 detail: error.message().to_owned(),
