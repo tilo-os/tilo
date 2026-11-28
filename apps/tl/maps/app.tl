@@ -2657,6 +2657,11 @@ view transit_panel(a: Atlas) {
                     a.transit_time.offset_min + 30,
                 )
             }
+            if a.transit_time.offset_min != 0 {
+                ui.Button("Reset to now", icon: .rotate_ccw, role: .plain, size: .small) {
+                    on press: set_transit_time(a, a.transit_time.arrive_by, 0)
+                }
+            }
         }
         if let journey = shown_journey(a) {
             stack(gap: .related) {

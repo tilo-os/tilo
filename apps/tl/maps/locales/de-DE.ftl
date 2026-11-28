@@ -690,14 +690,15 @@ d-zrj5mbzs = Wegbeschreibung
     .w-open-a-place-and-ask-for = Open a place and ask for directions to it.
 
 d-fxxzz6k4 = Fahrplan
-    .w-leave-at = Leave at
+    .w-leave-at = Abfahren
     .w-arrive-by = Ankommen bis
-    .w-earlier = Earlier
+    .w-earlier = Früher
     .w-min = { $abs } min
-    .w-later = Later
-    .w-direct = Direct
-    .w-changes = { $transfers } changes
-    .w-another-journey = Another journey
+    .w-later = Später
+    .w-reset-to-now = Auf jetzt zurücksetzen
+    .w-direct = Direkt
+    .w-changes = { $transfers } Umstiege
+    .w-another-journey = Andere Verbindung
     .w-clear-transit = Clear transit
     .w-choose-a-place-to-travel-to = Choose a place to travel to
 

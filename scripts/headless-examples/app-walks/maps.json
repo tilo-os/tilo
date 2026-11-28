@@ -14,7 +14,11 @@
     {
      "theme": false
     },
-    {"launch": {"answer": "Allow"}},
+    {
+     "launch": {
+      "answer": "Allow"
+     }
+    },
     {
      "wait_for": "window"
     },
@@ -62,6 +66,42 @@
       "Nearby",
       "Saved",
       "Recent"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "transit-time",
+   "said": "Transit journeys choose when to leave, and Reset to now returns to leaving now",
+   "ops": [
+    {
+     "press": "Directions"
+    },
+    {
+     "press": "Transit"
+    },
+    {
+     "must": [
+      "Leave at",
+      "Arrive by",
+      "Earlier",
+      "Later"
+     ]
+    },
+    {
+     "press": "Earlier"
+    },
+    {
+     "must": [
+      "Reset to now"
+     ]
+    },
+    {
+     "press": "Reset to now"
+    },
+    {
+     "must_not": [
+      "Reset to now"
      ]
     }
    ]
