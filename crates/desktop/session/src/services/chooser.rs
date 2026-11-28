@@ -664,6 +664,7 @@ fn documents_key(caller: &Caller) -> Result<AppKey, String> {
 fn kind_of(choice: Choice) -> Kind {
     match choice {
         Choice::Read => Kind::Read,
+        Choice::Edit => Kind::Edit,
         Choice::Folder { write } => Kind::Folder { write },
         Choice::Save => Kind::Save,
     }
@@ -672,6 +673,7 @@ fn kind_of(choice: Choice) -> Kind {
 fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> Granted {
     let choice = match chosen.kind {
         Kind::Read => Choice::Read,
+        Kind::Edit => Choice::Edit,
         Kind::Folder { write } => Choice::Folder { write },
         Kind::Save => Choice::Save,
     };

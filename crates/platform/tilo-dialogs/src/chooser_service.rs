@@ -523,9 +523,8 @@ impl Connection {
                     // A document given to be edited is written back beside itself and renamed
                     // over it, as a save writes: read when it is opened again to read.
                     Choice::Edit | Choice::Save if write => Choice::Save,
-                    Choice::Edit | Choice::Read if !write => Choice::Read,
-                    // A file given to read is never opened for writing, and a save's place is
-                    // never opened to read.
+                    Choice::Edit | Choice::Read | Choice::Save if !write => Choice::Read,
+                    // A file given to read is never opened for writing.
                     _ => return Err(NOT_CHOSEN),
                 };
                 File::from(open_document(&granted, choice).map_err(|_| NOT_CHOSEN)?)

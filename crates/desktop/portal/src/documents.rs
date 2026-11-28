@@ -118,7 +118,7 @@ impl Target {
     pub fn host_path(&self) -> PathBuf {
         match self.document.kind {
             Kind::Folder { .. } => self.document.host.join(&self.inner),
-            Kind::Read | Kind::Save => match self.document.host.parent() {
+            Kind::Read | Kind::Edit | Kind::Save => match self.document.host.parent() {
                 Some(folder) if !self.is_root() => folder.join(&self.inner),
                 _ => self.document.host.clone(),
             },
@@ -139,7 +139,7 @@ impl Target {
                     ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
                 )
             }
-            Kind::Read | Kind::Save => {
+            Kind::Read | Kind::Edit | Kind::Save => {
                 let folder = self
                     .document
                     .host
@@ -226,7 +226,7 @@ pub fn target(chosen: &ChosenTable, key: &AppKey, token: &str, inner: &Path) -> 
             let inner: PathBuf = rest.iter().collect();
             Some(Target { document, inner })
         }
-        Kind::Read | Kind::Save => {
+        Kind::Read | Kind::Edit | Kind::Save => {
             if !rest.is_empty() {
                 return None;
             }

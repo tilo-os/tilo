@@ -1150,7 +1150,9 @@ impl FilePicker for ShellChooser {
     ) -> std::sync::mpsc::Receiver<Result<(), String>> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.link.saved(reference, move |outcome| {
-            let _ = tx.send(outcome);
+            // What the save is called again is the file's own answer; a write-back only needs
+            // to know the file was replaced.
+            let _ = tx.send(outcome.map(drop));
         });
         rx
     }

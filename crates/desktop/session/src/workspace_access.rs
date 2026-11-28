@@ -804,7 +804,7 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
         .unwrap_or_else(|| t("session-access-you"));
     let allows = match held.kind {
         ChosenKind::Read => t("session-access-allows-read"),
-        ChosenKind::Save => t("session-access-allows-write"),
+        ChosenKind::Edit | ChosenKind::Save => t("session-access-allows-write"),
         ChosenKind::Folder { write: false } => t("session-access-allows-folder"),
         ChosenKind::Folder { write: true } => t("session-access-allows-folder-write"),
     };
