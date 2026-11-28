@@ -332,6 +332,13 @@ the reference the person's choice answers: what `File.list`, `File.read` and `Fi
 what reads the folder again later. Both stand on a control, since they ask the person at the
 window.
 
+`file.save(a, name: "...")` runs `a` and puts what it made — text, or a file — where the person
+says. `then: saved -> exported(p, saved)` names the action run once they have answered, handed a
+`host.Saved`: `at` is where the file was written, as the person reads the place, and is empty where
+the host keeps it without one (a page's download); `cancelled` says the person closed the chooser
+and nothing was written; and `refused` says why the save was refused. A save with no `then:` runs
+as it always did, and a refusal is then the call's own failure.
+
 ```
 action remind(t: Task) uses notify {
     notify(
