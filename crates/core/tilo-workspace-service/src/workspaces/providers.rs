@@ -1381,7 +1381,7 @@ fn moves(
     served: &BTreeMap<Arc<str>, Registered>,
     target: &RemoteActionTarget,
 ) -> Option<Registered> {
-    if !crate::resource_actions::moves_record(&target.address.action)
+    if !tilo_resource_store::moves_record(&target.address.action)
         || !tilo_actions::remote::names_app(&target.provider)
     {
         return None;

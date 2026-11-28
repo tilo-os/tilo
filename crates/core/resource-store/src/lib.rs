@@ -44,7 +44,7 @@ pub use port::{LocalPort, Port};
 pub use schema::{
     BRANCH_VERB, COPY_ACTION, CREATE_VERB, Declared, Expected, FIELD_EDIT, Field, FieldKind,
     HISTORY_VERBS, MAX_MARK_ARGS, MIGRATE_VERB, MOVE_VERB, ORIGIN_VERB, PLATFORM_VERBS,
-    RESERVED_VERBS, Schema, Type, Verb, WITHDRAW_COPY_ACTION, Writes,
+    RESERVED_VERBS, Schema, Type, Verb, WITHDRAW_COPY_ACTION, Writes, moves_record,
 };
 pub use store::{
     CHANGED, CREATED, Live, RecordReader, Review, Source, Store, StoreError, UPDATED, Written,

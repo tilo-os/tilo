@@ -421,7 +421,7 @@ impl ResourceActions {
             .to_owned();
         // Any app's record moves to another workspace of the caller's: the store judges each
         // side of it as the caller's write there.
-        if moves_record(&request.target.address.action) {
+        if tilo_resource_store::moves_record(&request.target.address.action) {
             let id = tilo_actions::remote::record_in(&request.target.address.resource, app)
                 .ok_or_else(|| invalid("a move names the record by its path under its app"))?;
             return self.moved(&workspace, app, id, caller, request).await;
@@ -554,18 +554,6 @@ impl ResourceActions {
         carried.map_err(|error| failed("refused", error))?;
         Ok(ActionOutput::default())
     }
-}
-
-/// Whether `action` takes a record of any app's across workspaces, as the store does it and no app
-/// declares: its move, a copy, or a copy taken back.
-#[must_use]
-pub fn moves_record(action: &str) -> bool {
-    [
-        tilo_resource_store::MOVE_VERB,
-        tilo_resource_store::COPY_ACTION,
-        tilo_resource_store::WITHDRAW_COPY_ACTION,
-    ]
-    .contains(&action)
 }
 
 impl ActionProvider for ResourceActions {

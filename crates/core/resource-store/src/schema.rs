@@ -80,6 +80,13 @@ pub fn platform_kind(verb: &str) -> Option<tilo_actions::ActionKind> {
         .then_some(tilo_actions::ActionKind::Undoable)
 }
 
+/// Whether `action` takes a record of any app's across workspaces, as the store does it and no
+/// app declares: its move, a copy, or a copy taken back.
+#[must_use]
+pub fn moves_record(action: &str) -> bool {
+    [MOVE_VERB, COPY_ACTION, WITHDRAW_COPY_ACTION].contains(&action)
+}
+
 /// The most bytes the arguments of a history verb's change take, as JSON.
 pub const MAX_MARK_ARGS: usize = 4096;
 
