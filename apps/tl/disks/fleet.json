@@ -7,7 +7,7 @@
     "macos",
     "web"
   ],
-  "tagline": "This computer's drives, their partitions and their health",
+  "tagline": "Partitions, formats and mounts drives",
   "names": [
     "Laufwerke"
   ],
@@ -20,6 +20,19 @@
     "smart",
     "laufwerke",
     "festplatten",
+    "disk",
+    "drive",
+    "partition",
+    "usb",
+    "storage",
+    "ssd",
+    "hard drive",
+    "disk utility",
+    "gnome disks",
+    "disk management",
+    "partition manager",
+    "kde partition manager",
+    "speicher",
     "partitionen",
     "formatieren",
     "einhängen"
@@ -48,7 +61,7 @@
         }
       ],
       "keywords": [],
-      "icon": ""
+      "icon": "pencil"
     },
     {
       "resource": "tl.so.tilo.disks.Disks",

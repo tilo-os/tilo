@@ -1,8 +1,8 @@
 app so.tilo.disks "Disks" (
     icon: .hard_drive,
     category: .system,
-    tagline: "This computer's drives, their partitions and their health",
-    keywords: ["disks", "drives", "partitions", "format", "mount", "smart", "laufwerke", "festplatten"],
+    tagline: "Partitions, formats and mounts drives",
+    keywords: ["disks", "drives", "partitions", "format", "mount", "smart", "laufwerke", "festplatten", "disk", "drive", "partition", "usb", "storage", "ssd", "hard drive", "disk utility", "gnome disks", "disk management", "partition manager", "kde partition manager", "speicher"],
     splash_budget: 250,
 )
 
@@ -66,9 +66,168 @@ fn health_words(health: device.DiskHealth) -> Text {
     } else if health.supported { std.say("Healthy") } else { std.say("Its health is not reported") }
 }
 
+/// What the drive plugs in by, or that it reports no transport.
+fn interface_words(drive: device.Drive) -> Text {
+    if let transport = drive.transport {
+        if transport == "nvme" {
+            "NVMe"
+        } else if transport == "sata" {
+            "SATA"
+        } else if transport == "usb" { "USB" } else { transport }
+    } else { std.say("Not reported") }
+}
+
+/// What kind of drive it is, as it is written on its box.
+fn kind_words(drive: device.Drive) -> Text {
+    if drive.kind != "disk" or drive.name.starts_with("zram") {
+        std.say("Virtual block device")
+    } else if let transport = drive.transport {
+        if transport == "nvme" {
+            std.say("NVMe solid state drive")
+        } else if transport == "usb" {
+            std.say("Removable USB drive")
+        } else if drive.rotational {
+            std.say("Hard disk drive")
+        } else { std.say("Solid state drive") }
+    } else if drive.rotational { std.say("Hard disk drive") } else { std.say("Block drive") }
+}
+
+/// Where a partition is mounted, as a person reads it: the kernel's `[SWAP]` marker is "Swap".
+fn mounted_words(part: device.Partition) -> Text {
+    let mount = part.mountpoint ?? ""
+    if mount == "[swap]" {
+        std.say("Swap")
+    } else if mount == "" { std.say("Not mounted") } else { mount }
+}
+
+/// What a partition is for, when it serves something a person knows by name.
+fn purpose_words(part: device.Partition) -> Text {
+    let mount = part.mountpoint ?? ""
+    let fstype = part.fstype ?? ""
+    if fstype == "swap" or fstype == "linux-swap" or mount == "[swap]" {
+        std.say("Swap space")
+    } else if mount == "/" {
+        std.say("Running system")
+    } else if mount == "/home" {
+        std.say("Home folders")
+    } else if mount == "/boot" or mount.starts_with("/boot/") {
+        std.say("Starts this device")
+    } else { "" }
+}
+
+/// Whether erasing or closing this partition would take the running system with it.
+fn serves_system(part: device.Partition) -> Bool {
+    let mount = part.mountpoint ?? ""
+    mount == "/" or mount == "/boot" or mount.starts_with("/boot/")
+}
+
+/// Why erasing `target` (the whole drive when empty) would destroy the running system; empty
+/// when it would not. Closing what holds the system is refused for the same reason.
+fn system_use(drive: device.Drive, target: Text) -> Text {
+    if target == "" {
+        if drive.partitions.any(part -> serves_system(part) or (part.mountpoint ?? "") == "/home") {
+            std.say("Holds the running system")
+        } else { "" }
+    } else if let part = drive.partitions.find(item -> item.name == target) {
+        if (part.mountpoint ?? "") == "/home" {
+            std.say("Holds the home folders")
+        } else if serves_system(part) { std.say("Holds the running system") } else { "" }
+    } else { "" }
+}
+
+/// Why erasing `target` (the whole drive when empty) is refused; empty when it is not. What
+/// holds the running system stays, and so does a partition's own encryption.
+fn erase_reason(drive: device.Drive, target: Text) -> Text {
+    let refused = system_use(drive, target)
+    if refused != "" {
+        refused
+    } else if target == "" {
+        ""
+    } else if let part = drive.partitions.find(item -> item.name == target) {
+        if part.encryption != .none {
+            std.say("Formatting would remove its encryption")
+        } else { "" }
+    } else { "" }
+}
+
+/// What a person calls a partition: its label, else its type, else its filesystem, else its
+/// name in `/dev`.
+fn part_name(part: device.Partition) -> Text {
+    let label = part.label ?? ""
+    let kind = part.part_type_name ?? ""
+    let fstype = part.fstype ?? ""
+    if label != "" {
+        label
+    } else if kind != "" { kind } else if fstype != "" { fstype } else { part.name }
+}
+
+/// What a mounted partition holds, as its row reads it.
+fn filesystem_line(part: device.Partition) -> Text {
+    let mount = part.mountpoint ?? ""
+    let fstype = part.fstype ?? ""
+    if mount == "[swap]" {
+        std.say("Swap space")
+    } else if fstype != "" { std.say("{fstype} at {mount}") } else { std.say("Mounted at {mount}") }
+}
+
+/// How much of a partition is filled, 0 where the drive does not say.
+fn filled(part: device.Partition) -> Float {
+    if let used = part.used_bytes {
+        if part.size_bytes > 0 {
+            used.to_float() / part.size_bytes.to_float()
+        } else { 0.0 }
+    } else { 0.0 }
+}
+
+/// What is left on a partition, where the drive says.
+fn room_left(part: device.Partition) -> Text {
+    if let used = part.used_bytes {
+        "{size_words(part.size_bytes - used)} free"
+    } else { "" }
+}
+
+/// The chosen partition, when the person chose one rather than the whole drive.
+fn chosen_partition(drive: device.Drive, chosen: Text) -> Option<device.Partition> {
+    drive.partitions.find(part -> part.name == chosen)
+}
+
+/// What an erase erases, in the words its confirmation asks with.
+fn format_loses(drive: device.Drive, target: Text) -> Text {
+    if target == "" {
+        let count = drive.partitions.len()
+        if count == 0 {
+            std.say("Everything on it is erased for good.")
+        } else if count == 1 {
+            std.say("Its partition and every file on it are erased for good.")
+        } else {
+            std.say("Its {count} partitions and every file on them are erased for good.")
+        }
+    } else if let part = drive.partitions.find(item -> item.name == target) {
+        let used = part.used_bytes ?? 0
+        let label = part.label ?? ""
+        if used > 0 and label != "" {
+            std.say("The {size_words(used)} of files on “{label}” are erased for good.")
+        } else if used > 0 {
+            std.say("The {size_words(used)} of files on it are erased for good.")
+        } else if label != "" {
+            std.say("Every file on “{label}” is erased for good.")
+        } else {
+            std.say("Every file on it is erased for good.")
+        }
+    } else {
+        std.say("Everything on it is erased for good.")
+    }
+}
+
 /// A drive's name in the words of the person reading it, by its serial.
-action name_drive(d: Disks, serial: Text, name: Text) {
-    if name.trim() != "" { d.names.put(serial, name.trim()) }
+action name_drive(d: Disks, serial: Text, name: Text) (
+    icon: .pencil,
+    label: "Name drive",
+    did: "Named a drive",
+) {
+    require name.trim() == name or name.trim() == "" "A drive's name is not blank and not padded"
+    let named = name.trim()
+    if named == "" { d.names.remove(serial) } else { d.names.put(serial, named) }
 }
 
 /// The filesystems a person may write from here.
@@ -92,7 +251,12 @@ view window(d: Disks) {
                     ui.StatusLine(error, status: .error)
                 }
                 if disks.drives.is_empty() {
-                    ui.EmptyState("No drives on this device", icon: .hard_drive, inline: true)
+                    ui.EmptyState(
+                        "No drives on this device",
+                        message: "Attach a drive, then rescan.",
+                        icon: .hard_drive,
+                        inline: true,
+                    )
                 }
                 stack(gap: .none) {
                     for each in disks.drives {
@@ -116,7 +280,7 @@ view window(d: Disks) {
             )
         }
     }
-    format_dialog(formatting, filesystem)
+    format_dialog(d, formatting, filesystem)
 }
 
 /// One drive in the list: what it is called, how big it is, and whether it needs attention.
@@ -226,8 +390,12 @@ view overview_pane(
                     free_block(free * 1000 / drive.size_bytes)
                 }
             }
-            // The legend names each piece of the bar; choosing one shows what it is.
+            // The legend names each piece of the bar; choosing one shows what it is, and the
+            // whole drive is one choice of its own, so it can be erased as one.
             row(gap: .tight, wrap: true) {
+                ui.Chip("The whole drive", selected: chosen_part == "") {
+                    on press: set(chosen_part, "")
+                }
                 for partition in drive.partitions {
                     ui.Chip(
                         "{partition.name} · {size_words(partition.size_bytes)}",
@@ -259,15 +427,17 @@ view overview_pane(
             )
         }
     }
+    mounted_filesystems(drive, chosen_part)
     row(gap: .tight, wrap: true) {
         // Where the drive is open: a filesystem written on the whole drive is the drive's own
         // `mountpoint`, and one on a partition is that partition's, which is the one to close.
         let open_part = drive.partitions.find(part -> part.mountpoint != .none)
         if let part = open_part {
+            let refused = system_use(drive, part.name)
+            ui.Button("Close", icon: .log_out, enabled: refused == "", description: refused) {
+                on press: device.unmount(device.disks, device: part.name)
+            }
             if let mounted = part.mountpoint {
-                ui.Button("Close", icon: .log_out) {
-                    on press: device.unmount(device.disks, device: part.name)
-                }
                 ui.Text("Open at {mounted}", role: .caption, secondary: true)
                 ways_on(d, mounted)
             }
@@ -294,10 +464,105 @@ view overview_pane(
                 on press: device.eject(device.disks, device: drive.name)
             }
         }
-        ui.Button("Erase…", icon: .trash, role: .destructive) {
-            on press: set(formatting, drive.name)
+        let refused = erase_reason(drive, chosen_part)
+        ui.Button(
+            "Erase…",
+            icon: .trash,
+            role: .destructive,
+            enabled: refused == "",
+            description: refused,
+        ) {
+            on press: set(formatting, if chosen_part == "" { drive.name } else { chosen_part })
         }
     }
+    if let part = chosen_partition(drive, chosen_part) {
+        partition_details(part)
+    } else {
+        drive_details(drive)
+    }
+}
+
+/// What the drive is: the facts a person checks before using it.
+view drive_details(drive: device.Drive) {
+    ui.Section("Details") {
+        ui.PropertyList {
+            ui.Property("Device", "/dev/{drive.name}", copyable: true)
+            ui.Property("Type", kind_words(drive))
+            ui.Property("Capacity", size_words(drive.size_bytes))
+            ui.Property("Interface", interface_words(drive))
+            if let serial = drive.serial {
+                ui.Property("Serial number", serial, copyable: true)
+            }
+            if let fstype = drive.fstype {
+                ui.Property("Filesystem", fstype)
+            }
+            if let mounted = drive.mountpoint {
+                ui.Property("Mounted at", mounted)
+            }
+        }
+    }
+}
+
+/// What one partition is: what it holds, where it is mounted, and what it is for.
+view partition_details(part: device.Partition) {
+    ui.Section("Details") {
+        ui.PropertyList {
+            ui.Property("Device", "/dev/{part.name}", copyable: true)
+            ui.Property("Size", size_words(part.size_bytes))
+            if let kind = part.part_type_name {
+                ui.Property("Type", kind)
+            }
+            if let fstype = part.fstype {
+                ui.Property("Filesystem", fstype)
+            }
+            if let encryption = part.encryption {
+                if let unlocked = encryption.unlocked_as {
+                    ui.Property("Encryption", "{encryption.scheme}, unlocked")
+                } else {
+                    ui.Property("Encryption", "{encryption.scheme}, locked")
+                }
+            }
+            ui.Property("Mounted at", mounted_words(part))
+            if let used = part.used_bytes {
+                ui.Property("Used", size_words(used))
+                ui.Property("Free", size_words(part.size_bytes - used))
+            }
+            if let purpose = purpose(part) {
+                ui.Property("Used for", purpose)
+            }
+        }
+    }
+}
+
+/// The filesystems mounted from the drive, each with what it holds and what is left, and the
+/// sentence a drive with none reads.
+view mounted_filesystems(drive: device.Drive, chosen_part: State<Text>) {
+    let mounted = drive.partitions.filter(part -> part.mountpoint != .none)
+    ui.Section("Filesystems") {
+        if mounted.is_empty() {
+            ui.Text("No filesystems are mounted.", role: .body, secondary: true)
+        }
+        for part in mounted {
+            ui.ListRow(
+                part_name(part),
+                secondary: filesystem_line(part),
+                meta: room_left(part),
+                meta_tone: if filled(part) >= 0.9 {
+                    if filled(part) >= 0.97 { .danger } else { .warning }
+                } else { .neutral },
+                icon: .layers,
+                selected: chosen_part == part.name,
+            ) {
+                on activate: set(chosen_part, part.name)
+            }
+        }
+    }
+}
+
+/// What a partition is for, where it serves something a person knows by name.
+fn purpose(part: device.Partition) -> Option<Text> {
+    let said = purpose_words(part)
+    if said == "" { .none } else { .some(said) }
 }
 
 /// Mounts the drive's first partition, which is what a drive without a filesystem of its own
@@ -440,9 +705,16 @@ view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
             ) {
                 trailing: {
                     row(gap: .tight, wrap: true) {
+                        let refused = system_use(drive, partition.name)
+                        let cant_erase = erase_reason(drive, partition.name)
                         if let mount = partition.mountpoint {
                             ui.Text(mount, role: .caption, secondary: true)
-                            ui.Button("Close", size: .small) {
+                            ui.Button(
+                                "Close",
+                                size: .small,
+                                enabled: refused == "",
+                                description: refused,
+                            ) {
                                 on press: device.unmount(device.disks, device: partition.name)
                             }
                             ways_on(d, mount)
@@ -462,6 +734,8 @@ view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
                             icon_only: true,
                             role: .destructive,
                             size: .small,
+                            enabled: cant_erase == "",
+                            description: cant_erase,
                         ) {
                             on press: set(formatting, partition.name)
                         }
@@ -520,29 +794,45 @@ action format_device(device_name: Text, filesystem: Text) {
 }
 
 /// The confirmation an erase asks for: what it erases, and the filesystem to write on it.
-view format_dialog(device_name: State<Text>, filesystem: State<Text>) {
-    if device_name != "" {
-        ui.ModalDialog(
-            title: "Erase {device_name}?",
-            description: .some("Everything on it is lost, and cannot be brought back."),
-            open: true,
-            primary: "Erase",
-            secondary: "Cancel",
-            destructive: true,
-        ) {
-            body: {
-                ui.Text("The drive is erased and a new filesystem written on it.")
-                row(gap: .tight, wrap: true) {
-                    for choice in filesystems() {
-                        ui.Chip(choice, selected: filesystem == choice) {
-                            on press: set(filesystem, choice)
+/// The confirmation an erase asks for: what it erases, and the filesystem to write on it.
+view format_dialog(d: Disks, target: State<Text>, filesystem: State<Text>) {
+    if target != "" {
+        let drive = device.disks.drives.find(
+            dr -> dr.name == target or dr.partitions.any(p -> p.name == target),
+        )
+        if let drive = drive {
+            let whole = target == drive.name
+            ui.ModalDialog(
+                title: "Erase {erase_name(d, drive, target)}?",
+                description: .some(format_loses(drive, if whole { "" } else { target })),
+                open: true,
+                primary: "Erase",
+                secondary: "Cancel",
+                destructive: true,
+            ) {
+                body: {
+                    ui.Text("It is erased and a new {filesystem} filesystem is written on it.")
+                    row(gap: .tight, wrap: true) {
+                        for choice in filesystems() {
+                            ui.Chip(choice, selected: filesystem == choice) {
+                                on press: set(filesystem, choice)
+                            }
                         }
                     }
                 }
+                on act_primary: format_device(target, filesystem).then(set(target, ""))
+                on act_secondary: set(target, "")
+                on dismiss: set(target, "")
             }
-            on act_primary: format_device(device_name, filesystem).then(set(device_name, ""))
-            on act_secondary: set(device_name, "")
-            on dismiss: set(device_name, "")
         }
     }
+}
+
+/// What a person calls the thing an erase erases: the drive by its name, a partition by its own.
+fn erase_name(d: Disks, drive: device.Drive, target: Text) -> Text {
+    if target == drive.name {
+        drive_name(d, drive)
+    } else if let part = drive.partitions.find(item -> item.name == target) {
+        part_name(part)
+    } else { target }
 }
