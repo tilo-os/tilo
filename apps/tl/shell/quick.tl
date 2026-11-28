@@ -15,7 +15,9 @@ view quick_settings() {
     // room it would float where the height of the band, not the bar, put it, and a panel taller
     // than the room would stand its heading above the screen.
     row(fill, align: .start, distribute: .end, padding: .related) {
-        quick_settings_panel(fill_height: false, compact: space.compact)
+        // A phone's band is shorter than the settings: there the panel takes the room it is
+        // given and its body scrolls inside it.
+        quick_settings_panel(fill_height: space.compact, compact: space.compact)
     }
 }
 

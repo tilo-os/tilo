@@ -20,8 +20,11 @@ view notices() {
     state query: Text = ""
     let all = device.notifications.notices
     let shown = all.matching(query)
+    let compact = space.compact
     row(fill, distribute: .end, padding: .related) {
-        ui.FloatingPanel(width: if not space.compact { 360.0 }, fill: space.compact) {
+        // A phone's band is shorter than the centre's list: there the panel takes the room it is
+        // given and its body scrolls inside it.
+        ui.FloatingPanel(width: if not compact { 360.0 }, fill: compact, fill_height: compact) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
                     ui.Text("Notifications", role: .heading)

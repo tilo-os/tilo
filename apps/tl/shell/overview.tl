@@ -15,38 +15,42 @@ view overview() {
     state query: Text = device.overlays.spotlight
     let windows = device.windows.all.sort_by(w -> w.place)
     let here = windows.filter(w -> w.workspace_key == front_workspace())
+    // The page fills the band, so what it holds scrolls inside it: a phone cannot show every
+    // window at once.
     page(full) {
-        stack(gap: .section) {
-            row(gap: .related, align: .center, wrap: true) {
-                ui.Text("Overview", role: .heading)
-                ui.Text(front_workspace_name(), role: .caption, secondary: true)
-                spacer
-                ui.Button("New workspace", icon: .plus, size: .small) {
-                    on press: session.new_workspace()
+        scroll(axis: .vertical, fill) {
+            stack(gap: .section) {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text("Overview", role: .heading)
+                    ui.Text(front_workspace_name(), role: .caption, secondary: true)
+                    spacer
+                    ui.Button("New workspace", icon: .plus, size: .small) {
+                        on press: session.new_workspace()
+                    }
+                    ui.Button("Join a workspace", icon: .users, size: .small) {
+                        on press: session.join_workspace()
+                    }
                 }
-                ui.Button("Join a workspace", icon: .users, size: .small) {
-                    on press: session.join_workspace()
+                ui.TextInput(bind: query, placeholder: "Search windows") {
+                    on submit: session.search(query: query)
                 }
-            }
-            ui.TextInput(bind: query, placeholder: "Search windows") {
-                on submit: session.search(query: query)
-            }
-            workspaces_here()
-            shared_out()
-            if query == "" {
-                if here.is_empty() {
-                    ui.EmptyState(
-                        "No windows",
-                        message: "Open something to see its window",
-                        icon: .app_window,
-                        inline: true,
-                    )
+                workspaces_here()
+                shared_out()
+                if query == "" {
+                    if here.is_empty() {
+                        ui.EmptyState(
+                            "No windows",
+                            message: "Open something to see its window",
+                            icon: .app_window,
+                            inline: true,
+                        )
+                    }
+                    for s in window_strips(here) {
+                        picture(here, s)
+                    }
+                } else {
+                    found(windows.matching(query))
                 }
-                for s in window_strips(here) {
-                    picture(here, s)
-                }
-            } else {
-                found(windows.matching(query))
             }
         }
     }

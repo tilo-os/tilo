@@ -1141,6 +1141,14 @@ impl Walk<'_> {
         inner_scroller: Scrolls,
         scrolling: bool,
     ) {
+        // What a surface floating in the window holds stands where the surface is placed, not
+        // inside the box the surface's view made for it: its card is read against the window, as
+        // the surface itself is.
+        let inner_parent = if floats_in_window(&node.widget) || floats(&node.widget) {
+            self.viewport
+        } else {
+            inner_parent
+        };
         for child in &node.children {
             if floats(&child.widget) {
                 continue;

@@ -628,6 +628,32 @@ tilo_test_env::scenario! {
         assert!(found(None).contains(&Kind::Overflow));
     }
 
+    phase a_floating_surfaces_card_stands_in_the_window_not_in_its_box;
+    // A popover's card is placed beside the control it opened from, outside the box the view made
+    // for the popover: read against that box it would always overflow. It stands in the window,
+    // and a card placed past the window is still caught.
+    {
+        let found = |card: [f64; 4]| {
+            let mut popover = node("Popover", "popover", [360.0, 280.0, 40.0, 20.0], None);
+            popover.children = vec![node("Container", "card", card, None)];
+            let root = stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![popover]);
+            inspect(&root, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::Overflow)
+                .map(|problem| problem.keys)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            found([20.0, 60.0, 220.0, 200.0]).is_empty(),
+            "the card stands beside its control, inside the window"
+        );
+        assert_eq!(
+            found([20.0, -120.0, 220.0, 200.0]).len(),
+            1,
+            "a card past the window is caught"
+        );
+    }
+
     phase a_framed_action_over_a_button_is_caught;
     // A header action the shell holds in a frame of its own is the control it frames.
     {
