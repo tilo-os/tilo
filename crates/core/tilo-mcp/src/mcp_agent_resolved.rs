@@ -125,17 +125,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     resource.clone(),
                     action.to_owned(),
                 )),
-                max_results: 1,
+                // A running app's instances publish the device's resource too: the device's own
+                // row is found among all of them, not only the first.
+                max_results: u32::MAX,
                 ..CatalogueQuery::default()
             })
             .await?;
-        // A provider a device registered answers by name; an app's instance is a peer number,
-        // and what it publishes under the device is reached through the app.
+        // A provider a device registered answers by name; an app's instance is a peer number and
+        // its launchable form a token (`launch:…`): what they publish under the device is the
+        // device's own, reached at the provider that registered it.
         let Some((provider, app_id, descriptor)) = page.rows.into_iter().find_map(|row| {
             let descriptor = row.action?;
             (descriptor.address.resource == resource
                 && descriptor.address.action == action
-                && row.provider.parse::<u64>().is_err())
+                && row.provider.parse::<u64>().is_err()
+                && !row.provider.contains(':'))
             .then_some((row.provider, row.app_id, descriptor))
         }) else {
             return Ok(None);

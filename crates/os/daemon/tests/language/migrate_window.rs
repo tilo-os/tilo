@@ -418,8 +418,10 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
         // A start with nothing chosen, asked of the migration as any caller asks it, is refused
         // by the device, and the window says why.
         let target = application_action_target(host.workspace(), MIGRATE, &resource, "start");
-        let started = host
-            .dispatch()
+        // The person's connection stays while their run goes: what the run asks in turn is
+        // theirs only while it does.
+        let dispatch = host.dispatch();
+        let started = dispatch
             .invoke(
                 &host.caller(),
                 host::call(&target.provider, target.address, &json!({})),
@@ -433,6 +435,7 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
             "nothing chosen is nothing to bring in: {refused:?}"
         );
         window.shows("Nothing of thunderbird is chosen").await;
+        drop(dispatch);
 
         // The agent chooses the address book and the calendar; the window shows both chosen,
         // and the refusal is gone.
@@ -790,6 +793,11 @@ fn checkbox(body: &str, title: &str) -> Option<(u32, bool)> {
     if let Some((number, tag, _)) = elements(body)
         .find(|(_, tag, _)| is_box(tag) && attribute(tag, "aria-label") == Some(title))
     {
+        return Some((number, marked(tag)));
+    }
+    // A row named by the title holds its box.
+    if let Some(row) = body.find(&format!("aria-label=\"{title}\"")) {
+        let (number, tag, _) = elements(&body[row..]).find(|(_, tag, _)| is_box(tag))?;
         return Some((number, marked(tag)));
     }
     // A box whose row the title names: the nearest before the title, else after it.
