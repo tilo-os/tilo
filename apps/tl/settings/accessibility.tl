@@ -4,11 +4,30 @@ view accessibility_pane() {
     let a = settings.accessibility
     let on_device = settings.accessibility_device
     ui.Section("Seeing") {
-        setting("Screen reader", "Speak what is on the screen and what it changes") {
-            ui.Button(if a.screen_reader { "On" } else { "Off" }, toggled: a.screen_reader) {
-                on press: settings.set_screen_reader(
-                    settings.accessibility,
-                    on: not a.screen_reader,
+        read_pane(of: settings.speech, what: "Speech") {
+            let speech = settings.speech
+            if speech.available {
+                setting("Screen reader", "Speak what is on the screen and what it changes") {
+                    ui.Button(
+                        if a.screen_reader { "On" } else { "Off" },
+                        toggled: a.screen_reader,
+                    ) {
+                        on press: settings.set_screen_reader(
+                            settings.accessibility,
+                            on: not a.screen_reader,
+                        )
+                    }
+                }
+            } else {
+                ui.ListRow(
+                    "Screen reader",
+                    secondary: "No speech engine is installed on this computer",
+                    icon: .volume_x,
+                )
+                ui.Text(
+                    "Install speech-dispatcher or espeak-ng to have the screen read aloud; the setting turns on when one is here.",
+                    role: .caption,
+                    secondary: true,
                 )
             }
         }

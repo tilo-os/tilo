@@ -102,6 +102,10 @@ pub fn surface() -> (Vec<ui::tilo_resource::Surface>, Vec<Root>) {
         service::languages::surface(),
     ));
     places.push((
+        service::speech::RESOURCE.to_owned(),
+        service::speech::surface(),
+    ));
+    places.push((
         service::tablet_choices::RESOURCE.to_owned(),
         service::tablet_choices::surface(),
     ));

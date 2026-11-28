@@ -141,6 +141,7 @@ so-tilo-settings-agent-models-redo-model = Choose the model again
 
 settings-shortcuts-table = Keyboard shortcuts
 settings-languages = Languages
+settings-speech = Speech
 settings-appearance-choose-language = Choose the language
 settings-tablet-choices = Tablet controls
 settings-theme-packages = Theme packages

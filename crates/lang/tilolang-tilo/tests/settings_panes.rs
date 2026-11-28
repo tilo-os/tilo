@@ -1299,3 +1299,37 @@ fn dictation_language_is_chosen_by_name() {
         "the setter takes the optional the field holds"
     );
 }
+
+/// The screen reader is offered where a speech engine is installed, and says why not where none
+/// is.
+#[test]
+fn the_screen_reader_says_when_no_speech_engine_is_here() {
+    for (available, engine) in [(false, ""), (true, "speech-dispatcher")] {
+        let (host, _) = settings();
+        crate::fixtures::set_reading(
+            &host,
+            "settings/speech",
+            &serde_json::json!({"available": available, "engine": engine}),
+        );
+        crate::fixtures::set_reading(
+            &host,
+            "settings/accessibility",
+            &serde_json::json!({"screen_reader": false}),
+        );
+        invoke(&host, "open_pane", vec![Value::text("accessibility")]);
+        let view = open_window(&host);
+        let shown = texts(&view);
+        let note = shown
+            .iter()
+            .any(|text| text == "No speech engine is installed on this computer");
+        assert_eq!(
+            note, !available,
+            "a machine with a speech engine offers the screen reader, and one without says why not: \
+             {shown:?}"
+        );
+        let hint = shown.iter().any(|text| text
+            == "Install speech-dispatcher or espeak-ng to have the screen read aloud; the setting \
+                turns on when one is here.");
+        assert_eq!(hint, !available, "the way to fix it is named: {shown:?}");
+    }
+}

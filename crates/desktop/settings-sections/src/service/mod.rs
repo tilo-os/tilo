@@ -26,6 +26,7 @@ pub mod agent_models;
 mod i18n;
 pub mod languages;
 pub mod shortcuts_table;
+pub mod speech;
 pub mod tablet_choices;
 pub mod theme_packages;
 
@@ -183,6 +184,11 @@ impl SettingsService {
                 i18n::t("settings-languages"),
             ),
         );
+        // Whether a speech engine is installed here, as the screen reader's page reads it.
+        resources.push(tilo_resource::typed_resource::<speech::SpeechReading>(
+            speech::RESOURCE,
+            i18n::t("settings-speech"),
+        ));
         resources.push(tilo_resource::typed_resource::<
             shortcuts_table::ShortcutsTableReading,
         >(
@@ -392,6 +398,9 @@ impl Service for SettingsService {
         }
         if resource == languages::RESOURCE {
             return serde_json::to_value(languages::Languages::spoken()).ok();
+        }
+        if resource == speech::RESOURCE {
+            return serde_json::to_value(speech::Speech::reads()).ok();
         }
         if resource == theme_packages::RESOURCE {
             return serde_json::to_value(theme_packages::ThemePackages::installed()).ok();
