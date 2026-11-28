@@ -157,6 +157,13 @@ def at_path(value, path: str):
     return at
 
 
+def asked_rows(reading) -> list:
+    """The invocations a workspace's invocations reading holds: the calls the
+    dispatch keeps, each as a record of its own, under the reader's `items`."""
+    items = reading.get("items") if isinstance(reading, dict) else None
+    return [row for row in items or [] if isinstance(row, dict)]
+
+
 class LocalMailServer:
     """The tree's stand-in mail server, run beside the walk's session as the
     provider of the address a mail account is added against: the server names in
@@ -2478,10 +2485,8 @@ class Walk:
             # A daemon reconnecting, or a workspace not looked at yet: nothing
             # is answered for it now, which is no question waiting.
             return []
-        rows = [row
-                for held in reading.get("records") or []
-                for row in (held.get("value") or {}).get("items") or []]
-        return [row for row in rows if row.get("status") == "waiting" and row.get("asked")]
+        return [row for row in asked_rows(reading)
+                if row.get("status") == "waiting" and row.get("asked")]
 
     def op_must(self, value) -> dict:
         """What a person must see now: every control the list names drawn on the
@@ -3622,7 +3627,7 @@ class Walk:
         if not invocation:
             raise Failed(f"the file chooser names no asked record: {question!r}")
         self.session.invoke(INVOCATIONS_APP, invocation, ASKED_RESOLVE,
-                            {"resolution": "approve", "files": [str(path)]})
+                            {"resolution": "approve", "files": [path.as_uri()]})
         until(f"the file chooser to take {path.name!r}",
               lambda: self.chooser_question() is None, 60)
         return {"chose": str(path), "question": invocation}

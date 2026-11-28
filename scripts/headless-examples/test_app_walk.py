@@ -245,6 +245,27 @@ class TheSessionAWalkStartsIn(unittest.TestCase):
         self.assertEqual(two[walk.LAN_NETWORKS_ENV], "127.0.0.1")
 
 
+class TheAsksAWalkReads(unittest.TestCase):
+    """A program's question is a `tilo.invocations` record, and the workspace's invocations
+    reading answers its calls under `items`. A walk that looked for another shape saw no
+    question at all, so every file chooser's answer timed out with nothing asked."""
+
+    def test_the_invocations_reading_holds_its_calls_under_items(self):
+        reading = {
+            "items": [
+                {"id": "a", "status": "waiting", "asked": {"files": {}}},
+                {"id": "b", "status": "ended"},
+            ],
+            "total": 2,
+            "waiting": 1,
+        }
+        self.assertEqual([row["id"] for row in walk.asked_rows(reading)], ["a", "b"])
+
+    def test_a_reading_of_another_shape_holds_none(self):
+        self.assertEqual(walk.asked_rows(None), [])
+        self.assertEqual(walk.asked_rows({"records": [{"value": {}}]}), [])
+
+
 class TheListTheMachinesDaemonEnforces(unittest.TestCase):
     """The machine's files daemon enforces a list the session decides, and keeps what it was
     told for its next start. In a walk that list lives in the walk's state, seeded from the
