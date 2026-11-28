@@ -642,13 +642,15 @@ pub const STORE_RECORD_KIND: &str = "k";
 pub type RecordKinds = std::collections::BTreeMap<[u8; 32], std::collections::BTreeSet<String>>;
 
 /// The kinds of the records each of `changes` writes in `record`, a document of a workspace's
-/// resource store, held as `held` before them (`None` for one held nowhere yet): read from the
-/// records themselves as they stand at the change's own earlier changes and after it, so a change
-/// of a record's kind names both, and every holder reads the same whatever else it holds. A
-/// content document holds one resource, whose kind its id names. A change whose records name no
-/// kind, or whose earlier changes are not here, is left out. Every change of a store's document
-/// is read so, whatever it was written under: a device's own edit of a record and a store's stamp
-/// alike write records of the store's kinds.
+/// resource store, held as `held` (`None` for one held nowhere yet). Read from the change's own
+/// operations and from the records as they stood at the change's own earlier changes: each record
+/// under whose key the change writes, with the kind it had there and any kind the change gives it,
+/// so a change of a record's kind names both, and every holder reads the same whatever else it
+/// holds. A change whose earlier changes are neither held nor among `changes` is left out, as is
+/// one whose records name no kind. A content document holds one resource, whose kind its id names.
+/// Every change of a store's document is read so, whatever it was written under: a device's own
+/// edit of a record and a store's stamp alike write records of the store's kinds. Nothing of the
+/// document is copied, so reading a change takes time that follows the change, not the document.
 #[must_use]
 pub fn store_record_kinds(
     record: &str,
@@ -656,6 +658,8 @@ pub fn store_record_kinds(
     changes: &[automerge::Change],
 ) -> RecordKinds {
     use automerge::ReadDoc as _;
+    use automerge::legacy::{Key, OpId, OpType};
+    use std::collections::BTreeSet;
     let mut kinds = RecordKinds::new();
     if !crate::is_store_document(record) {
         return kinds;
@@ -666,50 +670,123 @@ pub fn store_record_kinds(
         }
         return kinds;
     }
-    let kind_at = |doc: &automerge::Automerge, key: &str| {
-        let (_, map) = doc.get(automerge::ROOT, key).ok().flatten()?;
-        let (value, _) = doc.get(&map, STORE_RECORD_KIND).ok().flatten()?;
+    let empty = automerge::Automerge::new();
+    let held = held.unwrap_or(&empty);
+    let mut heads = held.get_heads();
+    heads.sort();
+    let kind_at = |key: &str, at: &[automerge::ChangeHash]| {
+        if at.is_empty() {
+            return None;
+        }
+        let value = if at == heads.as_slice() {
+            let (_, map) = held.get(automerge::ROOT, key).ok().flatten()?;
+            held.get(&map, STORE_RECORD_KIND).ok().flatten()?.0
+        } else {
+            let (_, map) = held.get_at(automerge::ROOT, key, at).ok().flatten()?;
+            held.get_at(&map, STORE_RECORD_KIND, at).ok().flatten()?.0
+        };
         value.as_str().map(str::to_owned)
     };
-    let mut held = held.cloned().unwrap_or_else(automerge::Automerge::new);
+    // Where each object `changes` make sits: the object it is made in and its key there.
+    let mut made = std::collections::HashMap::new();
+    // What of `held` each of `changes` stands on, for the later ones that build on it.
+    let mut stands_on = std::collections::HashMap::new();
+    // The kinds `changes` give each record, for the later ones that write it.
+    let mut given = std::collections::HashMap::<String, BTreeSet<String>>::new();
     for change in changes {
-        let Ok(mut doc) = held.fork_at(change.deps()) else {
+        // A change whose earlier changes are not here is left out, and so is any built on it.
+        let Some(mut on) = change
+            .deps()
+            .iter()
+            .map(|dep| match held.get_change_by_hash(dep) {
+                Some(_) => Some(vec![*dep]),
+                None => stands_on.get(dep).cloned(),
+            })
+            .collect::<Option<Vec<Vec<automerge::ChangeHash>>>>()
+            .map(|on| on.concat())
+        else {
             continue;
         };
-        let before = doc.clone();
-        let heads = doc.get_heads();
-        if doc.apply_changes([change.clone()]).is_err() {
-            continue;
+        on.sort();
+        on.dedup();
+        let expanded = change.decode();
+        let ops = || expanded.operations.iter().zip(expanded.start_op.get()..);
+        for (op, counter) in ops() {
+            if matches!(op.action, OpType::Make(_)) {
+                let id = OpId(counter, expanded.actor_id.clone());
+                made.insert(id, (op.obj.clone(), op.key.clone()));
+            }
         }
-        let records: std::collections::BTreeSet<String> = doc
-            .diff(&heads, &doc.get_heads())
-            .into_iter()
-            .filter_map(|patch| match (patch.path.first(), patch.action) {
-                (Some((_, automerge::Prop::Map(key))), _) => Some(key.clone()),
-                (
-                    None,
-                    automerge::PatchAction::PutMap { key, .. }
-                    | automerge::PatchAction::DeleteMap { key },
-                ) => Some(key),
-                _ => None,
-            })
-            .filter(|key| key.starts_with(STORE_RECORD))
-            .collect();
-        let written: std::collections::BTreeSet<String> = records
+        let mut records = BTreeSet::new();
+        for (op, _) in ops() {
+            let Some((key, whole)) = record_under(held, &made, &op.obj, &op.key) else {
+                continue;
+            };
+            if !key.starts_with(STORE_RECORD) {
+                continue;
+            }
+            if let (true, Key::Map(field), OpType::Put(automerge::ScalarValue::Str(kind))) =
+                (whole, &op.key, &op.action)
+                && field == STORE_RECORD_KIND
+            {
+                given
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(kind.to_string());
+            }
+            records.insert(key);
+        }
+        let written: BTreeSet<String> = records
             .iter()
-            .flat_map(|key| [kind_at(&before, key), kind_at(&doc, key)])
-            .flatten()
+            .flat_map(|key| {
+                let earlier = given.get(key).into_iter().flatten().cloned();
+                kind_at(key, &on).into_iter().chain(earlier)
+            })
             .collect();
         if !written.is_empty() {
             kinds.insert(change.hash().0, written);
         }
-        // Later changes may build on this one.
-        tilo_failure::ignored!(
-            "a change that does not apply here names nothing",
-            held.apply_changes([change.clone()]).ok()
-        );
+        stands_on.insert(change.hash(), on);
     }
     kinds
+}
+
+/// The key at the root of a resource store's document that an operation in `obj` at `key` writes
+/// under, and whether `obj` is the record kept there itself: found through the objects a change
+/// makes (`made`) and, for one made before, where `held` keeps it.
+fn record_under(
+    held: &automerge::Automerge,
+    made: &std::collections::HashMap<
+        automerge::legacy::OpId,
+        (automerge::legacy::ObjectId, automerge::legacy::Key),
+    >,
+    obj: &automerge::legacy::ObjectId,
+    key: &automerge::legacy::Key,
+) -> Option<(String, bool)> {
+    use automerge::ReadDoc as _;
+    use automerge::legacy::{Key, ObjectId};
+    let mut at = match (obj, key) {
+        (ObjectId::Root, Key::Map(key)) => return Some((key.to_string(), false)),
+        (ObjectId::Root, Key::Seq(_)) => return None,
+        (ObjectId::Id(id), _) => id.clone(),
+    };
+    let mut whole = true;
+    loop {
+        match made.get(&at) {
+            Some((ObjectId::Root, Key::Map(key))) => return Some((key.to_string(), whole)),
+            Some((ObjectId::Root, Key::Seq(_))) => return None,
+            Some((ObjectId::Id(parent), _)) => at = parent.clone(),
+            None => {
+                let obj = held.import_obj(&at.to_string()).ok()?;
+                let path: Vec<_> = held.parents(&obj).ok()?.collect();
+                let automerge::Prop::Map(key) = &path.last()?.prop else {
+                    return None;
+                };
+                return Some((key.clone(), whole && path.len() == 1));
+            }
+        }
+        whole = false;
+    }
 }
 
 /// The kinds `action`, a change's claim, says it edits whole: one for an edit of a record whole
