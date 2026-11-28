@@ -38,6 +38,10 @@ pub const DEVICE_FILES_VERBS: [&str; 7] = [
     "undo",
 ];
 
+/// Files' reads of a workspace's own folder by paths in it, which the workspace answers from its
+/// tree: what a folder or the trash holds, what a file says, and what changed it.
+pub const WORKSPACE_FILES_READS: [&str; 3] = ["list", "read-text", "history"];
+
 /// Action id that starts an application in a workspace without showing it:
 /// an instance with no window where the provider runs one, ready for the
 /// actions of the app that show nothing. It answers with that instance.

@@ -203,14 +203,6 @@ pub fn folder_of_reading(resource: &str) -> Option<&str> {
 /// named as History names them.
 pub const HISTORY: &str = "history";
 
-/// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
-/// ([`LIST`], [`READ_TEXT`], [`HISTORY`]), which whoever holds its tree answers as it carries
-/// out [`TREE_VERBS`]: with no window, and with every device of its people off.
-#[must_use]
-pub fn is_tree_read(action: &str) -> bool {
-    matches!(action, LIST | READ_TEXT | HISTORY)
-}
-
 /// The verb of Files that writes a file into a workspace's own folder by a path in the
 /// workspace, from text or from content the workspace keeps, where its tree is kept: what
 /// another app answered as content becomes a file with every device off. With a `device` it

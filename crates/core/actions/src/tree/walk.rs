@@ -1484,20 +1484,17 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// # Errors
     /// The path names no action, the walk does not reach the resource, or the resource offers
     /// no action by that name.
-    pub async fn target_at(&self, path: &str) -> Result<crate::remote::RemoteActionTarget, String> {
+    pub async fn target_at(
+        &self,
+        path: &str,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> Result<crate::remote::RemoteActionTarget, String> {
         let parsed = Address::parse(path)?;
         let action = parsed.action.clone().ok_or_else(|| {
             format!("`{path}` names no action: write `<app>/<resource>#<action>`")
         })?;
-        // Files' verbs on the workspace's own folder are the device's, and start no Files.
-        if below_app(&parsed).is_empty()
-            && names_files(&app_of(&parsed))
-            && crate::remote::DEVICE_FILES_VERBS.contains(&action.as_str())
-        {
-            return Ok(crate::remote::RemoteActionTarget {
-                provider: crate::remote::DEVICE_FILES_PROVIDER.to_owned(),
-                address: crate::api::ActionAddress::new(crate::remote::DEVICE_FILES_FOLDER, action),
-            });
+        if let Some(target) = self.folder_target(&parsed, &action, arguments) {
+            return Ok(target);
         }
         let (resolved, _) = self
             .resolve(&parsed, None)
@@ -1507,6 +1504,49 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         Ok(crate::remote::RemoteActionTarget {
             provider: resolved.provider,
             address: picked.address.clone(),
+        })
+    }
+
+    /// The target of Files' `action` on the workspace's own folder by a path in it, which starts
+    /// no Files: a change or a put of content (`open` with `content` or `files`) is the device's
+    /// that keeps the tree, and a read is the workspace's. `None` for any other call, and for one
+    /// naming a `device`, whose own disk Files on that device changes or reads; a `read-text` of
+    /// a path from `/` or `~` is a computer's own file, read there too.
+    pub fn folder_target(
+        &self,
+        parsed: &Address,
+        action: &str,
+        arguments: &serde_json::Map<String, Value>,
+    ) -> Option<crate::remote::RemoteActionTarget> {
+        use crate::remote::{APPLICATION_OPEN_ACTION, RemoteActionTarget};
+        if !below_app(parsed).is_empty()
+            || !names_files(&app_of(parsed))
+            || arguments.contains_key("device")
+        {
+            return None;
+        }
+        let puts = action == APPLICATION_OPEN_ACTION
+            && (arguments.contains_key("content") || arguments.contains_key("files"));
+        if puts || crate::remote::DEVICE_FILES_VERBS.contains(&action) {
+            return Some(RemoteActionTarget {
+                provider: crate::remote::DEVICE_FILES_PROVIDER.to_owned(),
+                address: crate::api::ActionAddress::new(crate::remote::DEVICE_FILES_FOLDER, action),
+            });
+        }
+        let on_a_computer = action == "read-text"
+            && !arguments.contains_key("content")
+            && arguments
+                .get("file")
+                .and_then(Value::as_str)
+                .is_none_or(|file| file.trim_start().starts_with(['/', '~']));
+        (crate::remote::WORKSPACE_FILES_READS.contains(&action) && !on_a_computer).then(|| {
+            RemoteActionTarget {
+                provider: crate::remote::workspace_provider(&self.workspace),
+                address: crate::api::ActionAddress::new(
+                    format!("{}{FILES_APP}", crate::remote::APPLICATION_RESOURCE_PREFIX),
+                    action,
+                ),
+            }
         })
     }
 

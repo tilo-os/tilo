@@ -69,8 +69,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Do the one action `path` names. One of Files' verbs on the workspace's own folder
-    /// ([`in_workspace_folder`]) starts no app: a read is asked of the workspace, a put or a
-    /// change of the device that keeps the tree. Every other action is done in the app that
+    /// ([`Tree::folder_target`](tilo_actions::tree::Tree::folder_target)) starts no app: a read is
+    /// asked of the workspace, a put or a change of the device that keeps the tree. Every other action is done in the app that
     /// offers it. A file read by its bare name is first the entry Files shows by that name where
     /// the agent acts ([`Self::read_where_shown`]).
     pub(super) async fn do_one_value(
@@ -108,23 +108,30 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if tilo_actions::tree::names_files(app)
             && let Ok(parsed) = Address::parse(path)
             && let Some(action) = parsed.action.as_deref()
-            && in_workspace_folder(&parsed, action, &arguments)
+            && let Some(target) = self.tree.folder_target(&parsed, action, &arguments)
         {
             if reads_by_bare_name(action, &arguments)
                 && let Some(read) = self.read_where_shown(path, &arguments, wait_ms).await
             {
                 return read;
             }
-            // A read is answered by the workspace's listing of its folder; a put or a change is
-            // the device's, which keeps the tree.
-            let value = if reads_workspace_folder(action, &arguments) {
-                let files = fs_protocol::tree::FILES_APP;
-                self.app_in_workspace(files, action, arguments, invocation, wait_ms)
-                    .await?
-            } else {
-                self.in_device_folder(action, arguments, invocation, wait_ms)
-                    .await?
-            };
+            let workspace =
+                target.provider == tilo_actions::remote::workspace_provider(&self.workspace);
+            let value = Box::pin(self.invoke_one(OneCall {
+                provider: Addressed {
+                    provider: target.provider,
+                    app_id: None,
+                },
+                workspace,
+                revision: None,
+                resource: target.address.resource,
+                action: target.address.action,
+                arguments,
+                invocation_id: invocation,
+                wait_ms,
+            }))
+            .await
+            .map_err(String::from)?;
             let reply = outcome(&value);
             return Ok(Done::Launched {
                 value,
@@ -266,33 +273,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reply
     }
 
-    /// Files' `action` on the workspace's own folder (its `open` of content, a verb by paths in
-    /// it), as the device that keeps the tree answers it under the workspace's grants for Files.
-    async fn in_device_folder(
-        &self,
-        action: &str,
-        arguments: serde_json::Map<String, Value>,
-        invocation: Option<String>,
-        wait_ms: Option<u64>,
-    ) -> Result<Value, String> {
-        use tilo_action_services::device_files;
-        Box::pin(self.invoke_one(OneCall {
-            provider: Addressed {
-                provider: device_files::PROVIDER.to_owned(),
-                app_id: None,
-            },
-            workspace: false,
-            revision: None,
-            resource: device_files::FOLDER.to_owned(),
-            action: action.to_owned(),
-            arguments,
-            invocation_id: invocation,
-            wait_ms,
-        }))
-        .await
-        .map_err(String::from)
-    }
-
     /// The workspace's `action` (its `open` or its `start`) of the app `app_id`, with
     /// `arguments` for the files it opens there: the workspace's answer, which names the
     /// instance it started at [`super::OPENED_PEER`].
@@ -329,53 +309,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 pub(super) fn starts_app(action: &str) -> bool {
     action == tilo_actions::remote::APPLICATION_OPEN_ACTION
         || action == tilo_actions::remote::APPLICATION_START_ACTION
-}
-
-/// Whether `action` with `arguments`, asked of the app `parsed` names, is one of Files' verbs on
-/// the workspace's own folder, its `write-file` there, its `open` of content
-/// ([`puts_into_workspace_folder`]), or one of its reads of it ([`reads_workspace_folder`]): a path in the workspace, and no device whose own disk it would
-/// change or read. Those start no app: the workspace reads its tree, and the device that keeps it
-/// changes it, as a file put into the workspace is; with a `device` they stay Files' own on that
-/// device.
-pub(super) fn in_workspace_folder(
-    parsed: &Address,
-    action: &str,
-    arguments: &serde_json::Map<String, Value>,
-) -> bool {
-    below_app(parsed).is_empty()
-        && tilo_actions::tree::names_files(&app_of(parsed))
-        && (fs_protocol::tree::is_tree_verb(action)
-            || action == fs_protocol::tree::WRITE_FILE
-            || puts_into_workspace_folder(action, arguments)
-            || reads_workspace_folder(action, arguments))
-        && !arguments.contains_key("device")
-}
-
-/// Whether `action` with `arguments` is Files' `open` of content (`content`, or `files` for
-/// many): a put into the workspace's own folder, which the workspace answers wherever Files
-/// runs. Asked of a running Files it would be resolved in that window's own actions, which
-/// put nothing into the workspace.
-fn puts_into_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
-    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-        && (arguments.contains_key("content") || arguments.contains_key("files"))
-}
-
-/// Whether `action` with `arguments` is one of Files' reads of the workspace's own folder by a
-/// path in the workspace: its `list`, its `history`, and its `read-text` of a file whose path starts at the
-/// workspace's folder. A path that starts with `/` or `~` is a file on a computer's own disk,
-/// which Files on that computer reads.
-fn reads_workspace_folder(action: &str, arguments: &serde_json::Map<String, Value>) -> bool {
-    use fs_protocol::tree::{HISTORY, LIST, READ_TEXT};
-    // Content the workspace keeps is on no one computer either: a read of it by its address
-    // (`content`) is the workspace's to answer.
-    action == LIST
-        || action == HISTORY
-        || (action == READ_TEXT
-            && (arguments.contains_key("content")
-                || arguments
-                    .get("file")
-                    .and_then(Value::as_str)
-                    .is_some_and(|file| !file.trim_start().starts_with(['/', '~']))))
 }
 
 /// What Files says of a name that is neither an absolute path nor an entry of the folder it

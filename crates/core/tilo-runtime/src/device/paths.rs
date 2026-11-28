@@ -78,7 +78,12 @@ impl ActionProvider for Paths {
         // The walk may ask the workspace where the app runs and wait on a directory that is
         // being read: it runs to its answer here, on the connection's own thread, before the
         // action it found is admitted as the app.
-        match super::workspaces::block_on_owned(async move { tree.target_at(&path).await }) {
+        let arguments = match &request.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+            _ => serde_json::Map::new(),
+        };
+        let found = async move { tree.target_at(&path, &arguments).await };
+        match super::workspaces::block_on_owned(found) {
             Ok(target) => {
                 request.target = target;
                 self.inner.invoke(caller, request)
