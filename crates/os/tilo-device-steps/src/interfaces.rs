@@ -283,17 +283,17 @@ mod tests {
     }
 
     /// An image built before interfaces had one version each: its declaration lists versions.
-    fn older_image() -> Declaration {
+    fn list_format_image() -> Declaration {
         Declaration::parse("[interfaces]\nsystem = [1]\nruntime = [1]\nshell-ui = [1]\n")
     }
 
     tilo_test_env::scenario! {
         fn interface_conflicts_are_judged_by_what_each_layer_and_image_declares;
 
-        phase a_session_swap_over_an_image_declaring_interfaces_in_the_older_form_is_refused;
+        phase a_session_swap_over_an_image_declaring_interfaces_in_another_format_is_refused;
         {
-            let image = older_image();
-            assert!(matches!(image, Declaration::Versions { .. }));
+            let image = list_format_image();
+            assert!(matches!(image, Declaration::Unreadable { .. }));
             let stack = [
                 member("tilo-session", &current(), true),
                 member("launcher", &current(), false),
@@ -313,7 +313,7 @@ mod tests {
 
         phase the_whole_session_set_swapped_together_reads_its_own_declaration;
         {
-            let image = older_image();
+            let image = list_format_image();
             let stack: Vec<Member> = USERSPACE_COMPONENTS
                 .iter()
                 .map(|component| member(component, &current(), *component == "tilo-session"))

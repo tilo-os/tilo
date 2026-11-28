@@ -5,10 +5,10 @@
 //! the readings run here, on the registries the workspace configures
 //! ([`app_cli::config::load_registries`]), never on a list the caller hands over.
 //!
-//! A catalogue read the caller explains to a person (the catalogue expired, or the system is too
-//! old to judge any repository) answers as a typed refusal, `{"refused": <reason>, "detail":
-//! <text>}`: the reason decides what the caller says, and the detail is for logs. Anything else
-//! that goes wrong fails the reading.
+//! A catalogue read the caller explains to a person (the catalogue expired, or the repository's is
+//! older than the one this device accepted) answers as a typed refusal, `{"refused": <reason>,
+//! "detail": <text>}`: the reason decides what the caller says, and the detail is for logs.
+//! Anything else that goes wrong fails the reading.
 
 use serde_json::{Map, Value, json};
 
@@ -24,9 +24,6 @@ const MAX_OFFER_BYTES: usize = 256 * 1024;
 /// Why a catalogue read gave no rows, for the caller to say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The system's interface declaration cannot be read: the system needs an update before any
-    /// repository can be judged.
-    SystemUpdateNeeded,
     /// The repository's catalogue is authentic but expired.
     Expired,
     /// The repository serves a catalogue older than the one this device already accepted.
@@ -38,7 +35,6 @@ impl Refusal {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::SystemUpdateNeeded => "system-update-needed",
             Self::Expired => "expired",
             Self::BehindAccepted => "behind-accepted",
         }
@@ -90,7 +86,6 @@ pub fn reading(id: &str, arguments: &Map<String, Value>) -> Option<Result<Value,
 /// `registry`'s verified catalogue: asked of the repository now when `fresh`, else the one this
 /// device last accepted from it, read without the network.
 fn catalogue(registry: &str, fresh: bool) -> Result<Vec<VerifiedEntry>, ReadError> {
-    system_declaration_readable(&package_store::interfaces::system_interfaces_path())?;
     let configured = app_cli::config::load_registries().map_err(ReadError::Failed)?;
     if fresh {
         catalogue_from(&configured, registry, app_cli::client::fetch_entries)
@@ -114,26 +109,6 @@ fn catalogue_answer(read: Result<Vec<VerifiedEntry>, ReadError>) -> Result<Value
             Ok(json!({ "refused": refusal.name(), "detail": detail }))
         }
         Err(ReadError::Failed(error)) => Err(error),
-    }
-}
-
-/// Refuse to read any repository while the system's interface declaration at `path` cannot be
-/// read ([`Refusal::SystemUpdateNeeded`]).
-///
-/// Which builds of an app run here is decided against that declaration. Unreadable, it was written
-/// for another version of the system than this daemon, so the caller must say the system needs an
-/// update. A device without a declaration (a development machine) judges nothing and reads
-/// repositories as they are.
-fn system_declaration_readable(path: &std::path::Path) -> Result<(), ReadError> {
-    match package_store::interfaces::read_interfaces(path) {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            tracing::error!(%error, "the system's interface declaration cannot be read; repositories are refused until the system is updated");
-            Err(ReadError::Refused(
-                Refusal::SystemUpdateNeeded,
-                error.to_string(),
-            ))
-        }
     }
 }
 
@@ -203,33 +178,6 @@ mod tests {
                 channel: tilo_app_package::version::ReleaseChannel::Stable,
             }],
         }
-    }
-
-    /// A declaration the daemon cannot read refuses every repository with the reason the caller
-    /// shows, never an empty or silently unjudged catalogue; a readable one, or none, reads.
-    #[test]
-    fn an_unreadable_system_declaration_refuses_saying_the_system_needs_an_update() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("system-interfaces.toml");
-        std::fs::write(&path, "[interfaces]\nsystem = \"one\"\n").unwrap();
-        let refused = system_declaration_readable(&path).unwrap_err();
-        assert!(
-            matches!(&refused, ReadError::Refused(Refusal::SystemUpdateNeeded, detail) if detail.contains("system-interfaces.toml")),
-            "{refused}"
-        );
-        assert_eq!(
-            catalogue_answer(Err(refused)).unwrap()["refused"],
-            "system-update-needed"
-        );
-
-        std::fs::write(
-            &path,
-            "[interfaces]\nsystem = [1]\nshell-ui = [11]\nruntime = [2]\n",
-        )
-        .unwrap();
-        assert!(system_declaration_readable(&path).is_ok());
-        std::fs::remove_file(&path).unwrap();
-        assert!(system_declaration_readable(&path).is_ok());
     }
 
     /// Only a configured, enabled repository is ever fetched, by its configured address and key.

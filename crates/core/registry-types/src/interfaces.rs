@@ -86,15 +86,17 @@ impl FromStr for InterfaceRequirement {
 /// filesystem, the app host, the identity broker and the rest an app is connected to.
 pub const RUNTIME_INTERFACE: &str = "runtime";
 
-/// The interface this OS serves of each, as its `system-interfaces.toml` declares them, the oldest
-/// version it still serves of the runtime interface, and the services that speak it:
+/// The one version this OS serves of each interface, as its `system-interfaces.toml` declares them,
+/// the oldest version it still serves of the runtime interface, and the services that speak the
+/// runtime interface:
 ///
 /// ```toml
 /// [interfaces]
 /// system = 1
 /// runtime = 3
+///
 /// [runtime]
-/// services = ["collab"]
+/// services = ["collab", "tilo-fs"]
 /// oldest = 2
 /// ```
 ///
@@ -105,29 +107,9 @@ pub const RUNTIME_INTERFACE: &str = "runtime";
 #[serde(deny_unknown_fields)]
 pub struct ProvidedInterfaces {
     #[serde(default)]
-    pub interfaces: BTreeMap<String, ServedVersions>,
+    pub interfaces: BTreeMap<String, u32>,
     #[serde(default)]
     pub runtime: RuntimeServices,
-}
-
-/// The versions one interface is served at: this form's number, or the list an older image wrote.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ServedVersions {
-    One(u32),
-    Listed(Vec<u32>),
-}
-
-impl ServedVersions {
-    /// The versions served, oldest and current; `None` when the list is empty.
-    #[must_use]
-    pub fn range(&self) -> Option<(u32, u32)> {
-        let versions = match self {
-            Self::One(version) => std::slice::from_ref(version),
-            Self::Listed(versions) => versions,
-        };
-        Some((*versions.iter().min()?, *versions.iter().max()?))
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,7 +208,7 @@ impl ProvidedInterfaces {
         Self {
             interfaces: interfaces
                 .into_iter()
-                .map(|(name, version)| (name.to_owned(), ServedVersions::One(version)))
+                .map(|(name, version)| (name.to_owned(), version))
                 .collect(),
             runtime: RuntimeServices {
                 services: runtime_services.into_iter().map(str::to_owned).collect(),
@@ -243,15 +225,17 @@ impl ProvidedInterfaces {
         self
     }
 
-    /// The versions this OS serves of `name`, oldest and current.
+    /// The versions this OS serves of `name`: the oldest it still speaks and the current one. An
+    /// interface of its own is served at one version; a service speaking the runtime interface at
+    /// the runtime's range.
     pub fn served(&self, name: &str) -> Option<(u32, u32)> {
-        if let Some(versions) = self.interfaces.get(name) {
-            return versions.range();
+        if let Some(version) = self.interfaces.get(name) {
+            return Some((*version, *version));
         }
         if !self.runtime.services.contains(name) {
             return None;
         }
-        let current = self.interfaces.get(RUNTIME_INTERFACE)?.range()?.1;
+        let current = *self.interfaces.get(RUNTIME_INTERFACE)?;
         Some((self.runtime.oldest.unwrap_or(current).min(current), current))
     }
 
@@ -471,8 +455,10 @@ mod tests {
         assert_eq!(os.version("collab"), Some(2));
         assert_eq!(os.served("collab"), Some((1, 2)));
         assert!(serde_json::from_str::<ProvidedInterfaces>(r#"{"system":1}"#).is_err());
-        let listed: ProvidedInterfaces =
-            serde_json::from_str(r#"{"interfaces":{"system":[1,2]}}"#).unwrap();
-        assert_eq!(listed.served("system"), Some((1, 2)));
+        assert!(
+            serde_json::from_str::<ProvidedInterfaces>(r#"{"interfaces":{"system":[1,2]}}"#)
+                .is_err(),
+            "one version per interface"
+        );
     }
 }

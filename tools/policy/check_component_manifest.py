@@ -256,8 +256,8 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
                 report.error(where, "the session must ship the system-interface declaration",
                              'add { from = "@manifest/usr/share/tilo/system-interfaces.toml", '
                              'to = "/usr/share/tilo/system-interfaces.toml", mode = "0644" } to the '
-                             f'{SESSION_COMPONENT} files; a session swapped onto an older image '
-                             'otherwise reads a declaration in another format and judges no app.')
+                             f'{SESSION_COMPONENT} files; the image record and tilo-vm read it, '
+                             'while every component that judges apps carries its own.')
         elif component.name == STEPS_COMPONENT:
             manifest_copy = next((entry for entry in component.files
                                   if entry.to == "/usr/share/tilo/components.toml"), None)

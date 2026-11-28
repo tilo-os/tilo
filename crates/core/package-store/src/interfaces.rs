@@ -49,21 +49,18 @@ pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, Interf
         })
 }
 
-/// Parse a declaration's TOML: one number per interface, or the list an older image wrote.
+/// Parse a declaration's TOML.
 ///
 /// # Errors
 ///
-/// Returns the reason when `raw` is not a declaration, or names an interface, service or version it
-/// cannot serve.
+/// Returns the reason when `raw` is not a declaration, names a malformed
+/// interface, service or version, lists a runtime service under a name that
+/// is an interface of its own, lists runtime services without serving the
+/// runtime interface, or names an oldest runtime version it does not serve.
 pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
     let provided: ProvidedInterfaces = toml::from_str(raw).map_err(|error| error.to_string())?;
-    for (name, versions) in &provided.interfaces {
-        let Some((oldest, current)) = versions.range() else {
-            return Err(format!("{name} is served at no version"));
-        };
-        for version in [oldest, current] {
-            InterfaceRequirement::new(name, version).map_err(|error| error.to_string())?;
-        }
+    for (name, version) in &provided.interfaces {
+        InterfaceRequirement::new(name, *version).map_err(|error| error.to_string())?;
     }
     for service in &provided.runtime.services {
         if !tilo_app_package::interfaces::valid_interface_name(service) {
@@ -95,15 +92,29 @@ pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
     Ok(provided)
 }
 
+/// The declaration this build serves: the tree's `system-interfaces.toml`, read when it was
+/// built, so no component judges apps by a declaration another component ships it.
+const DECLARATION: &str = include_str!("../../../../os/usr/share/tilo/system-interfaces.toml");
+
 /// The interfaces this OS serves; `None` on a host that declares none.
 ///
-/// A declaration that cannot be read is reported on stderr once and treated
-/// as absent: judging packages against a guess would refuse ones that work.
+/// This build's own declaration, not the image's file: a component swapped onto another image
+/// judges apps by what it was built for, and a generation whose components disagree is refused
+/// before it runs (`tilo-device-steps`). A developer override names a file instead; one that
+/// cannot be read is reported on stderr once and treated as absent, since judging packages
+/// against a guess would refuse ones that work.
 #[allow(
     clippy::print_stderr,
     reason = "a one-time operator warning; the reader may run before tracing is initialised"
 )]
+#[expect(
+    clippy::expect_used,
+    reason = "the carried declaration is a checked repository file"
+)]
 pub fn system_interfaces() -> Option<ProvidedInterfaces> {
+    if dev_override(SYSTEM_INTERFACES_ENV).is_none() {
+        return Some(parse_interfaces(DECLARATION).expect("the carried declaration parses"));
+    }
     match read_interfaces(&system_interfaces_path()) {
         Ok(provided) => provided,
         Err(error) => {
@@ -160,9 +171,6 @@ fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The declaration a pre-a572950cc8f image ships, listing each interface's versions.
-    const LISTED_DECLARATION: &str = include_str!("../tests/data/system-interfaces-list-form.toml");
 
     const SETTINGS: &str = r#"
 [package]
@@ -253,13 +261,10 @@ system = "required@2"
             let ranged = read_interfaces(&path).unwrap().unwrap();
             assert_eq!(ranged.served("collab"), Some((1, 2)));
 
-            // A daemon newer than the image it runs on reads that image's declaration.
-            std::fs::write(&path, LISTED_DECLARATION).unwrap();
-            let listed = read_interfaces(&path).unwrap().unwrap();
-            assert_eq!(listed.served("app-host"), Some((1, 1)));
-
             for bad in [
                 "system = 1\n",
+                "[interfaces]\nsystem = [1]\n",
+                "[interfaces]\nsystem = [1, 2]\n",
                 "[interfaces]\nsystem = 0\n",
                 "[interfaces]\n\"Sys tem\" = 1\n",
                 "[interfaces]\nsystem = \"1\"\n",
@@ -322,5 +327,14 @@ system = "required@2"
                 tilo_app_package::interfaces::Behind::System
             );
         }
+    }
+
+    /// A component judges apps by the declaration it was built with, not by a file another one
+    /// ships it: no device declares anything at the path this test host runs on.
+    #[test]
+    fn the_build_carries_the_declaration_it_judges_apps_by() {
+        let provided = system_interfaces().expect("the carried declaration");
+        assert!(provided.version("system").is_some());
+        assert!(provided.version("runtime").is_some());
     }
 }
