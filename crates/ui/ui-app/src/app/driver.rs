@@ -1932,11 +1932,32 @@ impl Driver {
         for root in self.app.presentation_roots() {
             crate::headless::collect_named_targets(root, "", &mut HashMap::new(), &mut retained);
         }
+        // Two widgets that share an address and a name (a `#[repr(transparent)]` wrapper and the
+        // field it wraps) are told apart by nothing: the walk meets both under one key, and the
+        // address names neither. One widget the walk meets twice (a decorator's child, which it
+        // lays out in place of itself) shares one concrete type and is that one widget.
+        let mut shared: HashMap<(usize, String), &'static str> = HashMap::new();
+        let mut ambiguous = std::collections::HashSet::new();
+        for target in &retained {
+            match shared.entry(target.key.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(target.concrete);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    if *entry.get() != target.concrete {
+                        ambiguous.insert(target.key.clone());
+                    }
+                }
+            }
+        }
         let mut targets = HashMap::new();
         for target in retained {
             let Some(Some(node)) = registered.get(&target.key).copied() else {
                 continue;
             };
+            if ambiguous.contains(&target.key) {
+                continue;
+            }
             // One widget the walk meets under two paths (a decorator's child, which it lays out
             // in place of itself) is that one widget: both its paths name it, and a press on
             // either reaches it. Only a name a *different* widget already holds is left alone,

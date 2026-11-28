@@ -323,6 +323,9 @@ pub struct RetainedNamedTarget {
     pub path: String,
     pub bare: Option<String>,
     pub id: Option<String>,
+    /// The concrete type the walk met: two widgets that share an address (a wrapper and its first
+    /// field) are told apart by it, and one widget met twice has one.
+    pub concrete: &'static str,
 }
 
 pub fn collect_named_targets(
@@ -361,6 +364,7 @@ fn collect_named_targets_called(
         path: path.clone(),
         bare,
         id: widget.test_id().map(str::to_owned),
+        concrete: widget.concrete_type_name(),
     });
     // Every child a walk of the retained tree must see, in the order it lists them: those the
     // widget routes input to, then the ones it hosts without routing — a subtree it does not own
