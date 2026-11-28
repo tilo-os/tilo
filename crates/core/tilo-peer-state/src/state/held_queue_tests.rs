@@ -182,11 +182,10 @@ tilo_test_env::scenario! {
         assert_eq!(value(&receiver, "late").as_deref(), Some("late"));
     }
 
-    phase a_write_waiting_for_its_authors_certificate_is_taken_in_with_its_own_admission;
+    phase a_write_waiting_for_its_authors_certificate_asks_for_the_state_that_names_it;
     {
         let (mut receiver, _, member_key, _, now) = seeded();
         receiver.select_exact_admissions().unwrap();
-        let workspace = receiver.workspace_id().to_owned();
         // A further device of the person the workspace's member list names, whose certificate
         // this replica has not been sent.
         let (newcomer_key, newcomer_cert) = crate::fixture::device(1, 4);
@@ -207,40 +206,16 @@ tilo_test_env::scenario! {
             held.summary().replay_wanted,
             "the workspace's state, which names the device, is asked for while its write waits"
         );
-        // Its own admission reaches this replica as every member's does, under its own name:
-        // the write held for its certificate is decided again with it, not on the next change
-        // that happens by.
-        let governance =
-            crate::join_log::GovernanceMessages::governance_messages(&receiver).unwrap();
-        let row = crate::own_admission::further_device_row(
-            &workspace,
-            &governance,
-            &newcomer_cert,
-            &newcomer_key,
-            now,
-        )
-        .unwrap();
-        assert!(!row.is_empty(), "the newcomer signs its own row");
-        let admitted = receiver
+        // Once per device: its next write asks for nothing, and neither does the same one again.
+        let later = incremental(&mut author, &member_key, now, "by the newcomer again");
+        let again = receiver
             .receive_from_report(
                 TransportOrigin::ServerDelta(newcomer_cert.device_public_key),
-                NeighbourMsg::SyncResp {
-                    changes: row,
-                    workspace,
-                },
+                as_author(&later, &newcomer_key, 2),
                 now,
             )
             .unwrap();
-        assert!(
-            matches!(admitted.primary(), InputDisposition::MetadataOnly | InputDisposition::Accepted(_)),
-            "{:?}",
-            admitted.primary()
-        );
-        assert_eq!(
-            value(&receiver, "by the newcomer").as_deref(),
-            Some("by the newcomer"),
-            "a write held for its author's certificate is taken in with its author's own row"
-        );
+        assert!(!again.summary().replay_wanted);
     }
 
     phase a_message_let_go_is_asked_for_again_once_what_it_waited_for_lands_and_then_applies;
@@ -291,7 +266,13 @@ tilo_test_env::scenario! {
         let replayed = receiver.receive_from_report(member, second, now).unwrap();
         assert!(matches!(replayed.primary(), InputDisposition::Accepted(_)));
         assert_eq!(value(&receiver, "second").as_deref(), Some("second"));
-        // Asked once: what landed is forgotten.
+        // What landed is forgotten: a member's next write is no reason to ask.
+        let writer = receiver
+            .receive_from_report(member, incremental(&mut author, &key, now, "after"), now)
+            .unwrap();
+        assert!(!writer.summary().replay_wanted);
+        // A device this replica names nowhere is asked about once, for the state that names it,
+        // and not for each of its writes after.
         let again = receiver
             .receive_from_report(
                 origin,
@@ -299,6 +280,17 @@ tilo_test_env::scenario! {
                 now,
             )
             .unwrap();
-        assert!(!again.summary().replay_wanted);
+        assert!(
+            again.summary().replay_wanted,
+            "an unknown device's first write asks for the state that names it"
+        );
+        let twice = receiver
+            .receive_from_report(
+                origin,
+                as_author(&incremental(&mut author, &key, now, "y"), &stranger, 901),
+                now,
+            )
+            .unwrap();
+        assert!(!twice.summary().replay_wanted);
     }
 }
