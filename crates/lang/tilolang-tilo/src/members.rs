@@ -410,10 +410,14 @@ impl Host {
             .iter()
             .map(|row| (row.id.clone(), row.clone()))
             .collect();
-        // A view shows a name the workspace keeps, and the reading below names its members by
-        // their actor alone: a member renamed moves no actor, and still every view naming them
-        // runs again.
-        let renamed = *before != now;
+        // A view shows a name and a face the workspace keeps, and the reading below names its
+        // members by their actor alone: someone renamed, or with another picture, moves no actor,
+        // and still every view showing them runs again. A row joining or leaving is the reading's
+        // move, not this one.
+        let renamed = before.iter().any(|(id, was)| {
+            now.get(id)
+                .is_some_and(|now| was.name != now.name || was.avatar != now.avatar)
+        });
         *self.inner.member_rows.borrow_mut() = Rc::new(now);
         let me = self.viewer().clone();
         let mine = self
@@ -458,9 +462,9 @@ impl Host {
             });
         self.inner.members_known.set(true);
         self.inner.members_asked.set(false);
-        if took || renamed {
-            // A view that read a name runs again even where a read followed the members first:
-            // the move is kept until an embedder takes it.
+        if renamed {
+            // A view showing someone runs again, kept until an embedder takes it. Who is in the
+            // workspace is the reading's own move, which the boundaries that read it follow.
             self.inner.members_named_moved.set(true);
         }
         took
