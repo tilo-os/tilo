@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::content::CrdtRoute;
 use crate::content::fixtures::{fan, pair};
-use crate::files::Paths;
+use crate::files::{ContentRead, Paths, ReadError};
 use crate::workspaces::fixtures::{hosting_device, test_host};
 
 use super::*;
@@ -1045,5 +1045,77 @@ fn a_file_reads_whole_from_a_device_that_holds_none_of_it() {
     assert!(
         started.elapsed() < std::time::Duration::from_secs(10),
         "the read gave up instead of waiting the file out: {error}"
+    );
+}
+
+/// A read of the file reports what has verified as it goes, and a stop ends a wait on a chunk
+/// no device still serves at once, answering [`ReadError::Stopped`] with no bytes.
+#[test]
+fn a_read_reports_progress_and_stops_between_chunks() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the test's runtime starts");
+    let put = runtime.block_on(fixture());
+    let photo: Vec<u8> = (0..716_800)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let content = put_content(&put.shelf, put.workspace, &photo);
+    put.put(&json!({"content": content, "name": "photo.jpg"}))
+        .expect("the file is put into the workspace");
+    let tree = runtime.block_on(tree_of(&put.workspaces, &put.name));
+    let hash = file_at(&tree, "", "photo.jpg")
+        .expect("the file is in the tree")
+        .hash
+        .clone()
+        .expect("the file names its content");
+
+    // The serving device offers the file's manifest and every chunk; the reader keeps none.
+    let fan = fan();
+    let route = CrdtRoute::app(FILES_APP, &put.name);
+    let offered = {
+        let shelf = put.shelf.0.lock().unwrap();
+        shelf.get(&files_scope(put.workspace)).cloned()
+    }
+    .expect("the put keeps the file's content");
+    for (chunk, bytes) in &offered {
+        fan.a
+            .offer(&route, chunk, bytes)
+            .expect("the serving device offers the content");
+    }
+
+    let (stop, watching) = tokio::sync::watch::channel(false);
+    let (told, progress) = std::sync::mpsc::channel();
+    let serving = Arc::clone(&fan.a_serves_b);
+    let reader = Paths::new(
+        put.workspaces.clone(),
+        Some(Arc::clone(&fan.b)),
+        runtime.handle().clone(),
+    );
+    let (name, hash) = (put.name, hash);
+    let started = std::time::Instant::now();
+    let reading = std::thread::spawn(move || {
+        let mut report = |done: u64, total: u64| {
+            let _ = told.send((done, total));
+            // The serving device stops serving what is left: the next chunk waits on it.
+            serving.store(false, std::sync::atomic::Ordering::Release);
+            true
+        };
+        let mut reading = ContentRead::new(&watching, &mut report);
+        reader.read_content_with(&name, &hash, &mut reading)
+    });
+    let (done, total) = progress
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the read reports progress");
+    assert!(
+        done > 0 && done < total,
+        "some, not all, of the file verified: {done} of {total}"
+    );
+    let _ = stop.send(true);
+    let read = reading.join().expect("the read thread");
+    assert_eq!(read.err(), Some(ReadError::Stopped));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the stop ended the wait on the missing chunk at once"
     );
 }

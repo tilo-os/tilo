@@ -51,7 +51,7 @@ pub mod socket;
 
 pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
 pub use opened::OpenedFiles;
-pub use paths::{Entry, EntryKind, Paths};
+pub use paths::{ContentRead, Entry, EntryKind, Paths, ReadError};
 pub use pushed::WrittenPushes;
 pub use puts::{FilesWatch, Puts};
 
@@ -603,6 +603,8 @@ pub struct WorkspaceSource {
     route: CrdtRoute,
     /// How long a read waits for content the workspace is asked for.
     wait: Duration,
+    /// Set when the caller stops the read: a wait on a chunk no device holds ends at once.
+    stop: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl WorkspaceSource {
@@ -612,13 +614,26 @@ impl WorkspaceSource {
             content,
             route: CrdtRoute::app(FILES_APP, workspace),
             wait,
+            stop: None,
         }
+    }
+
+    /// Stop waiting for a chunk as soon as `stop` says the caller gave up.
+    #[must_use]
+    pub fn stopping(mut self, stop: tokio::sync::watch::Receiver<bool>) -> Self {
+        self.stop = Some(stop);
+        self
     }
 }
 
 impl ContentSource for WorkspaceSource {
     fn fetch(&self, hash: Hash) -> futures::future::BoxFuture<'static, Option<Bytes>> {
-        let (content, route, wait) = (Arc::clone(&self.content), self.route.clone(), self.wait);
+        let (content, route, wait, stop) = (
+            Arc::clone(&self.content),
+            self.route.clone(),
+            self.wait,
+            self.stop.clone(),
+        );
         Box::pin(async move {
             let hash = hash.to_hex();
             // Subscribed before the want goes out: an answer that comes at once is heard.
@@ -629,7 +644,7 @@ impl ContentSource for WorkspaceSource {
                     .await
                     .ok()?;
             }
-            tokio::time::timeout(wait, async {
+            let waited = tokio::time::timeout(wait, async {
                 while let Some(news) = news.recv().await {
                     if news.hash != hash {
                         continue;
@@ -641,10 +656,14 @@ impl ContentSource for WorkspaceSource {
                     }
                 }
                 None
-            })
-            .await
-            .ok()
-            .flatten()
+            });
+            match stop {
+                Some(mut stop) => tokio::select! {
+                    fetched = waited => fetched.ok().flatten(),
+                    _ = stop.changed() => None,
+                },
+                None => waited.await.ok().flatten(),
+            }
         })
     }
 }

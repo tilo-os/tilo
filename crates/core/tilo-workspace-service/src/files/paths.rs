@@ -31,6 +31,30 @@ use crate::workspaces::Workspaces;
 /// How long a read of a file waits for bytes this device does not hold.
 const CONTENT_WAIT: Duration = Duration::from_secs(20);
 
+/// Why a read of a workspace's content did not answer its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadError {
+    /// Its caller stopped it.
+    Stopped,
+    /// The read failed, for its own words.
+    Failed(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => f.write_str("the read was stopped"),
+            Self::Failed(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl From<String> for ReadError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
 /// The longest name a file or a folder may have, in bytes.
 const NAME_MAX: usize = 255;
 
@@ -64,6 +88,34 @@ pub struct Paths {
     /// The runtime the workspace's records are driven on, as the caller's thread hands it: none
     /// of these calls may be made from inside it.
     runtime: tokio::runtime::Handle,
+}
+
+/// What a caller reports and stops a read with: the bytes verified so far and the whole after
+/// each chunk, answering whether to go on, and the signal that ends a wait on a chunk no device
+/// holds.
+pub struct ContentRead<'a> {
+    cancel: &'a tokio::sync::watch::Receiver<bool>,
+    progress: &'a mut dyn FnMut(u64, u64) -> bool,
+}
+
+impl<'a> ContentRead<'a> {
+    #[must_use]
+    pub fn new(
+        cancel: &'a tokio::sync::watch::Receiver<bool>,
+        progress: &'a mut dyn FnMut(u64, u64) -> bool,
+    ) -> Self {
+        Self { cancel, progress }
+    }
+
+    /// Whether the caller stopped the read.
+    fn stopped(&self) -> bool {
+        *self.cancel.borrow()
+    }
+
+    /// Report the verified bytes; answer whether to go on.
+    fn go(&mut self, done: u64, total: u64) -> bool {
+        (self.progress)(done, total)
+    }
 }
 
 impl Paths {
@@ -183,17 +235,47 @@ impl Paths {
     /// time, a chunk is not the bytes its hash names, the manifest does not read, or the
     /// workspace's files are sealed and their keys are not here.
     pub fn read_content(&self, workspace: &str, hash: &str) -> Result<Vec<u8>, String> {
+        let (watching, never) = tokio::sync::watch::channel(false);
+        let mut progress = |_: u64, _: u64| true;
+        let mut reading = ContentRead::new(&never, &mut progress);
+        let read = self.read_content_with(workspace, hash, &mut reading);
+        drop(watching);
+        read.map_err(|error| error.to_string())
+    }
+
+    /// [`Self::read_content`], reporting what verified as it goes and stopping when the person
+    /// does. A stopped read answers [`ReadError::Stopped`], and no bytes.
+    ///
+    /// # Errors
+    /// As [`Self::read_content`], or the read was stopped.
+    pub fn read_content_with(
+        &self,
+        workspace: &str,
+        hash: &str,
+        reading: &mut ContentRead<'_>,
+    ) -> Result<Vec<u8>, ReadError> {
         let address: Hash = hash
             .parse()
             .map_err(|_| format!("{hash:?} is no content address"))?;
+        if reading.stopped() {
+            return Err(ReadError::Stopped);
+        }
         let content = self.content()?;
         let route = CrdtRoute::app(FILES_APP, workspace);
-        let source = WorkspaceSource::new(Arc::clone(&content), workspace, CONTENT_WAIT);
+        let source = WorkspaceSource::new(Arc::clone(&content), workspace, CONTENT_WAIT)
+            .stopping(reading.cancel.clone());
         let stored = match content.kept(&route, hash) {
             Some(stored) => stored,
             None => self.fetch(&source, address, hash)?.to_vec(),
         };
+        if reading.stopped() {
+            return Err(ReadError::Stopped);
+        }
         if !is_manifest(&stored) {
+            let size = u64::try_from(stored.len()).unwrap_or(u64::MAX);
+            if !reading.go(size, size) {
+                return Err(ReadError::Stopped);
+            }
             return Ok(stored);
         }
         let id = workspace_id(workspace)?;
@@ -205,12 +287,18 @@ impl Paths {
             })?),
             None => None,
         };
-        let mut failure: Option<String> = None;
+        let total = manifest.total_len();
+        let (mut done, mut index) = (0_u64, 0_usize);
+        let mut failure: Option<ReadError> = None;
         let file = whole_with(
             stored,
             u64::MAX,
             |part| {
                 if failure.is_some() {
+                    return None;
+                }
+                if reading.stopped() {
+                    failure = Some(ReadError::Stopped);
                     return None;
                 }
                 let named = hex::encode(part);
@@ -219,13 +307,29 @@ impl Paths {
                     None => match self.fetch(&source, Hash::from(*part), &named) {
                         Ok(bytes) => bytes.to_vec(),
                         Err(error) => {
-                            failure = Some(error);
+                            failure = Some(if reading.stopped() {
+                                ReadError::Stopped
+                            } else {
+                                ReadError::Failed(error)
+                            });
                             return None;
                         }
                     },
                 };
                 if blake3::hash(&bytes).as_bytes() != part {
-                    failure = Some(format!("a chunk of {hash} is not the bytes its hash names"));
+                    failure = Some(ReadError::Failed(format!(
+                        "a chunk of {hash} is not the bytes its hash names"
+                    )));
+                    return None;
+                }
+                let len = manifest
+                    .chunks()
+                    .get(index)
+                    .map_or(0, |chunk| u64::from(chunk.len));
+                index = index.saturating_add(1);
+                done = done.saturating_add(len).min(total);
+                if !reading.go(done, total) {
+                    failure = Some(ReadError::Stopped);
                     return None;
                 }
                 Some(bytes)
@@ -233,7 +337,9 @@ impl Paths {
             |sealed, bytes| opened_chunk(id, keys.as_ref(), sealed, bytes),
         );
         file.ok_or_else(|| {
-            failure.unwrap_or_else(|| format!("{hash} could not be put together from its chunks"))
+            failure.unwrap_or_else(|| {
+                ReadError::Failed(format!("{hash} could not be put together from its chunks"))
+            })
         })
     }
 
