@@ -346,6 +346,7 @@ d-b52eh6m4 = Wetterfenster
     .w-add-place = Ort hinzufügen
     .w-refresh = Aktualisierung
     .w-show-first = Zuerst zeigen
+    .w-move-to-top = Nach oben
     .w-delete-place = Ort löschen
     .w-places = Orte
     .w-no-places-yet = Noch keine Orte
@@ -386,6 +387,7 @@ d-sqjw6zx2-place = Ort
 
 d-gnll3uce = Nach oben
     .doc = Schiebt einen Ort an die Spitze der Liste.
+    .did = hat einen Ort nach oben geschoben
     .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
 
 d-gnll3uce-place = Ort

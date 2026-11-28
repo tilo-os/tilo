@@ -260,7 +260,11 @@ action use_as_default(w: Locations, place: Place) (
 }
 
 /// Moves a place to the top of the list.
-action move_to_top(w: Locations, place: Place) (icon: .arrow_up, label: "Move to top") {
+action move_to_top(w: Locations, place: Place) (
+    icon: .arrow_up,
+    label: "Move to top",
+    did: "moved a place to the top",
+) {
     require w.places.index_of(place) != .some(0) "This place is already at the top"
     w.places.move(place, to: 0)
 }
@@ -1121,9 +1125,26 @@ fn found_line(found: Found) -> Text {
     } else if found.country != "" { "{found.name}, {found.country}" } else { found.name }
 }
 
-/// The place a window shows: what the person chose, else the one shown first, else the first.
+/// Whether the workspace still holds `place`.
+fn holds(w: Locations, place: Place) -> Bool {
+    w.places.find(p -> p.id() == place.id()) != .none
+}
+
+/// The place a window shows: what the person chose, else the one shown first, else the first —
+/// each only while the workspace still holds it, so removing the place a window shows moves it to
+/// one that stands.
 fn shown_place(w: Locations, shown: Option<Place>) -> Option<Place> {
-    shown ?? w.default ?? w.places.first()
+    if let chosen = shown {
+        if holds(w, chosen) {
+            return .some(chosen)
+        }
+    }
+    if let first = w.default {
+        if holds(w, first) {
+            return .some(first)
+        }
+    }
+    w.places.first()
 }
 
 /// The key the list marks as shown.
@@ -1490,6 +1511,9 @@ view weather_window(w: Locations) {
                 }
                 ui.Button("Show first", icon: .pin) {
                     on press: use_as_default(w, shown)
+                }
+                ui.Button("Move to top", icon: .arrow_up) {
+                    on press: move_to_top(w, shown)
                 }
                 ui.Button("Rename", icon: .pencil) {
                     on press: rename_place(w, shown)

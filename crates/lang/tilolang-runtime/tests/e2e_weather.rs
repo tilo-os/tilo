@@ -506,6 +506,19 @@ mod cases {
                 .collect();
             assert_eq!(listed, ["Berlin", "Amsterdam"], "{:?}", dump(window.tree()));
 
+            // A place this device has not read yet still shows a leading mark of its own.
+            let row = weather.window("place_row", vec![Value::resource(&amsterdam)]);
+            let face = of_kind(row.tree(), "ui.ListRow")
+                .into_iter()
+                .next()
+                .expect("the place's row");
+            assert_eq!(
+                text(face, "icon"),
+                "map-pin",
+                "a place not read yet shows where it is: {:?}",
+                dump(row.tree())
+            );
+
             weather.call(
                 "remove_place",
                 &[
@@ -552,6 +565,10 @@ mod cases {
             assert!(
                 labels.iter().any(|label| label == "Rename"),
                 "the window's bar offers Rename: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|label| label == "Move to top"),
+                "the window's bar offers Move to top: {labels:?}"
             );
         }
 
@@ -1125,6 +1142,96 @@ mod cases {
             let asked = weather.services.urls();
             assert_eq!(asked.len(), 1, "one look for the settled query: {asked:?}");
             assert!(asked[0].contains("name=Am"), "{asked:?}");
+        }
+
+        phase removing_the_place_a_window_shows_moves_it_to_one_that_stands;
+        {
+            let weather = Weather::new(false);
+            let berlin = returned_ref(weather.call(
+                "save_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("name", Value::text("Berlin")),
+                    ("latitude", Value::Float(52.52)),
+                    ("longitude", Value::Float(13.405)),
+                    ("region", Value::text("Berlin")),
+                    ("country", Value::text("Germany")),
+                ],
+            ));
+            let amsterdam = returned_ref(weather.call(
+                "save_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("name", Value::text("Amsterdam")),
+                    ("latitude", Value::Float(52.374)),
+                    ("longitude", Value::Float(4.8897)),
+                    ("region", Value::text("North Holland")),
+                    ("country", Value::text("Netherlands")),
+                ],
+            ));
+            weather.refresh();
+            let mut window = weather.weather_window();
+            assert!(window.show(&berlin).unwrap(), "the window shows Berlin");
+            window.poll_patches().unwrap();
+            assert!(
+                drawn(&window).iter().any(|text| text == "Germany"),
+                "Berlin is the place the window draws: {:?}",
+                dump(window.tree())
+            );
+            // The place the window showed is removed: the window moves to the one that stands,
+            // never to a reference the workspace no longer holds.
+            weather.call(
+                "remove_place",
+                &[
+                    ("w", Value::resource(&weather.root)),
+                    ("place", Value::resource(&berlin)),
+                ],
+            );
+            window.poll_patches().unwrap();
+            let after = drawn(&window);
+            assert!(
+                after.iter().any(|text| text == "North Holland, Netherlands"),
+                "the window moves to the place shown first: {after:?}"
+            );
+            assert!(
+                !after.iter().any(|text| text.contains("Germany")),
+                "the removed place is gone from the window: {after:?}"
+            );
+            let list = of_kind(window.tree(), "ui.NavList")
+                .into_iter()
+                .next()
+                .expect("the sidebar's list");
+            assert_eq!(
+                text(list, "selected"),
+                amsterdam.id_string(),
+                "the sidebar marks the place the window draws"
+            );
+        }
+
+        phase every_place_action_says_what_it_did;
+        {
+            let weather = Weather::new(false);
+            let did = |name: &str| {
+                weather
+                    .app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .and_then(|action| action.did.clone())
+            };
+            for (action, words) in [
+                ("save_place", "saved a place"),
+                ("use_as_default", "chose the place shown first"),
+                ("move_to_top", "moved a place to the top"),
+                ("move_place", "moved a place"),
+                ("rename_place", "renamed a place"),
+                ("remove_place", "deleted a place"),
+                ("refresh", "updated the forecasts"),
+                ("retry_place", "asked for a forecast again"),
+            ] {
+                assert_eq!(did(action).as_deref(), Some(words), "{action} in history");
+            }
         }
 
         phase the_hours_are_drawn_as_one_trend;
