@@ -1083,6 +1083,28 @@ d-qjqtfdyr = Kein Assistent
     .w-create-assistant = Assistent erstellen
     .w-the-workspace-s-agents-could-not = Die Agenten des Arbeitsbereichs konnten nicht gelesen werden
 
+d-5yv7kbgj = Problem mit dem Assistenten
+    .doc = Warum der letzte Versuch, den Assistenten des Arbeitsbereichs anzulegen, keinen angelegt hat, als Satz für die Person: leer, sobald einer angelegt ist.
+
+d-kr4q75qx = Assistent erstellen
+    .doc = Legt den Assistenten des Arbeitsbereichs über dessen eigenen Agenten-Datensatz an, als die Person: Ein Arbeitsbereich, dessen Rechte es verweigern, antwortet mit einem Satz, nicht mit der rohen Verweigerung des Datensatzes.
+
+d-kr4q75qx-record = Datensatz
+
+d-rrdl5mde = Hauptchat zeigen
+    .doc = Zeigt den Hauptchat: die direkte Unterhaltung mit dem Assistenten des Arbeitsbereichs, in der er antwortet und in der die Person seinen Unteragenten folgt.
+
+d-y3h7gacr = Unteragenten zeigen
+    .doc = Zeigt einen Unteragenten: die Unterhaltung, in der er arbeitet, seine eigene unter Direktnachrichten, in der gelesen wird, was er sagt und wie er steht.
+
+d-y3h7gacr-agent = Agent
+
+d-oqrzujic = Aufsicht zeigen
+    .doc = Zeigt die Aufsicht: wie der Assistent steht, mit welchem Modell er plant, gewählt in den Einstellungen, und was er gegen sein Tageslimit ausgegeben hat.
+
+d-uwwi4gny = Modelleinstellungen öffnen
+    .doc = Öffnet die Einstellungen, in denen die Agenten des Arbeitsbereichs wählen, mit welchem Modell sie planen.
+
 d-4cgtoeqz = Unteragenten starten
     .doc = Bittet den Assistenten, einen Unteragenten für `job` zu starten, in der direkten Unterhaltung, in der er antwortet: `start-sub-agent` im Datensatz ist dort seine eigene Aktion, und der Unteragent meldet sich in dieser Unterhaltung, wo die Person ihn verfolgt.
     .w-say-what-the-job-is-first = Sag zuerst, was die Aufgabe ist

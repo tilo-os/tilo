@@ -462,3 +462,114 @@ fn a_window_the_record_was_never_served_opens_without_claiming_none() {
         "a record that is not here yet is not a workspace without an assistant: {said:?}"
     );
 }
+
+#[test]
+fn the_assistant_is_the_workspaces_first_person_made_agent_no_client_connects_as() {
+    // A client's agent, a paused one, a sub-agent and two a person made: the assistant is the
+    // first of the two a person made, by when it was made. The others stand in the record, and
+    // are never the assistant.
+    let mut client = agent("client-agent", "Claude Code", 1);
+    client["mcp_client"] = json!("claude-code");
+    let mut paused = agent("paused", "Paused helper", 2);
+    paused["state"] = json!("paused");
+    let (_ada, open) = opened(
+        vec![
+            client,
+            paused,
+            sub_agent("scout", "Scout", "first", "Read the logs", "Coder", 3),
+            agent("first", "The first one", 4),
+            agent("later", "The later one", 9),
+        ],
+        "supervision",
+    );
+    let said = shown(&open);
+    assert!(
+        said.iter().any(|said| said.contains("The first one is on")),
+        "the assistant is the first a person made: {said:?}"
+    );
+    for other in [
+        "Claude Code is on",
+        "Paused helper is on",
+        "Scout is on",
+        "The later one is on",
+    ] {
+        assert!(
+            !said.iter().any(|said| said.contains(other)),
+            "{other}: {said:?}"
+        );
+    }
+}
+
+#[test]
+fn the_place_verbs_open_what_they_name_and_the_model_settings() {
+    /// What the window sends on, kept as it goes: a host runs each and answers.
+    #[derive(Clone, Default)]
+    struct Sends(std::rc::Rc<RefCell<Vec<Invocation>>>);
+
+    impl tilolang_runtime::delegate::Invoker for Sends {
+        fn invoke(&self, invocation: &Invocation) -> tilolang_runtime::delegate::Invoked {
+            self.0.borrow_mut().push(invocation.clone());
+            tilolang_runtime::delegate::Invoked::Done(Value::Unit)
+        }
+    }
+
+    let (ada, _) = opened(Vec::new(), "supervision");
+    let all = ada.host.root_of(CHAT_APP).expect("the conversations");
+    // With no assistant the main chat has none to open.
+    assert!(
+        matches!(
+            crate::chat::call(&ada, "view_main_chat", vec![Value::resource(&all)]),
+            Value::Opt(None)
+        ),
+        "no assistant, no conversation"
+    );
+    // Supervision answers the record it is drawn from, so a step that asks for it stands the
+    // window on the conversations.
+    let answered = crate::chat::call(&ada, "view_supervision", vec![Value::resource(&all)]);
+    let supervised = match &answered {
+        Value::Ref(at) => at.target.id_string() == all.id_string(),
+        _ => false,
+    };
+    assert!(
+        supervised,
+        "supervision is the workspace's conversations: {answered:?}"
+    );
+
+    // The model settings open through the session, at the page the supervision link names.
+    let sends = Sends::default();
+    ada.host.runtime().set_foreign_invoker(sends.clone());
+    let command = ada
+        .host
+        .package(CHAT_APP)
+        .expect("Chat runs here")
+        .meta
+        .action_named("open_model_settings")
+        .expect("the command")
+        .id
+        .clone();
+    let outcome = ada.host.runtime().invoke_approved_through(
+        &crate::fixtures::person("ada"),
+        None,
+        (command.as_str(), vec![Value::resource(&all)]),
+        None,
+    );
+    assert!(
+        matches!(outcome, Ok(tilolang_runtime::InvokeOutcome::Done(_))),
+        "the settings open: {outcome:?}"
+    );
+    let sent = sends
+        .0
+        .borrow()
+        .last()
+        .cloned()
+        .expect("the session is asked");
+    let Invocation::Action { name, args, .. } = sent else {
+        panic!("the settings are the session's to open");
+    };
+    assert_eq!(name, "open-settings", "the session's settings verb");
+    assert_eq!(
+        args,
+        vec![("link".to_owned(), Value::text("settings://agent_models"))],
+        "the page supervision links to"
+    );
+}

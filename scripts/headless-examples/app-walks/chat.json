@@ -278,6 +278,116 @@
       ]
     },
     {
+      "id": "assistant",
+      "said": "Make the workspace's assistant from its Assistant section",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Sub-agents"
+            ]
+          },
+          {
+            "must": [
+              "You have no assistant in this workspace",
+              "Create assistant"
+            ]
+          },
+          {
+            "press_any": [
+              "Create assistant"
+            ]
+          },
+          {
+            "must": {
+              "see": [
+                "No sub-agents"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "assistant-job",
+      "said": "Start a sub-agent with a job, handed to the assistant in the conversation it answers in",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Start a sub-agent"
+            ]
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "What the sub-agent should do"
+              }
+            ]
+          },
+          {
+            "type": "Read the build logs"
+          },
+          {
+            "press_any": [
+              "Start"
+            ]
+          },
+          {
+            "must": {
+              "see": [
+                "Start a sub-agent for this job: Read the build logs"
+              ],
+              "within": 20
+            }
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "supervision",
+      "said": "See how the assistant stands, the model it plans with and what it spent",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Supervision"
+            ]
+          },
+          {
+            "must": [
+              "Supervision",
+              "Assistant is on",
+              "Model",
+              "Chosen in Settings",
+              "Spent"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "standing",
+      "said": "The Sub-agents place, where each sub-agent's job, role and standing stand",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Sub-agents"
+            ]
+          },
+          {
+            "must": [
+              "No sub-agents",
+              "cannot read the main chat"
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "search",
       "said": "Find the message through the system's search",
       "ops": [

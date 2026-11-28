@@ -10,6 +10,7 @@ app so.tilo.chat "Chat" (
 use tilo.workspace as workspace
 use so.tilo.settings.sections as settings
 use so.tilo.device as device
+use so.tilo.session as session
 
 /// The workspace's conversations in the sidebar's order: channels outside any category, the
 /// categories each with its own, and the direct messages, in the list as people. Beside them,
@@ -25,6 +26,9 @@ type Conversations {
     /// The reports filed about a person rather than one of their messages, for the workspace's
     /// moderators.
     reports: Collection<Report>
+    /// Why the last try at making the workspace's assistant made none, in a sentence for the
+    /// person: empty once one is made.
+    assistant_trouble: Text = ""
 }
 
 root conversations: Conversations
@@ -1674,7 +1678,7 @@ fn spend_words(a: workspace.Agent) -> Text {
 view supervision(all: Conversations) {
     let roster = workspace.agents
     match assistant(roster) {
-        .none => no_assistant(roster),
+        .none => no_assistant(all, roster),
         .some(a) => stack(gap: .group) {
             ui.Text("Supervision", role: .title)
             ui.ListRow(title: "{a.name} is on", icon: .bot)
@@ -1707,7 +1711,7 @@ view sub_agents(all: Conversations) {
     state opened: Option<workspace.Agent> = .none
     let roster = workspace.agents
     match assistant(roster) {
-        .none => no_assistant(roster),
+        .none => no_assistant(all, roster),
         .some(a) => {
             let subs = subs_of(roster, a)
             stack(gap: .group) {
@@ -1762,6 +1766,12 @@ view sub_agent(s: workspace.Agent) {
     }
 }
 
+/// The member an agent stands in as: an agent is a member by its id, and its display name is
+/// the record's own, which the member list does not read.
+fn agent_member(agent: workspace.Agent) -> Option<Actor> {
+    workspace.members.people.find(p -> p.kind() == .agent and p.name() == agent.id)
+}
+
 /// Asks the assistant to start a sub-agent for `job`, in the direct conversation it answers in:
 /// the record's own `start-sub-agent` is the assistant's to call there, and the sub-agent reports
 /// in that conversation, where the person follows it. None where the workspace keeps no
@@ -1772,9 +1782,7 @@ action ask_for_sub_agent(
     job: Text = "",
 ) -> Option<Message> (icon: .pencil, label: "Start a sub-agent") {
     require job.trim() != "" "Say what the job is first"
-    // An agent stands in the members by its id: the list names it so, and its display name is
-    // the record's own, which the member list does not read.
-    let who = workspace.members.people.find(p -> p.kind() == .agent and p.name() == agent.id)
+    let who = agent_member(agent)
     match who {
         .none => .none,
         .some(person) => .some(
@@ -1790,7 +1798,7 @@ view start_sub_agent(all: Conversations) {
     state job: Text = ""
     let roster = workspace.agents
     match assistant(roster) {
-        .none => no_assistant(roster),
+        .none => no_assistant(all, roster),
         .some(a) => stack(gap: .group) {
             ui.Text("Start a sub-agent", role: .title)
             text(
@@ -1815,7 +1823,7 @@ view start_sub_agent(all: Conversations) {
 /// What stands where the assistant would while the workspace keeps none: the one step that
 /// makes it, through the workspace's own record of its agents.
 // The entry fills the action's job with what is typed; typing enter starts it.
-view no_assistant(record: workspace.WorkspaceAgent) {
+view no_assistant(all: Conversations, record: workspace.WorkspaceAgent) {
     // A record the session has not published here yet is not a workspace without an assistant:
     // a reading that has not arrived reads as none of its fields, so the pane says it could not
     // be read until it comes, and the empty state stands only once the record answered.
@@ -1826,11 +1834,78 @@ view no_assistant(record: workspace.WorkspaceAgent) {
                 icon: .bot,
                 message: "An assistant works for the workspace and answers in the direct conversation under Direct messages.",
             )
+            // A try the workspace refused says why in a sentence, and stands until it works.
+            if all.assistant_trouble != "" {
+                ui.StatusLine(all.assistant_trouble, status: .error)
+            }
             ui.Button("Create assistant", role: .primary) {
-                on press: workspace.create_agent(record, name: "Assistant")
+                on press: create_assistant(all, record)
             } as create_assistant
         }
     }
+}
+
+/// Makes the workspace's assistant, through its own record of its agents, as the person: a
+/// workspace whose grants refuse it answers with a sentence, not the record's refusal as it
+/// comes.
+action create_assistant(all: Conversations, record: workspace.WorkspaceAgent) (
+    icon: .bot,
+    label: "Create assistant",
+) {
+    match try workspace.create_agent(record, name: "Assistant") {
+        // The record made it: what an earlier try said is no longer news.
+        .ok => {
+            all.assistant_trouble = ""
+        }
+        .err(trouble) => {
+            all.assistant_trouble = "The assistant could not be created: {trouble}"
+        }
+    }
+}
+
+/// Shows the main chat: the direct conversation with the workspace's assistant, where it answers
+/// and where the person follows its sub-agents. Its answer is the conversation, so a press opens
+/// it and an agent's step opens it too; a workspace that keeps no assistant yet has none to open.
+action view_main_chat(all: Conversations) -> Option<Direct> (
+    icon: .message_circle,
+    label: "Show the main chat",
+) {
+    match assistant(workspace.agents) {
+        .none => .none,
+        .some(a) => match agent_member(a) {
+            .none => .none,
+            .some(who) => .some(message_person(all, who)),
+        },
+    }
+}
+
+/// Shows a sub-agent: the conversation it works in, its own under Direct messages, where what it
+/// says and how it stands are followed. Its answer is that conversation, so a press opens it and
+/// an agent's step opens it too; one the workspace's members do not hold has none to open.
+action view_sub_agent(all: Conversations, agent: workspace.Agent) -> Option<Direct> (
+    icon: .users,
+    label: "Show a sub-agent",
+) {
+    match agent_member(agent) {
+        .none => .none,
+        .some(who) => .some(message_person(all, who)),
+    }
+}
+
+/// Shows supervision: how the assistant stands, the model it plans with, chosen in Settings, and
+/// what it spent against its day's limit. Its answer is the workspace's conversations, the record
+/// the place is drawn from, so a press or an agent's step stands the window on it, where the
+/// Assistant section leads to supervision.
+action view_supervision(all: Conversations) -> Conversations (
+    icon: .gauge,
+    label: "Show supervision",
+) {
+    all
+}
+
+/// Opens the settings where the workspace's agents choose the model they plan with.
+action open_model_settings(all: Conversations) (icon: .settings, label: "Open the model settings") {
+    session.open_settings(link: "settings://agent_models")
 }
 
 /// The sidebar: channels outside any category first, then each category with its channels.
@@ -2625,7 +2700,12 @@ view direct_message(
         }
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
-        button(report(d, m), icon_only: true)
+        if created(m)?.owner != invoker {
+            button(report(d, m), icon_only: true)
+        }
+        if created(m)?.owner == invoker or moderates(invoker) {
+            button(delete(d, m), icon_only: true)
+        }
         if let w = writer_of(m) {
             about_person(w)
         }
@@ -2658,7 +2738,12 @@ view channel_message(
         }
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
-        button(report(c, m), icon_only: true)
+        if created(m)?.owner != invoker {
+            button(report(c, m), icon_only: true)
+        }
+        if created(m)?.owner == invoker or moderates(invoker) {
+            button(delete(c, m), icon_only: true)
+        }
         if let w = writer_of(m) {
             about_person(w)
         }
@@ -2726,7 +2811,12 @@ view thread_message(
         }
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
-        button(report(t, m), icon_only: true)
+        if created(m)?.owner != invoker {
+            button(report(t, m), icon_only: true)
+        }
+        if created(m)?.owner == invoker or moderates(invoker) {
+            button(delete(t, m), icon_only: true)
+        }
         if let w = writer_of(m) {
             about_person(w)
         }
@@ -2977,6 +3067,19 @@ view message(
     }
     if not m.attachments.is_empty() {
         stack(gap: .tight) {
+            // A picture shows as it looks, at its own shape and no wider than a reading column;
+            // its name under it opens it in the app that shows its kind. A picture the host did
+            // not keep shows no frame to fail in, and its chip below says why.
+            for f in m.attachments {
+                if f.media.starts_with("image/") and refusal_of(f) == .none {
+                    stack(gap: .tight) {
+                        ui.Image(src: f.blob, alt: f.name, fit: .contain, max: 20rem)
+                        ui.Chip(f.name, icon: .file_image) {
+                            on press: open_attachment(f)
+                        }
+                    }
+                }
+            }
             row(gap: .tight, wrap: true) {
                 for f in m.attachments {
                     if let _ = refusal_of(f) {
@@ -2989,7 +3092,8 @@ view message(
                         ui.Button("Replay {f.name}", icon: .play, size: .small) {
                             on press: open_attachment(f)
                         }
-                    } else {
+                    } else if not f.media.starts_with("image/") {
+                        // A picture stands above as itself, with its name; what is left is a file.
                         ui.Chip(f.name, icon: .paperclip) {
                             on press: open_attachment(f)
                         }

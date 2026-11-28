@@ -603,6 +603,134 @@ tilo_test_env::scenario! {
     }
 }
 
+/// A message's bar offers Delete on it to whoever wrote it; another member's message offers
+/// Report instead, and Delete too once the person reading moderates the workspace. A picture a
+/// message carries stands in the message as the picture it is, named under it, where a file that
+/// is no picture stays a chip.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation: two people's bars, a picture and a delete"
+)]
+fn a_message_offers_delete_to_its_author_and_shows_a_picture_as_itself() {
+    let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let meta = ada.host.package(APP).unwrap().meta;
+    let files = |json: serde_json::Value| {
+        ada.host
+            .argument(&meta, &json, "List<File>")
+            .expect("files as the action API says them")
+    };
+    let picture = files(serde_json::json!([{
+        "name": "Screenshot.png",
+        "media": "image/png",
+        "size": 52_000,
+        "hash": "cd".repeat(32),
+    }]));
+    let notes = files(serde_json::json!([{
+        "name": "Plan.md",
+        "media": "text/markdown",
+        "size": 400,
+        "hash": "ab".repeat(32),
+    }]));
+    call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Mine."), Value::none(), picture],
+    );
+    ada.commit();
+    let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.call(
+        APP,
+        "send",
+        vec![design.clone(), rich("Theirs."), Value::none(), notes],
+    );
+    ben.commit();
+    ada.sync_with(&ben);
+
+    // Ada reads her own message's bar: Delete, no Report. Another member's offers Report and no
+    // Delete, because she moderates nothing here; his own offers Delete, and no Report.
+    let mut ada_design = open(&ada, &target(&design));
+    let shown = rows(&mut ada_design);
+    assert!(button(&shown[0], "Delete").is_some(), "Delete on her own");
+    assert!(button(&shown[0], "Report").is_none(), "nothing to report");
+    assert!(
+        button(&shown[1], "Delete").is_none(),
+        "Delete is not on another's"
+    );
+    assert!(button(&shown[1], "Report").is_some(), "Report on another's");
+    let mut ben_design = open(&ben, &target(&design));
+    let shown = rows(&mut ben_design);
+    assert!(
+        button(&shown[0], "Delete").is_none(),
+        "Ben deletes none of Ada's"
+    );
+    assert!(button(&shown[0], "Report").is_some(), "Ben reports Ada's");
+    assert!(button(&shown[1], "Delete").is_some(), "Delete on his own");
+
+    // The picture stands as itself, with its name under it; the file that is no picture is a chip
+    // and no picture frame.
+    let images: Vec<_> = shown[0].of_kind("ui.Image");
+    assert_eq!(images.len(), 1, "the picture in the message: {shown:?}");
+    assert_eq!(
+        images[0].props.get("src").and_then(Value::as_text),
+        Some(format!("tilo-blob://{}", "cd".repeat(32)).as_str()),
+        "the picture's own bytes"
+    );
+    assert!(
+        images[0].props.get("alt") == Some(&Value::text("Screenshot.png")),
+        "the picture is named for a reader who cannot see it"
+    );
+    assert!(
+        shown[0]
+            .of_kind("ui.Chip")
+            .iter()
+            .any(|c| c.props.get("label") == Some(&Value::text("Screenshot.png"))),
+        "its name opens it"
+    );
+    assert!(
+        shown[1].of_kind("ui.Image").is_empty(),
+        "a Markdown file is no picture"
+    );
+    assert!(
+        shown[1]
+            .of_kind("ui.Chip")
+            .iter()
+            .any(|c| c.props.get("label") == Some(&Value::text("Plan.md"))),
+        "the file is its chip"
+    );
+
+    // Delete removes Ada's own message for both, its place left by nothing. A plain press asks
+    // first; Shift, held as a person skipping the question, deletes at once.
+    let mut ada_design = open(&ada, &target(&design));
+    let shown = rows(&mut ada_design);
+    let delete = button(&shown[0], "Delete").expect("Delete on her own");
+    let pressed = ada_design
+        .fire_held(
+            &delete,
+            "press",
+            None,
+            None,
+            tilolang_runtime::Held {
+                shift: true,
+                ..tilolang_runtime::Held::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(pressed, InvokeOutcome::Done(_)),
+        "deleted: {pressed:?}"
+    );
+    ada.commit();
+    ada.sync_with(&ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        assert_eq!(said(view), ["Theirs."]);
+    }
+}
+
 /// Chat as it was before channels: conversations of messages made of parts.
 const BEFORE: &str = include_str!("chat_before_channels/app.tl");
 const BEFORE_IDS: &str = include_str!("chat_before_channels/app.ids");
