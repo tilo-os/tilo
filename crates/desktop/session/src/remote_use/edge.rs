@@ -318,7 +318,7 @@ fn virtual_camera(
     let set = Command::new(tool("v4l2-ctl")?)
         .arg("--device")
         .arg(&device)
-        .arg("--set-fmt-video")
+        .arg("--set-fmt-video-out")
         .arg(format!(
             "width={width},height={height},pixelformat={pixels}"
         ))
