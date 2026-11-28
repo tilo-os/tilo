@@ -109,6 +109,8 @@ root vault_items: Vault
 
 default view vault_window for Vault
 
+default view item_window for Item
+
 // ---------------------------------------------------------------- the vault's calls
 /// The address of the vault's own call `verb`.
 fn vault_at(verb: Text) -> Text {
@@ -656,10 +658,50 @@ action copy_part(item: Item, part: Text) -> Text (icon: .copy, label: "Copy from
     } else { "Nothing was copied" }
 }
 
-/// Copies the addresses the item signs in to, one a line.
-action copy_origins(item: Item) uses clipboard (icon: .copy, label: "Copy web addresses") {
+/// Copies the item's secret and says how it went: what the window's button does, so a copy
+/// that the system refused is not left looking copied.
+action copy_secret_saying(item: Item) (
+    icon: .copy,
+    label: "Copy {secret_label(item.kind).lower()}",
+    did: "copied a password",
+) {
+    let why = copy_secret(item)
+    if why != "" {
+        notice(why, kind: .error)
+    } else {
+        let word = secret_label(item.kind).lower()
+        notice("Copied {word}", kind: .success)
+    }
+}
+
+/// Copies who the item signs in as, and says how it went.
+action copy_identity_saying(item: Item) (
+    icon: .user,
+    label: "Copy {identity_label(item.kind).lower()}",
+    did: "copied a username",
+) {
+    let why = copy_identity(item)
+    if why != "" {
+        notice(why, kind: .error)
+    } else {
+        let word = identity_label(item.kind).lower()
+        notice("Copied {word}", kind: .success)
+    }
+}
+
+/// Copies the addresses the item signs in to, and says how it went.
+action copy_origins_saying(item: Item) uses clipboard (
+    icon: .copy,
+    label: "Copy web addresses",
+    did: "copied web addresses",
+) {
     let places = item.places.map(p -> p)
-    if not places.is_empty() { clipboard.copy(places.join("\n")) }
+    let copied = if places.is_empty() { false } else { clipboard.copy(places.join("\n")) }
+    if copied {
+        notice("Copied the web addresses", kind: .success)
+    } else {
+        notice("Could not copy to the clipboard", kind: .error)
+    }
 }
 
 /// What the vault shows of an item for a while, each part by the name the window shows it under:
@@ -1141,25 +1183,6 @@ view vault_window(v: Vault) {
                 }
             }
         }
-        sidebar_actions: {
-            ui.MenuButton("File", icon: .file_plus) {
-                ui.MenuItem("Import from CSV…", icon: .file_plus) {
-                    on choose: file.choose(preview_csv(v), accept: ["text/csv", ".csv"])
-                }
-                ui.MenuItem("Export to CSV…", icon: .download) {
-                    on choose: file.save(export_csv(v), name: "passwords.csv")
-                }
-                ui.MenuItem("Back up vault…", icon: .lock) {
-                    on choose: file.save(export_backup(v), name: "passwords-backup.tilopw")
-                }
-                ui.MenuItem("Restore from backup…", icon: .lock_open) {
-                    on choose: file.choose(restore_backup(v), accept: [".tilopw"])
-                }
-                ui.MenuItem("Import this device's vault", icon: .key) {
-                    on choose: absorb_device(v)
-                }
-            }
-        }
         overview: {
             ui.Docked {
                 foot: {
@@ -1228,20 +1251,22 @@ view vault_window(v: Vault) {
             }
         }
     }
-    if let item = ask_delete {
-        ui.ModalDialog(
-            title: "Delete “{item.title}”?",
-            open: true,
-            primary: "Delete item",
-            secondary: "Cancel",
-            destructive: true,
-        ) {
-            on act_primary: delete(v, item).then(set(ask_delete, .none)).then(set(showing, .none))
-            on act_secondary: set(ask_delete, .none)
-            on dismiss: set(ask_delete, .none)
-            body: {
-                text("The item is removed from the vault and cannot be restored.", role: .body)
-            }
+}
+
+/// An item opened on its own, from search or a link: its page, with the vault it belongs to.
+view item_window(item: Item) {
+    state showing: Option<Item> = .none
+    state shown: Option<Shown> = .none
+    state seen: Option<Access> = .none
+    state ask_delete: Option<Item> = .none
+    let v = root Vault
+    if item.entry != "" {
+        std.document(item) {
+            item_page(v, item, showing, shown, seen, ask_delete)
+        }
+    } else {
+        std.document(item) {
+            ui.EmptyState("This item is no longer in the vault", icon: .shield)
         }
     }
 }
@@ -1328,16 +1353,16 @@ view item_page(
             }
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Copy {secret_label(item.kind).lower()}", icon: .copy) {
-                    on press: copy_secret(item)
+                    on press: copy_secret_saying(item)
                 }
                 if item.kind != .note {
                     ui.Button("Copy {identity_label(item.kind).lower()}", icon: .copy) {
-                        on press: copy_identity(item)
+                        on press: copy_identity_saying(item)
                     }
                 }
                 if not item.places.is_empty() {
                     ui.Button("Copy web addresses", icon: .copy) {
-                        on press: copy_origins(item)
+                        on press: copy_origins_saying(item)
                     }
                 }
                 if open {
@@ -1446,6 +1471,22 @@ view item_page(
                 ui.Button("Delete item", icon: .trash, role: .destructive) {
                     on press: set(ask_delete, item)
                 }
+            }
+        }
+    }
+    if let gone = ask_delete {
+        ui.ModalDialog(
+            title: "Delete “{gone.title}”?",
+            open: true,
+            primary: "Delete item",
+            secondary: "Cancel",
+            destructive: true,
+        ) {
+            on act_primary: delete(v, gone).then(set(ask_delete, .none)).then(set(showing, .none))
+            on act_secondary: set(ask_delete, .none)
+            on dismiss: set(ask_delete, .none)
+            body: {
+                text("The item is removed from the vault and cannot be restored.", role: .body)
             }
         }
     }
@@ -1564,9 +1605,11 @@ view review_page(v: Vault) {
 }
 
 /// The transfer page: an encrypted backup, the browser's CSV, and what this device's own vault
-/// holds.
+/// holds. A plaintext CSV asks first that the person understands what it holds.
 // ---------------------------------------------------------------- import and export
 view transfer_page(v: Vault) {
+    // A file no password protects is exported only once its person has said they know that.
+    state acknowledged: Bool = false
     ui.Scroll {
         page {
             stack(gap: .group) {
@@ -1590,15 +1633,20 @@ view transfer_page(v: Vault) {
                 }
                 ui.Section("Browser passwords") {
                     text(
-                        "Move logins between Passwords and a web browser with a CSV file. A CSV file holds every password unencrypted: keep it only as long as the move takes.",
+                        "Move logins between Passwords and a web browser with a CSV file. A CSV file holds every password unencrypted: anyone who can open the file can read every password in it. Delete it once your passwords are moved.",
                         role: .body,
                     )
+                    ui.Checkbox(bind: acknowledged, label: "I understand the file is not encrypted")
                     row(gap: .related, wrap: true) {
                         ui.Button("Import from CSV…", icon: .file_plus) {
                             on press: file.choose(preview_csv(v), accept: ["text/csv", ".csv"])
                         }
-                        ui.Button("Export to CSV…", icon: .download) {
-                            on press: file.save(export_csv(v), name: "passwords.csv")
+                        // A file no password protects is offered only once its person says
+                        // they know what it holds.
+                        if acknowledged {
+                            ui.Button("Export to CSV…", icon: .download) {
+                                on press: file.save(export_csv(v), name: "passwords.csv")
+                            }
                         }
                     }
                 }
