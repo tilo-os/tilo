@@ -64,6 +64,9 @@ impl DiffmergeEngine {
             let text = String::from_utf8(bytes).map_err(|_| "it is not UTF-8 text".to_owned())?;
             return Ok(json!({ "label": ask.name, "text": text }).to_string());
         }
+        if !ask.path.is_empty() {
+            absolute(&ask.path)?;
+        }
         let path = Path::new(&ask.path);
         let text = read_text(path)?;
         let label = if ask.name.is_empty() {
@@ -168,6 +171,8 @@ impl DiffmergeEngine {
             right: String,
         }
         let ask: Ask = read_ask(input)?;
+        absolute(&ask.left)?;
+        absolute(&ask.right)?;
         let comparison = folder::compare(Path::new(&ask.left), Path::new(&ask.right))?;
         Ok(comparison.to_json().to_string())
     }
@@ -179,6 +184,7 @@ impl DiffmergeEngine {
             text: String,
         }
         let ask: Ask = read_ask(input)?;
+        absolute(&ask.path)?;
         let path = Path::new(&ask.path);
         write_atomic(path, ask.text.as_bytes())?;
         Ok(json!({ "name": label_of(path) }).to_string())
@@ -398,6 +404,18 @@ fn aligned_text(model: &model::DiffModel) -> (String, String, String) {
     (left, right, kinds)
 }
 
+/// Refuses a path that names no place whole: a relative one would read from wherever the session
+/// happens to stand, which is neither the person's choice nor the same on another device.
+fn absolute(path: &str) -> Result<(), String> {
+    if Path::new(path).is_absolute() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{path}` is not an absolute path; give the whole path, like /home/ada/notes.txt"
+        ))
+    }
+}
+
 /// Refuses two texts whose bytes together are past what a document holds well.
 fn checked_size(first: &str, second: &str) -> Result<(), String> {
     let total = first.len().saturating_add(second.len());
@@ -494,6 +512,26 @@ mod tests {
             assert_eq!(right, "a\nb\nc");
             assert_eq!(kinds, " a ");
             assert_eq!(preview(&model, 1, 1), "b");
+        }
+
+        phase a_relative_path_reads_nothing_and_writes_nothing;
+        {
+            assert!(absolute("notes.txt").is_err());
+            assert!(absolute("./notes.txt").is_err());
+            assert!(absolute("/home/ada/notes.txt").is_ok());
+            let refused = DiffmergeEngine::op_open(&json!({ "path": "notes.txt" }).to_string())
+                .expect_err("a relative path is no place on this device");
+            assert!(refused.contains("absolute"), "{refused}");
+            let refused = DiffmergeEngine::op_save(
+                &json!({ "path": "merged.txt", "text": "a\n" }).to_string(),
+            )
+            .expect_err("a relative path is no place on this device");
+            assert!(refused.contains("absolute"), "{refused}");
+            let refused = DiffmergeEngine::op_compare_folders(
+                &json!({ "left": "/home/ada/a", "right": "b" }).to_string(),
+            )
+            .expect_err("a relative path is no place on this device");
+            assert!(refused.contains("absolute"), "{refused}");
         }
 
         phase a_file_is_read_as_text_and_written_back_whole;

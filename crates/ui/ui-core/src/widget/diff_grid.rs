@@ -172,6 +172,8 @@ pub struct DiffGrid {
     pub(crate) label: Option<String>,
     /// Why a press cannot run now, where the label does not say.
     pub(crate) description: Option<String>,
+    /// What an empty row reads where only the other side has a line there, as one side shows.
+    pub(crate) gap_words: Option<String>,
     /// Each line of each side as its language colours it, once per change of the text.
     left_spans: Vec<LineSpans>,
     right_spans: Vec<LineSpans>,
@@ -200,6 +202,7 @@ impl Default for DiffGrid {
             language: None,
             label: None,
             description: None,
+            gap_words: None,
             left_spans: Vec::new(),
             right_spans: Vec::new(),
             rect: Rect::ZERO,
@@ -731,12 +734,28 @@ impl DiffGrid {
                 x += f64::from(advance);
             }
         };
+        // One side alone takes the left column: its own lines, numbered as its file has them.
+        let shown = if g.both || self.side != DiffSide::Right {
+            DiffSide::Left
+        } else {
+            DiffSide::Right
+        };
+        let hidden = if shown == DiffSide::Right {
+            DiffSide::Left
+        } else {
+            DiffSide::Right
+        };
+        let spans = if shown == DiffSide::Right {
+            self.right_spans.get(row)
+        } else {
+            self.left_spans.get(row)
+        };
         line(
             text_renderer,
             scene,
-            self.number(DiffSide::Left, row),
-            self.line(DiffSide::Left, row),
-            self.left_spans.get(row),
+            self.number(shown, row),
+            self.line(shown, row),
+            spans,
             g.left_gutter_x0,
             g.left_x0,
             g.left_x1,
@@ -751,6 +770,19 @@ impl DiffGrid {
                 g.right_gutter_x0,
                 g.right_x0,
                 g.right_x1,
+            );
+        } else if let Some(words) = &self.gap_words
+            && self.line(shown, row).is_empty()
+            && !self.line(hidden, row).is_empty()
+        {
+            // The row is the other side's line: say so, in the quiet ink of a note.
+            text_renderer.draw_style(
+                scene,
+                words,
+                colors.text_tertiary,
+                transform * Affine::translate(Vec2::new(g.left_x0, text_y)),
+                None,
+                code,
             );
         }
     }

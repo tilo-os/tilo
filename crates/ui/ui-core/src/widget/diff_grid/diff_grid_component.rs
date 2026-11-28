@@ -47,6 +47,9 @@ pub struct DiffGridProps {
     /// Why it cannot be pressed now, where the label does not say (an action whose requirement
     /// does not hold): spoken as its description beside its name.
     pub description: Option<String>,
+    /// What an empty row reads where only the other side has a line there, as one side shows:
+    /// "Added on the right". Empty paints the row blank.
+    pub gap_words: Option<String>,
 }
 
 /// A grid takes a press until something says otherwise.
@@ -64,6 +67,7 @@ impl Default for DiffGridProps {
             wheel: Event::None,
             enabled: true,
             description: None,
+            gap_words: None,
         }
     }
 }
@@ -87,7 +91,8 @@ impl Described for DiffGrid {
             || numbering_changed
             || props.side != self.side
             || props.label != self.label
-            || props.description != self.description;
+            || props.description != self.description
+            || props.gap_words != self.gap_words;
         self.left = props.left;
         self.right = props.right;
         self.kinds = props.kinds;
@@ -96,6 +101,8 @@ impl Described for DiffGrid {
         self.language = props.language;
         self.label = props.label;
         self.description = props.description;
+        // An empty string is no note: the row stays blank.
+        self.gap_words = props.gap_words.filter(|words| !words.is_empty());
         if text_changed {
             self.first = 0;
             self.highlight_rows();

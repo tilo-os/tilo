@@ -466,6 +466,9 @@ d-kxbrjtkd = Sitzungsfenster
     .w-changes-resolved-conflicts-left = { $count } Änderungen, { $count2 } aufgelöst, { $count3 } Konflikte übrig
     .w-no-files-open = Keine Dateien offen
     .w-added-removed-modified-change-of = { $count } hinzugefügt, { $count2 } entfernt, { $count3 } geändert. Änderung { $count4 } von { $count5 }
+    .w-the-comparison-has-no-change-to = Der Vergleich hat keine Änderung zum Durchgehen
+    .w-added-on-the-right = Rechts hinzugefügt
+    .w-removed-from-the-left = Links entfernt
 
 d-gr3w24of = Quelle der Zusammenführung
 

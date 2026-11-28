@@ -842,6 +842,14 @@ fn kind_word(kind: Text) -> Text {
     if kind == "added" { "Added" } else if kind == "removed" { "Removed" } else { "Modified" }
 }
 
+/// The next change still asking a decision after `from`, wrapping: where the review goes once one
+/// is taken. With none left the change stays where it was.
+fn next_open(s: Session, from: Int) -> Int {
+    let after = s.hunks.find(h -> h.index > from and h.resolution == "conflict")
+    let before = s.hunks.find(h -> h.index != from and h.resolution == "conflict")
+    if let next = after { next.index } else if let wrapped = before { wrapped.index } else { from }
+}
+
 fn resolution_word(resolution: Text) -> Text {
     if resolution == "conflict" {
         "Conflict"
@@ -1033,7 +1041,7 @@ view session_window(s: Session) {
     state at: Int = 0
     // The change of the merge the person is at: what taking a side decides.
     state at_hunk: Int = s.hunks.first()?.index ?? 0
-    state side: Text = "ours"
+    state side: Text = "left"
     // The change whose own text is being written, and what was typed.
     state writing: Int = -1
     state typed: Text = ""
@@ -1097,10 +1105,24 @@ view toolbar(s: Session, mode: State<Text>, at: State<Int>, at_hunk: State<Int>)
             )
         }
         if mode == "diff" {
-            ui.Button("Previous change", icon: .arrow_up, icon_only: true, key: "F7") {
+            ui.Button(
+                "Previous change",
+                icon: .arrow_up,
+                icon_only: true,
+                key: "F7",
+                enabled: not s.blocks.is_empty(),
+                description: "the comparison has no change to step through",
+            ) {
                 on press: set(at, (at - 1).clamp(0, s.blocks.len() - 1))
             }
-            ui.Button("Next change", icon: .arrow_down, icon_only: true, key: "F8") {
+            ui.Button(
+                "Next change",
+                icon: .arrow_down,
+                icon_only: true,
+                key: "F8",
+                enabled: not s.blocks.is_empty(),
+                description: "the comparison has no change to step through",
+            ) {
                 on press: set(at, (at + 1).clamp(0, s.blocks.len() - 1))
             }
         }
@@ -1203,15 +1225,16 @@ view comparison_page(s: Session, at: State<Int>, side: State<Text>) {
     } else if space.compact {
         stack(gap: .tight, fill: 1.0) {
             ui.ToggleGroup(selected: if side == "left" { 0 } else { 1 }, fill: true) {
-                ui.Segment("Left")
-                ui.Segment("Right")
+                ui.Segment(if s.left_label == "" { "Left" } else { s.left_label })
+                ui.Segment(if s.right_label == "" { "Right" } else { s.right_label })
                 on change(i): set(side, if i == 1 { "right" } else { "left" })
             }
             comparison_grid(
                 s,
                 at,
                 if side == "left" { "left" } else { "right" },
-                language_word(s.left_label),
+                language_word(if side == "left" { s.left_label } else { s.right_label }),
+                if side == "left" { "Added on the right" } else { "Removed from the left" },
             )
         }
     } else if s.blocks.is_empty() {
@@ -1237,11 +1260,11 @@ view comparison_sides(s: Session, at: State<Int>) {
             ui.Text(s.left_label, role: .label, truncate: true, fill: 1.0)
             ui.Text(s.right_label, role: .label, truncate: true, fill: 1.0)
         }
-        comparison_grid(s, at, "both", language_word(s.left_label))
+        comparison_grid(s, at, "both", language_word(s.left_label), "")
     }
 }
 
-view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text) {
+view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text, gap: Text) {
     ui.DiffGrid(
         left: s.left_aligned.split("\n"),
         right: s.right_aligned.split("\n"),
@@ -1290,6 +1313,7 @@ view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text) {
             .system_verilog
         } else if language == "tilolang" { .tilolang } else { .plain_text },
         label: "{s.left_label} and {s.right_label}",
+        gap_words: gap,
         fill,
     ) {
         on press(row: Int): set(at, change_for_row(s, row))
@@ -1726,7 +1750,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>, at_
                 role: if h.resolution == "ours" { .primary } else { .secondary },
                 key: if at_hunk == h.index { "o" } else { "" },
             ) {
-                on press: take_ours(s, h.index)
+                on press: take_ours(s, h.index).then(set(at_hunk, next_open(s, h.index)))
             }
             ui.Button(
                 "Take theirs",
@@ -1734,7 +1758,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>, at_
                 role: if h.resolution == "theirs" { .primary } else { .secondary },
                 key: if at_hunk == h.index { "t" } else { "" },
             ) {
-                on press: take_theirs(s, h.index)
+                on press: take_theirs(s, h.index).then(set(at_hunk, next_open(s, h.index)))
             }
             ui.Button(
                 "Take both",
@@ -1742,7 +1766,7 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>, at_
                 role: if h.resolution == "both" { .primary } else { .secondary },
                 key: if at_hunk == h.index { "b" } else { "" },
             ) {
-                on press: take_both(s, h.index)
+                on press: take_both(s, h.index).then(set(at_hunk, next_open(s, h.index)))
             }
             if writing == h.index {
                 ui.TextInput(

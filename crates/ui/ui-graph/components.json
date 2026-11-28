@@ -2230,6 +2230,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "gap_words",
+          "doc": "What an empty row reads where only the other side has a line there, as one side shows: \"Added on the right\". Empty paints the row blank.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [

@@ -9,7 +9,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, Space, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/diffmerge/app.tl");
@@ -628,6 +628,16 @@ mod cases {
                     .expect("the key's press runs");
                 assert_eq!(s.text(&s.hunks(&d)[0], "resolution"), "ours");
                 assert_eq!(s.text(&s.hunks(&d)[1], "resolution"), "conflict");
+                // Taking a side moves the review on to the change still asking a decision.
+                window.poll_patches().unwrap();
+                let cards = of_kind(window.tree(), "ui.Card");
+                assert_eq!(cards.len(), 2);
+                assert_eq!(cards[0].props.get("selected"), Some(&Value::Bool(false)));
+                assert_eq!(
+                    cards[1].props.get("selected"),
+                    Some(&Value::Bool(true)),
+                    "the next change still asking is the one the keys now answer"
+                );
             }
             // The person moves to the next change with the key the View menu names; its keys are
             // the ones that answer now.
@@ -679,6 +689,57 @@ mod cases {
                     .iter()
                     .any(|button| button.props.get("key") == Some(&Value::text("F8"))),
                 "F8 steps on"
+            );
+        }
+
+        phase a_narrow_comparison_reads_one_side_and_says_why_a_row_is_empty;
+        {
+            let s = Desk::new();
+            let d = s.compare("a\nb\nc\n", "a\nc\n");
+            let mut window = s.window(&d);
+            window.set_space("", Space::from_rem(24.0, 40.0));
+            window.poll_patches().unwrap();
+            let shown = of_kind(window.tree(), "ui.DiffGrid")
+                .into_iter()
+                .next()
+                .expect("the comparison stands in a grid");
+            assert_eq!(shown.props.get("side"), Some(&Value::text("left")));
+            assert_eq!(
+                shown.props.get("gap_words"),
+                Some(&Value::text("Added on the right")),
+                "an empty row reads as the other side's line"
+            );
+            // The two segments name the two files, so the person knows which one reads.
+            let labels: Vec<String> = of_kind(window.tree(), "ui.Segment")
+                .into_iter()
+                .filter_map(|segment| {
+                    segment.props.get("label").and_then(Value::as_text).map(str::to_owned)
+                })
+                .collect();
+            assert!(labels.iter().any(|l| l == "b.rs"), "{labels:?}");
+            // The choice of sides, told from the window's mode choice by naming the files.
+            let switch = of_kind(window.tree(), "ui.ToggleGroup")
+                .into_iter()
+                .find(|group| {
+                    group.children.iter().any(|segment| {
+                        segment.props.get("label").and_then(Value::as_text) == Some("b.rs")
+                    })
+                })
+                .expect("the sides are a choice")
+                .key
+                .clone();
+            window
+                .fire_with(&switch, "change", Some(&Value::Int(1)))
+                .unwrap();
+            window.poll_patches().unwrap();
+            let shown = of_kind(window.tree(), "ui.DiffGrid")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the comparison stands in a grid: {}", dump(window.tree())));
+            assert_eq!(shown.props.get("side"), Some(&Value::text("right")));
+            assert_eq!(
+                shown.props.get("gap_words"),
+                Some(&Value::text("Removed from the left"))
             );
         }
 
