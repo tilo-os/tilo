@@ -409,7 +409,9 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
     match (ty, json) {
         // A job, as its device records it: what a `done:` or `progress:` handler is handed when
         // the device runs it as the app's published action.
-        (Ty::Record(key), Json::Object(_)) if key.app == "host" && key.name == "Job" => {
+        (Ty::Record(key), Json::Object(_))
+            if key.app == tilolang::host::HOST_APP && key.name == "Job" =>
+        {
             Ok(tilolang_runtime::host_work::job_value(json))
         }
         (Ty::Record(key), _) => {

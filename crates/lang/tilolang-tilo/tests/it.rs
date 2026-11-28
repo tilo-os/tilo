@@ -68,6 +68,7 @@ mod gallery;
 mod headings;
 mod held_records;
 mod inline_views;
+mod job_handlers;
 mod layers;
 mod legibility;
 mod levels;
