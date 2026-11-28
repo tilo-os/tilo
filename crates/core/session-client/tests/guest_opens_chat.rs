@@ -122,13 +122,26 @@ async fn chat_read_by_guest(
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(120);
     let (mut shown, mut answered, mut refusals) = (false, false, Vec::new());
+    let (mut landings, mut last_read) = (0_usize, String::from("none"));
     let mut quiet_since = Instant::now();
     loop {
         for event in events.drain() {
             match event {
                 Event::Landed { route, .. } if route == *chat => {
                     quiet_since = Instant::now();
-                    match crate::support::reading_of(page, chat, None) {
+                    landings += 1;
+                    let read = crate::support::reading_of(page, chat, None);
+                    last_read = match &read {
+                        Ok(DocumentRead::Whole { bytes, .. }) => {
+                            format!("whole, {} bytes", bytes.len())
+                        }
+                        Ok(DocumentRead::Changes { bytes, .. }) => {
+                            format!("{} bytes of changes", bytes.len())
+                        }
+                        Ok(other) => format!("{other:?}"),
+                        Err(error) => format!("refused: {error}"),
+                    };
+                    match read {
                         Ok(DocumentRead::Whole { bytes, .. }) => {
                             shown = holds_every_message(&bytes);
                         }
@@ -150,7 +163,10 @@ async fn chat_read_by_guest(
         // a while: what the page shows is final.
         assert!(
             !(answered && quiet_since.elapsed() > Duration::from_secs(5)),
-            "the guest's page never read the chat whole; its reads were refused: {refusals:?}"
+            "the guest's page never read the chat whole after the host answered its head: \
+             {landings} landing(s) of the chat, its last read {last_read}; its reads were \
+             refused: {refusals:?}; its channels:\n{}",
+            page.status().key_state
         );
         assert!(
             Instant::now() < deadline,

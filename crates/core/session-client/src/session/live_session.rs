@@ -304,6 +304,7 @@ impl LiveSessions {
     /// `workspace_id`'s live session was due and not asked for: `why` is what this
     /// page still lacks, said in its channel diagnostics.
     pub(crate) fn note_unasked(&mut self, workspace_id: WorkspaceId, why: &'static str) {
+        tracing::debug!(%workspace_id, why, "a page's live session is not asked for");
         self.unasked.insert(workspace_id, why);
     }
 

@@ -2526,9 +2526,18 @@ impl Task {
             return;
         }
         // Anything else a link brings that names no record (a workspace document's frames, an
-        // identity) is the replica's, already decided.
-        if changed && let Some(workspace_id) = self.workspace_of(&message) {
-            self.follow_governance(workspace_id);
+        // identity) is the replica's, already decided. A governance frame can decide a write it
+        // held for it all the same: that write's readers hear it here, as they hear one a
+        // document frame released.
+        if let Some(workspace_id) = self.workspace_of(&message) {
+            if let Ok(report) = &report
+                && !report.released().is_empty()
+            {
+                self.follow_report(&workspace_id.to_string(), report);
+            }
+            if changed {
+                self.follow_governance(workspace_id);
+            }
         }
     }
 
@@ -3244,6 +3253,7 @@ impl Task {
             })
             .collect();
         for (route, author) in landed {
+            tracing::debug!(app = %route.app_id, record = %route.document, "a write that waited landed here");
             self.held_inbound.remove(&route);
             self.landed(&route, Some(author));
         }
@@ -3348,6 +3358,7 @@ impl Task {
             }
             (waiting, ..) => format!("for {waiting}"),
         };
+        tracing::debug!(app = %route.app_id, record = %route.document, %reason, "a write waits here");
         self.held_inbound.insert(route.clone(), reason);
     }
 
