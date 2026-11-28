@@ -732,8 +732,9 @@ fn link_the_offered_model(state: &std::path::Path, session: &Session) {
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
-    settings_offer_a_model();
     let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
+    // The settings are the running session's, installed for everything in its process.
+    settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
     // Nothing of Notes is open or held here: an installed app is answered for before an agent
     // ever reaches for it.
@@ -1323,8 +1324,9 @@ fn make_agent(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>, na
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
-    settings_offer_a_model();
     let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
+    // The settings are the running session's, installed for everything in its process.
+    settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
@@ -1382,8 +1384,9 @@ fn workspace_settings_makes_the_workspaces_agents() {
 fn workspace_settings_retires_the_workspaces_agents() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    settings_offer_a_model();
     let mut session = session();
+    // The settings are the running session's, installed for everything in its process.
+    settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
@@ -1424,8 +1427,9 @@ fn workspace_settings_retires_the_workspaces_agents() {
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    settings_offer_a_model();
     let mut session = session();
+    // The settings are the running session's, installed for everything in its process.
+    settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
