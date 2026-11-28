@@ -3,7 +3,7 @@
 
 use crate::fixtures::Workspace;
 use tilolang_runtime::Actor;
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 
 use tilolang_tilo::used::{UsedApp, answer};
 
@@ -24,7 +24,7 @@ impl BlobHost for Papers {
         Ok(Vec::new())
     }
 
-    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<Saved, String> {
         Err("this test writes no files out".to_owned())
     }
 

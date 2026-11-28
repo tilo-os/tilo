@@ -536,7 +536,8 @@ impl Core {
         }))
     }
 
-    /// `file.save(a, name: n)`: run `a` and put what it made where the person says.
+    /// `file.save(a, name: n, then: b)`: run `a` and put what it made where the person says;
+    /// `b`, when given, runs with what the save came to.
     fn act_save(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let action = self.val(a.h(0)?)?;
         if !matches!(action, Value::Action(_)) {
@@ -546,10 +547,24 @@ impl Core {
             ));
         }
         let name = self.text(a.h(1)?)?;
+        let then = match a.h(2) {
+            Ok(handle) if handle != 0 => match self.val(handle)? {
+                Value::Opt(Some(held)) => Value::Opt(Some(held)),
+                Value::Opt(None) => Value::Opt(None),
+                Value::Action(aref) => Value::Opt(Some(Box::new(Value::Action(aref)))),
+                other => {
+                    return trap(format!(
+                        "`file.save`'s `then:` takes the action it runs, not {}",
+                        other.kind_name()
+                    ));
+                }
+            },
+            _ => Value::Opt(None),
+        };
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
             action: SAVE_ACTION.to_owned(),
-            args: vec![action, Value::Text(name)],
+            args: vec![action, Value::Text(name), then],
             author,
             from: None,
         }))

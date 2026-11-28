@@ -50,9 +50,13 @@ impl Platform for Device {
         std::sync::Arc::new(|| {})
     }
 
-    fn save_file(&self, request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+    fn save_file(
+        &self,
+        request: &SaveRequest,
+        _content: &[u8],
+    ) -> Result<tilolang_runtime::blob::Saved, String> {
         self.saved.borrow_mut().push(request.name.clone());
-        Ok(())
+        Ok(tilolang_runtime::blob::Saved::At(request.name.clone()))
     }
 
     fn read_content(&self, hash: &str) -> Option<Vec<u8>> {

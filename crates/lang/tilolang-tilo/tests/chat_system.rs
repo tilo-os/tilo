@@ -5,7 +5,7 @@
 use crate::fixtures::{
     chat_workspace, open_at as open, person, rich, rows, target, texts_of as texts,
 };
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::{InvokeOutcome, UiNode, Value};
 
 const APP: &str = "so.tilo.chat";
@@ -23,7 +23,7 @@ impl BlobHost for Device {
         Ok(Vec::new())
     }
 
-    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<Saved, String> {
         Err("this test writes no files out".to_owned())
     }
 

@@ -219,9 +219,10 @@ impl Platform for Packages {
         &self,
         request: &tilolang_tilo::runtime::blob::SaveRequest,
         content: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<tilolang_tilo::runtime::blob::Saved, String> {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        return tilo_dialogs::download(&request.name, content);
+        return tilo_dialogs::download(&request.name, content)
+            .map(|()| tilolang_tilo::runtime::blob::Saved::At(String::new()));
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         {
             let _ = (request, content);

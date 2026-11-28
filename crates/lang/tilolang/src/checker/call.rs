@@ -1979,7 +1979,8 @@ impl Checker<'_> {
 
     /// `file.choose(a, accept: [...])`: the action `a` run with the file the person picks.
     /// `file.save(a, name: "...")`: the action run, and what it made put in a file the person
-    /// picks. Both stand on a control, as `open` does.
+    /// picks; `then:` names the action run with what the save came to, as `host.Saved`. All
+    /// stand on a control, as `open` does.
     fn builtin_file(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.ctx != Ctx::View {
             let who = self.st.ctx.word();
@@ -2009,6 +2010,7 @@ impl Checker<'_> {
         let mut action = None;
         let mut accept = None;
         let mut called = None;
+        let mut then = None;
         for a in args {
             match a.name.as_ref().map(|n| n.name.as_str()) {
                 None if action.is_none() => {
@@ -2044,6 +2046,9 @@ impl Checker<'_> {
                         called = Some(self.expr_as(&a.value, &Ty::Text));
                     }
                 }
+                Some("then") if !choosing => {
+                    then = Some(self.saved_handler(&a.value));
+                }
                 Some(other) => {
                     self.err(
                         "E022",
@@ -2051,7 +2056,11 @@ impl Checker<'_> {
                         format!(
                             "`file.{}` takes {}; not `{other}:`",
                             name.name,
-                            if choosing { "`accept:`" } else { "`name:`" }
+                            if choosing {
+                                "`accept:`"
+                            } else {
+                                "`name:` and `then:`"
+                            }
                         ),
                     );
                 }
@@ -2096,7 +2105,17 @@ impl Checker<'_> {
                     Ex::str("")
                 }
             };
-            Ex::host(Imp::ActSave, vec![action, called], Ty::Action)
+            Ex::host(
+                Imp::ActSave,
+                vec![
+                    action,
+                    called,
+                    then.unwrap_or_else(|| {
+                        Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Action)))
+                    }),
+                ],
+                Ty::Action,
+            )
         }
     }
 
@@ -3560,6 +3579,53 @@ impl Checker<'_> {
         self.st.scopes.push(std::collections::HashMap::new());
         self.push_sink();
         let local = self.declare(&job.name, ty.clone());
+        self.emit(Stmt::Set(local, Ex::host(Imp::EventValue, Vec::new(), ty)));
+        // The call is applied, not run: an action reference, as a view's control holds one.
+        let ctx = std::mem::replace(&mut self.st.ctx, Ctx::Block);
+        let act = self.expr_as(body, &Ty::Action);
+        self.st.ctx = ctx;
+        let stmts = self.pop_sink();
+        self.st.scopes.pop();
+        Ex::host(
+            Imp::SomeH,
+            vec![Ex::new(
+                crate::ir::Ek::Seq(stmts, Box::new(act)),
+                Ty::Action,
+            )],
+            Ty::Option(Box::new(Ty::Action)),
+        )
+    }
+
+    /// `then: saved -> exported(p, saved)`: what `file.save` runs once the person has answered.
+    /// One of this app's actions, handed what the save came to as `host.Saved`, with the other
+    /// arguments resources and values the view has now.
+    fn saved_handler(&mut self, e: &ast::Expr) -> Ex {
+        let shape = "`then:` names one of this app's actions and hands it what the save came to \
+                     as `host.Saved`: `then: saved -> exported(p, saved)`; it runs once the \
+                     person has answered the chooser";
+        let ExprKind::Lambda { params, body } = &e.kind else {
+            self.err("E063", e.span, shape);
+            let _ = self.expr(e, None);
+            return Ex::error();
+        };
+        let [saved] = params.as_slice() else {
+            self.err("E063", e.span, shape);
+            return Ex::error();
+        };
+        let names_action = matches!(
+            &body.kind,
+            ExprKind::Call { callee, .. }
+                if matches!(&callee.kind, ExprKind::Ident(f)
+                    if self.env.callables.iter().any(|c| c.name == *f && c.kind == CKind::Action))
+        );
+        if !names_action || !super::component::passed_as_is(body, &saved.name) {
+            self.err("E063", body.span, shape);
+            return Ex::error();
+        }
+        let ty = super::platform::host_ty("Saved");
+        self.st.scopes.push(std::collections::HashMap::new());
+        self.push_sink();
+        let local = self.declare(&saved.name, ty.clone());
         self.emit(Stmt::Set(local, Ex::host(Imp::EventValue, Vec::new(), ty)));
         // The call is applied, not run: an action reference, as a view's control holds one.
         let ctx = std::mem::replace(&mut self.st.ctx, Ctx::Block);

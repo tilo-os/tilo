@@ -441,7 +441,7 @@ imports! {
     (FileOpen, "file_open", "i", "i"),
     (ActChoose, "act_choose", "ii", "i"),
     (ActChooseFolder, "act_choose_folder", "ii", "i"),
-    (ActSave, "act_save", "ii", "i"),
+    (ActSave, "act_save", "iii", "i"),
     (ActBlur, "act_blur", "", "i"),
     (ActClose, "act_close", "", "i"),
     // A PDF, read by the device's engine.

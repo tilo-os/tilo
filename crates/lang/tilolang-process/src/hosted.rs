@@ -1280,7 +1280,7 @@ impl Platform for HostPlatform {
         &self,
         request: &tilolang_tilo::runtime::blob::SaveRequest,
         content: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<tilolang_tilo::runtime::blob::Saved, String> {
         let Some(chooser) = self.chooser.as_deref() else {
             return Err(self.no_chooser.clone());
         };

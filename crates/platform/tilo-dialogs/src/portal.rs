@@ -651,8 +651,12 @@ impl PickRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveOutcome {
-    Saved,
+    /// Written, at `to`: the place as the person reads it, empty when this host keeps the file
+    /// without a path of its own (a page's download, a destination the host keeps).
+    Saved { to: String },
+    /// The person closed the chooser without saving.
     Cancelled,
+    /// The save was refused, with the reason.
     Failed(String),
 }
 
@@ -673,7 +677,9 @@ pub(crate) fn write_picked(destination: Option<PortalChannel>, bytes: Vec<u8>) -
         tilo_rt::background::Background::current().spawn("tilo-portal-write", move || {
             let _ = tx.send(match destination.recv() {
                 Ok(PortalOutcome::Opened(path)) => match std::fs::write(&path, bytes) {
-                    Ok(()) => SaveOutcome::Saved,
+                    Ok(()) => SaveOutcome::Saved {
+                        to: path.display().to_string(),
+                    },
                     Err(error) => SaveOutcome::Failed(format!("{}: {error}", path.display())),
                 },
                 Ok(PortalOutcome::Cancelled) => SaveOutcome::Cancelled,

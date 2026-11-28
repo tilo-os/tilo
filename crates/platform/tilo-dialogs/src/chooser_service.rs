@@ -546,7 +546,8 @@ impl Connection {
         }
     }
 
-    /// A save's bytes are in the file beside it: rename that over the file the person chose.
+    /// A save's bytes are in the file beside it: rename that over the file the person chose,
+    /// answering the place it now is.
     fn saved(&self, id: u64, reference: &Path) -> Reply {
         let renamed = (|| {
             let caller = self.caller();
@@ -559,10 +560,12 @@ impl Connection {
                 return Err(NOT_CHOSEN);
             }
             let beside = granted.save_sibling.ok_or(NOT_CHOSEN)?;
-            std::fs::rename(granted.host.with_file_name(beside), &granted.host).map_err(|_| GONE)
+            std::fs::rename(granted.host.with_file_name(beside), &granted.host)
+                .map_err(|_| GONE)?;
+            Ok(granted.host.display().to_string())
         })();
         match renamed {
-            Ok(()) => Reply::Saved { id },
+            Ok(to) => Reply::Saved { id, to },
             Err(reason) => failed(id, reason),
         }
     }
@@ -885,7 +888,13 @@ mod tests {
             b"the report".to_vec(),
         );
         let outcome = saving.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        assert_eq!(outcome, SaveOutcome::Saved, "the chooser commits the save");
+        assert_eq!(
+            outcome,
+            SaveOutcome::Saved {
+                to: destination.display().to_string()
+            },
+            "the chooser commits the save"
+        );
         assert_eq!(std::fs::read(&destination).unwrap(), b"the report");
 
         let mut left: Vec<_> = std::fs::read_dir(directory.path())

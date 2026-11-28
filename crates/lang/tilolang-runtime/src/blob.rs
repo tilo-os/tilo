@@ -213,6 +213,16 @@ pub struct SaveRequest {
     pub media: String,
 }
 
+/// What a save came to, as the app that asked reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// Written, at the place as the person reads it; empty when this host keeps the file
+    /// without a path of its own (a page's download, a destination the host keeps).
+    At(String),
+    /// The person closed the chooser without saving.
+    Cancelled,
+}
+
 /// The device's files, as its platform answers them: the content store a chosen file's bytes go
 /// to, the content it holds, and the chooser a person picks with.
 ///
@@ -248,12 +258,14 @@ pub trait BlobHost {
         Err("this host chooses no folders".to_owned())
     }
 
-    /// Put `content` in a file the person names, offering `request`'s name.
+    /// Put `content` in a file the person names, offering `request`'s name, and answer what it
+    /// came to: written where, or the person closing the chooser. A save the host refuses is an
+    /// error, carrying why.
     ///
     /// # Errors
     ///
-    /// Why it could not be written (no chooser, a refused path, a failed write).
-    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String>;
+    /// Why it was not written (no chooser, a refused path, a failed write).
+    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String>;
 
     /// Keep `bytes` as a file called `name` of media type `media`, answering the file whose
     /// content they now are: what a program that holds bytes makes of them, such as the files

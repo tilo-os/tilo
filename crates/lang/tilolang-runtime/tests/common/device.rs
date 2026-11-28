@@ -6,11 +6,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::clipboard::ClipboardHost;
 
 /// What draws a preview of a file, kept on the device, or `None` for a file with no preview.
 type Preview = dyn Fn(&Files, &FileValue, u32) -> Option<FileValue>;
+
+/// Every save asked: the name offered and what it held.
+type SaveAsks = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
 /// The device's files, kept in a session's content store (content at its address, once whatever
 /// its name), in the wake scope an engine's calls run in. A chooser answers what [`Self::pick`]
@@ -25,6 +28,12 @@ pub struct Files {
     picked_folder: Rc<RefCell<Option<String>>>,
     asked: Rc<RefCell<Vec<FileRequest>>>,
     saved: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+    /// What the next save answers instead of writing: the person closing the chooser.
+    cancel_save: Rc<Cell<bool>>,
+    /// Why the next save is refused, when it is.
+    refuse_save: Rc<RefCell<Option<String>>>,
+    /// Every save asked, in order: its name and what it held.
+    save_asks: SaveAsks,
     previews: Rc<RefCell<Option<Box<Preview>>>>,
     /// What this device kept, and of it what is on another device for now.
     kept: Rc<RefCell<std::collections::HashSet<String>>>,
@@ -43,6 +52,9 @@ impl Default for Files {
             picked_folder: Rc::default(),
             asked: Rc::default(),
             saved: Rc::default(),
+            cancel_save: Rc::default(),
+            refuse_save: Rc::default(),
+            save_asks: Rc::default(),
             previews: Rc::default(),
             kept: Rc::default(),
             away: Rc::default(),
@@ -133,6 +145,21 @@ impl Files {
         self.saved.borrow().get(name).cloned()
     }
 
+    /// The person closes the next save's chooser, so nothing is written.
+    pub fn cancel_next_save(&self) {
+        self.cancel_save.set(true);
+    }
+
+    /// Refuse the next save with `why`, as a chooser that cannot write does.
+    pub fn refuse_next_save(&self, why: &str) {
+        *self.refuse_save.borrow_mut() = Some(why.to_owned());
+    }
+
+    /// Every save asked, in order: the name offered and the content it held.
+    pub fn save_asks(&self) -> Vec<(String, Vec<u8>)> {
+        self.save_asks.borrow().clone()
+    }
+
     /// The text saved under `name`.
     pub fn said(&self, name: &str) -> String {
         let saved = self
@@ -166,11 +193,20 @@ impl BlobHost for Files {
         Ok(self.picked_folder.borrow().clone())
     }
 
-    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String> {
+        self.save_asks
+            .borrow_mut()
+            .push((request.name.clone(), content.to_vec()));
+        if let Some(why) = self.refuse_save.borrow_mut().take() {
+            return Err(why);
+        }
+        if self.cancel_save.take() {
+            return Ok(Saved::Cancelled);
+        }
         self.saved
             .borrow_mut()
             .insert(request.name.clone(), content.to_vec());
-        Ok(())
+        Ok(Saved::At(request.name.clone()))
     }
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {

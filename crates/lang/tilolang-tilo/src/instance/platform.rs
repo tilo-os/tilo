@@ -6,7 +6,7 @@
 
 use std::rc::Rc;
 
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::run::WebRequest;
 use tilolang_runtime::web::WebReply;
 
@@ -348,13 +348,14 @@ pub trait Platform {
         Err("this host chooses no folders".to_owned())
     }
 
-    /// Put `content` where the person says, offering `request`'s name. A platform without a
-    /// chooser answers the error saying so.
+    /// Put `content` where the person says, offering `request`'s name, and answer what it came
+    /// to: written where, or the chooser closed. A platform without a chooser answers the error
+    /// saying so.
     ///
     /// # Errors
     ///
     /// Why the content was not written.
-    fn save_file(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+    fn save_file(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String> {
         let _ = (request, content);
         Err("this host saves no files".to_owned())
     }
@@ -822,7 +823,7 @@ impl BlobHost for PlatformBlobs {
         self.0.choose_folder(request)
     }
 
-    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+    fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String> {
         self.0.save_file(request, content)
     }
 

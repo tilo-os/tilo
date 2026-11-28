@@ -205,6 +205,8 @@ mod record_lists;
 mod rich_text;
 #[path = "runs.rs"]
 mod runs;
+#[path = "save_outcome.rs"]
+mod save_outcome;
 #[path = "seeded_ids.rs"]
 mod seeded_ids;
 #[path = "shown_state.rs"]

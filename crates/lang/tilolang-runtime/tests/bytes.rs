@@ -11,7 +11,7 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
     use tilolang_runtime::meta::FieldKind;
     use tilolang_runtime::origin::OriginWrite;
     use tilolang_runtime::store::{BytesData, FieldSpec, Store as _};
@@ -53,7 +53,7 @@ view printed(r: Run) {
             Err("no chooser here".to_owned())
         }
 
-        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
+        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<Saved, String> {
             Err("no chooser here".to_owned())
         }
 

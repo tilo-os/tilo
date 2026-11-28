@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{ResourceRef, Value};
 use tilolang_tilo::host::Package;
@@ -73,7 +73,7 @@ impl BlobHost for Device {
 
     /// Nothing a test exports leaves this device: what an export writes is the person's own
     /// chooser's, and the tests read the text the action made instead.
-    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<Saved, String> {
         Err("this test writes no files out".to_owned())
     }
 

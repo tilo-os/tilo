@@ -632,6 +632,27 @@ tilo_test_env::scenario! {
     }
 }
 
+tilo_test_env::scenario! {
+    /// `file.save(a, name: ..., then: saved -> exported(p, saved))`: a save answers the app that
+    /// asked it what it came to, as `host.Saved`: where it was written, that the chooser was
+    /// closed, or why it was refused.
+    fn a_save_answers_what_it_came_to;
+
+    phase an_action_handed_the_save_is_accepted;
+    {
+        let src = "type P {\n    at: Text\n    refused: Text\n}\naction export(p: P) -> File (label: \"Export\") {\n    File.of_text(\"x.md\", \"x\")\n}\naction exported(p: P, saved: host.Saved) {\n    p.at = saved.at\n    p.refused = saved.refused\n}\nview v(p: P) {\n    ui.Button(\"Export\") {\n        on press: file.save(export(p), name: \"x.md\", then: saved -> exported(p, saved))\n    }\n}\n";
+        assert_eq!(codes(src), Vec::<String>::new());
+    }
+
+    phase a_then_that_is_no_action_handed_the_save_is_refused;
+    {
+        let not_a_lambda = "type P {\n    at: Text\n}\naction export(p: P) -> File (label: \"Export\") {\n    File.of_text(\"x.md\", \"x\")\n}\naction exported(p: P) {\n    p.at = \"x\"\n}\nview v(p: P) {\n    ui.Button(\"Export\") {\n        on press: file.save(export(p), name: \"x.md\", then: exported(p))\n    }\n}\n";
+        assert_eq!(codes(not_a_lambda), ["E063"]);
+        let a_computation = "type P {\n    at: Text\n}\naction export(p: P) -> File (label: \"Export\") {\n    File.of_text(\"x.md\", \"x\")\n}\naction exported(p: P, at: Text) {\n    p.at = at\n}\nview v(p: P) {\n    ui.Button(\"Export\") {\n        on press: file.save(export(p), name: \"x.md\", then: saved -> exported(p, saved.at))\n    }\n}\n";
+        assert_eq!(codes(a_computation), ["E063"]);
+    }
+}
+
 /// The ops of the package's engine, each with what it does besides answering.
 const OPS: &str =
     "op \"load\"\nop \"delete\" changes device\nop \"post\" reaches outside\nop \"send\" leaves\n";

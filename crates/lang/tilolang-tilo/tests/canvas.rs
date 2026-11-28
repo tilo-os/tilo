@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 
 use tilolang_runtime::canvas::{CanvasHost, OpenedArtwork};
 use tilolang_runtime::{ResourceRef, UiNode, Value, ViewInstance};
@@ -120,7 +120,7 @@ impl BlobHost for Device {
     fn choose(&self, _: &FileRequest) -> Result<Vec<FileValue>, String> {
         Err("this test chooses nothing".to_owned())
     }
-    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
+    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<Saved, String> {
         Err("this test writes no files out".to_owned())
     }
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {

@@ -854,7 +854,11 @@ impl runtime::blob::BlobHost for WorkspaceFiles {
         Err(NOBODY_AT_A_WINDOW.to_owned())
     }
 
-    fn save(&self, _: &runtime::blob::SaveRequest, _: &[u8]) -> Result<(), String> {
+    fn save(
+        &self,
+        _: &runtime::blob::SaveRequest,
+        _: &[u8],
+    ) -> Result<runtime::blob::Saved, String> {
         Err(NOBODY_AT_A_WINDOW.to_owned())
     }
 }

@@ -93,7 +93,7 @@ fn write_target(key: u64, bytes: &[u8]) -> SaveChannel {
     };
     match write_save_target(&target, bytes) {
         Ok(promise) => settled(promise, |written| match written {
-            Ok(_) => SaveOutcome::Saved,
+            Ok(_) => SaveOutcome::Saved { to: String::new() },
             Err(reason) => SaveOutcome::Failed(reason),
         }),
         Err(error) => answered(SaveOutcome::Failed(text(&error))),
@@ -206,7 +206,7 @@ impl crate::FilePicker for PageFiles {
         match save_file(name, &bytes) {
             Ok(promise) => settled(promise, |saved| match saved {
                 Ok(value) if value.as_bool() == Some(false) => SaveOutcome::Cancelled,
-                Ok(_) => SaveOutcome::Saved,
+                Ok(_) => SaveOutcome::Saved { to: String::new() },
                 Err(reason) => SaveOutcome::Failed(reason),
             }),
             Err(error) => answered(SaveOutcome::Failed(text(&error))),

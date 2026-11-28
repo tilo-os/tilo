@@ -303,7 +303,13 @@ fn a_save_writes_beside_the_file_and_the_chooser_commits_it() {
     let question = pending(&questions);
     assert_eq!(question.details["title"], "Save the report");
     answer_with(&questions, &[&destination]);
-    assert_eq!(saving.recv_timeout(answer()).unwrap(), SaveOutcome::Saved);
+    assert!(
+        matches!(
+            saving.recv_timeout(answer()).unwrap(),
+            SaveOutcome::Saved { to } if to.ends_with("report.txt")
+        ),
+        "the save names the place it wrote"
+    );
     assert_eq!(std::fs::read(&destination).unwrap(), b"the report");
     let mut left: Vec<_> = std::fs::read_dir(directory.path())
         .unwrap()
@@ -892,7 +898,13 @@ fn a_save_grants_writing_the_node_and_keeps_the_record() {
             b"the report, revised".to_vec(),
         );
     answer_with(&questions, &[&chosen]);
-    assert_eq!(saving.recv_timeout(answer()).unwrap(), SaveOutcome::Saved);
+    assert!(
+        matches!(
+            saving.recv_timeout(answer()).unwrap(),
+            SaveOutcome::Saved { to } if to.ends_with("report.txt")
+        ),
+        "the save names the place it wrote"
+    );
     assert_eq!(std::fs::read(&chosen).unwrap(), b"the report, revised");
     let held = workspace
         .granted(&format!("chosen:{APP}:{}:write", id.0))

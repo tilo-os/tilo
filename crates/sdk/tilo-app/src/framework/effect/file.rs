@@ -136,7 +136,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.wait_on(
             saving_copy(request, bytes),
             move |host, outcome, cx| match outcome {
-                Some(SaveOutcome::Saved) => then(host, true, cx),
+                Some(SaveOutcome::Saved { .. }) => then(host, true, cx),
                 Some(SaveOutcome::Cancelled) => then(host, false, cx),
                 Some(SaveOutcome::Failed(reason)) => Err(reason),
                 None => Err(CHOOSER_GONE.into()),
@@ -179,7 +179,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     ) -> Effected {
         let written = destination.write(bytes);
         self.wait_for(written, move |host, outcome, cx| match outcome {
-            Some(SaveOutcome::Saved) => then(host, Ok(()), cx),
+            Some(SaveOutcome::Saved { .. }) => then(host, Ok(()), cx),
             Some(SaveOutcome::Cancelled) => then(host, Err("the save was cancelled".into()), cx),
             Some(SaveOutcome::Failed(reason)) => then(host, Err(reason), cx),
             None => Err(CHOOSER_GONE.into()),
@@ -207,7 +207,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                     let written = destination.write(bytes(destination.name())?);
                     Ok(
                         cx.wait_for(written, move |host, outcome, cx| match outcome {
-                            Some(SaveOutcome::Saved) => {
+                            Some(SaveOutcome::Saved { .. }) => {
                                 cx.saved_document_at(
                                     destination.reference().or_else(|| destination.location()),
                                 );
@@ -240,7 +240,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             .map(std::path::Path::to_path_buf);
         let written = destination.write(bytes);
         self.wait_for(written, move |host, outcome, cx| match outcome {
-            Some(SaveOutcome::Saved) => {
+            Some(SaveOutcome::Saved { .. }) => {
                 cx.saved_document_at(at.as_deref());
                 then(host, Ok(()), cx)
             }

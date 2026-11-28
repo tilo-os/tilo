@@ -11,7 +11,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use serde_json::json;
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::rich::RichValue;
@@ -188,8 +188,8 @@ impl BlobHost for Kept {
         Err("nobody chooses files here".to_owned())
     }
 
-    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
-        Ok(())
+    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<Saved, String> {
+        Ok(Saved::At(String::new()))
     }
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {

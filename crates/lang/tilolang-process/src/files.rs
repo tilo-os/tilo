@@ -18,7 +18,7 @@ use tilo_dialogs::portal::{
     FileFilter, MultiOutcome, OpenFileOutcome, OpenedFile, PickRequest, SaveOutcome,
 };
 use tilolang_tilo::runtime::blob::{
-    FileRequest, FileValue, MAX_CHOSEN, SaveRequest, accepts, media_of,
+    FileRequest, FileValue, MAX_CHOSEN, SaveRequest, Saved, accepts, media_of,
 };
 
 /// What a person asking for a file is told when the session opened no chooser for the app: the
@@ -289,17 +289,23 @@ pub fn preview(
     keep(store, &format!("{stem}-{edge}.png"), "image/png", &png).map(Some)
 }
 
-/// Put `content` where the person says: what `file.save` runs.
+/// Put `content` where the person says: what `file.save` runs, answering where it went or that
+/// the chooser was closed.
 ///
 /// # Errors
 ///
 /// Why it was not written: the chooser refused, or the write failed.
-pub fn save(chooser: &dyn FilePicker, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
+pub fn save(
+    chooser: &dyn FilePicker,
+    request: &SaveRequest,
+    content: &[u8],
+) -> Result<Saved, String> {
     let title = format!("Save {}", request.name);
     // The confirm button reads Save, not the file's media type.
     let pick = PickRequest::save(&title, "", &request.name).thread_name("tilolang-save-file");
     match wait(&chooser.save_contents(pick, content.to_vec()))? {
-        SaveOutcome::Saved | SaveOutcome::Cancelled => Ok(()),
+        SaveOutcome::Saved { to } => Ok(Saved::At(to)),
+        SaveOutcome::Cancelled => Ok(Saved::Cancelled),
         SaveOutcome::Failed(why) => Err(why),
     }
 }

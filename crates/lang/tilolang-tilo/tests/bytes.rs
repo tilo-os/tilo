@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::store::{BytesData, FieldSpec, Store as _};
@@ -62,7 +62,7 @@ impl BlobHost for MemoryBlobs {
         Err("no chooser here".to_owned())
     }
 
-    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
+    fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<Saved, String> {
         Err("no chooser here".to_owned())
     }
 

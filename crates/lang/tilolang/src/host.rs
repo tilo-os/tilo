@@ -122,6 +122,8 @@ pub const HOST_ENUMS: &[HostEnum] = &[
 /// what a job's `done:` and `progress:` actions are handed.
 pub const JOB_STATE_TYPE: &str = "host-job-state";
 pub const JOB_TYPE: &str = "host-job";
+/// The id of the host's `Saved` value type: what `file.save`'s `then:` action is handed.
+pub const SAVED_TYPE: &str = "host-saved";
 
 pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
@@ -151,6 +153,28 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "detail",
                 "Text",
                 "What the op says of itself, as JSON: its answer once done (the file it made, the lines it read).",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Saved",
+        id: SAVED_TYPE,
+        doc: "What a save came to, as `file.save`'s `then:` action is handed it: where it was written, or that the person closed the chooser, or why it was refused.",
+        fields: &[
+            (
+                "at",
+                "Text",
+                "Where it was written, as the person reads it; empty when this host keeps the file without a path of its own (a page's download), or when nothing was written.",
+            ),
+            (
+                "cancelled",
+                "Bool",
+                "Whether the person closed the chooser without saving.",
+            ),
+            (
+                "refused",
+                "Text",
+                "Why the save was refused; empty unless it was.",
             ),
         ],
     },

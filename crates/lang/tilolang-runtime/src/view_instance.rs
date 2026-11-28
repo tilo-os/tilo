@@ -1560,11 +1560,27 @@ impl ViewInstance {
         self.run(&filled)
     }
 
-    /// `file.save(a, name)`: run `a`, and put what it made — text, or a file — in a file the
-    /// person names. What is saved is the device's: nothing is recorded.
+    /// `file.save(a, name, then: b)`: run `a`, and put what it made — text, or a file — in a
+    /// file the person names. `b`, when given, runs with what the save came to: where it was
+    /// written, that the chooser was closed, or why it was refused. What is saved is the
+    /// device's: nothing is recorded.
     fn platform_save(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [Value::Action(next), Value::Text(name)] = aref.args.as_slice() else {
-            return Err(RuntimeError::BadArgs("a malformed `file.save`".into()));
+        let (next, name, then) = match aref.args.as_slice() {
+            [Value::Action(next), Value::Text(name)] => (next, name, None),
+            [Value::Action(next), Value::Text(name), Value::Opt(after)] => {
+                (next, name, after.as_deref())
+            }
+            _ => return Err(RuntimeError::BadArgs("a malformed `file.save`".into())),
+        };
+        let then = match then {
+            Some(Value::Action(after)) => Some(after.clone()),
+            None => None,
+            Some(other) => {
+                return Err(RuntimeError::BadArgs(format!(
+                    "`file.save`'s `then:` takes an action, not {}",
+                    other.kind_name()
+                )));
+            }
         };
         let made = match self.run(next)? {
             InvokeOutcome::Done(made) => made,
@@ -1617,14 +1633,31 @@ impl ViewInstance {
             name.clone()
         };
         let request = crate::blob::SaveRequest { name, media };
-        let blobs = self.core.blobs.borrow();
-        let Some(blobs) = blobs.as_ref() else {
-            return Err(RuntimeError::Package("this host saves no files".to_owned()));
+        let saved = {
+            let blobs = self.core.blobs.borrow();
+            let Some(blobs) = blobs.as_ref() else {
+                return Err(RuntimeError::Package("this host saves no files".to_owned()));
+            };
+            blobs.save(&request, &content)
         };
-        blobs
-            .save(&request, &content)
-            .map_err(RuntimeError::Package)?;
-        Ok(InvokeOutcome::Done(Value::Unit))
+        let Some(mut after) = then else {
+            saved.map_err(RuntimeError::Package)?;
+            return Ok(InvokeOutcome::Done(Value::Unit));
+        };
+        // What the save came to, as the app reads it: where it went, that the chooser was
+        // closed, or why it was refused.
+        let outcome = match &saved {
+            Ok(crate::blob::Saved::At(to)) => {
+                Value::Tuple(vec![Value::text(to), Value::Bool(false), Value::text("")])
+            }
+            Ok(crate::blob::Saved::Cancelled) => {
+                Value::Tuple(vec![Value::text(""), Value::Bool(true), Value::text("")])
+            }
+            Err(why) => Value::Tuple(vec![Value::text(""), Value::Bool(false), Value::text(why)]),
+        };
+        fill_event(&mut after, Some(&outcome), Held::default())
+            .map_err(|()| RuntimeError::BadArgs("a malformed `file.save`".into()))?;
+        self.run(&after)
     }
 
     /// `set(name, value)`: change the view state slot the reference names, in this view's

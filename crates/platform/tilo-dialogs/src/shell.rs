@@ -205,9 +205,11 @@ pub enum Reply {
         id: u64,
         documents: Vec<HandedDocument>,
     },
-    /// A Save's bytes are in the file beside the chosen one, which is now renamed over it.
+    /// A Save's bytes are in the file beside the chosen one, which is now renamed over it;
+    /// `to` is the place the person chose, as they read it.
     Saved {
         id: u64,
+        to: String,
     },
     /// Retired: an answer from before the chooser handed descriptors. Read as a choice of
     /// nothing; never written.
@@ -264,7 +266,7 @@ impl Reply {
             | Reply::ContentsChunk { id, .. }
             | Reply::ContentsReleased { id }
             | Reply::Handed { id, .. }
-            | Reply::Saved { id }
+            | Reply::Saved { id, .. }
             | Reply::Picked { id, .. }
             | Reply::Cancelled { id }
             | Reply::Nobody { id }
@@ -754,7 +756,7 @@ impl ShellLink {
     pub fn saved(
         &self,
         reference: &Path,
-        answer: impl FnOnce(Result<(), String>) + Send + 'static,
+        answer: impl FnOnce(Result<String, String>) + Send + 'static,
     ) {
         let asked = reference.to_path_buf();
         self.connection().ask(
@@ -764,7 +766,7 @@ impl ShellLink {
             },
             Box::new(move |reply, _fds| {
                 answer(match reply {
-                    Reply::Saved { .. } => Ok(()),
+                    Reply::Saved { to, .. } => Ok(to),
                     Reply::Failed { reason, .. } => Err(reason),
                     _ => Err(CHOOSER_OUT_OF_TURN.to_owned()),
                 });
@@ -1009,7 +1011,7 @@ fn commit(link: &ShellLink, reference: &Path) {
         let _ = tx.send(outcome);
     });
     match rx.recv_timeout(SAVE_COMMIT_WAIT) {
-        Ok(Ok(())) => {}
+        Ok(Ok(_to)) => {}
         Ok(Err(reason)) => tracing::warn!(%reason, "a save was not committed"),
         Err(_) => tracing::warn!("the chooser did not commit a save in time"),
     }
@@ -1044,7 +1046,7 @@ fn write_and_commit(
         let _ = tx.send(outcome);
     });
     match rx.recv_timeout(SAVE_COMMIT_WAIT) {
-        Ok(Ok(())) => SaveOutcome::Saved,
+        Ok(Ok(to)) => SaveOutcome::Saved { to },
         Ok(Err(reason)) => SaveOutcome::Failed(reason),
         Err(_) => SaveOutcome::Failed("the chooser did not commit the save in time".to_owned()),
     }
@@ -1221,7 +1223,7 @@ impl FilePicker for ShellChooser {
                 }
                 link.saved(&reference, move |outcome| {
                     deliver(match outcome {
-                        Ok(()) => SaveOutcome::Saved,
+                        Ok(to) => SaveOutcome::Saved { to },
                         Err(reason) => SaveOutcome::Failed(reason),
                     });
                 });

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use tilolang::IdsLock;
-use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest, Saved};
 use tilolang_runtime::files::{DocumentApp, Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::{EngineHost, JobHandlers};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance};
@@ -446,7 +446,7 @@ impl BlobHost for Store {
         Ok(Vec::new())
     }
 
-    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+    fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<Saved, String> {
         Err("this test writes no files out".to_owned())
     }
 

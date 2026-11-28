@@ -123,7 +123,9 @@ fn write_path(path: PathBuf, bytes: Vec<u8>) -> SaveChannel {
     let spawned =
         tilo_rt::background::Background::current().spawn("tilo-portal-write", move || {
             let _ = tx.send(match super::replace_saved(&path, &bytes) {
-                Ok(()) => SaveOutcome::Saved,
+                Ok(()) => SaveOutcome::Saved {
+                    to: path.display().to_string(),
+                },
                 Err(error) => SaveOutcome::Failed(format!("{}: {error}", path.display())),
             });
         });
@@ -217,7 +219,12 @@ mod tests {
             let _work = work.background().enter();
             let saved = destination.write(b"%PDF".to_vec());
             work.run_pending();
-            assert_eq!(saved.recv().unwrap(), SaveOutcome::Saved);
+            assert_eq!(
+                saved.recv().unwrap(),
+                SaveOutcome::Saved {
+                    to: path.display().to_string()
+                }
+            );
             assert_eq!(std::fs::read(&path).unwrap(), b"%PDF");
             std::fs::remove_dir_all(dir).unwrap();
         }
@@ -228,18 +235,18 @@ mod tests {
             let into = std::sync::Arc::clone(&written);
             let destination = SaveDestination::kept("notes.pdf", move |bytes| {
                 into.lock().unwrap().extend(bytes);
-                answered(SaveOutcome::Saved)
+                answered(SaveOutcome::Saved { to: String::new() })
             });
             assert_eq!(destination.name(), "notes.pdf");
             assert_eq!(destination.location(), None, "no path to save in place");
             assert_eq!(
                 destination.write(b"%PDF".to_vec()).recv().unwrap(),
-                SaveOutcome::Saved
+                SaveOutcome::Saved { to: String::new() }
             );
             assert_eq!(*written.lock().unwrap(), b"%PDF");
             assert_eq!(
                 destination.write(b"!".to_vec()).recv().unwrap(),
-                SaveOutcome::Saved,
+                SaveOutcome::Saved { to: String::new() },
                 "a kept destination takes the next save too"
             );
             assert_eq!(*written.lock().unwrap(), b"%PDF!");

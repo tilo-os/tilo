@@ -576,7 +576,7 @@ imports! {
     FileOpen = "file_open" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
-    ActSave = "act_save" ([H, H] -> [H]);
+    ActSave = "act_save" ([H, H, H] -> [H]);
     // `blur()`: the field the keyboard is in ends its edit, as closing its editor does.
     ActBlur = "act_blur" ([] -> [H]);
     // `close()`: the window the view stands in closes, as the person closing it does.
