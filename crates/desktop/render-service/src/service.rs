@@ -7,8 +7,8 @@
 //! frame in this pass, then the service waits for the GPU once and tells
 //! each app which buffer to attach. An app whose frame takes the GPU longer
 //! than its budget has its following frame held until it has waited out the
-//! overrun, so one app cannot take the workspace's GPU from the others and
-//! the frame it drew last still is its newest picture.
+//! overrun while another app draws, so one app cannot take the workspace's
+//! GPU from the others and the frame it drew last still is its newest picture.
 //!
 //! Nothing an app sends can stop the loop: a refusal is a message back, a
 //! protocol violation closes that app's connection, and a panic while
@@ -42,6 +42,9 @@ struct Connection {
     surfaces: HashMap<SurfaceId, Surface>,
     /// Frames are held until then: the app overran its GPU budget.
     throttled_until: Option<Instant>,
+    /// When its last frame was answered: an app over its budget waits only while another app
+    /// drew since, so a frame nobody else is waiting for is drawn at once.
+    drawn_at: Option<Instant>,
     /// The frame that arrived while the app was over its budget: drawn when the
     /// overrun has been waited out.
     held: Option<Held>,
@@ -200,6 +203,7 @@ impl Service {
                                 registry: Registry::default(),
                                 surfaces: HashMap::new(),
                                 throttled_until: None,
+                                drawn_at: None,
                                 held: None,
                                 frames: 0,
                             },
@@ -427,8 +431,18 @@ impl Service {
         let over = self
             .connections
             .get(&id)
-            .and_then(|connection| connection.throttled_until)
-            .is_some_and(|until| Instant::now() < until);
+            .filter(|connection| {
+                connection
+                    .throttled_until
+                    .is_some_and(|until| Instant::now() < until)
+            })
+            .is_some_and(|connection| {
+                // The overrun is waited out for the apps sharing the GPU: alone, waiting gives
+                // nobody a turn and only keeps the app's newest picture off the screen.
+                self.connections
+                    .iter()
+                    .any(|(other, sharing)| *other != id && sharing.drawn_at > connection.drawn_at)
+            });
         if over {
             if let Some(connection) = self.connections.get_mut(&id) {
                 // An app that sent another frame meanwhile is answered for the one it
@@ -651,6 +665,7 @@ impl Service {
             };
             let gpu_us = ready.gpu_us.saturating_add(waited);
             connection.frames = connection.frames.saturating_add(1);
+            connection.drawn_at = Some(Instant::now());
             if gpu_us > limits.gpu_time_us {
                 let overrun =
                     Duration::from_micros(u64::from(gpu_us.saturating_sub(limits.gpu_time_us)));

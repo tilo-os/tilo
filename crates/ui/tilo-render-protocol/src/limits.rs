@@ -42,8 +42,8 @@ pub struct Limits {
     /// are mapped from their files and not counted).
     pub font_bytes: u64,
     /// GPU time one frame may take, in microseconds. A frame over it is
-    /// presented, then the app's next frames wait out the overrun, so one app
-    /// cannot take the room's GPU from the others.
+    /// presented, then the app's next frames wait out the overrun while other
+    /// apps draw, so one app cannot take the room's GPU from the others.
     pub gpu_time_us: u32,
     /// Backdrop regions one frame blurs.
     pub backdrops: u32,

@@ -873,24 +873,58 @@ fn an_app_cannot_draw_another_app_s_image() {
     assert!(why.contains("image"), "{why}");
 }
 
-#[test]
-fn an_app_over_its_gpu_budget_waits_out_the_overrun_and_its_frame_is_drawn() {
+/// An app over its budget whose next frame comes in a frame time: `(the slow frame's GPU time,
+/// how long the next one took to come back)`, with `beside` drawing a frame in between when given.
+fn after_an_overrun(beside: bool) -> (u32, std::time::Duration) {
     let broker = start(Limits {
         gpu_time_us: 0,
         ..Limits::default()
     });
     let mut app = connect(&broker, 1, "so.tilo.heavy");
-    // A large surface: drawing it takes milliseconds, all of it over a zero
-    // budget, so the app's next frame comes well inside the overrun.
-    app.size = (2048, 1536);
-    let scene = filled(Color::WHITE, KRect::new(0.0, 0.0, 2048.0, 1536.0));
+    // A scene slow to draw and small to send: hundreds of translucent layers over the whole
+    // surface, all of their time over a zero budget, so the app's next frame comes well inside
+    // the overrun.
+    app.size = (1024, 1024);
+    let whole = KRect::new(0.0, 0.0, 1024.0, 1024.0);
+    let mut scene = filled(Color::WHITE, whole);
+    for _ in 0..3_000 {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::BLACK.with_alpha(0.01),
+            None,
+            &whole,
+        );
+    }
     app.frame(&scene, None);
     let _ = app.recv();
     let ServiceMessage::FrameReady { gpu_us, .. } = app.recv().message else {
         panic!("the first frame is drawn");
     };
+    // The overrun runs from when the frame came back.
+    let drawn = std::time::Instant::now();
     assert!(gpu_us > 0, "the frame's time is measured");
-    let sequence = app.frame(&scene, None);
+    // The app beside stays connected while the held frame waits.
+    let _beside = beside.then(|| {
+        let mut other = connect(&broker, 2, "so.tilo.beside");
+        other.frame(&filled(Color::WHITE, KRect::new(0.0, 0.0, 2.0, 2.0)), None);
+        let _ = other.recv();
+        assert!(matches!(
+            other.recv().message,
+            ServiceMessage::FrameReady { .. }
+        ));
+        other
+    });
+    let corner = Rect {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 2.0,
+        y1: 2.0,
+    };
+    let sequence = app.damage_only(
+        &filled(Color::BLACK, KRect::new(0.0, 0.0, 2.0, 2.0)),
+        corner,
+    );
     // Held while the app is over its budget, then drawn: the picture on screen is
     // the app's newest one, not the frame before it.
     loop {
@@ -900,7 +934,7 @@ fn an_app_over_its_gpu_budget_waits_out_the_overrun_and_its_frame_is_drawn() {
                 sequence: ready, ..
             } => {
                 assert_eq!(ready, sequence);
-                break;
+                return (gpu_us, drawn.elapsed());
             }
             ServiceMessage::FrameDropped { why, .. } => {
                 panic!("the held frame is drawn rather than dropped: {why:?}");
@@ -908,6 +942,26 @@ fn an_app_over_its_gpu_budget_waits_out_the_overrun_and_its_frame_is_drawn() {
             other => panic!("unexpected {other:?}"),
         }
     }
+}
+
+#[test]
+fn an_app_over_its_gpu_budget_waits_out_the_overrun_while_another_draws() {
+    let (gpu_us, waited) = after_an_overrun(true);
+    assert!(
+        waited.as_micros() * 2 >= u128::from(gpu_us),
+        "the frame waited out most of a {gpu_us} µs overrun, not {waited:?}"
+    );
+}
+
+/// An app alone on the GPU is waited for by nobody: its next frame (a theme switched, a press
+/// answered) is drawn at once, not after its slow frame's time again.
+#[test]
+fn an_app_alone_over_its_gpu_budget_has_its_next_frame_drawn_at_once() {
+    let (gpu_us, waited) = after_an_overrun(false);
+    assert!(
+        waited.as_micros() * 2 < u128::from(gpu_us),
+        "a frame nobody else waits for comes back in {waited:?}, inside a {gpu_us} µs overrun"
+    );
 }
 
 #[test]
