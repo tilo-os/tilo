@@ -657,18 +657,29 @@ pub fn store_record_kinds(
     held: Option<&automerge::Automerge>,
     changes: &[automerge::Change],
 ) -> RecordKinds {
+    store_record_kinds_placed(record, held, changes).0
+}
+
+/// [`store_record_kinds`], and the changes left out because their earlier changes are not here.
+#[must_use]
+pub fn store_record_kinds_placed(
+    record: &str,
+    held: Option<&automerge::Automerge>,
+    changes: &[automerge::Change],
+) -> (RecordKinds, std::collections::BTreeSet<[u8; 32]>) {
     use automerge::ReadDoc as _;
     use automerge::legacy::{Key, OpId, OpType};
     use std::collections::BTreeSet;
     let mut kinds = RecordKinds::new();
+    let mut unplaced = BTreeSet::new();
     if !crate::is_store_document(record) {
-        return kinds;
+        return (kinds, unplaced);
     }
     if let Some(kind) = content_kind(record) {
         for change in changes {
             kinds.insert(change.hash().0, std::iter::once(kind.to_owned()).collect());
         }
-        return kinds;
+        return (kinds, unplaced);
     }
     let empty = automerge::Automerge::new();
     let held = held.unwrap_or(&empty);
@@ -705,6 +716,7 @@ pub fn store_record_kinds(
             .collect::<Option<Vec<Vec<automerge::ChangeHash>>>>()
             .map(|on| on.concat())
         else {
+            unplaced.insert(change.hash().0);
             continue;
         };
         on.sort();
@@ -748,7 +760,7 @@ pub fn store_record_kinds(
         }
         stands_on.insert(change.hash(), on);
     }
-    kinds
+    (kinds, unplaced)
 }
 
 /// The key at the root of a resource store's document that an operation in `obj` at `key` writes

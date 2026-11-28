@@ -1,5 +1,5 @@
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{AutoCommit, ROOT};
+use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use tilo_action_policy::{Answer, Context, Grant, Grantee, Party, roles};
 use tilo_action_types::KindSet;
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
@@ -851,6 +851,20 @@ fn store_change(kind: &str) -> automerge::Change {
     parse_changes(&doc.save()).unwrap().remove(0)
 }
 
+/// A store op a device signs, carrying `payload` and naming its surface.
+fn signed_store_op(payload: Vec<u8>) -> collab_types::op::SignedOp {
+    collab_types::op::SignedOp::new_unsigned(
+        payload,
+        collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
+        collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+        collab_types::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
+        collab_types::role::OpKind::Change,
+        std::time::SystemTime::UNIX_EPOCH,
+        1,
+    )
+    .with_surface(Some([1; 32]))
+}
+
 /// A change over records of two kinds is decided by the surface of each: one kind whose record
 /// is not edited whole refuses the change, and the units of both are what it is checked against.
 #[test]
@@ -941,16 +955,7 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
         }
     };
     let opened = |change: &automerge::Change, read: &ChangeClaim, claimed: ClaimedAction| {
-        let op = collab_types::op::SignedOp::new_unsigned(
-            Vec::new(),
-            collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
-            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
-            collab_types::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
-            collab_types::role::OpKind::Change,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-        )
-        .with_claims(vec![ChangeClaim {
+        let op = signed_store_op(Vec::new()).with_claims(vec![ChangeClaim {
             action: claimed,
             ..read.clone()
         }]);
@@ -1004,16 +1009,7 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
     // does, and its writer names them: the claim names them, under no verb it was not written
     // under.
     let in_store = |claimed: ClaimedAction| {
-        let op = collab_types::op::SignedOp::new_unsigned(
-            Vec::new(),
-            collab_types::document_artifact_id(APP, WORKSPACE, "*/tl.notes#0"),
-            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
-            collab_types::document_attestation_id(APP, WORKSPACE, "*/tl.notes#0"),
-            collab_types::role::OpKind::Change,
-            std::time::SystemTime::UNIX_EPOCH,
-            1,
-        )
-        .with_claims(vec![ChangeClaim {
+        let op = signed_store_op(Vec::new()).with_claims(vec![ChangeClaim {
             action: claimed,
             ..native_read.clone()
         }]);
@@ -1034,9 +1030,12 @@ fn a_claim_naming_other_kinds_than_its_change_is_refused_when_opened() {
 /// refused; one admitted before changes claimed their kinds, handed on from a store, keeps the
 /// verdict it got: it is decided whole against the app's own resource, as it was then.
 #[test]
-fn a_store_change_that_names_no_kind_is_refused_new_and_kept_as_it_was_in_replay() {
+fn a_store_change_is_decided_by_the_kinds_of_its_records_or_waits_for_its_earlier_change() {
     let notes = Kinds::new([TestKind("tl.notes", true, None)]);
-    let surface_for = |kind: Option<&str>| notes.surface(&store_document(), kind, None);
+    let surfaces = Surfaces::from_source(std::sync::Arc::new(notes));
+    let store = store_document();
+    let surface_for = |kind: Option<&str>| surfaces.source().unwrap().surface(&store, kind, None);
+    // Imported history: `of_imported_change` names the import person, `name_record_kinds` its kinds.
     let unnamed = claim(
         1,
         ClaimedAction::whole_resource_edit(String::new()),
@@ -1058,6 +1057,20 @@ fn a_store_change_that_names_no_kind_is_refused_new_and_kept_as_it_was_in_replay
         decide(false)
     );
     assert_eq!(decide(true), Ok(Receipt::Admit));
+
+    let change = store_change("tl.notes");
+    let mut doc = AutoCommit::load(change.raw_bytes()).unwrap();
+    let (_, record) = doc.get(ROOT, "r:n1").unwrap().unwrap();
+    doc.put(&record, "title", "Groceries").unwrap();
+    doc.commit_with(CommitOptions::default().with_message(change.message().unwrap()));
+    let later = parse_changes(&doc.save()).unwrap().remove(1);
+    let op = signed_store_op(
+        collab_types::op::DocumentMutation::Incremental(later.raw_bytes().to_vec())
+            .encode()
+            .unwrap(),
+    );
+    let decided = |held| decide_op(&op, &store, None, held, &surfaces, &|_, _, _| true);
+    assert_eq!(decided(None), Ok(Receipt::Hold));
 }
 
 /// A store's content document holds one resource, whose kind its id names. A change of it that

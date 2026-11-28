@@ -374,7 +374,7 @@ fn decide_cleartext_changes(
     // A resource store's change names the kinds of the records it writes as this receiver
     // reads them, before the change and after it: never as its writer says.
     let mut held = held;
-    let kinds = collab_types::claim::store_record_kinds(
+    let (kinds, unplaced) = collab_types::claim::store_record_kinds_placed(
         document.document,
         held.as_mut().map(automerge::AutoCommit::document),
         changes,
@@ -382,7 +382,12 @@ fn decide_cleartext_changes(
     let written = held.and_then(|held| collab_types::units::units_by_change(held, changes));
     let mut claims = cleartext_claims(changes, written.as_ref(), (imported, signer))?;
     collab_types::claim::name_record_kinds(&mut claims, &kinds);
-    check_store_kinds(&claims, document, replay)?;
+    // A change whose earlier changes are not here yet waits, never refused.
+    let decided = check_store_kinds(&claims, document, replay);
+    if decided.is_err() && claims.iter().any(|claim| unplaced.contains(&claim.change)) {
+        return Ok(Receipt::Hold);
+    }
+    decided?;
     let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
     if let Some(pinned) = pinned
         && op.surface != Some(pinned)
