@@ -91,10 +91,6 @@ so-tilo-system-firewall-refresh = Read this computer's firewalld again
 so-tilo-system-firewall-apply = Apply the configuration to this computer's firewalld
 so-tilo-system-firewall-read-blocked = Show what the kernel dropped
 
-# Journal
-so-tilo-system-journal-refresh = Read the journal again
-so-tilo-system-journal-read-after = Read the records after a cursor
-so-tilo-system-journal-set-following = Follow the journal live
 so-tilo-system-windows-apps-delete-data = Delete the app's data
 so-tilo-system-windows-apps-escalate-install = Continue the setup in Windows
 so-tilo-system-windows-apps-import-iso = Import a Windows ISO

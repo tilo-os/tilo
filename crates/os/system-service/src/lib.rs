@@ -67,9 +67,10 @@ use effects::{KeyboardLightAction, PowerAction, TimeAction, UpdateAction};
 use model::{KeyboardLight, Power, PowerMode, Time};
 use update::Update;
 
+pub use tilo_journal::JOURNAL;
 /// The resources' ids.
 pub use tilo_system_resources::{
-    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO, JOURNAL,
+    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO,
     KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
     USERS, WINDOWS_APPS, WINDOWS_PROGRAM, WINDOWS_PROGRAMS,
 };
@@ -132,7 +133,7 @@ pub struct Readings {
     pub processes: tilo_system_resources::processes::Processes,
     pub disks: tilo_system_resources::disks::Disks,
     pub firewall: tilo_system_resources::firewall::Firewall,
-    pub journal: tilo_system_resources::journal::Journal,
+    pub journal: tilo_journal::Journal,
     pub windows_apps: tilo_system_resources::windows_apps::WindowsApps,
 }
 
@@ -164,7 +165,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         processes: system.processes(),
         disks: system.disks(),
         firewall: system.firewall(),
-        journal: tilo_system_resources::journal::Journal::default(),
+        journal: tilo_journal::Journal::default(),
         windows_apps: tilo_system_resources::windows_apps::WindowsApps::default(),
     }
 }
@@ -195,7 +196,7 @@ enum Landed {
     /// The journal read, or the records written since a cursor.
     Journal {
         action: String,
-        result: Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String>,
+        result: Result<(Vec<tilo_journal::JournalEntry>, String), String>,
         /// The read replaced the entries, rather than continuing them.
         replace: bool,
         read_at_ms: u64,
@@ -780,7 +781,7 @@ impl SystemService {
     fn land_journal(
         &mut self,
         action: &str,
-        result: Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String>,
+        result: Result<(Vec<tilo_journal::JournalEntry>, String), String>,
         replace: bool,
         read_at_ms: u64,
     ) {
@@ -2382,18 +2383,16 @@ impl SystemService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        let action = decode::<tilo_system_resources::journal::JournalAction>(
-            published, resource, action, arguments,
-        )?;
+        let action = decode::<tilo_journal::JournalAction>(published, resource, action, arguments)?;
         let id = action.id();
         match action {
-            tilo_system_resources::journal::JournalAction::Refresh { limit } => {
+            tilo_journal::JournalAction::Refresh { limit } => {
                 Ok(self.start_journal(id, None, limit, true))
             }
-            tilo_system_resources::journal::JournalAction::ReadAfter { cursor, limit } => {
+            tilo_journal::JournalAction::ReadAfter { cursor, limit } => {
                 Ok(self.start_journal(id, Some(cursor), limit, false))
             }
-            tilo_system_resources::journal::JournalAction::SetFollowing { on } => {
+            tilo_journal::JournalAction::SetFollowing { on } => {
                 self.start_following(on);
                 Ok(Started::Accepted)
             }

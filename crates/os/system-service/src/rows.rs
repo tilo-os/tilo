@@ -2,9 +2,9 @@
 //! by its own title and how choosing it opens it.
 
 use tilo_actions::ReadingRow;
+use tilo_journal::JOURNAL;
 use tilo_system_resources::containers::CONTAINERS;
 use tilo_system_resources::disks::DISKS;
-use tilo_system_resources::journal::JOURNAL;
 use tilo_system_resources::printers::PRINTERS;
 use tilo_system_resources::processes::PROCESSES;
 use tilo_system_resources::scanners::SCANNERS;
@@ -270,11 +270,11 @@ fn print_rows(readings: &Readings) -> Vec<(String, ReadingRow)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_journal::JournalEntry;
     use tilo_system_resources::containers::{
         Container, ContainerState, ContainerStats, Containers,
     };
     use tilo_system_resources::disks::Partition;
-    use tilo_system_resources::journal::JournalEntry;
     use tilo_system_resources::printers::{JobState, PrintJob, PrinterQueue, QueueState};
     use tilo_system_resources::processes::Process;
     use tilo_system_resources::scanners::ScannerShown;

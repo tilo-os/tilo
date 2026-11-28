@@ -1,0 +1,24 @@
+[package]
+name = "tilo-journal"
+description = "This device's systemd journal as the `journal` resource reads it: its rows, the cursor a live tail continues from, and the bounded `journalctl` read whoever serves it uses."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-resource = { path = "../tilo-resource" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `journalctl` runs with a deadline and an output bound, for the session's system service and for
+# a device whose daemon serves the journal with no session.
+bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
+# The record's time in the person's zone.
+jiff.workspace = true
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

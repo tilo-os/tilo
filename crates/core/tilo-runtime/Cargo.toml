@@ -132,7 +132,7 @@ tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # This computer's journal: the reading's type and the one read, which the daemon serves the apps
 # attached to it when no session does.
-tilo-system-resources = { version = "0.1.0", path = "../../desktop/tilo-system-resources" }
+tilo-journal = { version = "0.1.0", path = "../journal" }
 # Where a workspace's resources open on the web: the entry the server that keeps it announces,
 # which its apps mint a resource's link under.
 tilo-reference = { version = "0.1.0", path = "../reference" }

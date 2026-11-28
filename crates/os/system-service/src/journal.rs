@@ -1,19 +1,19 @@
-//! The `journal` resource: what [`tilo_system_resources::journal`] says it is.
+//! The `journal` resource: what [`tilo_journal`] says it is.
 //!
 //! [`read`] reads the most recent records of this computer's systemd journal, [`read_after`]
 //! the records written since a cursor, and [`JournalAction`] offers both to a shell. The read is
-//! the journal's own ([`tilo_system_resources::journal::read`]), so a device whose daemon serves
+//! the journal's own ([`tilo_journal::read`]), so a device whose daemon serves
 //! the journal with no session reads it the same way. A machine whose journal cannot be read says
 //! so; it never answers with an empty journal.
 
 use tilo_actions::ResourceSpec;
+use tilo_journal::{JOURNAL, Journal, JournalAction};
 use tilo_service::offer;
-use tilo_system_resources::journal::{JOURNAL, Journal, JournalAction};
 
 use crate::i18n::name;
 
 // The journal's own read, shared with a device whose daemon has no session to read it.
-pub use tilo_system_resources::journal::{read, read_after};
+pub use tilo_journal::{read, read_after};
 
 /// The `journal` resource, as a declared type.
 #[derive(tilo_resource::Row)]

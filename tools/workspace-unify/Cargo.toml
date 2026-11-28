@@ -1152,6 +1152,7 @@ doc = false
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }
 "tilo-invocation-journal" = { path = "../../crates/core/invocation-journal", default-features = false, features = ["test-support"] }
 "tilo-invocations" = { path = "../../crates/core/invocations", default-features = false, features = [] }
+"tilo-journal" = { path = "../../crates/core/journal", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-keyboard-catalog" = { path = "../../crates/desktop/tilo-keyboard-catalog", default-features = false, features = [] }
 "tilo-keyboard-engine" = { path = "../../crates/engines/keyboard", default-features = false, features = [] }
@@ -3630,6 +3631,7 @@ doc = false
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }
 "tilo-invocation-journal" = { path = "../../crates/core/invocation-journal", default-features = false, features = ["test-support"] }
 "tilo-invocations" = { path = "../../crates/core/invocations", default-features = false, features = [] }
+"tilo-journal" = { path = "../../crates/core/journal", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-keyboard-catalog" = { path = "../../crates/desktop/tilo-keyboard-catalog", default-features = false, features = [] }
 "tilo-keyboard-engine" = { path = "../../crates/engines/keyboard", default-features = false, features = [] }

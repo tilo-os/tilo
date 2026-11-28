@@ -333,6 +333,7 @@ members = [
     "crates/engines/feeds",
     "crates/platform/tilo-location",
     "crates/desktop/tilo-system-resources",
+    "crates/core/journal",
     "crates/platform/image-codec",
     "crates/platform/image-info",
     "crates/platform/tilo-network-client",

@@ -4058,10 +4058,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             &[super::server_settings::SERVER],
             Arc::clone(&server_settings),
         )
-        .serving(
-            &[tilo_system_resources::journal::JOURNAL],
-            Arc::clone(&journal),
-        )
+        .serving(&[tilo_journal::JOURNAL], Arc::clone(&journal))
         .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
         .serving(&[super::clipboard::RESOURCE], Arc::clone(&clipboard))
         .serving(&[super::online::RESOURCE], Arc::clone(&online))

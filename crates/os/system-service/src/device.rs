@@ -400,7 +400,7 @@ pub trait System: Send + Sync {
         &self,
         _after: Option<&str>,
         _limit: u32,
-    ) -> Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String> {
+    ) -> Result<(Vec<tilo_journal::JournalEntry>, String), String> {
         Err("this machine has no system journal".to_owned())
     }
 
@@ -795,7 +795,7 @@ impl System for OsSystem {
         &self,
         after: Option<&str>,
         limit: u32,
-    ) -> Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String> {
+    ) -> Result<(Vec<tilo_journal::JournalEntry>, String), String> {
         match after {
             Some(cursor) => crate::journal::read_after(cursor, limit),
             None => crate::journal::read(limit),

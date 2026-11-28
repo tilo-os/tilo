@@ -17965,6 +17965,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-journal"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tilo-bounded-command",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-key-group"
 version = "0.1.0"
 dependencies = [
@@ -19968,6 +19980,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-invocations",
+ "tilo-journal",
  "tilo-key-group",
  "tilo-live",
  "tilo-location",
@@ -20008,7 +20021,6 @@ dependencies = [
  "tilo-socket",
  "tilo-startup-metrics",
  "tilo-surface-compile",
- "tilo-system-resources",
  "tilo-test-env",
  "tilo-test-http",
  "tilo-thumbnail",
@@ -21132,10 +21144,8 @@ dependencies = [
 name = "tilo-system-resources"
 version = "0.1.0"
 dependencies = [
- "jiff",
  "serde",
  "serde_json",
- "tilo-bounded-command",
  "tilo-resource",
  "workspace-hack",
 ]
@@ -21157,6 +21167,7 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-fs-client",
+ "tilo-journal",
  "tilo-location",
  "tilo-ntfs-mount",
  "tilo-os-release",
@@ -28147,6 +28158,7 @@ dependencies = [
  "tilo-install-helpers",
  "tilo-invocation-journal",
  "tilo-invocations",
+ "tilo-journal",
  "tilo-key-group",
  "tilo-keyboard-catalog",
  "tilo-keyboard-engine",

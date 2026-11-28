@@ -3,7 +3,7 @@
 //! capture's disposable profile).
 //!
 //! The session's system service serves the same resource to the shell, from the same read
-//! ([`tilo_system_resources::journal::read`]). A device with no session — the machine's daemon
+//! ([`tilo_journal::read`]). A device with no session — the machine's daemon
 //! alone, as `--run-app` starts an app — has nothing else to publish it, so the daemon does: the
 //! reading every view follows, and the actions that read it again, tail it after a cursor, or
 //! follow new records.
@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value};
 use tilo_actions::ActionOutput;
 use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
+use tilo_journal::{JOURNAL, Journal};
 use tilo_lock::MutexRecover as _;
-use tilo_system_resources::journal::{JOURNAL, Journal};
 use tokio::sync::{mpsc, oneshot};
 
 /// The most records the reading keeps: older ones leave as new ones arrive.
@@ -152,8 +152,8 @@ impl Inner {
     /// Read the journal, then put what it answered into the reading.
     fn read(&self, after: Option<String>, limit: u32, action: &str, replace: bool) {
         let result = match after {
-            Some(cursor) => tilo_system_resources::journal::read_after(&cursor, limit),
-            None => tilo_system_resources::journal::read(limit),
+            Some(cursor) => tilo_journal::read_after(&cursor, limit),
+            None => tilo_journal::read(limit),
         };
         self.land(action, result, replace);
         self.moved();
@@ -163,7 +163,7 @@ impl Inner {
     fn land(
         &self,
         action: &str,
-        result: Result<(Vec<tilo_system_resources::journal::JournalEntry>, String), String>,
+        result: Result<(Vec<tilo_journal::JournalEntry>, String), String>,
         replace: bool,
     ) {
         let mut served = self.served.lock_recover();
@@ -341,7 +341,7 @@ impl PublishedResources for Published {
 #[cfg(test)]
 mod tests {
     use super::Published;
-    use tilo_system_resources::journal::{FIXTURE_ENV, Journal};
+    use tilo_journal::{FIXTURE_ENV, Journal};
 
     /// The provider reads the journal a capture's profile stages and publishes it as the
     /// reading the Logs window shows.
