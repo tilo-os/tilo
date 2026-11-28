@@ -2771,11 +2771,12 @@ impl Daemon {
                 &identity.place.dir().join(OWN),
                 app_serving.as_ref(),
             );
-            tilo_rt::app().spawn(crate::device::keep::content::keep_for_members(
+            let (_, keeping) = crate::device::keep::content::keep_for_members(
                 workspaces.copies(),
                 &content,
                 app_serving,
-            ));
+            );
+            tilo_rt::app().spawn(keeping);
             None
         };
         let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {

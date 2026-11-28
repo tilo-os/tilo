@@ -645,14 +645,9 @@ impl Server {
             hosted.name_holder(&label).await;
         }
         // What every host keeps for its workspaces' members.
-        push_background_task(
-            &background_tasks,
-            tokio::spawn(crate::device::keep::content::keep_for_members(
-                &hosted,
-                &content,
-                app_serving,
-            )),
-        );
+        let (_, keeping) =
+            crate::device::keep::content::keep_for_members(&hosted, &content, app_serving);
+        push_background_task(&background_tasks, tokio::spawn(keeping));
         // This device's own web UI, on until its person turns it off: the host operation
         // `web.serve` reaches it through the workspaces it serves.
         let web_ui = {

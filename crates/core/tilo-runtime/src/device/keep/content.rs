@@ -66,19 +66,27 @@ pub fn of_device(
 /// member pushes is kept there ([`KeptContent`]) so a member that comes up after the writer left
 /// reads the same bytes from this device alone, a branch takes the content its records name, and
 /// a workspace its owner deleted takes its content and its app workers (`apps`) with it. What
-/// runs it is the future answered, which lasts as long as the device hosts.
+/// runs it is the future answered, which lasts as long as the device hosts; the keeper is
+/// answered beside it, for what reads what it keeps.
 pub fn keep_for_members(
     hosted: &tilo_workspace_service::workspaces::Workspaces,
     content: &Arc<WorkspaceStores>,
     apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
-) -> impl std::future::Future<Output = ()> + Send + 'static {
+) -> (
+    Arc<KeptContent>,
+    impl std::future::Future<Output = ()> + Send + 'static,
+) {
     hosted.serve_content(Arc::new(StoresContent(Arc::clone(content))));
     hosted.branch_content(Arc::new(branch::StoresBranches(Arc::clone(content))));
     let kept = KeptContent::new(hosted.clone(), Arc::clone(content));
     let forgetting = forget_deleted(hosted.clone(), Arc::clone(content), apps);
-    async move {
-        futures::join!(kept.keep_content(), forgetting);
-    }
+    let running = {
+        let kept = Arc::clone(&kept);
+        async move {
+            futures::join!(kept.keep_content(), forgetting);
+        }
+    };
+    (kept, running)
 }
 
 /// The workspaces' stores, as the host answers its members from them.

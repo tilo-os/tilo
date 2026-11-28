@@ -12,7 +12,7 @@
 use super::*;
 
 use tilo_workspace_service::workspaces::fixtures::{
-    declare_naming_kind, names_content, write_store,
+    declare_naming_kind, hosting_device_with, names_content, write_store,
 };
 
 const PHOTOS: &str = "so.tilo.photos";
@@ -403,36 +403,17 @@ async fn a_picture_two_members_push_stays_until_neither_holds_it() {
 /// the device that pushed it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_computer_hosting_a_workspace_keeps_what_its_members_push() {
-    // Alice's root is the one the workspace fixtures sign her pre-admissions with.
-    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-    let alice = TestUser {
-        user_pk: root.verifying_key().to_bytes(),
-        user_sk: root,
-        keys: std::sync::Arc::default(),
-    };
+    // The device the workspace fixtures' pre-admissions are signed by.
+    let (sk, cert) = hosting_device_with(DeviceCapabilities::primary());
+    let laptop = TestDevice { sk, cert };
     let bob = TestUser::fresh("Bob");
-    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let endpoint = device_endpoint(&laptop).await;
-    let (computer, _keys) =
-        crate::keep::common::laptop_service_at(state.path(), &laptop, endpoint.clone()).await;
-    let router = computer
-        .protocols()
-        .into_iter()
-        .fold(
-            iroh::protocol::Router::builder(endpoint),
-            |router, (alpn, handler)| router.accept(alpn, handler),
-        )
-        .spawn();
-    let workspaces = computer.workspaces();
-    let content = tilo_runtime::device::keep::content::stores(state.path());
-    let keeping = tokio::spawn(tilo_runtime::device::keep::content::keep_for_members(
-        workspaces, &content, None,
-    ));
+    let (computer, content, keeping, _keys) =
+        crate::keep::common::hosting_computer(&laptop, tempfile::tempdir().unwrap()).await;
+    let workspaces = computer.host.workspaces();
     let workspace = workspaces.create("Photos").await.unwrap().workspace;
-    // Alice's laptop lists itself as her device, signing its own row, as it does for every
-    // workspace she makes on it.
+    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    // The laptop lists itself as its person's device, signing its own row for the workspace.
     workspaces
         .enter(&workspace, (&laptop.cert, &laptop.sk))
         .await
@@ -445,19 +426,12 @@ async fn a_computer_hosting_a_workspace_keeps_what_its_members_push() {
         7,
     )
     .await;
-    let mut bob_link = Linked::open_on(
-        workspaces,
-        computer.node_addr(),
-        &phone,
-        WorkspaceId::parse(&workspace).unwrap(),
-        None,
-    )
-    .await
-    .expect("the computer admits Bob's phone");
-    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    let mut bob_link = Linked::open_hosted(&computer, &phone, workspace_id)
+        .await
+        .expect("the computer admits Bob's phone");
     tilo_test_env::within("Bob's phone subscribes to the workspace", async {
         while !computer
-            .sessions()
+            .host
             .is_subscribed(workspace_id, &phone.device_pubkey())
             .await
         {
@@ -502,6 +476,5 @@ async fn a_computer_hosting_a_workspace_keeps_what_its_members_push() {
     );
 
     keeping.abort();
-    router.shutdown().await.unwrap();
-    computer.shutdown().await;
+    computer.stop().await;
 }

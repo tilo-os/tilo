@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::Endpoint;
 use iroh::protocol::Router;
@@ -36,6 +36,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_server_protocol::policy::TrustPolicy;
 use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
+use tilo_workspace_service::workspaces::fixtures::TestHost;
 use tilo_workspace_service::workspaces::{IssueInvitationRequest, IssuedInvitation, Workspaces};
 
 pub use tilo_peer_state::sealed_records::{
@@ -603,6 +604,11 @@ pub async fn serve_configured(
     )
     .await
     .unwrap();
+    routed(host, endpoint, state)
+}
+
+/// `host` answering on `endpoint`, over the protocols it serves, with the state it keeps.
+fn routed(host: WorkspaceService, endpoint: Endpoint, state: TempDir) -> Hosted {
     let mut router = Router::builder(endpoint);
     for (alpn, handler) in host.protocols() {
         router = router.accept(alpn, handler);
@@ -612,6 +618,30 @@ pub async fn serve_configured(
         router: router.spawn(),
         state,
     }
+}
+
+/// A person's own computer's service over `state`, as its daemon opens it on `device`, routed and
+/// keeping what its workspaces' members push: the store, the keeping, and its key service.
+pub async fn hosting_computer(
+    device: &TestDevice,
+    state: TempDir,
+) -> (
+    Hosted,
+    Arc<tilo_content::WorkspaceStores>,
+    tokio::task::JoinHandle<()>,
+    tilo_workspace_service::own_device::KeyService,
+) {
+    let endpoint = device_endpoint(device).await;
+    let (host, keys) = laptop_service_at(state.path(), device, endpoint.clone()).await;
+    let content = tilo_runtime::device::keep::content::stores(state.path());
+    let (_, keeping) =
+        tilo_runtime::device::keep::content::keep_for_members(host.workspaces(), &content, None);
+    (
+        routed(host, endpoint, state),
+        content,
+        tokio::spawn(keeping),
+        keys,
+    )
 }
 
 /// A member device's link to one workspace on a host: its own copy of the workspace, seeded
@@ -751,26 +781,9 @@ impl Linked {
         let Some(endpoint) = &self.endpoint else {
             return Self::open_web(server, &self.device, workspace).await;
         };
-        let dialer = Arc::new(Dialer::from_endpoint(
-            tilo_server_client::ServerAddress::at(server.node_addr()),
-            endpoint.clone(),
-        ));
         let workspaces = server.workspaces().expect("the server holds workspaces");
-        let asking = tilo_peer_state::actions::ActionService::new(
-            self.sk.clone(),
-            Arc::new(tilo_peer_state::actions::NoActions),
-        )
-        .remote(endpoint, &server.node_addr(), &workspace.to_string());
-        Self::joined(
-            workspaces,
-            &self.device,
-            workspace,
-            dialer,
-            asking,
-            Some(endpoint.clone()),
-            None,
-        )
-        .await
+        self.reopen_on(endpoint, workspaces, server.node_addr(), workspace)
+            .await
     }
 
     /// [`Self::reopen`] for a host a test runs itself ([`Hosted`]).
@@ -786,16 +799,33 @@ impl Linked {
         let Some(endpoint) = &self.endpoint else {
             return Self::open_hosted(hosted, &self.device, workspace).await;
         };
+        self.reopen_on(
+            endpoint,
+            hosted.host.workspaces(),
+            hosted.host.node_addr(),
+            workspace,
+        )
+        .await
+    }
+
+    /// This device's link to `workspace` on the host whose `workspaces` are reached at `host`,
+    /// dialled from `endpoint`, the one its other links run from.
+    async fn reopen_on(
+        &self,
+        endpoint: &Endpoint,
+        workspaces: &Workspaces,
+        host: iroh::EndpointAddr,
+        workspace: WorkspaceId,
+    ) -> Result<Self, Refusal> {
         let dialer = Arc::new(Dialer::from_endpoint(
-            tilo_server_client::ServerAddress::at(hosted.host.node_addr()),
+            tilo_server_client::ServerAddress::at(host.clone()),
             endpoint.clone(),
         ));
-        let workspaces = hosted.host.workspaces();
         let asking = tilo_peer_state::actions::ActionService::new(
             self.sk.clone(),
             Arc::new(tilo_peer_state::actions::NoActions),
         )
-        .remote(endpoint, &hosted.host.node_addr(), &workspace.to_string());
+        .remote(endpoint, &host, &workspace.to_string());
         Self::joined(
             workspaces,
             &self.device,
@@ -998,24 +1028,11 @@ impl Linked {
         device: &TestDevice,
         workspace: WorkspaceId,
     ) -> Result<Self, Refusal> {
-        let endpoint = device_endpoint(device).await;
-        let dialer = Arc::new(Dialer::from_endpoint(
-            tilo_server_client::ServerAddress::at(hosted.host.node_addr()),
-            endpoint.clone(),
-        ));
-        let workspaces = hosted.host.workspaces();
-        let asking = tilo_peer_state::actions::ActionService::new(
-            device.sk.clone(),
-            Arc::new(tilo_peer_state::actions::NoActions),
-        )
-        .remote(&endpoint, &hosted.host.node_addr(), &workspace.to_string());
-        Self::joined(
-            workspaces,
+        Self::open_on(
+            hosted.host.workspaces(),
+            hosted.host.node_addr(),
             device,
             workspace,
-            dialer,
-            asking,
-            Some(endpoint),
             None,
         )
         .await
@@ -1279,6 +1296,83 @@ pub async fn laptop_service_at(
     .await
     .expect("the laptop's own service opens");
     (service, keys)
+}
+
+/// The app a test's messages and their files are kept in.
+pub const CHAT: &str = "so.tilo.chat";
+
+/// Write into `doc`, Chat's record, a message whose one attachment is the file `hash`, as a
+/// member posts one: a file posted before stays posted, and the record names every one.
+pub fn post_file(doc: &mut AutoCommit, hash: &str) {
+    let attachments = match doc.get(ROOT, "attachments") {
+        Ok(Some((automerge::Value::Object(ObjType::Map), map))) => map,
+        _ => doc.put_object(ROOT, "attachments", ObjType::Map).unwrap(),
+    };
+    let attached = doc.put_object(&attachments, hash, ObjType::Map).unwrap();
+    doc.put(&attached, "name", "notes.txt").unwrap();
+    doc.put(&attached, "blob", format!("tilo-blob://{hash}"))
+        .unwrap();
+}
+
+/// `host` beside a new workspace of its named "Lounge", its Chat record's channel founded here,
+/// and what it keeps for the workspace's members running
+/// ([`tilo_runtime::device::keep::content::keep_for_members`]): the workspace, the store, the
+/// keeper and the keeper running.
+pub async fn lounge(
+    state: &std::path::Path,
+    host: TestHost,
+) -> (
+    TestHost,
+    Workspaces,
+    String,
+    Arc<tilo_content::WorkspaceStores>,
+    Arc<tilo_runtime::device::keep::kept_content::KeptContent>,
+    tokio::task::JoinHandle<()>,
+) {
+    let workspaces = host.workspaces().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    // Chat's record is sealed for its members' channels; the host founds the one it keeps
+    // here, as for a record no device wrote yet.
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &tilo_peer_state::document_frame::DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+    let content = tilo_runtime::device::keep::content::stores(state);
+    let (kept, keeping) =
+        tilo_runtime::device::keep::content::keep_for_members(&workspaces, &content, None);
+    (
+        host,
+        workspaces,
+        workspace,
+        content,
+        kept,
+        tokio::spawn(keeping),
+    )
+}
+
+/// Post `files`, the addresses of posted content, in one message of `workspace`'s Chat record.
+pub async fn post(
+    workspaces: &Workspaces,
+    workspace: &str,
+    files: impl IntoIterator<Item = String>,
+) {
+    write_record(workspaces, workspace, (CHAT, "c_general"), |doc| {
+        for hash in files {
+            post_file(doc, &hash);
+        }
+        Ok(())
+    })
+    .await
+    .expect("the messages reach the workspace");
 }
 
 /// The keys of `workspace`'s group that reads `record` of `app`, as `at`'s device holds them.

@@ -9,31 +9,14 @@
 use std::io::Read as _;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
 use tilo_action_policy::{ContentLimit, ContentPolicy, Raises};
-use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_runtime::device::keep::kept_content::KeptContent;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, entry_join, guest_device, hosting_device, test_host, test_host_holding,
 };
 
-/// The app a member's messages and their files are kept in.
-const CHAT: &str = "so.tilo.chat";
-
-/// Write into `doc`, Chat's record, a message whose one attachment is the file
-/// `hash`: the way a member posts a file there. A file posted before stays
-/// posted; the record names every one.
-fn post_into(doc: &mut AutoCommit, hash: &str) {
-    let attachments = match doc.get(ROOT, "attachments") {
-        Ok(Some((automerge::Value::Object(ObjType::Map), map))) => map,
-        _ => doc.put_object(ROOT, "attachments", ObjType::Map).unwrap(),
-    };
-    let attached = doc.put_object(&attachments, hash, ObjType::Map).unwrap();
-    doc.put(&attached, "name", "notes.txt").unwrap();
-    doc.put(&attached, "blob", format!("tilo-blob://{hash}"))
-        .unwrap();
-}
+use crate::keep::common::CHAT;
 
 /// A device of a person of its own, admitted into `workspace` through its
 /// entry: the key it pushes its member's files from.
@@ -155,27 +138,12 @@ fn refused(limit: ContentLimit, allowed: u64) -> Posted {
 async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_keeps() {
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = hosting_device();
-    let host = test_host(scratch.path(), &root, &host_cert).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
+    let (host, workspaces, workspace, content, kept, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host(scratch.path(), &root, &host_cert).await,
+    )
+    .await;
     let host_device = host_cert.device_public_key;
-
-    // Chat's record is sealed for its members' channels; the host founds the one
-    // it keeps here, as it does for a record no device wrote yet.
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
 
     let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
     let bo = joined(&workspaces, &host_cert, &workspace, 14).await;
@@ -191,28 +159,14 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
     // The members' messages are one record, written once: each names its file,
     // and the writer's device is the one that keeps it until the host does.
     let posted = [&ada_one, &ada_two, &bo_one, &big, &cy_one, &cy_two];
-    crate::keep::common::write_record(
+    crate::keep::common::post(
         &workspaces,
         &workspace,
-        (CHAT, "c_general"),
-        |doc| -> Result<(), String> {
-            for bytes in posted {
-                post_into(doc, blake3::hash(bytes).to_hex().as_str());
-            }
-            Ok(())
-        },
+        posted
+            .iter()
+            .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
     )
-    .await
-    .expect("the messages reach the workspace");
-
-    // The host keeps what the workspace's members push: the same keeper its
-    // daemon runs.
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    .await;
 
     // A file is capped at 1000 bytes and a member's share at 1500; the hourly
     // intake is wide enough not to bind in this phase.
@@ -465,51 +419,26 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
     // One key service across both hosts: the device that comes up again opens
     // what the one before it sealed.
     let keys = Arc::new(TestGroupKeys::default());
-    let mut host = test_host_holding(scratch.path(), &root, &host_cert, Arc::clone(&keys)).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
+    let (mut host, workspaces, workspace, content, kept, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host_holding(scratch.path(), &root, &host_cert, Arc::clone(&keys)).await,
+    )
+    .await;
     let host_device = host_cert.device_public_key;
-
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
 
     let ada = joined(&workspaces, &host_cert, &workspace, 13).await;
     let one = vec![1_u8; 800];
     let two = vec![2_u8; 800];
     let three = vec![3_u8; 800];
     let posted = [&one, &two, &three];
-    crate::keep::common::write_record(
+    crate::keep::common::post(
         &workspaces,
         &workspace,
-        (CHAT, "c_general"),
-        |doc| -> Result<(), String> {
-            for bytes in posted {
-                post_into(doc, blake3::hash(bytes).to_hex().as_str());
-            }
-            Ok(())
-        },
+        posted
+            .iter()
+            .map(|bytes| blake3::hash(bytes).to_hex().to_string()),
     )
-    .await
-    .expect("the messages reach the workspace");
-
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
+    .await;
 
     settle(
         &workspaces,
@@ -567,11 +496,9 @@ async fn a_restart_refuses_the_same_content_no_second_time_and_keeps_the_totals(
     host.shutdown().await;
     host = test_host_holding(scratch.path(), &root, &host_cert, Arc::clone(&keys)).await;
     let workspaces = host.workspaces().clone();
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    let (kept, keeping) =
+        tilo_runtime::device::keep::content::keep_for_members(&workspaces, &content, None);
+    let keeping = tokio::spawn(keeping);
     tilo_test_env::within("the host reads its refusals back from the store", async {
         while kept.refusals(&workspace).await.len() != 1 {
             tokio::task::yield_now().await;
@@ -674,25 +601,12 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
 
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = hosting_device();
-    let host = test_host(scratch.path(), &root, &host_cert).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
+    let (host, workspaces, workspace, content, kept, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host(scratch.path(), &root, &host_cert).await,
+    )
+    .await;
     let host_device = host_cert.device_public_key;
-
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
 
     // The folder, one file at a time: each has its own bytes, so each is its
     // own content.
@@ -702,26 +616,7 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
         let hash = blake3::hash(&bytes).to_hex().to_string();
         folder.push(hash);
     }
-    crate::keep::common::write_record(
-        &workspaces,
-        &workspace,
-        (CHAT, "c_general"),
-        |doc| -> Result<(), String> {
-            for hash in &folder {
-                post_into(doc, hash);
-            }
-            Ok(())
-        },
-    )
-    .await
-    .expect("the folder's messages reach the workspace");
-
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    crate::keep::common::post(&workspaces, &workspace, folder.clone()).await;
 
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.
@@ -853,32 +748,15 @@ fn folder_piece_frame(
 /// `#[ignore]`d, and its own dispatched check runs it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes 3 GiB to the store and reads it back: `t test kept-content-3gib` runs it"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: a 3 GiB folder is posted piece by piece and read back whole"
-)]
 async fn a_three_gib_folder_reaches_its_own_server_whole() {
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = hosting_device();
-    let host = test_host(scratch.path(), &root, &host_cert).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
+    let (host, workspaces, workspace, content, kept, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host(scratch.path(), &root, &host_cert).await,
+    )
+    .await;
     let host_device = host_cert.device_public_key;
-
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
 
     // The folder's addresses, from the pieces the test is about to stream.
     let folder = tilo_test_env::within(
@@ -888,26 +766,7 @@ async fn a_three_gib_folder_reaches_its_own_server_whole() {
     .await
     .expect("the folder's addresses are computed");
 
-    crate::keep::common::write_record(
-        &workspaces,
-        &workspace,
-        (CHAT, "c_general"),
-        |doc| -> Result<(), String> {
-            for hash in &folder {
-                post_into(doc, hash);
-            }
-            Ok(())
-        },
-    )
-    .await
-    .expect("the folder's messages reach the workspace");
-
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    crate::keep::common::post(&workspaces, &workspace, folder.clone()).await;
 
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.

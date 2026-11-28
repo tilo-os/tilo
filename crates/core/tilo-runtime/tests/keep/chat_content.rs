@@ -6,19 +6,14 @@
 //! reports. What it pushes is kept in the workspace's content store on the
 //! host, from where the host answers another member's request: once the poster
 //! is gone, the host alone serves the file.
-use std::sync::Arc;
-
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable as _};
 use neighbour_wire::NeighbourMsg;
-use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_runtime::device::keep::kept_content::KeptContent;
 use tilo_workspace_service::workspaces::fixtures::{
     admit_device, declare_naming_kind, hosting_device, member_device, names_content, test_host,
     write_store,
 };
 
-/// The app a member's messages and their files are kept in.
-const CHAT: &str = "so.tilo.chat";
+use crate::keep::common::CHAT;
 
 /// The record one of Chat's messages and a filed report are in: the app's
 /// own document, where a message names its attachments and a rich text names
@@ -106,18 +101,12 @@ fn opened(frames: &[Vec<u8>], asker: &[u8; 32]) -> Option<Vec<u8>> {
 async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leaves() {
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = hosting_device();
-    let host = test_host(scratch.path(), &root, &host_cert).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
-
     // The host keeps what the workspace's members push: the same keeper its daemon runs.
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    let (host, workspaces, workspace, _, _, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host(scratch.path(), &root, &host_cert).await,
+    )
+    .await;
 
     // The poster's device, a member's, and the reader's, by its key as a link
     // names a device.
@@ -130,6 +119,7 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
         .await
         .1
         .device_public_key;
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
 
     // The files only the poster's device keeps: a file sent with a message, and
     // a picture in a feedback report.
@@ -142,21 +132,6 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
         .collect();
     let notes_hash = blake3::hash(&notes).to_hex().to_string();
     let picture_hash = blake3::hash(&picture).to_hex().to_string();
-    // Chat's record is sealed for its members' channels; the host founds the one
-    // it keeps here, as it does for a record no device wrote yet.
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
     crate::keep::common::write_record(
         &workspaces,
         &workspace,
@@ -201,11 +176,11 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
                 &push(&host_cert.device_public_key, &poster, &workspace, &picture),
             );
             let notes_held = workspaces
-                .kept_record_content(summary.workspace_id, CHAT, &notes_hash)
+                .kept_record_content(workspace_id, CHAT, &notes_hash)
                 .await
                 .is_some();
             let picture_held = workspaces
-                .kept_record_content(summary.workspace_id, CHAT, &picture_hash)
+                .kept_record_content(workspace_id, CHAT, &picture_hash)
                 .await
                 .is_some();
             if notes_held && picture_held {
@@ -273,33 +248,16 @@ fn attach(doc: &mut AutoCommit, name: &str, hash: &str) -> Result<(), String> {
 async fn each_file_a_member_posts_is_kept_as_it_is_pushed() {
     let scratch = tempfile::tempdir().unwrap();
     let (root, host_cert) = hosting_device();
-    let host = test_host(scratch.path(), &root, &host_cert).await;
-    let workspaces = host.workspaces().clone();
-    let summary = workspaces.create("Lounge").await.unwrap();
-    let workspace = summary.workspace.clone();
-    let content = tilo_runtime::device::keep::content::stores(scratch.path());
-    workspaces.serve_content(Arc::new(
-        tilo_runtime::device::keep::content::StoresContent(Arc::clone(&content)),
-    ));
-    if let Some(Err(error)) = workspaces
-        .own_route_keys(
-            &DocumentRoute {
-                app_id: CHAT.into(),
-                cluster_id: workspace.clone(),
-                document: String::new(),
-            },
-            true,
-        )
-        .await
-    {
-        panic!("the record's channel is not founded here: {error}");
-    }
-    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
-    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+    let (host, workspaces, workspace, _, _, keeping) = crate::keep::common::lounge(
+        scratch.path(),
+        test_host(scratch.path(), &root, &host_cert).await,
+    )
+    .await;
     let poster = member_device(&workspaces, &workspace, &host_cert, 3)
         .await
         .1
         .device_public_key;
+    let workspace_id = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
 
     let started = std::time::Instant::now();
     for index in 0..5_u8 {
@@ -318,7 +276,7 @@ async fn each_file_a_member_posts_is_kept_as_it_is_pushed() {
                     &push(&host_cert.device_public_key, &poster, &workspace, &file),
                 );
                 if workspaces
-                    .kept_record_content(summary.workspace_id, CHAT, &hash)
+                    .kept_record_content(workspace_id, CHAT, &hash)
                     .await
                     .is_some()
                 {
