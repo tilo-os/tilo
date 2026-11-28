@@ -2716,6 +2716,16 @@ impl AppWindow {
         true
     }
 
+    /// Past the text that follows a press the app has not answered, a key (Enter, a correction)
+    /// is for what the press opens, not the field the keyboard is leaving: it waits untaken.
+    fn waits_for_press(&self, event: &ui::winit::event::WindowEvent) -> bool {
+        self.fired > self.took
+            && matches!(event, ui::winit::event::WindowEvent::KeyboardInput { event: key, .. }
+                if key.text.as_deref().is_none_or(|text| text.chars().any(char::is_control)))
+            && (self.typed.back())
+                .is_some_and(|typed| typed.after == self.fired && typed.follows && !typed.moved)
+    }
+
     /// Enter in a field of one line that submits nothing moves the keyboard on to the next field of
     /// its view, as native Notes goes from a note's title to its body. A field with `submit` keeps
     /// Enter: it submits. Whether it moved.
@@ -4335,6 +4345,9 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         // where a question its call raises stands.
         if is_key_press(event) {
             self.note_key_control(self.focused_control().as_deref());
+        }
+        if self.waits_for_press(event) {
+            return;
         }
         if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
             *ctx.handled = true;

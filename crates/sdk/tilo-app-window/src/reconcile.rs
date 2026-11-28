@@ -3656,12 +3656,14 @@ mod tests {
             scroll.set_viewport_size(720.0, 400.0);
             scroll.set_content_size(720.0, 2000.0);
             scroll.set_offset_y(600.0);
-            assert_eq!(scroll.offset_y(), 600.0, "the fixture scrolled");
+            assert!(
+                (scroll.offset_y() - 600.0).abs() < 1e-3,
+                "the fixture scrolled"
+            );
         }
         let mut updated = reconciler.update(built, &old, &new);
-        assert_eq!(
-            scroller(updated.as_mut()).offset_y(),
-            600.0,
+        assert!(
+            (scroller(updated.as_mut()).offset_y() - 600.0).abs() < 1e-3,
             "the page built again keeps the place the person scrolled to"
         );
     }

@@ -3360,16 +3360,19 @@ fn a_bound_entry_takes_the_next_typing_after_it_sends() {
         Some(""),
         "the entry let go of what it sent"
     );
-    // The app reads its draft back as empty, as the cleared field told it: the field keeps
-    // holding nothing, never the sent words pushed back on it.
+    // The app ran the send and reads its draft back as empty, as the cleared field told it: the
+    // field keeps holding nothing, never the sent words pushed back on it.
     send(
         &mut app,
-        &[ToUi::Bound {
-            level: Level::Root,
-            key: "field".to_owned(),
-            value: Value::text(""),
-            acked: 1,
-        }],
+        &[
+            ToUi::Took { fired: 1 },
+            ToUi::Bound {
+                level: Level::Root,
+                key: "field".to_owned(),
+                value: Value::text(""),
+                acked: 1,
+            },
+        ],
     );
     drawn_window(&mut harness).receive();
     harness.relayout();

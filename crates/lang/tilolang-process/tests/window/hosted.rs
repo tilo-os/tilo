@@ -1916,6 +1916,16 @@ fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
         body.contains("Packing") && body.contains("passport"),
         "{body:?}"
     );
+    // From that body, as a screen reader presses: the keyboard stays there until it is answered.
+    let window = &mut session.window;
+    let new_note = window.node_named("New note").expect("New note").0;
+    window.a11y_action(new_note, &ui::a11y::Action::Activate);
+    window.type_text("Lunch");
+    window.press_key(ui::winit::keyboard::NamedKey::Enter);
+    window.type_text("soup");
+    session.settle();
+    let (title, body) = open_note(&mut session);
+    assert_eq!((title.as_str(), body.as_str()), ("Lunch", "soup"));
 }
 
 #[test]
