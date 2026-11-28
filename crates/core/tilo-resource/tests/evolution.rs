@@ -77,7 +77,20 @@ tilo_test_env::scenario! {
 
         assert!(crate::bring_up::<Contact>(&mut doc));
         assert!(!crate::bring_up::<Contact>(&mut doc), "once");
-        let contact = evolution::read_checked::<Contact>(&doc).unwrap();
+        use tilo_resource::founding::{containers, found_holding, structure, Scope};
+        use tilo_resource::surface::surface_of;
+        let scope = Scope {
+            workspace: Replica::<Contact>::WORKSPACE,
+            kind: Contact::KIND,
+            id: Replica::<Contact>::ID,
+        };
+        let now = containers(&surface_of::<Contact>());
+        let older = containers(&surface_of::<ContactV1>());
+        let before = doc.get_changes(&[]).len();
+        let answered = found_holding((scope, "so.tilo.model"), &now, &mut doc).unwrap();
+        assert_eq!(answered, (false, structure(scope, &older).unwrap().hash()));
+        assert_ne!(answered.1, structure(scope, &now).unwrap().hash());
+        assert_eq!(doc.get_changes(&[]).len(), before, "a reopen writes nothing");        let contact = evolution::read_checked::<Contact>(&doc).unwrap();
         assert_eq!(
             (contact.given.as_str(), contact.family.as_str()),
             ("Ada", "Lovelace")

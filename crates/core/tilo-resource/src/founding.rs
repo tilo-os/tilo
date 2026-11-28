@@ -261,17 +261,16 @@ pub fn bring_up(
     doc: &mut AutoCommit,
 ) -> Result<bool, crate::ModelError> {
     let from = crate::evolution::stored_version(doc);
-    let mut changed = found((scope, app), containers, doc)?;
-    // The chain follows the founding this record stands on, not the one its type derives now:
-    // a newer type's founding names containers an older record never had, and applying it over
-    // the record's own would be a second change under one founding's actor and number. The
-    // common case is the founding its type derives now, found by one lookup: only a record an
-    // older type founded is walked for the founding it holds.
+    let (found_changed, held) = found_holding((scope, app), containers, doc)?;
+    let mut changed = found_changed;
+    // The chain follows the founding this record stands on, the one `found_holding` answered.
     let current = structure(scope, containers)?;
-    let chain = if doc.get_change_by_hash(&current.hash()).is_some() {
+    let chain = if held == current.hash() {
         chain_on(&current, scope, version)?
     } else {
-        let founding = founding_of(doc, scope).ok_or(automerge::AutomergeError::Fail)?;
+        let founding = doc
+            .get_change_by_hash(&held)
+            .ok_or(automerge::AutomergeError::Fail)?;
         chain_on(&founding, scope, version)?
     };
     let missing: Vec<automerge::Change> = chain
@@ -289,30 +288,29 @@ pub fn bring_up(
 /// Give the record `scope` names, the app `app`'s, its derived founding when it was made without
 /// one (two devices' own root containers, before every holder derived it), and bring together
 /// what its devices made apart ([`split::merge_split_containers`]): once, the first part
-/// of [`bring_up`], and all a store that reads no type's version does on opening a record.
-/// Whether this changed anything.
+/// of [`bring_up`], and all a store that reads no type's version does on opening a record. It
+/// answers whether this changed anything, and the founding the record holds after it: the one
+/// its type derives now, or the older one it was founded by, which a holder keeps so that a
+/// reopen is one lookup of it.
 ///
 /// # Errors
 /// When the founding or the merge cannot be made.
-pub fn found(
+pub fn found_holding(
     (scope, app): (Scope<'_>, &str),
     containers: &[(String, ObjType)],
     doc: &mut AutoCommit,
-) -> Result<bool, automerge::AutomergeError> {
+) -> Result<(bool, ChangeHash), automerge::AutomergeError> {
     let founding = structure(scope, containers)?;
-    // The common case is one lookup, never a walk of the record's changes.
-    if doc.get_change_by_hash(&founding.hash()).is_some() {
-        return Ok(false);
+    let current = founding.hash();
+    if doc.get_change_by_hash(&current).is_some() {
+        return Ok((false, current));
     }
-    // A record already founded by an older derivation of its founding keeps it: a later type's
-    // founding holds another container set, under the same actor and number, and applying it
-    // over the record's own is a conflicting change.
-    if founding_of(doc, scope).is_some() {
-        return Ok(false);
+    if let Some(held) = founding_of(doc, scope) {
+        return Ok((false, held.hash()));
     }
     doc.apply_incoming([founding])?;
     split::merge_split_containers(doc, scope, containers, app)?;
-    Ok(true)
+    Ok((true, current))
 }
 
 /// [`bring_up`] of the record `id` of the resource type `R` in `workspace`, by the containers and

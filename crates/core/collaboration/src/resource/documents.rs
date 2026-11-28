@@ -317,6 +317,8 @@ pub struct ResourceSet {
     writer: automerge::ActorId,
     /// The types this store founds its records by ([`ResourceStore::declare_type`]).
     types: RecordTypes,
+    /// The founding each record here was found to hold: a reopen of it is one lookup.
+    founding: RefCell<BTreeMap<DocumentId, ChangeHash>>,
 }
 
 struct Reserved {
@@ -378,6 +380,7 @@ impl ResourceSet {
             writes,
             writer,
             types,
+            founding: RefCell::default(),
         }
     }
 
@@ -571,13 +574,22 @@ impl ResourceSet {
 
     /// Bring together the root containers of `doc`, the record `want` names, that devices made
     /// each of their own before its founding was the same everywhere
-    /// ([`tilo_resource::founding::found`]), by the type this store founds its kind by.
+    /// ([`tilo_resource::founding::found_holding`]), by the type this store founds its kind by.
     fn merge_split(
         &self,
         doc: &mut AutoCommit,
         want: &DocumentCheckout,
     ) -> Result<(), ResourceOpenError> {
         if let Some(founding) = self.types.founding(want.kind.as_str()) {
+            // A record already found to hold its founding, still holding it, needs nothing.
+            if self
+                .founding
+                .borrow()
+                .get(&want.id)
+                .is_some_and(|held| doc.get_change_by_hash(held).is_some())
+            {
+                return Ok(());
+            }
             // The record's own app names the change, whichever store opened the record: the app
             // that declares the kind, so every holder derives the same bytes.
             let app = collab_types::app_surface::app_of_kind(want.kind.as_str())
@@ -588,8 +600,10 @@ impl ResourceSet {
                 kind: want.kind.as_str(),
                 id: want.id.route(),
             };
-            tilo_resource::founding::found((scope, &app), &founding, doc)
-                .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+            let (_, held) =
+                tilo_resource::founding::found_holding((scope, &app), &founding, doc)
+                    .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+            self.founding.borrow_mut().insert(want.id.clone(), held);
         }
         Ok(())
     }
@@ -1815,7 +1829,7 @@ impl ResourceStore {
     /// before it makes one ([`content_genesis`]).
     ///
     /// A record of the kind open here already is brought together as one opened from now on is
-    /// ([`tilo_resource::founding::found`]).
+    /// ([`tilo_resource::founding::found_holding`]).
     pub fn declare_type(
         &self,
         kind: &str,
@@ -1838,6 +1852,8 @@ impl ResourceStore {
         let app =
             collab_types::app_surface::app_of_kind(kind).unwrap_or_else(|| set.app_id.to_string());
         let workspace = set.workspace();
+        // What a record held before its type was known is found again by the type now declared.
+        set.founding.borrow_mut().clear();
         for (id, parked) in &mut set.open {
             if parked.kind.as_str() != kind {
                 continue;
@@ -1848,8 +1864,10 @@ impl ResourceStore {
                     kind,
                     id: id.route(),
                 };
-                match tilo_resource::founding::found((scope, &app), &founding, doc) {
-                    Ok(changed) => merged |= changed,
+                let answered =
+                    tilo_resource::founding::found_holding((scope, &app), &founding, doc);
+                match answered {
+                    Ok((changed, _)) => merged |= changed,
                     Err(error) => {
                         tracing::warn!(record = %id, %error, "a record's split containers were not brought together");
                     }
