@@ -140,7 +140,8 @@ impl StoreReader for InstalledPackages {
         record: &str,
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
         let installed = if super::package_runs::runs_in_process(app) {
-            Some(super::package_runs::verified_installed(workspace, app)?.module)
+            let revoked = super::package_runs::revoked_now(&self.copies, workspace);
+            Some(super::package_runs::verified_installed(workspace, app, &revoked)?.module)
         } else {
             None
         };

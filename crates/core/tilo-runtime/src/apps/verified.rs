@@ -11,15 +11,16 @@
 #[cfg(any(target_os = "macos", windows))]
 pub(crate) fn verified_tilolang(
     installed: &package_store::registry::InstalledPackage,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<crate::device::package_runs::Verified, String> {
-    verify_package(installed)?;
+    verify_package(installed, revoked)?;
     let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
         .map_err(|error| error.to_string())?;
     let runtime = launcher::manifest::code_runtime(&manifest, &installed.payload_root)
         .map(str::to_owned)
         .ok_or_else(|| format!("{} is no tilolang app", installed.id))?;
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
-    let runtime_root = installed_runtime(&catalog, &runtime)?;
+    let runtime_root = installed_runtime(&catalog, &runtime, revoked)?;
     // The standard library is the runtime's, proven with the rest of its payload just above.
     let std_file = runtime_root.join(runtime_portal::process_link::STD_FILE);
     let std = std::fs::read(&std_file).map_err(|error| {
@@ -48,6 +49,7 @@ pub(crate) fn verified_tilolang(
 pub(crate) fn installed_runtime(
     catalog: &package_store::Catalog,
     runtime: &str,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<std::path::PathBuf, String> {
     let provides = |package: &package_store::registry::InstalledPackage| {
         let manifest = std::fs::read_to_string(&package.manifest_path)
@@ -64,16 +66,17 @@ pub(crate) fn installed_runtime(
         .into_iter()
         .find(provides)
         .ok_or_else(|| format!("the runtime it runs on, {runtime}, is not installed"))?;
-    verify_package(&package).map_err(|why| format!("its runtime {runtime}: {why}"))?;
+    verify_package(&package, revoked).map_err(|why| format!("its runtime {runtime}: {why}"))?;
     Ok(package.payload_root)
 }
 
 /// Prove `package` is still what was installed: its record's signature by its publisher, the
-/// manifest and every payload file against the signed hashes, no file it did not ship, and — on a
-/// profile that reads the person's revoked keys — a publisher key it has not revoked. The error
-/// says which check failed.
+/// manifest and every payload file against the signed hashes, no file it did not ship, and a
+/// publisher key not in `revoked`, the keys the workspace it runs in refuses. The error says
+/// which check failed.
 pub(crate) fn verify_package(
     package: &package_store::registry::InstalledPackage,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<(), String> {
     use package_store::integrity;
     let report =
@@ -92,22 +95,8 @@ pub(crate) fn verify_package(
         &package.package_id_hex,
     )
     .map_err(|error| error.to_string())?;
-    // The person's revoked keys are the profile's, read on the platform whose daemon keeps them.
-    #[cfg(any(target_os = "macos", windows))]
-    {
-        let revoked = tilo_app_package::RevocationList {
-            revoked: tilo_control::packages::trust()
-                .1
-                .into_iter()
-                .map(|key| tilo_app_package::RevokedKey {
-                    pubkey_hex: key.pubkey_hex,
-                    reason: key.reason,
-                })
-                .collect(),
-        };
-        if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
-            return Err(format!("its publisher's key is revoked ({})", entry.reason));
-        }
+    if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
+        return Err(format!("its publisher's key is revoked ({})", entry.reason));
     }
     if !hex::encode(signed.root.publisher_identity).eq_ignore_ascii_case(&package.publisher_key_hex)
     {
@@ -119,7 +108,7 @@ pub(crate) fn verify_package(
 /// Prove the installed package behind `app` is still the one that was
 /// installed: its record's signature by its publisher, the manifest and
 /// every payload file against the signed hashes, no file the package did
-/// not ship, and a publisher key this profile has not revoked.
+/// not ship, and a publisher key not in `revoked`.
 ///
 /// # Errors
 ///
@@ -128,6 +117,7 @@ pub(crate) fn verify_package(
 pub(super) fn verify_installed(
     catalog: &package_store::Catalog,
     app: &app_catalogue::apps::InstalledApp,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<(), String> {
     let refuse = |why: String| format!("refusing to launch {}: {why}", app.app_id);
     let package = catalog
@@ -136,7 +126,7 @@ pub(super) fn verify_installed(
         .into_iter()
         .find(|package| package.manifest_path == app.manifest_path)
         .ok_or_else(|| refuse("it is no longer installed".into()))?;
-    verify_package(&package).map_err(refuse)
+    verify_package(&package, revoked).map_err(refuse)
 }
 
 /// Where the GStreamer a runtime package carries finds its plugins and its scanner: only in the

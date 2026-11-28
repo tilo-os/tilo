@@ -33,7 +33,8 @@ pub(super) fn launch(
         .catalog
         .as_ref()
         .ok_or("refusing to launch: no app store is available")?;
-    verify_installed(catalog, app)?;
+    let revoked = crate::device::package_runs::revocations(&apps.package_trust(workspace).1);
+    verify_installed(catalog, app, &revoked)?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|error| format!("refusing to launch {}: {error}", app.app_id))?;
     let runtime = manifest
@@ -47,7 +48,7 @@ pub(super) fn launch(
                 app.app_id
             )
         })?;
-    let runtime = installed_runtime(catalog, runtime)
+    let runtime = installed_runtime(catalog, runtime, &revoked)
         .map_err(|why| format!("refusing to launch {}: {why}", app.app_id))?;
     let window = apps.hosted_window(&app.app_id, workspace)?;
     let mut command = std::process::Command::new(

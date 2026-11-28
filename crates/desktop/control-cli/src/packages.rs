@@ -32,14 +32,18 @@ pub struct Registry {
     pub channel: String,
 }
 
+/// What names a workspace's trust list (its JSON, `{attestors, revoked}`) for [`trust`] to read
+/// instead of asking a desktop: what the daemon hands each launch it starts, read from the
+/// workspace the launch runs in, and what a test or a development build sets.
+pub const WORKSPACE_TRUST_ENV: &str = "TILO_WORKSPACE_TRUST";
+
 /// The workspace's trust list: the attestors it accepts and the publisher keys it refuses. Empty
-/// when no desktop answers, which trusts nothing beyond a package's own signature.
-///
-/// `TILO_WORKSPACE_TRUST` names the list (its JSON, `{attestors, revoked}`) a test or a
-/// development build reads instead of asking a desktop.
+/// when no desktop answers, which trusts nothing beyond a package's own signature. A process the
+/// daemon started reads the list it was handed ([`WORKSPACE_TRUST_ENV`]): the daemon never waits
+/// on its own action listing to start what it launches.
 #[must_use]
 pub fn trust() -> (Vec<TrustAttestor>, Vec<RevokedPublisher>) {
-    let Some(value) = reading("TILO_WORKSPACE_TRUST", "trust.list") else {
+    let Some(value) = reading(WORKSPACE_TRUST_ENV, "trust.list") else {
         return (Vec::new(), Vec::new());
     };
     let attestors = rows(&value, "attestors")

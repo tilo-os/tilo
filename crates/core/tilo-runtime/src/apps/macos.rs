@@ -38,7 +38,8 @@ pub(super) fn launch(
         .catalog
         .as_ref()
         .ok_or("refusing to launch: no app store is available")?;
-    verify_installed(catalog, app)?;
+    let revoked = crate::device::package_runs::revocations(&apps.package_trust(workspace).1);
+    verify_installed(catalog, app, &revoked)?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|error| format!("refusing to launch {}: {error}", app.app_id))?;
     let executable = manifest
@@ -50,7 +51,7 @@ pub(super) fn launch(
         .entrypoint
         .runtime
         .as_deref()
-        .map(|runtime| runtime_payload(catalog, app, runtime))
+        .map(|runtime| runtime_payload(catalog, app, runtime, &revoked))
         .transpose()?;
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
@@ -200,7 +201,8 @@ pub(super) fn connector(
         .catalog
         .as_ref()
         .ok_or("refusing to start a connector: no app store is available")?;
-    verify_installed(catalog, app)?;
+    let revoked = crate::device::package_runs::revocations(&apps.package_trust(workspace).1);
+    verify_installed(catalog, app, &revoked)?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|error| format!("refusing to start {}'s connector: {error}", app.app_id))?;
     if !manifest
@@ -216,7 +218,7 @@ pub(super) fn connector(
     }
     let runtime = launcher::manifest::code_runtime(&manifest, &app.payload_root)
         .ok_or_else(|| format!("{} runs on no tilolang runtime", app.app_id))?;
-    let runtime = runtime_payload(catalog, app, runtime)?;
+    let runtime = runtime_payload(catalog, app, runtime, &revoked)?;
     if apps.data_home.as_os_str().is_empty() {
         return Err("refusing to start a connector: HOME is not set".into());
     }
@@ -416,7 +418,8 @@ fn runtime_payload(
     catalog: &package_store::Catalog,
     app: &InstalledApp,
     runtime: &str,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<std::path::PathBuf, String> {
-    installed_runtime(catalog, runtime)
+    installed_runtime(catalog, runtime, revoked)
         .map_err(|why| format!("refusing to launch {}: {why}", app.app_id))
 }

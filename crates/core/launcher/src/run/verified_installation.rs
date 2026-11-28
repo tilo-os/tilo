@@ -11,24 +11,14 @@ pub(crate) fn verified_launch_installation(
     payload_root: &Path,
     expected: &str,
 ) -> Result<ManifestView, LaunchError> {
-    verified_launch_publisher(installed, manifest_path, payload_root, expected)
-        .map(|(manifest, _)| manifest)
-}
-
-/// [`verified_launch_installation`], with the identity of the publisher whose key signed the package.
-pub(crate) fn verified_launch_publisher(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-) -> Result<(ManifestView, [u8; 32]), LaunchError> {
     // Read on every launch, as `tilo-install run` does: a publisher the workspace
     // revoked after install must not keep launching from the shell.
     let revoked = workspace_revocations();
     verified_launch_publisher_against(installed, manifest_path, payload_root, expected, &revoked)
+        .map(|(manifest, _)| manifest)
 }
 
-fn verified_launch_publisher_against(
+pub(crate) fn verified_launch_publisher_against(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,
     payload_root: &Path,

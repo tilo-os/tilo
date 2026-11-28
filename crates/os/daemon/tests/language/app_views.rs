@@ -78,6 +78,67 @@ fn a_page_that_narrows_lays_its_view_out_again_through_the_daemon() {
     });
 }
 
+/// A workspace that refuses an app's publisher runs none of the app's code: a view of the app
+/// there does not open, and says the publisher is refused, while the person's other workspace,
+/// which refuses no one, opens it. What each workspace refuses is read from the copy this device
+/// holds of that one workspace, as the daemon starts the view's process.
+#[test]
+fn a_publisher_the_workspace_refuses_opens_no_view_there() {
+    host::run_with(&["notes"], |host| async move {
+        let refusing = host
+            .daemon()
+            .workspaces()
+            .create("Refusing")
+            .await
+            .expect("the person makes a second workspace")
+            .workspace;
+        host.install_app_into(&refusing, NOTES).await;
+        let publisher = package_store::find_installed(NOTES)
+            .expect("the device's packages read")
+            .expect("Notes is installed")
+            .publisher_key_hex;
+        let laptop = host.member("Ada's laptop", &refusing).await;
+        let revoked = laptop
+            .call(
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+                tilo_actions::remote::workspace_governance_address(&refusing, "trust.revoke"),
+                &serde_json::json!({"pubkey": publisher, "reason": "its signing key leaked"}),
+            )
+            .await
+            .expect("the device link answers");
+        assert!(
+            matches!(revoked, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "the owner refuses the publisher: {revoked:?}"
+        );
+
+        let (daemon, person, open) = (
+            host.daemon(),
+            host.person().to_owned(),
+            host.workspace().to_owned(),
+        );
+        let (refused, opened) = tokio::task::spawn_blocking(move || {
+            let caller = |workspace: &str| {
+                tilo_actions::remote::Caller::local_person(&person).in_workspace(workspace)
+            };
+            let refused = daemon
+                .open_view(&caller(&refusing), NOTES, &refusing, None, None)
+                .map(|_| ());
+            let opened = daemon
+                .open_view(&caller(&open), NOTES, &open, None, None)
+                .map(|link| WindowLink::over(link).open(None));
+            (refused, opened)
+        })
+        .await
+        .unwrap();
+        let refused = refused.expect_err("the refusing workspace opens no view of the app");
+        assert!(refused.contains("revoked"), "{refused}");
+        assert!(refused.contains("its signing key leaked"), "{refused}");
+        opened
+            .expect("the person's own workspace opens the view")
+            .expect("and its window answers the page");
+    });
+}
+
 /// A caller admitted to another workspace opens no view of this one.
 #[test]
 fn a_caller_of_another_workspace_opens_no_view() {

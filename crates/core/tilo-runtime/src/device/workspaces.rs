@@ -1115,6 +1115,10 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
                 )
             })
     }
+
+    fn package_trust(&self, workspace: &str) -> super::package_runs::PackageTrust {
+        super::package_runs::package_trust_now(self.copies(), workspace)
+    }
 }
 
 /// The workspace replicas the runtime's own services read: the profile's own

@@ -27,7 +27,9 @@ use seccomp_fds::SeccompFds;
 mod entrypoint_runtime;
 mod seccomp_fds;
 mod verified_installation;
-pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
+pub(crate) use verified_installation::{
+    verified_launch_installation, verified_launch_publisher_against,
+};
 pub mod tilolang_process;
 pub mod tilolang_window;
 

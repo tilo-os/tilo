@@ -288,8 +288,6 @@ portable-pty = { version = "0.9.0" }
 # Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
 [target.'cfg(windows)'.dependencies]
 launcher-windows = { path = "../launcher-windows" }
-# The workspace's trust list, read through the desktop's action API.
-tilo-control = { path = "../../desktop/control-cli" }
 # What powers the machine: whether an app's long-lived connection runs now.
 windows-sys = { version = "0.61.2", features = ["Win32_System_Power"] }
 
@@ -316,11 +314,12 @@ tilo-liveness = { path = "../../platform/liveness" }
 # The file chooser a hosted app asks this daemon for: the files a person chooses for it, kept by
 # reference, and the session's own chooser where one serves at the computer.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The workspace's trust list as a launch is handed it, and as a task's programs read it from
+# the desktop.
+tilo-control = { path = "../../desktop/control-cli" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
-# The workspace's trust list, read through the desktop's action API.
-tilo-control = { path = "../../desktop/control-cli" }
 launcher-macos = { path = "../launcher-macos" }
 # The file chooser a confined app asks this runtime to show, and the one this runtime serves a
 # hosted app: the files a person chooses for it, kept by reference.

@@ -232,8 +232,10 @@ impl Instance {
 #[cfg(target_os = "linux")]
 pub(crate) type Has = dyn Fn(&str) -> bool + Send + Sync;
 
-/// How an installed app is verified for a process: the workspace it is installed in, and the app.
-type Verifies = dyn Fn(&str, &str) -> Result<Verified, String> + Send + Sync;
+/// How an installed app is verified for a process: the workspace it is installed in, the app,
+/// and the publisher keys that workspace refuses.
+type Verifies =
+    dyn Fn(&str, &str, &tilo_app_package::RevocationList) -> Result<Verified, String> + Send + Sync;
 
 /// What starts a host here ([`spawn_host`]): `tilo-launcher`, which builds its sandbox, on Linux.
 #[cfg(target_os = "linux")]
@@ -324,6 +326,10 @@ pub struct Processes {
     /// The providers this device registered, whose packages each instance is handed
     /// ([`InstanceRequest::provided`]).
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
+    /// What each workspace trusts for packages, as this device holds it, once the daemon keeps
+    /// its workspaces here ([`Self::read_trust_from`]): the publishers an instance's app is
+    /// refused by. None refused before then.
+    trust: OnceLock<Arc<dyn crate::apps::LaunchGrantsSource>>,
     /// Where each workspace's content is read, once the daemon keeps its workspaces here
     /// ([`Self::read_content_from`]): what each window's process serves as `workspace.content`.
     #[cfg(target_os = "linux")]
@@ -388,6 +394,7 @@ impl Processes {
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
             provided: OnceLock::new(),
+            trust: OnceLock::new(),
             #[cfg(target_os = "linux")]
             content_of: OnceLock::new(),
             verdicts_of: OnceLock::new(),
@@ -574,6 +581,20 @@ impl Processes {
         providers: tilo_workspace_service::workspaces::providers::Providers,
     ) {
         let _ = self.provided.set(providers);
+    }
+
+    /// Verify every app an instance runs against what its workspace trusts, as `trust` reads it
+    /// from the workspace this device holds, from now on.
+    pub(crate) fn read_trust_from(&self, trust: Arc<dyn crate::apps::LaunchGrantsSource>) {
+        let _ = self.trust.set(trust);
+    }
+
+    /// The publisher keys `workspace` refuses, as this device holds it now.
+    fn revoked(&self, workspace: &str) -> tilo_app_package::RevocationList {
+        self.trust
+            .get()
+            .map(|trust| super::package_runs::revocations(&trust.package_trust(workspace).1))
+            .unwrap_or_default()
     }
 
     /// Read each workspace's content from `content` from now on: what each window's process
@@ -875,7 +896,9 @@ impl Processes {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
         let began = std::time::Instant::now();
-        let verified = (self.verifies)(&instance.workspace, &instance.app).map_err(refused)?;
+        let revoked = self.revoked(&instance.workspace);
+        let verified =
+            (self.verifies)(&instance.workspace, &instance.app, &revoked).map_err(refused)?;
         (self.opened)(&instance.app);
         let key = HostKey {
             workspace: instance.workspace.clone(),
@@ -1016,11 +1039,12 @@ impl Processes {
                 return module;
             }
         };
+        let revoked = self.revoked(&key.workspace);
         for app in apps
             .iter()
             .filter(|app| app.app_id != PERSON_VIEWS_APP && runs_in_process(&app.app_id))
         {
-            let Ok(verified) = (self.verifies)(&key.workspace, &app.app_id) else {
+            let Ok(verified) = (self.verifies)(&key.workspace, &app.app_id, &revoked) else {
                 tracing::warn!(package_id = %app.app_id, "the person's views leave out an app that could not be verified");
                 continue;
             };
@@ -1068,7 +1092,8 @@ impl Processes {
     ) -> std::io::Result<bool> {
         let refused =
             |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
-        let verified = (self.verifies)(&key.workspace, app).map_err(refused)?;
+        let revoked = self.revoked(&key.workspace);
+        let verified = (self.verifies)(&key.workspace, app, &revoked).map_err(refused)?;
         let runs_in = HostKey {
             workspace: key.workspace.clone(),
             app: app.to_owned(),
@@ -1248,7 +1273,8 @@ impl Processes {
         workspace: &str,
         view: crate::apps::OpenedView,
     ) -> std::io::Result<tilo_socket::Stream> {
-        let verified = (self.verifies)(workspace, app).map_err(std::io::Error::other)?;
+        let revoked = self.revoked(workspace);
+        let verified = (self.verifies)(workspace, app, &revoked).map_err(std::io::Error::other)?;
         (self.opened)(app);
         let key = HostKey {
             workspace: workspace.to_owned(),
@@ -1840,7 +1866,7 @@ mod tests {
         Processes::with(
             data_home,
             no_launcher(),
-            Box::new(|_, _| Err("no package store here".to_owned())),
+            Box::new(|_, _, _| Err("no package store here".to_owned())),
         )
     }
 
@@ -1933,7 +1959,7 @@ mod tests {
                 let processes = Processes::with(
                     dir.path().join("data"),
                     launcher.path().to_owned(),
-                    Box::new(|_, app| {
+                    Box::new(|_, app, _| {
                         if app != NOTES {
                             return Err(format!("{app} is not installed here"));
                         }
@@ -2299,7 +2325,7 @@ mod tests {
         let processes = Processes::with(
             std::env::temp_dir(),
             no_launcher(),
-            Box::new(move |_, _| {
+            Box::new(move |_, _, _| {
                 Ok(Verified {
                     runtime: "tilolang@1".to_owned(),
                     app_runtime: "tilo@1".to_owned(),
@@ -2549,7 +2575,7 @@ mod tests {
         let processes = Processes::with(
             home.path().to_path_buf(),
             launcher,
-            Box::new(|_, _| Err("no app is started here".to_owned())),
+            Box::new(|_, _, _| Err("no app is started here".to_owned())),
         );
         let lines = counting_lines(&processes);
 
@@ -2660,7 +2686,7 @@ mod tests {
         let processes = Processes::recording(
             home.path().to_path_buf(),
             launcher,
-            Box::new(|_, app| {
+            Box::new(|_, app, _| {
                 Ok(Verified {
                     runtime: "tilolang/0.1.0+tilolang".to_owned(),
                     app_runtime: format!("tilo-runtime/2026.10.1+{app}"),

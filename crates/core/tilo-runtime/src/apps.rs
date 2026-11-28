@@ -225,6 +225,11 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
     /// version of it, or whose members took that grant back, every change the connector made
     /// would be refused, on every frame.
     fn app_keeps_its_records(&self, workspace: &str, app: &str) -> bool;
+
+    /// What `workspace` trusts for packages, as this device holds it now: the attestors it
+    /// accepts and the publisher keys it refuses. Read from the device's own copy, so a launch
+    /// never waits on an action listing, which answers only once every workspace's providers do.
+    fn package_trust(&self, workspace: &str) -> crate::device::package_runs::PackageTrust;
 }
 
 impl Apps {
@@ -386,7 +391,20 @@ impl Apps {
     /// Read what a launch into this runtime's workspace is granted from
     /// `source` from now on: the workspace service, once it is open.
     pub(crate) fn keep_launch_grants(&self, source: Arc<dyn LaunchGrantsSource>) {
+        self.instances.read_trust_from(Arc::clone(&source));
         let _ = self.grants.set(source);
+    }
+
+    /// What `workspace` trusts for packages ([`LaunchGrantsSource::package_trust`]): nothing
+    /// refused and no attestor before the workspace service is open.
+    pub(crate) fn package_trust(
+        &self,
+        workspace: &str,
+    ) -> crate::device::package_runs::PackageTrust {
+        self.grants
+            .get()
+            .map(|source| source.package_trust(workspace))
+            .unwrap_or_default()
     }
 
     /// Hand every app instance started from now on what the providers in `providers` publish,

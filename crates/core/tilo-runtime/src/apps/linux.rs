@@ -275,6 +275,13 @@ fn command(
         .env(launcher::services::BLOB_SOCKET_ENV, &sockets.blobs)
         // The launcher keeps the profile out of every grant it binds.
         .env(tilo_machine::DAEMON_PROFILE_VAR, &apps.root)
+        // What the workspace trusts, as this device holds it: the launcher verifies the app's
+        // publisher against it, and never asks this daemon's action listing, which answers only
+        // once every workspace's providers do and so waits on launches like this one.
+        .env(
+            tilo_control::packages::WORKSPACE_TRUST_ENV,
+            trust_reading(apps.package_trust(workspace)),
+        )
         // The launcher connects every service itself; nothing inherited
         // from this process stands for one.
         .env_remove("TILO_SVC_COLLAB_FD")
@@ -289,6 +296,11 @@ fn command(
         }
     }
     Ok((command, launcher))
+}
+
+/// `trust` as the launcher reads a workspace's trust list ([`tilo_control::packages::trust`]).
+fn trust_reading((attestors, revoked): crate::device::package_runs::PackageTrust) -> String {
+    serde_json::json!({ "attestors": attestors, "revoked": revoked }).to_string()
 }
 
 /// The host session's Wayland socket, which the launcher binds into the

@@ -170,16 +170,22 @@ impl VerifiedInstance {
 }
 
 /// The tilolang app `installed`, installed at `manifest_path` with its payload at `payload_root`, whose
-/// signed root hashes to `expected`: verified (its files, its signature, its publisher not revoked) and
-/// read for a tilolang host.
+/// signed root hashes to `expected`: verified (its files, its signature, its publisher not in
+/// `revoked`, the keys the workspace it runs in refuses) and read for a tilolang host.
 pub fn verified_instance(
     installed: &package_store::InstalledPackage,
     manifest_path: &Path,
     payload_root: &Path,
     expected: &str,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<VerifiedInstance, LaunchError> {
-    let (manifest, publisher) =
-        super::verified_launch_publisher(installed, manifest_path, payload_root, expected)?;
+    let (manifest, publisher) = super::verified_launch_publisher_against(
+        installed,
+        manifest_path,
+        payload_root,
+        expected,
+        revoked,
+    )?;
     let not_tilolang =
         || LaunchError::InvalidServiceLaunch(format!("{} is no tilolang app", manifest.package_id));
     let runtime = crate::manifest::code_runtime(&manifest, payload_root)

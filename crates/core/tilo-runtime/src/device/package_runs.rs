@@ -18,6 +18,54 @@ pub struct Verified {
     pub module: runtime_portal::process_link::Module,
 }
 
+/// What a workspace trusts for packages: the attestors it accepts and the publisher keys it
+/// refuses.
+pub type PackageTrust = (
+    Vec<tilo_peer_state::TrustAttestor>,
+    Vec<tilo_peer_state::RevokedPublisher>,
+);
+
+/// What `workspace` trusts for packages, as `copies` hold it now, without waiting on its lock:
+/// nothing where this device holds no copy of it.
+pub(crate) fn package_trust_now(
+    copies: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+) -> PackageTrust {
+    tilo_desktop_model::WorkspaceId::parse(workspace)
+        .and_then(|id| copies.copy_now(id))
+        .map(|copy| {
+            (
+                copy.peer.governance().trusted_attestors(),
+                copy.peer.governance().revoked_publishers(),
+            )
+        })
+        .unwrap_or_default()
+}
+
+/// The publisher keys `workspace` refuses, as `copies` hold it now: what an app read or run in
+/// it is verified against.
+pub(crate) fn revoked_now(
+    copies: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+) -> tilo_app_package::RevocationList {
+    revocations(&package_trust_now(copies, workspace).1)
+}
+
+/// The publisher keys `revoked` names, as a launch's verification takes them.
+pub(crate) fn revocations(
+    revoked: &[tilo_peer_state::RevokedPublisher],
+) -> tilo_app_package::RevocationList {
+    tilo_app_package::RevocationList {
+        revoked: revoked
+            .iter()
+            .map(|key| tilo_app_package::RevokedKey {
+                pubkey_hex: key.pubkey_hex.clone(),
+                reason: key.reason.clone(),
+            })
+            .collect(),
+    }
+}
+
 /// Whether the runtime `raw` (`<name>/<version>`) is here: installed as a bundle a launch finds,
 /// or carried by this device's own runtime, as a phone carries the one its apps run on.
 #[must_use]
@@ -71,7 +119,7 @@ pub fn task_packages() -> Vec<TaskPackage> {
     };
     apps.iter()
         .filter(|app| runs_in_process(&app.app_id))
-        .filter_map(|app| match verified_package(&app.app_id) {
+        .filter_map(|app| match verified_package(&app.app_id, &desktop_revocations()) {
             Ok(verified) => Some(TaskPackage {
                 app: app.app_id.to_string(),
                 module: verified.module,
@@ -110,7 +158,15 @@ pub fn task_runtimes() -> Result<(String, String), String> {
         .map_err(|error| format!("the installed apps are not known: {error}"))?;
     apps.iter()
         .filter(|app| runs_in_process(&app.app_id))
-        .find_map(|app| verified_installed("", &app.app_id).ok())
+        // Only the runtimes are read here: what a workspace refuses is checked where its app runs.
+        .find_map(|app| {
+            verified_installed(
+                "",
+                &app.app_id,
+                &tilo_app_package::RevocationList::default(),
+            )
+            .ok()
+        })
         .map(|verified| (verified.runtime, verified.app_runtime))
         .ok_or_else(|| {
             "no tilolang app installed here runs on runtimes this device has, so a task's \
@@ -157,10 +213,28 @@ pub fn origin_of(app: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// `app`, installed here, verified as `tilo-launcher` verifies a launch.
+/// The publisher keys the desktop's workspace refuses, as its trust reading answers them: what a
+/// task's programs, which run the apps' code in the caller, are verified against.
+#[cfg(target_os = "linux")]
+fn desktop_revocations() -> tilo_app_package::RevocationList {
+    revocations(
+        &tilo_control::packages::trust()
+            .1
+            .into_iter()
+            .map(|key| tilo_peer_state::RevokedPublisher {
+                pubkey_hex: key.pubkey_hex,
+                reason: key.reason,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// `app`, installed here, verified as `tilo-launcher` verifies a launch, its publisher not in
+/// `revoked`.
 #[cfg(target_os = "linux")]
 fn verified_package(
     app: &str,
+    revoked: &tilo_app_package::RevocationList,
 ) -> Result<launcher::run::tilolang_process::VerifiedInstance, String> {
     let installed = package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
@@ -170,13 +244,13 @@ fn verified_package(
         &installed.manifest_path,
         &installed.payload_root,
         &installed.package_id_hex,
+        revoked,
     )
     .map_err(|error| error.to_string())
 }
 
 /// The payload of the installed tilolang app `app`, verified as a launch of it verifies it: its
-/// files against the signed record, its publisher's signature and the publisher not revoked, and
-/// the runtimes it names here — installed bundles, or the exact builds this device's host carries
+/// files against the signed record and its publisher's signature, and the runtimes it names here — installed bundles, or the exact builds this device's host carries
 /// in itself, as a phone does. What a host that runs the app in its own process reads its bundle
 /// from (a phone's window starts no process), on the same verified installation a launch starts.
 ///
@@ -187,7 +261,8 @@ pub fn verified_payload(app: &str) -> Result<std::path::PathBuf, String> {
     let installed = package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed here"))?;
-    crate::apps::verify_package(&installed)?;
+    // A phone's own process holds no workspace's trust list to refuse a publisher by.
+    crate::apps::verify_package(&installed, &tilo_app_package::RevocationList::default())?;
     let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
         .map_err(|error| format!("{app}'s manifest: {error}"))?;
     let runtime = launcher::manifest::code_runtime(&manifest, &installed.payload_root)
@@ -212,14 +287,19 @@ pub fn verified_payload(app: &str) -> Result<std::path::PathBuf, String> {
     Ok(installed.payload_root)
 }
 
-/// `app`, installed here, verified as a launch verifies it, on runtimes installed here: on Linux
-/// as `tilo-launcher` verifies a launch, on macOS and Windows as the daemon verifies an app it launches
-/// (`crate::apps`). An app installed for runtimes since replaced runs nowhere until it is built
-/// again.
-pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified, String> {
+/// `app`, installed here, verified as a launch verifies it, on runtimes installed here, its
+/// publisher not in `revoked`, the keys the workspace it runs in refuses: on Linux as
+/// `tilo-launcher` verifies a launch, on macOS and Windows as the daemon verifies an app it
+/// launches (`crate::apps`). An app installed for runtimes since replaced runs nowhere until it
+/// is built again.
+pub(super) fn verified_installed(
+    _workspace: &str,
+    app: &str,
+    revoked: &tilo_app_package::RevocationList,
+) -> Result<Verified, String> {
     #[cfg(target_os = "linux")]
     return {
-        let verified = verified_package(app)?;
+        let verified = verified_package(app, revoked)?;
         let carried = runtime_bundle::carried(&verified.runtime).is_some()
             && runtime_bundle::carried(&verified.app_runtime).is_some();
         if !verified.runs_here() && !carried {
@@ -238,7 +318,7 @@ pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified
     return package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))
-        .and_then(|installed| crate::apps::verified_tilolang(&installed));
+        .and_then(|installed| crate::apps::verified_tilolang(&installed, revoked));
     #[cfg(target_os = "android")]
     return Err(format!(
         "{app} runs in the Tilo app's own process: Android starts no process for an app"

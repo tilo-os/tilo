@@ -1123,6 +1123,7 @@ fn a_package_built_against_another_library_fetches_the_runtime_that_carries_it_a
         &installed.manifest_path,
         &installed.payload_root,
         &installed.package_id_hex,
+        &tilo_app_package::RevocationList::default(),
     )
     .unwrap();
     assert_eq!(instance.runtime, needed);

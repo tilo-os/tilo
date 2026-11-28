@@ -8843,9 +8843,13 @@ async fn answer_a_record(
     let package = packages
         .entry((workspace.clone(), app.clone()))
         .or_insert_with(|| {
-            match super::package_runs::runs_in_process(&app)
-                .then(|| super::package_runs::verified_installed(&workspace, &app))
-            {
+            match super::package_runs::runs_in_process(&app).then(|| {
+                super::package_runs::verified_installed(
+                    &workspace,
+                    &app,
+                    &super::package_runs::revoked_now(copies, &workspace),
+                )
+            }) {
                 Some(Ok(verified)) => Package::Installed(verified.module),
                 _ => Package::BuiltIn,
             }

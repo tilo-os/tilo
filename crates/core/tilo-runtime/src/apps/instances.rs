@@ -92,6 +92,8 @@ pub(crate) struct Instances {
     locale: Mutex<runtime_portal::process_link::Locale>,
     /// The providers this device registered, whose packages every instance is handed.
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
+    /// What each workspace trusts for packages, which every instance's app is verified against.
+    trust: OnceLock<Arc<dyn super::LaunchGrantsSource>>,
     /// What makes each app's own tilolang process its daemon line, once the daemon serves them.
     own_lines: OnceLock<crate::device::processes::OwnLines>,
     /// The web entry of the server this device keeps workspaces for, and the workspaces it
@@ -383,6 +385,7 @@ impl Instances {
             person: OnceLock::new(),
             locale: Mutex::default(),
             provided: OnceLock::new(),
+            trust: OnceLock::new(),
             own_lines: OnceLock::new(),
             serving: OnceLock::new(),
             made: Mutex::default(),
@@ -467,6 +470,15 @@ impl Instances {
         let _ = self.provided.set(providers);
     }
 
+    /// Verify the app of every instance the processes start against what its workspace trusts,
+    /// as `trust` reads it, from now on.
+    pub(crate) fn read_trust_from(&self, trust: Arc<dyn super::LaunchGrantsSource>) {
+        if let Some(processes) = self.processes.get() {
+            processes.read_trust_from(Arc::clone(&trust));
+        }
+        let _ = self.trust.set(trust);
+    }
+
     /// Hand each app's own tilolang process started from now on its daemon line, made by `lines`.
     #[cfg(unix)]
     pub(crate) fn serve_own_lines(&self, lines: crate::device::processes::OwnLines) {
@@ -493,6 +505,9 @@ impl Instances {
                 let processes = Processes::new(launcher).attesting(Arc::clone(&self.launched));
                 if let Some(providers) = self.provided.get() {
                     processes.read_provided_from(providers.clone());
+                }
+                if let Some(trust) = self.trust.get() {
+                    processes.read_trust_from(Arc::clone(trust));
                 }
                 if let Some(lines) = self.own_lines.get() {
                     processes.serve_own_lines(Arc::clone(lines));

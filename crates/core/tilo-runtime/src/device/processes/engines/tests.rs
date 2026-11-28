@@ -153,7 +153,7 @@ impl Device {
         let processes = Processes::with(
             dir.path().join("data"),
             launcher.path().to_owned(),
-            Box::new(|_, app| Err(format!("{app} is not installed here"))),
+            Box::new(|_, app, _| Err(format!("{app} is not installed here"))),
         );
         let jobs = DeviceJobs::new(DEVICE);
         let effects = Arc::new(Effects::default());
