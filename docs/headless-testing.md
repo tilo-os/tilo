@@ -596,7 +596,7 @@ printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
 
 A heartbeat asks the loop, through a calloop ping source, to acknowledge a wake. One it does not acknowledge within the budget is a stall, and the answer carries every thread's state and kernel wait channel; when the main thread is blocked it also carries the backtraces of the threads blocked in a system call. A main thread still working is not interrupted, and neither is a thread that is running, faulting in a page or inside the allocator, because a backtrace is captured by a signal handler that allocates.
 
-Every build, release included, also runs the main-loop watchdog (`crates/desktop/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/desktop/session/tests/main_thread_reads.rs`) keeps the loop's own threads off paths that read the layout.
+Every build, release included, also runs the main-loop watchdog (`crates/platform/liveness/src/watchdog.rs`). It needs no client: a thread of its own notices a session thread that has slept without running once, outside the loop's wait, for longer than any wait it makes is bounded at (`LONGEST_BOUNDED_WAIT`, plus one sample), writes the same thread dump to stderr and the journal, and exits with status 70, which hands DRM master and the VT back and ends the session at the greeter. A loop that is working, starved of CPU, idle, stopped, under a debugger or in the kernel's uninterruptible sleep is never ended, nor one sampled across a suspend. `main_thread_reads` (`crates/desktop/session/tests/main_thread_reads.rs`) keeps the loop's own threads off paths that read the layout.
 
 ## Where to look in source
 
@@ -606,7 +606,7 @@ Every build, release included, also runs the main-loop watchdog (`crates/desktop
 | What the session publishes | `crates/desktop/compositor/src/lib.rs` (`listen`), `crates/desktop/session/src/published_workspace.rs`, `crates/desktop/session/src/env.rs` |
 | `TILO_TEST_CONTROL` protocol | `crates/desktop/session/src/test_control.rs` |
 | `tilo-control` | `crates/desktop/control-cli/` |
-| Liveness socket and watchdog | `crates/desktop/liveness/src/` |
+| Liveness socket and watchdog | `crates/platform/liveness/src/` |
 | Headless backend | `crates/desktop/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/desktop/frame-metrics/src/lib.rs` |
 | Memory report | `crates/desktop/compositor/src/memory_report.rs` |

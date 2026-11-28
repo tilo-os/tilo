@@ -438,7 +438,7 @@ tilo-session-logging = { path = "../session-logging" }
 # The runs of what people ask this session's agents to do: what the agent
 # composer and a run's window follow, and what the broker delivers a run on.
 # The watchdog that ends a session whose main loop stopped for good.
-tilo-liveness = { path = "../liveness" }
+tilo-liveness = { path = "../../platform/liveness" }
 # The room left on the person's filesystems, for the storage notice.
 rustix = { workspace = true, features = ["fs", "process"] }
 # Planning and starting the apps the person opens.

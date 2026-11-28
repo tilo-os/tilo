@@ -392,6 +392,10 @@ pub struct Running {
     serving: Option<std::thread::JoinHandle<io::Result<()>>>,
     /// The person's services while they run: what starts their shell.
     person: Arc<Person>,
+    /// The report of this daemon's threads, bound beside the native endpoint and unlinked when
+    /// the daemon ends: what a harness asks for when a request to the daemon goes unanswered.
+    #[cfg(target_os = "linux")]
+    _liveness: Option<tilo_liveness::Server>,
 }
 
 /// The person's services, while they run, for whoever waits for them to.
@@ -513,6 +517,12 @@ impl Running {
         let listener = tilo_files::native::private::bind_socket(&path)?;
         #[cfg(unix)]
         publish_native(profile, &path)?;
+        // A harness's request to this daemon that goes unanswered names where the daemon waits:
+        // the same thread report a session answers at its liveness socket ([`tilo_liveness`]).
+        #[cfg(target_os = "linux")]
+        let liveness = tilo_liveness::serve_threads(&path, |liveness| {
+            tilo_files::native::private::bind_socket(liveness)
+        });
         #[cfg(unix)]
         if serves_the_computer(profile) {
             use std::os::unix::fs::PermissionsExt as _;
@@ -584,6 +594,8 @@ impl Running {
             tenant_accepting,
             serving: Some(serving),
             person,
+            #[cfg(target_os = "linux")]
+            _liveness: liveness,
         })
     }
 

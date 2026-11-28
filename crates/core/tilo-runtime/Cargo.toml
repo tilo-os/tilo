@@ -306,6 +306,9 @@ ush = { path = "../../vm/ush", features = ["quic"] }
 # The environment record a workspace's machine is: the daemon reads the records its workspace
 # keeps as any other record of it, and publishes them to the apps it serves.
 tilo-environment = { path = "../environment" }
+# What a harness asks for when a request to the daemon goes unanswered: the same thread report a
+# session answers at its liveness socket, on this daemon's own.
+tilo-liveness = { path = "../../platform/liveness" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]

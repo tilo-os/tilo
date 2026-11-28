@@ -1159,7 +1159,7 @@ doc = false
 "tilo-keyboard-map" = { path = "../../crates/desktop/tilo-keyboard-map", default-features = false, features = ["default", "native"] }
 "tilo-libvirt-domain" = { path = "../../crates/vm/libvirt-domain", default-features = false, features = [] }
 "tilo-live" = { path = "../../crates/core/tilo-live", default-features = false, features = ["app_call", "default", "iroh", "live_session", "mix", "relay"] }
-"tilo-liveness" = { path = "../../crates/desktop/liveness", default-features = false, features = [] }
+"tilo-liveness" = { path = "../../crates/platform/liveness", default-features = false, features = [] }
 "tilo-local-identity" = { path = "../../crates/platform/local-identity", default-features = false, features = [] }
 "tilo-local-time" = { path = "../../crates/platform/local-time", default-features = false, features = [] }
 "tilo-locale" = { path = "../../crates/platform/tilo-locale", default-features = false, features = [] }
@@ -3638,7 +3638,7 @@ doc = false
 "tilo-keyboard-map" = { path = "../../crates/desktop/tilo-keyboard-map", default-features = false, features = ["default", "native"] }
 "tilo-libvirt-domain" = { path = "../../crates/vm/libvirt-domain", default-features = false, features = [] }
 "tilo-live" = { path = "../../crates/core/tilo-live", default-features = false, features = ["app_call", "default", "iroh", "live_session", "mix", "relay"] }
-"tilo-liveness" = { path = "../../crates/desktop/liveness", default-features = false, features = [] }
+"tilo-liveness" = { path = "../../crates/platform/liveness", default-features = false, features = [] }
 "tilo-local-identity" = { path = "../../crates/platform/local-identity", default-features = false, features = [] }
 "tilo-local-time" = { path = "../../crates/platform/local-time", default-features = false, features = [] }
 "tilo-locale" = { path = "../../crates/platform/tilo-locale", default-features = false, features = [] }

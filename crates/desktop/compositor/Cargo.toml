@@ -77,7 +77,7 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 tilo-session-core = { path = "../session-core" }
 # The liveness socket beside the control socket: whether the loop still turns,
 # and where every thread is when it does not.
-tilo-liveness = { path = "../liveness" }
+tilo-liveness = { path = "../../platform/liveness" }
 # A surface's HDR signal and the tone-mapped SDR rendition the scene draws:
 # the plane and the layer compositing it, shared with the colour passes.
 tilo-color-pipeline = { path = "../color-pipeline" }

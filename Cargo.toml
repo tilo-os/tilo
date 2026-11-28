@@ -443,7 +443,7 @@ members = [
     "crates/os/hardware-report",
     "crates/os/install-plan",
     "crates/os/install-profile-model",
-    "crates/desktop/liveness",
+    "crates/platform/liveness",
     "crates/services/media-controls",
     "crates/desktop/native-media",
     "crates/desktop/network-actor",

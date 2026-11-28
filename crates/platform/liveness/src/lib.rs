@@ -384,6 +384,70 @@ pub fn serve<D: 'static>(
     Some(Server { _unlink: unlink })
 }
 
+/// Serve the thread listing alone on `<control>.live`, for a process that keeps no main loop of
+/// its own: `threads` is answered exactly as a session answers it — the same report, from
+/// [`dump_threads`] — and a heartbeat is answered alive at once, as a process with no loop has
+/// none to stall. `bind` binds the socket private to this user, as the caller's control socket is.
+pub fn serve_threads(
+    control: &Path,
+    bind: impl FnOnce(&Path) -> std::io::Result<std::os::unix::net::UnixListener>,
+) -> Option<Server> {
+    let path = socket_path(control);
+    let listener = match bind(&path) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("tilo liveness: bind {}: {error}", path.display());
+            return None;
+        }
+    };
+    let unlink = UnlinkOnDrop(path);
+    install_capture_handler();
+    let spawned = std::thread::Builder::new()
+        .name("tilo-liveness".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let _ = std::thread::Builder::new()
+                    .name("tilo-liveness-conn".into())
+                    .spawn(move || answer_threads(stream));
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("tilo liveness: thread: {error}");
+        return None;
+    }
+    Some(Server { _unlink: unlink })
+}
+
+/// The answers a process with no main loop gives: its threads, and a heartbeat that is its own.
+fn answer_threads(stream: UnixStream) {
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let line = match wire_frame::read_line_or_eof(&mut reader, MAX_REQUEST_LINE_BYTES) {
+            Ok(Some(bytes)) => match String::from_utf8(bytes) {
+                Ok(line) => line,
+                Err(_) => return,
+            },
+            Ok(None) | Err(_) => return,
+        };
+        let answer = match serde_json::from_str::<Request>(&line) {
+            Ok(Request::Threads) => Answer::Threads(dump_threads()),
+            Ok(Request::Heartbeat { .. }) => Answer::Alive {
+                ticks: 0,
+                latency_ms: 0.0,
+                halfway: None,
+            },
+            Ok(_) => Answer::Err("no main loop is here to ask that of".into()),
+            Err(error) => Answer::Err(format!("bad liveness request: {error}")),
+        };
+        if !write_answer(&mut writer, &answer) {
+            return;
+        }
+    }
+}
+
 fn write_answer(writer: &mut UnixStream, answer: &Answer) -> bool {
     let Ok(mut encoded) = serde_json::to_vec(answer) else {
         return false;
