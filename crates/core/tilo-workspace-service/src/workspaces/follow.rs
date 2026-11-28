@@ -515,7 +515,9 @@ impl Workspaces {
             let Some(inner) = workspaces.upgrade() else {
                 return;
             };
-            (Self { inner }).replay(&workspace).await;
+            // What this leaves waiting for a key is taken in by the copy's own wait, once the
+            // group's keys advance ([`Workspaces::take_part_in_keys`]).
+            let _ = (Self { inner }).replay(&workspace).await;
         });
     }
 
@@ -1293,7 +1295,7 @@ impl Workspaces {
                 _ => None,
             })
             .collect();
-        self.recall_retained(workspace, retained).await;
+        let _waiting = self.recall_retained(workspace, retained).await;
         self.carry_held(workspace, &kept)
     }
 
@@ -1348,12 +1350,17 @@ impl Workspaces {
     /// all: they are replayed again, in the order their authors wrote them,
     /// once the surface arrives ([`Self::follow`]) or something they waited
     /// for lands ([`Followed::replay_wanted`]).
+    ///
+    /// Answers whether a write it kept is sealed under an epoch whose key this device does not
+    /// hold yet: the caller replays again once the group's keys advance
+    /// ([`Workspaces::take_part_in_keys`]).
     pub(super) async fn recall_retained(
         &self,
         workspace: &mut HostedWorkspace,
         retained: Vec<crate::workspace_documents::RetainedBody>,
-    ) {
+    ) -> bool {
         let (mut changed, mut again) = (false, false);
+        let mut waiting = false;
         // The documents this replay changed: whoever follows them is told, as a write taken in
         // as it is made tells them, since a replay runs again whenever something a write waited
         // for lands, long after those followers first read the copy.
@@ -1382,8 +1389,10 @@ impl Workspaces {
             let followed = self
                 .follow_kept_checked(workspace, retained.author, message.clone())
                 .await;
-            self.replay_resource_write(workspace, retained.author, &message)
-                .await;
+            waiting |= self
+                .replay_resource_write(workspace, retained.author, &message)
+                .await
+                == super::resources::Restored::Waiting;
             let Followed {
                 changed: took,
                 replay_wanted,
@@ -1430,6 +1439,7 @@ impl Workspaces {
         if again {
             self.replay_soon(workspace.workspace().to_owned());
         }
+        waiting
     }
 
     /// Found every document of `workspace` that `retained` holds a write of

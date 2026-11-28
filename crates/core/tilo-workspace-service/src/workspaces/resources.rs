@@ -930,9 +930,14 @@ impl HostedWorkspace {
                     collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
                 // Sealed for the document's own scope, which its id derives, and no other.
                 let scope = collab_types::document_artifact_id(app, self.workspace(), doc);
-                keys.open_content(scope, &metadata, &ciphertext)
-                    .map_err(|error| error.to_string())?
-                    .to_vec()
+                match keys.open_content(scope, &metadata, &ciphertext) {
+                    Ok(payload) => payload.to_vec(),
+                    // The epoch the write was sealed under is one this device does not hold yet:
+                    // the write waits for its key's frame, which the group sends as it advances,
+                    // and is taken in then ([`Workspaces::take_in_what_keys_open`]).
+                    Err(key_group::Error::MissingContentKey(_)) => return Ok(false),
+                    Err(error) => return Err(error.to_string()),
+                }
             }
         };
         let (payload, action) =
@@ -1511,14 +1516,29 @@ impl Workspaces {
     }
 }
 
+/// What became of a kept write through [`Workspaces::replay_resource_write`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Restored {
+    /// The store's projection holds it.
+    Taken,
+    /// A sealed resource write this device may read, kept until the key of the epoch it was
+    /// sealed under, or the rest of a change it is a segment of, arrives.
+    Waiting,
+    /// Nothing the store places: not a resource document, written in the clear, a write peer
+    /// admission does not hold, or one it refused.
+    NotOurs,
+}
+
 impl Workspaces {
-    /// Restore the store projection of a sealed frame that passed peer admission.
+    /// Restore the store projection of a sealed frame that passed peer admission, and answer what
+    /// became of it: the projection holds it, it waits for the key of the epoch it was sealed
+    /// under or the rest of a change it is a segment of, or nothing here places it.
     pub(super) async fn replay_resource_write(
         &self,
         hosted: &mut HostedWorkspace,
         author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
-    ) -> bool {
+    ) -> Restored {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             document_id,
@@ -1527,7 +1547,7 @@ impl Workspaces {
             ..
         } = message
         else {
-            return false;
+            return Restored::NotOurs;
         };
         if !is_store_document(document_id)
             || envelope.encryption.is_none()
@@ -1536,10 +1556,10 @@ impl Workspaces {
                 .publication()
                 .has_sealed_write(app_id, document_id, envelope)
         {
-            return false;
+            return Restored::NotOurs;
         }
         drop(self.store_of(&mut *hosted));
-        if let Err(error) = hosted
+        let restored = match hosted
             .take_resources(
                 author,
                 (app_id, document_id),
@@ -1549,10 +1569,17 @@ impl Workspaces {
             )
             .await
         {
-            tracing::warn!(workspace = %hosted.workspace(), %document_id, %error, "a retained resource write was not restored");
-        }
+            Ok(true) => Restored::Taken,
+            // Not placed yet: the epoch's key or the rest of a segmented change is still on its
+            // way, and the write is taken in when it lands.
+            Ok(false) => Restored::Waiting,
+            Err(error) => {
+                tracing::warn!(workspace = %hosted.workspace(), %document_id, %error, "a retained resource write was not restored");
+                Restored::NotOurs
+            }
+        };
         self.follow_apps(&mut *hosted);
-        true
+        restored
     }
 
     /// Takes `message`, `author`'s write, into `workspace`'s store when it writes a document the
@@ -1623,6 +1650,12 @@ impl Workspaces {
                 false,
             )
             .await;
+        if matches!(&taken, Ok(false)) {
+            // A write this device cannot place yet — sealed under an epoch whose key it holds not,
+            // or a change whose rest is on its way — is kept for the replay that runs once what it
+            // waits for lands ([`Workspaces::take_part_in_keys`]).
+            hosted.keys_wanted.notify_one();
+        }
         self.follow_apps(&mut hosted);
         if taken? {
             // Whoever follows the workspace's writes (its bots) is woken by a resource's

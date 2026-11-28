@@ -2379,8 +2379,11 @@ impl Workspaces {
     /// once what it kept but could not open before
     /// ([`Self::take_in_what_keys_open`]), and a copy this device hosts — one
     /// another host handed over — replays what this host retains
-    /// ([`Self::replay`]). Answers the task that waits for them, `None` when
-    /// the device has no key service.
+    /// ([`Self::replay`]). A member of a workspace whose group rotates its keys takes in again
+    /// each time they advance while something it kept waits for a key, and wakes to take in a
+    /// write that arrives sealed under an epoch it holds not yet: the same pass, for the same
+    /// writes, until nothing it keeps waits for a key. Answers the task that waits for them,
+    /// `None` when the device has no key service.
     pub(super) fn take_part_in_keys(
         &self,
         workspace: &str,
@@ -2393,12 +2396,38 @@ impl Workspaces {
             if !super::sealed_documents::wait_for_group_keys(&keys, &workspace).await {
                 return;
             }
-            let Some(workspaces) = workspaces.upgrade() else {
+            let Some(service) = workspaces.upgrade() else {
                 return;
             };
-            match held {
-                Held::MemberCopy => workspaces.take_in_what_keys_open(&workspace).await,
-                Held::Hosts => workspaces.replay(&workspace).await,
+            let Ok(state) = service.workspace(&workspace).await else {
+                return;
+            };
+            let wanted = {
+                let hosted = state.lock().await;
+                Arc::clone(&hosted.keys_wanted)
+            };
+            drop(service);
+            // Where the keys stood at the last look: a pass that leaves a write waiting waits for
+            // a change after it, never for one that already happened.
+            let mut seen = 0;
+            loop {
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return;
+                };
+                let waiting = match held {
+                    Held::MemberCopy => workspaces.take_in_what_keys_open(&workspace).await,
+                    Held::Hosts => workspaces.replay(&workspace).await,
+                };
+                drop(workspaces);
+                if waiting {
+                    match keys.keys_changed(&workspace, seen).await {
+                        Some(next) => seen = next,
+                        None => return,
+                    }
+                } else {
+                    // Nothing kept waits for a key now: the next write that does wakes this.
+                    wanted.notified().await;
+                }
             }
         });
         Some(task.abort_handle())
@@ -2410,23 +2439,28 @@ impl Workspaces {
     /// ([`Self::keep_member_write`]) and nothing sends those writes again, so without this the
     /// copy would hold the record without them for good, and so would everything reading it
     /// here. What it takes in reaches whoever follows the record as the history it is.
+    ///
+    /// Answers whether a write it took in left waiting for the key of the epoch it was sealed
+    /// under, so the copy waits for the group's keys to advance and runs this again
+    /// ([`Self::take_part_in_keys`]).
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the copy stays held until every kept write is in, so a write that comes meanwhile is judged after them"
     )]
-    async fn take_in_what_keys_open(&self, workspace: &str) {
+    async fn take_in_what_keys_open(&self, workspace: &str) -> bool {
         let Ok(state) = self.workspace(workspace).await else {
-            return;
+            return false;
         };
         let mut hosted = state.lock().await;
         let retained = match self.inner.records.retained(hosted.workspace_id()).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "a member copy did not read the writes it kept");
-                return;
+                return false;
             }
         };
         let mut took = false;
+        let mut waiting = false;
         for frame in retained {
             // A copy keeps every write it was sent, and taking each in again is work for this
             // thread alone, none of it waiting: a copy of a large workspace takes minutes. The
@@ -2448,10 +2482,14 @@ impl Workspaces {
             // start ([`Self::recall_member_resources`]).
             if collab_types::is_store_document(document_id) {
                 self.follow_member_document(&mut hosted, frame.author, &message);
-                let admitted = self
+                match self
                     .replay_resource_write(&mut hosted, frame.author, &message)
-                    .await;
-                took |= admitted;
+                    .await
+                {
+                    super::resources::Restored::Taken => took = true,
+                    super::resources::Restored::Waiting => waiting = true,
+                    super::resources::Restored::NotOurs => {}
+                }
             } else if hosted.take_served(frame.author, &message)
                 || self
                     .follow_kept_checked(&mut hosted, frame.author, message.clone())
@@ -2469,6 +2507,7 @@ impl Workspaces {
         if took {
             self.keep_soon(&mut hosted);
         }
+        waiting
     }
 
     /// Project this copy's retained resource frames before starting its link.
@@ -2486,9 +2525,11 @@ impl Workspaces {
                 if collab_types::is_store_document(document_id))
             {
                 self.follow_member_document(hosted, frame.author, &message);
-                let admitted = self
-                    .replay_resource_write(hosted, frame.author, &message)
-                    .await;
+                let admitted = !matches!(
+                    self.replay_resource_write(hosted, frame.author, &message)
+                        .await,
+                    super::resources::Restored::NotOurs
+                );
                 if admitted
                     && self.member_device_key() == Some(frame.author)
                     && let Some(link) = link
@@ -2647,14 +2688,21 @@ impl Workspaces {
         // seeing it. Whoever follows the copy's records is told either way:
         // otherwise a folder's sync hears of the serving device's edits only
         // when it next reads every record.
+        // Whether this write may be one the copy kept but could not open: its keys are asked for
+        // once it is kept, never before ([`Self::take_part_in_keys`] reads the kept writes).
+        let mut watch_keys = false;
         if taken || landed {
             // A resource's document is the workspace's store's: a write the
             // device serving it sent is taken into the store as this device's
             // own writes are, so the records it keeps read here as they read
             // there.
             if collab_types::is_store_document(document_id) {
-                self.replay_resource_write(&mut hosted, author, message)
+                let restored = self
+                    .replay_resource_write(&mut hosted, author, message)
                     .await;
+                // Sealed under an epoch whose key is not here yet, or not placed yet: the copy's
+                // wait for keys takes it in once they advance.
+                watch_keys = restored != super::resources::Restored::Taken;
             }
             self.tell_followers(&hosted, author, message, history).await;
             self.wrote(workspace, app_id, document_id);
@@ -2669,6 +2717,7 @@ impl Workspaces {
             // A write the copy cannot take in yet (a sealed record whose keys have not reached the
             // service) is still the apps' to show, which may hold its keys.
             self.hand_on(&hosted, author, message, history);
+            watch_keys = collab_types::is_store_document(document_id);
         }
         // A write of this device's own the serving device sent is one this
         // device made before it lost what it held, an empty disk after a move:
@@ -2686,6 +2735,10 @@ impl Workspaces {
                 body: body.to_vec(),
             },
         )?;
+        // Woken once the write is kept, so the pass that takes in what the keys open reads it.
+        if watch_keys {
+            hosted.keys_wanted.notify_one();
+        }
         drop(hosted);
         Ok(())
     }

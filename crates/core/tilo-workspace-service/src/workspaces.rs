@@ -381,6 +381,9 @@ pub struct HostedWorkspace {
     handed_by: Option<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1>,
     /// For a member copy, the address of the device serving the workspace.
     member: Option<member::Member>,
+    /// Wakes [`Workspaces::take_part_in_keys`] when a kept write arrives that this device's keys
+    /// cannot open yet: the pass that takes such writes in runs again once they can.
+    keys_wanted: Arc<tokio::sync::Notify>,
     /// The workspace's resources, in the framework's store.
     resources: resources::Resources,
 }
@@ -642,6 +645,7 @@ impl HostedWorkspace {
             // Read before the path moves into the workspace.
             handed_by: holding::handed_by(&path),
             member: member::member_of(&path),
+            keys_wanted: Arc::new(tokio::sync::Notify::new()),
             path,
             device: device.cloned(),
             compaction_wait: 0,
@@ -3150,26 +3154,27 @@ impl Workspaces {
     }
 
     /// Replay what the server retains for `workspace` into the host's
-    /// copy now: [`Self::replay_soon`] in the caller's own time.
-    async fn replay(&self, workspace: &str) {
+    /// copy now: [`Self::replay_soon`] in the caller's own time. Answers whether a replayed write
+    /// is sealed under an epoch whose key this device does not hold yet.
+    async fn replay(&self, workspace: &str) -> bool {
         self.inner
             .replays
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Ok(state) = self.workspace(workspace).await else {
-            return;
+            return false;
         };
         let workspace_id = state.lock().await.workspace_id();
         let retained = match self.inner.records.retained_settled(workspace_id).await {
             Ok(retained) => retained,
             Err(error) => {
                 tracing::warn!(%workspace, %error, "hosted workspace did not replay what its members wrote");
-                return;
+                return false;
             }
         };
         #[cfg(feature = "device-keys")]
         self.found_retained(workspace, &state, &retained).await;
         let mut hosted = state.lock().await;
-        self.recall_retained(&mut hosted, retained).await;
+        self.recall_retained(&mut hosted, retained).await
     }
 
     /// Ask the key holders of `app`'s `record`'s channel in `workspace` to
@@ -3199,7 +3204,7 @@ impl Workspaces {
             // whoever waits for them ([`Self::waits_for_keys`]) reads the
             // record once that is in the host's copy.
             if workspaces.join_keys(&name).await {
-                workspaces.replay(&name).await;
+                let _ = workspaces.replay(&name).await;
             }
             let Ok(workspace) = workspaces.workspace(&name).await else {
                 return;
