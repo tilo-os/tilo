@@ -233,21 +233,21 @@ impl Host {
     /// This device founds `record` of Notes in `workspace`, in the workspace's store, of the
     /// kind the app manifests here declare a read of.
     async fn write(&self, workspace: &str, record: &str) {
-        tilo_workspace_service::workspaces::fixtures::write_record_of_kind(
+        tilo_workspace_service::workspaces::fixtures::declare_record_kind_named(
             self.workspaces(),
-            workspace,
-            (NOTES, NOTES_KIND),
-            record,
-            |document| {
+            NOTES,
+            NOTES_KIND,
+        );
+        self.workspaces()
+            .author_record(workspace, (NOTES, NOTES_KIND, record), |document| {
                 use automerge::transaction::Transactable as _;
                 document
                     .put(automerge::ROOT, "text", "milk")
                     .map(drop)
                     .map_err(|error| error.to_string())
-            },
-        )
-        .await
-        .expect("the device writes its record");
+            })
+            .await
+            .expect("the device writes its record");
     }
 
     /// `workspace` keeps `grants`, as its person decided.

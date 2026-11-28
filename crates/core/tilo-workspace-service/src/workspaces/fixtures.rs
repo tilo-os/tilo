@@ -621,24 +621,6 @@ pub fn declare_record_kind_named(workspaces: &Workspaces, app: &str, kind: &str)
     workspaces.declare_package_surface(app, surface.as_bytes());
 }
 
-/// Change `app`'s record `record` of `workspace` with `edit`, its kind `kind` declared on
-/// `workspaces` first.
-///
-/// # Errors
-/// The workspace is not kept here, or its store refused the write.
-pub async fn write_record_of_kind(
-    workspaces: &Workspaces,
-    workspace: &str,
-    (app, kind): (&str, &str),
-    record: &str,
-    edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
-) -> Result<(), String> {
-    declare_record_kind_named(workspaces, app, kind);
-    workspaces
-        .author_record(workspace, (app, kind, record), edit)
-        .await
-}
-
 /// The compiled surface of `kind`, a record whose fields the tests write anything into.
 fn record_surface(kind: &str) -> String {
     let fields: Vec<serde_json::Value> = [
