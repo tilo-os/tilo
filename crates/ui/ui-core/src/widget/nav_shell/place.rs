@@ -327,11 +327,14 @@ fn place_header(
     }
     let band = (trail - start).max(0.0);
 
+    // The title is cut short only once every action has given what it can: where the row leaves it
+    // nothing at all, its buttons show their icons rather than their words.
+    let title_starved = title.is_some_and(|(_, width, _, _)| width <= 0.5);
     let (use_compact, shown) = if let Some((control, _)) = alone {
         // The control stands alone: it is the only action the row keeps.
         let _ = control;
         (false, 0)
-    } else if trailing(&full, kept) <= band {
+    } else if !title_starved && trailing(&full, kept) <= band {
         (false, kept)
     } else if trailing(&compact, kept) <= band {
         (true, kept)
