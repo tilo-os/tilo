@@ -3318,35 +3318,83 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
 /// The account's person's part names its shell secret; the seat that made the person links
 /// before its key is certified, and another account's seat or another start of a pid is refused.
 #[test]
-#[rustfmt::skip]
 fn the_accounts_person_answers_the_token_and_the_seat_that_made_them_links() {
     use serde_json::json;
     use std::sync::Arc;
     let founded = founded_daemon(false);
     let sign_in = || {
-        let said = founding_ask(0, &founded.socket, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in", "args": {"uid": founded.uid}}}}));
-        said["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned()
+        let said = founding_ask(
+            0,
+            &founded.socket,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in", "args": {"uid": founded.uid}}}}),
+        );
+        said["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
     };
     // A start that failed is replaced by the part that runs now.
-    founded.native.seats.did_not_start("the first start failed".to_owned());
-    let other = Arc::new(Linked::default()); other.person([0x52; 32]);
+    founded
+        .native
+        .seats
+        .did_not_start("the first start failed".to_owned());
+    let other = Arc::new(Linked::default());
+    other.person([0x52; 32]);
     founded.native.seats.serve(Arc::clone(&other) as _);
-    assert!(!sign_in().contains("\"token\":\""), "another person's part names a secret");
-    let serving = Arc::new(Linked::default()); serving.person(founded.person);
+    assert!(
+        !sign_in().contains("\"token\":\""),
+        "another person's part names a secret"
+    );
+    let serving = Arc::new(Linked::default());
+    serving.person(founded.person);
     founded.native.seats.serve(Arc::clone(&serving) as _);
-    let token = sign_in().split("\"token\":\"").nth(1).and_then(|r| r.split('"').next()).expect("her part names it").to_owned();
-    let linked = founding_ask(founded.uid, &founded.socket, &json!({"native": "shells#link"}));
-    assert!(linked["error"].is_null(), "the seat that made the person: {linked}");
+    let token = sign_in()
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .expect("her part names it")
+        .to_owned();
+    let linked = founding_ask(
+        founded.uid,
+        &founded.socket,
+        &json!({"native": "shells#link"}),
+    );
+    assert!(
+        linked["error"].is_null(),
+        "the seat that made the person: {linked}"
+    );
     // Another process of her account, with no seat record, is refused:
     // a_founding_link_is_never_an_apps_or_another_programs, daemon_tests.rs:3554.
-    let refused = founding_ask(1001, &founded.socket, &json!({"native": "shells#link", "token": token}));
-    assert!(refused["error"].as_str().is_some_and(|w| w.contains("does not act")), "{refused}");
+    let refused = founding_ask(
+        1001,
+        &founded.socket,
+        &json!({"native": "shells#link", "token": token}),
+    );
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|w| w.contains("does not act")),
+        "{refused}"
+    );
     let (pid, person) = (std::process::id(), hex::encode(founded.person));
-    let record = founded.home.root().join("seats").join(format!("1001-{pid}.json"));
-    std::fs::write(&record, format!("{{\"uid\":1001,\"pid\":{pid},\"start\":0,\"person\":\"{person}\"}}")).unwrap();
+    let record = founded
+        .home
+        .root()
+        .join("seats")
+        .join(format!("1001-{pid}.json"));
+    std::fs::write(
+        &record,
+        format!("{{\"uid\":1001,\"pid\":{pid},\"start\":0,\"person\":\"{person}\"}}"),
+    )
+    .unwrap();
     let stale = founding_ask(1001, &founded.socket, &json!({"native": "shells#link"}));
-    assert!(stale["error"].as_str().is_some_and(|w| w.contains("no seat")), "{stale}");
+    assert!(
+        stale["error"]
+            .as_str()
+            .is_some_and(|w| w.contains("no seat")),
+        "{stale}"
+    );
 }
 
 /// An action the device does not answer itself is answered by its person's part, not refused as
