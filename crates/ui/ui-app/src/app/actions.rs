@@ -1693,6 +1693,7 @@ impl App {
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        #[cfg(feature = "native")]
         let _ = crate::widget::take_presses();
         let started = (|| {
             use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
@@ -1719,6 +1720,7 @@ impl App {
         // A control chosen the way a person chooses it (a menu row) asked
         // to be pressed where it is drawn: pressed for this invoker, before
         // the caller learns it finished.
+        #[cfg(feature = "native")]
         for at in crate::widget::take_presses() {
             self.dispatch_semantic_click(at.x, at.y);
         }
