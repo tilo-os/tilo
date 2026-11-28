@@ -1246,162 +1246,67 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
     b_endpoint.close().await;
 }
 
-/// The action a [`Described`] provider describes as a read.
-const READ: &str = "read";
-
-/// `test.provider` as a provider that describes its own actions: [`READ`] reads, anything else
-/// changes. What it answers is the test provider's.
-struct Described(Arc<TestProvider>);
-
-impl ActionProvider for Described {
-    fn serves(&self, provider: &str) -> bool {
-        provider == "test.provider"
-    }
-
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> tilo_actions::remote::Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>>
-    {
-        self.0.query(caller, query)
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
-    > {
-        self.0.invoke(caller, request)
-    }
-
-    fn observe(
-        &self,
-        caller: &Caller,
-        id: &InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        self.0.observe(caller, id)
-    }
-
-    fn cancel(
-        &self,
-        caller: &Caller,
-        id: &InvocationId,
-    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
-        self.0.cancel(caller, id)
-    }
-
-    fn invocation(
-        &self,
-        address: &ActionAddress,
-        _argument: Option<&str>,
-    ) -> Option<tilo_actions::api::ActionDescriptor> {
-        let kind = if address.action == READ {
-            tilo_actions::contract::ActionKind::Read
-        } else {
-            tilo_actions::contract::ActionKind::Outside
-        };
-        Some(tilo_actions::api::ActionDescriptor {
-            did: None,
-            state: tilo_actions::ActionState::default(),
-            semantic_identity: None,
-            address: address.clone(),
-            resource_kind: "note".into(),
-            resource_label: "Note".into(),
-            action_label: address.action.clone(),
-            keywords: Vec::new(),
-            icon: None,
-            description: None,
-            locus: tilo_actions::ExecutionLocus::default(),
-            kind: tilo_actions::OperationKind::Effect,
-            contract: tilo_actions::contract::ActionContract {
-                kind,
-                ..tilo_actions::contract::ActionContract::default()
-            },
-            input: tilo_actions::InputSpec::None,
-            params: Vec::new(),
-            view: None,
-        })
-    }
-}
-
-/// `invocation` of the note's `action`, its argument saying it only reads.
-fn claiming_a_read(invocation: InvocationId, action: &str) -> InvokeRequest {
-    let mut request = invoke(invocation);
-    request.target.address = ActionAddress::new("note:1", action);
-    request.argument = InvokeArgument::Text("read".into());
-    request
-}
-
-/// A read its provider describes as one spends none of the caller's changes; a change spends
-/// one whatever the caller says of it, so the bound holds against a write passed off as a read.
+/// The host's reads, as its own operations describe them, spend none of a caller's changes
+/// however often they are asked; a write spends one whatever the caller says of it, so the bound
+/// holds against a write passed off as a read.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_read_its_provider_describes_spends_nothing_and_a_write_called_a_read_still_spends() {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let a = certify(&root, 2, DeviceCapabilities::member());
-    let b = certify(&root, 3, DeviceCapabilities::member());
-    let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestProvider::new());
-    let engine = Engine::serving(
-        Replica::new(workspace(WORKSPACE, &a, &roster)),
-        a.0.clone(),
-        Arc::new(TestProvider::new()),
-        Bounds {
-            changes_per_window: 1,
-            window_secs: 3600,
-            burst: 2,
-        },
+async fn the_hosts_reads_spend_nothing_and_a_write_called_a_read_still_spends() {
+    use tilo_server_protocol::workspaces::{
+        DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WORKSPACES, Role,
+    };
+    use tilo_workspace_service::workspaces::fixtures::{
+        entry_join_as, guest_device, hosting_device, test_host,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspace = host.workspaces().create("Notes").await.unwrap().workspace;
+    let (guest_key, guest) = guest_device();
+    entry_join_as(
+        host.workspaces(),
+        &cert,
+        &workspace,
+        (&guest_key, &guest),
+        81,
+        Role::Viewer,
     )
     .await;
-    engine
-        .service
-        .add_provider(Arc::new(Described(Arc::clone(&dispatcher))));
-    let (b_endpoint, b_action_service) = asking(&b.0).await;
-    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
-    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
-    let sent = |request: InvokeRequest| {
-        let remote = &remote;
-        let caller = &caller;
+    let (endpoint, service) = asking(&guest_key).await;
+    let remote = service.remote(&endpoint, &host.node_addr(), &workspace);
+    let caller = Caller::authenticated(guest.user_public_key, guest.device_public_key);
+    let slowed = |action: &str| {
+        let mut request = invoke(InvocationId::new());
+        request.target = RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.into(),
+            address: ActionAddress::new(HOST_WORKSPACES_RESOURCE, action),
+        };
+        request.argument = InvokeArgument::Text("read".into());
+        let answered =
+            tokio::time::timeout(PATIENCE, ActionProvider::invoke(&remote, &caller, request));
         async move {
-            tokio::time::timeout(PATIENCE, ActionProvider::invoke(remote, caller, request))
+            let answered = answered
                 .await
-                .expect("the device answers")
-                .expect("the asker is not dropped")
-                .map(|receipt| receipt.status)
+                .expect("the host answers")
+                .expect("the asker is not dropped");
+            matches!(answered, Err(ActionCallError::Refused { reason }) if reason == "too many changes; slow down")
         }
     };
 
-    // Far more reads than the bound allows changes.
-    for _ in 0..5 {
-        assert!(matches!(
-            sent(claiming_a_read(InvocationId::new(), READ)).await,
-            Ok(ReceiptStatus::Completed { .. })
-        ));
+    for _ in 0..100 {
+        assert!(!slowed(LIST_WORKSPACES).await, "a read is never slowed");
     }
-    // A write that says everywhere it can that it reads spends a change, up to the bound.
-    for _ in 0..2 {
-        assert!(matches!(
-            sent(claiming_a_read(InvocationId::new(), "insert")).await,
-            Ok(ReceiptStatus::Completed { .. })
-        ));
+    let mut writes = 0;
+    while !slowed(DELETE_WORKSPACE).await {
+        writes += 1;
+        assert!(writes <= 60, "writes past the bound are refused");
     }
-    let refused = sent(claiming_a_read(InvocationId::new(), "insert"))
-        .await
-        .unwrap_err();
-    assert_eq!(refusal(&refused), "too many changes; slow down");
-    // A plain write past the bound is refused too, and nothing past it ran.
-    let refused = sent(invoke(InvocationId::new())).await.unwrap_err();
-    assert_eq!(refusal(&refused), "too many changes; slow down");
-    assert_eq!(
-        dispatcher.asked().len(),
-        7,
-        "the reads and the writes within the bound ran, nothing past it"
+    assert!(
+        writes >= Bounds::default().burst,
+        "the bound lets its burst of writes through"
     );
 
-    engine.close().await;
-    b_endpoint.close().await;
+    endpoint.close().await;
+    host.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

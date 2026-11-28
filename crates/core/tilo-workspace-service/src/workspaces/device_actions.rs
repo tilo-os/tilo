@@ -1277,6 +1277,15 @@ impl ActionProvider for Answers {
         }
     }
 
+    /// The host's own operations as their rows describe them, so a read of them spends nothing.
+    fn invocation(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<tilo_actions::ActionDescriptor> {
+        super::actions::host::described(address)
+    }
+
     fn invoke(
         &self,
         caller: &Caller,

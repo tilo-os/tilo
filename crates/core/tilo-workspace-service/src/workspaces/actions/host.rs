@@ -19,7 +19,7 @@
 use serde_json::Value;
 use tilo_action_policy::{Answer, roles};
 use tilo_actions::remote::{ActionCallError, Caller, CatalogueRow, InvokeRequest};
-use tilo_actions::{ActionKind, ActionParam, ParamType};
+use tilo_actions::{ActionDescriptor, ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::workspaces::BRANCH_OWN_WORKSPACE;
 use tilo_server_protocol::workspaces::{
@@ -74,6 +74,16 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 /// The part a person takes in a workspace of their own, as a listing names
 /// it: they made it and administer it.
 const OWNER_ROLE: &str = "owner";
+
+/// The host's operation at `address` as its row describes it: a read of it spends none of its
+/// caller's changes where the action service answering it asks.
+pub(crate) fn described(address: &tilo_actions::ActionAddress) -> Option<ActionDescriptor> {
+    let (verb, _) = ACCOUNT_VERBS
+        .iter()
+        .find(|(verb, _)| verb.id == address.action)?;
+    (address.resource == HOST_WORKSPACES_RESOURCE)
+        .then(|| verb.row(ACCOUNT, HOST_WORKSPACES_RESOURCE, LABEL).action)?
+}
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
