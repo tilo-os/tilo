@@ -32,6 +32,8 @@ use tilo_ui_base::{
     motion::Direction, motion::Disclose, motion::ListChange, motion::MotionSpec, motion::Snap,
 };
 
+#[path = "tabs_author.rs"]
+mod author;
 #[path = "tabs_bar_layout.rs"]
 mod bar_layout;
 #[cfg(test)]
@@ -377,6 +379,8 @@ pub struct TabBar {
     /// The faces a tab's view gave its pill, by tab id: shown in place of the live presence
     /// feed's people while the view gives any.
     given_faces: HashMap<u64, Vec<TabFaceSpec>>,
+    /// Who opened each tab's window, by tab id, where someone else did: their face leads the pill.
+    authors: HashMap<u64, TabFaceSpec>,
     /// `face_demand` changed since the last layout: the pills must resize.
     face_demand_stale: bool,
     pending_context_menu: Option<(u64, Point)>,
@@ -579,6 +583,7 @@ impl TabBar {
             face_metrics: FaceMetrics::default(),
             face_demand: HashMap::new(),
             given_faces: HashMap::new(),
+            authors: HashMap::new(),
             face_demand_stale: false,
             pending_context_menu: None,
             hover_idx: None,
@@ -1338,7 +1343,7 @@ impl TabBar {
         } else {
             Self::draw_pill_leading_glyph(scene, transform, r, (t, image), accent, text_color)
         };
-        let title_x = title_x0(r, leading_shift);
+        let title_x = title_x0(r, leading_shift + self.author_slot(t.id));
         let title_y = r.center().y - f64::from(th) / 2.0;
         let clip_x1 = r.x1
             - self
@@ -1574,19 +1579,20 @@ impl TabBar {
     /// Small faces of the peers on this tab at the trailing end of the title zone: initials in each
     /// person's presence colour, agents in the agent mark, ringed so overlaps stay separate.
     fn draw_pill_faces(&self, ctx: &mut PaintCtx<'_>, env: &DrawEnv<'_>, pill: &PillPaint<'_>) {
-        let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
-        if faces.slots() == 0 {
-            return;
-        }
         let r = pill.rect;
-        let metrics = self.face_metrics;
-        let x0 = self.pill_faces_x0(pill.i, r);
-        let cy = r.center().y;
         let ring = tilo_ui_base::tokens::colors::over(
             self.ground(ctx.theme),
             pill.look.fill.with_alpha(1.0),
             pill.look.fill.components[3],
         );
+        self.draw_pill_author(ctx, (pill.i, r), ring);
+        let faces = self.pill_faces.get(pill.i).copied().unwrap_or_default();
+        if faces.slots() == 0 {
+            return;
+        }
+        let metrics = self.face_metrics;
+        let x0 = self.pill_faces_x0(pill.i, r);
+        let cy = r.center().y;
         let face_rect = |part: usize| {
             square_at(
                 Point::new(
@@ -1655,19 +1661,6 @@ impl TabBar {
             .unwrap_or_else(|| Reveal::None.reserve());
         let metrics = self.face_metrics;
         r.x1 - reserve - faces.width(metrics) + metrics.gap
-    }
-
-    /// Where pill `i` draws its first face, when it draws one.
-    pub(super) fn first_face_rect(&self, i: usize) -> Option<Rect> {
-        let faces = self.pill_faces.get(i).copied().unwrap_or_default();
-        let r = *self.tab_rects.get(i)?;
-        (faces.faces > 0).then(|| {
-            let x0 = self.pill_faces_x0(i, r);
-            square_at(
-                Point::new(x0 + self.face_metrics.face / 2.0, r.center().y),
-                self.face_metrics.face,
-            )
-        })
     }
 
     /// The close × (or unsaved-changes dot) chip. Split out of
@@ -2251,7 +2244,13 @@ impl TabBar {
         }
     }
 
+    /// What a pill keeps before its title: its glyph's zone, then its author's face.
     fn leading_zone(&self, i: usize) -> f64 {
+        self.glyph_zone(i) + self.tabs.get(i).map_or(0.0, |tab| self.author_slot(tab.id))
+    }
+
+    /// The room a pill's app glyph, accent dot or mark takes before what follows it.
+    fn glyph_zone(&self, i: usize) -> f64 {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };

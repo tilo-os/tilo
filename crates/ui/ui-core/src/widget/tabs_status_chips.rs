@@ -229,16 +229,15 @@ impl TabBar {
         theme: &Theme,
     ) {
         self.opened.painted = None;
-        // A tab that wears the agent's face (a strip whose view says who opened its windows)
-        // has its mark there: the face is what points, reads and presses as the mark.
-        if let Some(i) = self.tabs.iter().position(|tab| tab.id == self.active_id)
-            && self.opened_by(self.active_id).is_some()
+        // A tab that wears the agent as its author (a strip whose view says who opened its
+        // windows) has its mark there, before its title: the face is what points, reads and
+        // presses as the mark.
+        if self.opened_by(self.active_id).is_some()
             && self
-                .given_faces(self.active_id)
-                .and_then(|faces| faces.first())
-                .is_some_and(|face| face.agent)
+                .author(self.active_id)
+                .is_some_and(|author| author.agent)
         {
-            self.opened.painted = self.first_face_rect(i);
+            self.opened.painted = self.author_rect(self.active_id);
             return;
         }
         let Some((rect, label)) = self.opened_by_chip(tr, theme) else {

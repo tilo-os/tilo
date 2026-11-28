@@ -618,17 +618,18 @@ impl TabStrip {
             self.bar.set_attention(*id, tab.attention);
             self.bar.set_mark(*id, tab.busy.then_some(TabMark::Busy));
             self.bar.set_modified(*id, tab.modified);
-            // Whoever opened the window leads its faces, once, ahead of who else is there now.
+            // Whoever opened the window leads the tab, before its title; who else is there now
+            // trails it, without the author a second time.
             let author = tab.author.as_ref();
             let opener = author.and_then(TabAuthorProps::face);
-            let mut faces: Vec<TabFaceSpec> = opener.clone().into_iter().collect();
-            faces.extend(
-                tab.presence
-                    .iter()
-                    .filter_map(face_spec)
-                    .filter(|face| opener.as_ref().is_none_or(|lead| lead.name != face.name)),
-            );
+            let faces: Vec<TabFaceSpec> = tab
+                .presence
+                .iter()
+                .filter_map(face_spec)
+                .filter(|face| opener.as_ref().is_none_or(|lead| lead.name != face.name))
+                .collect();
             self.bar.set_faces(*id, faces);
+            self.bar.set_author(*id, opener);
             self.bar
                 .set_holder(*id, author.and_then(TabAuthorProps::holder));
             self.bar

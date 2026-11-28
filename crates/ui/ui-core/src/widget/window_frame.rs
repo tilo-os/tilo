@@ -1895,6 +1895,12 @@ mod tests {
                     ..TabAuthorProps::default()
                 },
             ),
+            TabItemProps {
+                key: "c".to_owned(),
+                item: Some(ResourceId("@notes.Note:c".to_owned())),
+                title: Some("Diary".to_owned()),
+                ..TabItemProps::default()
+            },
         ];
         let queue: tilo_ui_base::Intents<tilo_ui_base::component::Fired> =
             tilo_ui_base::Intents::default();
@@ -1946,6 +1952,49 @@ mod tests {
             Widget::apply_layout(&mut frame, &taffy, node, Point::ZERO);
             let _ = drawn(&theme, &mut frame);
         }
+        // Each author leads their tab, before its title and the same step from it, person or
+        // agent; a window of the person's own wears none.
+        let leads = with_tabs_bar(&mut frame, &mut |bar| {
+            let titles = bar.painted_labels();
+            let ids: Vec<(String, u64)> = bar
+                .tabs()
+                .iter()
+                .map(|tab| (tab.title.clone(), tab.id))
+                .collect();
+            ids.into_iter()
+                .map(|(title, id)| {
+                    let at = titles
+                        .iter()
+                        .find(|label| label.widget == "TabTitle" && label.text == title)
+                        .map(|label| label.rect[0]);
+                    (title, bar.author_rect(id), at)
+                })
+                .collect::<Vec<_>>()
+        })
+        .expect("the frame holds the strip");
+        let gaps: Vec<f64> = leads
+            .iter()
+            .filter_map(|(title, face, at)| {
+                let at = at.unwrap_or_else(|| panic!("{title} is drawn"));
+                let face = (*face)?;
+                assert!(
+                    face.x1 < at,
+                    "{title}'s author leads its title: {face:?} before x {at}"
+                );
+                Some(at - face.x1)
+            })
+            .collect();
+        assert_eq!(gaps.len(), 2, "both authors lead their tabs: {leads:?}");
+        assert!(
+            (gaps[0] - gaps[1]).abs() < 0.5,
+            "one step between face and title, person or agent: {gaps:?}"
+        );
+        assert!(
+            leads
+                .iter()
+                .any(|(title, face, _)| title == "Diary" && face.is_none()),
+            "a window of one's own wears no author: {leads:?}"
+        );
         let own = frame.layers.children()[CONTENT].children();
         let own = own[OWN_BAR].children();
         let strip = own[TABS];
