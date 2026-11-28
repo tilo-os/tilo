@@ -1973,13 +1973,44 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = &crate::PersonServices::of(server.workspaces());
-    // Ada's workspace, which the host founded for her and serves.
-    let ada = guest_device().1;
+    // Ada's workspace, which the host founded for her and serves; her device makes the host's
+    // own person an administrator there.
+    let (ada_key, ada) = guest_device();
     let workspace = workspaces
         .create_for("Ada's", None, ada.user_public_key)
         .await
         .unwrap()
         .workspace;
+    workspaces
+        .enter(&workspace, (&ada, &ada_key))
+        .await
+        .unwrap();
+    tilo_workspace_service::workspaces::fixtures::remember_admitted(&ada, &ada_key);
+    tilo_workspace_service::workspaces::fixtures::made_as(
+        workspaces,
+        &workspace,
+        &ada,
+        (
+            owner.user_public_key,
+            tilo_peer_state::workspace_membership::MemberPlace::Administrator,
+        ),
+    )
+    .await
+    .unwrap();
+    // The change her device signed lets the host read Passwords: it holds the vault's keys, which
+    // a device holding the keys seals them for it as for any device the workspace newly lets read them.
+    let vault_keys_with = async || {
+        let held = workspaces.workspace(&workspace).await.unwrap();
+        let held = held.lock().await;
+        held.peer()
+            .document_key_holders(
+                tilo_app_id::apps::PASSWORDS,
+                tilo_actions::remote::VAULT_RECORD,
+                tilo_clock::wall(),
+            )
+            .unwrap()
+    };
+    assert!(vault_keys_with().await.contains(&owner.device_public_key));
     let signing_in = async || {
         crate::person_settings::account_secret_for_test(workspaces, &workspace, NAME).await
     };
@@ -2016,6 +2047,10 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
 
     let refused = signing_in().await;
     assert!(refused.is_err(), "the host still signs in: {refused:?}");
+    assert!(
+        !vault_keys_with().await.contains(&owner.device_public_key),
+        "the host still holds the vault's keys"
+    );
     assert!(
         !accounts::vault_dir_in(&workspaces.workspace_root(&workspace)).exists(),
         "the host keeps a vault of its own"

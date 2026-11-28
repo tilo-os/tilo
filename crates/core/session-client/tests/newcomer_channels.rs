@@ -95,14 +95,12 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .publish(
-            &lounge.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Everyone".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let desktop = DocumentRoute {
@@ -185,14 +183,12 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
     let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .publish(
-            &lounge.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Everyone".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let desktop = DocumentRoute {

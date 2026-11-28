@@ -44,14 +44,12 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .publish(
-            &lounge.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Coffee and tea".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let server_cert = host_device.cert.clone();
@@ -114,7 +112,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     // An entry that takes people by invitation says so, in its code: someone without one is told to
     // be invited, not left to read a sentence, and the session stops.
     workspaces
-        .settle_entry(&lounge.workspace, &host_device.cert, |entry| {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
             entry.invitation_only = true;
         })
         .await
@@ -160,14 +158,12 @@ async fn a_visitors_page_lands_in_an_open_workspace_over_the_browsers_transport(
     let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .publish(
-            &lounge.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Everyone".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let server_cert = host_device.cert.clone();

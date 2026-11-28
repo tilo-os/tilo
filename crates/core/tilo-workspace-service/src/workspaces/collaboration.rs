@@ -6,6 +6,7 @@
 //! owns who may ask what of this server's workspaces, and the durability barrier
 //! before each answer.
 
+use collab_types::signer::DeviceSigner;
 use collab_types::workspace_grant::WorkspaceGrant;
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -15,14 +16,12 @@ use tilo_peer_state::join_log::{Administered, Listed, Signer};
 pub use tilo_peer_state::join_log::{JoinError as CollaborationError, Redeeming};
 use tilo_server_protocol::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
-    RemoveMemberRequest, SetMemberRoleRequest,
 };
 use tilo_user_identity::DeviceCert;
 
 use tilo_action_policy::Role;
 use tilo_action_policy::roles::governance;
-use tilo_member_types::{Actor, MemberId};
-use tilo_peer_state::ActionStamp;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 
 use super::authority::WorkspaceOp;
 use super::{HostedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
@@ -33,22 +32,96 @@ pub(super) fn not_here() -> CollaborationError {
     CollaborationError::new("this device has no copy of that workspace and hasn't joined it")
 }
 
-/// The person `person` (a root key in hex) as the host's actor: who a
-/// governance change names as the one who decided it. `None` for a key that is
-/// no person.
-pub(super) fn actor_of(person: &str) -> Option<Actor> {
-    tilo_failure::ignored!(
-        "a change decided by a key that is no person names no decider, and still applies",
-        tilo_member_types::PersonId::parse(person).ok()
-    )
-    .map(|person| Actor::Member(MemberId::person(person)))
+/// Who asks [`Workspaces::govern`] for a change, under which request, and the changes their
+/// device signed for it, once it has.
+pub struct SignedAsk<'a> {
+    pub device: &'a DeviceCert,
+    pub request_id: [u8; 32],
+    pub signed: Option<Vec<Vec<u8>>>,
 }
 
-/// The stamp of the governance action `verb`, decided by `by`: what every
-/// governance change of it names, so a watcher of the workspace tells a ban
-/// from a removal.
-pub(super) fn stamped(verb: &'static str, by: Option<Actor>) -> Option<ActionStamp> {
-    by.map(|by| ActionStamp::new(verb, by))
+impl<'a> SignedAsk<'a> {
+    /// `device` asking under `request_id`, with nothing signed yet.
+    pub const fn here(device: &'a DeviceCert, request_id: [u8; 32]) -> Self {
+        Self {
+            device,
+            request_id,
+            signed: None,
+        }
+    }
+}
+
+/// What a change asked of this host came to: `T`, or what the asking device signs the change on
+/// ([`Workspaces::govern`]), nothing written yet.
+#[derive(Debug)]
+pub enum Signing<T> {
+    Done(T),
+    Sign(tilo_actions::remote::SignFacts),
+}
+
+/// What [`Workspaces::govern`] came to.
+pub type DeviceChange = Signing<GovernanceCompletion>;
+
+impl<T> Signing<T> {
+    /// What the change came to: a device that is not this host's own signs it through the
+    /// workspace's actions, which answer what it signs on.
+    ///
+    /// # Errors
+    /// The change is another device's to sign.
+    pub fn done(self) -> Result<T, CollaborationError> {
+        match self {
+            Self::Done(done) => Ok(done),
+            Self::Sign(_) => Err(CollaborationError::new(
+                "the change is the asking device's to sign, through the workspace's actions",
+            )),
+        }
+    }
+
+    /// What `answer` makes of the change once it is made.
+    pub fn map<U>(self, answer: impl FnOnce(T) -> U) -> Signing<U> {
+        match self {
+            Self::Done(done) => Signing::Done(answer(done)),
+            Self::Sign(facts) => Signing::Sign(facts),
+        }
+    }
+}
+
+/// What `ask` comes to as `device` signs it with `signer`, in one call: asked first, a host that
+/// is not that device answers what to sign on; the device signs the change it asked for on it
+/// ([`tilo_peer_state::asked_signing::signed_on`]) and asks again with that signature. What a
+/// device holding its own key in this process does; the first ask writes nothing.
+///
+/// # Errors
+///
+/// As `ask`, or the device could not sign the change the host named.
+pub async fn signed_through<'d, T, Asked>(
+    (device, signer): (&'d DeviceCert, &dyn DeviceSigner),
+    request_id: [u8; 32],
+    ask: impl Fn(SignedAsk<'d>) -> Asked,
+) -> Result<T, CollaborationError>
+where
+    Asked: std::future::Future<Output = Result<Signing<T>, CollaborationError>>,
+{
+    let facts = match ask(SignedAsk::here(device, request_id)).await? {
+        Signing::Done(done) => return Ok(done),
+        Signing::Sign(facts) => facts,
+    };
+    let command = serde_json::from_value(facts.change.clone())
+        .map_err(|error| CollaborationError::new(error.to_string()))?;
+    let changes = tilo_peer_state::asked_signing::signed_on(
+        &facts,
+        &command,
+        (device, signer),
+        system_time(tilo_clock::unix_now_ns()),
+    )
+    .await?;
+    ask(SignedAsk {
+        device,
+        request_id,
+        signed: Some(changes),
+    })
+    .await?
+    .done()
 }
 
 /// The name an invitation carries for a person: what the workspace shows them
@@ -74,28 +147,6 @@ pub struct AddMemberRequest {
 }
 
 pub(super) use tilo_peer_state::join_log::JoinLog as CollaborationState;
-
-/// A change to who is in a workspace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub(super) enum Membership {
-    Remove,
-    Ban,
-    Unban,
-}
-
-impl Membership {
-    /// This change of the person with the root key `person`, as the
-    /// workspace's policy decides it.
-    pub(super) fn change(self, person: [u8; 32]) -> tilo_action_policy::Change {
-        use tilo_action_policy::Change;
-        let person = hex::encode(person);
-        match self {
-            Self::Remove => Change::RemoveMember { person },
-            Self::Ban => Change::Ban { person },
-            Self::Unban => Change::Unban { person },
-        }
-    }
-}
 
 /// A committed governance change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -672,167 +723,6 @@ impl Workspaces {
         Ok(true)
     }
 
-    pub async fn set_member_role(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: SetMemberRoleRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let by = self.authorize_role_change(&workspace, administrator, &request, now)?;
-        let key = self.inner.host.key.clone();
-        let completion = self
-            .administer_as(
-                &mut workspace,
-                request.request_id,
-                request_digest(&request)?,
-                |peer| {
-                    peer.governance_mut().set_member_role(
-                        request.user_public_key,
-                        request.role,
-                        &key,
-                        system_time(now),
-                    )
-                },
-                stamped(governance::SET_ROLE, actor_of(&by)),
-                now,
-            )
-            .await;
-        drop(workspace);
-        completion
-    }
-
-    /// Make `change`, a page's role edit, to `workspace`'s members as `caller`, whom the
-    /// workspace must allow it: one member's role ([`Self::set_member_role`]), or a custom
-    /// role or its assignment ([`Self::edit_member_list`]).
-    pub(super) async fn edit_roles(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        request_id: [u8; 32],
-        change: tilo_action_policy::Change,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        match change {
-            tilo_action_policy::Change::SetRole { person, role } => {
-                let user_public_key = hex::decode(&person)
-                    .ok()
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .ok_or_else(|| CollaborationError::new("the change names no person"))?;
-                self.set_member_role(
-                    workspace,
-                    caller,
-                    SetMemberRoleRequest {
-                        request_id,
-                        user_public_key,
-                        role,
-                    },
-                )
-                .await
-            }
-            change => {
-                self.edit_member_list(workspace, caller, request_id, change)
-                    .await
-            }
-        }
-    }
-
-    /// Make `change`, a custom role's, to `workspace`'s member list as `caller`, whom the
-    /// workspace must allow it.
-    pub(super) async fn edit_member_list(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        request_id: [u8; 32],
-        change: tilo_action_policy::Change,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        if !change.is_custom_role_change() {
-            return Err(CollaborationError::new("expected a custom role change"));
-        }
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let by = self.authorize(caller, Some(&workspace), WorkspaceOp::Change(&change), now)?;
-        let key = self.inner.host.key.clone();
-        // Giving a member a role of the workspace's own changes that member; defining a role
-        // changes nobody.
-        let stamp = matches!(
-            change,
-            tilo_action_policy::Change::SetMemberCustomRole { .. }
-        )
-        .then(|| stamped(governance::SET_ROLE, actor_of(&by)))
-        .flatten();
-        let completion = self
-            .administer_as(
-                &mut workspace,
-                request_id,
-                request_digest(&("custom-role", &change))?,
-                |peer| {
-                    peer.governance_mut()
-                        .change_member_list(change, &key, system_time(now))
-                },
-                stamp,
-                now,
-            )
-            .await;
-        drop(workspace);
-        completion
-    }
-
-    pub(super) async fn set_document_access(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        request_id: [u8; 32],
-        (recipient, app, document): (&str, &str, &str),
-        access: &str,
-        now: u64,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let at = system_time(now);
-        let document = if app.is_empty() {
-            document
-        } else {
-            let document =
-                collab_types::document_access_target(app, document).ok_or_else(|| {
-                    CollaborationError::new("this document has no workspace access rules")
-                })?;
-            workspace
-                .peer()
-                .check_document_read(caller.device_public_key, app, document, at)?;
-            document
-        };
-        let policy = workspace.peer().governance().member_policy()?;
-        let actor = hex::encode(caller.user_public_key);
-        let changes = collab_types::document_access_changes(
-            &policy,
-            &actor,
-            (recipient, app, document),
-            access,
-        )
-        .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        for change in &changes {
-            self.authorize(caller, Some(&workspace), WorkspaceOp::Change(change), now)?;
-        }
-        let key = self.inner.host.key.clone();
-        let completion = self
-            .administer(
-                &mut workspace,
-                request_id,
-                request_digest(&("document-access", recipient, app, document, access))?,
-                |peer| {
-                    peer.governance_mut()
-                        .change_document_access(changes, &key, at)
-                },
-                now,
-            )
-            .await;
-        drop(workspace);
-        completion
-    }
-
     /// Write workspace grants (workspace settings such as a role's Deny on a kind), keyed by
     /// their ids, as `administrator` decided.
     ///
@@ -974,209 +864,6 @@ impl Workspaces {
             None,
         )
         .await
-    }
-
-    /// Make `user_public_key` an administrator of `workspace`: an editor holding
-    /// every governance action, still bounded by their role
-    /// ([`tilo_action_policy::roles::administrator_grant`]). `name`, when the
-    /// declaring request carries one, is how the workspace names them from
-    /// then on: its member list and the invitations they make say it before
-    /// any device of theirs has named them.
-    ///
-    /// # Errors
-    ///
-    /// Refuses non-administrators, the structural owner, a name that is not a
-    /// display name, and governance that cannot be updated.
-    pub async fn set_member_administrator(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request_id: [u8; 32],
-        user_public_key: [u8; 32],
-        name: Option<&str>,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let named = workspace.to_owned();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let by = self.authorize(
-            administrator,
-            Some(&workspace),
-            WorkspaceOp::MakeAdministrator,
-            now,
-        )?;
-        let key = self.inner.host.key.clone();
-        // Someone new to the workspace is added; a member is given a new role.
-        let verb = if workspace
-            .peer()
-            .governance()
-            .member_policy()
-            .map_err(CollaborationError::new)?
-            .members
-            .contains_key(&hex::encode(user_public_key))
-        {
-            governance::SET_ROLE
-        } else {
-            governance::ADD_MEMBER
-        };
-        let completion = self
-            .administer_as(
-                &mut workspace,
-                request_id,
-                request_digest(&("administrator", user_public_key, name))?,
-                |peer| {
-                    peer.governance_mut().set_member_administrator(
-                        user_public_key,
-                        name,
-                        &key,
-                        system_time(now),
-                    )
-                },
-                stamped(verb, actor_of(&by)),
-                now,
-            )
-            .await?;
-        drop(workspace);
-        // The new administrator reaches the machines of every server serving the workspace, by
-        // a grant naming them there.
-        if let Err(error) = self.refresh_server_controls(&named).await {
-            tracing::warn!(%error, "a new administrator was not granted the served machines' controls");
-        }
-        Ok(completion)
-    }
-
-    /// Remove the member `request.user_public_key` and every device of theirs
-    /// from `workspace`. The server stops admitting them before this returns.
-    pub async fn remove_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let person = request.user_public_key;
-        let done = self
-            .change_membership(workspace, administrator, request, Membership::Remove)
-            .await;
-        if done.is_ok() {
-            self.unlist_for(&person, workspace).await;
-            // A member who left the workspace is no administrator of it, and their server
-            // controls go with that place.
-            if let Err(error) = self
-                .release_administrator_controls(&hex::encode(person))
-                .await
-            {
-                tracing::warn!(%error, "a removed administrator's server controls were not taken back");
-            }
-        }
-        done
-    }
-
-    /// Remove `request.user_public_key` from `workspace`, when a member, and keep
-    /// them out until [`Self::unban_member`]: a removal plus their
-    /// `block:<person>` Deny.
-    pub async fn ban_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.change_membership(workspace, administrator, request, Membership::Ban)
-            .await
-    }
-
-    /// Let the banned `request.user_public_key` be admitted to `workspace` again.
-    pub async fn unban_member(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.change_membership(workspace, administrator, request, Membership::Unban)
-            .await
-    }
-
-    /// Remove, ban or unban, decided by who asks: a device of the server's
-    /// user administers its workspaces, and any other member by the
-    /// workspace's grants on the action (the Moderator role has them).
-    async fn change_membership(
-        &self,
-        workspace: &str,
-        administrator: &DeviceCert,
-        request: RemoveMemberRequest,
-        membership: Membership,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let person = hex::encode(request.user_public_key);
-        let change = membership.change(request.user_public_key);
-        let by = self.authorize(
-            administrator,
-            Some(&workspace),
-            WorkspaceOp::Change(&change),
-            now,
-        )?;
-        let key = self.inner.host.key.clone();
-        let target = request.user_public_key;
-        // What a watcher of the workspace's members reads the change as: a ban
-        // is no removal and an unban no admission.
-        let stamp = match membership {
-            Membership::Remove => stamped(governance::REMOVE_MEMBER, actor_of(&by)),
-            Membership::Ban => stamped(governance::BAN, actor_of(&by)),
-            Membership::Unban => stamped(governance::UNBAN, actor_of(&by)),
-        };
-        let completion = self
-            .administer_as(
-                &mut workspace,
-                request.request_id,
-                request_digest(&(membership, &request))?,
-                |peer| match membership {
-                    Membership::Remove => {
-                        peer.governance_mut()
-                            .remove_member(target, &key, system_time(now))
-                    }
-                    Membership::Ban => {
-                        peer.governance_mut()
-                            .ban_member(target, &by, &key, system_time(now))
-                    }
-                    Membership::Unban => {
-                        peer.governance_mut()
-                            .unban_member(target, &key, system_time(now))
-                    }
-                },
-                stamp,
-                now,
-            )
-            .await?;
-        if matches!(membership, Membership::Remove | Membership::Ban) {
-            // A removal takes back every way in the workspace handed them, not
-            // only their membership: an invitation issued to them before, still
-            // unredeemed, would otherwise admit them again at once.
-            let mut state = workspace.collaboration().clone();
-            state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
-            workspace.commit_state(state)?;
-            workspace
-                .keep_out_removed(
-                    &std::collections::BTreeSet::from([target]),
-                    Some(administrator.user_public_key),
-                    now,
-                )
-                .map_err(CollaborationError::new)?;
-        }
-        if matches!(membership, Membership::Unban) {
-            workspace
-                .removals
-                .clear(target)
-                .map_err(CollaborationError::new)?;
-        }
-        tracing::info!(
-            workspace = %workspace.workspace(),
-            %person,
-            outcome = ?membership,
-            "workspace membership change committed"
-        );
-        drop(workspace);
-        Ok(completion)
     }
 
     /// Commit `command`, a membership change this host's own device makes, in
@@ -1487,80 +1174,6 @@ impl Workspaces {
             .app_versions())
     }
 
-    /// Change the trust `workspace` keeps for packages — adding or replacing an
-    /// attestor, removing one, or refusing a publisher — as a member the
-    /// workspace lets install apps. Every member reads
-    /// the lists ([`Self::package_trust`]) and verifies against them.
-    ///
-    /// # Errors
-    /// Refuses another command, a malformed row, and a member the workspace
-    /// does not let install apps.
-    pub async fn change_package_trust(
-        &self,
-        workspace: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(
-            command,
-            Command::AddAttestor(_)
-                | Command::RemoveAttestor { .. }
-                | Command::RevokePublisher { .. }
-        ) {
-            return Err(CollaborationError::new(
-                "only a trust list change decides the packages a workspace trusts",
-            ));
-        }
-        self.govern_as_member(
-            workspace,
-            member,
-            request_id,
-            command,
-            governance::INSTALL_APP,
-            "package.trust",
-        )
-        .await
-    }
-
-    /// Change the registries `workspace` fetches apps from, as a member the
-    /// workspace lets install apps. Every member reads
-    /// the list ([`Self::registries`]) and fetches from it.
-    ///
-    /// # Errors
-    /// Refuses another command, a malformed row, and a member the workspace
-    /// does not let install apps.
-    pub async fn change_package_registries(
-        &self,
-        workspace: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(
-            command,
-            Command::AddRegistry(_)
-                | Command::RemoveRegistry { .. }
-                | Command::SetRegistryEnabled { .. }
-                | Command::SetRegistryChannel { .. }
-        ) {
-            return Err(CollaborationError::new(
-                "only a registry change decides where a workspace fetches apps",
-            ));
-        }
-        self.govern_as_member(
-            workspace,
-            member,
-            request_id,
-            command,
-            governance::INSTALL_APP,
-            "package.registries",
-        )
-        .await
-    }
-
     /// The trust `workspace` keeps for packages: the attestors it accepts and
     /// the publisher keys it refuses, as its tree records them now.
     pub async fn package_trust(
@@ -1638,40 +1251,6 @@ impl Workspaces {
         }
     }
 
-    /// Change what the call in `channel` of `workspace` allows, as `member`, whom the workspace
-    /// must grant `call`: a workspace change every member's live session follows the call to.
-    ///
-    /// # Errors
-    /// Refuses a malformed channel, and a member the workspace does not let moderate calls.
-    pub async fn moderate_call(
-        &self,
-        workspace: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        channel: &str,
-        change: collab_types::calls::CallChange,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let done = self
-            .govern_as_member(
-                workspace,
-                member,
-                request_id,
-                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Call {
-                    channel: channel.to_owned(),
-                    change,
-                },
-                governance::CALL,
-                "call",
-            )
-            .await;
-        // The live origin holds every call track to the call's rule: it reads the rule again now.
-        if done.is_ok() {
-            crate::authority_epoch::bump();
-            self.found_call_keys(workspace, channel);
-        }
-        done
-    }
-
     /// Found the key group of the generation `channel`'s call in `workspace` is in now, which
     /// seals its media from now on: the members it admits are handed its keys at once, rather
     /// than after the wait a device that cannot found a group gives one that can.
@@ -1709,44 +1288,207 @@ impl Workspaces {
             .call(channel))
     }
 
-    /// Apply `command` to `workspace` as `member`, whom the workspace must allow the
-    /// governance action `check`, and publish it; `tag` names the request
-    /// kind in its digest.
-    async fn govern_as_member(
+    /// Make `command` in `workspace` as `ask.device`, whom the workspace must allow what the
+    /// command asks ([`asked_check`]): a change the device signs itself, never this host.
+    /// Without `ask.signed`, nothing is written and the answer is what the device signs it on
+    /// ([`DeviceChange::Sign`]); with it, those changes are taken in as the device's own, judged
+    /// by the device's place in the workspace as every copy judges them. A round trip refused or
+    /// never finished leaves the workspace as it was.
+    ///
+    /// What this host keeps of a change goes with it, under the same lock: a person it removes
+    /// takes every way in the workspace handed them with them, and one it admits or unbans is no
+    /// longer kept out. After it, a removed administrator's server controls go, a new one's come,
+    /// a directory hears of changed settings and a moderated call's rule is read again.
+    ///
+    /// A device of this host's own signs here at once, as any device of the person's does.
+    ///
+    /// # Errors
+    /// The workspace does not allow the change of the device, or refuses what it signed.
+    pub async fn govern(
         &self,
         workspace: &str,
-        member: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        check: &'static str,
-        tag: &'static str,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
+        ask: SignedAsk<'_>,
+        command: &WorkspaceMembershipCommand,
+    ) -> Result<DeviceChange, CollaborationError> {
         command.validate()?;
+        // A key its person's root revoked signs nothing here, in a workspace whose member list
+        // carries the revocation as in one this host only keeps.
+        if let Some(super::Refusal::Revoked { reason }) =
+            self.revoked(&tilo_actions::remote::Caller::authenticated(
+                ask.device.user_public_key,
+                ask.device.device_public_key,
+            ))
+        {
+            return Err(CollaborationError::new(reason));
+        }
         let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        self.authorize(member, Some(&workspace), WorkspaceOp::Govern(check), now)?;
-        let key = self.inner.host.key.clone();
-        workspace
-            .peer()
-            .clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(member, &command, &key, system_time(now))?;
-        self.administer(
-            &mut workspace,
-            request_id,
-            request_digest(&(tag, &command))?,
-            |peer| {
-                peer.workspace_mut().apply_workspace_membership_command(
-                    member,
-                    &command,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
+        let held = self.workspace(workspace).await?;
+        let mut hosted = held.lock().await;
+        if let Some(check) = asked_check(command) {
+            self.authorize_signed(ask.device, &hosted, check, now)?;
+        }
+        let signed = if let Some(signed) = ask.signed {
+            signed
+        } else {
+            let facts = Self::sign_facts(&hosted, command)?;
+            if ask.device.device_public_key != self.inner.host.cert.device_public_key {
+                return Ok(DeviceChange::Sign(facts));
+            }
+            drop(hosted);
+            let signed = self.sign_here(&facts, command).await?;
+            hosted = held.lock().await;
+            signed
+        };
+        let members =
+            |hosted: &HostedWorkspace| super::member_roots(&hosted.peer(), system_time(now));
+        let before = members(&hosted);
+        // A signed change is taken in, not written by this host's own commit: it reaches the
+        // workspace's devices only as this host passes it on. It goes under this host's name,
+        // since the device that signed it asked for it through an action, not its link, and its
+        // own copy takes it from here as every other does.
+        let carried = signed.clone();
+        let completion = self
+            .administer(
+                &mut hosted,
+                ask.request_id,
+                request_digest(&("signed", command))?,
+                |peer| peer.take_signed(ask.device, signed, system_time(now)),
+                now,
+            )
+            .await?;
+        self.carry_signed(hosted.workspace_id(), &self.inner.host.cert, carried)
+            .map_err(CollaborationError::new)?;
+        let removed: std::collections::BTreeSet<_> =
+            before.difference(&members(&hosted)).copied().collect();
+        if !removed.is_empty() {
+            let mut state = hosted.collaboration().clone();
+            state.withdraw_invitations(&removed);
+            hosted.commit_state(state)?;
+            hosted
+                .keep_out_removed(&removed, Some(ask.device.user_public_key), now)
+                .map_err(CollaborationError::new)?;
+        }
+        // Holding a person again is a deliberate admission, and lifts a plain removal at once; a
+        // ban's block stays on the policy until it is lifted, which lifts this too.
+        let admitted = match command {
+            WorkspaceMembershipCommand::Place { person, .. } => Some(*person),
+            WorkspaceMembershipCommand::Member {
+                change: tilo_action_policy::Change::Unban { person },
+            } => {
+                let mut key = [0; 32];
+                hex::decode_to_slice(person, &mut key)
+                    .map_err(|_| CollaborationError::new("an unban names a person's key"))?;
+                Some(key)
+            }
+            _ => None,
+        };
+        if let Some(person) = admitted {
+            hosted
+                .removals
+                .clear(person)
+                .map_err(CollaborationError::new)?;
+        }
+        drop(hosted);
+        Box::pin(self.after_change(workspace, command, &removed)).await;
+        Ok(DeviceChange::Done(completion))
+    }
+
+    /// What follows `command` once `workspace` took it, outside its lock: `removed` leave the
+    /// people's lists of it and their server controls, a new administrator reaches the served
+    /// machines, a directory hears of the settings, and a call's live origin reads its rule again.
+    async fn after_change(
+        &self,
+        workspace: &str,
+        command: &WorkspaceMembershipCommand,
+        removed: &std::collections::BTreeSet<[u8; 32]>,
+    ) {
+        let mut unmade: Vec<String> = Vec::new();
+        for person in removed {
+            self.unlist_for(person, workspace).await;
+            unmade.push(hex::encode(person));
+        }
+        match command {
+            WorkspaceMembershipCommand::Place {
+                place: MemberPlace::Administrator,
+                ..
+            } => {
+                if let Err(error) = self.refresh_server_controls(workspace).await {
+                    tracing::warn!(%error, "a new administrator was not granted the served machines' controls");
+                }
+            }
+            WorkspaceMembershipCommand::Revoke { grant } => {
+                unmade.extend(
+                    tilo_action_policy::roles::administrator_named(grant).map(str::to_owned),
+                );
+            }
+            WorkspaceMembershipCommand::Settings(_) => self.inner.directory.announce(workspace),
+            WorkspaceMembershipCommand::Call { channel, .. } => {
+                crate::authority_epoch::bump();
+                self.found_call_keys(workspace, channel);
+            }
+            _ => {}
+        }
+        for person in unmade {
+            if let Err(error) = self.release_administrator_controls(&person).await {
+                tracing::warn!(%error, "an unmade administrator's server controls were not taken back");
+            }
+        }
+    }
+
+    /// Make `command` in `workspace` as `device` under `request_id` ([`Self::govern`]): a change
+    /// this host's own device signs here at once; another device's is refused, since it signs its
+    /// own through the workspace's actions.
+    ///
+    /// # Errors
+    /// As [`Self::govern`], or `device` is not this host's own.
+    pub async fn change(
+        &self,
+        workspace: &str,
+        (device, request_id): (&DeviceCert, [u8; 32]),
+        command: impl Into<WorkspaceMembershipCommand>,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.govern(
+            workspace,
+            SignedAsk::here(device, request_id),
+            &command.into(),
         )
-        .await
+        .await?
+        .done()
+    }
+
+    /// What a device signs `command` on in `hosted`: the workspace's member list, and the change.
+    fn sign_facts(
+        hosted: &HostedWorkspace,
+        command: &WorkspaceMembershipCommand,
+    ) -> Result<tilo_actions::remote::SignFacts, CollaborationError> {
+        use tilo_peer_state::join_log::GovernanceMessages as _;
+        Ok(tilo_actions::remote::SignFacts {
+            workspace: hosted.workspace_id().to_string(),
+            governance: hosted
+                .peer()
+                .governance_messages()?
+                .iter()
+                .map(hex::encode)
+                .collect(),
+            change: serde_json::to_value(command)
+                .map_err(|error| CollaborationError::new(error.to_string()))?,
+        })
+    }
+
+    /// `command` signed on `facts` by this host's own device, as any device of its person's signs
+    /// it.
+    async fn sign_here(
+        &self,
+        facts: &tilo_actions::remote::SignFacts,
+        command: &WorkspaceMembershipCommand,
+    ) -> Result<Vec<Vec<u8>>, CollaborationError> {
+        Ok(tilo_peer_state::asked_signing::signed_on(
+            facts,
+            command,
+            (&self.inner.host.cert, &self.inner.host.key),
+            system_time(tilo_clock::unix_now_ns()),
+        )
+        .await?)
     }
 
     pub(super) async fn administer(
@@ -1755,23 +1497,6 @@ impl Workspaces {
         request_id: [u8; 32],
         digest: [u8; 32],
         change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
-        now: u64,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        self.administer_as(workspace, request_id, digest, change, None, now)
-            .await
-    }
-
-    /// [`Self::administer`], the governance changes `change` makes named as
-    /// the action `stamp` names, by whom it names: what a watcher of the
-    /// workspace's members reads a ban, a removal and an unban apart by. The
-    /// change is otherwise the same, in the same order and admitted the same.
-    pub(super) async fn administer_as(
-        &self,
-        workspace: &mut HostedWorkspace,
-        request_id: [u8; 32],
-        digest: [u8; 32],
-        change: impl FnOnce(&mut tilo_peer_state::StatePeer) -> Result<bool, String>,
-        stamp: Option<ActionStamp>,
         now: u64,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         if let Administered::Done(generation) =
@@ -1787,14 +1512,7 @@ impl Workspaces {
             let shared = workspace.peer.shared();
             let mut replica = shared.lock();
             let mut candidate = replica.clone();
-            if let Some(stamp) = stamp {
-                candidate.stamp_action(stamp.verb, stamp.by);
-            }
             change(&mut candidate)?;
-            // The action names the change that moves the rows, and no commit
-            // after it: a base made, a name dropped or a grant reconciled with
-            // it is bookkeeping the change itself is not.
-            candidate.clear_action_stamp();
             let generation = candidate.governance().generation();
             let mut state = workspace.collaboration().clone();
             state.record_administration(request_id, digest, generation);
@@ -2129,4 +1847,31 @@ pub(super) fn revoked_keys(workspace: &HostedWorkspace) -> Vec<[u8; 32]> {
             }
         })
         .collect()
+}
+
+/// What the workspace must allow the device asking `command` of this host, before it is asked to
+/// sign it: `None` for a change only its signer's own place decides, as every copy decides it.
+pub(super) fn asked_check(command: &WorkspaceMembershipCommand) -> Option<WorkspaceOp<'_>> {
+    use WorkspaceMembershipCommand as Command;
+    Some(match command {
+        Command::Member { change } => WorkspaceOp::Change(change),
+        Command::Place { person, place, .. } => WorkspaceOp::Place(*person, *place),
+        Command::InstallApp(_)
+        | Command::UninstallApp { .. }
+        | Command::AddAttestor(_)
+        | Command::RemoveAttestor { .. }
+        | Command::RevokePublisher { .. }
+        | Command::AddRegistry(_)
+        | Command::RemoveRegistry { .. }
+        | Command::SetRegistryEnabled { .. }
+        | Command::SetRegistryChannel { .. } => WorkspaceOp::Govern(governance::INSTALL_APP),
+        Command::Call { .. } => WorkspaceOp::Govern(governance::CALL),
+        Command::Settings(SettingsChange::Rename { .. }) => WorkspaceOp::Govern(governance::RENAME),
+        Command::Settings(_) => WorkspaceOp::Govern(governance::SETTINGS),
+        Command::Grant { .. } | Command::Reading { reads: true, .. } => {
+            WorkspaceOp::Govern(governance::GRANT)
+        }
+        Command::Reading { reads: false, .. } => WorkspaceOp::Govern(governance::REVOKE),
+        _ => return None,
+    })
 }

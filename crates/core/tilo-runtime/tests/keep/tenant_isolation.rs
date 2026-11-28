@@ -35,8 +35,7 @@ use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::{
     CREATE_WORKSPACE, ENTER_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE,
-    IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, RemoveMemberRequest,
-    WorkspaceSummary, Workspaces,
+    IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, WorkspaceSummary, Workspaces,
 };
 
 use crate::keep::common::{KEYS, Linked, TestDevice, TestUser, invitation, opened, redeem};
@@ -91,12 +90,11 @@ async fn removal_refused(
     let answer = server
         .workspaces()
         .unwrap()
-        .remove_member(
+        .change(
             &workspace.workspace,
-            &device.cert,
-            RemoveMemberRequest {
-                request_id: [0xA4; 32],
-                user_public_key: victim,
+            (&device.cert, [0xA4; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(victim),
             },
         )
         .await;
@@ -607,12 +605,11 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
     .await;
 
     t.workspaces()
-        .remove_member(
+        .change(
             &t.globex.workspace,
-            &t.host.cert,
-            RemoveMemberRequest {
-                request_id: [0x21; 32],
-                user_public_key: t.bob.user_pk,
+            (&t.host.cert, [0x21; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(t.bob.user_pk),
             },
         )
         .await
@@ -706,19 +703,25 @@ async fn an_agent_never_administers_and_reaches_no_workspace_outside_its_grant()
             .await;
         assert!(issued.is_err(), "the agent invited into {workspace}");
         let administrator = workspaces
-            .set_member_administrator(workspace, &agent.cert, [0xB2; 32], t.ann.user_pk, None)
+            .change(
+                workspace,
+                (&agent.cert, [0xB2; 32]),
+                (
+                    t.ann.user_pk,
+                    tilo_workspace_service::workspaces::MemberPlace::Administrator,
+                ),
+            )
             .await;
         assert!(
             administrator.is_err(),
             "the agent made an administrator in {workspace}"
         );
         let removed = workspaces
-            .remove_member(
+            .change(
                 workspace,
-                &agent.cert,
-                RemoveMemberRequest {
-                    request_id: [0xB3; 32],
-                    user_public_key: t.bob.user_pk,
+                (&agent.cert, [0xB3; 32]),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(t.bob.user_pk),
                 },
             )
             .await;

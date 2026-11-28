@@ -550,10 +550,6 @@ impl Workspaces {
         )? {
             return Err("the device's own row does not let it in".to_owned());
         }
-        let row = neighbour_wire::NeighbourMsg::SyncResp {
-            changes: admission.to_vec(),
-            workspace: candidate.workspace_id().to_owned(),
-        };
         let state = hosted.collaboration().clone();
         hosted.keep(
             candidate,
@@ -561,23 +557,41 @@ impl Workspaces {
             crate::workspaces::system_time(now),
             |_, _| Ok(state),
         )?;
-        let body = postcard::to_stdvec(&row).map_err(|error| error.to_string())?;
-        let workspace = hosted.workspace_id();
-        self.inner
-            .records
-            .carry(
-                workspace,
-                cert.device_public_key,
-                &crate::workspace_documents::HostCommit { body },
-            )
+        self.carry_signed(hosted.workspace_id(), cert, admission.to_vec())
             .map_err(|error| format!("the device's own row was not carried: {error}"))?;
-        // A member copy serves no link the row could go out on: it goes to the device serving
-        // the workspace as the copy's other writes do. Carried alone, it reached that device only
-        // with the catch-up of a link made after it, never on a link already up.
+        self.settle(hosted).await
+    }
+
+    /// Carry `changes`, which `cert`'s device signed and `workspace` took in here, to the
+    /// workspace's other devices: live to those linked now, and kept for those that link later.
+    /// Taken in from what the device asked of this host, not from its link, they reach the
+    /// workspace's members only by this host passing them on.
+    ///
+    /// # Errors
+    /// The changes do not encode, or the workspace could not carry them.
+    pub(crate) fn carry_signed(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        cert: &DeviceCert,
+        changes: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        let row = neighbour_wire::NeighbourMsg::SyncResp {
+            changes,
+            workspace: workspace.to_string(),
+        };
+        let body = postcard::to_stdvec(&row).map_err(|error| error.to_string())?;
+        self.inner.records.carry(
+            workspace,
+            cert.device_public_key,
+            &crate::workspace_documents::HostCommit { body },
+        )?;
+        // A workspace kept here for a member serves no link the changes could go out on: they go
+        // to the device serving the workspace as its other writes do. Carried alone, they reached
+        // that device only with the catch-up of a link made after them, never on a link already up.
         if self.member_link(workspace).is_some() {
             self.forward_member_document(workspace, row);
         }
-        self.settle(hosted).await
+        Ok(())
     }
 
     /// Take `admission`, the changes `cert`'s device signed for itself
@@ -981,9 +995,8 @@ impl Workspaces {
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::SigningKey;
-    use tilo_server_protocol::directory::{EntryRefusalCode, Listing};
+    use tilo_server_protocol::directory::EntryRefusalCode;
     use tilo_server_protocol::entering::{EnterRefusal, Entered, Entering, Entry, Through};
-    use tilo_server_protocol::workspaces::RemoveMemberRequest;
     use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -1113,14 +1126,12 @@ mod tests {
         let workspaces = server.workspaces();
         let lounge = workspaces.create("Lounge").await.unwrap();
         workspaces
-            .publish(
-                &lounge.workspace,
-                &owner,
-                Listing {
+            .found_entry(&lounge.workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());
@@ -1249,18 +1260,16 @@ mod tests {
         let workspaces = server.workspaces();
         let closed = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &closed,
-                &owner,
-                Listing {
+            .found_entry(&closed, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&closed, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&closed, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let unlisted = workspaces.create("Team").await.unwrap().workspace;
@@ -1317,18 +1326,16 @@ mod tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());
@@ -1421,23 +1428,21 @@ mod tests {
             member_at(workspaces, &owner, &workspace, root, Role::Editor).await;
         }
         workspaces
-            .ban_member(
+            .change(
                 &workspace,
-                &owner,
-                RemoveMemberRequest {
-                    request_id: [7; 32],
-                    user_public_key: banned.verifying_key().to_bytes(),
+                (&owner, [7; 32]),
+                tilo_action_policy::Change::Ban {
+                    person: hex::encode(banned.verifying_key().to_bytes()),
                 },
             )
             .await
             .unwrap();
         workspaces
-            .remove_member(
+            .change(
                 &workspace,
-                &owner,
-                RemoveMemberRequest {
-                    request_id: [8; 32],
-                    user_public_key: removed.verifying_key().to_bytes(),
+                (&owner, [8; 32]),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(removed.verifying_key().to_bytes()),
                 },
             )
             .await
@@ -1478,14 +1483,12 @@ mod tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());

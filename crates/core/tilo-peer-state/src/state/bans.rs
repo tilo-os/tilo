@@ -5,12 +5,12 @@
 use super::SystemTime;
 use super::facades::PeerGovernanceMut;
 use collab_types::signer::DeviceSigner;
-use tilo_action_policy::{Grantee, roles};
+use tilo_action_policy::{Change, roles};
 
 impl PeerGovernanceMut<'_> {
     /// Remove `user_public_key` (when a member) with every device of theirs,
-    /// and keep them out until [`Self::unban_member`]. `by` is the person
-    /// who decided it, recorded on the block.
+    /// and keep them out until [`Self::unban_member`]. The block records the
+    /// person whose device signs it as who decided it.
     ///
     /// # Errors
     /// Returns an error if the change is not `key`'s device's to make, the person is
@@ -18,44 +18,33 @@ impl PeerGovernanceMut<'_> {
     pub fn ban_member(
         self,
         user_public_key: [u8; 32],
-        by: &str,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.ban_member_by(user_public_key, Grantee::person(by), key, now)
-    }
-
-    /// [`Self::ban_member`] with `by` recorded as given: a person, or the workspace's moderation
-    /// bot taking the ban through its grant.
-    ///
-    /// # Errors
-    /// As [`Self::ban_member`].
-    pub fn ban_member_by(
-        self,
-        user_public_key: [u8; 32],
-        by: Grantee,
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
         let person = hex::encode(user_public_key);
         // Work on a clone: a refused block must not leave the removal applied.
         let mut candidate = self.peer.clone();
-        // The removal and the block are the one ban.
+        // The removal and the block are the one ban. The block is written as the ban it is, so
+        // every device decides it by who may ban, as a moderator's device signs it, never as a
+        // grant only an owner gives.
         let stamp = candidate.own_action(roles::governance::BAN, key, now);
-        let block = roles::block_grant(&self.peer.core.workspace, &person, by);
         let (removed, blocked) = candidate.naming(stamp, |peer| {
             let removed = peer
                 .governance_mut()
                 .remove_member(user_public_key, key, now)?;
-            let blocked = peer
-                .governance_mut()
-                .put_member_grants(&[block], key, now)?;
+            let document = peer
+                .core
+                .workspace_doc
+                .clone()
+                .ok_or("workspace governance missing")?;
+            let blocked = peer.write_changes(document, vec![Change::Ban { person }], key, now)?;
             Ok::<_, String>((removed, blocked))
         })?;
         *self.peer = candidate;
         Ok(removed || blocked)
     }
-    /// Let a banned person be admitted again: revoke their block.
+
+    /// Let a banned person be admitted again: revoke their block, written as the unban it is.
     ///
     /// # Errors
     /// Returns an error if the change is not `key`'s device's to make or governance
@@ -66,10 +55,17 @@ impl PeerGovernanceMut<'_> {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let id = roles::block_grant_id(&hex::encode(user_public_key));
+        let person = hex::encode(user_public_key);
+        self.peer.require_member_writer(key, now)?;
+        let document = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
         let stamp = self.peer.own_action(roles::governance::UNBAN, key, now);
         self.peer.naming(stamp, |peer| {
-            peer.governance_mut().remove_member_grants(&[id], key, now)
+            peer.write_changes(document, vec![Change::Unban { person }], key, now)
         })
     }
 }

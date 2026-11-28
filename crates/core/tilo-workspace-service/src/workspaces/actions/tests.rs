@@ -23,8 +23,8 @@ use super::{
     ServiceWorkspaceActions, TRUSTED_ATTESTORS, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
+use crate::workspaces::Workspaces;
 use crate::workspaces::tests::{guest_device, hosting_device, is_banned, test_host};
-use crate::workspaces::{SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 pub(crate) use crate::workspaces::fixtures::{
@@ -135,14 +135,27 @@ async fn the_catalogue_root_carries_the_surface_the_workspace_publishes() {
     server.shutdown().await;
 }
 
-/// `request` by `caller`: what it produced, or why not.
-async fn invoke(
+/// `request` by `caller`: what it produced, or why not. A member's device signs the change it
+/// asks for, as every device of a member's does ([`crate::workspaces::fixtures::signed_from`]).
+pub(super) async fn invoke(
     host: &ServiceWorkspaceActions,
     workspace_id: WorkspaceId,
     caller: &Caller,
     request: InvokeRequest,
 ) -> Result<Value, ActionCallError> {
-    let receipt = settled(host.in_workspace(workspace_id).invoke(caller, request)).await?;
+    let device = caller
+        .device_public_key()
+        .and_then(crate::workspaces::fixtures::admitted_cert);
+    let receipt = match device {
+        Some(device) => {
+            settled(
+                host.device_page(workspace_id, &device)
+                    .invoke(caller, request),
+            )
+            .await?
+        }
+        None => settled(host.in_workspace(workspace_id).invoke(caller, request)).await?,
+    };
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
         other => panic!("governance completes at once: {other:?}"),
@@ -234,12 +247,11 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     // members, as its role's grants say, but no invitations. Roles, restrictions and the workspace's settings are written
     // by a member's own device, not asked of the host.
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [30; 32],
-                user_public_key: bo.user_public_key,
+            (&owner, [30; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bo.user_public_key),
                 role: Role::Moderator,
             },
         )
@@ -294,12 +306,11 @@ async fn the_workspaces_owners_and_moderators_rename_it() {
     assert_eq!(workspaces.summary(&workspace).await.unwrap().name, "Team");
 
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [32; 32],
-                user_public_key: ada.user_public_key,
+            (&owner, [32; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(ada.user_public_key),
                 role: Role::Moderator,
             },
         )
@@ -741,12 +752,11 @@ async fn banning_is_decided_by_grants_and_ending_a_call_waits_for_everyone() {
     // confirmation beside the grant, and a retry of that invocation changes
     // nothing more.
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [31; 32],
-                user_public_key: bo.user_public_key,
+            (&owner, [31; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bo.user_public_key),
                 role: Role::Moderator,
             },
         )
@@ -824,12 +834,11 @@ async fn a_member_granted_removing_removes_anyone_but_the_owner() {
     // role's grant on removing reaches every member but the owner.
     for (request_id, cert) in [([32; 32], &bo), ([33; 32], &ada)] {
         workspaces
-            .set_member_role(
+            .change(
                 &workspace,
-                &owner,
-                SetMemberRoleRequest {
-                    request_id,
-                    user_public_key: cert.user_public_key,
+                (&owner, request_id),
+                tilo_action_policy::Change::SetRole {
+                    person: hex::encode(cert.user_public_key),
                     role: Role::Moderator,
                 },
             )
@@ -990,12 +999,11 @@ async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_h
     // exist for Bo either.
     let cy = admit(workspaces, &workspace, &owner, 3).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [34; 32],
-                user_public_key: bo.user_public_key,
+            (&owner, [34; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bo.user_public_key),
                 role: Role::Moderator,
             },
         )
@@ -1113,256 +1121,14 @@ fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
     })
 }
 
-/// An Editor by role alone is offered no install verb, and asks for an action
-/// the workspace does not carry: no version is recorded.
-async fn an_editor_installs_nothing(
-    workspaces: &Workspaces,
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    editor: &DeviceCert,
-    publisher: &str,
-) {
-    assert!(
-        !offered(host, workspace_id, &caller(editor))
-            .await
-            .iter()
-            .any(|verb| verb == governance::INSTALL_APP)
-    );
-    assert!(matches!(
-        invoke(
-            host,
-            workspace_id,
-            &caller(editor),
-            request(
-                workspace,
-                governance::INSTALL_APP,
-                dev_release(publisher, "1.5.0-dev.1", 1)
-            ),
-        )
-        .await,
-        Err(ActionCallError::UnknownAction)
-    ));
-    assert!(workspaces.app_versions(workspace).await.unwrap().is_empty());
-}
-
-/// Once the owner lets `developer` install apps, its own build runs, recorded
-/// with who signed and installed it; the next push replaces it, so one version
-/// runs at a time; and a release that does not name its hashes in full is
-/// refused.
-async fn a_developer_installs_its_own_build(
-    workspaces: &Workspaces,
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    owner: &DeviceCert,
-    developer: &DeviceCert,
-    publisher: &str,
-) {
-    a_developers_build_runs_recorded_with_who_signed_it(
-        workspaces,
-        host,
-        workspace_id,
-        workspace,
-        owner,
-        developer,
-        publisher,
-    )
-    .await;
-    the_developers_next_push_replaces_its_build(
-        workspaces,
-        host,
-        workspace_id,
-        workspace,
-        developer,
-        publisher,
-    )
-    .await;
-    a_pinned_build_holds_until_it_is_unpinned(
-        workspaces,
-        host,
-        workspace_id,
-        workspace,
-        developer,
-        publisher,
-    )
-    .await;
-    a_release_that_does_not_name_its_hashes_is_refused(host, workspace_id, workspace, developer)
-        .await;
-}
-
-/// Once the owner lets `developer` install apps, its own build runs, recorded with who signed and
-/// installed it.
-async fn a_developers_build_runs_recorded_with_who_signed_it(
-    workspaces: &Workspaces,
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    owner: &DeviceCert,
-    developer: &DeviceCert,
-    publisher: &str,
-) {
-    grant(
-        workspaces,
-        workspace,
-        owner,
-        developer,
-        governance::INSTALL_APP,
-    )
-    .await;
-    let answer = invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(
-            workspace,
-            governance::INSTALL_APP,
-            dev_release(publisher, "1.5.0-dev.1", 1),
-        ),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
-    assert_eq!(answer["running"]["release"]["dev"], true);
-    assert_eq!(answer["running"]["installed_by"], publisher);
-}
-
-/// The next push replaces the developer's build: one version runs at a time.
-async fn the_developers_next_push_replaces_its_build(
-    workspaces: &Workspaces,
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    developer: &DeviceCert,
-    publisher: &str,
-) {
-    invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(
-            workspace,
-            governance::INSTALL_APP,
-            dev_release(publisher, "1.5.0-dev.2", 2),
-        ),
-    )
-    .await
-    .unwrap();
-    let running = workspaces.app_versions(workspace).await.unwrap();
-    assert_eq!(running.len(), 1, "{running:?}");
-    assert_eq!(running[0].release.version, "1.5.0-dev.2");
-    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
-    // An install only where the workspace runs no version, as opening an app the device holds
-    // asks, leaves the version it chose.
-    let mut held = dev_release(publisher, "1.4.0", 4);
-    held[super::IF_ABSENT] = json!(true);
-    let answer = invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(workspace, governance::INSTALL_APP, held),
-    )
-    .await
-    .unwrap();
-    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.2");
-    let running = workspaces.app_versions(workspace).await.unwrap();
-    assert_eq!(running.len(), 1, "{running:?}");
-    assert_eq!(running[0].release.version, "1.5.0-dev.2");
-}
-
-/// The app is a resource of the workspace's apps, which offers updating, pinning and uninstalling
-/// it; pinned, the version stays until it is unpinned.
-async fn a_pinned_build_holds_until_it_is_unpinned(
-    workspaces: &Workspaces,
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    developer: &DeviceCert,
-    publisher: &str,
-) {
-    let verbs = offered(host, workspace_id, &caller(developer)).await;
-    for verb in [
-        governance::INSTALL_APP,
-        super::PIN_APP,
-        super::UNINSTALL_APP,
-    ] {
-        assert!(
-            verbs.iter().any(|offered| offered == verb),
-            "{verb}: {verbs:?}"
-        );
-    }
-    invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(workspace, super::PIN_APP, json!({ "app": "so.tilo.notes" })),
-    )
-    .await
-    .unwrap();
-    let refused = invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(
-            workspace,
-            governance::INSTALL_APP,
-            dev_release(publisher, "1.5.0-dev.3", 3),
-        ),
-    )
-    .await;
-    assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason, .. }) if reason.contains("unpin it first")),
-        "{refused:?}"
-    );
-    let verbs = offered(host, workspace_id, &caller(developer)).await;
-    assert!(
-        verbs.iter().any(|offered| offered == super::UNPIN_APP),
-        "{verbs:?}"
-    );
-    invoke(
-        host,
-        workspace_id,
-        &caller(developer),
-        request(
-            workspace,
-            super::UNPIN_APP,
-            json!({ "app": "so.tilo.notes" }),
-        ),
-    )
-    .await
-    .unwrap();
-    let running = workspaces.app_versions(workspace).await.unwrap();
-    assert_eq!(running[0].release.version, "1.5.0-dev.2");
-    assert!(!running[0].release.pinned);
-}
-
-/// A release names its hashes in full.
-async fn a_release_that_does_not_name_its_hashes_is_refused(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    developer: &DeviceCert,
-) {
-    assert!(matches!(
-        invoke(
-            host,
-            workspace_id,
-            &caller(developer),
-            request(
-                workspace,
-                governance::INSTALL_APP,
-                json!({ "app": "so.tilo.notes", "version": "1", "surface": "ab", "package": "cd", "publisher": "ef" }),
-            ),
-        )
-        .await,
-        Err(ActionCallError::InvalidRequest { .. })
-    ));
-}
-
-/// The workspace chooses the version of an app every member runs. An Editor by
-/// role alone may not; a member the owner lets install apps (a developer)
-/// installs their own build, which the workspace records with who signed and
-/// installed it, and taking the choice back lets each member run their own.
+/// The workspace chooses the version of an app every member runs. An Editor by role alone is
+/// offered no install verb and asks for an action the workspace does not carry: no version is
+/// recorded. Once the owner lets a member install apps (a developer), its own build runs,
+/// recorded with who signed and installed it; the next push replaces it, so one version runs at a
+/// time, and an install only where none runs (as opening an app the device holds asks) leaves the
+/// version chosen. The app's resource offers updating, pinning and uninstalling it; pinned, the
+/// version stays until it is unpinned. A release names its hashes in full, and taking the choice
+/// back lets each member run their own.
 #[tokio::test]
 async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     let dir = tempfile::tempdir().unwrap();
@@ -1372,46 +1138,91 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let publisher = hex::encode(ada.user_public_key);
+    let ask = async |device: &DeviceCert, verb: &str, argument: Value| {
+        let request = request(&workspace, verb, argument);
+        invoke(&host, workspace_id, &caller(device), request).await
+    };
+    let install = |version: &str, surface: u8| dev_release(&publisher, version, surface);
+    let notes = json!({ "app": "so.tilo.notes" });
+    let versions = async || workspaces.app_versions(&workspace).await.unwrap();
+    let verbs = async || offered(&host, workspace_id, &caller(&ada)).await;
 
-    an_editor_installs_nothing(
+    assert!(
+        !verbs()
+            .await
+            .iter()
+            .any(|verb| verb == governance::INSTALL_APP)
+    );
+    let refused = ask(&ada, governance::INSTALL_APP, install("1.5.0-dev.1", 1)).await;
+    assert!(
+        matches!(refused, Err(ActionCallError::UnknownAction)),
+        "{refused:?}"
+    );
+    assert!(versions().await.is_empty());
+
+    grant(
         workspaces,
-        &host,
-        workspace_id,
-        &workspace,
-        &ada,
-        &publisher,
-    )
-    .await;
-    a_developer_installs_its_own_build(
-        workspaces,
-        &host,
-        workspace_id,
         &workspace,
         &owner,
         &ada,
-        &publisher,
+        governance::INSTALL_APP,
     )
     .await;
+    let answer = ask(&ada, governance::INSTALL_APP, install("1.5.0-dev.1", 1))
+        .await
+        .unwrap();
+    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
+    assert_eq!(answer["running"]["release"]["dev"], true);
+    assert_eq!(answer["running"]["installed_by"], publisher);
 
-    invoke(
-        &host,
-        workspace_id,
-        &caller(&owner),
-        request(
-            &workspace,
-            super::UNINSTALL_APP,
-            json!({ "app": "so.tilo.notes" }),
-        ),
-    )
-    .await
-    .unwrap();
+    ask(&ada, governance::INSTALL_APP, install("1.5.0-dev.2", 2))
+        .await
+        .unwrap();
+    let mut held = install("1.4.0", 4);
+    held[super::IF_ABSENT] = json!(true);
+    let answer = ask(&ada, governance::INSTALL_APP, held).await.unwrap();
+    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.2");
+    let running = versions().await;
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].release.version, "1.5.0-dev.2");
+    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
+
+    let offers = verbs().await;
+    for verb in [
+        governance::INSTALL_APP,
+        super::PIN_APP,
+        super::UNINSTALL_APP,
+    ] {
+        assert!(
+            offers.iter().any(|offered| offered == verb),
+            "{verb}: {offers:?}"
+        );
+    }
+    ask(&ada, super::PIN_APP, notes.clone()).await.unwrap();
+    let refused = ask(&ada, governance::INSTALL_APP, install("1.5.0-dev.3", 3)).await;
     assert!(
-        workspaces
-            .app_versions(&workspace)
-            .await
-            .unwrap()
-            .is_empty()
+        matches!(&refused, Err(ActionCallError::Refused { reason, .. }) if reason.contains("unpin it first")),
+        "{refused:?}"
     );
+    let offers = verbs().await;
+    assert!(
+        offers.iter().any(|offered| offered == super::UNPIN_APP),
+        "{offers:?}"
+    );
+    ask(&ada, super::UNPIN_APP, notes.clone()).await.unwrap();
+    let running = versions().await;
+    assert_eq!(running[0].release.version, "1.5.0-dev.2");
+    assert!(!running[0].release.pinned);
+
+    let unhashed = json!({ "app": "so.tilo.notes", "version": "1", "surface": "ab", "package": "cd", "publisher": "ef" });
+    let refused = ask(&ada, governance::INSTALL_APP, unhashed).await;
+    assert!(
+        matches!(refused, Err(ActionCallError::InvalidRequest { .. })),
+        "{refused:?}"
+    );
+
+    ask(&owner, super::UNINSTALL_APP, notes).await.unwrap();
+    assert!(versions().await.is_empty());
     server.shutdown().await;
 }
 
@@ -1518,11 +1329,12 @@ async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     );
 }
 
-/// The workspace's package trust and registries are resources its install
-/// grant changes and every member reads: an Editor by role alone has
-/// neither, and a member the owner lets install apps adds an attestor,
-/// refuses a publisher, and adds, disables, enables and re-channels a
-/// registry, each answer being the list as it stands after the change.
+/// The workspace's package trust and registries are resources its install grant changes and
+/// every member reads: an Editor by role alone has neither, and a member the owner lets install
+/// apps adds and removes an attestor, refuses a publisher, and adds, disables, enables,
+/// re-channels and removes a registry, each answer being the list as it stands after the change.
+/// Discovery never creates trust: a plain-HTTP address that is not loopback, or an owner key of
+/// zeros, is refused.
 #[tokio::test]
 async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_by() {
     let dir = tempfile::tempdir().unwrap();
@@ -1531,9 +1343,29 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = hosted(workspaces).await;
     let ada = admit(workspaces, &workspace, &owner, 1).await;
-
-    members_read_the_package_trust_and_registries(&host, workspace_id, &workspace, &ada).await;
-
+    let ask = async |verb: &str, argument: Value| {
+        let request = request(&workspace, verb, argument);
+        invoke(&host, workspace_id, &caller(&ada), request).await
+    };
+    let (attestor, publisher, registry) = ("ab".repeat(32), "ef".repeat(32), "cd".repeat(32));
+    let any = json!({ "id": "acme/1", "pubkey": attestor, "name": "Tilo main",
+        "url": "https://apps.tilo.so", "owner_key": registry });
+    let read = ask(TRUSTED_ATTESTORS, json!({})).await.unwrap();
+    assert_eq!(
+        (&read["attestors"], &read["revoked"]),
+        (&json!([]), &json!([]))
+    );
+    assert_eq!(
+        ask(REGISTRIES, json!({})).await.unwrap()["registries"],
+        json!([])
+    );
+    for verb in [ADD_ATTESTOR, REVOKE_PUBLISHER, ADD_REGISTRY] {
+        let refused = ask(verb, any.clone()).await;
+        assert!(
+            matches!(refused, Err(ActionCallError::UnknownAction)),
+            "{verb} as an Editor"
+        );
+    }
     grant(
         workspaces,
         &workspace,
@@ -1543,283 +1375,60 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
     )
     .await;
 
-    a_developer_adds_and_removes_an_attestor(&host, workspace_id, &workspace, &ada).await;
-    a_developer_revokes_a_publisher(&host, workspace_id, &workspace, &ada).await;
-    a_developer_adds_and_changes_a_registry(&host, workspace_id, &workspace, &ada).await;
-    a_registry_that_would_create_trust_is_refused(&host, workspace_id, &workspace, &ada).await;
-    a_developer_removes_a_registry(&host, workspace_id, &workspace, &ada).await;
-
-    server.shutdown().await;
-}
-
-/// `verb` with `argument`, asked by `device` in `workspace`: what it produced, or why not.
-async fn ask(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-    verb: &str,
-    argument: Value,
-) -> Result<Value, ActionCallError> {
-    invoke(
-        host,
-        workspace_id,
-        &caller(device),
-        request(workspace, verb, argument),
-    )
-    .await
-}
-
-/// Every member reads the lists, and an Editor by role alone changes none.
-async fn members_read_the_package_trust_and_registries(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    let read = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        TRUSTED_ATTESTORS,
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(read["attestors"], json!([]));
-    assert_eq!(read["revoked"], json!([]));
-    let read = ask(host, workspace_id, workspace, device, REGISTRIES, json!({}))
-        .await
-        .unwrap();
-    assert_eq!(read["registries"], json!([]));
-    for verb in [ADD_ATTESTOR, REVOKE_PUBLISHER, ADD_REGISTRY] {
+    let tilo = json!({ "name": "Tilo main" });
+    let main = json!({ "name": "Tilo main", "base_url": "https://apps.tilo.so",
+        "owner_pubkey_hex": registry, "enabled": true, "channel": "stable" });
+    let mut off = main.clone();
+    off["enabled"] = json!(false);
+    let mut development = main.clone();
+    development["channel"] = json!("development");
+    let acme = json!({ "id": "acme/1", "pubkey_hex": attestor, "scope": "prefix:so.tilo." });
+    let revoked = json!([{ "pubkey_hex": publisher, "reason": "lost key" }]);
+    let add_acme = json!({ "id": "acme/1", "pubkey": attestor, "scope": "prefix:so.tilo." });
+    let revoke = json!({ "pubkey": publisher, "reason": "lost key" });
+    let add_main =
+        json!({ "name": "Tilo main", "url": "https://apps.tilo.so/", "owner_key": registry });
+    let channel = json!({ "name": "Tilo main", "channel": "development" });
+    // Each step: the verb, its argument, and what its answer reads at a place in it.
+    let steps = [
+        (ADD_ATTESTOR, add_acme, "/attestors", json!([acme])),
+        (TRUSTED_ATTESTORS, json!({}), "/attestors", json!([acme])),
+        (
+            REMOVE_ATTESTOR,
+            json!({ "id": "acme/1" }),
+            "/attestors",
+            json!([]),
+        ),
+        (REVOKE_PUBLISHER, revoke, "/revoked", revoked.clone()),
+        (REVOKED_PUBLISHERS, json!({}), "/revoked", revoked),
+        (ADD_REGISTRY, add_main, "/registries", json!([main])),
+        (DISABLE_REGISTRY, tilo.clone(), "/registries", json!([off])),
+        (ENABLE_REGISTRY, tilo.clone(), "/registries", json!([main])),
+        (
+            REGISTRY_CHANNEL,
+            channel,
+            "/registries",
+            json!([development]),
+        ),
+    ];
+    for (verb, argument, at, reads) in steps {
+        let answer = ask(verb, argument).await.unwrap();
+        assert_eq!(answer.pointer(at), Some(&reads), "{verb}: {answer}");
+    }
+    for (url, owner_key) in [
+        ("http://example.test", registry),
+        ("https://example.test", "00".repeat(32)),
+    ] {
+        let argument = json!({ "name": "untrusted", "url": url, "owner_key": owner_key });
+        let refused = ask(ADD_REGISTRY, argument).await;
         assert!(
-            matches!(
-                ask(
-                    host,
-                    workspace_id,
-                    workspace,
-                    device,
-                    verb,
-                    json!({
-                        "id": "acme/1",
-                        "pubkey": "ab".repeat(32),
-                        "name": "Tilo main",
-                        "url": "https://apps.tilo.so",
-                        "owner_key": "cd".repeat(32),
-                    }),
-                )
-                .await,
-                Err(ActionCallError::UnknownAction)
-            ),
-            "{verb} is no action an Editor may take"
+            matches!(refused, Err(ActionCallError::InvalidRequest { .. })),
+            "{url}"
         );
     }
-}
-
-/// A member the owner lets install apps adds an attestor and removes it, each answer being the
-/// list as it stands after the change.
-async fn a_developer_adds_and_removes_an_attestor(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    let attestor_key = "ab".repeat(32);
-    let added = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        ADD_ATTESTOR,
-        json!({ "id": "acme/1", "pubkey": attestor_key, "scope": "prefix:so.tilo." }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(added["attestors"][0]["id"], "acme/1");
-    assert_eq!(added["attestors"][0]["pubkey_hex"], attestor_key);
-    assert_eq!(added["attestors"][0]["scope"], "prefix:so.tilo.");
-    let listed = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        TRUSTED_ATTESTORS,
-        json!({}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(listed["attestors"], added["attestors"]);
-
-    let removed = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        REMOVE_ATTESTOR,
-        json!({ "id": "acme/1" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(removed["attestors"], json!([]));
-}
-
-/// A developer revokes a publisher, and the revoked list names it with the reason given.
-async fn a_developer_revokes_a_publisher(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    let refused_key = "ef".repeat(32);
-    let revoked = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        REVOKE_PUBLISHER,
-        json!({ "pubkey": refused_key, "reason": "lost key" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(revoked["revoked"][0]["pubkey_hex"], refused_key);
-    assert_eq!(revoked["revoked"][0]["reason"], "lost key");
-    assert_eq!(
-        ask(
-            host,
-            workspace_id,
-            workspace,
-            device,
-            REVOKED_PUBLISHERS,
-            json!({})
-        )
-        .await
-        .unwrap()["revoked"],
-        revoked["revoked"]
-    );
-}
-
-/// A developer adds a registry and disables, enables and re-channels it, each answer being the
-/// list as it stands after the change.
-async fn a_developer_adds_and_changes_a_registry(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    let owner_key = "cd".repeat(32);
-    let added = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        ADD_REGISTRY,
-        json!({ "name": "Tilo main", "url": "https://apps.tilo.so/", "owner_key": owner_key }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(added["registries"][0]["name"], "Tilo main");
-    assert_eq!(added["registries"][0]["base_url"], "https://apps.tilo.so");
-    assert_eq!(added["registries"][0]["owner_pubkey_hex"], owner_key);
-    assert_eq!(added["registries"][0]["enabled"], true);
-    assert_eq!(added["registries"][0]["channel"], "stable");
-
-    let disabled = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        DISABLE_REGISTRY,
-        json!({ "name": "Tilo main" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(disabled["registries"][0]["enabled"], false);
-    let enabled = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        ENABLE_REGISTRY,
-        json!({ "name": "Tilo main" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(enabled["registries"][0]["enabled"], true);
-    let development = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        REGISTRY_CHANNEL,
-        json!({ "name": "Tilo main", "channel": "development" }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(development["registries"][0]["channel"], "development");
-}
-
-/// A plain-HTTP address that is not loopback, and a placeholder owner key, are refused: discovery
-/// never creates trust.
-async fn a_registry_that_would_create_trust_is_refused(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    assert!(matches!(
-        ask(
-            host,
-            workspace_id,
-            workspace,
-            device,
-            ADD_REGISTRY,
-            json!({
-                "name": "plain",
-                "url": "http://example.test",
-                "owner_key": "cd".repeat(32),
-            }),
-        )
-        .await,
-        Err(ActionCallError::InvalidRequest { .. })
-    ));
-    assert!(matches!(
-        ask(
-            host,
-            workspace_id,
-            workspace,
-            device,
-            ADD_REGISTRY,
-            json!({
-                "name": "unpinned",
-                "url": "https://example.test",
-                "owner_key": "00".repeat(32),
-            }),
-        )
-        .await,
-        Err(ActionCallError::InvalidRequest { .. })
-    ));
-}
-
-/// A developer removes the registry, and the list is empty again.
-async fn a_developer_removes_a_registry(
-    host: &ServiceWorkspaceActions,
-    workspace_id: WorkspaceId,
-    workspace: &str,
-    device: &DeviceCert,
-) {
-    let removed = ask(
-        host,
-        workspace_id,
-        workspace,
-        device,
-        REMOVE_REGISTRY,
-        json!({ "name": "Tilo main" }),
-    )
-    .await
-    .unwrap();
+    let removed = ask(REMOVE_REGISTRY, tilo).await.unwrap();
     assert_eq!(removed["registries"], json!([]));
+    server.shutdown().await;
 }
 
 /// Two devices that redeem one invitation at once: `workspace/members#admit` takes the workspace

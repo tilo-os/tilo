@@ -1955,6 +1955,56 @@ pub async fn admit_device(
 static ADMITTED: std::sync::Mutex<Vec<(DeviceCert, ed25519_dalek::SigningKey)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// What `ask` changes as `device` signs it with `key`: asked first, a host that is not the
+/// device answers with what to sign on; the device signs the change it asked for on it, and asks
+/// again with it ([`tilo_peer_state::asked_signing`]).
+///
+/// # Errors
+///
+/// As `ask`, or the device could not sign the change the host named.
+pub async fn signed_by<'d, T, Asked>(
+    device: &'d DeviceCert,
+    key: &SigningKey,
+    ask: impl Fn(super::SignedAsk<'d>) -> Asked,
+) -> Result<T, super::CollaborationError>
+where
+    Asked: std::future::Future<Output = Result<super::Signing<T>, super::CollaborationError>>,
+{
+    super::signed_through((device, key), super::shares::fresh_request()?, ask).await
+}
+
+/// What `ask` comes to as `device` makes it: signed by the device itself where [`admit_device`]
+/// admitted it ([`signed_by`]), by this host's own device at once where it is the host's.
+pub async fn as_device<'d, T, Asked>(
+    device: &'d DeviceCert,
+    ask: impl Fn(super::SignedAsk<'d>) -> Asked,
+) -> Result<T, super::CollaborationError>
+where
+    Asked: std::future::Future<Output = Result<super::Signing<T>, super::CollaborationError>>,
+{
+    match admitted_key(device) {
+        Some(key) => signed_by(device, &key, ask).await,
+        None => ask(super::SignedAsk::here(device, rand::random()))
+            .await?
+            .done(),
+    }
+}
+
+/// `command` made in `workspace` as `device` makes it ([`as_device`]).
+///
+/// # Errors
+///
+/// As [`Workspaces::govern`].
+pub async fn made_as(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+    command: impl Into<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand>,
+) -> Result<super::GovernanceCompletion, super::CollaborationError> {
+    let command = command.into();
+    as_device(device, |ask| workspaces.govern(workspace, ask, &command)).await
+}
+
 /// The key of `device`, when [`admit_device`] admitted it.
 pub fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
     ADMITTED
@@ -1963,6 +2013,25 @@ pub fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
         .iter()
         .find(|(cert, _)| cert.device_public_key == device.device_public_key)
         .map(|(_, key)| key.clone())
+}
+
+/// The device [`admit_device`] admitted under the key `device`: whom a call from it signs as.
+pub fn admitted_cert(device: &[u8; 32]) -> Option<DeviceCert> {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(cert, _)| cert.device_public_key == *device)
+        .map(|(cert, _)| cert.clone())
+}
+
+/// Keep `cert`'s key, a device a test admitted another way than [`admit_device`]: what its
+/// changes are signed with.
+pub fn remember_admitted(cert: &DeviceCert, key: &ed25519_dalek::SigningKey) {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((cert.clone(), key.clone()));
 }
 
 /// A device of `person` (their root key, as hex) that [`admit_device`] admitted, with its key.
@@ -2333,6 +2402,13 @@ impl super::actions::ServiceWorkspaceActions {
     }
 }
 
+/// The signed ask each call a [`SignedBy`] device signed was sent as, by the call's invocation.
+static SIGNED_ASKS: std::sync::LazyLock<
+    Mutex<
+        std::collections::HashMap<tilo_actions::InvocationId, tilo_actions::remote::InvokeRequest>,
+    >,
+> = std::sync::LazyLock::new(Mutex::default);
+
 /// `page`, each call its device's person sends signed by `device` ([`signed_from`]).
 #[derive(Clone)]
 struct SignedBy<P> {
@@ -2341,7 +2417,9 @@ struct SignedBy<P> {
     workspace: String,
 }
 
-impl<P: tilo_actions::remote::ActionProvider> tilo_actions::remote::ActionProvider for SignedBy<P> {
+impl<P: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static>
+    tilo_actions::remote::ActionProvider for SignedBy<P>
+{
     fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
         self.page.installed_surface(app_id)
     }
@@ -2367,7 +2445,71 @@ impl<P: tilo_actions::remote::ActionProvider> tilo_actions::remote::ActionProvid
         let mut request = request;
         request.signed = None;
         let request = signed_from(&request, &self.workspace, (&self.device, caller));
-        self.page.invoke(caller, request)
+        // A governance change the host asks the device to sign, it signs as every device does
+        // ([`tilo_peer_state::asked_signing`]), and asks again with it.
+        let (answer, pending) = tilo_actions::remote::pending();
+        let (page, device, workspace, caller) = (
+            self.page.clone(),
+            self.device.clone(),
+            self.workspace.clone(),
+            caller.clone(),
+        );
+        tokio::spawn(async move {
+            let unanswered =
+                || tilo_actions::remote::ActionCallError::unavailable("the host did not answer");
+            let answered = async {
+                // A call sent again is its signed ask sent again, as a device's session resends
+                // what it sent: the host answers it as it answered it.
+                let resent = SIGNED_ASKS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&request.invocation)
+                    .cloned();
+                if let Some(again) = resent {
+                    let receipt = page.invoke(&caller, again).await.ok_or_else(unanswered)??;
+                    return Ok(tilo_actions::remote::InvocationReceipt {
+                        invocation: request.invocation,
+                        ..receipt
+                    });
+                }
+                // The page answers it as an error of the call, which its receipt carries once it
+                // travels ([`tilo_peer_state::asked_signing::sign_asked`]).
+                let first = page
+                    .invoke(&caller, request.clone())
+                    .await
+                    .ok_or_else(unanswered)?;
+                let facts = match &first {
+                    Ok(receipt) => tilo_peer_state::asked_signing::sign_asked(receipt).cloned(),
+                    Err(tilo_actions::remote::ActionCallError::SignatureRequired(facts)) => {
+                        Some((**facts).clone())
+                    }
+                    Err(_) => None,
+                };
+                let (Some(facts), Some(key)) = (facts, admitted_key(&device)) else {
+                    return first;
+                };
+                let again = tilo_peer_state::asked_signing::signed_again(
+                    &request,
+                    &facts,
+                    (&device, &key),
+                    super::system_time(tilo_clock::unix_now_ns()),
+                )
+                .await
+                .map_err(tilo_actions::remote::ActionCallError::refused)?;
+                let again = signed_from(&again, &workspace, (&device, &caller));
+                SIGNED_ASKS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(request.invocation, again.clone());
+                let receipt = page.invoke(&caller, again).await.ok_or_else(unanswered)??;
+                Ok(tilo_actions::remote::InvocationReceipt {
+                    invocation: request.invocation,
+                    ..receipt
+                })
+            };
+            answer.complete(answered.await);
+        });
+        pending
     }
 
     fn observe(
@@ -2429,23 +2571,34 @@ thread_local! {
 /// they are made, and what they were shown.
 pub struct Answering {
     approves: bool,
+    /// Whether the device that asked signs the change their yes lets it make, as its session
+    /// does once it follows the call.
+    signs: bool,
     asked: Mutex<Vec<tilo_actions::remote::asked::AskedFacts>>,
 }
 
 impl Answering {
-    /// From now on in this test, the person approves every call that waits for them.
+    /// From now on in this test, the person approves every call that waits for them, and the
+    /// device that asked signs what their yes lets it change.
     pub fn approving() -> Arc<Self> {
-        Self::answering_as(true)
+        Self::answering_as(true, true)
+    }
+
+    /// [`Self::approving`], the device that asked signing nothing by itself: the test signs in
+    /// its place, or leaves it silent.
+    pub fn approving_unsigned() -> Arc<Self> {
+        Self::answering_as(true, false)
     }
 
     /// From now on in this test, the person declines every call that waits for them.
     pub fn declining() -> Arc<Self> {
-        Self::answering_as(false)
+        Self::answering_as(false, false)
     }
 
-    fn answering_as(approves: bool) -> Arc<Self> {
+    fn answering_as(approves: bool, signs: bool) -> Arc<Self> {
         let answering = Arc::new(Self {
             approves,
+            signs,
             asked: Mutex::default(),
         });
         ANSWERING.set(Some(Arc::clone(&answering)));
@@ -2618,7 +2771,60 @@ async fn answered_as_its_person(
             waiting.asked.facts.clone(),
         )));
     }
+    if answering.signs {
+        Box::pin(signed_once_awaited(here, caller, request)).await?;
+    }
     ended_as(here, caller, request.invocation).await
+}
+
+/// Follow `request` on `here` until it ends, or until the host waits for the device that asked
+/// it to sign the change: that device signs it, where a test admitted it, and asks again, as its
+/// session does ([`tilo_peer_state::asked_signing::signed_again`]).
+async fn signed_once_awaited(
+    here: &(impl tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static),
+    caller: &tilo_actions::remote::Caller,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Result<(), tilo_actions::remote::ActionCallError> {
+    let awaited = awaited_signature(here, caller, &request.invocation).await;
+    let device = caller.device_public_key().and_then(admitted_cert);
+    let (Some(facts), Some(device)) = (awaited, device) else {
+        return Ok(());
+    };
+    let key = admitted_key(&device).expect("an admitted device's key is kept");
+    let signed = tilo_peer_state::asked_signing::signed_again(
+        request,
+        &facts,
+        (&device, &key),
+        super::system_time(tilo_clock::unix_now_ns()),
+    )
+    .await
+    .map_err(tilo_actions::remote::ActionCallError::refused)?;
+    settled(here.invoke(caller, signed)).await.map(drop)
+}
+
+/// What the host waits for the device that asked `invocation` on `here` to sign, read as that
+/// device follows the call; nothing when the call ends first.
+pub async fn awaited_signature(
+    here: &(impl tilo_actions::remote::ActionProvider + Sync),
+    caller: &tilo_actions::remote::Caller,
+    invocation: &tilo_actions::InvocationId,
+) -> Option<tilo_actions::remote::SignFacts> {
+    tilo_test_env::within("the call ends or waits for its device", async {
+        loop {
+            match here.observe(caller, invocation) {
+                Some(state) if state.is_terminal() => return None,
+                Some(state) => {
+                    if let Some(facts) = tilo_actions::remote::SignFacts::awaited_in(&state.update)
+                    {
+                        return Some(facts);
+                    }
+                }
+                None => {}
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
 }
 
 /// `first`, a call refused for the person's yes, answered once `answering` approves it: the same

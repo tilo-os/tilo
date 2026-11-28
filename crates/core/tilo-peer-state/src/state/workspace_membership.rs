@@ -122,9 +122,8 @@ impl StatePeer {
             }
             Change::Ban { person } => {
                 let who = member_root(person)?;
-                let by = hex::encode(caller.user_public_key);
                 self.as_action(roles::governance::BAN, caller.user_public_key, |peer| {
-                    peer.governance_mut().ban_member(who, &by, key, now)
+                    peer.governance_mut().ban_member(who, key, now)
                 })
             }
             Change::Unban { person } => {
@@ -383,7 +382,102 @@ impl PeerWorkspaceMut<'_> {
         if let WorkspaceMembershipCommand::Settings(change) = command {
             return self.peer.apply_settings_change(caller, change, key, now);
         }
+        if let WorkspaceMembershipCommand::DocumentAccess {
+            recipient,
+            app,
+            document,
+            access,
+        } = command
+        {
+            return self.peer.apply_document_access(
+                caller,
+                (recipient, app, document),
+                access,
+                key,
+                now,
+            );
+        }
+        if let WorkspaceMembershipCommand::Reading {
+            grantee,
+            resource,
+            reads,
+        } = command
+        {
+            return self
+                .peer
+                .apply_reading(caller, (grantee, resource, *reads), key, now);
+        }
         self.peer.apply_own_row(caller, command, key, now)
+    }
+}
+
+impl StatePeer {
+    /// The member-list changes giving `recipient` `access` to `document` of `app` (the whole
+    /// workspace when `app` is empty) make, as `caller`, who reads the document, decides them on
+    /// this copy, signed by `key`.
+    fn apply_document_access(
+        &mut self,
+        caller: &DeviceCert,
+        (recipient, app, document): (&str, &str, &str),
+        access: &str,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let document = if app.is_empty() {
+            document
+        } else {
+            let document = collab_types::document_access_target(app, document)
+                .ok_or("this document has no workspace access rules")?;
+            self.check_document_read(caller.device_public_key, app, document, now)?;
+            document
+        };
+        let policy = self.governance().member_policy()?;
+        let changes = collab_types::document_access_changes(
+            &policy,
+            &hex::encode(caller.user_public_key),
+            (recipient, app, document),
+            access,
+        )
+        .map_err(|refusal| refusal.to_string())?;
+        self.governance_mut()
+            .change_document_access(changes, key, now)
+    }
+}
+
+impl StatePeer {
+    /// The change letting `grantee` read `resource` (`reads`) or keeping them from it makes, as
+    /// `caller`'s person decides it on this copy, signed by `key`: none when they already stand
+    /// as asked.
+    fn apply_reading(
+        &mut self,
+        caller: &DeviceCert,
+        (grantee, resource, reads): (&tilo_action_policy::Grantee, &str, bool),
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let node = tilo_action_policy::reading::published_node(&self.core.workspace, resource)
+            .ok_or_else(|| format!("`{resource}` is no resource of an app of this workspace"))?;
+        let member = self
+            .permissions(caller.device_public_key, now)
+            .map_err(|error| error.to_string())?;
+        let person = member
+            .person_id()
+            .ok_or("the caller is no person's device")?;
+        let change = member
+            .policy
+            .reading_change(
+                &member.authority(),
+                grantee.clone(),
+                &node,
+                reads,
+                tilo_action_policy::Grantee::person(person),
+                &tilo_action_policy::Context::at_time(now),
+            )
+            .map_err(|refusal| refusal.to_string())?;
+        match change {
+            Some(change) => self.apply_member_change(caller, &change, key, now),
+            None => Ok(false),
+        }
     }
 }
 

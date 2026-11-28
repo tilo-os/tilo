@@ -1,16 +1,16 @@
 //! Who reads one resource, changed one person or role at a time.
 //!
 //! A resource keeps no membership of its own: who belongs to a channel, a shared folder or any
-//! other resource is who the workspace's policy lets read it. Letting someone read it, or keeping
-//! them from it, is a grant on the resource's own node, made by whoever the workspace lets grant
-//! (to let someone in) or revoke (to keep someone out), and decided by [`crate::decide`] like
-//! every other grant.
+//! other resource is who the workspace's policy lets read it. Letting someone in is a role over
+//! that one resource, the giver's own entry ([`Change::SetScopedRole`]); keeping them out is a
+//! Deny on its node. Whoever the workspace lets grant lets someone in, whoever it lets revoke
+//! keeps them out, and [`crate::decide`] decides each like every other change.
 //!
 //! The policy holds the least that says it. Each person or role has at most one reading grant on
 //! a resource ([`reading_grant_id`]); a change that leaves them reading as they would without it
 //! takes that grant away rather than writing one more. So letting back in someone a moderator
-//! kept out removes the Deny, and keeping out someone a grant let in removes the Allow, while
-//! keeping out someone their role lets read writes a Deny of their own.
+//! kept out removes the Deny, while keeping out someone their role lets read writes a Deny of
+//! their own.
 
 use crate::{
     Authority, Change, Context, Grant, GrantId, Grantee, Level, Refusal, TreePath, WorkspacePolicy,
@@ -95,27 +95,23 @@ impl WorkspacePolicy {
         if reads_without == reads {
             return Ok(held.map(|grant| Change::Revoke(grant.id.clone())));
         }
-        let grant = if reads {
-            Grant::new(
-                id.as_str(),
+        // Let in is a role over the one resource, the signer's own entry ([`Change::SetScopedRole`]).
+        if reads {
+            return Ok(Some(Change::SetScopedRole {
                 grantee,
-                node.clone(),
-                KindSet::READ,
-                crate::Answer::Allow,
-                granted_by,
-            )
-        } else {
-            // Kept out of reading is kept out of all of it: nobody writes into what they cannot
-            // read.
-            Grant::new(
-                id.as_str(),
-                grantee,
-                node.clone(),
-                KindSet::ALL,
-                crate::Answer::Deny,
-                granted_by,
-            )
-        };
+                scope: node.clone(),
+                role: Some(crate::Role::Viewer),
+            }));
+        }
+        // Kept out of reading is kept out of all of it: nobody writes into what they cannot read.
+        let grant = Grant::new(
+            id.as_str(),
+            grantee,
+            node.clone(),
+            KindSet::ALL,
+            crate::Answer::Deny,
+            granted_by,
+        );
         Self::check_within(actor, &grant, cx)?;
         if held.is_some_and(|kept| *kept == grant) {
             return Ok(None);

@@ -21,7 +21,7 @@ use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use tilo_workspace_service::workspaces::{
     CREATE_WORKSPACE, CreatedWorkspace, ENTER_WORKSPACE, EnteredWorkspace, IssueInvitationRequest,
-    IssuedInvitation, RemoveMemberRequest, WorkspaceListing,
+    IssuedInvitation, WorkspaceListing,
 };
 
 use crate::keep::common::{
@@ -422,15 +422,12 @@ async fn an_invited_person_joins_a_listed_workspace_edits_sees_presence_and_is_r
     );
 
     // Alice removes Bob: the server stops admitting his device.
-    let generation = server
-        .workspaces()
-        .unwrap()
-        .remove_member(
+    let generation = laptop
+        .makes(
+            server.workspaces().unwrap(),
             &workspace.workspace,
-            &laptop.cert,
-            RemoveMemberRequest {
-                request_id: [9; 32],
-                user_public_key: bob.user_pk,
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(bob.user_pk),
             },
         )
         .await

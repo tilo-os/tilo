@@ -6,15 +6,16 @@ use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
 use tilo_action_types::KindSet;
 use tilo_peer_state::join::Role;
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_server_protocol::operator::WaitListStatus;
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::PersonNames as _;
+use crate::workspaces::fixtures::made_as;
 use crate::workspaces::tests::{guest_device, hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{
-    IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, SetMemberRoleRequest,
-    WaitListMail, WaitListSecrets, WaitListed, Workspaces,
+    IssueInvitationRequest, PreAdmitRequest, WaitListMail, WaitListSecrets, WaitListed, Workspaces,
 };
 
 /// A new person admitted to `workspace` as an Editor, through the owner's
@@ -59,6 +60,7 @@ async fn keyed_admit(
         )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    crate::workspaces::fixtures::remember_admitted(&cert, &key);
     (key, cert)
 }
 
@@ -92,17 +94,43 @@ async fn set_role(
     person: &DeviceCert,
     role: Role,
 ) {
-    workspaces
-        .set_member_role(workspace, by, role_request(person, role, rand::random()))
+    made_as(workspaces, workspace, by, set(person, role))
         .await
         .unwrap();
 }
 
-fn role_request(person: &DeviceCert, role: Role, request_id: [u8; 32]) -> SetMemberRoleRequest {
-    SetMemberRoleRequest {
-        request_id,
-        user_public_key: person.user_public_key,
+/// `person` given `role`.
+fn set(person: &DeviceCert, role: Role) -> tilo_action_policy::Change {
+    tilo_action_policy::Change::SetRole {
+        person: hex::encode(person.user_public_key),
         role,
+    }
+}
+
+/// `person` taken out of the workspace.
+fn removal(person: [u8; 32]) -> tilo_action_policy::Change {
+    tilo_action_policy::Change::RemoveMember {
+        person: hex::encode(person),
+    }
+}
+
+/// `person` made an administrator.
+fn administrator(person: &DeviceCert) -> WorkspaceMembershipCommand {
+    (
+        person.user_public_key,
+        crate::workspaces::MemberPlace::Administrator,
+    )
+        .into()
+}
+
+/// The person `root` made an administrator, named `name` until they name themselves.
+fn named_administrator(root: [u8; 32], name: &str) -> WorkspaceMembershipCommand {
+    let place = crate::workspaces::MemberPlace::Administrator;
+    let name = Some(name.to_owned());
+    WorkspaceMembershipCommand::Place {
+        person: root,
+        place,
+        name,
     }
 }
 
@@ -337,15 +365,7 @@ async fn a_page_deletes_a_workspace_of_its_own_with_nobody_else_in_it() {
         "the owner deleted a workspace with someone else in it: {refused:?}"
     );
     // A member leaves by taking themselves out, and the workspace stays for its owner.
-    workspaces
-        .remove_member(
-            &workspace,
-            &ada,
-            crate::workspaces::RemoveMemberRequest {
-                request_id: [9; 32],
-                user_public_key: ada.user_public_key,
-            },
-        )
+    made_as(workspaces, &workspace, &ada, removal(ada.user_public_key))
         .await
         .expect("a member leaves the workspace");
     let after = workspaces.summary(&workspace).await.unwrap();
@@ -1114,7 +1134,11 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     let person = SigningKey::from_bytes(&rand::random());
     let root = person.verifying_key().to_bytes();
     workspaces
-        .set_member_administrator(&workspace, &owner, rand::random(), root, Some("Quinten"))
+        .change(
+            &workspace,
+            (&owner, rand::random()),
+            named_administrator(root, "Quinten"),
+        )
         .await
         .unwrap();
     let named = |members: &[tilo_peer_state::Member]| {
@@ -1218,7 +1242,7 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     set_role(workspaces, &workspace, &owner, &cy, Role::Viewer).await;
 
     workspaces
-        .set_member_administrator(&workspace, &owner, [50; 32], ada.user_public_key, None)
+        .change(&workspace, (&owner, [50; 32]), administrator(&ada))
         .await
         .unwrap();
     an_administrator_rules_every_member_but_administrators(workspaces, &workspace, &ada, &bo, &cy)
@@ -1239,15 +1263,7 @@ async fn an_administrator_rules_every_member_but_administrators(
     set_role(workspaces, workspace, ada, cy, Role::Commenter).await;
     set_role(workspaces, workspace, ada, bo, Role::Moderator).await;
     set_role(workspaces, workspace, ada, bo, Role::Editor).await;
-    workspaces
-        .remove_member(
-            workspace,
-            ada,
-            RemoveMemberRequest {
-                request_id: [55; 32],
-                user_public_key: cy.user_public_key,
-            },
-        )
+    made_as(workspaces, workspace, ada, removal(cy.user_public_key))
         .await
         .unwrap();
 }
@@ -1417,8 +1433,7 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
         .await;
     assert!(matches!(reply, WorkspacesReply::Refused(_)), "{reply:?}");
     assert!(
-        workspaces
-            .set_member_administrator(&workspace, &ada, [31; 32], bo.user_public_key, None)
+        made_as(workspaces, &workspace, &ada, administrator(&bo))
             .await
             .is_err()
     );
@@ -1519,11 +1534,9 @@ async fn a_server_without_a_place_on_the_member_list_carries_out_nothing() {
     server.shutdown().await;
 }
 
-/// A workspace its host hands to a person is administered by them: they make
-/// administrators through the host, which serves the workspace as one of
-/// them, and an administrator makes more. Taking an administrator's grant back
-/// is the owner's alone and signed on a device of theirs: the host refuses to
-/// carry it out for them in words that say so, and nobody else may.
+/// A workspace its host hands to a person is administered by them, from their own devices:
+/// the owner makes administrators, an administrator makes more, and taking an administrator's
+/// grant back is the owner's alone, signed on a device of theirs.
 #[tokio::test]
 async fn a_workspace_handed_to_a_person_is_administered_by_them() {
     let dir = tempfile::tempdir().unwrap();
@@ -1551,43 +1564,30 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
         "{again}"
     );
 
-    // The owner makes Bo an administrator, and Bo makes Cy one.
-    workspaces
-        .set_member_administrator(&workspace, &ada, [43; 32], bo.user_public_key, None)
+    // The owner makes Bo an administrator, and Bo makes Cy one, each on a device of theirs.
+    made_as(workspaces, &workspace, &ada, administrator(&bo))
         .await
         .unwrap();
-    workspaces
-        .set_member_administrator(&workspace, &bo, [44; 32], cy.user_public_key, None)
+    made_as(workspaces, &workspace, &bo, administrator(&cy))
         .await
         .unwrap();
-    // Bo unmakes neither Cy nor the owner.
+    // Bo unmakes neither Cy nor the owner, and the host, which signs only what an
+    // administrator may, does not unmake Cy for the owner.
     for person in [&cy, &ada] {
         assert!(
-            workspaces
-                .set_member_role(
-                    &workspace,
-                    &bo,
-                    role_request(person, Role::Editor, rand::random())
-                )
+            made_as(workspaces, &workspace, &bo, set(person, Role::Editor))
                 .await
                 .is_err()
         );
     }
-    // The owner may unmake Cy, but not through the host, which signs only
-    // what an administrator may.
     let relayed = workspaces
-        .set_member_role(
-            &workspace,
-            &ada,
-            role_request(&cy, Role::Editor, rand::random()),
-        )
+        .change(&workspace, (&host, rand::random()), set(&cy, Role::Editor))
         .await
         .unwrap_err()
         .to_string();
     assert!(
-        relayed.contains(
-            "only the workspace's owner makes this change, and from a device of their own"
-        ),
+        relayed
+            .contains("may not unmake or remove an administrator: only the workspace's owner may"),
         "{relayed}"
     );
     let policy = workspaces.policy_of(&workspace).await.unwrap();
@@ -1598,6 +1598,12 @@ async fn a_workspace_handed_to_a_person_is_administered_by_them() {
         .issue_as(&workspace, &cy, invitation(45, Role::Editor), true)
         .await
         .unwrap();
+    // The owner unmakes Cy from a device of hers.
+    made_as(workspaces, &workspace, &ada, set(&cy, Role::Editor))
+        .await
+        .unwrap();
+    let policy = workspaces.policy_of(&workspace).await.unwrap();
+    assert!(!policy.is_administrator(&hex::encode(cy.user_public_key)));
     server.shutdown().await;
 }
 
@@ -1679,7 +1685,11 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
     let root = person.verifying_key().to_bytes();
     for workspace in [&lounge, &own] {
         workspaces
-            .set_member_administrator(workspace, &owner, rand::random(), root, Some("Eager Lynx"))
+            .change(
+                workspace,
+                (&owner, rand::random()),
+                named_administrator(root, "Eager Lynx"),
+            )
             .await
             .unwrap();
     }
@@ -1711,7 +1721,11 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
     // soon as that workspace's governance moves.
     let later = workspaces.create("Later").await.unwrap().workspace;
     workspaces
-        .set_member_administrator(&later, &owner, rand::random(), root, Some("Witty Otter"))
+        .change(
+            &later,
+            (&owner, rand::random()),
+            named_administrator(root, "Witty Otter"),
+        )
         .await
         .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1739,7 +1753,11 @@ async fn a_person_renames_themselves_and_the_last_name_is_the_one_kept() {
     let person = SigningKey::from_bytes(&rand::random());
     let root = person.verifying_key().to_bytes();
     workspaces
-        .set_member_administrator(&lounge, &owner, rand::random(), root, Some("Eager Lynx"))
+        .change(
+            &lounge,
+            (&owner, rand::random()),
+            named_administrator(root, "Eager Lynx"),
+        )
         .await
         .unwrap();
     let named = async || {
@@ -1808,13 +1826,13 @@ async fn an_agents_key_administers_nothing_its_persons_device_does() {
     ] {
         assert!(
             workspaces
-                .decide(&agent, None, WorkspaceOp::Host(operation), now)
+                .decide(&agent, None, WorkspaceOp::Host(operation), now, false)
                 .is_err(),
             "the agent's key does {operation:?}"
         );
         assert!(
             workspaces
-                .decide(&owner, None, WorkspaceOp::Host(operation), now)
+                .decide(&owner, None, WorkspaceOp::Host(operation), now, false)
                 .is_ok(),
             "its person's device does {operation:?}"
         );
@@ -1822,10 +1840,10 @@ async fn an_agents_key_administers_nothing_its_persons_device_does() {
     let guest = admit(workspaces, &workspace, &owner, 61).await;
     assert!(
         workspaces
-            .set_member_role(
+            .change(
                 &workspace,
-                &agent,
-                role_request(&guest, Role::Viewer, rand::random())
+                (&agent, rand::random()),
+                set(&guest, Role::Viewer)
             )
             .await
             .is_err(),

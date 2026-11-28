@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
+use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_server_protocol::workspaces::{
     DocumentAccess, Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry,
     WaitListEntry, Workspace, WorkspaceHolder, WorkspacesReply, WorkspacesRequest,
@@ -26,7 +27,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::admitting::Admitting;
 use super::authority::WorkspaceOp;
-use super::collaboration::carried;
+use super::collaboration::{SignedAsk, Signing, carried};
 use super::hosts::holders_of;
 use super::{
     CancelInvitationRequest, CollaborationError, HostedWorkspace, IssueInvitationRequest,
@@ -170,14 +171,15 @@ fn joined_name(name: &str) -> Result<String, CollaborationError> {
 
 impl Workspaces {
     /// Answer one `/workspaces` request of `device`, the session's certified
-    /// device.
+    /// device. A change it asks for is this host's own device's to sign.
     pub async fn page_workspaces(
         &self,
         device: &DeviceCert,
         request: WorkspacesRequest,
     ) -> WorkspacesReply {
-        self.page_workspaces_inner(device, request)
+        self.page_answer(device, request, None)
             .await
+            .and_then(Signing::done)
             .unwrap_or_else(|error| WorkspacesReply::Refused(error.to_string()))
     }
 
@@ -186,7 +188,8 @@ impl Workspaces {
     /// it waits in: admitted first as an agent's requests are
     /// ([`Workspaces::admit_page`]), then decided as the workspace each
     /// request names decides it. A host with no workspaces refuses rather than
-    /// staying silent.
+    /// staying silent. A change the request asks for is the device's to sign: asked without
+    /// `signed`, the answer is what it signs on.
     ///
     /// # Errors
     /// Why the request is refused; one an agent's grant leaves to its person
@@ -198,9 +201,50 @@ impl Workspaces {
         caller: &Caller,
         request: WorkspacesRequest,
         approved: bool,
-    ) -> Result<WorkspacesReply, ActionCallError> {
+        signed: Option<Vec<Vec<u8>>>,
+    ) -> Result<Signing<WorkspacesReply>, ActionCallError> {
         self.admit_page(device, caller, &request, approved).await?;
-        Ok(self.page_workspaces(device, request).await)
+        Ok(self
+            .page_answer(device, request, signed)
+            .await
+            .unwrap_or_else(|error| Signing::Done(WorkspacesReply::Refused(error.to_string()))))
+    }
+
+    /// [`Self::page_workspaces_inner`], a change the request asks for signed by `device`
+    /// ([`Self::govern`]): one to the workspace's roles, or who reads a document.
+    pub(super) async fn page_answer(
+        &self,
+        device: &DeviceCert,
+        request: WorkspacesRequest,
+        signed: Option<Vec<Vec<u8>>>,
+    ) -> Result<Signing<WorkspacesReply>, CollaborationError> {
+        let Some(command) = WorkspaceMembershipCommand::of_page_request(&request) else {
+            return Ok(Signing::Done(
+                self.page_workspaces_inner(device, request).await?,
+            ));
+        };
+        let (workspace, request_id) = match &request {
+            WorkspacesRequest::EditRoles {
+                workspace,
+                request_id,
+                ..
+            }
+            | WorkspacesRequest::SetDocumentAccess {
+                workspace,
+                request_id,
+                ..
+            } => (workspace, *request_id),
+            _ => return Err(CollaborationError::new("not a change a page signs")),
+        };
+        let ask = SignedAsk {
+            device,
+            request_id,
+            signed,
+        };
+        Ok(match self.govern(workspace, ask, &command).await? {
+            Signing::Sign(facts) => Signing::Sign(facts),
+            Signing::Done(_) => Signing::Done(self.page_workspace(workspace, device).await?),
+        })
     }
 
     async fn page_document_access(
@@ -261,37 +305,9 @@ impl Workspaces {
             | WorkspacesRequest::MailInvite { .. }) => {
                 self.page_invitations(device, request, now).await?
             }
-            WorkspacesRequest::EditRoles {
-                workspace,
-                request_id,
-                change,
-            } => {
-                self.edit_roles(&workspace, device, request_id, change)
-                    .await?;
-                self.page_workspace(&workspace, device).await?
-            }
             WorkspacesRequest::DocumentAccess { workspace } => WorkspacesReply::DocumentAccess(
                 self.page_document_access(&workspace, device, now).await?,
             ),
-            WorkspacesRequest::SetDocumentAccess {
-                workspace,
-                request_id,
-                app,
-                document,
-                recipient,
-                access,
-            } => {
-                self.set_document_access(
-                    &workspace,
-                    device,
-                    request_id,
-                    (&recipient, &app, &document),
-                    &access,
-                    now,
-                )
-                .await?;
-                self.page_workspace(&workspace, device).await?
-            }
             WorkspacesRequest::PreAdmit {
                 request_id,
                 grant,
@@ -310,6 +326,10 @@ impl Workspaces {
                 WorkspacesReply::Refused(
                     "a page shares part of a workspace with `grant.set`".into(),
                 )
+            }
+            // The changes a page signs itself ([`Self::page_answer`]).
+            WorkspacesRequest::EditRoles { .. } | WorkspacesRequest::SetDocumentAccess { .. } => {
+                return Err(CollaborationError::new("the change is the page's to sign"));
             }
             WorkspacesRequest::Name { workspace, name } => {
                 self.name_self(&workspace, device, &name, now).await?

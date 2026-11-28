@@ -11,7 +11,6 @@ use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_DOCUMENT, SharedDesktop};
 use tilo_desktop_model::{Layout, StripId, WindowWidth, Workspace, WorkspaceId, shared_resource};
 use tilo_peer_state::direct::Kept;
-use tilo_workspace_service::workspaces::SetMemberRoleRequest;
 
 use super::*;
 
@@ -231,29 +230,25 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
         crate::keep::common::receives(link, |peer| strip_name_in(peer).is_some()).await;
     }
 
-    // Mo is made the workspace's moderator while his page is in it, and his page learns it.
-    server
-        .workspaces()
-        .unwrap()
-        .set_member_role(
+    // Mo is made the workspace's moderator while his page is in it, and every copy learns it,
+    // the laptop that signed it included: the host relays a signed change back to its signer too.
+    laptop
+        .makes(
+            server.workspaces().unwrap(),
             &hosted.workspace,
-            &laptop.cert,
-            SetMemberRoleRequest {
-                request_id: [34; 32],
-                user_public_key: mo.user_pk,
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(mo.user_pk),
                 role: Role::Moderator,
             },
         )
         .await
         .unwrap();
-    crate::keep::common::receives(&mo_link, |peer| {
-        role(peer, mo_browser.device_pubkey()) == Some(collab_types::Role::Moderator)
-    })
-    .await;
-    crate::keep::common::receives(&ada_link, |peer| {
-        role(peer, mo_browser.device_pubkey()) == Some(collab_types::Role::Moderator)
-    })
-    .await;
+    for link in [&mo_link, &ada_link, &laptop_link] {
+        crate::keep::common::receives(link, |peer| {
+            role(peer, mo_browser.device_pubkey()) == Some(collab_types::Role::Moderator)
+        })
+        .await;
+    }
     // What each page asks before it offers a close on someone else's window.
     let moderates = |device: &TestDevice| {
         let workspaces = server.workspaces().unwrap();

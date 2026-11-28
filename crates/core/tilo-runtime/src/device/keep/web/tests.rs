@@ -329,14 +329,12 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
-        .publish(
-            &workspace,
-            &host.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&workspace, &host.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Coffee and tea".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
@@ -442,14 +440,12 @@ async fn a_back_soon_host_serves_its_public_listing_to_nobody() {
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
-        .publish(
-            &workspace,
-            &host.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&workspace, &host.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Coffee and tea".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     workspaces.hold_mode(tilo_workspace_service::workspaces::mode::HostMode::held(
@@ -1086,18 +1082,16 @@ async fn invitation_only_host(
     let workspaces = server.workspaces().unwrap().clone();
     let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     workspaces
-        .publish(
-            &workspace,
-            &host.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&workspace, &host.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Coffee and tea".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     workspaces
-        .settle_entry(&workspace, &host.cert, |entry| entry.invitation_only = true)
+        .found_entry(&workspace, &host.cert, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     (server, host, workspace, state)
@@ -1114,10 +1108,8 @@ async fn waiting_entry(
     use tilo_action_policy::{EntryMail, EntryPolicy, ListingPolicy};
 
     workspaces
-        .found_entry(
-            workspace,
-            founder,
-            EntryPolicy {
+        .found_entry(workspace, founder, |entry| {
+            *entry = EntryPolicy {
                 listing: Some(ListingPolicy {
                     description: "Coffee and tea".into(),
                     default_role: tilo_action_policy::Role::Editor,
@@ -1129,8 +1121,8 @@ async fn waiting_entry(
                     from: "wait-list@tilo.example".into(),
                     templates: None,
                 }),
-            },
-        )
+            }
+        })
         .await
         .unwrap();
 }

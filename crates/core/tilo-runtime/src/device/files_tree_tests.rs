@@ -31,7 +31,7 @@ use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipC
 use tilo_permissions::caps::Access as Granted;
 use tilo_permissions::caps::CapOverride;
 use tilo_permissions::caps::Scope;
-use tilo_server_protocol::workspaces::{RemoveMemberRequest, Role};
+use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::files::{FOLDERS_APP, FolderList};
 
@@ -475,12 +475,11 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
     // Bob's role is lowered while his mount runs: his next write is refused, his reads go on,
     // and nothing is mounted again.
     hosted
-        .set_member_role(
+        .change(
             &workspace,
-            &server_cert,
-            tilo_workspace_service::workspaces::SetMemberRoleRequest {
-                request_id: fresh_id(),
-                user_public_key: bob_cert.user_public_key,
+            (&server_cert, fresh_id()),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bob_cert.user_public_key),
                 role: Role::Viewer,
             },
         )
@@ -498,12 +497,11 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
 
     // Raised again, he writes again on the same mount.
     hosted
-        .set_member_role(
+        .change(
             &workspace,
-            &server_cert,
-            tilo_workspace_service::workspaces::SetMemberRoleRequest {
-                request_id: fresh_id(),
-                user_public_key: bob_cert.user_public_key,
+            (&server_cert, fresh_id()),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bob_cert.user_public_key),
                 role: Role::Editor,
             },
         )
@@ -658,12 +656,11 @@ async fn mounts_on_the_daemons_sync_and_enforce_what_the_workspace_grants_now() 
         .resolve_path_ino(&plan)
         .unwrap();
     hosted
-        .remove_member(
+        .change(
             &workspace,
-            &server_cert,
-            RemoveMemberRequest {
-                request_id: fresh_id(),
-                user_public_key: bob_cert.user_public_key,
+            (&server_cert, fresh_id()),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(bob_cert.user_public_key),
             },
         )
         .await
@@ -761,12 +758,11 @@ async fn a_member_removed_while_their_link_is_down_finds_no_workspace_when_it_re
 
     // Removed while he is away: nothing of it reaches the copy his device kept.
     hosted
-        .remove_member(
+        .change(
             &workspace,
-            &server_cert,
-            RemoveMemberRequest {
-                request_id: fresh_id(),
-                user_public_key: bob_cert.user_public_key,
+            (&server_cert, fresh_id()),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(bob_cert.user_public_key),
             },
         )
         .await

@@ -424,7 +424,6 @@ mod tests {
     use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
     use tilo_action_types::KindSet;
     use tilo_actions::remote::ReceiptStatus;
-    use tilo_workspace_service::workspaces::RemoveMemberRequest;
     use tilo_workspace_service::workspaces::fixtures::{
         hosting_device, record_grants, revoke_grants, test_host,
     };
@@ -1241,11 +1240,12 @@ mod tests {
         revoke_grants(&workspaces, &workspace, std::slice::from_ref(&grant.id)).await;
         assert!(read(TASKS).await.is_err(), "its grant was taken back");
         record_grants(&workspaces, &workspace, &[grant]).await;
-        let leaves = RemoveMemberRequest {
-            request_id: [8; 32],
-            user_public_key: cy_key,
+        let leaves = tilo_action_policy::Change::RemoveMember {
+            person: hex::encode(cy_key),
         };
-        let left = workspaces.remove_member(&workspace, &owner, leaves).await;
+        let left = workspaces
+            .change(&workspace, (&owner, [8; 32]), leaves)
+            .await;
         assert!(left.is_ok() && read(TASKS).await.is_err(), "Cy left");
         assert!(
             !found(&ada_person).contains("Wombat survey"),

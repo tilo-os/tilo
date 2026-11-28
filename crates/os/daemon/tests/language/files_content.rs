@@ -352,14 +352,12 @@ fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
             .workspace;
         host.daemon()
             .workspaces()
-            .publish(
-                &lounge,
-                host.daemon().workspaces().device_cert(),
-                tilo_server_protocol::directory::Listing {
+            .found_entry(&lounge, host.daemon().workspaces().device_cert(), |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: tilo_peer_state::join::Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         assert!(
@@ -415,12 +413,14 @@ fn a_tree_a_computers_mount_founds_is_one_a_page_opens() {
             .workspace;
         host.daemon()
             .workspaces()
-            .publish(
+            .found_entry(
                 &workspace,
                 host.daemon().workspaces().device_cert(),
-                tilo_server_protocol::directory::Listing {
-                    description: "Everyone".into(),
-                    default_role: tilo_peer_state::join::Role::Editor,
+                |entry| {
+                    entry.listing = Some(tilo_action_policy::ListingPolicy {
+                        description: "Everyone".into(),
+                        default_role: tilo_peer_state::join::Role::Editor,
+                    });
                 },
             )
             .await

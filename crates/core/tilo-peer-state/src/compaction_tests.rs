@@ -218,12 +218,7 @@ tilo_test_env::scenario! {
         );
         assert!(
             peer.governance_mut()
-                .set_member_administrator(
-                    guest.user_public_key,
-                    None,
-                    &owner_key,
-                    at(),
-                )
+                .declare_member(guest.user_public_key, crate::join::Role::Editor, true, None, &owner_key, at())
                 .unwrap()
         );
         assert!(ever_held(&document_of(&peer), "Secret plan"));

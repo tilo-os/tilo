@@ -37,14 +37,12 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     let workspaces = host.server.workspaces().unwrap();
     let club = workspaces.create("Club").await.unwrap();
     workspaces
-        .publish(
-            &club.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&club.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "The club".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let peer = arrive_under(

@@ -1607,35 +1607,6 @@ impl PeerGovernanceMut<'_> {
             .declare_member(user_public_key, role, administrator, name, key, now)
     }
 
-    /// Make a person an administrator of the workspace: a member as an Editor,
-    /// holding every governance action
-    /// ([`tilo_action_policy::roles::administrator_grant`]), whether one of
-    /// their devices has joined yet or not. A declaration made before they
-    /// arrive is governance like any other, so it is here when they do and
-    /// after a restart. `name`, when the caller carries one, is how the
-    /// workspace names them until they rename themselves.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the change is not `key`'s device's to make, the
-    /// person is the workspace's own owner, `name` is not a display name, or
-    /// governance cannot be updated.
-    pub fn set_member_administrator(
-        self,
-        user_public_key: [u8; 32],
-        name: Option<&str>,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.declare_member(
-            user_public_key,
-            crate::join::Role::Editor,
-            true,
-            name,
-            key,
-            now,
-        )
-    }
     /// Hand the workspace to the person `user_public_key`, as its owner's
     /// device `key`: they become its owner from this change on, on every
     /// device that replays it, and the owner this replaces stays as one of

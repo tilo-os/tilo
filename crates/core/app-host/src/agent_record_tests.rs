@@ -14,11 +14,11 @@ use tilo_peer_state::join::Role;
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::WorkspaceAgents;
 use tilo_workspace_service::work::{self, Ineligible, NotTaken};
+use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
     admit, agents_listed as agents, ask_agents as ask, hosting_device, offered_agents as offered,
     test_host,
 };
-use tilo_workspace_service::workspaces::{SetMemberRoleRequest, Workspaces};
 
 use crate::agents::agent_keys::AgentKeys;
 use crate::agents::triggered;
@@ -95,12 +95,11 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
     let workspace = created.workspace.clone();
     let viewer = admit(workspaces, &workspace, &owner, 7).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [41; 32],
-                user_public_key: viewer.user_public_key,
+            (&owner, [41; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(viewer.user_public_key),
                 role: Role::Viewer,
             },
         )

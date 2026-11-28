@@ -627,12 +627,11 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
     );
 
     hosted
-        .set_member_role(
+        .change(
             &workspace,
-            &server_cert,
-            tilo_server_protocol::workspaces::SetMemberRoleRequest {
-                request_id: [82; 32],
-                user_public_key: guest_root.verifying_key().to_bytes(),
+            (&server_cert, [82; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(guest_root.verifying_key().to_bytes()),
                 role: Role::Editor,
             },
         )
@@ -982,7 +981,9 @@ async fn a_kept_workspaces_entry_is_settled_once_and_the_owners_change_stays() {
         ..deployment.clone()
     };
     workspaces
-        .found_entry(&workspace.to_string(), &cert, changed.clone())
+        .found_entry(&workspace.to_string(), &cert, |entry| {
+            *entry = changed.clone();
+        })
         .await
         .expect("the owner changes the entry");
 

@@ -25,7 +25,6 @@ use tilo_user_identity::DeviceCert;
 use crate::fixtures::{
     admit, ask_own, caller, hosted, hosting_device, request, settled, test_host,
 };
-use tilo_workspace_service::workspaces::SetMemberRoleRequest;
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -243,12 +242,11 @@ async fn a_workspaces_key_is_sealed_and_no_other_workspace_reaches_it() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [31; 32],
-                user_public_key: bo.user_public_key,
+            (&owner, [31; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bo.user_public_key),
                 role: Role::Moderator,
             },
         )

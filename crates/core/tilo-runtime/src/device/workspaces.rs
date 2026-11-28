@@ -319,7 +319,9 @@ impl ServiceWorkspaces {
                 .found_entry(
                     &workspace.to_string(),
                     &self.identity.device_cert,
-                    entry.clone(),
+                    |current| {
+                        *current = entry.clone();
+                    },
                 )
                 .await
                 .map_err(|error| error.to_string())?;

@@ -1152,12 +1152,14 @@ impl Host {
         let daemon = self.daemon();
         let workspaces = daemon.workspaces();
         workspaces
-            .remove_member(
+            .change(
                 workspace,
-                workspaces.device_cert(),
-                tilo_workspace_service::workspaces::RemoveMemberRequest {
-                    request_id: *blake3::hash(&[&user[..], b"removed"].concat()).as_bytes(),
-                    user_public_key: user,
+                (
+                    workspaces.device_cert(),
+                    *blake3::hash(&[&user[..], b"removed"].concat()).as_bytes(),
+                ),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(user),
                 },
             )
             .await

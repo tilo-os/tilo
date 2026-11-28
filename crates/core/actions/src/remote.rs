@@ -579,6 +579,16 @@ pub fn workspace_grant(address: &ActionAddress) -> Option<&str> {
     (permissions == WORKSPACE_PERMISSIONS && !grant.is_empty()).then_some(grant)
 }
 
+/// The argument `address` names in its resource, as the governance action asked there reads
+/// it: the person a member's resource is, the app an app's is, or the grant a permission's is.
+#[must_use]
+pub fn workspace_named_argument(address: &ActionAddress) -> Option<(&'static str, &str)> {
+    workspace_person(address)
+        .map(|person| ("person", person))
+        .or_else(|| workspace_app_named(address).map(|app| ("app", app)))
+        .or_else(|| workspace_grant(address).map(|grant| ("grant", grant)))
+}
+
 /// The person's settings, kept by the provider whether or not the app that shows
 /// them is open: each section a record published with its field edits and
 /// verbs (`settings:<kind>`), changed through them as that app's window
@@ -1116,6 +1126,12 @@ pub enum ActionCallError {
     /// works once it is (its `serving` state).
     #[error("the workspace is not ready for this call yet")]
     NotReady,
+    /// The change is the caller's own device's to sign, as every change of a workspace's
+    /// governance is: what it signs on ([`SignFacts`]). The device checks the change named is
+    /// the one it asked for, signs it with its own key, and calls again with the signed changes
+    /// ([`SIGNED_ARGUMENT`]); the host only carries them. Nothing ran.
+    #[error("the change is the caller's device's to sign")]
+    SignatureRequired(Box<SignFacts>),
     /// The device or provider that runs the call did not answer in time. Unlike
     /// every other variant this one does not say that nothing ran: the same
     /// call under the same invocation id is answered by what it did, and runs
@@ -1211,6 +1227,7 @@ impl ActionCallError {
             Self::NotCancellable { .. } => "not_cancellable",
             Self::Refused { .. } => "refused",
             Self::NotReady => "not_ready",
+            Self::SignatureRequired(_) => "signature_required",
             Self::Unanswered => "unanswered",
         }
     }
@@ -1276,6 +1293,63 @@ impl ActionCallError {
 /// on the wire as an [`ActionCallError::InvalidRequest`].
 pub const STALE_REVISION_REASON: &str = "the target changed since that revision; list it again";
 
+/// How [`ActionCallError::SignatureRequired`] travels: a refusal whose reason starts with this,
+/// the facts following as JSON. A peer that predates it reads a refusal, which it is to a device
+/// that does not sign its own changes.
+pub const SIGNATURE_REQUIRED_REASON: &str = "signature_required: ";
+
+/// The argument a call carries its device's signed changes in, after
+/// [`ActionCallError::SignatureRequired`]: the workspace changes, each hex-encoded.
+pub const SIGNED_ARGUMENT: &str = "signed";
+
+/// What a device signs on when its host answers [`ActionCallError::SignatureRequired`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignFacts {
+    /// The workspace the change is in.
+    pub workspace: String,
+    /// The workspace's governance as the host holds it: encoded neighbour messages, each
+    /// hex-encoded.
+    pub governance: Vec<String>,
+    /// The typed change the host read the call as. The device signs only when this is the
+    /// change it asked for.
+    pub change: serde_json::Value,
+}
+
+/// The phase of a call its person said yes to that waits for its device to sign its change
+/// ([`SignFacts::awaited`]).
+pub const SIGNING_PHASE: &str = "signing";
+
+impl SignFacts {
+    /// `invocation`, a call its person said yes to, waiting for the device that asked it to sign
+    /// its change on these facts: what that device reads as it follows the call
+    /// ([`Self::awaited_in`]). It follows the update the call waited for its person in.
+    #[must_use]
+    pub fn awaited(&self, invocation: InvocationId) -> InvocationUpdate {
+        InvocationUpdate::Progress {
+            invocation,
+            sequence: 2,
+            phase: SIGNING_PHASE.to_owned(),
+            completed: None,
+            total: None,
+            message: serde_json::to_string(self).ok(),
+        }
+    }
+
+    /// What `update` asks its call's device to sign on ([`Self::awaited`]): `None` for an update
+    /// that says anything else.
+    #[must_use]
+    pub fn awaited_in(update: &InvocationUpdate) -> Option<Self> {
+        match update {
+            InvocationUpdate::Progress {
+                phase,
+                message: Some(facts),
+                ..
+            } if phase == SIGNING_PHASE => serde_json::from_str(facts).ok(),
+            _ => None,
+        }
+    }
+}
+
 /// [`ActionCallError`] as it travels: only variants every peer decodes.
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionCallError")]
@@ -1294,6 +1368,10 @@ enum WireActionCallError {
 }
 
 impl From<ActionCallError> for WireActionCallError {
+    #[expect(
+        clippy::expect_used,
+        reason = "the facts a device signs on are strings and lists, which always serialise"
+    )]
     fn from(error: ActionCallError) -> Self {
         match error {
             ActionCallError::Unavailable { reason } => Self::Unavailable { reason },
@@ -1309,6 +1387,12 @@ impl From<ActionCallError> for WireActionCallError {
             ActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
             ActionCallError::Refused { reason } => Self::Refused { reason },
             ActionCallError::NotReady => Self::NotReady,
+            ActionCallError::SignatureRequired(facts) => Self::Refused {
+                reason: format!(
+                    "{SIGNATURE_REQUIRED_REASON}{}",
+                    serde_json::to_string(&facts).expect("sign facts are plain JSON")
+                ),
+            },
             ActionCallError::Unanswered => Self::Unanswered,
         }
     }
@@ -1328,7 +1412,13 @@ impl From<WireActionCallError> for ActionCallError {
             WireActionCallError::UnknownInvocation => Self::UnknownInvocation,
             WireActionCallError::InvocationConflict => Self::InvocationConflict,
             WireActionCallError::NotCancellable { reason } => Self::NotCancellable { reason },
-            WireActionCallError::Refused { reason } => Self::Refused { reason },
+            WireActionCallError::Refused { reason } => match reason
+                .strip_prefix(SIGNATURE_REQUIRED_REASON)
+                .and_then(|facts| serde_json::from_str::<SignFacts>(facts).ok())
+            {
+                Some(facts) => Self::SignatureRequired(Box::new(facts)),
+                None => Self::Refused { reason },
+            },
             WireActionCallError::NotReady => Self::NotReady,
             WireActionCallError::Unanswered => Self::Unanswered,
         }

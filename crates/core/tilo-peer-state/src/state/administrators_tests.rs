@@ -45,7 +45,7 @@ tilo_test_env::scenario! {
 
         assert!(
             peer.governance_mut()
-                .set_member_administrator(user, None, &host_key, now)
+                .declare_member(user, crate::join::Role::Editor, true, None, &host_key, now)
                 .unwrap()
         );
         assert!(is_administrator(&peer, user, now));
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
         assert!(!moderates(&peer));
         assert!(
             peer.governance_mut()
-                .set_member_administrator(user, None, &host_key, now)
+                .declare_member(user, crate::join::Role::Editor, true, None, &host_key, now)
                 .unwrap()
         );
         assert!(moderates(&peer));
@@ -109,7 +109,7 @@ tilo_test_env::scenario! {
                 .is_err()
         );
         peer.governance_mut()
-            .set_member_administrator(user, None, &host_key, now)
+            .declare_member(user, crate::join::Role::Editor, true, None, &host_key, now)
             .unwrap();
         assert!(
             peer.governance_mut()
@@ -155,7 +155,7 @@ tilo_test_env::scenario! {
         }
 
         peer.governance_mut()
-            .set_member_administrator(user, None, &host_key, now)
+            .declare_member(user, crate::join::Role::Editor, true, None, &host_key, now)
             .unwrap();
         assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
         assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
@@ -281,7 +281,7 @@ tilo_test_env::scenario! {
             "an editor's grants change no role"
         );
         peer.governance_mut()
-            .set_member_administrator(user, None, &host_key, now)
+            .declare_member(user, crate::join::Role::Editor, true, None, &host_key, now)
             .unwrap();
         assert!(
             peer.clone()
@@ -458,7 +458,7 @@ mod made_and_invited {
             assert!(
                 peer.clone()
                     .governance_mut()
-                    .set_member_administrator(dee, None, &eve_key, now)
+                    .declare_member(dee, crate::join::Role::Editor, true, None, &eve_key, now)
                     .is_err()
             );
             assert!(
@@ -471,13 +471,13 @@ mod made_and_invited {
             // The owner's own device makes Bob one, and Bob makes Dee one.
             assert!(
                 peer.governance_mut()
-                    .set_member_administrator(bob, None, &owner_key, now)
+                    .declare_member(bob, crate::join::Role::Editor, true, None, &owner_key, now)
                     .unwrap()
             );
             assert!(is_administrator(&peer, bob, now));
             assert!(
                 peer.governance_mut()
-                    .set_member_administrator(dee, None, &bob_key, now)
+                    .declare_member(dee, crate::join::Role::Editor, true, None, &bob_key, now)
                     .unwrap()
             );
             assert!(is_administrator(&peer, dee, now));

@@ -2382,10 +2382,9 @@ impl Task {
                     .await
                     .map_err(|error| format!("this device could not sign the request: {error}"))?,
                 ));
-                let mut asked = ask_action(
+                let mut asked = ask_signing(
                     &link,
-                    Arc::clone(&signer),
-                    cert.device_public_key,
+                    (&cert, Arc::clone(&signer)),
                     "",
                     host,
                     RemoteActionMessage::Invoke(invoke.clone()),
@@ -2395,10 +2394,9 @@ impl Task {
                 if asked.as_ref().err().is_some_and(link_failed)
                     && let Some(fresh) = dialed_again(&commands).await
                 {
-                    asked = ask_action(
+                    asked = ask_signing(
                         &fresh,
-                        signer,
-                        cert.device_public_key,
+                        (&cert, signer),
                         "",
                         host,
                         RemoteActionMessage::Invoke(invoke),
@@ -4480,7 +4478,6 @@ impl Task {
             return;
         };
         let signer = Arc::clone(&self.signer);
-        let device = self.config.cert.device_public_key;
         let user = self.config.cert.user_public_key;
         let reports = Arc::clone(&self.reports);
         let cert = self.config.cert.clone();
@@ -4497,10 +4494,9 @@ impl Task {
             } else {
                 (workspace_id.to_string(), message)
             };
-            let mut asked = ask_action(
+            let mut asked = ask_signing(
                 &link,
-                Arc::clone(&signer),
-                device,
+                (&cert, Arc::clone(&signer)),
                 &scope,
                 to,
                 message.clone(),
@@ -4510,7 +4506,7 @@ impl Task {
             if asked.as_ref().err().is_some_and(link_failed)
                 && let Some(fresh) = dialed_again(&commands).await
             {
-                asked = ask_action(&fresh, signer, device, &scope, to, message).await;
+                asked = ask_signing(&fresh, (&cert, signer), &scope, to, message).await;
             }
             match asked {
                 Ok(frame) => reports.emit(&Event::Remote(Heard::Action {
@@ -4657,6 +4653,127 @@ async fn dialed_again(
         .send(Command::ActionsRedial(answer))
         .ok()?;
     receipt.await.ok().flatten()
+}
+
+/// [`ask_action`] as this device, `cert`'s: a governance change the host answers is this
+/// device's to sign it signs, when it is the change it asked for, and asks again with it
+/// ([`tilo_peer_state::asked_signing::signed_again`]). The answer is then the one to the first
+/// ask. A change that waits for its person's yes first is followed here until they answer, and
+/// signed then the same way ([`follow_to_signing`]). A signer that does not answer within
+/// [`SIGN_WAIT`](tilo_peer_state::asked_signing::SIGN_WAIT) (a passkey nobody touches) signs
+/// nothing, and its person reads
+/// [`NOT_SIGNED_IN_TIME`](tilo_peer_state::asked_signing::NOT_SIGNED_IN_TIME).
+///
+/// # Errors
+/// As [`ask_action`].
+async fn ask_signing(
+    link: &tilo_server_client::link::Link,
+    (cert, signer): (&DeviceCert, Arc<dyn tilo_server_client::DeviceSigner>),
+    workspace: &str,
+    to: [u8; 32],
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Result<Vec<u8>, tilo_server_protocol::refusal::Refusal> {
+    let (device, asked) = (cert.device_public_key, message.clone());
+    let frame = ask_action(link, Arc::clone(&signer), device, workspace, to, asked).await?;
+    let tilo_actions::remote::RemoteActionMessage::Invoke(request) = message else {
+        return Ok(frame);
+    };
+    let Some((invocation, facts)) = tilo_peer_state::asked_signing::sign_asked_in(&frame) else {
+        if tilo_peer_state::asked_signing::accepted_change(&request, &frame) {
+            let (link, cert, workspace) = (link.clone(), cert.clone(), workspace.to_owned());
+            n0_future::task::spawn(async move {
+                follow_to_signing(&link, (&cert, signer), &workspace, to, &request).await;
+            });
+        }
+        return Ok(frame);
+    };
+    let asked_again = signed_and_asked(
+        link,
+        (cert, Arc::clone(&signer)),
+        (workspace, to),
+        &request,
+        &facts,
+    )
+    .await;
+    Ok(match asked_again {
+        Ok(answer) => tilo_peer_state::asked_signing::answered_as(answer?, invocation),
+        Err(reason) => {
+            tilo_peer_state::asked_signing::refused_frame(invocation, reason).unwrap_or(frame)
+        }
+    })
+}
+
+/// `request` signed on `facts` by this device and asked of `to` again: the host's answer, or why
+/// this device did not sign.
+async fn signed_and_asked(
+    link: &tilo_server_client::link::Link,
+    (cert, signer): (&DeviceCert, Arc<dyn tilo_server_client::DeviceSigner>),
+    (workspace, to): (&str, [u8; 32]),
+    request: &tilo_actions::remote::InvokeRequest,
+    facts: &tilo_actions::remote::SignFacts,
+) -> Result<Result<Vec<u8>, tilo_server_protocol::refusal::Refusal>, String> {
+    use tilo_peer_state::asked_signing::{NOT_SIGNED_IN_TIME, SIGN_WAIT};
+    let again = n0_future::time::timeout(
+        SIGN_WAIT,
+        tilo_peer_state::asked_signing::signed_again(
+            request,
+            facts,
+            (cert, signer.as_ref()),
+            crate::clock::system_time(tilo_clock::unix_now_ns()),
+        ),
+    )
+    .await
+    .unwrap_or_else(|_| Err(NOT_SIGNED_IN_TIME.to_owned()))?;
+    let again = tilo_actions::remote::RemoteActionMessage::Invoke(again);
+    Ok(ask_action(link, signer, cert.device_public_key, workspace, to, again).await)
+}
+
+/// Follow `request`, a change the host accepted to wait for its person's yes, until it ends, or
+/// until their yes has the host wait for this device to sign it: signed then, and asked again,
+/// and the call ends with what that came to. A link that closes ends the following, and the
+/// host ends the call unsigned.
+async fn follow_to_signing(
+    link: &tilo_server_client::link::Link,
+    (cert, signer): (&DeviceCert, Arc<dyn tilo_server_client::DeviceSigner>),
+    workspace: &str,
+    to: [u8; 32],
+    request: &tilo_actions::remote::InvokeRequest,
+) {
+    use tilo_actions::remote::{
+        MAX_REMOTE_WAIT_MS, RemoteActionFrame, RemoteActionMessage, SignFacts, UpdateMark,
+    };
+    let mut seen = Some(UpdateMark::Accepted);
+    loop {
+        let observe = RemoteActionMessage::Observe {
+            correlation: 0,
+            invocation: request.invocation,
+            wait_ms: Some(MAX_REMOTE_WAIT_MS),
+            seen,
+        };
+        let device = cert.device_public_key;
+        let asked = ask_action(link, Arc::clone(&signer), device, workspace, to, observe).await;
+        let Ok(frame) = asked else {
+            return;
+        };
+        let Ok(RemoteActionMessage::Update {
+            state: Some(state), ..
+        }) = RemoteActionFrame::decode(&frame).map(|frame| frame.message)
+        else {
+            return;
+        };
+        if state.is_terminal() {
+            return;
+        }
+        if let Some(facts) = SignFacts::awaited_in(&state.update) {
+            if let Err(reason) =
+                signed_and_asked(link, (cert, signer), (workspace, to), request, &facts).await
+            {
+                tracing::warn!(%reason, "this device did not sign the change its person allowed");
+            }
+            return;
+        }
+        seen = Some(UpdateMark::of(&state.update));
+    }
 }
 
 /// Ask `to`, a device of `workspace`, `message` through the host's action service, and answer the

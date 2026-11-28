@@ -146,8 +146,10 @@ pub mod members;
 pub mod workspace_membership;
 
 mod admission;
+pub mod asked_signing;
 pub mod own_admission;
 pub mod resources;
+pub mod signed_actions;
 /// The work reading and writing a workspace's history costs, for the whole
 /// process.
 pub mod work;

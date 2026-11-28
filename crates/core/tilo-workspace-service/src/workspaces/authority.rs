@@ -41,9 +41,7 @@
 use tilo_action_policy::{Change, Context, Role, roles};
 use tilo_user_identity::DeviceCert;
 
-use super::{
-    CollaborationError, HostedWorkspace, MemberPlace, SetMemberRoleRequest, Workspaces, system_time,
-};
+use super::{CollaborationError, HostedWorkspace, MemberPlace, Workspaces, system_time};
 use crate::service_authority::ServiceOperation;
 
 /// What a workspace administration request asks of its authority.
@@ -156,7 +154,36 @@ impl Workspaces {
         op: WorkspaceOp<'_>,
         now: u64,
     ) -> Result<String, CollaborationError> {
-        let result = self.decide(device, workspace, op, now);
+        self.judged(device, workspace, op, now, true)
+    }
+
+    /// [`Self::authorize`] of a change `device` signs itself: what this host's own person may do
+    /// there decides nothing, since this host does not sign it.
+    ///
+    /// # Errors
+    ///
+    /// Why the device may not.
+    pub(super) fn authorize_signed(
+        &self,
+        device: &DeviceCert,
+        workspace: &HostedWorkspace,
+        op: WorkspaceOp<'_>,
+        now: u64,
+    ) -> Result<String, CollaborationError> {
+        self.judged(device, Some(workspace), op, now, false)
+    }
+
+    /// [`Self::authorize`], the change signed by this host when `host_signs`, and logged when
+    /// refused.
+    fn judged(
+        &self,
+        device: &DeviceCert,
+        workspace: Option<&HostedWorkspace>,
+        op: WorkspaceOp<'_>,
+        now: u64,
+        host_signs: bool,
+    ) -> Result<String, CollaborationError> {
+        let result = self.decide(device, workspace, op, now, host_signs);
         if let Err(reason) = &result {
             tracing::warn!(
                 device = %hex::encode(device.device_public_key),
@@ -169,8 +196,8 @@ impl Workspaces {
     }
 
     /// Whether `device` may do `op` in the workspace `workspace` names
-    /// (`None`: of the server itself) now, as [`Self::authorize`] decides once
-    /// the request is carried out: what an agent's call is checked for before its person
+    /// (`None`: of the server itself) now, as its device's own place decides it
+    /// ([`Self::authorize_signed`]): what an agent's call is checked for before its person
     /// is asked ([`super::actions::agents`]), so they are never asked about
     /// what would be refused anyway.
     ///
@@ -185,14 +212,14 @@ impl Workspaces {
     ) -> Result<(), CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let Some(workspace) = workspace else {
-            return self.authorize(device, None, op, now).map(drop);
+            return self.judged(device, None, op, now, false).map(drop);
         };
         let hosted = self.workspace(workspace).await?;
         let hosted = hosted.lock().await;
-        self.authorize(device, Some(&hosted), op, now).map(drop)
+        self.judged(device, Some(&hosted), op, now, false).map(drop)
     }
 
-    /// Whether [`Self::authorize`] would let `device` do `op` in `workspace` at
+    /// Whether [`Self::authorize_signed`] would let `device` do `op` in `workspace` at
     /// `now`: the same decision, asked without acting on it, so a catalogue
     /// can leave out what its caller may not do. A refusal here is not
     /// logged; nothing was attempted.
@@ -203,7 +230,7 @@ impl Workspaces {
         op: WorkspaceOp<'_>,
         now: u64,
     ) -> bool {
-        self.decide(device, workspace, op, now).is_ok()
+        self.decide(device, workspace, op, now, false).is_ok()
     }
 
     fn decide(
@@ -212,6 +239,7 @@ impl Workspaces {
         workspace: Option<&HostedWorkspace>,
         op: WorkspaceOp<'_>,
         now: u64,
+        host_signs: bool,
     ) -> Result<String, CollaborationError> {
         let host = self.inner.host.cert.user_public_key;
         // A device this host placed for a Browser environment carries a certificate of the
@@ -269,7 +297,7 @@ impl Workspaces {
                 ));
             }
         }
-        decide_by_governance(workspace, device, op, now, Some(host))
+        decide_by_governance(workspace, device, op, now, host_signs.then_some(host))
     }
 }
 
@@ -500,31 +528,6 @@ fn a_key_may_not(
 /// list does not let it make the change.
 const OWNER_SIGNS: &str = "only the workspace's owner makes this change, and from a device of their own: \
      this host serves the workspace as one of its administrators and may not sign it for them";
-
-impl Workspaces {
-    /// Whether `device` may give the member `request` names its new role in
-    /// `workspace`: the workspace's set-role change. Setting a role also takes
-    /// back an administrator's access, which the workspace's policy gives
-    /// only its owner
-    /// ([`tilo_action_policy::WorkspacePolicy::may_unmake_administrators`]).
-    ///
-    /// # Errors
-    ///
-    /// Why the device may not.
-    pub(super) fn authorize_role_change(
-        &self,
-        workspace: &HostedWorkspace,
-        device: &DeviceCert,
-        request: &SetMemberRoleRequest,
-        now: u64,
-    ) -> Result<String, CollaborationError> {
-        let change = Change::SetRole {
-            person: hex::encode(request.user_public_key),
-            role: request.role,
-        };
-        self.authorize(device, Some(workspace), WorkspaceOp::Change(&change), now)
-    }
-}
 
 impl Workspaces {
     /// How `workspace`'s membership log stands against its rows, for an

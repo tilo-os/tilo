@@ -716,12 +716,11 @@ async fn a_removed_member_opens_nothing(process: tilo_clock::testing::OwnProcess
 
     // The owner removes Bob.
     hosted
-        .remove_member(
+        .change(
             &WORKSPACE.to_string(),
-            &issuer.cert,
-            tilo_workspace_service::workspaces::RemoveMemberRequest {
-                request_id: [0x52; 32],
-                user_public_key: bob.user_pk,
+            (&issuer.cert, [0x52; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(bob.user_pk),
             },
         )
         .await

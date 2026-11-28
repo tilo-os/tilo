@@ -8,6 +8,7 @@
 //! path its actions run; what is read back is the committed governance, the
 //! changes a history or a feed of them reads.
 
+use tilo_action_policy::Change;
 use tilo_action_policy::roles::governance;
 use tilo_member_types::{Actor, MemberId, PersonId};
 use tilo_peer_state::join::Role;
@@ -131,12 +132,11 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [2; 32],
-                user_public_key: target,
+            (&owner, [2; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(target),
                 role: Role::Viewer,
             },
         )
@@ -152,12 +152,11 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
-        .remove_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [3; 32],
-                user_public_key: target,
+            (&owner, [3; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(target),
             },
         )
         .await
@@ -187,12 +186,11 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
-        .ban_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [5; 32],
-                user_public_key: banned,
+            (&owner, [5; 32]),
+            tilo_action_policy::Change::Ban {
+                person: hex::encode(banned),
             },
         )
         .await
@@ -214,12 +212,11 @@ async fn each_member_action_stamps_the_members_change_it_makes() {
     let before = listed(workspaces, &workspace).await;
     let started = tilo_clock::unix_now();
     workspaces
-        .unban_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [6; 32],
-                user_public_key: banned,
+            (&owner, [6; 32]),
+            tilo_action_policy::Change::Unban {
+                person: hex::encode(banned),
             },
         )
         .await
@@ -257,23 +254,21 @@ async fn a_ban_and_an_unban_reach_the_members_in_that_order() {
         .unwrap();
     let before = listed(workspaces, &workspace).await;
     workspaces
-        .ban_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [2; 32],
-                user_public_key: person,
+            (&owner, [2; 32]),
+            tilo_action_policy::Change::Ban {
+                person: hex::encode(person),
             },
         )
         .await
         .unwrap();
     workspaces
-        .unban_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [3; 32],
-                user_public_key: person,
+            (&owner, [3; 32]),
+            tilo_action_policy::Change::Unban {
+                person: hex::encode(person),
             },
         )
         .await
@@ -312,24 +307,22 @@ async fn a_refused_member_action_stamps_no_members_change() {
     // Someone the workspace has never let in cannot move its people, ban one
     // or remove one: the change is refused before any is written.
     let refused = workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &stranger,
-            SetMemberRoleRequest {
-                request_id: [1; 32],
-                user_public_key: owner.user_public_key,
+            (&stranger, [1; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(owner.user_public_key),
                 role: Role::Viewer,
             },
         )
         .await;
     assert!(refused.is_err(), "a stranger moves nobody");
     let refused = workspaces
-        .ban_member(
+        .change(
             &workspace,
-            &stranger,
-            RemoveMemberRequest {
-                request_id: [2; 32],
-                user_public_key: owner.user_public_key,
+            (&stranger, [2; 32]),
+            tilo_action_policy::Change::Ban {
+                person: hex::encode(owner.user_public_key),
             },
         )
         .await;
@@ -380,12 +373,11 @@ async fn a_base_keeps_every_action_the_history_before_it_took() {
         .await
         .unwrap();
     workspaces
-        .remove_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [2; 32],
-                user_public_key: first,
+            (&owner, [2; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(first),
             },
         )
         .await
@@ -510,28 +502,49 @@ async fn a_watcher_of_the_workspace_reads_each_member_action_once_with_who_and_w
             .await
             .unwrap();
     }
-    let gone = |request: u8, person: [u8; 32]| RemoveMemberRequest {
-        request_id: [request; 32],
-        user_public_key: person,
-    };
+    let person = |person: [u8; 32]| hex::encode(person);
     workspaces
-        .ban_member(&workspace, &owner, gone(3, banned))
+        .change(
+            &workspace,
+            (&owner, [3; 32]),
+            Change::Ban {
+                person: person(banned),
+            },
+        )
         .await
         .unwrap();
     // Someone the workspace never let in removes nobody, and nothing of it
     // reaches a watcher.
     assert!(
         workspaces
-            .remove_member(&workspace, &stranger, gone(4, removed))
+            .change(
+                &workspace,
+                (&stranger, [4; 32]),
+                Change::RemoveMember {
+                    person: person(removed)
+                }
+            )
             .await
             .is_err()
     );
     workspaces
-        .remove_member(&workspace, &owner, gone(5, removed))
+        .change(
+            &workspace,
+            (&owner, [5; 32]),
+            Change::RemoveMember {
+                person: person(removed),
+            },
+        )
         .await
         .unwrap();
     workspaces
-        .unban_member(&workspace, &owner, gone(6, banned))
+        .change(
+            &workspace,
+            (&owner, [6; 32]),
+            Change::Unban {
+                person: person(banned),
+            },
+        )
         .await
         .unwrap();
 
@@ -716,12 +729,11 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
     );
 
     workspaces
-        .remove_member(
+        .change(
             &first,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [2; 32],
-                user_public_key: target,
+            (&owner, [2; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(target),
             },
         )
         .await
@@ -817,12 +829,11 @@ async fn the_members_resource_names_each_member_with_their_role_and_join_time() 
     );
 
     workspaces
-        .remove_member(
+        .change(
             &workspace,
-            &owner,
-            RemoveMemberRequest {
-                request_id: [2; 32],
-                user_public_key: target,
+            (&owner, [2; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(target),
             },
         )
         .await

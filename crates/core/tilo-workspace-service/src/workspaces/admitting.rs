@@ -32,10 +32,10 @@ use tilo_user_identity::DeviceCert;
 use super::authority::WorkspaceOp;
 use super::collaboration::{
     AddMemberRequest, CollaborationError, GovernanceCompletion, HeldWorkspace, MemberPlace,
-    Redeeming, actor_of, request_digest, stamped,
+    Redeeming, request_digest,
 };
 use super::pages::Presented;
-use super::{HostedWorkspace, Workspaces, system_time};
+use super::{HostedWorkspace, Workspaces};
 
 /// The argument of `workspace/members#admit` that redeems invitations: the admissions, each a
 /// [`Admitting`], answered in order with a [`Admitted`] each.
@@ -187,69 +187,60 @@ impl Workspaces {
         administrator: &DeviceCert,
         request: AddMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let person = request.user_public_key;
-        let place = request.place;
-        let owner_to_come = place == MemberPlace::Owner
-            && self
-                .policy_of(workspace)
-                .await
-                .is_none_or(|policy| policy.joined_at(&hex::encode(person)).is_none());
-        if owner_to_come {
-            let request = tilo_server_protocol::workspaces::IssueInvitationRequest {
-                request_id: request.request_id,
-                role: Role::Owner,
-                recipient_user_public_key: Some(person),
-                invitee_name: request.name.clone(),
-                expires_at_ns: now
-                    .saturating_add(tilo_peer_state::join_log::MAX_INVITATION_LIFETIME_NS),
-                inviter_name: None,
-            };
-            self.issue_for(workspace, administrator, request, false, None)
-                .await?;
-            return Ok(GovernanceCompletion {
-                generation: self.summary(workspace).await?.generation,
-            });
+        let (person, place) = (request.user_public_key, request.place);
+        let ask = (request.request_id, request.name.clone());
+        if place == MemberPlace::Owner
+            && let Some(done) = self
+                .owner_to_come(workspace, administrator, person, ask)
+                .await?
+        {
+            return Ok(done);
         }
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let by = self.authorize(
-            administrator,
-            Some(&workspace),
-            WorkspaceOp::Place(person, place),
-            now,
-        )?;
-        let key = self.inner.host.key.clone();
-        let name = request.name.as_deref();
-        let done = self
-            .administer_as(
-                &mut workspace,
-                request.request_id,
-                request_digest(&("member", person, &place, name))?,
-                |peer| {
-                    peer.governance_mut()
-                        .place_member(person, place, name, &key, system_time(now))
-                },
-                stamped(
-                    tilo_action_policy::roles::governance::ADD_MEMBER,
-                    actor_of(&by),
-                ),
-                now,
-            )
-            .await;
-        if done.is_ok() {
-            // Holding the person again is a deliberate admission, and lifts a
-            // plain removal at once, as it lifts the mark on a device the
-            // workspace took off its member list. A ban is not lifted so: its
-            // block stays on the workspace's policy, and admitting a banned
-            // person is refused before this change commits.
-            workspace
-                .removals
-                .clear(person)
-                .map_err(CollaborationError::new)?;
+        let command = tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Place {
+            person,
+            place,
+            name: request.name,
+        };
+        self.change(workspace, (administrator, request.request_id), command)
+            .await
+    }
+
+    /// `person` made the owner of `workspace` by `administrator` as they join, where no device of
+    /// theirs has: an owner invitation for them, named `name` and asked under `request_id`, which
+    /// hands them the workspace as they redeem it. `None` for a person who has joined, made the
+    /// owner at once.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not here, or `administrator` may not issue the invitation.
+    pub(crate) async fn owner_to_come(
+        &self,
+        workspace: &str,
+        administrator: &DeviceCert,
+        person: [u8; 32],
+        (request_id, name): ([u8; 32], Option<String>),
+    ) -> Result<Option<GovernanceCompletion>, CollaborationError> {
+        let joined = self
+            .policy_of(workspace)
+            .await
+            .is_some_and(|policy| policy.joined_at(&hex::encode(person)).is_some());
+        if joined {
+            return Ok(None);
         }
-        drop(workspace);
-        done
+        let request = tilo_server_protocol::workspaces::IssueInvitationRequest {
+            request_id,
+            role: Role::Owner,
+            recipient_user_public_key: Some(person),
+            invitee_name: name,
+            expires_at_ns: tilo_clock::unix_now_ns()
+                .saturating_add(tilo_peer_state::join_log::MAX_INVITATION_LIFETIME_NS),
+            inviter_name: None,
+        };
+        self.issue_for(workspace, administrator, request, false, None)
+            .await?;
+        Ok(Some(GovernanceCompletion {
+            generation: self.summary(workspace).await?.generation,
+        }))
     }
 
     /// `workspace/members#admit` with invitations ([`ADMISSIONS`]), asked by `caller` of the

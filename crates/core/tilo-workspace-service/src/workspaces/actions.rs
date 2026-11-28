@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde_json::{Map, Value, json};
 use tilo_action_calls::InvocationLog;
 use tilo_action_policy::roles::{self, governance};
-use tilo_action_policy::{Answer, EntryPolicy, ListingPolicy, TreePath};
+use tilo_action_policy::{Answer, EntryPolicy, TreePath};
 use tilo_action_services::{formats, mcp_server, server_account};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
@@ -58,15 +58,16 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_GRANT_SET,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app, workspace_app_named,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app,
     workspace_governance_address, workspace_governance_child, workspace_governance_operation,
-    workspace_governance_resource, workspace_member, workspace_person,
+    workspace_governance_resource, workspace_member, workspace_named_argument,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
     InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, RiskLevel,
 };
 use tilo_peer_state::join::Role;
+use tilo_peer_state::signed_actions::Arguments;
 use tilo_server_protocol::workspaces::{
     ADMINISTER_WORKSPACES, CREATE_WEBHOOK, DELETE_WEBHOOK, FETCH_GRANT, HOST_ACTIONS_PROVIDER,
     HOST_WORKSPACES_RESOURCE, LIST_WEBHOOKS as WEBHOOKS,
@@ -93,7 +94,7 @@ use super::weak::WeakWorkspaces;
 #[cfg(not(target_arch = "wasm32"))]
 use super::{
     CancelInvitationRequest, CollaborationError, HostedWorkspace, IssueInvitationRequest,
-    RemoveMemberRequest, Workspaces,
+    Workspaces,
 };
 use crate::app_serving::AppActionServer;
 use tilo_lock::MutexRecover as _;
@@ -112,10 +113,12 @@ pub(crate) const REVOKE_KEY: &str = "key.revoke";
 /// keys. Every member names themself, so it is no governance action and no
 /// grant checks it.
 pub(crate) const NAME: &str = "member.name";
-/// Holding a person in the workspace by their key, at a role, as an
-/// administrator or as an owner: what an administrator does when they know
-/// the person's key rather than handing them an invitation.
-pub const ADD_MEMBER: &str = "member.add";
+pub use tilo_peer_state::signed_actions::ADD_MEMBER;
+pub(crate) use tilo_peer_state::signed_actions::{
+    ADD_ATTESTOR, ADD_REGISTRY, DISABLE_REGISTRY, ENABLE_REGISTRY, PIN_APP, PUBLISH,
+    REGISTRY_CHANNEL, REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER, SET_CONTENT_POLICY,
+    UNINSTALL_APP, UNPIN_APP, UNPUBLISH,
+};
 /// The addresses people left at the entry while it takes people by
 /// invitation: part of inviting.
 pub(crate) const WAIT_LIST: &str = "wait-list.list";
@@ -156,30 +159,16 @@ const CHOOSES_SERVERS: &str = "choose-servers";
 /// largest file a host keeps, and what one member's files may take, now and in
 /// any hour. Every member reads them, as what their posts may take.
 pub(crate) const CONTENT_POLICY: &str = "content.policy";
-/// Settling the workspace's content policy: its owners'.
-pub(crate) const SET_CONTENT_POLICY: &str = "content.set-policy";
 /// The content this host stopped keeping because a limit said so: each
 /// refusal names the limit and who can raise it, so the member who posted it
 /// reads why.
 pub(crate) const CONTENT_REFUSED: &str = "content.refused";
-/// Listing the workspace as a public workspace, with its description and the
-/// role everyone who joins gets.
-pub(crate) const PUBLISH: &str = "publish";
-/// Taking the workspace out of the directory.
-pub(crate) const UNPUBLISH: &str = "unpublish";
 /// Whether the workspace is public, and with which listing.
 pub(crate) const PUBLICATION: &str = "publication";
-/// No longer choosing which version of an app the workspace runs
-/// (`install-app`, the governance action of that name, chooses one).
-pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
 /// `install-app`'s flag that installs the release it names only where the workspace runs no
 /// version of the app yet, answering the version it runs otherwise: how opening an app the
 /// device holds installs it without moving the workspace off a version it chose.
 pub const IF_ABSENT: &str = "if_absent";
-/// Keeping the version of an app the workspace runs: an update is refused until it is unpinned.
-pub(crate) const PIN_APP: &str = "app.pin";
-/// Letting the version of an app the workspace runs be updated again.
-pub(crate) const UNPIN_APP: &str = "app.unpin";
 /// The versions of an app the workspace ran before the one it runs, the most recent first.
 pub(crate) const EARLIER_APP_VERSIONS: &str = "app.earlier";
 /// What the tree publishes on each app the workspace runs, not on its apps: updating, pinning
@@ -191,23 +180,8 @@ pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
 pub(crate) const TRUSTED_ATTESTORS: &str = "trust.list";
 /// The publisher keys the workspace refuses.
 pub(crate) const REVOKED_PUBLISHERS: &str = "trust.revoked";
-/// Add or replace an attestor the workspace trusts.
-pub(crate) const ADD_ATTESTOR: &str = "trust.add";
-/// Remove an attestor.
-pub(crate) const REMOVE_ATTESTOR: &str = "trust.remove";
-/// Refuse every package publisher key from now on.
-pub(crate) const REVOKE_PUBLISHER: &str = "trust.revoke";
 /// The registries the workspace fetches apps from.
 pub(crate) const REGISTRIES: &str = "registry.list";
-/// Add a registry.
-pub(crate) const ADD_REGISTRY: &str = "registry.add";
-/// Remove a registry.
-pub(crate) const REMOVE_REGISTRY: &str = "registry.remove";
-/// Read a registry, or stop reading it.
-pub(crate) const ENABLE_REGISTRY: &str = "registry.enable";
-pub(crate) const DISABLE_REGISTRY: &str = "registry.disable";
-/// Offer another channel of a registry's releases.
-pub(crate) const REGISTRY_CHANNEL: &str = "registry.channel";
 /// The apps the configured registries offer, with the version, package and publisher an install
 /// names; language packs among them, which Settings offers a person.
 pub(crate) const APP_OFFERS: &str = "app.offers";
@@ -784,35 +758,6 @@ fn content_policy_json(policy: &tilo_action_policy::ContentPolicy) -> Value {
     })
 }
 
-/// The app an app change is about: named by `app`, or by its `flatpak` reference, which must name
-/// the same app where both are given.
-fn named_app(app: Option<&str>, flatpak: Option<&str>) -> Result<String, ActionCallError> {
-    use tilo_peer_state::workspace_membership::flatpak_app_id;
-    let unreadable = || {
-        ActionCallError::invalid_request("`flatpak` names `app/<application id>/<arch>/<branch>`")
-    };
-    match (app, flatpak) {
-        (Some(app), None) => Ok(app.to_owned()),
-        (Some(app), Some(reference)) => {
-            let named = flatpak_app_id(reference).ok_or_else(unreadable)?;
-            if named != app {
-                return Err(ActionCallError::invalid_request(format!(
-                    "the Flatpak `{reference}` is {named} in this workspace, not `{app}`"
-                )));
-            }
-            Ok(named)
-        }
-        (None, Some(reference)) => flatpak_app_id(reference).ok_or_else(unreadable),
-        (None, None) => Err(ActionCallError::invalid_request("`app` is required")),
-    }
-}
-
-/// The limit `named`, kept over `current`: a size, or 0 for no limit at all. A
-/// caller who named none leaves the limit as it is.
-fn named_limit(named: Option<u64>, current: Option<u64>) -> Option<u64> {
-    named.map_or(current, |bytes| (bytes > 0).then_some(bytes))
-}
-
 /// The limits a workspace's owners set on what members post there, each one
 /// left out staying as it is.
 fn content_policy_params() -> Vec<ActionParam> {
@@ -1132,60 +1077,6 @@ fn webhook_delete_params() -> Vec<ActionParam> {
         ParamType::Text,
         "The webhook, as `webhook.list` names it.",
     )]
-}
-
-/// The entry `workspace#publish` asks for, as its arguments name it.
-fn published_entry(args: &Args) -> Result<EntryPolicy, ActionCallError> {
-    let text = args.required_text("default_role")?;
-    let default_role = Role::parse(text)
-        .filter(|role| matches!(role, Role::Viewer | Role::Commenter | Role::Editor))
-        .ok_or_else(|| {
-            ActionCallError::invalid_request(format!(
-                "a public workspace hands out viewer, commenter or editor, not `{text}`"
-            ))
-        })?;
-    let admission = args.text("admission")?.unwrap_or("open").trim().to_owned();
-    let invitation_only = match admission.as_str() {
-        "open" => false,
-        "invite" => true,
-        other => {
-            return Err(ActionCallError::invalid_request(format!(
-                "an entry is `open` or `invite`, not `{other}`"
-            )));
-        }
-    };
-    let wait_list_max = args
-        .integer("wait_list_max")?
-        .map(u32::try_from)
-        .transpose()
-        .map_err(|_| ActionCallError::invalid_request("`wait_list_max` is too large".to_owned()))?
-        .map_or(0, |kept| kept as usize);
-    let contact = args
-        .text("contact")?
-        .map(str::trim)
-        .filter(|contact| !contact.is_empty())
-        .map(str::to_owned);
-    let mail = match args.text("mail_from")?.map(str::trim) {
-        None | Some("") => None,
-        Some(from) => Some(tilo_action_policy::EntryMail {
-            from: from.to_owned(),
-            templates: args
-                .text("mail_templates")?
-                .map(str::trim)
-                .filter(|templates| !templates.is_empty())
-                .map(str::to_owned),
-        }),
-    };
-    Ok(EntryPolicy {
-        listing: Some(ListingPolicy {
-            description: args.text("description")?.unwrap_or_default().to_owned(),
-            default_role,
-        }),
-        invitation_only,
-        wait_list_max,
-        contact,
-        mail,
-    })
 }
 
 fn publish_params() -> Vec<ActionParam> {
@@ -1552,14 +1443,7 @@ fn governance_tree(mut rows: Vec<CatalogueRow>, name: &str) -> Vec<CatalogueRow>
 fn governance_request(request: &InvokeRequest, workspace: &str, operation: &str) -> InvokeRequest {
     let mut asked = request.clone();
     asked.target.address = ActionAddress::new(workspace_governance_resource(workspace), operation);
-    let named = workspace_person(&request.target.address)
-        .map(|person| ("person", person))
-        .or_else(|| workspace_app_named(&request.target.address).map(|app| ("app", app)))
-        .or_else(|| {
-            tilo_actions::remote::workspace_grant(&request.target.address)
-                .map(|grant| ("grant", grant))
-        });
-    if let Some((name, value)) = named {
+    if let Some((name, value)) = workspace_named_argument(&request.target.address) {
         let mut arguments = match asked.argument {
             InvokeArgument::Json(arguments) => arguments,
             _ => Map::new(),
@@ -1613,14 +1497,15 @@ impl Args {
         }
     }
 
+    /// The named arguments, as every reader of a governance action's arguments reads them.
+    fn read(&self) -> Arguments<'_> {
+        Arguments(&self.0)
+    }
+
     fn text(&self, name: &str) -> Result<Option<&str>, ActionCallError> {
-        match self.0.get(name) {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(text)) => Ok(Some(text)),
-            Some(_) => Err(ActionCallError::invalid_request(format!(
-                "`{name}` must be text"
-            ))),
-        }
+        self.read()
+            .optional_text(name)
+            .map_err(ActionCallError::invalid_request)
     }
 
     /// The argument `name`, an object read as `T`.
@@ -1636,48 +1521,36 @@ impl Args {
         }
     }
 
+    /// The governance changes the caller's device signed for this call
+    /// ([`tilo_actions::remote::SIGNED_ARGUMENT`]), each hex-encoded: `None` when it sent none.
+    fn signed(&self) -> Result<Option<Vec<Vec<u8>>>, ActionCallError> {
+        signed_in(&self.0)
+    }
+
     fn required_text(&self, name: &str) -> Result<&str, ActionCallError> {
-        self.text(name)?
-            .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
+        self.read()
+            .text(name)
+            .map_err(ActionCallError::invalid_request)
     }
 
     /// The key `name` holds: 64 hex characters, or a person as a program gives one
     /// (`{"person": "<hex>"}`), which is how a tilolang app passes an `Actor`.
     fn key(&self, name: &str) -> Result<Option<[u8; 32]>, ActionCallError> {
-        let named = match self.0.get(name) {
-            Some(Value::Object(person)) => match person.get("person") {
-                Some(Value::String(key)) => Some(key.as_str()),
-                _ => {
-                    return Err(ActionCallError::invalid_request(format!(
-                        "`{name}` must be a person"
-                    )));
-                }
-            },
-            _ => self.text(name)?,
-        };
-        named
-            .map(|text| {
-                let mut key = [0; 32];
-                hex::decode_to_slice(text, &mut key).map_err(|_| {
-                    ActionCallError::invalid_request(format!("`{name}` must be 64 hex characters"))
-                })?;
-                Ok(key)
-            })
-            .transpose()
+        self.read()
+            .optional_key(name)
+            .map_err(ActionCallError::invalid_request)
     }
 
     fn required_key(&self, name: &str) -> Result<[u8; 32], ActionCallError> {
-        self.key(name)?
-            .ok_or_else(|| ActionCallError::invalid_request(format!("`{name}` is required")))
+        self.read()
+            .key(name)
+            .map_err(ActionCallError::invalid_request)
     }
 
     fn integer(&self, name: &str) -> Result<Option<u64>, ActionCallError> {
-        match self.0.get(name) {
-            None | Some(Value::Null) => Ok(None),
-            Some(value) => value.as_u64().map(Some).ok_or_else(|| {
-                ActionCallError::invalid_request(format!("`{name}` must be a whole number"))
-            }),
-        }
+        self.read()
+            .integer(name)
+            .map_err(ActionCallError::invalid_request)
     }
 
     fn boolean(&self, name: &str) -> Result<Option<bool>, ActionCallError> {
@@ -1707,59 +1580,11 @@ impl Args {
         }
     }
 
-    /// The change a call's moderator asks for, or `None` for `show`.
-    fn call_change(&self) -> Result<Option<collab_types::calls::CallChange>, ActionCallError> {
-        use collab_types::calls::{CallChange, Directions};
-        let directions = || -> Result<Directions, ActionCallError> {
-            Ok(Directions {
-                publish: self.flag_or("publish", true)?,
-                subscribe: self.flag_or("subscribe", true)?,
-            })
-        };
-        Ok(Some(match self.required_text("operation")? {
-            "start" => CallChange::Start {
-                allowed: directions()?,
-            },
-            "end" => CallChange::End,
-            "restart" => CallChange::Restart,
-            "set-directions" => CallChange::SetDirections {
-                allowed: directions()?,
-            },
-            "deny" => CallChange::Deny {
-                person: self.required_key("person")?,
-                denied: directions()?,
-            },
-            "allow" => CallChange::Allow {
-                person: self.required_key("person")?,
-            },
-            "show" => return Ok(None),
-            other => {
-                return Err(ActionCallError::invalid_request(format!(
-                    "no call operation `{other}`"
-                )));
-            }
-        }))
-    }
-
-    /// The flag `name`, or `otherwise` when it was not given.
-    fn flag_or(&self, name: &str, otherwise: bool) -> Result<bool, ActionCallError> {
-        match self.0.get(name) {
-            None | Some(Value::Null) => Ok(otherwise),
-            Some(Value::Bool(flag)) => Ok(*flag),
-            Some(_) => Err(ActionCallError::invalid_request(format!(
-                "`{name}` must be true or false"
-            ))),
-        }
-    }
-
+    /// The flag `name`, false when it was not given.
     fn flag(&self, name: &str) -> Result<bool, ActionCallError> {
-        match self.0.get(name) {
-            None | Some(Value::Null) => Ok(false),
-            Some(Value::Bool(flag)) => Ok(*flag),
-            Some(_) => Err(ActionCallError::invalid_request(format!(
-                "`{name}` must be true or false"
-            ))),
-        }
+        self.read()
+            .flag_or(name, false)
+            .map_err(ActionCallError::invalid_request)
     }
 
     /// Where the argument `name` puts a person: a role, an administrator's
@@ -2524,6 +2349,28 @@ impl Workspaces {
         self.governance_run(action, call).await
     }
 
+    /// What `call` asks under, with what its device signed for it, once it has.
+    fn signed_ask<'a>(
+        call: &GovernanceCall<'a>,
+    ) -> Result<super::collaboration::SignedAsk<'a>, ActionCallError> {
+        Ok(super::collaboration::SignedAsk {
+            device: call.device,
+            request_id: call.request_id,
+            signed: call.args.signed()?,
+        })
+    }
+
+    /// The change `changed` made, or what the caller's device signs it on
+    /// ([`ActionCallError::SignatureRequired`]): nothing is written until it has.
+    pub(super) fn signed_change<T>(
+        changed: Result<super::Signing<T>, CollaborationError>,
+    ) -> Result<T, ActionCallError> {
+        match changed.map_err(|error| ActionCallError::refused(error.to_string()))? {
+            super::Signing::Done(done) => Ok(done),
+            super::Signing::Sign(facts) => Err(ActionCallError::SignatureRequired(Box::new(facts))),
+        }
+    }
+
     /// Whether the change `action` makes is decided where it is made, so the check a governance
     /// call makes before it is only a probe: [`Self::check_governance`] decides a change to who
     /// is in the workspace, and this host decides naming it where it renames it.
@@ -2550,53 +2397,92 @@ impl Workspaces {
         args: &Args,
         published: &str,
     ) -> Result<(), ActionCallError> {
-        let change;
-        let op = match action {
-            ADD_MEMBER => {
-                let person = args.required_key("person")?;
-                let place = args.place_at("role")?;
-                // A role is changed on a member; `admit` is what gives a person a place.
-                if published == WORKSPACE_MEMBER_PLACED {
-                    WorkspaceOp::Role(person, place)
-                } else {
-                    WorkspaceOp::Place(person, place)
-                }
-            }
-            // An invitation is letting someone in put off: issuing one is decided as letting
-            // them in at its place is.
-            WORKSPACE_INVITE => match args.place_at("role")? {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        let command;
+        // An invitation is letting someone in put off: issuing one is decided as letting them in
+        // at its place is.
+        let op = if action == WORKSPACE_INVITE {
+            match args.place_at("role")? {
                 super::MemberPlace::Role(role) => WorkspaceOp::Admit(role),
                 super::MemberPlace::Administrator => WorkspaceOp::AdmitAdministrator,
                 super::MemberPlace::Owner => WorkspaceOp::MakeOwner,
-            },
-            governance::REMOVE_MEMBER | governance::BAN | governance::UNBAN => {
-                let membership = match action {
-                    governance::REMOVE_MEMBER => super::collaboration::Membership::Remove,
-                    governance::BAN => super::collaboration::Membership::Ban,
-                    _ => super::collaboration::Membership::Unban,
-                };
-                change = membership.change(args.required_key("person")?);
-                WorkspaceOp::Change(&change)
             }
-            _ => return Ok(()),
+        } else {
+            command =
+                Command::of_action(action, &args.0).map_err(ActionCallError::invalid_request)?;
+            match &command {
+                // A role is changed on a member; `admit` is what gives a person a place.
+                Some(Command::Place { person, place, .. })
+                    if published == WORKSPACE_MEMBER_PLACED =>
+                {
+                    WorkspaceOp::Role(*person, *place)
+                }
+                Some(command) => match super::collaboration::asked_check(command) {
+                    Some(op) => op,
+                    None => return Ok(()),
+                },
+                None => return Ok(()),
+            }
         };
         self.check_now(device, Some(workspace), op)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per governance action: what each answers once its change is made"
+    )]
     async fn governance_run(
         &self,
         action: &str,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
+        // A change the action asks for is the caller's device's to sign; what the action answers
+        // is then read as the workspace stands.
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        let done = match self.asked_change(action, &call).await? {
+            // The version of an app the workspace runs is the app's record in its store, which
+            // this host writes for a member the workspace lets install apps.
+            Some(command @ (Command::InstallApp(_) | Command::UninstallApp { .. })) => Some(
+                self.govern_app(call.workspace, call.device, call.request_id, command)
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?,
+            ),
+            Some(command) => Some(Self::signed_change(
+                self.govern(call.workspace, Self::signed_ask(&call)?, &command)
+                    .await,
+            )?),
+            None => None,
+        };
+        let generation = || json!({ "generation": done.as_ref().map(|done| done.generation) });
         match action {
             WORKSPACE_INVITE | INVITATIONS | CANCEL_INVITATION | NAME => {
                 self.governance_invitations(action, call).await
             }
-            ADD_MEMBER => self.governance_add_member(call).await,
+            ADD_MEMBER | governance::REMOVE_MEMBER => Ok(self
+                .members(call.workspace)
+                .await
+                .map_err(ActionCallError::refused)?
+                .into()),
+            governance::BAN | governance::UNBAN => Ok(generation()),
+            governance::RENAME => {
+                let renamed = self
+                    .workspace(call.workspace)
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?
+                    .lock()
+                    .await
+                    .name();
+                Ok(json!({ "workspace": call.workspace, "name": renamed }))
+            }
             CONTENT_HELD => Ok(self.content_held_here(call.workspace)),
-            CONTENT_POLICY | SET_CONTENT_POLICY => self.set_or_read_content_policy(call).await,
+            CONTENT_POLICY | SET_CONTENT_POLICY => Ok(content_policy_json(
+                &self
+                    .content_policy(call.workspace)
+                    .await
+                    .ok_or(ActionCallError::UnknownAction)?,
+            )),
             CONTENT_REFUSED => {
                 // The refusal is the poster's to read, and the workspace's
                 // owners' and the host's person's: a member reads none of
@@ -2618,52 +2504,169 @@ impl Workspaces {
             }
             server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
-            PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
+            PUBLISH | UNPUBLISH | PUBLICATION => Ok(self.governance_listing(call.workspace).await),
             governance::INSTALL_APP | UNINSTALL_APP | PIN_APP | UNPIN_APP => {
-                self.governance_apps(action, call).await
+                let app = Self::named_app(call.args)?;
+                if action == governance::INSTALL_APP && done.is_some() {
+                    self.root_installed(call.workspace, &app).await;
+                }
+                let running = self.running_release(call.workspace, &app).await?;
+                Ok(json!({
+                    "generation": done.as_ref().map(|done| done.generation),
+                    "running": running,
+                }))
             }
             TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | ADD_ATTESTOR | REMOVE_ATTESTOR
-            | REVOKE_PUBLISHER => self.package_trust_action(action, call).await,
+            | REVOKE_PUBLISHER => {
+                let (attestors, revoked) = self
+                    .package_trust(call.workspace)
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                Ok(json!({ "attestors": attestors, "revoked": revoked }))
+            }
             REGISTRIES | ADD_REGISTRY | REMOVE_REGISTRY | ENABLE_REGISTRY | DISABLE_REGISTRY
-            | REGISTRY_CHANNEL => self.package_registries_action(action, call).await,
-            governance::CALL => self.call_action(call).await,
+            | REGISTRY_CHANNEL => {
+                let registries = self
+                    .registries(call.workspace)
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                Ok(json!({ "registries": registries }))
+            }
+            governance::CALL => {
+                let channel = call.args.required_text("channel")?;
+                collab_types::calls::validate_channel(channel)
+                    .map_err(ActionCallError::invalid_request)?;
+                let rule = self
+                    .call_rule(call.workspace, channel)
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
+                Ok(json!({ "channel": channel, "call": rule }))
+            }
             FETCH_GRANT => Ok(self.fetch_grant(call)),
             UPLOAD_APP_FILE => self.upload_app_piece(call.workspace, call.args),
             APP_OFFERS => self.apps_offers(call.workspace).await,
             EARLIER_APP_VERSIONS => self.earlier_app_versions(call).await,
             REVOKE_KEY => self.governance_revoke_key(call).await,
             WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK => self.webhook_actions(action, call).await,
-            WORKSPACE_GRANT_REVOKE => self.revoke_policy_grant(call).await,
+            WORKSPACE_GRANT_REVOKE => Ok(json!({ "revoked": call.args.required_text("grant")? })),
             WORKSPACE_GRANT_SET => self.set_grant(call).await,
-            WORKSPACE_READ_GRANT => self.set_reading(call, true).await,
-            WORKSPACE_READ_REVOKE => self.set_reading(call, false).await,
-            _ => self.governance_members(action, call).await,
+            WORKSPACE_READ_GRANT | WORKSPACE_READ_REVOKE => Ok(json!({
+                "resource": call.args.required_text("resource")?,
+                "reads": action == WORKSPACE_READ_GRANT,
+                "generation": done.as_ref().map(|done| done.generation),
+            })),
+            _ => Err(ActionCallError::UnknownAction),
         }
     }
 
-    /// Moderate one of the workspace's calls, or `show` what it allows: end or restart it, deny a
-    /// person or let them back, or set what everyone in it may do. The change is the caller's,
-    /// decided by their grants on every device that receives it. Answers what the call allows now.
-    async fn call_action(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let channel = args.required_text("channel")?.to_owned();
-        collab_types::calls::validate_channel(&channel)
-            .map_err(ActionCallError::invalid_request)?;
-        if let Some(change) = args.call_change()? {
-            self.moderate_call(workspace, device, request_id, &channel, change)
+    /// The change the governance action `action` asks for with `call`'s arguments, once this
+    /// host's own checks of it pass: `None` for an action that reads, or whose change is made
+    /// elsewhere (naming oneself, who reads a resource). Pinning names the version the workspace
+    /// runs; an install is refused over a pinned version, or a package file not here yet; a
+    /// grant is taken back by whoever gave it or whom the workspace lets revoke grants.
+    async fn asked_change(
+        &self,
+        action: &str,
+        call: &GovernanceCall<'_>,
+    ) -> Result<
+        Option<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand>,
+        ActionCallError,
+    > {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+        let running = || async {
+            self.running_release(call.workspace, &Self::named_app(call.args)?)
                 .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        };
+        // Opening an app installs it only where the workspace runs no version of it: the version
+        // the workspace chose stays.
+        if action == governance::INSTALL_APP
+            && call.args.flag(IF_ABSENT)?
+            && running().await?.is_some()
+        {
+            return Ok(None);
         }
-        let rule = self
-            .call_rule(workspace, &channel)
+        let command = match action {
+            NAME => return Ok(None),
+            PIN_APP | UNPIN_APP => {
+                let mut release = running()
+                    .await?
+                    .ok_or_else(|| {
+                        ActionCallError::refused("the workspace runs no version of this app")
+                    })?
+                    .release;
+                release.pinned = action == PIN_APP;
+                WorkspaceMembershipCommand::InstallApp(release)
+            }
+            _ => match WorkspaceMembershipCommand::of_action(action, &call.args.0)
+                .map_err(ActionCallError::invalid_request)?
+            {
+                Some(command) => command,
+                None => return Ok(None),
+            },
+        };
+        match &command {
+            // A person no device of theirs has joined is made the owner by an owner invitation,
+            // which hands them the workspace as they redeem it.
+            WorkspaceMembershipCommand::Place {
+                person,
+                place: super::MemberPlace::Owner,
+                name,
+            } => {
+                let ask = (call.request_id, name.clone());
+                let invited = self.owner_to_come(call.workspace, call.device, *person, ask);
+                if invited
+                    .await
+                    .map_err(|error| ActionCallError::refused(error.to_string()))?
+                    .is_some()
+                {
+                    return Ok(None);
+                }
+            }
+            WorkspaceMembershipCommand::InstallApp(release)
+                if action == governance::INSTALL_APP =>
+            {
+                if let Some(running) = running().await?.filter(|running| running.release.pinned) {
+                    return Err(ActionCallError::refused(format!(
+                        "the workspace keeps version {} of this app: unpin it first",
+                        running.release.version
+                    )));
+                }
+                // Members fetch the file from this host: it must be here first.
+                if let Some(file) = &release.file
+                    && !self.keeps_app_file(call.workspace, file)
+                {
+                    return Err(ActionCallError::refused(
+                        "the workspace's host does not have this package file: hand it over with `upload-app-file` first",
+                    ));
+                }
+            }
+            WorkspaceMembershipCommand::Revoke { grant } => self.may_revoke(call, grant).await?,
+            _ => {}
+        }
+        command
+            .validate()
+            .map_err(ActionCallError::invalid_request)?;
+        Ok(Some(command))
+    }
+
+    /// The app a change to the apps the workspace runs names, as `args` name it.
+    fn named_app(args: &Args) -> Result<String, ActionCallError> {
+        tilo_peer_state::signed_actions::named_app(args.text("app")?, args.text("flatpak")?)
+            .map_err(ActionCallError::invalid_request)
+    }
+
+    /// The version of `app` `workspace` runs, as its governance records it now.
+    async fn running_release(
+        &self,
+        workspace: &str,
+        app: &str,
+    ) -> Result<Option<tilo_peer_state::InstalledApp>, ActionCallError> {
+        Ok(self
+            .app_versions(workspace)
             .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({ "channel": channel, "call": rule }))
+            .map_err(|error| ActionCallError::refused(error.to_string()))?
+            .into_iter()
+            .find(|installed| installed.release.app == app))
     }
 
     /// Revoke the key `grant` names: the caller's own or one it minted, or, for a device of the
@@ -2830,56 +2833,51 @@ impl Workspaces {
         }
     }
 
-    /// Take back one grant of the workspace's policy (`workspace/permissions/<grant>#revoke`):
-    /// the person who gave it may, from a device of their own, and so may whoever the
-    /// workspace's policy lets revoke grants. The host writes the revocation as its change to
-    /// the workspace, and every member's device decides by the policy without it from then on.
-    async fn revoke_policy_grant(
+    /// Whether `call`'s device may take back `grant`, one of the workspace's policy
+    /// (`workspace/permissions/<grant>#revoke`): the person who gave it may, from a device of
+    /// their own, and so may whoever the workspace's policy lets revoke grants.
+    async fn may_revoke(
         &self,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        let id = call.args.required_text("grant")?.to_owned();
+        call: &GovernanceCall<'_>,
+        grant: &tilo_action_policy::GrantId,
+    ) -> Result<(), ActionCallError> {
         let hosted = self
             .workspace(call.workspace)
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        let mut workspace = hosted.lock().await;
-        let grant = workspace
+        let workspace = hosted.lock().await;
+        let granted_by = workspace
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .governance()
+            .member_policy()
             .map_err(|_| ActionCallError::UnknownAction)?
-            .policy
             .grants
             .iter()
-            .find(|grant| grant.id.0 == id)
-            .cloned()
+            .find(|held| held.id == *grant)
+            .map(|held| held.granted_by.clone())
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "This workspace has no grant by that id".into(),
             })?;
         let in_person =
             call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
         let gave_it = in_person
-            && grant.granted_by
+            && granted_by
                 == tilo_action_policy::Grantee::person(hex::encode(call.device.user_public_key));
-        let may_revoke = gave_it
-            || self.permits(
-                call.device,
-                Some(&workspace),
-                WorkspaceOp::Govern(governance::REVOKE),
-                tilo_clock::unix_now_ns(),
-            );
-        if !may_revoke {
-            return Err(ActionCallError::Refused {
-                reason: "Only the person who gave this grant, or someone this workspace lets \
-                         revoke grants, can take it back"
-                    .into(),
-            });
-        }
-        self.revoke_grants(&mut workspace, tilo_clock::wall(), &[grant.id])
-            .await
-            .map_err(ActionCallError::refused)?;
+        let permitted = self.permits(
+            call.device,
+            Some(&workspace),
+            WorkspaceOp::Govern(governance::REVOKE),
+            tilo_clock::unix_now_ns(),
+        );
         drop(workspace);
-        Ok(json!({ "revoked": id }))
+        if gave_it || permitted {
+            return Ok(());
+        }
+        Err(ActionCallError::Refused {
+            reason: "Only the person who gave this grant, or someone this workspace lets \
+                     revoke grants, can take it back"
+                .into(),
+        })
     }
 
     /// Give a person, or everyone, a role over one part of the workspace, or take the caller's
@@ -2907,57 +2905,10 @@ impl Workspaces {
         Ok(json!({ "scope": scope.to_string(), "changed": changed }))
     }
 
-    /// Let a person or a role read one resource, or keep them from it
-    /// (`workspace/members#grant-read`, `#revoke-read`): the grant on the resource's node,
-    /// decided as every receiver decides it ([`tilo_action_policy::reading`]). Answers whether
-    /// anything changed.
-    async fn set_reading(
-        &self,
-        call: GovernanceCall<'_>,
-        reads: bool,
-    ) -> Result<Value, ActionCallError> {
-        let resource = call.args.required_text("resource")?;
-        let node = tilo_action_policy::reading::published_node(call.workspace, resource)
-            .ok_or_else(|| {
-                ActionCallError::invalid_request(format!(
-                    "`{resource}` is no resource of an app of this workspace"
-                ))
-            })?;
-        let member = call.args.object::<tilo_member_types::MemberId>("member")?;
-        let grantee = match (member, call.args.text("role")?) {
-            (Some(member), None) => tilo_action_policy::Grantee::member(member),
-            (None, Some(role)) => tilo_action_policy::Grantee::role(
-                tilo_action_policy::Role::parse(role).ok_or_else(|| {
-                    ActionCallError::invalid_request(format!("`{role}` is no role"))
-                })?,
-            ),
-            _ => {
-                return Err(ActionCallError::invalid_request(
-                    "name a member or a role, not both",
-                ));
-            }
-        };
-        let changed = self
-            .set_resource_reading(call.workspace, call.device, &node, grantee, reads)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({ "resource": resource, "reads": reads, "changed": changed }))
-    }
-
     /// Making the workspace a public workspace, taking it back, and what its entry
     /// is: `{"public": bool, "description"?, "default_role"?, "admission",
     /// "wait_list_max"}`.
-    async fn governance_listing(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        let GovernanceCall {
-            workspace,
-            device,
-            args,
-            ..
-        } = call;
+    async fn governance_listing(&self, workspace: &str) -> Value {
         let entry_answer = |entry: &EntryPolicy| {
             let mut answer = match &entry.listing {
                 Some(listing) => json!({
@@ -2994,128 +2945,7 @@ impl Workspaces {
             }
             answer
         };
-        match action {
-            PUBLISH => self
-                .found_entry(workspace, device, published_entry(args)?)
-                .await
-                .map(|entry| entry_answer(&entry))
-                .map_err(|error| ActionCallError::refused(error.to_string())),
-            UNPUBLISH => self
-                .unpublish(workspace, device)
-                .await
-                .map(|()| json!({ "public": false }))
-                .map_err(|error| ActionCallError::refused(error.to_string())),
-            _ => Ok(entry_answer(
-                &self.entry_policy(workspace).await.unwrap_or_default(),
-            )),
-        }
-    }
-
-    /// The version of an app the workspace runs: choosing one, and taking the
-    /// choice back. Answers what the workspace runs now.
-    async fn governance_apps(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        use tilo_peer_state::workspace_membership::{
-            AppPayload, AppRelease, WorkspaceMembershipCommand,
-        };
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        // A Flatpak is named by its reference; the record its app id. Every other change names the
-        // app it is about.
-        let flatpak = args.text("flatpak")?.map(str::to_owned);
-        let app = named_app(args.text("app")?, flatpak.as_deref())?;
-        let running = self
-            .app_versions(workspace)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?
-            .into_iter()
-            .find(|installed| installed.release.app == app);
-        let command = if matches!(action, PIN_APP | UNPIN_APP) {
-            let mut release = running
-                .ok_or_else(|| {
-                    ActionCallError::refused("the workspace runs no version of this app")
-                })?
-                .release;
-            release.pinned = action == PIN_APP;
-            WorkspaceMembershipCommand::InstallApp(release)
-        } else if action == governance::INSTALL_APP {
-            // Opening an app installs it only where the workspace runs no version of it: the
-            // version the workspace chose stays.
-            if args.flag(IF_ABSENT)?
-                && let Some(running) = running
-            {
-                return Ok(json!({ "running": running }));
-            }
-            if let Some(running) = running.as_ref().filter(|running| running.release.pinned) {
-                return Err(ActionCallError::refused(format!(
-                    "the workspace keeps version {} of this app: unpin it first",
-                    running.release.version
-                )));
-            }
-            let version = args.required_text("version")?.to_owned();
-            // A version that publishes no surface names none, and a Flatpak names neither a
-            // package nor a publisher: its reference is its payload.
-            let surface = args.text("surface")?.map(str::to_owned).unwrap_or_default();
-            // A Flatpak names neither a package nor a publisher: its reference is its payload.
-            let (package, publisher) = if flatpak.is_some() {
-                (String::new(), String::new())
-            } else {
-                (
-                    args.required_text("package")?.to_owned(),
-                    args.required_text("publisher")?.to_owned(),
-                )
-            };
-            let file = args.text("file")?.map(str::to_owned);
-            // Members fetch the file from this holder: it must be here first.
-            if let Some(file) = &file
-                && !self.keeps_app_file(workspace, file)
-            {
-                return Err(ActionCallError::refused(
-                    "the workspace's host does not have this package file: hand it over with `upload-app-file` first",
-                ));
-            }
-            let payload = match flatpak {
-                Some(reference) => AppPayload::Flatpak { reference },
-                None => AppPayload::Tapp,
-            };
-            WorkspaceMembershipCommand::InstallApp(AppRelease {
-                app: app.clone(),
-                version,
-                surface,
-                package,
-                publisher,
-                file,
-                dev: args.flag("dev")?,
-                pinned: false,
-                payload,
-            })
-        } else {
-            WorkspaceMembershipCommand::UninstallApp { app: app.clone() }
-        };
-        command
-            .validate()
-            .map_err(ActionCallError::invalid_request)?;
-        let done = self
-            .govern_app(workspace, device, request_id, command)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        if action == governance::INSTALL_APP {
-            self.root_installed(workspace, &app).await;
-        }
-        let running = self
-            .app_versions(workspace)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?
-            .into_iter()
-            .find(|installed| installed.release.app == app);
-        Ok(json!({ "generation": done.generation, "running": running }))
+        entry_answer(&self.entry_policy(workspace).await.unwrap_or_default())
     }
 
     /// Make the root of `app`, just installed in `workspace`, empty, as this device's own change
@@ -3132,110 +2962,6 @@ impl Workspaces {
         if let Err(error) = self.root_app(workspace, app, None).await {
             tracing::warn!(%workspace, app, %error, "an installed app's root is not made");
         }
-    }
-
-    /// The trust the workspace keeps for packages: adding or replacing an
-    /// attestor, removing one, or refusing a publisher. Every call answers the
-    /// lists as they are then.
-    async fn package_trust_action(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let command = match action {
-            ADD_ATTESTOR => Some(WorkspaceMembershipCommand::AddAttestor(
-                tilo_peer_state::TrustAttestor {
-                    id: args.required_text("id")?.to_owned(),
-                    pubkey_hex: args.required_text("pubkey")?.to_ascii_lowercase(),
-                    scope: args.text("scope")?.unwrap_or("all").to_owned(),
-                },
-            )),
-            REMOVE_ATTESTOR => Some(WorkspaceMembershipCommand::RemoveAttestor {
-                id: args.required_text("id")?.to_owned(),
-            }),
-            REVOKE_PUBLISHER => Some(WorkspaceMembershipCommand::RevokePublisher {
-                pubkey: args.required_text("pubkey")?.to_ascii_lowercase(),
-                reason: args.text("reason")?.unwrap_or_default().to_owned(),
-            }),
-            TRUSTED_ATTESTORS | REVOKED_PUBLISHERS => None,
-            _ => return Err(ActionCallError::UnknownAction),
-        };
-        if let Some(command) = command {
-            command
-                .validate()
-                .map_err(ActionCallError::invalid_request)?;
-            self.change_package_trust(workspace, device, request_id, command)
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        }
-        let (attestors, revoked) = self
-            .package_trust(workspace)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({ "attestors": attestors, "revoked": revoked }))
-    }
-
-    /// The registries the workspace fetches apps from: adding one, removing
-    /// one, reading it or not, or choosing the channel it offers. Every call
-    /// answers the list as it is then.
-    async fn package_registries_action(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let command = match action {
-            ADD_REGISTRY => Some(WorkspaceMembershipCommand::AddRegistry(
-                tilo_peer_state::PackageRegistry {
-                    name: args.required_text("name")?.to_owned(),
-                    base_url: args.required_text("url")?.trim_end_matches('/').to_owned(),
-                    owner_pubkey_hex: args.required_text("owner_key")?.to_ascii_lowercase(),
-                    enabled: true,
-                    channel: args.text("channel")?.unwrap_or("stable").to_owned(),
-                },
-            )),
-            REMOVE_REGISTRY => Some(WorkspaceMembershipCommand::RemoveRegistry {
-                name: args.required_text("name")?.to_owned(),
-            }),
-            ENABLE_REGISTRY | DISABLE_REGISTRY => {
-                Some(WorkspaceMembershipCommand::SetRegistryEnabled {
-                    name: args.required_text("name")?.to_owned(),
-                    enabled: action == ENABLE_REGISTRY,
-                })
-            }
-            REGISTRY_CHANNEL => Some(WorkspaceMembershipCommand::SetRegistryChannel {
-                name: args.required_text("name")?.to_owned(),
-                channel: args.required_text("channel")?.to_owned(),
-            }),
-            REGISTRIES => None,
-            _ => return Err(ActionCallError::UnknownAction),
-        };
-        if let Some(command) = command {
-            command
-                .validate()
-                .map_err(ActionCallError::invalid_request)?;
-            self.change_package_registries(workspace, device, request_id, command)
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        }
-        let registries = self
-            .registries(workspace)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(json!({ "registries": registries }))
     }
 
     /// The apps `workspace`'s registries offer: each one's name, the version to install, the
@@ -3537,38 +3263,6 @@ impl Workspaces {
         }
     }
 
-    /// Holding a person in the workspace by their key: answers the people as
-    /// the workspace holds them now.
-    async fn governance_add_member(
-        &self,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let request = super::AddMemberRequest {
-            request_id,
-            user_public_key: args.required_key("person")?,
-            place: args.place_at("role")?,
-            name: args
-                .text("name")?
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .map(str::to_owned),
-        };
-        self.add_member(workspace, device, request)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(self
-            .members(workspace)
-            .await
-            .map_err(ActionCallError::refused)?
-            .into())
-    }
-
     /// The workspace's servers, having another keep it as well, and having one
     /// keep it no more: each answers the servers as they are then. Choosing how
     /// many copies it keeps answers the same, and each says where its copies
@@ -3670,35 +3364,6 @@ impl Workspaces {
         json!({ "workspace": workspace, "held": held.held, "going": held.going })
     }
 
-    /// The workspace's content policy: the largest file a host keeps, and what
-    /// one member's files may take, now and in any hour. `content.set-policy`
-    /// settles it as the person who may change the workspace's settings gives
-    /// the values it names; one left out stays as it is. Answers the policy the
-    /// workspace now records, which every host of it obeys.
-    async fn set_or_read_content_policy(
-        &self,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        let workspace = call.workspace;
-        let current = self
-            .content_policy(workspace)
-            .await
-            .ok_or(ActionCallError::UnknownAction)?;
-        if call.args.0.is_empty() {
-            return Ok(content_policy_json(&current));
-        }
-        let policy = tilo_action_policy::ContentPolicy {
-            file_bytes: named_limit(call.args.integer("file_bytes")?, current.file_bytes),
-            member_bytes: named_limit(call.args.integer("member_bytes")?, current.member_bytes),
-            hourly_bytes: named_limit(call.args.integer("hourly_bytes")?, current.hourly_bytes),
-        };
-        let settled = self
-            .settle_content_policy(workspace, call.device, policy)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        Ok(content_policy_json(&settled))
-    }
-
     /// [`Self::read_copies`] of `workspace`, asked from a session in another workspace by
     /// `caller`, a device of one of its members speaking for themselves. Unknown to anyone else,
     /// as the read is to a stranger in the workspace itself.
@@ -3793,66 +3458,6 @@ impl Workspaces {
                 .collect::<Vec<_>>(),
         }))
     }
-
-    /// Naming the workspace, and removing, banning and unbanning members.
-    async fn governance_members(
-        &self,
-        action: &str,
-        call: GovernanceCall<'_>,
-    ) -> Result<Value, ActionCallError> {
-        let GovernanceCall {
-            workspace,
-            device,
-            request_id,
-            args,
-        } = call;
-        let member = |person| RemoveMemberRequest {
-            request_id,
-            user_public_key: person,
-        };
-        let generation = |done: Result<super::GovernanceCompletion, CollaborationError>| {
-            done.map(|done| json!({ "generation": done.generation }))
-                .map_err(|error| ActionCallError::refused(error.to_string()))
-        };
-        match action {
-            governance::RENAME => {
-                // The workspace itself changes from a device of its person's own: the check a
-                // governance call makes before it is a probe ([`Self::governance_is_decided_later`]).
-                self.check_now(
-                    device,
-                    Some(workspace),
-                    WorkspaceOp::Govern(governance::RENAME),
-                )
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                let renamed = self
-                    .rename(workspace, args.required_text("name")?)
-                    .await
-                    .map_err(ActionCallError::refused)?;
-                Ok(json!({ "workspace": renamed.workspace, "name": renamed.name }))
-            }
-            governance::UNBAN => {
-                let person = member(args.required_key("person")?);
-                generation(self.unban_member(workspace, device, person).await)
-            }
-            governance::REMOVE_MEMBER => {
-                let person = member(args.required_key("person")?);
-                self.remove_member(workspace, device, person)
-                    .await
-                    .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                Ok(self
-                    .members(workspace)
-                    .await
-                    .map_err(ActionCallError::refused)?
-                    .into())
-            }
-            governance::BAN => {
-                let person = member(args.required_key("person")?);
-                generation(self.ban_member(workspace, device, person).await)
-            }
-            _ => Err(ActionCallError::UnknownAction),
-        }
-    }
 }
 
 /// One governance invocation, as its workspace method takes it.
@@ -3904,6 +3509,10 @@ pub(crate) struct Shared {
     /// Told each time a call that was not answered at once moved: its person answered it, or its
     /// work ended. What a follow of the host's own operations waits on ([`ServiceWorkspaceActions::host_change`]).
     moved: tokio::sync::watch::Sender<()>,
+    /// The calls their person said yes to that wait for their device to sign their change.
+    awaiting_signature: invocation_states::AwaitingSignature,
+    /// How long such a call waits, in milliseconds.
+    sign_wait_ms: std::sync::atomic::AtomicU64,
 }
 
 /// The calls that wait in their asked records, each with the workspace and the device certificate
@@ -3934,6 +3543,11 @@ impl ServiceWorkspaceActions {
                 at_root_again: Mutex::default(),
                 following_root: OnceLock::new(),
                 moved: tokio::sync::watch::channel(()).0,
+                awaiting_signature: Mutex::default(),
+                sign_wait_ms: std::sync::atomic::AtomicU64::new(
+                    u64::try_from(tilo_peer_state::asked_signing::SIGN_WAIT.as_millis())
+                        .unwrap_or(u64::MAX),
+                ),
             }),
         }
     }
@@ -4107,6 +3721,24 @@ impl ServiceWorkspaceActions {
         );
         drop(log);
         true
+    }
+
+    /// How long a call its person said yes to waits for its device's signature.
+    fn sign_wait(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(
+            self.shared
+                .sign_wait_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+
+    /// From now on, a call its person said yes to waits `wait` for its device's signature.
+    #[cfg(test)]
+    pub(crate) fn sign_within(&self, wait: std::time::Duration) {
+        self.shared.sign_wait_ms.store(
+            u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Whether `caller` started invocation `id` here.
@@ -4579,6 +4211,29 @@ impl InWorkspace {
         // records).
         if tilo_actions::remote::asked::is_resolve(&request.target) {
             return workspaces.resolve_kept_here(caller, self.certificate.as_ref(), &request);
+        }
+        // The signature a call its person said yes to waits for: it runs as their yes admitted
+        // it, and answers its caller as the one asked.
+        if let Some(signed) = invocation_states::signed_after_yes(
+            &self.server,
+            caller,
+            self.certificate.as_ref(),
+            &request,
+        ) {
+            let asked = request.invocation;
+            return self
+                .run(
+                    workspaces,
+                    caller,
+                    signed,
+                    Ok(tilo_action_calls::Reservation::Reserved),
+                )
+                .map(move |ran| {
+                    ran.map(|receipt| InvocationReceipt {
+                        invocation: asked,
+                        ..receipt
+                    })
+                });
         }
         let reservation = self.server.log().reserve(caller, &request);
         self.run(workspaces, caller, request, reservation)
@@ -5053,6 +4708,32 @@ impl AppActionServer for HostActionServer {
 mod share_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The changes `arguments` carry signed by the calling device, once its host asked it to sign
+/// them ([`tilo_actions::remote::SIGNED_ARGUMENT`]): `None` before.
+///
+/// # Errors
+/// They are not hex changes.
+fn signed_in(
+    arguments: &serde_json::Map<String, Value>,
+) -> Result<Option<Vec<Vec<u8>>>, ActionCallError> {
+    let name = tilo_actions::remote::SIGNED_ARGUMENT;
+    let invalid = || ActionCallError::invalid_request(format!("`{name}` must be hex changes"));
+    match arguments.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(changes)) => changes
+            .iter()
+            .map(|change| {
+                change
+                    .as_str()
+                    .and_then(|change| hex::decode(change).ok())
+                    .ok_or_else(invalid)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Some(_) => Err(invalid()),
+    }
+}
 
 /// This host's dispatch, as an asked record's store hands it back the call it keeps.
 struct HostAsked(std::sync::Weak<Shared>);

@@ -108,7 +108,13 @@ async fn settle(
     policy: ContentPolicy,
 ) {
     workspaces
-        .settle_content_policy(workspace, host_cert, policy)
+        .change(
+            workspace,
+            (host_cert, rand::random()),
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                tilo_peer_state::workspace_membership::SettingsChange::Content(policy),
+            ),
+        )
         .await
         .expect("the workspace's owners settle its content policy");
     tilo_test_env::within("the host obeys the policy its owners settled", async {

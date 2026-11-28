@@ -1688,14 +1688,12 @@ async fn a_listed_workspace_keeps_sharing_its_windows_after_a_restart() {
     );
     // Listed in the directory: anyone may come in as an editor.
     workspaces
-        .publish(
-            &workspace,
-            &cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&workspace, &cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Come in".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     drop(workspaces);
@@ -2364,12 +2362,11 @@ async fn people_join_leave_and_rejoin_through_the_workspaces_log() {
     );
 
     workspaces
-        .remove_member(
+        .change(
             &workspace,
-            &cert,
-            RemoveMemberRequest {
-                request_id: [32; 32],
-                user_public_key: guest.user_public_key,
+            (&cert, [32; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(guest.user_public_key),
             },
         )
         .await
@@ -2426,12 +2423,11 @@ async fn a_restarted_host_admits_exactly_what_the_member_list_committed() {
         "a join is answered once the host admits the device"
     );
     workspaces
-        .remove_member(
+        .change(
             &created.workspace,
-            &cert,
-            RemoveMemberRequest {
-                request_id: [43; 32],
-                user_public_key: guest.user_public_key,
+            (&cert, [43; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(guest.user_public_key),
             },
         )
         .await

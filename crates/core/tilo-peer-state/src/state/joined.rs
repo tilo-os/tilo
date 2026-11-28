@@ -220,4 +220,40 @@ impl StatePeer {
             .is_ok_and(|held| held == device)
             && self.role(&device.device_public_key, now).is_ok())
     }
+
+    /// Take in `changes`, a governance change `device` signed itself
+    /// ([`crate::own_admission::sign_command`]), as every receiver does: under
+    /// `device` as their sender, judged by its own place in the workspace.
+    /// Whether they changed anything.
+    ///
+    /// # Errors
+    /// The workspace refuses any of them, or they build on history this copy lacks: nothing of
+    /// them is taken in then.
+    pub fn take_signed(
+        &mut self,
+        device: &DeviceCert,
+        changes: Vec<Vec<u8>>,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let workspace = self.core.workspace.clone();
+        let mut next = self.clone();
+        let outcome = next
+            .receive_from(
+                TransportOrigin::ServerDelta(device.device_public_key),
+                NeighbourMsg::SyncResp { changes, workspace },
+                now,
+            )
+            .map_err(|error| error.to_string())?;
+        if outcome.rejected > 0 {
+            return Err("the workspace refuses the change the device signed".into());
+        }
+        if outcome.deferred || outcome.lacks_history {
+            return Err(
+                "the device signed its change on a member list this copy does not hold yet".into(),
+            );
+        }
+        let took = outcome.changed || outcome.metadata_changed;
+        *self = next;
+        Ok(took)
+    }
 }

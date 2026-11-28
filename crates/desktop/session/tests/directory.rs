@@ -40,7 +40,6 @@ use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::SheetState as _;
-use tilo_workspace_service::workspaces::RemoveMemberRequest;
 
 use crate::common::directory::{
     community_site, held, layout, open_directory, pointer_here, recorded_layout, tile_here,
@@ -957,14 +956,12 @@ impl LoungeHost {
     ) {
         let web = block_on_within(runtime, "the lounge's host to serve its web", async {
             self.workspaces
-                .publish(
-                    &self.workspace,
-                    &self.server_cert,
-                    tilo_server_protocol::directory::Listing {
+                .found_entry(&self.workspace, &self.server_cert, |entry| {
+                    entry.listing = Some(tilo_action_policy::ListingPolicy {
                         description: "Where the site's people talk".to_owned(),
                         default_role: Role::Editor,
-                    },
-                )
+                    });
+                })
                 .await
                 .expect("the lounge is public");
             self.server
@@ -1857,12 +1854,11 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     block_on_within(
         &lounge.runtime,
         "the lounge to remove this person",
-        lounge.workspaces.remove_member(
+        lounge.workspaces.change(
             &lounge.workspace,
-            &lounge.server_cert,
-            RemoveMemberRequest {
-                request_id: [0x62; 32],
-                user_public_key: person,
+            (&lounge.server_cert, [0x62; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(person),
             },
         ),
     )

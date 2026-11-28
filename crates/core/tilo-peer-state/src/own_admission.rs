@@ -393,3 +393,40 @@ pub async fn sign_entry(
         }
     }
 }
+
+/// Why a device signs nothing a host answered with: the change the answer names is not the one
+/// the device asked for. A device signs only the change it chose, never one its host chose.
+pub const NOT_ASKED: &str = "the host answered with a change this device did not ask for: it \
+     signs only the change it asked for, and signed nothing";
+
+/// The changes `own`'s device signs to make `command`, a governance change it asked its host
+/// for and checked it asked for ([`crate::asked_signing`]), on `governance`, the workspace's
+/// governance as the host answered it
+/// ([`crate::PeerWorkspaceMut::apply_workspace_membership_command`]). What it signs is decided
+/// under its own role and grants by every device that takes it in; the host only carries it.
+///
+/// # Errors
+/// The governance does not read, `signer` is not `own`'s or does not sign, or the workspace
+/// refuses the change as every receiver would.
+pub async fn sign_command(
+    workspace: &str,
+    governance: &[Vec<u8>],
+    command: &crate::workspace_membership::WorkspaceMembershipCommand,
+    (own, signer): (&DeviceCert, &dyn DeviceSigner),
+    now: SystemTime,
+) -> Result<Vec<Vec<u8>>, String> {
+    signed_turn(signer, |key| {
+        written(
+            workspace,
+            (governance, &[]),
+            own,
+            key,
+            |peer, key| {
+                peer.workspace_mut()
+                    .apply_workspace_membership_command(own, command, key, now)
+            },
+            now,
+        )
+    })
+    .await
+}

@@ -882,9 +882,15 @@ impl Workspaces {
         let args = Args::of(&request.argument)?;
         let asked = administered_request(&args.0)
             .map_err(|error| ActionCallError::InvalidRequest { reason: error })?;
-        let reply = self
-            .answer_administration(device, caller, asked, request.approval().is_some())
-            .await?;
+        let reply = Self::signed_change(Ok(self
+            .answer_administration(
+                device,
+                caller,
+                asked,
+                request.approval().is_some(),
+                args.signed()?,
+            )
+            .await?))?;
         administered_answer(&reply).map_err(|reason| ActionCallError::Refused { reason })
     }
 

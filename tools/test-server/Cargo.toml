@@ -19,6 +19,7 @@ tilo-runtime = { path = "../../crates/core/tilo-runtime" }
 # The login a server daemon is signed in with, asked on its native endpoint.
 tilo-actions = { path = "../../crates/core/actions" }
 tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
+tilo-action-policy = { path = "../../crates/core/action-policy" }
 tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }
 tilo-endpoint-reachability = { path = "../../crates/core/endpoint-reachability" }
 settings-store = { package = "tilo-settings-store", path = "../../crates/desktop/settings" }
@@ -32,6 +33,7 @@ tilo-test-env = { path = "../test-env" }
 # The daemon's own socket, reached at whatever path its profile lies at.
 tilo-socket = { version = "0.1.0", path = "../../crates/platform/tilo-socket" }
 serde_json.workspace = true
+hex.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tempfile.workspace = true
 blake3.workspace = true
@@ -51,7 +53,6 @@ tilo-app-package = { path = "../../crates/core/tilo-app-package", optional = tru
 launcher = { path = "../../crates/core/launcher", optional = true }
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false, optional = true }
 tilo-paths = { workspace = true, optional = true }
-hex = { workspace = true, optional = true }
 
 [features]
 # Install apps into a test's device ([`apps`]), and run them on the flows' server.
@@ -63,7 +64,6 @@ apps = [
     "dep:launcher",
     "dep:tilo-ui-base",
     "dep:tilo-paths",
-    "dep:hex",
 ]
 
 [lints]

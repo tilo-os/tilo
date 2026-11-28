@@ -1438,26 +1438,6 @@ pub use tilo_workspace_join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
 };
 
-/// Change a member's role.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetMemberRoleRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-    /// Their new role.
-    pub role: Role,
-}
-
-/// Remove a member and every device of theirs.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveMemberRequest {
-    /// Caller-chosen idempotency key.
-    pub request_id: [u8; 32],
-    /// The member's person.
-    pub user_public_key: [u8; 32],
-}
-
 /// A workspace as its administrators see it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceSummary {

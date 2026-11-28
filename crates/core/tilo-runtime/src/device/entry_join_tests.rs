@@ -12,7 +12,6 @@
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_server_protocol::directory::Listing;
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
 use tilo_server_protocol::workspaces::Role;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
@@ -126,14 +125,12 @@ async fn a_computer_joins_a_public_workspace_through_its_open_entry() {
 
     // Its owner opens the entry to anyone, as viewers.
     hosted
-        .publish(
-            &lounge,
-            &host_cert,
-            Listing {
+        .found_entry(&lounge, &host_cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Anyone may come in".into(),
                 default_role: Role::Viewer,
-            },
-        )
+            });
+        })
         .await
         .expect("the owner publishes the workspace");
 

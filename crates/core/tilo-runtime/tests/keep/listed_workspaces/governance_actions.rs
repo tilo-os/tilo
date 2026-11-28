@@ -94,6 +94,34 @@ pub(super) async fn ask(
         .unwrap_or_else(|reason| panic!("the server did not answer: {reason}"))
 }
 
+/// What the server answers `message`, sent over `actions` from `device`: a change the host
+/// answers is the device's to sign, it signs, as its session does, and asks again with it
+/// ([`tilo_peer_state::asked_signing`]).
+async fn ask_as(
+    actions: &RemoteDevice,
+    device: &TestDevice,
+    message: RemoteActionMessage,
+) -> RemoteActionMessage {
+    let answer = ask(actions, message.clone()).await;
+    let (RemoteActionMessage::Receipt(receipt), RemoteActionMessage::Invoke(request)) =
+        (&answer, &message)
+    else {
+        return answer;
+    };
+    let Some(facts) = tilo_peer_state::asked_signing::sign_asked(receipt) else {
+        return answer;
+    };
+    let again = tilo_peer_state::asked_signing::signed_again(
+        request,
+        facts,
+        (&device.cert, &device.sk),
+        tilo_clock::wall(),
+    )
+    .await
+    .expect("the device signs the change it asked for");
+    ask(actions, RemoteActionMessage::Invoke(again)).await
+}
+
 pub(super) fn invocation(
     provider: &str,
     resource: String,
@@ -495,8 +523,9 @@ async fn the_owner_removes_a_member_whose_next_session_is_refused() {
         .expect("the host answers its actions link");
     let bob_hex = hex::encode(bob.user_pk);
     let removed = outcome(
-        ask(
+        ask_as(
             &owner_actions,
+            &laptop,
             invocation(
                 WORKSPACE_GOVERNANCE_PROVIDER,
                 workspace_member(&workspace.workspace, &bob_hex),

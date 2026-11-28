@@ -8,13 +8,17 @@ use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{Answer, Grantee};
 use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER,
+    ActionCallError, ActionProvider as _, Caller, ReceiptStatus, SignFacts,
+    WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER,
 };
+use tilo_peer_state::asked_signing::signed_again;
+use tilo_peer_state::workspace_membership::MemberPlace::Administrator;
+use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::super::tests::{Answering, admit, answered, caller, hosted, offered, request, settled};
 use super::super::{ADD_MEMBER, ServiceWorkspaceActions};
+use crate::workspaces::fixtures::{admitted_key, awaited_signature};
 use crate::workspaces::tests::{hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
@@ -69,6 +73,7 @@ async fn in_workspace(
     .await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
+        ReceiptStatus::Failed { error } => Err(ActionCallError::refused(error.message)),
         other => panic!("governance completes: {other:?}"),
     }
 }
@@ -228,12 +233,10 @@ async fn a_persons_own_key_removes_no_member_however_they_may() {
     let (laptop_signer, laptop) = device_of(&quinten, "laptop", DeviceCapabilities::member());
     let_in(workspaces, &workspace, &owner, (&laptop_signer, &laptop), 2).await;
     workspaces
-        .set_member_administrator(
+        .change(
             &workspace,
-            &owner,
-            rand::random(),
-            laptop.user_public_key,
-            None,
+            (&owner, rand::random()),
+            (laptop.user_public_key, Administrator),
         )
         .await
         .unwrap();
@@ -247,13 +250,15 @@ async fn a_persons_own_key_removes_no_member_however_they_may() {
         3,
     )
     .await;
-    let remove = |caller: &Caller, member: &DeviceCert| {
+    // The laptop is a device of his own: it signs the change it asks for.
+    crate::workspaces::fixtures::remember_admitted(&laptop, &laptop_signer);
+    let remove = async |caller: &Caller, member: &DeviceCert| {
         let asked = request(
             &workspace,
             tilo_action_policy::roles::governance::REMOVE_MEMBER,
             json!({"person": hex::encode(member.user_public_key)}),
         );
-        settled(actions.in_workspace(workspace_id).invoke(caller, asked))
+        super::super::tests::invoke(&actions, workspace_id, caller, asked).await
     };
     // A key is no device of the person's own: it changes no place, so an administrator's key
     // removes nobody, however they may. Its session says it acts for him, as every key's does.
@@ -457,12 +462,10 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
     // An administrator may remove Bo, and their agent's grants answer Ask: it
     // asks them first, and what they refuse leaves the member in place.
     workspaces
-        .set_member_administrator(
+        .change(
             &workspace,
-            &owner,
-            rand::random(),
-            ada.user_public_key,
-            None,
+            (&owner, rand::random()),
+            (ada.user_public_key, Administrator),
         )
         .await
         .unwrap();
@@ -478,11 +481,57 @@ async fn its_person_is_asked_last_once_their_own_checks_pass() {
         "what she refused leaves Bo in place: {members:?}"
     );
 
-    // What passes her checks is hers to answer.
+    // What passes her checks is hers to answer, and the change hers to sign: her yes has the host
+    // wait for her device, which asked, and never sign in its place. A device gone silent leaves
+    // the call to end in plain words, nothing written; her device signs no other change.
+    let silent = Answering::approving_unsigned();
+    actions.sign_within(std::time::Duration::from_millis(300));
+    let agent = agent_of(&ada);
+    let before = workspaces.member_role(&workspace, bo.user_public_key).await;
+    let to_viewer = request(
+        &workspace,
+        ADD_MEMBER,
+        json!({"person": hex::encode(bo.user_public_key), "role": "viewer"}),
+    );
+    let here = actions.in_workspace(workspace_id);
+    let (unsigned, facts) = tokio::join!(
+        in_workspace(&actions, workspace_id, &agent, to_viewer.clone()),
+        awaited_signature(&here, &agent, &to_viewer.invocation),
+    );
+    assert!(
+        matches!(&unsigned, Err(ActionCallError::Refused { reason })
+            if reason == tilo_peer_state::asked_signing::NOT_SIGNED_IN_TIME),
+        "{unsigned:?}"
+    );
+    assert_eq!(
+        workspaces.member_role(&workspace, bo.user_public_key).await,
+        before
+    );
+    let rename = SettingsChange::Rename {
+        name: "Taken".to_owned(),
+    };
+    let change = serde_json::to_value(WorkspaceMembershipCommand::Settings(rename)).unwrap();
+    let other = SignFacts {
+        change,
+        ..facts.expect("the host waits for her device")
+    };
+    let key = admitted_key(&ada).expect("her device's key");
+    let refused = signed_again(&to_viewer, &other, (&ada, &key), tilo_clock::wall()).await;
+    assert_eq!(
+        refused.unwrap_err(),
+        tilo_peer_state::own_admission::NOT_ASKED
+    );
+
+    // Allowed again, her device signs it and it is written.
     let allowing = Answering::approving();
-    demote(&actions, (&workspace, workspace_id), &agent_of(&ada), &bo)
+    actions.sign_within(tilo_peer_state::asked_signing::SIGN_WAIT);
+    demote(&actions, (&workspace, workspace_id), &agent, &bo)
         .await
         .unwrap();
-    assert_eq!(allowing.asked().len(), 1);
+    assert_eq!(
+        workspaces.member_role(&workspace, bo.user_public_key).await,
+        Some(tilo_action_policy::Role::Commenter)
+    );
+    assert_eq!((silent.asked().len(), allowing.asked().len()), (1, 1));
     server.shutdown().await;
 }

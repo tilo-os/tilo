@@ -156,14 +156,12 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
     let workspaces = host.server.workspaces().unwrap();
     let lounge = workspaces.create("Lounge").await.unwrap();
     workspaces
-        .publish(
-            &lounge.workspace,
-            &host_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Everyone".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let address = host.server.node_addr();

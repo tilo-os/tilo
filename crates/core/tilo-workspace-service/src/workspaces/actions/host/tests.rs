@@ -307,23 +307,23 @@ async fn the_servers_person_enters_a_workspace_and_lets_an_app_author_it_as_acti
         "each entry answers an invitation of its own"
     );
 
-    // A Viewer, who may invite no one, lists a device of theirs by signing its own row, and
-    // the device is then answered the same way: the invitation is their own, at their role,
-    // and the device redeems it.
+    // A Viewer, who may invite no one, lists a device of theirs by signing its own row.
     let root = SigningKey::from_bytes(&[9; 32]);
+    let laptop_key = SigningKey::from_bytes(&[5; 32]);
     workspaces
-        .add_member(
-            &created.workspace,
-            &laptop,
-            crate::workspaces::AddMemberRequest {
-                request_id: [9; 32],
-                user_public_key: root.verifying_key().to_bytes(),
-                place: crate::workspaces::MemberPlace::Role(Role::Viewer),
-                name: Some("Cy".into()),
-            },
-        )
+        .enter(&created.workspace, (&laptop, &laptop_key))
         .await
         .unwrap();
+    let command = tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Place {
+        person: root.verifying_key().to_bytes(),
+        place: crate::workspaces::MemberPlace::Role(Role::Viewer),
+        name: Some("Cy".into()),
+    };
+    crate::workspaces::fixtures::signed_by(&laptop, &laptop_key, |ask| {
+        workspaces.govern(&created.workspace, ask, &command)
+    })
+    .await
+    .unwrap();
     let mut phone = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: SigningKey::from_bytes(&[10; 32]).verifying_key().to_bytes(),

@@ -135,6 +135,26 @@ impl TestDevice {
     pub fn device_pubkey(&self) -> [u8; 32] {
         self.cert.device_public_key
     }
+
+    /// `change` made in `workspace` as this device makes it: signed by the device itself, as
+    /// its session signs the change its host asks it to.
+    pub async fn makes(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        change: impl Into<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand>,
+    ) -> Result<
+        tilo_workspace_service::workspaces::GovernanceCompletion,
+        tilo_workspace_service::workspaces::CollaborationError,
+    > {
+        let change = change.into();
+        tilo_workspace_service::workspaces::signed_through(
+            (&self.cert, &self.sk),
+            rand::random(),
+            |ask| workspaces.govern(workspace, ask, &change),
+        )
+        .await
+    }
 }
 
 /// Spin up a server bound to `workspace_ids`. Every listed

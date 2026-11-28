@@ -2224,10 +2224,9 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
             .admit_invited_member(redemption, &guest_key, now)
     };
     assert!(admit(&mut peer, &first).unwrap());
-    let by = hex::encode(peer.owner());
     assert!(
         peer.governance_mut()
-            .ban_member(guest.user_public_key, &by, &owner, now)
+            .ban_member(guest.user_public_key, &owner, now)
             .unwrap()
     );
     assert!(peer.permissions(guest.device_public_key, now).is_err());

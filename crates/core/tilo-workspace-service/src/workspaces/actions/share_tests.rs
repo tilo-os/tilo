@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use tilo_action_policy::{Grantee, Role, TreePath};
 use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, ReceiptStatus, WORKSPACE_GRANT_SET,
+    ActionCallError, ActionProvider as _, ReceiptStatus, WORKSPACE_GRANT_SET, WORKSPACE_READ_GRANT,
+    WORKSPACE_READ_REVOKE,
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
@@ -42,10 +43,20 @@ impl Asked<'_> {
         role: Option<&str>,
     ) -> Result<Value, ActionCallError> {
         let argument = json!({ "person": person, "address": address, "role": role });
-        let pending = self.host.in_workspace(self.id).invoke(
-            &caller(device),
-            request(&self.workspace, WORKSPACE_GRANT_SET, argument),
-        );
+        self.call(device, WORKSPACE_GRANT_SET, argument).await
+    }
+
+    /// What `device`'s governance action `action` with `argument` comes to.
+    async fn call(
+        &self,
+        device: &DeviceCert,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionCallError> {
+        let pending = self
+            .host
+            .in_workspace(self.id)
+            .invoke(&caller(device), request(&self.workspace, action, argument));
         let receipt = settled(pending).await?;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -64,6 +75,23 @@ impl Asked<'_> {
             .permissions(device.device_public_key, now)
             .unwrap();
         member.allows(&node, kind, now)
+    }
+
+    /// `owner` keeps `member` out of a channel and lets them back in, and their read follows.
+    async fn reads_follow(&self, owner: &DeviceCert, member: &DeviceCert) {
+        let read = TreePath::workspace(&self.workspace).app("so.tilo.chat");
+        let read = read
+            .any(tilo_action_policy::Level::Kind)
+            .resource("root/general");
+        let person = json!({"person": hex::encode(member.user_public_key)});
+        for (action, reads) in [(WORKSPACE_READ_REVOKE, false), (WORKSPACE_READ_GRANT, true)] {
+            let argument = json!({ "resource": "tl:so.tilo.chat:root/general", "member": person });
+            self.call(owner, action, argument).await.unwrap();
+            assert_eq!(
+                self.may(member, &read.to_string(), ActionKind::Read).await,
+                reads
+            );
+        }
     }
 
     async fn policy(&self) -> tilo_action_policy::WorkspacePolicy {
@@ -103,12 +131,11 @@ async fn the_owner_shares_one_note_with_everyone_until_they_take_it_back() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            crate::workspaces::SetMemberRoleRequest {
-                request_id: [40; 32],
-                user_public_key: bo.user_public_key,
+            (&owner, [40; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(bo.user_public_key),
                 role: tilo_peer_state::join::Role::Viewer,
             },
         )
@@ -180,6 +207,10 @@ async fn the_owner_shares_one_note_with_everyone_until_they_take_it_back() {
         .await
         .unwrap();
     assert!(asked.may(&bo, &p1, writes).await);
+
+    // Who reads one resource is changed the same way: kept out is a Deny on it, and let back in
+    // takes the Deny away (`members#revoke-read`, `#grant-read`).
+    asked.reads_follow(&owner, &bo).await;
 
     // Only its giver takes it back: Bo may not, the owner may.
     refused(asked.set(&bo, "everyone", &p1, None).await);

@@ -145,6 +145,11 @@ pub(super) async fn ended(
                 }
             }
         }
+        // Its person said yes, and the change is the device's that asked to sign: it waits for
+        // that device's signature, never the host's.
+        Ok(Err(ActionCallError::SignatureRequired(facts))) if call.request.approval().is_some() => {
+            Ok(await_signature(actions, call, &facts))
+        }
         Ok(Err(error)) if call.request.approval().is_some() => {
             actions
                 .log()
@@ -232,6 +237,103 @@ async fn keep_for_root(
             Err(ActionCallError::ConfirmationRequired(Box::new(facts)))
         }
     }
+}
+
+/// A call its person said yes to, waiting for the device that asked it to sign its change: the
+/// call as their yes admitted it, its caller and that device.
+pub(in crate::workspaces) struct AwaitsSignature {
+    caller: tilo_actions::remote::Caller,
+    request: tilo_actions::remote::InvokeRequest,
+    device: Option<[u8; 32]>,
+}
+
+/// The calls that wait for their device's signature, by invocation.
+pub(in crate::workspaces) type AwaitingSignature =
+    std::sync::Mutex<std::collections::HashMap<InvocationId, AwaitsSignature>>;
+
+/// Keep `call`, which its person said yes to, waiting for the device that asked it to sign its
+/// change on `facts`: whoever follows it reads what to sign ([`SignFacts::awaited`]). Unsigned
+/// within the host's wait, it ends in the words a device's own wait ends in, and nothing is
+/// written.
+///
+/// [`SignFacts::awaited`]: tilo_actions::remote::SignFacts::awaited
+fn await_signature(
+    actions: &Actions,
+    call: &Call,
+    facts: &tilo_actions::remote::SignFacts,
+) -> InvocationReceipt {
+    let invocation = call.request.invocation;
+    actions.shared.awaiting_signature.lock_recover().insert(
+        invocation,
+        AwaitsSignature {
+            caller: call.caller.clone(),
+            request: call.request.clone(),
+            device: call.certificate.as_ref().map(|cert| cert.device_public_key),
+        },
+    );
+    let state = InvocationState::new(invocation, facts.awaited(invocation));
+    let receipt = state.receipt();
+    actions.log().complete(&invocation, state);
+    let (waiting, wait) = (actions.clone(), actions.sign_wait());
+    actions.shared.runtime.spawn(async move {
+        tokio::time::sleep(wait).await;
+        let unsigned = waiting
+            .shared
+            .awaiting_signature
+            .lock_recover()
+            .remove(&invocation)
+            .is_some();
+        if unsigned {
+            waiting.log().complete(
+                &invocation,
+                failed(
+                    invocation,
+                    tilo_peer_state::asked_signing::NOT_SIGNED_IN_TIME,
+                ),
+            );
+            waiting.moved();
+        }
+    });
+    receipt
+}
+
+/// The call `request` signs, where it is a call its person said yes to that waits for this
+/// device's signature ([`await_signature`]): asked again by its `caller` on `device`, the same
+/// call carrying the signed change. It is the call their yes admitted, carrying the signature,
+/// and waits no more. `None` for any other request.
+pub(super) fn signed_after_yes(
+    actions: &Actions,
+    caller: &tilo_actions::remote::Caller,
+    device: Option<&tilo_user_identity::DeviceCert>,
+    request: &tilo_actions::remote::InvokeRequest,
+) -> Option<tilo_actions::remote::InvokeRequest> {
+    use tilo_actions::remote::{InvokeArgument, SIGNED_ARGUMENT};
+    let InvokeArgument::Json(arguments) = &request.argument else {
+        return None;
+    };
+    if request.approval().is_some() || !arguments.contains_key(SIGNED_ARGUMENT) {
+        return None;
+    }
+    let mut asked = arguments.clone();
+    asked.remove(SIGNED_ARGUMENT);
+    let device = device.map(|cert| cert.device_public_key);
+    let mut awaiting = actions.shared.awaiting_signature.lock_recover();
+    let held = awaiting
+        .iter()
+        .find(|(_, held)| {
+            caller.continues(&held.caller)
+                && held.device == device
+                && held.request.target == request.target
+                && matches!(&held.request.argument, InvokeArgument::Json(kept) if *kept == asked)
+        })
+        .map(|(invocation, _)| *invocation)?;
+    let held = awaiting.remove(&held)?;
+    drop(awaiting);
+    Some(tilo_actions::remote::InvokeRequest {
+        argument: request.argument.clone(),
+        signed: request.signed.clone(),
+        ..held.request
+    })
 }
 
 /// Answer that `call` runs, record it so, and record how it ends once `work` does: the caller

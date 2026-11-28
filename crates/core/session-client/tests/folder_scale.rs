@@ -353,14 +353,12 @@ async fn folder() -> Folder {
     let workspaces = server.server.workspaces().unwrap();
     let company = workspaces.create("Company").await.unwrap();
     workspaces
-        .publish(
-            &company.workspace,
-            &owner_device.cert,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&company.workspace, &owner_device.cert, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "The company's folder".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     let address = server.server.node_addr();

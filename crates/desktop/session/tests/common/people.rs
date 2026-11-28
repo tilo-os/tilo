@@ -61,7 +61,7 @@ use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
 use tilo_device_identity::login::{ALREADY_A_PERSONS, FOUND};
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, TEST_PLATFORM_ENV, TILO_OS_PLATFORM};
-use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
+use tilo_server_protocol::directory::{EntryJoin, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -281,14 +281,15 @@ impl Site {
     /// from now on the entry admits people.
     pub fn publish(&self, role: Role) {
         self.runtime
-            .block_on(self.workspaces.publish(
-                &self.workspace,
-                &self.host,
-                Listing {
-                    description: format!("{}'s workspace", self.name),
-                    default_role: role,
-                },
-            ))
+            .block_on(
+                self.workspaces
+                    .found_entry(&self.workspace, &self.host, |entry| {
+                        entry.listing = Some(tilo_action_policy::ListingPolicy {
+                            description: format!("{}'s workspace", self.name),
+                            default_role: role,
+                        });
+                    }),
+            )
             .expect("the workspace is published");
         *self.published.lock().expect("the site's published role") = Some(role);
     }
@@ -373,12 +374,11 @@ impl Site {
     /// removes, an editor writes.
     pub fn set_role(&self, person: [u8; 32], role: Role) {
         self.runtime
-            .block_on(self.workspaces.set_member_role(
+            .block_on(self.workspaces.change(
                 &self.workspace,
-                &self.host,
-                tilo_workspace_service::workspaces::SetMemberRoleRequest {
-                    request_id: fresh_id(),
-                    user_public_key: person,
+                (&self.host, fresh_id()),
+                tilo_action_policy::Change::SetRole {
+                    person: hex::encode(person),
                     role,
                 },
             ))
@@ -431,12 +431,11 @@ impl Site {
     /// on the site hosts nothing of the workspace for them.
     pub fn remove(&self, person: [u8; 32]) {
         self.runtime
-            .block_on(self.workspaces.remove_member(
+            .block_on(self.workspaces.change(
                 &self.workspace,
-                &self.host,
-                tilo_workspace_service::workspaces::RemoveMemberRequest {
-                    request_id: fresh_id(),
-                    user_public_key: person,
+                (&self.host, fresh_id()),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(person),
                 },
             ))
             .expect("the workspace's owner removes a member");

@@ -103,7 +103,7 @@ fn a_members_row_counts_the_permissions_given_beyond_their_role() {
         .unwrap();
     // Being an administrator is their role's to say, not one more permission.
     peer.governance_mut()
-        .set_member_administrator(root, None, &authority, now)
+        .declare_member(root, crate::join::Role::Editor, true, None, &authority, now)
         .unwrap();
     let listed = member(&peer, root, now).unwrap();
     assert!(listed.administrator);

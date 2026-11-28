@@ -375,15 +375,12 @@ async fn a_picture_two_members_push_stays_until_neither_holds_it() {
     });
 
     // Bob's later picture is his alone: once Alice removes him, it goes too.
-    server
-        .workspaces()
-        .unwrap()
-        .remove_member(
+    laptop
+        .makes(
+            server.workspaces().unwrap(),
             ws,
-            &laptop.cert,
-            RemoveMemberRequest {
-                request_id: [9; 32],
-                user_public_key: bob.user_pk,
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(bob.user_pk),
             },
         )
         .await

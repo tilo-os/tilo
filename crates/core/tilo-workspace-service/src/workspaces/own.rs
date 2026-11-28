@@ -667,7 +667,7 @@ impl Workspaces {
     /// Apply `action` to a record of `workspace`, as this host, carried where the service keeps
     /// its writes ([`Self::carry_write`]): the write waits on the key service, and the caller's
     /// thread is never the one that has to answer it.
-    async fn change<R: tilo_resource::Resource + Send + 'static>(
+    async fn write_ownership<R: tilo_resource::Resource + Send + 'static>(
         &self,
         workspace: &str,
         record: (&str, &str),
@@ -692,7 +692,7 @@ impl Workspaces {
         let labels = serde_json::to_string(labels).map_err(|error| {
             tilo_actions::remote::ActionCallError::invalid_request(error.to_string())
         })?;
-        self.change(
+        self.write_ownership(
             workspace,
             membership::OWNERSHIP,
             Ownership::RELABEL.with(labels),
@@ -703,7 +703,7 @@ impl Workspaces {
 
     /// Turn [`Self::runs_unattended`] for `workspace` on or off.
     pub(super) async fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
-        self.change(
+        self.write_ownership(
             workspace,
             membership::OWNERSHIP,
             Ownership::RUN_UNATTENDED.with(on),

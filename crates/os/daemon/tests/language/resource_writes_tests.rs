@@ -749,11 +749,11 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     }
     // The entry keeps requests: it opens leaving one to any key.
     workspaces
-        .settle_entry(&workspace, &cert, |entry| entry.invitation_only = true)
+        .found_entry(&workspace, &cert, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     workspaces
-        .settle_entry(&workspace, &cert, |entry| entry.wait_list_max = 8)
+        .found_entry(&workspace, &cert, |entry| entry.wait_list_max = 8)
         .await
         .unwrap();
     let device = context(&workspace, &cert);
@@ -2004,12 +2004,11 @@ async fn viewer(
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     workspaces
-        .set_member_role(
+        .change(
             workspace,
-            owner,
-            tilo_workspace_service::workspaces::SetMemberRoleRequest {
-                request_id: rand::random(),
-                user_public_key: cert.user_public_key,
+            (owner, rand::random()),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(cert.user_public_key),
                 role: tilo_server_protocol::workspaces::Role::Viewer,
             },
         )

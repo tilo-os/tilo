@@ -30,13 +30,12 @@ use super::super::ServiceWorkspaceActions;
 use super::super::tests::{Answering, answered, caller, settled};
 use crate::workspaces::fixtures::list_itself_on_link;
 use crate::workspaces::fixtures::{
-    create_own, home_of, host_operation as invoke, host_operation_on as on_host, let_in,
+    create_own, home_of, host_operation as invoke, host_operation_on as on_host, let_in, made_as,
     open_home as open, own_request,
 };
 use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 use crate::workspaces::{
-    AddMemberRequest, IssueInvitationRequest, MemberPlace, OwnWorkspaceOffer, WaitListSecrets,
-    Workspaces,
+    IssueInvitationRequest, MemberPlace, OwnWorkspaceOffer, WaitListSecrets, Workspaces,
 };
 
 use tilo_peer_state::fixture::{labelled_with, member_cert_with};
@@ -1927,19 +1926,14 @@ async fn an_agent_asks_before_changing_a_members_role_and_changes_it_only_on_yes
     join(workspaces, &created, (&device_signing, &device)).await;
     // Someone else in it, at Viewer.
     let (_, member) = guest_device();
-    workspaces
-        .add_member(
-            &workspace,
-            &device,
-            AddMemberRequest {
-                request_id: rand::random(),
-                user_public_key: member.user_public_key,
-                place: MemberPlace::Role(Role::Viewer),
-                name: None,
-            },
-        )
-        .await
-        .unwrap();
+    made_as(
+        workspaces,
+        &workspace,
+        &device,
+        (member.user_public_key, MemberPlace::Role(Role::Viewer)),
+    )
+    .await
+    .unwrap();
     // The agent the person's own device hands its session to.
     let as_agent = Caller::authenticated(device.user_public_key, device.device_public_key)
         .delegated_to("keeper of the members");
@@ -2222,12 +2216,16 @@ fn certified_as(
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
-        issued_at_ns: now,
+        // Certified a moment before it is used, as any device is: what it signs in the same
+        // instant is never dated before the certificate.
+        issued_at_ns: now.saturating_sub(1_000_000_000),
         expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
         signature: [0; 64],
         issuer: None,
     };
     sign_device_cert(&mut cert, root).unwrap();
+    // What it asks of a workspace's member list it signs with its own key.
+    crate::workspaces::fixtures::remember_admitted(&cert, key);
     cert
 }
 
@@ -2261,8 +2259,9 @@ async fn govern(
 ) -> Result<Value, ActionCallError> {
     let request = super::super::tests::request(&workspace.workspace, verb, argument);
     let key = as_key(cert);
+    // The key signs what it changes in the member list, as every device does.
     let first = settled(
-        host.in_workspace(workspace.workspace_id)
+        host.device_page(workspace.workspace_id, cert)
             .invoke(&key, request.clone()),
     )
     .await;
@@ -2581,23 +2580,25 @@ async fn an_owners_key_administers_nothing_and_a_device_of_theirs_makes_an_admin
         "a key making nobody an administrator left Grace out"
     );
 
-    // A device of Ada's makes Grace an administrator by her key.
-    let ada_device = certified_as(
-        ada,
-        &SigningKey::from_bytes(&rand::random()),
-        DeviceCapabilities::member(),
-        "Ada's laptop",
-    );
+    // A device of Ada's, in by a row it signs itself, makes Grace an administrator by her key.
+    let laptop = SigningKey::from_bytes(&rand::random());
+    let ada_device = certified_as(ada, &laptop, DeviceCapabilities::member(), "Ada's laptop");
     workspaces
-        .set_member_administrator(
-            &workspace.workspace,
-            &ada_device,
-            rand::random(),
-            grace_person,
-            Some("Someone"),
-        )
+        .enter(&workspace.workspace, (&ada_device, &laptop))
         .await
         .unwrap();
+    made_as(
+        workspaces,
+        &workspace.workspace,
+        &ada_device,
+        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Place {
+            person: grace_person,
+            place: tilo_peer_state::workspace_membership::MemberPlace::Administrator,
+            name: Some("Someone".to_owned()),
+        },
+    )
+    .await
+    .unwrap();
     let listed = Value::Array(workspaces.members(&workspace.workspace).await.unwrap());
     let row = listed
         .as_array()
@@ -2974,10 +2975,8 @@ async fn held_host() -> (
     // and keeps their addresses.
     let lounge = home_of(&workspaces).await;
     workspaces
-        .found_entry(
-            &lounge,
-            &owner,
-            tilo_action_policy::EntryPolicy {
+        .found_entry(&lounge, &owner, |entry| {
+            *entry = tilo_action_policy::EntryPolicy {
                 listing: Some(tilo_action_policy::ListingPolicy {
                     description: "Coffee and tea".into(),
                     default_role: tilo_action_policy::Role::Editor,
@@ -2989,8 +2988,8 @@ async fn held_host() -> (
                     from: "lounge@example.com".into(),
                     templates: None,
                 }),
-            },
-        )
+            }
+        })
         .await
         .unwrap();
     let (stranger_key, stranger) = guest_device();
@@ -3029,18 +3028,16 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
         .unwrap();
     let lounge = home_of(&workspaces).await;
     workspaces
-        .publish(
-            &lounge,
-            &owner,
-            tilo_server_protocol::directory::Listing {
+        .found_entry(&lounge, &owner, |entry| {
+            entry.listing = Some(tilo_action_policy::ListingPolicy {
                 description: "Coffee and tea".into(),
                 default_role: tilo_server_protocol::workspaces::Role::Editor,
-            },
-        )
+            });
+        })
         .await
         .unwrap();
     workspaces
-        .settle_entry(&lounge, &owner, |entry| entry.invitation_only = true)
+        .found_entry(&lounge, &owner, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     let refused = workspaces
@@ -3530,12 +3527,13 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     let ada = SigningKey::from_bytes(&rand::random());
     let ada_person = ada.verifying_key().to_bytes();
     workspaces
-        .set_member_administrator(
+        .change(
             &home,
-            workspaces.device_cert(),
-            rand::random(),
-            ada_person,
-            None,
+            (workspaces.device_cert(), rand::random()),
+            (
+                ada_person,
+                tilo_peer_state::workspace_membership::MemberPlace::Administrator,
+            ),
         )
         .await
         .unwrap();

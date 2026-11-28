@@ -2936,7 +2936,7 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once() {
                 ..entry
             };
             runtime
-                .block_on(workspaces.found_entry(KEPT_WORKSPACE, &daemon.cert, changed))
+                .block_on(workspaces.found_entry(KEPT_WORKSPACE, &daemon.cert, |e| *e = changed))
                 .expect("the owner changes the entry");
         } else {
             // A later start founds nothing and settles nothing: it reads the

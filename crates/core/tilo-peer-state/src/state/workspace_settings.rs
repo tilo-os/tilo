@@ -100,6 +100,27 @@ impl StatePeer {
             SettingsChange::Content(policy) => {
                 self.governance_mut().put_content_policy(policy, key, now)
             }
+            SettingsChange::Unlist => {
+                let mut entry = self.governance().workspace_entry();
+                entry.listing = None;
+                self.governance_mut().put_workspace_entry(&entry, key, now)
+            }
+            SettingsChange::Limits {
+                file_bytes,
+                member_bytes,
+                hourly_bytes,
+            } => {
+                let named = |named: &Option<u64>, current: Option<u64>| {
+                    named.map_or(current, |bytes| (bytes > 0).then_some(bytes))
+                };
+                let current = self.governance().content_policy();
+                let policy = tilo_action_policy::ContentPolicy {
+                    file_bytes: named(file_bytes, current.file_bytes),
+                    member_bytes: named(member_bytes, current.member_bytes),
+                    hourly_bytes: named(hourly_bytes, current.hourly_bytes),
+                };
+                self.governance_mut().put_content_policy(&policy, key, now)
+            }
             SettingsChange::Shortcuts(change) => self
                 .workspace_mut()
                 .apply_shortcut_change(caller, change, key, now),

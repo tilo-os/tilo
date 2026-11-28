@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
         let invited = redemption(&peer, &owner, &owner_key, &guest, Role::Viewer, 72, now);
 
         peer.governance_mut()
-            .set_member_administrator(user, None, &owner_key, now)
+            .declare_member(user, crate::join::Role::Editor, true, None, &owner_key, now)
             .unwrap();
         for (who, key) in [("an administrator", &editor_key), ("the owner", &owner_key)] {
             let refused = peer
@@ -254,7 +254,7 @@ fn refusal_of_tampered_admission(
     let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);
     let editor_key = SigningKey::from_bytes(&[6; 32]);
     peer.governance_mut()
-        .set_member_administrator(user, None, &owner_key, now)
+        .declare_member(user, crate::join::Role::Editor, true, None, &owner_key, now)
         .unwrap();
     // The guest's device admits itself as every device does — the rows its
     // operation names beside the receipt — and the administrator's device
@@ -760,7 +760,7 @@ fn only_an_owners_device_hands_the_workspace_over() {
         crate::admission_tests::add_member_with(&mut owner_copy, &owner_key, now, 51, 52);
     owner_copy
         .governance_mut()
-        .set_member_administrator(admin, None, &owner_key, now)
+        .declare_member(admin, Role::Editor, true, None, &owner_key, now)
         .unwrap();
     let stranger = device(53, 54);
     let admin_cert = crate::fixture::certificate_of(&owner_copy, &admin_key);

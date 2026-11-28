@@ -46,7 +46,7 @@ mod tests {
     use crate::workspaces::tests::{device_cert, guest_device, hosting_device, test_host};
     use ed25519_dalek::SigningKey;
     use tilo_peer_state::join::Role;
-    use tilo_server_protocol::directory::{EntryJoin, Listing};
+    use tilo_server_protocol::directory::EntryJoin;
     use tilo_server_protocol::workspaces::{
         IssueInvitationRequest, JoinReply, Workspace, WorkspacesReply, WorkspacesRequest,
     };
@@ -318,18 +318,17 @@ mod tests {
         assert_eq!(row(&page, &newcomer).role, Some(Role::Owner), "{page:?}");
         assert!(row(&page, &newcomer).is_self, "their own row is theirs");
         assert!(!row(&page, &member).is_self, "nobody else's row is");
-        workspaces
-            .set_member_role(
-                &workspace,
-                &newcomer,
-                tilo_server_protocol::workspaces::SetMemberRoleRequest {
-                    request_id: rand::random(),
-                    user_public_key: member.user_public_key,
-                    role: Role::Viewer,
-                },
-            )
-            .await
-            .expect("the owner may change a role");
+        let command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand =
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(member.user_public_key),
+                role: Role::Viewer,
+            }
+            .into();
+        crate::workspaces::fixtures::signed_by(&newcomer, &newcomer_key, |ask| {
+            workspaces.govern(&workspace, ask, &command)
+        })
+        .await
+        .expect("the owner may change a role");
 
         // An owner invitation is only its owner's to issue: the host it was handed from
         // administers this workspace now, and its owner invitation admits nobody.
@@ -377,18 +376,16 @@ mod tests {
         );
         let home = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &home,
-                &cert,
-                Listing {
+            .found_entry(&home, &cert, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&home, &cert, |entry| entry.invitation_only = true)
+            .found_entry(&home, &cert, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let elsewhere = workspaces.create("Acme").await.unwrap().workspace;
@@ -439,14 +436,12 @@ mod tests {
         let workspaces = site.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &governing.1,
-                Listing {
+            .found_entry(&workspace, &governing.1, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "The Tilo community".into(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (newcomer_key, newcomer) = guest_device();

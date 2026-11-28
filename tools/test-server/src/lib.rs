@@ -485,12 +485,11 @@ impl Host {
     pub fn remove(&self, workspace: &str, person: [u8; 32], request: u8) {
         self.0
             .runtime
-            .block_on(self.0.workspaces.remove_member(
+            .block_on(self.0.workspaces.change(
                 workspace,
-                &self.0.cert,
-                tilo_workspace_service::workspaces::RemoveMemberRequest {
-                    request_id: [request; 32],
-                    user_public_key: person,
+                (&self.0.cert, [request; 32]),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(person),
                 },
             ))
             .expect("the host takes the person out");

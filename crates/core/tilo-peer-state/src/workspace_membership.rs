@@ -342,6 +342,24 @@ pub enum WorkspaceMembershipCommand {
         kept_ms: i64,
         progress: serde_json::Value,
     },
+    /// Give `recipient` (a person, a role, or everyone) `access` to `document` of `app`, or to
+    /// the whole workspace when `app` is empty: the member-list changes that makes, read from the
+    /// caller's own copy of the workspace ([`collab_types::document_access_changes`]).
+    DocumentAccess {
+        recipient: String,
+        app: String,
+        document: String,
+        access: String,
+    },
+    /// Let `grantee` read `resource`, as the workspace publishes it (`tl:<app>:<id>`), or keep
+    /// them from it (`reads`), as the signing device's copy decides it
+    /// ([`tilo_action_policy::WorkspacePolicy::reading_change`]): a let-in is a role over that
+    /// one resource, given by the signer.
+    Reading {
+        grantee: tilo_action_policy::Grantee,
+        resource: String,
+        reads: bool,
+    },
 }
 
 /// Where [`WorkspaceMembershipCommand::Place`] puts a person.
@@ -431,6 +449,16 @@ pub enum SettingsChange {
     /// and what one member's files may take, now and in any hour
     /// ([`tilo_action_policy::ContentPolicy`]).
     Content(tilo_action_policy::ContentPolicy),
+    /// Take the workspace out of the directory; the rest of its entry stays as the signing
+    /// device's copy records it.
+    Unlist,
+    /// Settle the content policy's limits that are named, each as the signing device's copy
+    /// records it otherwise: a limit of 0 removes it.
+    Limits {
+        file_bytes: Option<u64>,
+        member_bytes: Option<u64>,
+        hourly_bytes: Option<u64>,
+    },
 }
 
 /// The name a workspace is founded with, trimmed: none, which every reader
@@ -455,6 +483,23 @@ pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
         return Err("workspace name must contain 1–80 characters".into());
     }
     Ok(name)
+}
+
+/// Placing a person at a place, under the name the member list already holds for them.
+impl From<([u8; 32], MemberPlace)> for WorkspaceMembershipCommand {
+    fn from((person, place): ([u8; 32], MemberPlace)) -> Self {
+        Self::Place {
+            person,
+            place,
+            name: None,
+        }
+    }
+}
+
+impl From<tilo_action_policy::Change> for WorkspaceMembershipCommand {
+    fn from(change: tilo_action_policy::Change) -> Self {
+        Self::Member { change }
+    }
 }
 
 impl WorkspaceMembershipCommand {
@@ -550,6 +595,8 @@ impl WorkspaceMembershipCommand {
                 // of who saved it that its workspace's admission asks for.
                 SettingsChange::AssignPreset { .. }
                 | SettingsChange::Content(_)
+                | SettingsChange::Unlist
+                | SettingsChange::Limits { .. }
                 | SettingsChange::GrantSandbox { .. }
                 | SettingsChange::RevokeSandbox { .. }
                 | SettingsChange::Shortcuts(_) => Ok(()),

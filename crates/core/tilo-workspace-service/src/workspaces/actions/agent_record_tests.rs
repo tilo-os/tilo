@@ -13,7 +13,6 @@ use tilo_peer_state::join::Role;
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 
 use super::super::tests::admit;
-use crate::workspaces::SetMemberRoleRequest;
 use crate::workspaces::fixtures::{
     agents_listed as agents, ask_agents as ask, offered_agents as offered,
 };
@@ -36,12 +35,11 @@ async fn the_agents_record_changes_only_through_admitted_actions() {
     let workspace = created.workspace.clone();
     let viewer = admit(workspaces, &workspace, &owner, 7).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [31; 32],
-                user_public_key: viewer.user_public_key,
+            (&owner, [31; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(viewer.user_public_key),
                 role: Role::Viewer,
             },
         )
@@ -163,12 +161,11 @@ async fn an_agents_change_is_admitted_while_a_writer_holds_the_workspace() {
     let workspace = workspaces.create("Studio").await.unwrap().workspace;
     let viewer = admit(workspaces, &workspace, &owner, 7).await;
     workspaces
-        .set_member_role(
+        .change(
             &workspace,
-            &owner,
-            SetMemberRoleRequest {
-                request_id: [31; 32],
-                user_public_key: viewer.user_public_key,
+            (&owner, [31; 32]),
+            tilo_action_policy::Change::SetRole {
+                person: hex::encode(viewer.user_public_key),
                 role: Role::Viewer,
             },
         )

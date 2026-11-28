@@ -2,7 +2,7 @@
 //! anyone in with the role their owner chose.
 //!
 //! Making a workspace public is one of its governance settings
-//! ([`governance::SETTINGS`]): its owner, or anyone the workspace lets change its
+//! (`governance::SETTINGS`): its owner, or anyone the workspace lets change its
 //! settings, settles its entry ([`tilo_action_policy::EntryPolicy`]) — a listing
 //! (a description and the default role), whether it takes people by invitation
 //! only, and how many requests it keeps — as one change to the workspace's
@@ -34,9 +34,8 @@ pub(crate) use entering::refuse_unlisted_person;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
+use tilo_action_policy::{EntryPolicy, Role};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::join_log::request_digest;
 use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
@@ -46,7 +45,6 @@ use tilo_server_protocol::workspaces::{
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
 use tilo_user_identity::DeviceCert;
 
-use super::authority::WorkspaceOp;
 use super::{CollaborationError, HostedWorkspace, Workspaces, wait_list};
 
 /// How long an invitation the entry hands a person the workspace declared
@@ -274,58 +272,6 @@ impl Workspaces {
             .is_some_and(|entry| entry.is_listed())
     }
 
-    /// Settle `workspace`'s entry as `change` asks, as `device`: the workspace's
-    /// governance must let its person change its settings
-    /// ([`governance::SETTINGS`]). Answers the entry the workspace now records.
-    ///
-    /// # Errors
-    ///
-    /// Returns why `device` may not change the workspace's settings, or why the
-    /// entry cannot stand.
-    pub async fn settle_entry(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        change: impl FnOnce(&mut EntryPolicy),
-    ) -> Result<EntryPolicy, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let key = self.inner.host.key.clone();
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        self.authorize(
-            device,
-            Some(&hosted),
-            WorkspaceOp::Govern(governance::SETTINGS),
-            now,
-        )?;
-        let mut entry = Self::entry_of(&hosted);
-        change(&mut entry);
-        let entry = entry
-            .checked()
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if entry == Self::entry_of(&hosted) {
-            return Ok(entry);
-        }
-        let digest = request_digest(&("the workspace's entry", &entry))
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        self.administer(
-            &mut hosted,
-            rand::random(),
-            digest,
-            |peer| {
-                peer.governance_mut()
-                    .put_workspace_entry(&entry, &key, super::system_time(now))
-            },
-            now,
-        )
-        .await?;
-        let listed = entry.is_listed();
-        drop(hosted);
-        self.inner.directory.announce(workspace);
-        tracing::info!(%workspace, listed, "the workspace's entry settled");
-        Ok(entry)
-    }
-
     /// The content policy `workspace`'s governance records here now: the
     /// largest file a host keeps, and what one member's files may take, now
     /// and in any hour. The defaults when its owners set none. `None` when this
@@ -339,56 +285,11 @@ impl Workspaces {
         Some(hosted.peer().governance().content_policy())
     }
 
-    /// Settle `workspace`'s content policy as `policy`, as `device`: the
-    /// workspace's governance must let its person change its settings
-    /// ([`governance::SETTINGS`]). Answers the policy the workspace now
-    /// records, which every host of it obeys.
-    ///
-    /// # Errors
-    ///
-    /// Returns why `device` may not change the workspace's settings, or why
-    /// the change could not be kept.
-    pub async fn settle_content_policy(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        policy: tilo_action_policy::ContentPolicy,
-    ) -> Result<tilo_action_policy::ContentPolicy, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let key = self.inner.host.key.clone();
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        self.authorize(
-            device,
-            Some(&hosted),
-            WorkspaceOp::Govern(governance::SETTINGS),
-            now,
-        )?;
-        if hosted.peer().governance().content_policy() == policy {
-            return Ok(policy);
-        }
-        let digest = request_digest(&("the workspace's content policy", &policy))
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        self.administer(
-            &mut hosted,
-            rand::random(),
-            digest,
-            |peer| {
-                peer.governance_mut()
-                    .put_content_policy(&policy, &key, super::system_time(now))
-            },
-            now,
-        )
-        .await?;
-        Ok(policy)
-    }
-
-    /// Found `workspace`'s entry as `entry`, as `device`: where a directory lists
-    /// it and what it says, whom the entry lets in, and how many requests it keeps
-    /// — one change, which the workspace's governance records. What a deployment
-    /// names when its founder makes the workspace; an owner changes it later
-    /// through the same setting ([`Self::publish`], [`Self::unpublish`],
-    /// [`Self::settle_entry`]).
+    /// Settle `workspace`'s entry as `change` asks, as `device`, this host's own: where a
+    /// directory lists it and what it says, whom the entry lets in, and how many requests it
+    /// keeps — one change, which the workspace's governance records. What a deployment names when
+    /// its founder makes the workspace; an owner changes it later through the same setting.
+    /// Answers the entry the workspace now records.
     ///
     /// # Errors
     ///
@@ -398,47 +299,32 @@ impl Workspaces {
         &self,
         workspace: &str,
         device: &DeviceCert,
-        entry: EntryPolicy,
+        change: impl FnOnce(&mut EntryPolicy),
     ) -> Result<EntryPolicy, CollaborationError> {
-        self.settle_entry(workspace, device, |current| *current = entry)
-            .await
-    }
-
-    /// Make `workspace` public with `listing`, as `device` asks: the workspace's
-    /// governance must let its person change the workspace's settings.
-    pub async fn publish(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        listing: Listing,
-    ) -> Result<Listing, CollaborationError> {
-        let settling = ListingPolicy {
-            description: listing.description,
-            default_role: listing.default_role,
+        let mut entry = {
+            let state = self.workspace(workspace).await?;
+            let hosted = state.lock().await;
+            Self::entry_of(&hosted)
         };
-        let entry = self
-            .settle_entry(workspace, device, |entry| {
-                entry.listing = Some(settling);
-            })
+        let before = entry.clone();
+        change(&mut entry);
+        let entry = entry
+            .checked()
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        if entry != before {
+            let command =
+                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Settings(
+                    tilo_peer_state::workspace_membership::SettingsChange::Entry(entry.clone()),
+                );
+            self.change(
+                workspace,
+                (device, super::shares::fresh_request()?),
+                command,
+            )
             .await?;
-        listing_of_entry(&entry)
-            .ok_or_else(|| CollaborationError::new("the workspace records no listing"))
-    }
-
-    /// Take `workspace` out of the directory, as `device` asks. Its members stay;
-    /// nobody new gets in through its entry.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::publish`].
-    pub async fn unpublish(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-    ) -> Result<(), CollaborationError> {
-        self.settle_entry(workspace, device, |entry| entry.listing = None)
-            .await
-            .map(drop)
+            tracing::info!(%workspace, listed = entry.is_listed(), "the workspace's entry settled");
+        }
+        Ok(entry)
     }
 
     /// Whether `user` holds an invitation this workspace issued and has not
@@ -878,8 +764,7 @@ pub(crate) mod entry_tests {
     };
     use tilo_peer_state::join::Role;
     use tilo_server_protocol::WorkspaceId;
-    use tilo_server_protocol::directory::{EntryJoin, Listing};
-    use tilo_server_protocol::workspaces::RemoveMemberRequest;
+    use tilo_server_protocol::directory::EntryJoin;
     use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -1010,14 +895,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: Role::Commenter,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (guest_key, guest) = guest_device();
@@ -1056,14 +939,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: Role::Commenter,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         // The person's first device walks in through the open entry.
@@ -1109,14 +990,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: Role::Commenter,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (guest_key, guest) = guest_device();
@@ -1143,7 +1022,7 @@ pub(crate) mod entry_tests {
             "an empty admission lets nobody in"
         );
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let reply = workspaces
@@ -1173,14 +1052,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Everyone".into(),
                     default_role: Role::Commenter,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let generation = async || {
@@ -1279,14 +1156,12 @@ pub(crate) mod entry_tests {
             let workspaces = server.workspaces();
             workspace = workspaces.create("Lounge").await.unwrap().workspace;
             workspaces
-                .publish(
-                    &workspace,
-                    &owner,
-                    Listing {
+                .found_entry(&workspace, &owner, |entry| {
+                    entry.listing = Some(tilo_action_policy::ListingPolicy {
                         description: "Everyone".into(),
                         default_role: Role::Commenter,
-                    },
-                )
+                    });
+                })
                 .await
                 .unwrap();
             let (guest_key, guest) = guest_device();
@@ -1300,7 +1175,7 @@ pub(crate) mod entry_tests {
                 .unwrap();
             assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
             workspaces
-                .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+                .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
                 .await
                 .unwrap();
             server.shutdown().await;
@@ -1368,14 +1243,12 @@ pub(crate) mod entry_tests {
 
         // Another default from now on: the next person gets it.
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Talk about coffee".into(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (reply, _) = walk_in(workspaces, &workspace).await;
@@ -1515,14 +1388,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (reply, guest) = walk_in(workspaces, &workspace).await;
@@ -1538,14 +1409,12 @@ pub(crate) mod entry_tests {
 
         // Whether a person writes stays their role's.
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (_, viewer) = walk_in(workspaces, &workspace).await;
@@ -1564,14 +1433,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (guest_key, guest) = guest_device();
@@ -1584,12 +1451,11 @@ pub(crate) mod entry_tests {
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
-            .remove_member(
+            .change(
                 &workspace,
-                &owner,
-                RemoveMemberRequest {
-                    request_id: [7; 32],
-                    user_public_key: guest.user_public_key,
+                (&owner, [7; 32]),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(guest.user_public_key),
                 },
             )
             .await
@@ -1661,12 +1527,11 @@ pub(crate) mod entry_tests {
     ) {
         // A removal the person answers with an invitation is lifted by it too.
         workspaces
-            .remove_member(
+            .change(
                 workspace,
-                owner,
-                RemoveMemberRequest {
-                    request_id: [9; 32],
-                    user_public_key: guest.user_public_key,
+                (owner, [9; 32]),
+                tilo_action_policy::Change::RemoveMember {
+                    person: hex::encode(guest.user_public_key),
                 },
             )
             .await
@@ -1725,14 +1590,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Hearth").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (guest_key, guest) = guest_device();
@@ -1745,12 +1608,11 @@ pub(crate) mod entry_tests {
             Ok(JoinReply::Admitted { .. })
         ));
         workspaces
-            .ban_member(
+            .change(
                 &workspace,
-                &owner,
-                RemoveMemberRequest {
-                    request_id: [7; 32],
-                    user_public_key: guest.user_public_key,
+                (&owner, [7; 32]),
+                tilo_action_policy::Change::Ban {
+                    person: hex::encode(guest.user_public_key),
                 },
             )
             .await
@@ -1832,14 +1694,12 @@ pub(crate) mod entry_tests {
         assert!(reply.is_err(), "never published: no entry");
 
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         assert_eq!(
@@ -1865,14 +1725,12 @@ pub(crate) mod entry_tests {
 
         assert!(
             workspaces
-                .publish(
-                    &workspace,
-                    &owner,
-                    Listing {
+                .found_entry(&workspace, &owner, |entry| {
+                    entry.listing = Some(tilo_action_policy::ListingPolicy {
                         description: String::new(),
                         default_role: Role::Moderator,
-                    },
-                )
+                    });
+                })
                 .await
                 .is_err()
         );
@@ -1887,14 +1745,12 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: String::new(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let (guest_key, guest) = guest_device();
@@ -1907,16 +1763,18 @@ pub(crate) mod entry_tests {
             Ok(JoinReply::Admitted { .. })
         ));
         assert!(
-            workspaces.unpublish(&workspace, &guest).await.is_err(),
+            workspaces
+                .found_entry(&workspace, &guest, |entry| entry.listing = None)
+                .await
+                .is_err(),
             "an Editor who joined does not change the workspace's settings"
         );
         workspaces
-            .ban_member(
+            .change(
                 &workspace,
-                &owner,
-                RemoveMemberRequest {
-                    request_id: [7; 32],
-                    user_public_key: guest.user_public_key,
+                (&owner, [7; 32]),
+                tilo_action_policy::Change::Ban {
+                    person: hex::encode(guest.user_public_key),
                 },
             )
             .await
@@ -1948,18 +1806,16 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Coffee and tea".into(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
 
@@ -1987,10 +1843,8 @@ pub(crate) mod entry_tests {
         assert!(listed[0].invitation_only);
         assert_eq!(listed[0].wait_list, None);
         workspaces
-            .found_entry(
-                workspace,
-                owner,
-                EntryPolicy {
+            .found_entry(workspace, owner, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Coffee and tea".into(),
                         default_role: Role::Editor,
@@ -2002,8 +1856,8 @@ pub(crate) mod entry_tests {
                         from: "lounge@example.com".into(),
                         templates: None,
                     }),
-                },
-            )
+                }
+            })
             .await
             .unwrap();
         let offered = tilo_server_protocol::directory::EntryWaitList {
@@ -2071,7 +1925,7 @@ pub(crate) mod entry_tests {
         owner: &DeviceCert,
     ) {
         workspaces
-            .settle_entry(workspace, owner, |entry| entry.invitation_only = false)
+            .found_entry(workspace, owner, |entry| entry.invitation_only = false)
             .await
             .unwrap();
         let (open_key, open) = guest_device();
@@ -2098,21 +1952,17 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Coffee and tea".into(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         let settled = workspaces
-            .found_entry(
-                &workspace,
-                &owner,
-                EntryPolicy {
+            .found_entry(&workspace, &owner, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Coffee and tea".into(),
                         default_role: Role::Editor,
@@ -2124,8 +1974,8 @@ pub(crate) mod entry_tests {
                         from: "lounge@example.com".into(),
                         templates: Some("/srv/mail".into()),
                     }),
-                },
-            )
+                }
+            })
             .await
             .unwrap();
         let offered = tilo_server_protocol::directory::EntryWaitList {
@@ -2141,7 +1991,7 @@ pub(crate) mod entry_tests {
         // A settings change is a different entry: what a guest admission
         // named is the entry it was let in under.
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.wait_list_max = 5)
+            .found_entry(&workspace, &owner, |entry| entry.wait_list_max = 5)
             .await
             .unwrap();
         let changed = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2150,13 +2000,13 @@ pub(crate) mod entry_tests {
             settled_digest
         );
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.wait_list_max = 4)
+            .found_entry(&workspace, &owner, |entry| entry.wait_list_max = 4)
             .await
             .unwrap();
 
         // Open: the settings stay, and the entry offers no wait list.
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = false)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = false)
             .await
             .unwrap();
         let open = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2179,7 +2029,7 @@ pub(crate) mod entry_tests {
         // Back to invitation-only: the same settings are in force and the
         // wait list is offered again, as the entry every admission names.
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let again = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2212,18 +2062,16 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "Coffee and tea".into(),
                     default_role: Role::Editor,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
 
@@ -2231,12 +2079,14 @@ pub(crate) mod entry_tests {
         // device of theirs arrives, so the entry does not see a stranger.
         let (declared_key, declared) = guest_device();
         workspaces
-            .set_member_administrator(
+            .change(
                 &workspace,
-                &owner,
-                rand::random(),
-                declared.user_public_key,
-                None,
+                (&owner, rand::random()),
+                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Place {
+                    person: declared.user_public_key,
+                    place: tilo_peer_state::workspace_membership::MemberPlace::Administrator,
+                    name: None,
+                },
             )
             .await
             .unwrap();
@@ -2309,10 +2159,8 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         let settled = workspaces
-            .found_entry(
-                &workspace,
-                &owner,
-                EntryPolicy {
+            .found_entry(&workspace, &owner, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Coffee and tea".into(),
                         default_role: Role::Commenter,
@@ -2321,8 +2169,8 @@ pub(crate) mod entry_tests {
                     wait_list_max: 0,
                     contact: None,
                     mail: None,
-                },
-            )
+                }
+            })
             .await
             .expect("the founder settles the entry");
         assert!(
@@ -2368,10 +2216,8 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .found_entry(
-                &workspace,
-                &owner,
-                EntryPolicy {
+            .found_entry(&workspace, &owner, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Coffee and tea".into(),
                         default_role: Role::Editor,
@@ -2380,8 +2226,8 @@ pub(crate) mod entry_tests {
                     wait_list_max: 0,
                     contact: None,
                     mail: None,
-                },
-            )
+                }
+            })
             .await
             .expect("the founder settles the entry");
 
@@ -2448,10 +2294,8 @@ pub(crate) mod entry_tests {
         let workspaces = server.workspaces();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         workspaces
-            .found_entry(
-                &workspace,
-                &owner,
-                EntryPolicy {
+            .found_entry(&workspace, &owner, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "As it was founded".into(),
                         default_role: Role::Editor,
@@ -2460,24 +2304,22 @@ pub(crate) mod entry_tests {
                     wait_list_max: 0,
                     contact: None,
                     mail: None,
-                },
-            )
+                }
+            })
             .await
             .expect("the founder settles the entry");
         // Its owner changes the entry afterwards.
         workspaces
-            .publish(
-                &workspace,
-                &owner,
-                Listing {
+            .found_entry(&workspace, &owner, |entry| {
+                entry.listing = Some(tilo_action_policy::ListingPolicy {
                     description: "As its owner left it".into(),
                     default_role: Role::Viewer,
-                },
-            )
+                });
+            })
             .await
             .unwrap();
         workspaces
-            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
+            .found_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         server.shutdown().await;
@@ -2507,10 +2349,8 @@ pub(crate) mod entry_tests {
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         let (_, server_device) = guest_device();
         let refused = workspaces
-            .found_entry(
-                &workspace,
-                &server_device,
-                EntryPolicy {
+            .found_entry(&workspace, &server_device, |entry| {
+                *entry = EntryPolicy {
                     listing: Some(ListingPolicy {
                         description: "Ours now".into(),
                         default_role: Role::Editor,
@@ -2519,8 +2359,8 @@ pub(crate) mod entry_tests {
                     wait_list_max: 0,
                     contact: None,
                     mail: None,
-                },
-            )
+                }
+            })
             .await;
         assert!(
             refused.is_err(),

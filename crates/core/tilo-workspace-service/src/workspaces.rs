@@ -243,7 +243,10 @@ use web_time::SystemTime;
 pub use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
 pub(crate) use actions::{HostActionServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
-pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
+pub use collaboration::{
+    AddMemberRequest, CollaborationError, DeviceChange, GovernanceCompletion, MemberPlace,
+    SignedAsk, Signing, signed_through,
+};
 pub use listing::EntryRefusal;
 pub use pages::PreAdmitRequest;
 #[cfg(feature = "apps")]
@@ -258,9 +261,8 @@ pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListe
 pub use tilo_server_protocol::workspaces::{
     ActionInvitation, CREATE_WORKSPACE, CancelInvitationRequest, CreatedWorkspace, ENTER_WORKSPACE,
     EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE,
-    IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation,
-    RemoveMemberRequest, SetMemberRoleRequest, UNHOST_WORKSPACE, WorkspaceHosted, WorkspaceListing,
-    WorkspaceSummary,
+    IssueInvitationRequest, IssuedInvitation, LIST_WORKSPACES, PendingInvitation, UNHOST_WORKSPACE,
+    WorkspaceHosted, WorkspaceListing, WorkspaceSummary,
 };
 
 use crate::registry::WorkspaceRegistry;

@@ -15,7 +15,6 @@ use tilo_peer_state::direct::Kept;
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
-use tilo_workspace_service::workspaces::RemoveMemberRequest;
 
 use crate::keep::common::{
     KEYS, Linked, RECORDS_APP as APP, TestUser, copy_says, hold_workspace, invitation, opened,
@@ -131,12 +130,11 @@ async fn member_list_access_removes_a_live_person_without_widening_other_workspa
     drop(alice_new);
 
     workspaces
-        .remove_member(
+        .change(
             &shared.to_string(),
-            &server_dev.cert,
-            RemoveMemberRequest {
-                request_id: [0x71; 32],
-                user_public_key: alice.user_pk,
+            (&server_dev.cert, [0x71; 32]),
+            tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(alice.user_pk),
             },
         )
         .await
