@@ -538,6 +538,11 @@ d-v7fwyqef = Herkunftswörter
     .w-workspace = Arbeitsbereich
     .w-custom-folder = Eigener Ordner
 
+d-mskukut2 = Gesundheitszeile
+    .w-no-failed-backups = Keine fehlgeschlagenen Sicherungen
+    .w-one-backup-needs-attention = Eine Sicherung braucht Aufmerksamkeit
+    .w-backups-need-attention = { $failed } Sicherungen brauchen Aufmerksamkeit
+
 d-tgaw76i6 = Entfernungszeile
     .w-nothing-would-be-removed-the-next = Nichts würde entfernt: Die nächste Sicherung behält jede Momentaufnahme.
     .w-the-next-backup-would-remove-one = Die nächste Sicherung würde eine Momentaufnahme entfernen, aufgenommen { $when }.

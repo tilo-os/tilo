@@ -870,6 +870,33 @@ mod cases {
             );
         }
 
+        phase the_timeline_says_how_the_snapshots_stand;
+        {
+            let s = Backups::new();
+            s.set_up();
+            s.done(
+                "keep_catalog",
+                vec![Value::resource(&s.root), Value::text(catalog_json())],
+            );
+            let window = s.window();
+            assert!(
+                says(window.tree(), "No failed backups"),
+                "with nothing failed the window says so"
+            );
+            // One failed snapshot says what needs a look.
+            let one_failed =
+                catalog_json().replacen("\"status\":\"complete\"", "\"status\":\"failed\"", 1);
+            s.done(
+                "keep_catalog",
+                vec![Value::resource(&s.root), Value::text(one_failed)],
+            );
+            let window = s.window();
+            assert!(
+                says(window.tree(), "One backup needs attention"),
+                "a failed snapshot is named"
+            );
+        }
+
         phase a_destination_inside_the_folder_it_copies_is_refused;
         {
             let s = Backups::new();

@@ -911,6 +911,18 @@ fn failed_count(b: Backups) -> Int {
     b.snapshots.count(s -> s.health == .failed)
 }
 
+/// How the snapshots stand: nothing failed, or how many need a look.
+fn health_line(b: Backups) -> Text {
+    let failed = failed_count(b)
+    if failed == 0 {
+        std.say("No failed backups")
+    } else if failed == 1 {
+        std.say("One backup needs attention")
+    } else {
+        std.say("{failed} backups need attention")
+    }
+}
+
 /// The period a snapshot taken at `at` counts in, for the retention class: 0 hourly, 1 daily,
 /// 2 weekly, 3 monthly.
 fn period_of(at: Int, class: Int) -> Int {
@@ -1281,6 +1293,11 @@ view timeline(b: Backups) {
         if failed_count(b) > 0 {
             ui.StatTile("Need a look", "{failed_count(b)}", tone: .warning)
         }
+    }
+    if failed_count(b) == 0 {
+        ui.Text(health_line(b), role: .caption, secondary: true)
+    } else {
+        ui.StatusLine(health_line(b), status: .warning)
     }
     row(gap: .related, align: .center) {
         ui.Button(
