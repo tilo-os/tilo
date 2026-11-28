@@ -77,6 +77,7 @@ const DRAWN = `(() => {
     triggerChevronSize: (box => box && [box.width, box.height])(trigger?.lastElementChild?.getBoundingClientRect()),
     iconSize: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tilo-menu-icon')),
     shadow: getComputedStyle(menu).boxShadow,
+    lift: resolved('boxShadow', token('--tilo-floating-lift')),
   };
 })()`;
 
@@ -138,6 +139,8 @@ try {
       }
       const columns = new Set(labelled.map(row => Math.round(row.textX)));
       if (columns.size > 1) fail(`labels start at ${[...columns].join(', ')} px, not one column`);
+      // The panel casts the app's floating lift, not a shadow of the page's own.
+      if (!drawn.shadow.startsWith(drawn.lift)) fail(`the panel casts ${drawn.shadow} where the app's lift is ${drawn.lift}`);
       if (!drawn.shadow.includes(drawn.edge)) fail(`the panel's edge is not the theme's floating edge ${drawn.edge}: ${drawn.shadow}`);
       if (drawn.faceEdge && !drawn.restShadows.every(shadow => shadow.includes(drawn.faceEdge))) {
         fail(`a button at rest has no edge of ${drawn.faceEdge}: ${drawn.restShadows.join(' | ')}`);

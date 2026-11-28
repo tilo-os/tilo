@@ -1683,8 +1683,28 @@ pub fn theme_css(theme: &tilo_ui_base::Theme) -> String {
     // is the separator the app derives on that ground. An icon's stroke is the theme's, in pixels
     // at every size, as the app strokes it.
     let ground = tilo_ui_base::chrome::panel_ground(theme);
+    // It lifts as the app lifts it (`surface::floating_lift`): the wide layer over the contact
+    // layer, each a blur of its outline whose CSS radius is twice the app's standard deviation, or
+    // the outline a theme without depth draws in their place.
+    let lift = tilo_ui_base::surface::floating_lift(theme)
+        .iter()
+        .rev()
+        .flat_map(|layer| {
+            let outline = layer
+                .outline
+                .map(|o| format!("0 0 0 {}px {}", o.width, rgba(o.color)));
+            let blur = format!(
+                "0 {}px {}px {}",
+                layer.offset_y,
+                layer.blur,
+                rgba(layer.color)
+            );
+            outline.into_iter().chain(Some(blur))
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let floating = format!(
-        "--tilo-floating-ground:{};--tilo-floating-radius:{}px;--tilo-menu-rule:{};--tilo-icon-stroke:{}px;",
+        "--tilo-floating-ground:{};--tilo-floating-radius:{}px;--tilo-menu-rule:{};--tilo-icon-stroke:{}px;--tilo-floating-lift:{lift};",
         rgba(ground),
         crate::widget::floating_surface::radius(theme),
         rgba(tilo_ui_base::surface::edge_on(ground)),
