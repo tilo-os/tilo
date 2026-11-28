@@ -210,6 +210,12 @@ TILO_INSTALL=$device/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$lounge/runtimes \
   sh "$lounge_dir/install-apps.sh" "$lounge/packages" "$device/apps" \
   || { echo "FAIL: could not install the apps a flow's device runs" >&2; exit 1; }
 ln -sfn "$lounge/runtimes" "$device/data/tilo-runtime"
+# A daemon names its data directory itself, from its runtime profile
+# (`crates/core/tilo-runtime/src/profile.rs`): this account's daemon keeps its profile
+# under its home, and looks for a bundle in <profile>/data beside it.
+daemon_profile=$HOME/.local/state/tilo/runtime
+mkdir -p "$daemon_profile/data"
+ln -sfn "$lounge/runtimes" "$daemon_profile/data/tilo-runtime"
 
 # The host's own listener, which a page dials over WebTransport and pins by its
 # certificate (tools/web/chrome.mjs): the browsers the flows open are pinned to the
