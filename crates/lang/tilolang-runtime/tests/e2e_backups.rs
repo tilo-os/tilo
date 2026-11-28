@@ -330,27 +330,19 @@ mod cases {
 
         /// Chooses the folder this device protects, as a person walks the picker.
         fn choose_source(&self, folder: &str) {
-            s_done(self, "choose_source", vec![Value::resource(&self.root)]);
             s_done(
                 self,
-                "go",
+                "set_source",
                 vec![Value::resource(&self.root), Value::text(folder)],
             );
-            s_done(self, "pick", vec![Value::resource(&self.root)]);
         }
 
         fn choose_destination(&self, folder: &str) {
             s_done(
                 self,
-                "choose_destination",
-                vec![Value::resource(&self.root)],
-            );
-            s_done(
-                self,
-                "go",
+                "set_destination",
                 vec![Value::resource(&self.root), Value::text(folder)],
             );
-            s_done(self, "pick", vec![Value::resource(&self.root)]);
         }
 
         fn set_up(&self) {
@@ -552,14 +544,11 @@ mod cases {
                 "ask_restore",
                 vec![Value::resource(&s.root), Value::resource(snapshot)],
             );
-            assert_eq!(s.text(&s.root, "picking"), "restore");
             s.done(
-                "go",
+                "set_restore_into",
                 vec![Value::resource(&s.root), Value::text("/home/you/restored")],
             );
-            s.done("pick", vec![Value::resource(&s.root)]);
             assert_eq!(s.text(&s.root, "restore_into"), "/home/you/restored");
-            assert_eq!(s.text(&s.root, "picking"), "");
 
             s.done(
                 "restore_now",
@@ -591,10 +580,9 @@ mod cases {
                 vec![Value::resource(&s.root), Value::resource(&snapshot)],
             );
             s.done(
-                "go",
+                "set_restore_into",
                 vec![Value::resource(&s.root), Value::text("/home/you/restored")],
             );
-            s.done("pick", vec![Value::resource(&s.root)]);
             let sheet = s
                 .rt
                 .open_view(
@@ -966,22 +954,42 @@ mod cases {
             );
         }
 
+        phase asking_for_a_folder_is_the_systems_chooser;
+        {
+            let s = Backups::new();
+            let window = s.window();
+            assert!(
+                has_prop(window.tree(), "action", "Choose the folder to protect"),
+                "the setup offers the system's chooser"
+            );
+            assert!(
+                s.app.meta().actions.iter().all(|action| !matches!(
+                    action.name.as_str(),
+                    "choose_source"
+                        | "choose_destination"
+                        | "go"
+                        | "go_up"
+                        | "pick"
+                        | "cancel_pick"
+                        | "read_picker"
+                        | "begin_restore"
+                )),
+                "the app keeps no folder browser of its own"
+            );
+        }
+
         phase a_destination_inside_the_folder_it_copies_is_refused;
         {
             let s = Backups::new();
-            s.done("choose_source", vec![Value::resource(&s.root)]);
             s.done(
-                "go",
+                "set_source",
                 vec![Value::resource(&s.root), Value::text("/home/you")],
             );
-            s.done("pick", vec![Value::resource(&s.root)]);
             // The folder being protected is the home folder; its own child cannot hold the snapshots.
-            s.done("choose_destination", vec![Value::resource(&s.root)]);
             s.done(
-                "go",
+                "set_destination",
                 vec![Value::resource(&s.root), Value::text("/home/you/Documents")],
             );
-            s.done("pick", vec![Value::resource(&s.root)]);
             assert_eq!(
                 s.text(&s.root, "destination"),
                 "",
@@ -1000,11 +1008,8 @@ mod cases {
             // A first run shows the setup, not an empty timeline.
             let window = s.window();
             assert!(
-                labels(window.tree())
-                    .iter()
-                    .any(|label| label.contains("Choose the folder to protect")),
-                "the setup offers the chooser: {:?}",
-                labels(window.tree())
+                has_prop(window.tree(), "action", "Choose the folder to protect"),
+                "the setup offers the chooser"
             );
 
             s.set_up();
@@ -1018,14 +1023,6 @@ mod cases {
                 "the sidebar names this device: {places:?}"
             );
 
-            // The picker walks the device's folders.
-            s.done("choose_source", vec![Value::resource(&s.root)]);
-            let window = s.window();
-            let rows = titles(window.tree());
-            assert!(
-                rows.iter().any(|row| row == "Projects"),
-                "the picker lists the folders: {rows:?}"
-            );
         }
 
         phase a_snapshots_folders_fold_their_contents_away;

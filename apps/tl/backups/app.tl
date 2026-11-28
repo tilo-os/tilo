@@ -111,12 +111,6 @@ type Policy {
     monthly: Int = 12
 }
 
-/// The folder a person picked in the picker, before it becomes the backup's folder.
-type Place (title: name) {
-    name: Text
-    path: Text
-}
-
 /// The workspace's Backups app: the folder this device protects, where its snapshots go, the
 /// snapshots it holds, and the retention policy that prunes them.
 type Backups (untitled: "Backups") {
@@ -168,11 +162,6 @@ type Backups (untitled: "Backups") {
     result: Text = ""
     /// The snapshot being verified or restored, by its second.
     subject: Int = 0
-    /// Which folder the person is picking: `source`, `destination` or `restore`.
-    picking: Text = ""
-    /// The folder the picker walks, and the folders in it.
-    picker: Text = "~"
-    picks: Collection<Place>
     /// The folder a restore writes into, and whether it may replace what is there.
     restore_into: Text = ""
     overwrite: Bool = false
@@ -399,13 +388,6 @@ action ask_restore(b: Backups, s: Snapshot) (icon: .history, label: "Restore the
     b.overwrite = false
     b.result = ""
     b.notice = ""
-    begin_restore(b)
-}
-
-/// Starts finding the folder a restore writes into, without running anything yet.
-action begin_restore(b: Backups) {
-    b.picking = "restore"
-    read_picker(b)
 }
 
 /// Restores the snapshot into the folder the person chose.
@@ -418,7 +400,6 @@ destructive action restore_now(b: Backups, s: Snapshot) uses time, files (
 ) {
     require b.restore_into != "" "Choose a folder to restore into"
     require not busy(b) "One piece of work is running already"
-    b.picking = ""
     work_begins(b)
     let started = engine.start(
         "restore",
@@ -587,105 +568,39 @@ action dismiss(b: Backups) {
     b.result = ""
 }
 
-/// Asks the person which folder this device protects.
 // ---------------------------------------------------------------------------
-// Picking a folder on this device
+// The folders a person chooses: the system's chooser asks, and these take its answer
 // ---------------------------------------------------------------------------
-action choose_source(b: Backups) uses files (
-    icon: .folder_open,
-    label: "Choose the folder to protect",
-) {
-    b.picking = "source"
-    read_picker(b)
-}
-
-/// Asks the person where the snapshots go.
-action choose_destination(b: Backups) uses files (
-    icon: .folder_open,
-    label: "Choose where snapshots go",
-) {
-    b.picking = "destination"
-    read_picker(b)
-}
-
-/// Walks the picker to another folder and shows the folders in it.
-action go(b: Backups, path: Text) uses files {
-    b.picker = if path == "" { "~" } else { path }
-    read_picker(b)
-}
-
-/// Walks the picker up one folder.
-action go_up(b: Backups) uses files (icon: .arrow_left, label: "Go up") {
-    b.picker = parent_of(b.picker)
-    read_picker(b)
-}
-
-/// Takes the folder the picker shows: as what this device protects, where snapshots go, or
-/// where a restore writes.
-action pick(b: Backups) uses files (icon: .check, label: "Use this folder") {
-    let chosen = b.picker
-    if b.picking == "source" {
-        if b.destination != "" and (chosen == b.destination or chosen.starts_with(b.destination)) {
-            b.trouble = "Choose a folder outside the one your snapshots are written to"
-            return
-        }
-        b.source = chosen
-        b.source_name = name_of(chosen)
-        b.source_origin = .custom
-    } else if b.picking == "destination" {
-        if b.source != "" and (chosen == b.source or chosen.starts_with(b.source)) {
-            b.trouble = "Choose a folder outside the one being protected"
-            return
-        }
-        b.destination = chosen
-        b.destination_name = name_of(chosen)
-    } else if b.picking == "restore" {
-        b.restore_into = chosen
+/// Protects `path` on this device, if it stands outside where the snapshots are written.
+action set_source(b: Backups, path: Text) uses time, files {
+    let chosen = if path == "" { "~" } else { path }
+    if b.destination != "" and (chosen == b.destination or chosen.starts_with(b.destination)) {
+        b.trouble = "Choose a folder outside the one your snapshots are written to"
+        return
     }
-    b.picking = ""
-    b.picker = "~"
+    b.source = chosen
+    b.source_name = name_of(chosen)
+    b.source_origin = .custom
+    b.trouble = ""
     refresh(b)
 }
 
-/// Leaves the picker without changing anything.
-action cancel_pick(b: Backups) (icon: .x, label: "Cancel") {
-    b.picking = ""
-    b.picker = "~"
-}
-
-/// Reads the folders of the one the picker shows.
-action read_picker(b: Backups) uses files {
-    for place in b.picks {
-        b.picks.remove(place)
+/// Writes snapshots to `path`, if it stands outside the folder being protected.
+action set_destination(b: Backups, path: Text) uses time, files {
+    let chosen = if path == "" { "~" } else { path }
+    if b.source != "" and (chosen == b.source or chosen.starts_with(b.source)) {
+        b.trouble = "Choose a folder outside the one being protected"
+        return
     }
+    b.destination = chosen
+    b.destination_name = name_of(chosen)
     b.trouble = ""
-    match File.list(b.picker) {
-        .err(why) => {
-            b.trouble = why
-        }
-        .ok(found) => {
-            for entry in found.filter(item -> item.folder) {
-                b.picks.insert(Place(name: entry.name, path: entry.path))
-            }
-        }
-    }
+    refresh(b)
 }
 
-/// The folder above `path`, or `~` at the top of the home folder.
-fn parent_of(path: Text) -> Text {
-    if path == "~" or path == "/" or path == "" {
-        "~"
-    } else if path == "~/" {
-        "~"
-    } else {
-        let parts = path.split("/").filter(part -> part != "")
-        if parts.len() <= 1 {
-            if path.starts_with("/") { "/" } else { "~" }
-        } else {
-            let head = if path.starts_with("/") { "/" } else { "" }
-            head + parts.take(parts.len() - 1).join("/")
-        }
-    }
+/// Restores the snapshot into `path`.
+action set_restore_into(b: Backups, path: Text) {
+    b.restore_into = if path == "" { "~" } else { path }
 }
 
 /// What a folder is called: its own name, or the folder it stands at.
@@ -1125,59 +1040,10 @@ fn chosen_snapshot(b: Backups) -> Option<Snapshot> {
 // The window
 // ---------------------------------------------------------------------------
 view window(b: Backups) {
-    if b.picking != "" {
-        picker(b)
-    } else if b.source == "" or b.destination == "" {
+    if b.source == "" or b.destination == "" {
         setup(b)
     } else {
         shell(b)
-    }
-}
-
-/// One folder the picker offers.
-view picker(b: Backups) {
-    std.page(b) {
-        content: {
-            ui.ObjectHeader(
-                title: if b.picking == "source" {
-                    "Choose the folder to protect"
-                } else if b.picking == "destination" {
-                    "Choose where snapshots go"
-                } else { "Choose the folder to restore into" },
-                caption: b.picker,
-                icon: .folder_open,
-            )
-            row(gap: .related, align: .center) {
-                ui.Button("Up", icon: .arrow_left) {
-                    on press: go_up(b)
-                }
-                if b.picking == "restore" {
-                    ui.Button("Restore into this folder", icon: .check, role: .primary) {
-                        on press: pick(b)
-                    }
-                } else {
-                    ui.Button("Use this folder", icon: .check, role: .primary) {
-                        on press: pick(b)
-                    }
-                }
-                ui.Button("Cancel", role: .plain) {
-                    on press: cancel_pick(b)
-                }
-            }
-            if b.trouble != "" {
-                ui.Banner("That folder could not be read", message: b.trouble, kind: .warning)
-            }
-            ui.Section(title: "Folders") {
-                if b.picks.is_empty() {
-                    ui.EmptyState("No folders inside", inline: true)
-                }
-                for place in b.picks.sort_by(p -> p.name) {
-                    ui.ListRow(title: place.name, icon: .folder, secondary: place.path) {
-                        on activate: go(b, place.path)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1199,7 +1065,7 @@ view setup(b: Backups) {
                         inline: true,
                         action: "Choose the folder to protect",
                     ) {
-                        on act: choose_source(b)
+                        on act: file.choose_folder(set_source(b))
                     }
                 } else {
                     ui.PropertyList {
@@ -1208,7 +1074,7 @@ view setup(b: Backups) {
                         ui.Property("Kind", origin_words(b.source_origin))
                     }
                     ui.Button("Choose another folder", icon: .folder_open) {
-                        on press: choose_source(b)
+                        on press: file.choose_folder(set_source(b))
                     }
                 }
             }
@@ -1221,7 +1087,7 @@ view setup(b: Backups) {
                         inline: true,
                         action: "Choose where snapshots go",
                     ) {
-                        on act: choose_destination(b)
+                        on act: file.choose_folder(set_destination(b))
                     }
                 } else {
                     ui.PropertyList {
@@ -1229,7 +1095,7 @@ view setup(b: Backups) {
                         ui.Property("Used", used_line(b))
                     }
                     ui.Button("Choose another folder", icon: .hard_drive) {
-                        on press: choose_destination(b)
+                        on press: file.choose_folder(set_destination(b))
                     }
                 }
             }
@@ -1510,7 +1376,7 @@ view snapshot_sheet(b: Backups, s: Snapshot) {
                     on act: restore_now(b, s)
                 }
                 ui.Button("Choose another folder", icon: .folder_open) {
-                    on press: begin_restore(b)
+                    on press: file.choose_folder(set_restore_into(b))
                 }
             } else {
                 ui.Text(
@@ -1519,7 +1385,7 @@ view snapshot_sheet(b: Backups, s: Snapshot) {
                     secondary: true,
                 )
                 ui.Button("Choose the folder to restore into", icon: .folder_open) {
-                    on press: begin_restore(b)
+                    on press: file.choose_folder(set_restore_into(b))
                 }
             }
             if b.overwrite {
@@ -1584,7 +1450,7 @@ view source_page(b: Backups) {
         ui.Property("State", if b.source_failing { "Needs a look" } else { "Fine" })
     }
     ui.Button("Choose another folder", icon: .folder_open) {
-        on press: choose_source(b)
+        on press: file.choose_folder(set_source(b))
     }
     ui.Section(title: "When it backs up") {
         row(gap: .tight, wrap: true) {
@@ -1659,7 +1525,7 @@ view destination_page(b: Backups) {
         ui.ProgressBar(value: fraction, label: "Used")
     }
     ui.Button("Choose another folder", icon: .hard_drive) {
-        on press: choose_destination(b)
+        on press: file.choose_folder(set_destination(b))
     }
     ui.Section(title: "Its snapshots") {
         for s in listed(b) {

@@ -42,7 +42,7 @@
     },
     {
       "id": "picker",
-      "said": "Choosing the folder opens the folder picker",
+      "said": "Choosing the folder opens the system folder chooser, and its answer protects the folder",
       "ops": {
         "tl": [
           {
@@ -51,26 +51,29 @@
             ]
           },
           {
-            "wait_for": "Use this folder"
+            "wait_for": "Choose folder"
           },
           {
-            "wait_for": "Folders"
+            "press": "Choose folder"
+          },
+          {
+            "wait_for": "Choose where snapshots go"
           }
         ]
       }
     },
     {
       "id": "leave",
-      "said": "The picker can be left without changing anything",
+      "said": "The setup keeps what was chosen and waits for the folder snapshots go to",
       "ops": {
         "tl": [
           {
-            "press_any": [
-              "Cancel"
-            ]
-          },
-          {
-            "wait_for": "Set up Backups"
+            "must": {
+              "see": [
+                "Set up Backups",
+                "Choose where snapshots go"
+              ]
+            }
           }
         ]
       }

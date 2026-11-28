@@ -243,6 +243,16 @@ mod cases {
         }
     }
 
+    /// The first node under `tree` whose words or events `wanted` names.
+    fn any_node<'a>(tree: &'a UiNode, wanted: &dyn Fn(&UiNode) -> bool) -> Option<&'a UiNode> {
+        if wanted(tree) {
+            return Some(tree);
+        }
+        tree.children
+            .iter()
+            .find_map(|child| any_node(child, wanted))
+    }
+
     /// Whether any prop of any node is the text `wanted`.
     fn any_prop_text(tree: &UiNode, wanted: &str) -> bool {
         tree.props
@@ -371,18 +381,28 @@ mod cases {
             assert_eq!(t.text("job"), "");
         }
 
-        phase the_chooser_walks_the_folders_and_measures_the_one_it_shows;
+        phase asking_for_a_folder_is_the_systems_chooser;
         {
             let t = Usage::new();
-            t.act("choose", vec![Value::resource(&t.root)]);
-            assert_eq!(t.text("picker"), "~");
-            assert_eq!(t.kept("picks", "name"), ["Projects", "Videos"], "the home folders");
-            t.act("go", vec![Value::resource(&t.root), Value::text("/home/you/Projects")]);
-            t.act("pick", vec![Value::resource(&t.root)]);
-            assert_eq!(t.text("folder"), "/home/you/Projects");
+            let view = t.view();
+            // The window's own button asks the system for a folder and measures what it
+            // answers; the app keeps no picker of its own.
+            let chooser = any_node(view.tree(), &|node| {
+                node.kind == "ui.Button"
+                    && node.props.get("label") == Some(&Value::text("Choose a folder"))
+            })
+            .expect("the places page offers to choose a folder");
             assert!(
-                !matches!(t.rt.read(&t.root, "choosing").unwrap(), Value::Bool(true)),
-                "the chooser closed"
+                chooser.events.contains_key("press"),
+                "the button asks for a folder: {:?}",
+                chooser.props
+            );
+            assert!(
+                t.app.meta().actions.iter().all(|action| !matches!(
+                    action.name.as_str(),
+                    "choose" | "go" | "pick" | "cancel_choose" | "read_picker"
+                )),
+                "the app keeps no folder browser of its own"
             );
         }
 
@@ -488,7 +508,6 @@ mod cases {
             let t = Usage::new();
             let actions = &t.app.meta().actions;
             for (name, label) in [
-                ("choose", "Choose a folder"),
                 ("back", "Go back"),
                 ("home", "Show places"),
                 ("open_disks", "Open Disks"),

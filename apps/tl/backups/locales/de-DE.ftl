@@ -98,17 +98,6 @@ d-wzd6czrl-filter-weekly = Wöchentlich
 
 d-wzd6czrl-filter-monthly = Monatlich
 
-d-v7z4w6ml = Ort
-    .doc = Der Ordner, den eine Person in der Auswahl wählte, bevor er zum Ordner der Sicherung wird.
-    .noun = { $count ->
-        [one] place
-       *[other] places
-    }
-
-d-dho3qqg3 = Name
-
-d-f3pl3mol = Pfad
-
 d-igeecx5d = Datensicherung
     .doc = Die Datensicherung des Arbeitsbereichs: der Ordner, den dieses Gerät schützt, wohin seine Stände gehen, die Stände darin und die Aufbewahrungsregel, die sie ausdünnt.
     .noun = { $count ->
@@ -191,14 +180,6 @@ d-xsai3dea = Ergebnis
 
 d-fihmdmmi = Betreff
     .doc = Der Stand, der geprüft oder wiederhergestellt wird, nach seiner Sekunde.
-
-d-q6dvqz3z = Auswählen
-    .doc = Welchen Ordner die Person wählt: `source`, `destination` oder `restore`.
-
-d-vlgd4tne = Auswahl
-    .doc = Der Ordner, den die Auswahl durchläuft, und die Ordner darin.
-
-d-6nds5bnc = Gefunden
 
 d-5dqejapv = Wiederherstellen nach
     .doc = Der Ordner, in den eine Wiederherstellung schreibt, und ob sie ersetzen darf, was dort liegt.
@@ -431,9 +412,6 @@ d-ttl3xkqx = Stand wiederherstellen
 
 d-ttl3xkqx-s = S
 
-d-4v3uefx5 = Wiederherstellen beginnen
-    .doc = Beginnt, den Ordner für die Wiederherstellung zu suchen, ohne schon etwas auszuführen.
-
 d-v5ylljvo = Wiederherstellen
     .doc = Stellt den Stand in dem Ordner wieder her, den die Person wählte.
     .w-choose-a-folder-to-restore-into = Wähle einen Ordner zum Wiederherstellen
@@ -496,28 +474,20 @@ d-pqix6wmj-weekday = Wochentag
 d-x5h6br5g = Ausblenden
     .doc = Blendet die Zeile unter der Liste aus.
 
-d-z6m2czb6 = Ordner zum Schützen wählen
-    .doc = Fragt die Person, welchen Ordner dieses Gerät schützt.
+d-w4peltry = Quelle setzen
+    .doc = Schützt `path` auf diesem Gerät, wenn er außerhalb liegt, wohin die Momentaufnahmen geschrieben werden.
 
-d-ioanf4us = Wählen, wohin Stände gehen
-    .doc = Fragt die Person, wohin die Stände geschrieben werden.
+d-w4peltry-path = Pfad
 
-d-54fhu267 = Öffnen
-    .doc = Geht in der Auswahl in einen anderen Ordner und zeigt die Ordner darin.
+d-f4hzpl6v = Ziel setzen
+    .doc = Schreibt Momentaufnahmen nach `path`, wenn der Ordner außerhalb des geschützten liegt.
 
-d-54fhu267-path = Pfad
+d-f4hzpl6v-path = Pfad
 
-d-k5qqlbcc = Nach oben
-    .doc = Geht in der Auswahl einen Ordner nach oben.
+d-my75cr27 = Wiederherstellungsziel setzen
+    .doc = Spielt die Momentaufnahme nach `path` zurück.
 
-d-nj4ehqok = Diesen Ordner verwenden
-    .doc = Nimmt den Ordner, den die Auswahl zeigt: als geschützten Ordner, als Ziel der Stände oder als Ziel einer Wiederherstellung.
-
-d-egcbexsk = Abbrechen
-    .doc = Verlässt die Auswahl, ohne etwas zu ändern.
-
-d-5b35wzq6 = Auswahl lesen
-    .doc = Liest die Ordner des Ordners, den die Auswahl zeigt.
+d-my75cr27-path = Pfad
 
 d-e7w6p5gh = Arbeit beginnt
     .doc = Leert, was die letzte Arbeit sagte, wenn eine neue beginnt.
@@ -622,18 +592,6 @@ d-4vnqjv4m = Wiederhergestellt
 d-gaktgwrl = Zeitplan setzen~present
 
 d-yeswuxpe = Fenster
-
-d-5kspbgsu = Auswahl
-    .w-choose-the-folder-to-protect = Ordner zum Schützen wählen
-    .w-choose-where-snapshots-go = Wählen, wohin Stände gehen
-    .w-choose-the-folder-to-restore-into = Ordner zum Wiederherstellen wählen
-    .w-up = Nach oben
-    .w-restore-into-this-folder = In diesen Ordner wiederherstellen
-    .w-use-this-folder = Diesen Ordner verwenden
-    .w-cancel = Abbrechen
-    .w-that-folder-could-not-be-read = Der Ordner ließ sich nicht lesen
-    .w-folders = Ordner
-    .w-no-folders-inside = Keine Ordner darin
 
 d-xpn57dne = Einrichtung
     .w-set-up-backups = Datensicherung einrichten

@@ -85,14 +85,6 @@ d-tby3fdb6 = Wurzel
 d-neoxlbvt = Zuletzt gemessen
     .doc = Die zuletzt gemessenen Ordner, neueste zuerst.
 
-d-jwzq6fuq = Auswahl
-    .doc = Ob das Fenster nach dem zu messenden Ordner fragt.
-
-d-eynuk6dc = Ordnerwahl
-    .doc = Der Ordner, den man beim Auswählen durchwandert, und die Ordner darin.
-
-d-o5hekdfu = Auswahl
-
 d-5hwszxkf-filter-total = Gesamt
 
 d-5hwszxkf-filter-files = Dateien
@@ -102,8 +94,6 @@ d-5hwszxkf-filter-unreadable = Unlesbar
 d-5hwszxkf-filter-seen_bytes = Gesehene Bytes
 
 d-5hwszxkf-filter-seen_files = Gesehene Dateien
-
-d-5hwszxkf-filter-choosing = Auswahl
 
 d-nzngtwys = Messauftrag
     .noun = { $count ->
@@ -196,23 +186,6 @@ d-nunfy2n7 = Zurück
 d-3xbntjv4 = Orte anzeigen
     .doc = Zeigt die Orte und die zuletzt gemessenen Ordner.
 
-d-dqco66zt = Ordner wählen
-    .doc = Fragt nach dem zu messenden Ordner und zeigt dabei dessen Ordner.
-
-d-mebmi2mx = Öffnen
-    .doc = Führt die Ordnerwahl zu `path` und zeigt die Ordner darin.
-
-d-mebmi2mx-path = Pfad
-
-d-bfl27bkl = Diesen Ordner analysieren
-    .doc = Misst den Ordner, den die Ordnerwahl zeigt.
-
-d-pyftqwif = Abbrechen
-    .doc = Verlässt die Auswahl, ohne etwas zu messen.
-
-d-j7osqmlp = Ordnerwahl lesen
-    .doc = Liest die Ordner des Ordners, den die Ordnerwahl zeigt.
-
 d-awmspafp = Datenträger öffnen
     .doc = Öffnet die App Datenträger, wo die Laufwerke des Geräts und ihre Belegung stehen.
 
@@ -252,6 +225,7 @@ d-bmoxtaea = Analyse
 
 d-atuiqpvv = Ortsseite
     .w-places = Orte
+    .w-choose-a-folder = Ordner wählen
     .w-var-workspace = /var/workspace
     .w-recent = Zuletzt gemessen
 
@@ -273,9 +247,3 @@ d-j7nmhek2 = Messseite
     .w-it-holds-no-files-and-no = Er enthält keine Dateien und keine Ordner.
 
 d-egkyccty = Messzeile
-
-d-tp6qomzh = Ordnerwahl
-    .w-choose-a-folder = Ordner wählen
-    .w-up = Nach oben
-    .w-analyze-this-folder = Diesen Ordner analysieren
-    .w-cancel = Abbrechen

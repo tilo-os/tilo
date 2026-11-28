@@ -53,11 +53,6 @@ type Analyzer (title: label, untitled: "Disk Usage") {
     root: Text
     /// The folders measured lately, newest first.
     recents: Collection<Recent>
-    /// Whether the window asks for the folder to measure.
-    choosing: Bool
-    /// The folder the person walks through while choosing, and the folders in it.
-    picker: Text
-    picks: Collection<Measure>
 }
 
 device root analyzer: Analyzer
@@ -171,52 +166,8 @@ action home(a: Analyzer) (icon: .home, label: "Show places") {
     a.job = ""
     a.trouble = ""
     a.notice = ""
-    a.choosing = false
     for m in a.entries {
         a.entries.remove(m)
-    }
-}
-
-/// Asks the person which folder to measure, showing the folders of this device.
-primary action choose(a: Analyzer) uses files, time (icon: .folder_open, label: "Choose a folder") {
-    a.choosing = true
-    a.picker = "~"
-    read_picker(a)
-}
-
-/// Walks the picker to `path` and shows the folders in it.
-action go(a: Analyzer, path: Text) uses files, time {
-    a.picker = if path == "" { "~" } else { path }
-    read_picker(a)
-}
-
-/// Measures the folder the picker shows.
-action pick(a: Analyzer) uses files, time (icon: .check, label: "Analyze this folder") {
-    let chosen = a.picker
-    a.choosing = false
-    analyze(a, path: chosen, label: place_label(chosen))
-}
-
-/// Leaves the chooser without measuring anything.
-action cancel_choose(a: Analyzer) (icon: .x, label: "Cancel") {
-    a.choosing = false
-}
-
-/// Reads the folders of the one the picker shows.
-action read_picker(a: Analyzer) uses files, time {
-    for m in a.picks {
-        a.picks.remove(m)
-    }
-    match File.list(a.picker) {
-        .err(why) => {
-            a.trouble = why
-        }
-        .ok(found) => {
-            for entry in found.filter(e -> e.folder) {
-                a.picks.insert(Measure(name: entry.name, path: entry.path, bytes: 0, files: 0))
-            }
-            a.trouble = ""
-        }
     }
 }
 
@@ -354,9 +305,7 @@ fn unreadable_text(n: Int) -> Text {
 /// The window: the places to measure, the folder being measured, its folders as a donut and a
 /// list, or why it could not be read.
 view analyzer(a: Analyzer) {
-    if a.choosing {
-        chooser(a)
-    } else if a.folder == "" {
+    if a.folder == "" {
         places_page(a)
     } else if a.job != "" {
         measuring_page(a)
@@ -373,6 +322,11 @@ view places_page(a: Analyzer) {
     std.page(a) {
         content: {
             ui.Section(title: "Places") {
+                row(gap: .tight, wrap: true) {
+                    ui.Button("Choose a folder", icon: .folder_open, role: .primary) {
+                        on press: file.choose_folder(open_place(a))
+                    } as choose_folder
+                }
                 place_row(a, "~")
                 place_row(a, "/var/workspace")
                 place_row(a, "/")
@@ -437,7 +391,7 @@ view trouble_page(a: Analyzer) {
                 action: "Choose another folder",
                 error: true,
             ) {
-                on act: choose(a)
+                on act: file.choose_folder(open_place(a))
             }
             if a.notice != "" {
                 ui.Text(a.notice, role: .caption, secondary: true)
@@ -503,43 +457,6 @@ view measure_row(a: Analyzer, m: Measure) {
     } else {
         ui.ListRow(m.name, secondary: files_text(m.files), meta: std.size(m.bytes), icon: .folder) {
             on activate: drill(a, m)
-        }
-    }
-}
-
-/// The chooser: the folders of the one it shows, its way up, and the folder to measure.
-view chooser(a: Analyzer) {
-    let up = parent_of(a.picker)
-    std.page(a) {
-        content: {
-            ui.Section(title: "Choose a folder") {
-                stack(gap: .group) {
-                    row(gap: .related, align: .center) {
-                        ui.Button("Up", icon: .arrow_up, icon_only: true) {
-                            on press: go(a, up)
-                        }
-                        ui.Text(a.picker, role: .label, fill: 1.0)
-                    }
-                    if not a.trouble.is_empty() {
-                        ui.Text(a.trouble, role: .caption, secondary: true)
-                    }
-                    ui.Section {
-                        for m in a.picks.sort_by(m -> m.name) {
-                            ui.ListRow(m.name, icon: .folder) {
-                                on activate: go(a, m.path)
-                            }
-                        }
-                    }
-                    row(gap: .related) {
-                        ui.Button("Analyze this folder", icon: .check, role: .primary) {
-                            on press: pick(a)
-                        }
-                        ui.Button("Cancel", role: .plain) {
-                            on press: cancel_choose(a)
-                        }
-                    }
-                }
-            }
         }
     }
 }
