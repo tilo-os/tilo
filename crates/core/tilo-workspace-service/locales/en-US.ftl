@@ -248,3 +248,9 @@ tilo-host-server-admit = Take a server into your servers
 tilo-host-machine-keep-recovery-key = Keep this machine's disk recovery key
 tilo-host-machine-recovery-keys = Read your machines' disk recovery keys
 tilo-host-web-serve = Serve this server's web UI
+# What a workspace's agents learned about its people, as a turn's tools name them.
+tilo-learned-resource = What was learned
+tilo-learned-list = What was learned
+tilo-learned-learn = Keep a fact
+tilo-learned-correct = Correct a fact
+tilo-learned-forget = Forget a fact

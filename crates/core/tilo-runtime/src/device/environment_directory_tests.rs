@@ -241,6 +241,10 @@ fn an_app_makes_changes_and_lists_environments() {
 /// in English, the environments' rename reads the English, and asked in a language no catalogue
 /// has, the English source.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one listing of every provider the daemon reaches, in the languages it reads"
+)]
 fn a_listing_names_its_actions_in_the_callers_language() {
     let Some(root) = isolated_root(
         "device::environment_directory_tests::a_listing_names_its_actions_in_the_callers_language",
@@ -253,7 +257,7 @@ fn a_listing_names_its_actions_in_the_callers_language() {
         .expect("the person's own connection");
     let listed = |provider: &str, language: &str| {
         let mut query = tilo_actions::remote::CatalogueQuery {
-            provider: Some(provider.to_owned()),
+            provider: Some(provider.to_string()),
             language: Some(language.to_owned()),
             ..tilo_actions::remote::CatalogueQuery::default()
         };
@@ -302,17 +306,133 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     ];
     let english = english_said_otherwise_in_german();
     let mut in_english = Vec::new();
-    for registered in daemon.workspaces().providers().all() {
-        for (action, label) in listed(&registered.provider, "de-DE") {
-            let at = format!("{}#{action}", registered.provider);
+    let check = |provider: &str, labels: Vec<(String, String)>, in_english: &mut Vec<String>| {
+        for (action, label) in labels {
+            let at = format!("{provider}#{action}");
             if let Some(german) = english.get(&label)
                 && !undeclared.contains(&at.as_str())
             {
                 in_english.push(format!("{at}: {label:?}, not {german:?}"));
             }
         }
+    };
+    for registered in daemon.workspaces().providers().all() {
+        check(
+            &registered.provider,
+            listed(&registered.provider, "de-DE"),
+            &mut in_english,
+        );
     }
+    // The workspace's own service answers the providers registered with it on its own catalogue,
+    // where the person's connection does not reach them: the operations of the host keeping the
+    // workspace among them, read in the language the query declares.
+    let workspace = daemon.workspace().expect("this computer's workspace");
+    let id = tilo_server_protocol::WorkspaceId::parse(&workspace).expect("a workspace");
+    let cert = daemon.workspaces().device_cert().clone();
+    let asking =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
+    for registered in daemon.workspaces().providers().all() {
+        let provider = registered.provider.clone();
+        let query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(provider.to_string()),
+            language: Some("de-DE".to_owned()),
+            max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        let (asking, cert) = (asking.clone(), cert.clone());
+        let service = Arc::clone(&daemon);
+        let page = crate::device::workspaces::block_on_owned(async move {
+            service
+                .workspaces()
+                .catalogue(Some(id), &asking, Some(&cert), &query)
+                .await
+        });
+        check(
+            &provider,
+            page.rows
+                .into_iter()
+                .filter_map(|row| row.action)
+                .map(|action| (action.address.action, action.action_label))
+                .collect(),
+            &mut in_english,
+        );
+    }
+    // What the providers answer agents and apps with, which a person's listing does not carry:
+    // every declaration of theirs is read in the language of the listing all the same.
+    let declared =
+        |provider: &str, words: Vec<(&'static str, String)>, in_english: &mut Vec<String>| {
+            check(
+                provider,
+                words
+                    .into_iter()
+                    .map(|(action, label)| (action.to_owned(), label))
+                    .collect(),
+                in_english,
+            );
+        };
+    tilo_resource::label::reading_in(Some("de-DE"), || {
+        use tilo_resource::Effect as _;
+        declared(
+            tilo_workspace_records::models::PROVIDER,
+            tilo_workspace_records::models::ModelsAction::declarations()
+                .into_iter()
+                .map(|declaration| (declaration.id, declaration.label.read()))
+                .collect(),
+            &mut in_english,
+        );
+        declared(
+            tilo_workspace_records::accounts::PROVIDER,
+            tilo_workspace_records::accounts::AccountsAction::declarations()
+                .into_iter()
+                .map(|declaration| (declaration.id, declaration.label.read()))
+                .collect(),
+            &mut in_english,
+        );
+        declared(
+            tilo_workspace_records::vault::PROVIDER,
+            tilo_workspace_records::vault::VaultAction::declarations()
+                .into_iter()
+                .map(|declaration| (declaration.id, declaration.label.read()))
+                .collect(),
+            &mut in_english,
+        );
+        declared(
+            tilo_workspace_records::connections::PROVIDER,
+            tilo_workspace_records::connections::ConnectionsAction::declarations()
+                .into_iter()
+                .map(|declaration| (declaration.id, declaration.label.read()))
+                .collect(),
+            &mut in_english,
+        );
+        declared(
+            tilo_person_services::person_telling::PROVIDER,
+            tilo_person_services::person_telling::ToldAction::declarations()
+                .into_iter()
+                .map(|declaration| (declaration.id, declaration.label.read()))
+                .collect(),
+            &mut in_english,
+        );
+    });
     assert!(in_english.is_empty(), "listed in English: {in_english:#?}");
+    // What a turn is offered, which no provider lists as rows of its own: the words are the
+    // catalogue's all the same.
+    let tools: Vec<String> = tilo_resource::label::reading_in(
+        Some("de-DE"),
+        tilo_person_services::person_learned::descriptors,
+    )
+    .into_iter()
+    .map(|descriptor| descriptor.action_label)
+    .collect();
+    assert_eq!(
+        tools,
+        [
+            "Was gelernt wurde",
+            "Einen Fakt behalten",
+            "Einen Fakt berichtigen",
+            "Einen Fakt vergessen"
+        ]
+    );
 }
 
 /// Every catalogue's English words that its German says otherwise, with the German: a word no

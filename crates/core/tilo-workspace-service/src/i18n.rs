@@ -8,7 +8,7 @@ tilo_resource::declared_catalogue!(pub(crate) CATALOGUE);
 
 /// What `app` calls its action `action`, in the language this thread reads now: the catalogue's
 /// entry `<app>-<action>` where it holds one, `source` — the code's English — otherwise.
-pub(crate) fn action_words(app: &str, action: &str, source: &str) -> String {
+pub fn action_words(app: &str, action: &str, source: &str) -> String {
     let key = format!(
         "{}-{}",
         tilo_actions::message_key(app),
