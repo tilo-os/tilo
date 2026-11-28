@@ -826,7 +826,7 @@ fn the_updates_pane_offers_the_schedule_and_metered_choice() {
             } => args
                 .iter()
                 .find(|(named, _)| named == "schedule")
-                .map(|(_, value)| (app.to_string(), name.to_string(), value.clone())),
+                .map(|(_, value)| (app, name, value.clone())),
             Invocation::Edit { .. } => None,
         })
         .expect("the choice is the update resource's verb");
@@ -886,10 +886,10 @@ fn a_captive_portals_sign_in_page_opens() {
     .expect("the page opens");
     assert_eq!(
         sent.borrow().last().map(|invocation| match invocation {
-            Invocation::Action { app, name, .. } => (app.to_string(), name.to_string()),
-            Invocation::Edit { .. } => (String::new(), String::new()),
+            Invocation::Action { app, name, .. } => (app.as_str(), name.as_str()),
+            Invocation::Edit { .. } => ("", ""),
         }),
-        Some(("so.tilo.device".to_owned(), "open-link".to_owned()))
+        Some(("so.tilo.device", "open-link"))
     );
 }
 
