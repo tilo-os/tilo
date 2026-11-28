@@ -52,6 +52,7 @@ tilo-vault-page-logins = List a site's logins
 tilo-vault-keep-page-login = Keep a page's login
 tilo-vault-forget-page-login = Forget a page's login
 tilo-vault-page-fill = Fill a page's login
+tilo-vault-website-sign-ins = Open the person's website sign-ins
 
 # A workspace's model providers, kept by the host that keeps the workspace.
 tilo-models-list = List model providers

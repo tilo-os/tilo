@@ -45,7 +45,7 @@ pub use tilo_actions::remote::{ItemRef, VAULT_ITEM_KIND as ITEM_KIND};
 /// step it takes in the record the workspace keeps its vault in ([`VAULT_KIND`] in Passwords).
 /// An item kept is sealed, one forgotten goes, and every use of a secret, a copy and a reveal
 /// included, is written down. A read writes nothing, and an action not named writes nothing.
-pub const VAULT_STEPS: [(&str, &[&str]); 13] = [
+pub const VAULT_STEPS: [(&str, &[&str]); 14] = [
     ("add", &[KEEP_SEALED]),
     ("ask", &[KEEP_SEALED]),
     ("keep", &[KEEP_SEALED]),
@@ -59,6 +59,7 @@ pub const VAULT_STEPS: [(&str, &[&str]); 13] = [
     ("web-call", &[KEEP_USES]),
     ("sign", &[KEEP_USES]),
     ("release", &[KEEP_USES]),
+    ("website-sign-ins", &[KEEP_USES]),
 ];
 
 pub use tilo_actions::remote::VAULT_SECRET_ANSWERS;
@@ -413,6 +414,17 @@ pub enum VaultAction {
         #[param("The site the page is at, as its window's engine says it.")]
         site: String,
     },
+    /// Open the person's website sign-ins
+    ///
+    /// The website sign-ins the person brought from a browser of theirs, as
+    /// [`WebsiteSignIns`], for Browser's window to open its profile signed in with: all but
+    /// those the window says it holds already. Each one handed is written into its uses first.
+    /// It is answered only to Browser's window, on that window's own connection.
+    #[effect(kind = "outside", returns = WebsiteSignIns)]
+    WebsiteSignIns {
+        #[param("The sign-ins the window holds already, each as its id and digest.")]
+        held: Vec<String>,
+    },
 }
 
 impl std::fmt::Debug for VaultAction {
@@ -437,7 +449,8 @@ macro_rules! ids {
 
 ids! {
     LIST, ADD, REMOVE, USES, TAKE_BACK, COPY, REVEAL, ASK, FILL_PAGE, WEB_CALL, CODE, SIGN,
-    RELEASE, FIND, KEEP, DEVICE_KEY, PAGE_LOGINS, KEEP_PAGE_LOGIN, FORGET_PAGE_LOGIN, PAGE_FILL
+    RELEASE, FIND, KEEP, DEVICE_KEY, PAGE_LOGINS, KEEP_PAGE_LOGIN, FORGET_PAGE_LOGIN, PAGE_FILL,
+    WEBSITE_SIGN_INS
 }
 
 /// The vault's actions a person asks of it, from Passwords or as themselves, in catalogue
@@ -511,8 +524,13 @@ pub fn surface() -> tilo_actions::surface::Surface {
 }
 
 /// The page login actions, which only a window of an app's own is answered.
-pub const PAGE_LOGIN_ACTIONS: [&str; 4] =
-    [PAGE_LOGINS, KEEP_PAGE_LOGIN, FORGET_PAGE_LOGIN, PAGE_FILL];
+pub const PAGE_LOGIN_ACTIONS: [&str; 5] = [
+    PAGE_LOGINS,
+    KEEP_PAGE_LOGIN,
+    FORGET_PAGE_LOGIN,
+    PAGE_FILL,
+    WEBSITE_SIGN_INS,
+];
 
 /// The action `target` asks when it is one only an app's own process or window is answered, on
 /// the connection the daemon handed it: a [`RELEASE`], [`FIND`] or [`PAGE_FILL`] of whatever it
@@ -529,6 +547,7 @@ pub fn asked_by_app(target: &RemoteActionTarget) -> Option<&'static str> {
         PAGE_LOGINS,
         KEEP_PAGE_LOGIN,
         FORGET_PAGE_LOGIN,
+        WEBSITE_SIGN_INS,
     ];
     (target.provider == PROVIDER)
         .then(|| anywhere.into_iter().find(|id| *id == action))
@@ -990,6 +1009,34 @@ pub struct PageLogin {
 pub struct PageLogins {
     /// What is safe to say of each login.
     pub logins: Vec<PageLogin>,
+}
+
+/// What [`WEBSITE_SIGN_INS`] answers: the website sign-ins Browser's window opens its profile
+/// signed in with. It prints nothing of their cookies.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebsiteSignIns {
+    /// Each sign-in the window does not hold yet.
+    pub sign_ins: Vec<WebsiteSignIn>,
+}
+
+impl std::fmt::Debug for WebsiteSignIns {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebsiteSignIns")
+            .field("count", &self.sign_ins.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// One website sign-in, as [`WEBSITE_SIGN_INS`] hands it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebsiteSignIn {
+    /// Its id and digest, as the window names it once it holds it.
+    pub held: String,
+    /// The sign-in itself: the session its cookies are kept as, in JSON.
+    pub session: String,
 }
 
 /// What [`PAGE_FILL`] answers: the login's name and secret, for the window that asked alone. It

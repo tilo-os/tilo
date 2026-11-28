@@ -70,6 +70,9 @@ pub enum Ask {
     /// which holds nothing the person signed in to and goes when the window does. Asked before
     /// the page says anything else, since it settles which engine the page has.
     Private,
+    /// The page's profile opens signed in to the sites the person brought their sign-ins of from
+    /// a browser of theirs ([`crate::PageSession::open_sign_ins`]). A private page opens none.
+    SignIns,
     /// Install the extension package the person chose, named by the address its bytes stand at
     /// in this device's content store (`tilo-blob://…`). A sandboxed app never names a host
     /// path, so the window reads the bytes and hands the engine the package.
@@ -324,6 +327,8 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "asks" => Ask::Asks,
         // A private page's window starts its engine on a profile of its own.
         "private" => Ask::Private,
+        // A page of the person's own opens signed in where they brought their sign-ins.
+        "sign_ins" => Ask::SignIns,
         // The engine's own developer tools, opened beside the page.
         "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
         // The page written as a PDF the person can print: where the engine wrote it reaches

@@ -299,3 +299,65 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
         [&theirs]
     );
 }
+
+/// The sites the person brought their sign-ins of open signed in in their own Browser's window,
+/// which is handed each sign-in its profile does not hold, and in no other app's window or a
+/// tilolang process.
+#[tokio::test]
+async fn the_browsers_window_alone_is_handed_the_persons_website_sign_ins() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, _, _) = hosted(workspaces).await;
+    let cookies = json!([{
+        "host": "shop.example.test", "domain": "shop.example.test", "host_only": true,
+        "name": "session", "value": "made-up-cookie-23", "path": "/",
+        "expires_unix_seconds": null, "secure": true, "http_only": true, "same_site": "lax",
+    }]);
+    workspaces
+        .keep_website_sign_in(
+            &workspace,
+            owner.user_public_key,
+            ("web-firefox-1", "Sign-ins from Firefox", "web", SHOP),
+            &zeroize::Zeroizing::new(cookies.to_string()),
+        )
+        .await
+        .expect("the person's sign-ins are kept");
+    let asking = |app: &'static str, process: AppProcess, held: Value| {
+        let workspace = &workspace;
+        async move {
+            let request = at_vault(workspace_vault::WEBSITE_SIGN_INS, &json!({"held": held}));
+            workspaces
+                .page_login((app, workspace), &process, &request, None)
+                .await
+        }
+    };
+    let handed: workspace_vault::WebsiteSignIns = serde_json::from_value(
+        asking(BROWSER, AppProcess::Unplaced, json!([]))
+            .await
+            .expect("Browser's window is handed them"),
+    )
+    .unwrap();
+    assert_eq!(handed.sign_ins.len(), 1);
+    assert!(handed.sign_ins[0].session.contains("made-up-cookie-23"));
+    let held = handed.sign_ins[0].held.clone();
+    let again: workspace_vault::WebsiteSignIns = serde_json::from_value(
+        asking(BROWSER, AppProcess::Unplaced, json!([held]))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        again.sign_ins.is_empty(),
+        "what the profile holds is not handed again"
+    );
+    assert_eq!(
+        refusal(asking("so.tilo.notes", AppProcess::Unplaced, json!([])).await),
+        page_logins::NOT_BROWSER
+    );
+    assert_eq!(
+        refusal(asking(BROWSER, AppProcess::Tilolang, json!([])).await),
+        page_logins::from_a_tilolang_process(BROWSER)
+    );
+}

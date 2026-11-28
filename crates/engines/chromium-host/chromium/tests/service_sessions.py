@@ -183,6 +183,22 @@ def main():
                 assert result["imported"] is False and result["cookie_count"] == 0
                 host.navigate(url, "private")
                 assert observed("private") == ""
+            # The person's own sign-ins of every site come into their browsing profile, one
+            # after another, and into no private or service profile.
+            with Host(root / "browsing", flags) as host:
+                result = host.import_cookies(cookies[:1], service="web", session="web_1")
+                assert result["imported"] is True and result["cookie_count"] == 1
+                result = host.import_cookies(cookies[1:], request=2, service="web", session="web_2")
+                assert result["imported"] is True and result["cookie_count"] == 2
+                host.navigate(url, "browsing")
+                transmitted = observed("browsing")
+                assert all(c["name"] + "=" + c["value"] in transmitted for c in cookies)
+            with Host(root / "private-web", flags + ["--private"]) as host:
+                assert host.import_cookies(cookies, service="web", session="web_1")["imported"] is False
+                host.navigate(url, "private-web")
+                assert observed("private-web") == ""
+            with Host(root / "selected-web", selected) as host:
+                assert host.import_cookies(cookies, service="web", session="web_1")["imported"] is False
             with Host(root / "selected", selected) as host:
                 refused = host.import_cookies(cookies, session="wrong_session")
                 assert refused["imported"] is False

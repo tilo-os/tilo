@@ -7,6 +7,7 @@
 //! status. So a login is handed only for the site the page is at, and the engine fills it only
 //! while the page is still there.
 
+use tilo_webview::sessions::SessionCookies;
 use tilo_webview::{CredentialAction, ReleasedText};
 
 /// What the app asks of its page's logins: one of the engine's own credential actions, or one the
@@ -95,6 +96,10 @@ pub trait LoginVault {
         asked_by: Option<&str>,
         done: Answered<(String, ReleasedText)>,
     );
+    /// The website sign-ins the person brought from a browser of theirs, all but those `held`
+    /// names (each its id and digest), each with the name the window holds it by once its
+    /// profile took it. Only Browser's window is answered them.
+    fn website_sign_ins(&self, held: Vec<String>, done: Answered<Vec<(String, SessionCookies)>>);
 }
 
 /// What a vault call answered, for the session to carry on with on the window's thread.
@@ -124,6 +129,8 @@ pub(crate) enum VaultAnswer {
         site: String,
         result: Result<(String, ReleasedText), String>,
     },
+    /// The website sign-ins the person brought that the page's profile does not hold yet.
+    SignIns(Result<Vec<(String, SessionCookies)>, String>),
 }
 
 /// What a page that has no vault to ask answers: a private window is offered no saved logins.

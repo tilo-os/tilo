@@ -860,14 +860,24 @@ impl WebViewEngine for TestEngine {
                 inner.scale_factor = scale_factor;
                 self.render_locked(&inner);
             }
+            // As a browsing profile's host: it takes the person's own sign-ins of every site
+            // that are still current, and no service's, which only a profile of that service's
+            // own takes.
             WebViewCommand::ImportServiceSession(request) => {
+                let imported = request.session.service
+                    == browser_continuity_core::sessions::Service::Web
+                    && request.valid();
                 inner.events.push(WebViewEvent::ServiceSessionResult(
                     super::ServiceSessionReply {
                         request_id: request.request_id,
                         session_id: request.session.session_id.clone(),
                         service: request.session.service,
-                        imported: false,
-                        cookie_count: 0,
+                        imported,
+                        cookie_count: if imported {
+                            request.session.cookies.len()
+                        } else {
+                            0
+                        },
                         origin_storage_count: 0,
                     },
                 ));

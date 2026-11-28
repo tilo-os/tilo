@@ -52,6 +52,10 @@ fn vault() -> std::rc::Rc<dyn tilo_page_engine::LoginVault> {
     std::rc::Rc::new(crate::page_vault::NativeVault::new(ui::WakeHandle::new()))
 }
 
+/// The file beside the Browser's profile that names the sign-ins it holds.
+#[cfg(not(target_arch = "wasm32"))]
+const SIGN_INS_HELD: &str = "tilo-sign-ins";
+
 /// What asking the page left to do.
 pub enum Asked {
     /// The operation answered at once (a navigation, a zoom): what the app reads.
@@ -71,6 +75,18 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
         // page has; a page that already started keeps the engine it has.
         codec::Ask::Private => {
             start_private(page)?;
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        // The sites the person brought their sign-ins of open signed in in the page's profile,
+        // which names beside itself the sign-ins it holds.
+        codec::Ask::SignIns => {
+            let _ = engine_of(page);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(profile) = tilo_webview::chromium::browsing_profile() {
+                session_of(page, |session| {
+                    session.open_sign_ins(profile.join(SIGN_INS_HELD));
+                })?;
+            }
             Ok(Asked::Answered(codec::accepted()))
         }
         // An extension the person chose arrives as the address of its bytes in this device's

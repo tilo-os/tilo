@@ -52,6 +52,7 @@ tilo-vault-page-logins = Die Anmeldungen einer Website auflisten
 tilo-vault-keep-page-login = Die Anmeldung einer Seite sichern
 tilo-vault-forget-page-login = Die Anmeldung einer Seite vergessen
 tilo-vault-page-fill = Die Anmeldung einer Seite ausfüllen
+tilo-vault-website-sign-ins = Die Website-Anmeldungen der Person öffnen
 
 # A workspace's model providers, kept by the host that keeps the workspace.
 tilo-models-list = Modellanbieter auflisten

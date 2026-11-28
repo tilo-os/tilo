@@ -12,6 +12,7 @@ mod asks;
 mod logins;
 pub mod omnibox;
 mod prompts;
+mod sign_ins;
 
 pub use asks::{Asks, ExtensionButton, ExtensionNotice, Menu};
 pub use logins::{Answered, LoginAsk, LoginVault, VaultLogin};
@@ -123,6 +124,8 @@ pub struct PageSession {
     /// What the person types after an extension's keyword in the address, and what the extension
     /// says of it.
     omnibox: omnibox::Omnibox,
+    /// The sites the person brought their sign-ins of, opening in this page's profile.
+    sign_ins: Option<sign_ins::SignIns>,
 }
 
 impl PageSession {
@@ -154,6 +157,7 @@ impl PageSession {
             panel: None,
             quiet_sign_ins: Vec::new(),
             omnibox: omnibox::Omnibox::default(),
+            sign_ins: None,
         }
     }
 
@@ -417,6 +421,11 @@ impl PageSession {
                 // took, a fill, or the status the session asked to learn the page's document and
                 // site, which is not the person's to see: their own action follows with them.
                 WebViewEvent::CredentialResult(reply) => self.engine_answered(reply),
+                // A sign-in the person brought, which the profile took or did not: the window's
+                // own, never the page's event.
+                WebViewEvent::ServiceSessionResult(reply) if self.sign_in_opened(reply) => {
+                    continue;
+                }
                 // The page came into or out of fullscreen: its window fills the screen while it
                 // is in it and shows the way out, which the app's record keeps.
                 WebViewEvent::FullscreenChanged(on) if self.asks.fullscreen != *on => {
@@ -1019,6 +1028,7 @@ impl PageSession {
                 }
                 Err(why) => self.notes.push(note("fill_field", Err(&why), "")),
             },
+            VaultAnswer::SignIns(result) => self.sign_ins_answered(result),
         }
     }
 
@@ -1049,6 +1059,7 @@ impl PageSession {
             || !self.taking.is_empty()
             || self.vault_pending > 0
             || !self.fields_filling.is_empty()
+            || self.sign_ins_opening()
             || !self.notes.is_empty()
     }
 }
@@ -1210,6 +1221,8 @@ mod tests {
         asked: std::cell::RefCell<Vec<String>>,
         kept: std::cell::RefCell<Vec<Kept>>,
         refuse_fill: Option<String>,
+        /// The website sign-ins it keeps, by the name a window holds each by.
+        sign_ins: Vec<(String, tilo_webview::sessions::SessionCookies)>,
     }
 
     const TYPED: &str = "synthetic-typed-password";
@@ -1270,6 +1283,154 @@ mod tests {
                 )),
             });
         }
+        fn website_sign_ins(
+            &self,
+            held: Vec<String>,
+            done: Answered<Vec<(String, tilo_webview::sessions::SessionCookies)>>,
+        ) {
+            self.asked
+                .borrow_mut()
+                .push(format!("sign-ins but {}", held.join(",")));
+            done(Ok(self
+                .sign_ins
+                .iter()
+                .filter(|(name, _)| !held.contains(name))
+                .cloned()
+                .collect()));
+        }
+    }
+
+    /// A website sign-in of the person's own, for every site, with one cookie of `site`'s.
+    fn web_sign_in(id: &str, site: &str) -> tilo_webview::sessions::SessionCookies {
+        use tilo_webview::sessions::{Cookie, SameSite, Service, SessionCookies};
+        SessionCookies {
+            schema: 1,
+            session_id: id.to_owned(),
+            service: Service::Web,
+            identity_public_key: [7; 32],
+            setup_binding: "workspace".to_owned(),
+            source_snapshot_digest: [1; 32],
+            cookies: vec![Cookie {
+                host: site.to_owned(),
+                domain: site.to_owned(),
+                host_only: true,
+                name: "session".to_owned(),
+                value: "synthetic-cookie".to_owned(),
+                path: "/".to_owned(),
+                expires_unix_seconds: None,
+                secure: true,
+                http_only: true,
+                same_site: SameSite::Lax,
+            }],
+            origin_storage: Vec::new(),
+        }
+    }
+
+    /// The sign-ins the session handed its engine, by the number each was asked under.
+    fn sign_ins_handed(test: &std::sync::Arc<TestEngine>) -> Vec<(u32, String)> {
+        test.commands()
+            .iter()
+            .filter_map(|command| match command {
+                WebViewCommand::ImportServiceSession(request) => {
+                    Some((request.request_id, request.session.session_id.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The sites the person brought their sign-ins of open signed in in the window's profile:
+    /// each sign-in the profile does not hold is handed to the engine, one at a time, written
+    /// down beside the profile once the engine took it, and never asked for again; one the engine
+    /// refused is said and asked for again next time. None of it is the page's own event.
+    #[test]
+    fn a_window_opens_its_profile_signed_in_to_each_site_the_person_brought_once() {
+        let held_at = std::env::temp_dir().join(format!(
+            "tilo-page-sign-ins-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        drop(std::fs::remove_file(&held_at));
+        let brought = || {
+            // The engine refuses a sign-in whose cookies ran out meanwhile.
+            let mut ran_out = web_sign_in("web-2", "example.net");
+            ran_out.cookies[0].expires_unix_seconds = Some(1);
+            FakeVault {
+                sign_ins: vec![
+                    ("web-1:aa".to_owned(), web_sign_in("web-1", "example.org")),
+                    ("web-2:bb".to_owned(), ran_out),
+                ],
+                ..FakeVault::default()
+            }
+        };
+        let (test, mut session, vault) = with_vault(brought());
+        session.open_sign_ins(held_at.clone());
+        session.poll();
+        assert_eq!(*vault.asked.borrow(), ["sign-ins but "]);
+        let handed = |test: &std::sync::Arc<TestEngine>| {
+            sign_ins_handed(test)
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(handed(&test), ["web-1"], "the engine takes one at a time");
+        assert!(session.busy(), "the session waits on the engine's answer");
+        session.poll();
+        assert_eq!(handed(&test), ["web-1", "web-2"]);
+        session.poll();
+        assert!(
+            session.next_event().is_none(),
+            "a sign-in is no event of the page's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&held_at).unwrap(),
+            "web-1:aa\n",
+            "only what the profile took is written down"
+        );
+        let said: Vec<serde_json::Value> = session
+            .notes()
+            .iter()
+            .map(|note| serde_json::from_str(note).unwrap())
+            .collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0]["did"], "sign_ins");
+        assert_eq!(said[0]["success"], false);
+        assert!(!session.busy(), "nothing waits on the engine or the vault");
+
+        // The next window asks only for what its profile does not hold.
+        let (test, mut session, vault) = with_vault(brought());
+        session.open_sign_ins(held_at.clone());
+        session.poll();
+        assert_eq!(*vault.asked.borrow(), ["sign-ins but web-1:aa"]);
+        assert_eq!(handed(&test), ["web-2"]);
+        // An answer to a number this session never asked under is the page's own.
+        test.push_event(WebViewEvent::ServiceSessionResult(
+            tilo_webview::ServiceSessionReply {
+                request_id: 99,
+                session_id: "web-9".to_owned(),
+                service: tilo_webview::sessions::Service::Web,
+                imported: true,
+                cookie_count: 1,
+                origin_storage_count: 0,
+            },
+        ));
+        session.poll();
+        assert!(matches!(
+            session.next_event(),
+            Some(WebViewEvent::ServiceSessionResult(reply)) if reply.request_id == 99
+        ));
+        drop(std::fs::remove_file(&held_at));
+    }
+
+    /// A page with no vault, a private one above all, opens no sign-in.
+    #[test]
+    fn a_page_with_no_vault_opens_no_sign_in() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.open_sign_ins(std::env::temp_dir().join("tilo-page-sign-ins-none"));
+        session.poll();
+        assert!(sign_ins_handed(&test).is_empty());
+        assert!(!session.busy());
     }
 
     /// The engine's answer to a login action.

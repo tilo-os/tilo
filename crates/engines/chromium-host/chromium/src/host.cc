@@ -1590,12 +1590,18 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto reply=[owner](CefRefPtr<CefDictionaryValue> fields){
         if(!closing && output)owner->Event("service_session_result",fields);
       };
-      if(private_mode || service_session_id.empty() || service_session_id!=d->GetString("session_id").ToString() || service_session_consumed) {
+      // The person's own sign-ins of every site come into a browsing profile, never a private,
+      // sealed or service's own one, each once its owner hands it; a service's go only into the one
+      // dedicated profile its session was started for, once.
+      const bool web=d->GetString("service")=="web";
+      const bool admitted=!private_mode && (web?service_session_id.empty() && !sealed_documents:
+        !service_session_id.empty() && service_session_id==d->GetString("session_id").ToString() && !service_session_consumed);
+      if(!admitted || (service_session_import_ && !service_session_import_->Finished())) {
         auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",d->GetInt("request_id"));
         fields->SetString("session_id",d->GetString("session_id"));fields->SetString("service",d->GetString("service"));
         fields->SetBool("imported",false);fields->SetInt("cookie_count",0);fields->SetInt("origin_storage_count",0);tilo::ForgetServiceCookies(d);reply(fields);return;
       }
-      service_session_consumed=true;
+      if(!web)service_session_consumed=true;
       service_session_import_=new tilo::ServiceSessionImport(browser_,d,std::move(reply));
       service_session_import_->Start();
     }

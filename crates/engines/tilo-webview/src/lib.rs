@@ -80,6 +80,7 @@ mod credentials;
 pub mod extensions;
 pub mod key_code;
 mod service_sessions;
+pub use browser_continuity_core::sessions;
 pub use credentials::{
     AddressFields, CredentialAction, CredentialForm, CredentialReply, CredentialRequest,
 };

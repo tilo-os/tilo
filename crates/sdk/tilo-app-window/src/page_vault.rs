@@ -15,7 +15,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, ReceiptStatus,
     RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN, VAULT_PAGE_FILL,
-    VAULT_PAGE_LOGINS, vault_target,
+    VAULT_PAGE_LOGINS, VAULT_WEBSITE_SIGN_INS, vault_target,
 };
 use tilo_page_engine::{Answered, LoginVault, VaultLogin};
 use tilo_webview::ReleasedText;
@@ -208,4 +208,42 @@ impl LoginVault for NativeVault {
             },
         );
     }
+
+    fn website_sign_ins(
+        &self,
+        held: Vec<String>,
+        done: Answered<Vec<(String, tilo_webview::sessions::SessionCookies)>>,
+    ) {
+        self.call(
+            (vault_target(VAULT_WEBSITE_SIGN_INS), json!({"held": held})),
+            None,
+            move |value| done(value.and_then(signed_in)),
+        );
+    }
+}
+
+/// `value` as the website sign-ins it hands, each with the name the window holds it by.
+fn signed_in(
+    value: Value,
+) -> Result<Vec<(String, tilo_webview::sessions::SessionCookies)>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct WebsiteSignIns {
+        sign_ins: Vec<WebsiteSignIn>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WebsiteSignIn {
+        held: String,
+        session: String,
+    }
+    let unreadable = || "The vault answered what is no website sign-in".to_owned();
+    let answered: WebsiteSignIns = serde_json::from_value(value).map_err(|_| unreadable())?;
+    answered
+        .sign_ins
+        .into_iter()
+        .map(|sign_in| {
+            let session = serde_json::from_str(&sign_in.session).map_err(|_| unreadable())?;
+            Ok((sign_in.held, session))
+        })
+        .collect()
 }

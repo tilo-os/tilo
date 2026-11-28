@@ -763,6 +763,15 @@ fn record_private_helper(root: &Path, pid: u32) -> std::io::Result<()> {
     )
 }
 
+/// The profile the person's Browser windows browse in: `TILO_CHROMIUM_PROFILE`, or Browser's
+/// own under the person's data directory.
+#[must_use]
+pub fn browsing_profile() -> Option<PathBuf> {
+    std::env::var_os("TILO_CHROMIUM_PROFILE")
+        .map(PathBuf::from)
+        .or_else(|| tilo_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
+}
+
 struct Runtime {
     tx: Arc<CommandQueue>,
     process: Arc<Shared>,
@@ -1461,10 +1470,7 @@ impl ChromiumEngine {
     /// Returns an error for invalid extensions, unavailable runtime/profile, or a helper
     /// that cannot be started.
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
-        let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
-            .map(PathBuf::from)
-            .or_else(|| tilo_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
-            .ok_or("Cannot locate Chromium profile directory")?;
+        let profile = browsing_profile().ok_or("Cannot locate Chromium profile directory")?;
         Self::with_host_extensions(
             &host_path()?,
             &profile,
@@ -1542,16 +1548,22 @@ impl ChromiumEngine {
         Self::with_host_extensions(&host_path()?, profile, &[], None, HostMode::SealedDocuments)
     }
 
-    /// Admit private credentials only to the exact dedicated session host.
+    /// Admit private credentials only to the exact dedicated session host, and the person's
+    /// own sign-ins of every site ([`Service::Web`]) only to a browsing profile's host: never
+    /// a private one, which the host itself refuses too.
+    ///
+    /// [`Service::Web`]: browser_continuity_core::sessions::Service::Web
     pub fn import_service_session(
         &self,
         request: super::ServiceSessionRequest,
     ) -> Result<(), String> {
-        if self.runtime.service_session.as_deref() != Some(request.session.session_id.as_str())
-            || self.runtime.link.is_some()
-            || self.tab != 1
-            || !request.valid()
+        let admitted = if request.session.service == browser_continuity_core::sessions::Service::Web
         {
+            self.runtime.service_session.is_none()
+        } else {
+            self.runtime.service_session.as_deref() == Some(request.session.session_id.as_str())
+        };
+        if !admitted || self.runtime.link.is_some() || self.tab != 1 || !request.valid() {
             return Err("Selected website session cannot be imported into this profile".into());
         }
         let mut command = request

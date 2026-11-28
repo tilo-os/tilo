@@ -62,8 +62,8 @@ pub use vault::{
     ItemRef, KEEP_SEALED, KEEP_USES, REMOVE_SEALED, VAULT_DEVICE_KEY, VAULT_FIND,
     VAULT_FORGET_PAGE_LOGIN, VAULT_ITEM_KIND, VAULT_KEEP, VAULT_KEEP_PAGE_LOGIN, VAULT_KIND,
     VAULT_LIST, VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, VAULT_PROVIDER, VAULT_RECORD, VAULT_RELEASE,
-    VAULT_RESOURCE, VAULT_SECRET_ANSWERS, answers_secret, calls_answering_a_secret,
-    calls_by_address, item_param, takes_item, vault_target,
+    VAULT_RESOURCE, VAULT_SECRET_ANSWERS, VAULT_WEBSITE_SIGN_INS, answers_secret,
+    calls_answering_a_secret, calls_by_address, item_param, takes_item, vault_target,
 };
 pub mod press_points;
 mod providers;

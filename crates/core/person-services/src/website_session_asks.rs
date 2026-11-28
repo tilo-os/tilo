@@ -8,7 +8,7 @@
 
 use account_credentials::service_sessions::SERVICE_SESSION_TYPE;
 use accounts::Account;
-use browser_continuity_core::sessions::SessionCookies;
+use browser_continuity_core::sessions::{Service, SessionCookies};
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionDescriptor as Descriptor,
     BrowserServiceSessionReply as Reply,
@@ -62,6 +62,46 @@ impl crate::PersonServices {
             return Err(UNAVAILABLE.into());
         }
         Ok(reply)
+    }
+
+    /// The website sign-ins the person `identity` brought from a browser of theirs
+    /// (`add-website-session`), for their Browser's window to open its own profile signed in
+    /// with: each enabled one of theirs the window does not say it holds (`held`, each its id and
+    /// digest). Each one handed is written into its uses first.
+    ///
+    /// # Errors
+    /// The accounts record or the vault does not read, or a use is not written.
+    pub async fn website_sign_ins(
+        &self,
+        workspace: &str,
+        identity: [u8; 32],
+        held: &[String],
+    ) -> Result<tilo_workspace_records::vault::WebsiteSignIns, String> {
+        use tilo_workspace_records::vault::{WebsiteSignIn, WebsiteSignIns};
+        let kept = Box::pin(self.website_sessions(workspace, SERVICE_SESSION_TYPE)).await?;
+        let mut sign_ins = Vec::new();
+        for kept in kept.into_iter().filter(|kept| kept.account.enabled) {
+            let Some(session) = selection(&kept, identity, crate::website_sessions::KEPT_BINDING)
+                .filter(|session| session.service == Service::Web)
+            else {
+                continue;
+            };
+            let mark = format!(
+                "{}:{}",
+                session.session_id,
+                hex::encode(session.source_snapshot_digest)
+            );
+            if held.contains(&mark) {
+                continue;
+            }
+            Box::pin(self.website_session_opened(workspace, &kept.account, BROWSER)).await?;
+            let session = serde_json::to_string(&session).map_err(|error| error.to_string())?;
+            sign_ins.push(WebsiteSignIn {
+                held: mark,
+                session,
+            });
+        }
+        Ok(WebsiteSignIns { sign_ins })
     }
 }
 
@@ -331,6 +371,10 @@ mod tests {
     /// keeps the newer cookies in place of the older.
     #[cfg(feature = "device-keys")]
     #[tokio::test(flavor = "multi_thread")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flow, from bringing them to opening them"
+    )]
     async fn a_sign_in_the_person_brought_opens_for_them_alone() {
         use crate::website_sessions::KEPT_BINDING;
         let dir = tempfile::tempdir().unwrap();
@@ -414,6 +458,34 @@ mod tests {
             .unwrap();
         assert_eq!(held.len(), 1, "kept once");
         assert_eq!(held[0].account.display_name, "Sign-ins from Firefox");
+
+        // The person's Browser window is handed what its profile does not hold yet, and the
+        // newer cookies again once the person brought them again.
+        let opened = workspaces.website_sign_ins(at, person, &[]).await.unwrap();
+        assert_eq!(opened.sign_ins.len(), 1);
+        let handed: SessionCookies = serde_json::from_str(&opened.sign_ins[0].session).unwrap();
+        assert_eq!(handed.cookies, cookies);
+        let mark = opened.sign_ins[0].held.clone();
+        assert!(mark.starts_with("web-firefox-1:"), "{mark}");
+        let again = workspaces
+            .website_sign_ins(at, person, std::slice::from_ref(&mark))
+            .await
+            .unwrap();
+        assert!(
+            again.sign_ins.is_empty(),
+            "what the profile holds is not handed again"
+        );
+        let theirs = workspaces.website_sign_ins(at, [8; 32], &[]).await.unwrap();
+        assert!(theirs.sign_ins.is_empty(), "another member is handed none");
+        cookies.push(cookies[0].clone());
+        cookies[1].name = "csrf".into();
+        keep("web", &cookies).await.expect("brought once more");
+        let newer = workspaces
+            .website_sign_ins(at, person, std::slice::from_ref(&mark))
+            .await
+            .unwrap();
+        assert_eq!(newer.sign_ins.len(), 1, "the newer sign-in is handed");
+        assert_ne!(newer.sign_ins[0].held, mark);
     }
 
     /// Only the person's own, enabled selection is listed and opened, and only theirs is

@@ -1225,11 +1225,14 @@ action refresh_page(p: Page) -> Answer uses page (
     Answer(ok: true, message: "read")
 }
 
-/// The page's window opened: it settles a private page's engine before anything is read, then
-/// reads what the page asks and shows before anyone looks.
+/// The page's window opened: it settles a private page's engine before anything is read, and
+/// opens any other signed in to the sites the person brought their sign-ins of from a browser of
+/// theirs, then reads what the page asks and shows before anyone looks.
 opened action opened_page(p: Page) uses page {
     if not p.shared {
         let _ = page.call(json.encode(Ask(op: "private")))
+    } else {
+        let _ = page.call(json.encode(Ask(op: "sign_ins")))
     }
     refresh_page(p)
 }

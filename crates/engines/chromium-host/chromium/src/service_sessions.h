@@ -42,6 +42,8 @@ inline bool ServiceCookieHost(const std::string& host,const std::string& service
     for(size_t i=start;i<start+length;++i)if(!((host[i]>='a' && host[i]<='z') || (host[i]>='0' && host[i]<='9') || host[i]=='-'))return false;
     if(end==std::string::npos)break;start=end+1;if(start==host.size())return false;
   }
+  // The person's own sign-ins of every site go only to their browsing profile.
+  if(service=="web")return host.find('.')!=std::string::npos;
   const std::string base=service=="slack"?"slack.com":service=="discord"?"discord.com":"";
   return !base.empty() && (host==base || (host.size()>base.size() && host.compare(host.size()-base.size(),base.size(),base)==0 && host[host.size()-base.size()-1]=='.'));
 }
@@ -51,7 +53,7 @@ inline bool ServiceSessionCommandValid(CefRefPtr<CefDictionaryValue> d) {
   if(d->GetType("request_id")!=VTYPE_INT || d->GetInt("request_id")<=0 ||
      d->GetType("session_id")!=VTYPE_STRING || !ServiceSessionId(d->GetString("session_id").ToString()) ||
      d->GetType("service")!=VTYPE_STRING || d->GetType("cookies")!=VTYPE_LIST)return false;
-  const auto service=d->GetString("service").ToString();if(service!="slack" && service!="discord")return false;
+  const auto service=d->GetString("service").ToString();if(service!="slack" && service!="discord" && service!="web")return false;
   CefDictionaryValue::KeyList fields;d->GetKeys(fields);
   for(const auto& field:fields)if(field!="op" && field!="tab" && field!="request_id" && field!="session_id" && field!="service" && field!="cookies" && field!="origin_storage" && field!="verify_only")return false;
   if(d->HasKey("verify_only") && d->GetType("verify_only")!=VTYPE_BOOL)return false;
@@ -143,6 +145,7 @@ class ServiceSessionImport final : public CefSetCookieCallback,public CefComplet
     if(!manager_)Finish(false);else if(verify_)Call(Stage::Cookies,"Storage.getCookies",nullptr);else Next();
   }
   void Detach() {if(!finished_)Finish(false);registration_=nullptr;browser_=nullptr;}
+  bool Finished() const {return finished_;}
   void Loaded(CefRefPtr<CefFrame> frame,int status) {
     if(finished_ || stage_!=Stage::Bootstrap || !frame->IsMain())return;
     // OnLoadEnd for the pre-import about:blank can arrive after Start. Only

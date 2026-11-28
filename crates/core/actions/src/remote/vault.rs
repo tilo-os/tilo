@@ -37,6 +37,8 @@ pub const VAULT_KEEP_PAGE_LOGIN: &str = "keep-page-login";
 pub const VAULT_FORGET_PAGE_LOGIN: &str = "forget-page-login";
 /// A login written into a page, addressed at the item ([`ItemRef::target`]).
 pub const VAULT_PAGE_FILL: &str = "page-fill";
+/// The website sign-ins the person brought, handed to Browser's window.
+pub const VAULT_WEBSITE_SIGN_INS: &str = "website-sign-ins";
 
 // The record kind the workspace keeps its vault in, in Passwords, where every action of the vault
 // that writes takes its step, and the id its declaration binds to it.

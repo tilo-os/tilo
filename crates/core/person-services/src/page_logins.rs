@@ -41,6 +41,10 @@ pub const NOT_A_WINDOW: &str = "A page's logins are answered only to the window 
                                 that shows the page, on that window's own connection: a person \
                                 reads their logins in Passwords.";
 
+/// What a window of another app than Browser asking for the person's website sign-ins is refused
+/// with.
+pub const NOT_BROWSER: &str = "The website sign-ins you brought open only in your Browser";
+
 /// What is written into an item each time a window is handed it to fill a page.
 const PAGE_FILL_USE: &str = "tilo.vault/page-fill";
 
@@ -243,18 +247,18 @@ impl crate::PersonServices {
         request: &InvokeRequest,
         asked_by: Option<&Caller>,
     ) -> Result<Value, ActionCallError> {
-        if matches!(process, AppProcess::Tilolang | AppProcess::OwnTilolang) {
-            return Err(refused(from_a_tilolang_process(app)));
+        let first = self.answered_first((app, workspace), process, request);
+        if let Some(answered) = first.await {
+            return answered;
         }
         let cert = self.device_cert();
-        let person = hex::encode(cert.user_public_key);
         let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(workspace);
         self.using_vault(workspace, &device, Some(app), false)
             .await
             .map_err(|why| refused(device_may_not_read(app, &why)))?;
         let caller = Caller::local_app(app)
-            .acting_for(person)
+            .acting_for(hex::encode(cert.user_public_key))
             .in_workspace(workspace);
         match asked_of(request)? {
             VaultAction::PageLogins { site: at } => {
@@ -341,6 +345,50 @@ impl crate::PersonServices {
             }
             _ => Err(ActionCallError::UnknownAction),
         }
+    }
+
+    /// What `request` is answered before anything else, where it is: refused for a tilolang
+    /// process, and the person's website sign-ins for Browser's window alone. `None` for every
+    /// other call of a window of the app's own.
+    async fn answered_first(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &AppProcess,
+        request: &InvokeRequest,
+    ) -> Option<Result<Value, ActionCallError>> {
+        if matches!(process, AppProcess::Tilolang | AppProcess::OwnTilolang) {
+            return Some(Err(refused(from_a_tilolang_process(app))));
+        }
+        match asked_of(request) {
+            Ok(VaultAction::WebsiteSignIns { held }) => {
+                Some(Box::pin(self.sign_ins_for_window((app, workspace), &held)).await)
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        }
+    }
+
+    /// The website sign-ins the person brought, all but those `held` names, for `app`'s window
+    /// in `workspace`: the sites they open signed in in their own Browser, and in no other
+    /// app's window.
+    async fn sign_ins_for_window(
+        &self,
+        (app, workspace): (&str, &str),
+        held: &[String],
+    ) -> Result<Value, ActionCallError> {
+        if app != tilo_app_id::apps::BROWSER {
+            return Err(refused(NOT_BROWSER));
+        }
+        let cert = self.device_cert();
+        let device = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(workspace);
+        self.using_vault(workspace, &device, Some(app), false)
+            .await
+            .map_err(|why| refused(device_may_not_read(app, &why)))?;
+        let sign_ins = Box::pin(self.website_sign_ins(workspace, cert.user_public_key, held))
+            .await
+            .map_err(refused)?;
+        answer(&sign_ins)
     }
 
     /// The logins `workspace`'s vault keeps for `site`, as `app`'s window is told them.
