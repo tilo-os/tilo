@@ -449,6 +449,7 @@ impl KeptServer {
                 endpoint: endpoint.clone(),
                 seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
                 apps: app_serving.clone(),
+                founding_registries: None,
                 configure: Some(Box::new(move |config| {
                     let config = tilo_workspace_service::service::ServiceConfig {
                         reaching,

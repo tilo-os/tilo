@@ -2384,6 +2384,13 @@ impl Daemon {
         // The owner's root a deployment hands this daemon is kept here before the identity is
         // read, so this computer is the person's own device and founds its workspaces under it.
         adopt_owner_root(root)?;
+        // The registries a workspace founded here starts with: this profile's own, named beside
+        // its other files — an image's or a distribution's catalogue — or the official registry
+        // when it names none. A profile that names one this daemon cannot read refuses to start
+        // rather than found workspaces from someone else's list.
+        let founding_registries =
+            app_cli::config::registries_file_at(&root.join(FOUNDING_REGISTRIES))
+                .map_err(io::Error::other)?;
         let identity = Identity::here(root)?;
         tilo_files::native::private::directory(identity.place.dir())?;
         if locked.is_some_and(|device| device != identity.key.verifying_key().to_bytes()) {
@@ -2524,6 +2531,7 @@ impl Daemon {
             Arc::clone(&brokers),
             app_serving.clone(),
             keeping.as_ref().zip(itself.clone()),
+            founding_registries,
         )?;
         // A device of the person's at another peer protocol version is refused by the
         // workspaces here: the person reads which side updates, once for each device and version.
@@ -3782,6 +3790,11 @@ pub(super) fn person_name() -> Option<String> {
         .filter(|name| tilo_identity::store::is_chosen_display_name(name))
 }
 
+/// The registries a profile names beside its other files, for the workspaces founded on this
+/// device: an image's or a distribution's own catalogue, as the app store's list writes them
+/// (`[[registry]]` entries). A profile that names none starts from the official registry.
+const FOUNDING_REGISTRIES: &str = "registries.toml";
+
 /// Open the device's workspace service in its directory: it hosts the workspace founded here
 /// on a computer with no login, and holds the member copies of the login's workspaces otherwise.
 /// `apps` is what answers its devices' app frames (`crate::device::keep::hosted_browser::app_serving`).
@@ -3794,6 +3807,7 @@ fn open_workspaces(
         &super::keep::Keeping,
         crate::device::keep::server::ServerIdentity,
     )>,
+    founding_registries: Option<tilo_workspace_service::service::RegistriesFile>,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let device = tilo_identity::identity_store::DeviceIdentity::held(
         identity.cert.clone(),
@@ -3824,6 +3838,7 @@ fn open_workspaces(
             seal_checks: Arc::new(BrokerSealChecks(brokers)),
             apps,
             configure,
+            founding_registries,
             itself,
         })
         .await

@@ -3,7 +3,7 @@
 //! actions. A device keeps no list of its own.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -151,6 +151,51 @@ impl RegistriesFile {
     pub fn enabled(&self) -> impl Iterator<Item = &RegistryConfig> {
         self.registries.iter().filter(|r| r.enabled)
     }
+}
+
+/// Why a device's own registries file could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum RegistriesFileError {
+    #[error("could not read the registries file {}: {source}", .path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the registries file {} is invalid: {source}", .path.display())]
+    Decode {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
+}
+
+/// The registries the file at `path` names, when a device's configuration ships one: an image's
+/// or a distribution's own catalogue beside the official one. `Ok(None)` when there is no file,
+/// which leaves the official registry standing — a device that names none starts from it.
+///
+/// A file that is there but cannot be read or parsed is an error, never the official list by
+/// another name: a device whose configuration is broken says so where it starts.
+///
+/// # Errors
+/// The file is there but cannot be read, or is not a registries file.
+pub fn registries_file_at(path: &Path) -> Result<Option<RegistriesFile>, RegistriesFileError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(RegistriesFileError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    toml::from_str(&text)
+        .map(Some)
+        .map_err(|source| RegistriesFileError::Decode {
+            path: path.to_owned(),
+            source,
+        })
 }
 
 /// The root config dir; `TILO_STORE_CONFIG_DIR` overrides it for tests.
@@ -424,6 +469,35 @@ mod tests {
                 "an image that ships {shipped} does not replace the trust root"
             );
         }
+    }
+
+    #[test]
+    fn a_device_naming_its_own_registries_file_founds_with_that_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registries.toml");
+        assert!(
+            registries_file_at(&path).unwrap().is_none(),
+            "no file, no list"
+        );
+        fs::write(&path, "").unwrap();
+        assert_eq!(
+            registries_file_at(&path).unwrap(),
+            Some(RegistriesFile::default()),
+            "an empty file names no registry"
+        );
+        fs::write(
+            &path,
+            "[[registry]]\nname = \"fixture\"\nbase_url = \"http://127.0.0.1:8081\"\n\
+             owner_pubkey_hex = \"ab\"\n",
+        )
+        .unwrap();
+        let named = registries_file_at(&path).unwrap().unwrap();
+        assert_eq!(named.registries[0].name, "fixture");
+        fs::write(&path, "not toml").unwrap();
+        assert!(
+            registries_file_at(&path).is_err(),
+            "a file that does not parse is an error, never the official list"
+        );
     }
 
     #[test]

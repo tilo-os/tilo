@@ -67,6 +67,9 @@ pub(crate) struct Opening<'a> {
     pub(crate) apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
     /// What the service keeps beyond a device's own, on a server.
     pub(crate) configure: Option<Box<dyn FnOnce(ServiceConfig) -> ServiceConfig + Send + 'a>>,
+    /// The registries a workspace founded here starts with, when this device's configuration
+    /// names its own: the official registry stands otherwise.
+    pub(crate) founding_registries: Option<tilo_workspace_service::service::RegistriesFile>,
     /// The device itself, when the service acts as it: on a server.
     pub(crate) itself: Option<tilo_workspace_service::service::ServiceIdentity>,
 }
@@ -128,6 +131,7 @@ impl ServiceWorkspaces {
             seal_checks,
             apps,
             configure,
+            founding_registries,
             itself,
         } = opening;
         // A device confined to one workspace issues no certificate, so no service key of its
@@ -165,7 +169,7 @@ impl ServiceWorkspaces {
                     registers: vec![tilo_person_services::register],
                     ..config
                 };
-                match configure {
+                let config = match configure {
                     Some(configure) => configure(config),
                     // A person's computer serves its workspaces at once, on the network or off
                     // it: the service names its address in them once a relay answers, so
@@ -178,6 +182,13 @@ impl ServiceWorkspaces {
                         },
                         ..config
                     },
+                };
+                match founding_registries {
+                    Some(registries) => ServiceConfig {
+                        founding_registries: registries,
+                        ..config
+                    },
+                    None => config,
                 }
             },
         )
@@ -1310,12 +1321,10 @@ impl ServiceWorkspaces {
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: Some(Arc::clone(&sessions)
                 as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>),
-            configure: Some(Box::new(|config| {
-                tilo_workspace_service::service::ServiceConfig {
-                    founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
-                    ..config
-                }
-            })),
+            configure: None,
+            // A test's device founds with no registry: its workspaces start from what its own
+            // fixtures hold, and no test reaches the real catalogue.
+            founding_registries: Some(tilo_workspace_service::service::RegistriesFile::default()),
             itself: None,
         })
         .await
@@ -1370,14 +1379,10 @@ impl ServiceWorkspaces {
             endpoint,
             seal_checks: Arc::new(tilo_workspace_keys::NoSealChecks),
             apps: None,
+            configure: None,
             // A test's device founds with no registry: its workspaces start from what its own
             // fixtures hold, and no test reaches the real catalogue.
-            configure: Some(Box::new(|config| {
-                tilo_workspace_service::service::ServiceConfig {
-                    founding_registries: tilo_workspace_service::service::RegistriesFile::default(),
-                    ..config
-                }
-            })),
+            founding_registries: Some(tilo_workspace_service::service::RegistriesFile::default()),
             itself,
         })
         .await

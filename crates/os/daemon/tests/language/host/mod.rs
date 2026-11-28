@@ -360,6 +360,9 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     // starts is refused a profile anyone else could read.
     let profile = place("p");
     std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // The profile names no registry, as a test host's configuration does: the workspaces the
+    // daemon founds here start from what the test installs, and none reaches the real catalogue.
+    std::fs::write(profile.join("registries.toml"), "").unwrap();
     // The device relays through this machine's loopback relay: nothing reaches a relay or a
     // directory out on the internet.
     let (relay, relay_url) = test_server::loopback_relay();

@@ -325,6 +325,10 @@ impl DaemonProfile {
             .context("creating the daemon profile")?;
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
             .context("making the daemon profile private")?;
+        // The profile names no registry, as a test host's configuration does: the workspaces it
+        // founds start from what the test installs, and no test reaches the real catalogue.
+        std::fs::write(root.path().join("registries.toml"), "")
+            .context("naming the profile's registries")?;
         Ok(Self { root, daemon: None })
     }
     fn path(&self) -> &Path {
