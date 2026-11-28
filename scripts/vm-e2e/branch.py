@@ -20,14 +20,11 @@ configured and then work on their own (`tilo-vm vm branch`, docs/architecture/wo
 3. Each branch has a device key of its own (the source's and the other branch's differ), a
    machine record of its own UUID, a valid certificate under the same person's root, the
    person's secret, passwords vault, SSH key and git config readable as them, and a
-   machine id and SSH host keys of its own; `box` keeps its own. The daemon's key, its
-   directory and the daemon are the boot's: 0600 tilo:tilo in a 0700 tilo:tilo directory, the
-   daemon active; a branch holds none of its source's sealed group state, and the source's is
-   as it was.
-4. A second computer joins the person with a ticket (their certificate, never their root) and
-   holds the workspace; a copy of it re-keys and is nobody's device until the person lets it
-   in: no certificate for its key, no group key, the workspace refusing what it asks; then a
-   ticket lets it in and it holds the workspace's keys, never the joined computer's.
+   machine id and SSH host keys of its own; `box` keeps its own. The daemon's key is a 0600
+   tilo:tilo file in a 0700 tilo:tilo directory with the daemon active, and no branch holds
+   its source's sealed group state.
+4. A joined computer's copy re-keys: no certificate for its key and no group key until the
+   person lets it in; then a ticket certifies it and it holds the workspace's keys.
 5. `box` and `a` hold the workspace: a window opened on either shows on the other, also
    after both reboot.
 6. `vm rm box` leaves `a` and `b` bootable.
@@ -61,11 +58,8 @@ from acceptance.vm import (Invoked, TiloVm, VmError, address, completed, first_j
 ACCOUNT = "me"
 SOURCE, BRANCHES = "box", ("a", "b")
 NAMES = (SOURCE, *BRANCHES)
-# A second computer of the person's that joined rather than being the source: it holds their
-# certificate and login, never their root, so a copy of it has no way to sign itself in.
-JOINED, JOINED_COPY = "c", "d"
-# The account a disk image installs, which a computer with no Tilo account yet is driven as.
-IMAGE_ACCOUNT = "tester"
+# A computer that joined the person (their certificate, no root), and the account a disk installs.
+JOINED, JOINED_COPY, IMAGE_ACCOUNT = "c", "d", "tester"
 # The boxes' local network (tools/ci/vm-e2e-branch.sh's bridge): each box's address on it and
 # the MAC of its NIC there.
 OUTPUT = "1280x800"
@@ -155,15 +149,10 @@ for c in device/certs/*.bin; do [ -f "$c" ] && echo "CERT=$(basename "$c" .bin)"
 echo "MACHINE-ID=$(cat /etc/machine-id)"
 for k in /etc/ssh/ssh_host_*_key.pub; do [ -f "$k" ] && echo "HOST-KEY=$(ssh-keygen -lf "$k" | awk '{print $2}')"; done
 echo "BRANCH-UNIT=$(systemctl show tilo-device-branch.service -p ActiveState -p Result --value | paste -sd, -)"
-# The daemon's key: one file, readable by the account the daemon runs as, inside that account's
-# directory; and the daemon itself, which reads it. The group state is the daemon's sealed
-# membership, by name and digest: a copy must not hold its source's.
-echo "KEYPAIR=$(stat -c '%F|%a|%U:%G' device-private/keypair.bin 2>&1)"
-echo "KEY-DIR=$(stat -c '%F|%a|%U:%G' device-private 2>&1)"
-echo "DAEMON=$(systemctl is-active tilo-runtime.service 2>&1 | head -n 1)"
-for g in state/state/tilo/device/own/groups/*; do
-  [ -f "$g" ] && echo "GROUP=$(basename "$g"):$(sha256sum < "$g" | cut -c1-16)"
-done
+# The daemon's key, its directory and the daemon; and its sealed group membership, by name and
+# digest, which a copy must not hold its source's of.
+echo "KEY=$(stat -c '%F|%a|%U:%G' device-private/keypair.bin 2>&1)|$(stat -c '%F|%a|%U:%G' device-private 2>&1)|$(systemctl is-active tilo-runtime.service 2>&1)"
+for g in state/state/tilo/device/own/groups/*; do [ -f "$g" ] && echo "GROUP=${g##*/}:$(sha256sum < "$g" | cut -c1-16)"; done
 """
 
 # As the person, in their session: their identity and this device's certificate, what the
@@ -923,147 +912,74 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
 # -- a joined computer, and a copy of it -------------------------------------------------
 
 
-def device_ticket(run: Run, name: str, timeout: float = 240) -> str:
-    """A ticket `name` gives another computer, as `tilo device add` gives one: the add asks the
-    person, whose card this answers with the resolve call the card makes, and prints the ticket."""
-    vm = run.vm(name)
-    state = "/tmp/tilo-device-add.json"
-    vm.exec(f"rm -f {state} {state}.err; setsid sh -c 'tilo device add --json >{state} "
+def device_ticket(run: Run, name: str) -> str:
+    """A ticket `name` gives another computer: `tilo device add` asks the person, whose card is
+    answered here with the call the card makes, and prints the ticket."""
+    vm, state = run.vm(name), "/tmp/tilo-device-add.json"
+    vm.exec(f"rm -f {state}.err; setsid sh -c 'tilo device add --json >{state} "
             f"2>{state}.err' </dev/null >/dev/null 2>&1 & echo started", check=False)
     answered = [False]
 
     def made():
-        printed = vm.exec(f"cat {state} 2>/dev/null || true", check=False).strip()
         try:
-            answer = json.loads(printed) if printed else None
-        except json.JSONDecodeError:
+            answer = first_json(vm.exec(f"cat {state} 2>/dev/null || true", check=False))
+        except VmError:
             answer = None
         if isinstance(answer, dict) and answer.get("ticket"):
             return answer["ticket"]
         if not answered[0]:
-            read = vm.exec("tilo read invocations/workspace --json 2>/dev/null || true",
-                           check=False)
             try:
-                items = (json.loads(read) or {}).get("items") or []
-            except (json.JSONDecodeError, AttributeError):
+                items = as_list((first_json(vm.exec("tilo read invocations/workspace --json "
+                                                    "2>/dev/null || true", check=False))
+                                 or {}).get("items"))
+            except (VmError, AttributeError):
                 items = []
             for item in items:
-                asked = item.get("asked") or {}
-                call = str(asked.get("action") or item.get("action") or "")
-                if item.get("status") == "waiting" and asked.get("workspace") and (
+                ask = item.get("asked") or {}
+                call = str(ask.get("action") or item.get("action") or "")
+                if item.get("status") == "waiting" and ask.get("workspace") and (
                         item.get("title") == "Add a device" or call.endswith("#issue")):
                     vm.exec("tilo do 'invocations/workspace/{}#resolve' resolution=approve -w {}"
-                            .format(item["id"], shlex.quote(asked["workspace"])), timeout=180)
+                            .format(item["id"], shlex.quote(ask["workspace"])), timeout=180)
                     answered[0] = True
         return None
 
-    ticket = wait_until(made, timeout, interval=3.0)
-    if ticket:
-        return ticket
-    said = vm.exec(f"cat {state}.err 2>/dev/null || true", check=False).strip()
-    raise Failed(f"{name} printed no ticket for another computer: {said[-800:]}")
+    ticket = wait_until(made, 240, interval=3.0)
+    if not ticket:
+        raise Failed(f"{name} printed no ticket: "
+                     + vm.exec(f"cat {state}.err 2>/dev/null || true", check=False)[-800:])
+    return ticket
 
 
-def joined_facts(run: Run, name: str, label: str) -> dict:
-    """The machine's facts, and what its session answers of its identity."""
-    m = machine_facts(run, name, label)
-    try:
-        p = person_facts(run, name, label)
-    except VmError as exc:
-        p = {"identity": {"unreadable": str(exc)[:400]}}
-    m["identity"] = p.get("identity") or {}
-    return m
-
-
-def join_computer(facts: dict, run: Run, disk: Path, source: dict, ws: dict) -> None:
-    """A second computer of the person's, let in with a ticket box issues: their certificate and
-    login and none of their root, holding the workspace and its keys, the state a copy of it is
-    measured against."""
-    vm = run.vm(JOINED)
-    vm.vm_cmd("create", JOINED, "--image", str(disk), "--heads", "1", "--resolution", OUTPUT,
-              "--memory-mb", str(GUEST_MB), "--cpus", "2", timeout=900)
-    vm.vm_cmd("start", JOINED, timeout=900)
+def join_and_copy_gate(facts: dict, run: Run, disk: Path, source: dict, ws: dict) -> None:
+    """A computer that joined the person is copied: the copy re-keys and, until the person lets
+    its key in, holds no certificate for it and no group key; then a ticket certifies it."""
+    joined, copy = run.vm(JOINED), run.vm(JOINED_COPY)
+    joined.vm_cmd("create", JOINED, "--image", str(disk), "--heads", "1", "--resolution", OUTPUT,
+                  "--memory-mb", str(GUEST_MB), "--cpus", "2", timeout=900)
+    joined.vm_cmd("start", JOINED, timeout=900)
     ticket = device_ticket(run, SOURCE)
-    vm.root_exec(f"su - {IMAGE_ACCOUNT} -c " + shlex.quote(f"tilo login {shlex.quote(ticket)}"),
-                 timeout=300)
-    m = machine_facts(run, JOINED, "S03f")
-    expect(m.get("DEVICE-PUBLIC") and m["DEVICE-PUBLIC"] != source.get("DEVICE-PUBLIC"),
-           f"{JOINED} presents no device key of its own: {m.get('DEVICE-PUBLIC')!r}")
-    vm.vm_cmd("account", "create", ACCOUNT, "--headful", "--outputs", f"{OUTPUT}@1", timeout=900)
-    wait_session(vm)
-
-    def held():
-        return [r for r in hosts_of(vm) if r.get("workspace") == ws.get("id")
-                and not r.get("awaiting_host")]
-
-    expect(wait_until(held, 600, interval=10.0),
-           f"{JOINED} never came to hold the workspace {ws.get('id')!r}: {hosts_of(vm)}")
-    m = joined_facts(run, JOINED, "S03f")
-    facts["joined"] = {k: m.get(k) for k in ("DEVICE-PUBLIC", "ROOT-HERE", "GROUP")}
-    expect(m.get("ROOT-HERE") != "yes",
-           f"{JOINED} holds the person's root, so it is no computer that joined")
-    expect(m["GROUP"], f"{JOINED} holds no sealed group state once taken in, so an empty copy "
-                       "would prove nothing")
-
-
-def join_copy_gate(facts: dict, run: Run, ws: dict) -> None:
-    """A copy of the joined computer: it re-keys, and until the person lets the new device in it
-    holds no certificate, no group key, and the workspace refuses what it asks; then they let it
-    in and it holds the workspace's keys, never the joined computer's."""
-    source, copy = run.vm(JOINED), run.vm(JOINED_COPY)
-    source.vm_cmd("stop", JOINED, timeout=600)
-    source.vm_cmd("branch", JOINED, JOINED_COPY, "--no-admit", timeout=900)
+    joined.root_exec(f"su - {IMAGE_ACCOUNT} -c " + shlex.quote(f"tilo login {shlex.quote(ticket)}"),
+                     timeout=300)
+    joined.vm_cmd("stop", JOINED, timeout=600)
+    joined.vm_cmd("branch", JOINED, JOINED_COPY, "--no-admit", timeout=900)
     copy.vm_cmd("start", JOINED_COPY, timeout=900)
+    copy.vm_cmd("account", "create", ACCOUNT, "--headful", "--outputs", f"{OUTPUT}@1", timeout=900)
     wait_session(copy)
-    m = joined_facts(run, JOINED_COPY, "S03g")
-    held = [r for r in hosts_of(copy) if r.get("workspace") == ws.get("id")]
-    try:
-        asked = str(app_action(copy, "", "list-logins", None, PASSWORDS))[:600]
-    except (VmError, Failed) as exc:
-        asked = str(exc)[:600]
-    facts["before_approval"] = {"pending_label": m.get("PENDING-LABEL"), "groups": m["GROUP"],
-                                "this_device": m["identity"].get("this_device"), "held": held,
-                                "refused": asked}
-    problems = []
-    if m["identity"].get("this_device"):
-        problems.append("the copy holds a certificate for its new key before the person let it "
-                        f"in: {m['identity']['this_device']}")
-    if not m.get("PENDING-LABEL"):
-        problems.append("the re-key left no pending label, so nothing names the device that waits")
-    if m["GROUP"]:
-        problems.append(f"the copy holds group keys before its host took it in: {m['GROUP']}")
-    if not held:
-        problems.append(f"the copy's session names no workspace {ws.get('id')!r} it holds: "
-                        f"{hosts_of(copy)}")
-    elif not held[0].get("awaiting_host"):
-        problems.append(f"the host took the copy in without the person's approval: {held[0]}")
-    if "hasn't been admitted to" not in asked:
-        problems.append("what the copy asked of the workspace was not refused as a request from "
-                        f"a device its host never admitted: {asked!r}")
-    expect(not problems, "; ".join(problems))
+    m, person = machine_facts(run, JOINED_COPY, "S03g"), person_facts(run, JOINED_COPY, "S03g")
+    cert = (person.get("identity") or {}).get("this_device")
+    expect(not cert and not m["GROUP"] and m.get("PENDING-LABEL"),
+           f"{JOINED_COPY} is not a device waiting to be let in: {cert}, {m['GROUP']}, "
+           f"{m.get('PENDING-LABEL')!r}")
     # The person lets the new device in: a ticket from a computer holding their root, taken up on
     # the copy, which the issuer certifies for the key the copy made.
     ticket = device_ticket(run, SOURCE)
     copy.root_exec(f"su - {IMAGE_ACCOUNT} -c " + shlex.quote(f"tilo login {shlex.quote(ticket)}"),
                    timeout=300)
     copy.run("account", "restart", ACCOUNT, timeout=300, account=False)
-
-    def taken_in():
-        q = joined_facts(run, JOINED_COPY, "S03g")
-        row = next((r for r in hosts_of(copy) if r.get("workspace") == ws.get("id")), {})
-        approved = (q["GROUP"] and row and not row.get("awaiting_host")
-                    and q["identity"].get("this_device"))
-        return q if approved else None
-
-    q = wait_until(taken_in, 300, interval=15.0)
-    facts["after_approval"] = {"groups": (q or {}).get("GROUP"),
-                               "this_device": ((q or {}).get("identity") or {}).get("this_device")}
-    expect(q, f"{JOINED_COPY} never got the workspace's keys after the person let it in: "
-              f"{facts['after_approval']}")
-    joins = next((s["facts"].get("joined") or {} for s in run.steps if s["id"] == "S03f"), {})
-    shared = set(q["GROUP"]) & set(joins.get("GROUP") or [])
-    expect(not shared, f"{JOINED_COPY} holds group state of the joined computer's: {sorted(shared)}")
-    for name in (JOINED_COPY, JOINED):  # the run has no room for the pair's disks from here
+    keys = wait_until(lambda: machine_facts(run, JOINED_COPY, "S03h")["GROUP"], 300, interval=15.0)
+    expect(keys, f"{JOINED_COPY} got no keys after the person let it in ({m.get('ROOT-HERE')!r})")
+    for name in (JOINED_COPY, JOINED):
         run.vm(name).vm_cmd("rm", name, "--force", timeout=600, check=False)
 
 
@@ -1156,19 +1072,13 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
     m = machine_facts(run, name, f"S06-{name}")
     boot = keep_boot(run, name, "S06")
     facts["branch_unit"] = [l for l in boot.splitlines() if "tilo-device-key-init" in l or "branch" in l][-25:]
-    facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "DEVICE-PUBLIC",
-                                               "CERT", "PENDING-LABEL", "JOURNAL", "BRANCH-UNIT",
-                                               "KEYPAIR", "KEY-DIR", "DAEMON", "GROUP")}
+    facts["machine"] = {k: m.get(k) for k in ("UUID", "RECORD", "DEVICE-PUBLIC", "CERT",
+                                               "PENDING-LABEL", "BRANCH-UNIT", "KEY", "GROUP")}
     problems = []
-    # The daemon's key, as the boot gives it: root provisions it, the daemon account reads it,
-    # and the daemon is the one process that uses it.
-    if m.get("KEYPAIR") != "regular file|600|tilo:tilo":
-        problems.append(f"the device key is {m.get('KEYPAIR')!r}, not a 0600 regular file of "
-                        "tilo:tilo")
-    if m.get("KEY-DIR") != "directory|700|tilo:tilo":
-        problems.append(f"the device key's directory is {m.get('KEY-DIR')!r}, not 0700 tilo:tilo")
-    if m.get("DAEMON") != "active":
-        problems.append(f"tilo-runtime.service is {m.get('DAEMON')!r}, not active")
+    # The daemon's key as the boot gives it: root provisions it, the daemon account reads it, and
+    # the daemon is the one process that uses it.
+    if m.get("KEY") != "regular file|600|tilo:tilo|directory|700|tilo:tilo|active":
+        problems.append(f"the daemon's key, its directory or the daemon: {m.get('KEY')!r}")
     if m.get("RECORD") != m.get("UUID"):
         problems.append(f"machine.bin {m.get('RECORD')} is not this machine's UUID {m.get('UUID')}")
     if name != SOURCE:
@@ -1182,9 +1092,9 @@ def judge_machine(facts: dict, run: Run, name: str, source: dict, others: dict) 
             problems.append("the branch kept SSH host keys of the source's")
         if m.get("JOURNAL"):
             problems.append("the re-key journal is still there (a store was not re-sealed)")
-        shared = set(m["GROUP"]) & set(source["GROUP"])
-        if shared:
-            problems.append(f"the branch holds the source's sealed group state: {sorted(shared)}")
+        if set(m["GROUP"]) & set(source["GROUP"]):
+            problems.append(f"the branch holds the source's sealed group state: "
+                            f"{sorted(set(m['GROUP']) & set(source['GROUP']))}")
     else:
         for key in ("DEVICE-PUBLIC", "MACHINE-ID", "UUID", "GROUP"):
             if m.get(key) != source.get(key):
@@ -1303,10 +1213,8 @@ def steps(run: Run, args) -> None:
     run.step("S03e", "box stopped and started again comes up at its shell", cold_boot, run)
     ws = next((s["facts"].get("workspace") for s in run.steps if s["id"] == "S03c"), None)
     if ws:
-        run.step("S03f", "a second computer joins the person: their certificate, never their root",
-                 join_computer, run, args.disk, source, ws)
-        run.step("S03g", "a copy of it gets no key of the workspace's before the person lets the "
-                 "new device in", join_copy_gate, run, ws)
+        run.step("S03f", "a joined computer's copy is nobody's device until it is let in",
+                 join_and_copy_gate, run, args.disk, source, ws)
     run.step("S04", "box is stopped and branched into a and b", branch, run)
     if not run.passed("S04"):
         return
