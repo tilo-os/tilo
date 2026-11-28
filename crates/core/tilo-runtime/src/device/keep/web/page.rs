@@ -323,6 +323,7 @@ async fn answer_appearance(
                 title: opened.title,
                 css: opened.css,
                 body: opened.body,
+                app: opened.app,
             },
             Some(Ok(None)) | None => PageAnswer::Patched(Vec::new()),
             Some(Err(refusal)) => PageAnswer::Refused(refusal),
@@ -378,6 +379,7 @@ where
             title: opened.title,
             css: opened.css,
             body: opened.body,
+            app: opened.app,
         },
     ))
 }

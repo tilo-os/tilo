@@ -623,6 +623,76 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
     });
 }
 
+/// A person's act on an app's page, signed by her browser for the app the page names, is carried
+/// out as hers: New note on Notes' page makes a note, as the browser's page signs it.
+#[test]
+fn a_signed_act_on_an_apps_page_makes_what_it_asks() {
+    host::run_with(&["notes"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let (key, cert) = host.certify(
+            "Ada's browser",
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
+        let caller =
+            tilo_workspace_service::service::local_caller(&cert).in_workspace(workspace.clone());
+        let page = Page::at(&daemon, &workspace, &(caller, cert.clone()), "notes").await;
+        assert_eq!(
+            page.opened.app, "so.tilo.notes",
+            "the page names the app its acts are signed for by its id"
+        );
+        let shown = page
+            .until("New note on Notes' page", |html| {
+                labelled(html, "New note").is_some()
+            })
+            .await;
+        let id = labelled(&shown, "New note").unwrap();
+        // The page sends the element's target (its `data-t`) with what was done on it.
+        let opening = format!("data-p=\"{id}\"");
+        let element = &shown[shown.find(&opening).unwrap()..];
+        let element = &element[..element.find('>').unwrap()];
+        let target = element
+            .split_once("data-t=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(target, _)| target.to_owned());
+
+        let asked = json!({"id": id, "target": target, "action": PageAction::Activate});
+        let mut request = host::call(
+            &page.opened.app,
+            tilo_actions::ActionAddress::new(&page.opened.app, "act"),
+            &asked,
+        );
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                &workspace,
+                &request,
+                &cert,
+                &key,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap(),
+        ));
+        let pages = daemon.pages().unwrap();
+        let acted = answered(pages.act(
+            page.workspace,
+            page.opened.page,
+            Some(PageAct {
+                id,
+                target,
+                action: PageAction::Activate,
+                signed: tilo_actions::remote::SignedCall::of(&request).map(Box::new),
+            }),
+        ))
+        .await
+        .unwrap_or_else(|refused| panic!("the signed act is taken: {refused:?}"));
+        if !patched(&acted).contains("<textarea") {
+            page.until("the new note's title to type in", |html| {
+                html.contains("<textarea")
+            })
+            .await;
+        }
+    });
+}
+
 /// The workspace's front page is its desktop with a side beside it: the window open on her
 /// computer stands there with its own page in its well, numbered as on the desktop's page, and
 /// closes from there; the side leads to search and to the apps she opens.

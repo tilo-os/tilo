@@ -247,6 +247,9 @@ pub struct OpenedPage {
     pub title: String,
     pub css: String,
     pub body: String,
+    /// The app whose actions the page's acts run, by its id: what a reader signs each act for
+    /// (empty for a page whose acts carry no call).
+    pub app: String,
 }
 
 /// What a page is answered.
@@ -256,11 +259,14 @@ pub enum PageAnswer {
     /// The serving device waits for the keys that open the workspace's
     /// documents, which are on their way: the page follows.
     Loading,
-    /// The page whole: its title, the theme's stylesheet and its body.
+    /// The page whole: its title, the theme's stylesheet and its body, and the app, by its id,
+    /// whose actions its acts run: what the browser signs each act for (empty for a page whose
+    /// acts carry no call).
     Shown {
         title: String,
         css: String,
         body: String,
+        app: String,
     },
     /// What the page's last ask changed, outermost first.
     Patched(Vec<PagePatch>),

@@ -879,8 +879,9 @@ pub fn stamped_context(
     Ok(Some(stamp.action_context()))
 }
 
-/// Check the call a page's reader signed for what they did on the page of `app` in `workspace`,
-/// as the device serving the page does before the act runs, and return their certificate: the
+/// Check the call a page's reader signed for what they did on a page of `app` (its id, as the
+/// record a change it makes is in names it) in `workspace`, as the device serving the page does
+/// before the act runs, and return their certificate: the
 /// signature, that it names this workspace and this app, that its arguments are the act `asked`
 /// (`{id, target, action}`, as the page sent it), its freshness at `now_ns`, and the
 /// certificate's chain, validity and revocation. Every holder of the change checks it again
@@ -1922,8 +1923,8 @@ mod tests {
             let act = serde_json::json!({"id": 7, "target": "notes.block-text:b1", "action": {"value": "Milk"}});
             let mut asked = request();
             asked.target = RemoteActionTarget {
-                provider: "notes".into(),
-                address: ActionAddress::new("notes", "act"),
+                provider: "so.tilo.notes".into(),
+                address: ActionAddress::new("so.tilo.notes", "act"),
             };
             asked.argument = InvokeArgument::Json(act.as_object().unwrap().clone());
             let call = tilo_actions::remote::SignedCall::of(&signed(&asked, &cert, &key, NOW)).unwrap();
@@ -1932,12 +1933,12 @@ mod tests {
             let check = |call: &tilo_actions::remote::SignedCall, app: &str, act: (u32, Option<&str>, &PageAction)| {
                 verify_page_call(call, WORKSPACE, app, act, &none, NOW)
             };
-            assert_eq!(check(&call, "notes", (7, Some("notes.block-text:b1"), &milk)), Ok(cert));
+            assert_eq!(check(&call, "so.tilo.notes", (7, Some("notes.block-text:b1"), &milk)), Ok(cert));
             // Another element, other text, or another app's page: not what was signed.
             let mismatch = Err(InvocationError::Mismatch(StatementMismatch::Arguments));
-            assert_eq!(check(&call, "notes", (8, Some("notes.block-text:b1"), &milk)), mismatch);
+            assert_eq!(check(&call, "so.tilo.notes", (8, Some("notes.block-text:b1"), &milk)), mismatch);
             let eggs = PageAction::Value("Eggs".into());
-            assert_eq!(check(&call, "notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
+            assert_eq!(check(&call, "so.tilo.notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
             assert_eq!(
                 check(&call, "mail", (7, Some("notes.block-text:b1"), &milk)),
                 Err(InvocationError::Mismatch(StatementMismatch::Target))
@@ -1950,7 +1951,7 @@ mod tests {
                     .unwrap()
                     .clone(),
             ));
-            assert_eq!(check(&swapped, "notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
+            assert_eq!(check(&swapped, "so.tilo.notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
         }
     }
 

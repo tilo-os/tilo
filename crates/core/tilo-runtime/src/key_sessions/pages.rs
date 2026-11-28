@@ -140,8 +140,8 @@ struct CallRoute {
 }
 
 enum Held {
-    /// An app's window, shown on the page: the app it shows and the workspace it is in, which a
-    /// call its reader signed names.
+    /// An app's window, shown on the page: the app it shows, by its id, and the workspace it is
+    /// in, which a call its reader signed names.
     App {
         window: Box<WindowLink>,
         workspace: String,
@@ -303,6 +303,8 @@ impl Inner {
                 title: "Search".to_owned(),
                 css: page_css() + HOME_CSS + SEARCH_CSS,
                 body,
+                // A row's run is the search's own call, which signs nothing of the page.
+                app: String::new(),
             });
         }
         let views = self
@@ -341,6 +343,8 @@ impl Inner {
                 title: "Tilo".to_owned(),
                 css: page_css() + HOME_CSS,
                 body,
+                // What its acts run once the desktop drew: the shell's.
+                app: tilo_app_host::shell::SHELL_APP.to_owned(),
             });
         }
         let app_id = if address.app == DESKTOP {
@@ -362,7 +366,7 @@ impl Inner {
         let page = self.hold(Held::App {
             window: Box::new(window),
             workspace,
-            app: address.app.clone(),
+            app: app_id.clone(),
             wells,
             side: None,
         });
@@ -372,6 +376,7 @@ impl Inner {
             title,
             css,
             body,
+            app: app_id,
         })
     }
 
@@ -408,7 +413,7 @@ impl Inner {
         *held = Held::App {
             window: Box::new(opened.window),
             workspace,
-            app: String::new(),
+            app: tilo_app_host::shell::SHELL_APP.to_owned(),
             wells: opened.wells,
             side: Some(side),
         };
@@ -526,19 +531,24 @@ impl Inner {
             .ok_or_else(|| unavailable("the page was closed"))?;
         let mut held = held.lock_recover();
         self.desktop_arrived(page, &mut held, DESKTOP_WITHIN);
-        let Held::App { window, side, .. } = &mut *held else {
+        let Held::App {
+            window, side, app, ..
+        } = &mut *held
+        else {
             return Ok(None);
         };
         let (title, css, body) = beside(
             side.as_deref(),
             window.appearance(dark).map_err(unavailable)?,
         );
+        let app = app.clone();
         drop(held);
         Ok(Some(OpenedPage {
             page,
             title,
             css,
             body,
+            app,
         }))
     }
 

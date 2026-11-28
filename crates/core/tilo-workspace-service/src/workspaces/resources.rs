@@ -3323,13 +3323,34 @@ fn stamp_resource_write(
     stamp_resource_invoker(
         command,
         &written_on,
-        &|invocation| context.invoker_of(invocation).cloned(),
+        &|stamp| {
+            context
+                .invoker_of(&stamp.invocation)
+                .cloned()
+                .or_else(|| signed_by_viewer(context, stamp))
+        },
         &otherwise,
         person,
         &|kind| reads_by_author_alone(surfaces, context.app_id(), kind),
         &mut unserved,
     )?;
     Ok((Some(acting), unserved))
+}
+
+/// The caller a page's view was opened for, when `stamp` keeps the call they signed, on the key
+/// the page's link verified, for this app and the very act the write serves: what the app does for
+/// a page's reader is theirs. Every holder of the change checks the call again.
+#[cfg(feature = "apps")]
+fn signed_by_viewer(
+    context: &tilo_broker_core::services::ResourceRequestContext,
+    stamp: &tilo_resource_store::Stamp,
+) -> Option<tilo_actions::Acting> {
+    let viewer = context.viewer()?;
+    let statement = stamp.signed.as_deref()?.signed.statement();
+    (statement.invocation.0.to_string() == stamp.invocation
+        && statement.target.address.resource == context.app_id()
+        && viewer.device_public_key() == Some(&statement.signer))
+    .then(|| viewer.acting().clone())
 }
 
 /// Whether `app`'s surface makes a `kind` one it declares and only its author reads
@@ -3367,7 +3388,8 @@ fn writes_kind(command: &collab_types::store::wire::Command, kind: &str) -> bool
 
 /// The command names the verb and invocation, and the workspace service names who made it:
 /// whoever invoked the invocation a write serves, when the workspace service delivered that one
-/// to the app, and otherwise `otherwise` (the app itself on its own process's route; the device's
+/// to the app or the reader of the page the app's view was opened for signed it
+/// ([`signed_by_viewer`]), and otherwise `otherwise` (the app itself on its own process's route; the device's
 /// person, or the caller its view was opened for, on the device's own) for any other write, whose
 /// resource type and verb are added to `unserved`. An app's own write may name the person it acts
 /// for only on the ruled path of its own actions: a kind its surface declares that only its author
@@ -3381,7 +3403,7 @@ fn writes_kind(command: &collab_types::store::wire::Command, kind: &str) -> bool
 fn stamp_resource_invoker(
     command: &mut collab_types::store::wire::Command,
     device: &(String, String),
-    served: &dyn Fn(&str) -> Option<tilo_actions::Acting>,
+    served: &dyn Fn(&tilo_resource_store::Stamp) -> Option<tilo_actions::Acting>,
     otherwise: &tilo_actions::Acting,
     person: &str,
     author_read: &dyn Fn(&str) -> bool,
@@ -3413,7 +3435,7 @@ fn stamp_resource_invoker(
         // Every other command writes nothing, and so names no one who made one.
         _ => return Ok(()),
     };
-    let serving = served(&stamp.invocation);
+    let serving = served(stamp);
     if serving.is_none()
         && otherwise.by.app().is_some()
         && let Some(named) = stamp.acted_for.as_deref()

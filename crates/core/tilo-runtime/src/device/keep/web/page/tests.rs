@@ -201,6 +201,7 @@ impl AppPages for Echo {
         Pending::ready(Ok(OpenedPage {
             page: 1,
             title: "Notes".into(),
+            app: "so.tilo.notes".into(),
             css: String::new(),
             body: format!(
                 "<div data-p=\"0\">{}</div>",

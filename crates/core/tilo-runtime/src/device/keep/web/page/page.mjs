@@ -247,7 +247,7 @@ function u64(n) {
   return out;
 }
 
-/** The call `device` signs for `act` (`{id, target, action}`) on the page of `app` in
+/** The call `device` signs for `act` (`{id, target, action}`) on a page of `app` (its id) in
  * `workspace`: the signed statement, as the wire carries it, with the act as its argument.
  * Its issue time is a whole second, which a number holds exactly. */
 export async function signedAct(device, workspace, app, act,
@@ -785,14 +785,18 @@ function start() {
   // An act on an app's page goes signed by the device this page is in as: whose the change it
   // makes is. Acts are signed one after another, so they are asked in the order they were made.
   let signing = Promise.resolve();
+  // The app the page's acts are signed for, by its id, as the page whole last named it: none on a
+  // page whose acts carry no call (the search, the front page before its desktop drew).
+  let signsFor = '';
   const act = (element, action, field = null) => {
     const id = numberOf(element);
     if (!Number.isFinite(id)) return;
     const asked = {id, target: element.dataset.t ?? null, action};
     const by = signer;
-    if (!config.address.app || !by) { ask({act: asked}, 0, field); return; }
+    const app = signsFor;
+    if (!app || !by) { ask({act: asked}, 0, field); return; }
     signing = signing.then(async () => {
-      const signed = await signedAct(by, config.address.workspace, config.address.app, asked).catch(error => {
+      const signed = await signedAct(by, config.address.workspace, app, asked).catch(error => {
         console.warn('page: signing an act', error);
         return null;
       });
@@ -1016,8 +1020,9 @@ function start() {
   globalThis.matchMedia?.('(prefers-color-scheme: dark)')
     ?.addEventListener?.('change', () => { if (toldLook !== null) tellLook(); });
 
-  const show = ({title, css, body}) => {
+  const show = ({title, css, body, app}) => {
     const held = typingHeld();
+    signsFor = app ?? '';
     appTitle = title;
     // The workspace's own page is named by the workspace; an app's by the app,
     // and by what is open in it (`follow`).
