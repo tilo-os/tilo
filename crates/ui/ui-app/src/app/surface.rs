@@ -898,6 +898,7 @@ impl App {
         // after the sync; the frame that runs the sync publishes it once
         // (`App::publish_owed_action_surface`). A pointer move may ask for no
         // frame, and a view-only wheel for no sync, so both publish now.
+        #[cfg(feature = "model")]
         let sync_follows = (handled || focus_target.is_some())
             && !(view_only_scroll && !history_handled && focus_target.is_none())
             && !matches!(event, WindowEvent::CursorMoved { .. });

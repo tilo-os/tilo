@@ -3,10 +3,13 @@
 //! Everything here reads or drives the app's own state: its palette, the presence its peers sent,
 //! its semantic tree and the root it routes input to. The driver keeps none of it.
 
+#[cfg(feature = "model")]
 use vello::kurbo::Rect;
 
 use super::Driver;
+#[cfg(feature = "model")]
 use tilo_ui_base::permissions::MemberId;
+#[cfg(feature = "model")]
 use tilo_ui_base::widget::Widget;
 
 #[cfg(feature = "model")]

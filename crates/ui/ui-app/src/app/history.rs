@@ -117,6 +117,7 @@ impl App {
         }
         roots
     }
+    #[cfg(feature = "model")]
     pub(super) fn discard_history_local_intents(&mut self) {
         #[cfg(feature = "model")]
         if let Some(history) = &mut self.history {
@@ -978,12 +979,16 @@ impl App {
             &mut self.layout.node_map,
         );
         self.layout.root_node = Some(app);
-        let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(self.root_widget.as_ref(), app)];
         #[cfg(feature = "model")]
-        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_deref())
-        {
-            roots.push((palette, node));
-        }
+        let palette = palette_node
+            .zip(self.actions.action_palette.as_deref())
+            .map(|(node, palette)| (palette as &dyn Widget, node));
+        #[cfg(not(feature = "model"))]
+        let palette = None;
+        let roots: Vec<(&dyn Widget, taffy::NodeId)> =
+            std::iter::once((self.root_widget.as_ref(), app))
+                .chain(palette)
+                .collect();
         // SAFETY: every disjoint presentation root belongs to this App.
         unsafe {
             self.bindings

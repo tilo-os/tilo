@@ -28,6 +28,7 @@ impl App {
         self.actions.action_transport = transport;
     }
 
+    #[cfg(feature = "model")]
     fn resource_cache_key(&self) -> ResourceCacheKey {
         ResourceCacheKey {
             mutation_generation: self.actions.resource_generation.get(),
@@ -47,8 +48,11 @@ impl App {
         }
         #[cfg(feature = "model")]
         self.retire_action_directory();
+        #[cfg(feature = "model")]
         self.actions.resource_cache.get_mut().take();
+        #[cfg(feature = "model")]
         self.actions.local_resource_cache.get_mut().take();
+        #[cfg(feature = "model")]
         self.actions.open_resource_search_cache.get_mut().take();
         self.actions.last_control_availability = None;
         // Also at an exhausted generation, which no longer moves on.
@@ -247,6 +251,7 @@ impl App {
         (key, permission_generation)
     }
 
+    #[cfg(feature = "model")]
     fn collect_local_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         // Tilo's model is the action layer: without it a window publishes no resources.
         #[cfg(feature = "model")]
@@ -408,11 +413,14 @@ impl App {
     ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes APIs served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
-        let mut host_resources = vec![crate::widget::search_request::search_resource()];
         #[cfg(feature = "model")]
-        if let Some(history) = &self.history {
-            host_resources.push(history.api_resource());
-        }
+        let history = self.history.as_ref().map(|history| history.api_resource());
+        #[cfg(not(feature = "model"))]
+        let history = None;
+        let host_resources: Vec<_> =
+            std::iter::once(crate::widget::search_request::search_resource())
+                .chain(history)
+                .collect();
         let mut seen = std::collections::HashSet::new();
         bindings
             .into_iter()
@@ -441,6 +449,7 @@ impl App {
             .collect()
     }
 
+    #[cfg(feature = "model")]
     fn invoke_semantic_operation_encoded(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
@@ -685,6 +694,7 @@ impl App {
     /// with its feature native and without, so the type is named by its full
     /// path: this file's parent brings the short name in for native and test
     /// builds alone.
+    #[cfg(feature = "model")]
     const HELD_OWN_INVOCATION_WAIT: crate::time::Duration = crate::time::Duration::from_secs(20);
 
     /// Send an invocation of this app's own action to the session action
@@ -2866,10 +2876,12 @@ impl App {
     /// [`Self::refuse_visibly`] for a refusal that arrives with no control
     /// on screen (a host's or a remote's answer, later): said in the
     /// window's bar.
+    #[cfg(feature = "model")]
     fn refuse_in_window(&mut self, error: &tilo_actions::ApiError) {
         self.refuse_at(error, None);
     }
 
+    #[cfg(feature = "model")]
     fn refuse_at(&mut self, error: &tilo_actions::ApiError, anchor: Option<vello::kurbo::Rect>) {
         self.actions.refused.push(error.to_string());
         // Said once the pass ends ([`Self::say_refusals`]): the window's own
@@ -2883,6 +2895,7 @@ impl App {
 
     /// Say why this pass's refused invocations did not run: the last one,
     /// at its control or in the window's bar.
+    #[cfg(feature = "model")]
     fn say_refusals(&mut self) {
         let Some((reason, anchor)) = self.actions.refusals.pop() else {
             return;
@@ -3336,6 +3349,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
 }
 
 impl App {
+    #[cfg(feature = "model")]
     pub(crate) fn refused_unsaid(&mut self, error: &tilo_actions::ApiError) {
         self.actions.refused.push(error.to_string());
     }
@@ -3480,6 +3494,7 @@ impl App {
     /// Say that an invocation the person made did not run, and why, at the
     /// control they used: a click is never dropped with only a log line, and
     /// never opens search.
+    #[cfg(feature = "model")]
     pub(crate) fn refuse_visibly(&mut self, error: &tilo_actions::ApiError) {
         let anchor = self.tree().acting_control_rect();
         self.refuse_at(error, anchor);

@@ -71,7 +71,7 @@ impl App {
     /// permissions changed with time ([`Self::permissions_change_at`]), or
     /// an outside authority they follow announced a change. A frame walks
     /// the tree again.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "model"))]
     pub(crate) fn permissions_walk_due(&self, now: crate::time::Instant) -> bool {
         self.layout.walks.availability.as_ref().is_some_and(|walk| {
             walk.changes_at.is_some_and(|at| at <= now)

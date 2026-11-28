@@ -136,6 +136,7 @@ pub fn restore_focus_state_bound(widget: &mut dyn tilo_ui_base::widget::Widget, 
 }
 
 /// Prepared components have no runner node map yet.
+#[cfg(feature = "model")]
 pub(crate) fn capture_tree_focus_bound(
     root: &dyn tilo_ui_base::widget::Widget,
 ) -> Option<FocusView> {
@@ -160,6 +161,7 @@ pub(crate) fn capture_tree_focus_bound(
     visit(root, &mut 0)
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn restore_tree_focus_bound(
     root: &mut dyn tilo_ui_base::widget::Widget,
     focus: &FocusView,

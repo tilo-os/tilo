@@ -6,7 +6,9 @@
 #[cfg(feature = "model")]
 use collab_types::app_actions::ApplicationLaunch;
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
-use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
+#[cfg(feature = "model")]
+use tilo_actions::{ActionOutput, InvocationUpdate};
+use tilo_actions::{ApiError, InvocationId};
 
 #[cfg(feature = "model")]
 use crate::{remote_actions::InvocationCall, remote_actions::RemoteActions};

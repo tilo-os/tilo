@@ -8,7 +8,9 @@
 use tilo_sort::CompactSort as _;
 
 use super::Driver;
-use crate::headless::{Capture, DEFAULT_VIEWPORT, Spec};
+#[cfg(feature = "model")]
+use crate::headless::DEFAULT_VIEWPORT;
+use crate::headless::{Capture, Spec};
 
 impl Driver {
     #[cfg(feature = "model")]
@@ -103,6 +105,7 @@ impl Driver {
 
     /// Wait for the controls the app pressed on its own to run, then run `spec`'s steps in order,
     /// offering the record's writer what each changed. Why the run stopped, if it did.
+    #[cfg(feature = "model")]
     fn drive_spec_steps(&mut self, spec: &Spec) -> Option<String> {
         tilo_startup_metrics::mark("headless-actions-start");
         if !self.wait_until(crate::time::Duration::from_secs(10), Self::controls_settled) {
@@ -135,6 +138,7 @@ impl Driver {
 
     /// The accessibility audit `spec` asks for: its issues printed, its report written, and the
     /// run failed when it is not clean and nothing failed before.
+    #[cfg(feature = "model")]
     fn audit_spec(&self, spec: &Spec, failure: &mut Option<String>) -> Result<(), String> {
         if !spec.audit && spec.audit_report.is_none() {
             return Ok(());
@@ -244,7 +248,7 @@ impl Driver {
     /// The frame is the window a person sees a moment after it opened: the capture settles first,
     /// as a named capture does, so an entrance still running, a scroll bar still fading and a page
     /// whose sharp bitmap has not arrived are all waited out.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "host")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
         if window_bar {
             self.present_in_window_bar();
@@ -263,7 +267,7 @@ impl Driver {
 
     /// The frame a capture or an audit reads last: everything the app's components changed since
     /// the frame before is taken up ([`Self::refresh_model`]) and laid out.
-    #[cfg(feature = "native")]
+    #[cfg(feature = "host")]
     pub(crate) fn prepare_component_output(&mut self) {
         self.refresh_model();
         self.idle();

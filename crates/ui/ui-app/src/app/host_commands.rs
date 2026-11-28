@@ -75,6 +75,7 @@ impl App {
         resource
     }
 
+    #[cfg(feature = "model")]
     pub(super) fn refresh_local_undo_discovery(&mut self) -> bool {
         let status =
             tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())

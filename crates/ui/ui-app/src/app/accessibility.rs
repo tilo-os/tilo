@@ -531,6 +531,7 @@ impl App {
 
     /// Say a step of someone's action that advanced to the person's screen reader: a failure
     /// at once, the rest when it is quiet.
+    #[cfg(feature = "model")]
     pub(super) fn announce_interaction(&mut self, interaction: &tilo_actions::SemanticInteraction) {
         let Some(text) = self.presence_ctx.interaction_announcement(interaction) else {
             return;

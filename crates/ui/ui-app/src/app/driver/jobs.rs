@@ -10,12 +10,16 @@ use std::io::{self, Write};
 
 use accesskit::{Action as AkAction, Role};
 use serde::Serialize;
-use tilo_actions::{ActionAddress, ActionOutput, ApiError, InvocationId, InvocationUpdate};
+use tilo_actions::ActionAddress;
+#[cfg(feature = "model")]
+use tilo_actions::{ActionOutput, ApiError, InvocationId, InvocationUpdate};
 
 use super::Driver;
 #[cfg(feature = "model")]
 use ::collaboration::CollabRequest;
-use tilo_ui_base::{widget::ResourceOperationStart, widget::Widget};
+#[cfg(feature = "model")]
+use tilo_ui_base::widget::ResourceOperationStart;
+use tilo_ui_base::widget::Widget;
 
 /// What the driver keeps of the calls it made and the requests it read.
 #[derive(Default)]
@@ -25,6 +29,7 @@ pub(super) struct Jobs {
     results: Option<InvocationResults>,
     /// How many of the requests the app made of its peer were already taken
     /// ([`Driver::take_collaboration_requests`]).
+    #[cfg(feature = "model")]
     taken: usize,
 }
 
@@ -137,26 +142,17 @@ impl Driver {
     /// cancelled, as the app answered its peer.
     #[must_use]
     pub fn control_failures(&self) -> Vec<String> {
-        let mut failures = self
-            .app
-            .actions
-            .refused
-            .reasons()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let failures = self.app.actions.refused.reasons().map(str::to_owned);
         #[cfg(feature = "model")]
-        {
-            failures.extend(self.call_failures());
-            failures.extend(
-                self.peer_requests()
-                    .into_iter()
-                    .filter_map(|request| match request {
-                        CollabRequest::ResourceLocalEffect { update, .. } => ended_badly(&update),
-                        _ => None,
-                    }),
-            );
-        }
-        failures
+        let failures = failures.chain(self.call_failures()).chain(
+            self.peer_requests()
+                .into_iter()
+                .filter_map(|request| match request {
+                    CollabRequest::ResourceLocalEffect { update, .. } => ended_badly(&update),
+                    _ => None,
+                }),
+        );
+        failures.collect()
     }
 
     /// Every operable control the exported accessibility tree carries now, the window's bar
@@ -251,6 +247,7 @@ impl Driver {
 
     /// Whether the record the window was opened on has not arrived: the component shows its
     /// opening view, and what it will publish is read from the record once that is here.
+    #[cfg(feature = "model")]
     fn record_still_arriving(&self) -> bool {
         #[cfg(feature = "model")]
         let arriving = crate::bound_dispatch::callback_binding(&*self.app.root_widget)
@@ -333,6 +330,7 @@ impl Driver {
     }
 
     /// Keep what the invocation of `address` answered, when outcomes are kept.
+    #[cfg(feature = "model")]
     pub(super) fn retain_invocation_outcome(
         &mut self,
         address: &ActionAddress,
@@ -391,6 +389,7 @@ fn ended_badly(update: &InvocationUpdate) -> Option<String> {
 
 /// The refusal a call to `address` that failed at once is to its caller: the code the app
 /// answered with kept as data.
+#[cfg(feature = "model")]
 pub(super) fn failure_refusal(
     address: &ActionAddress,
     error: tilo_actions::ActionFailure,
@@ -449,14 +448,18 @@ fn is_pressable(role: Role) -> bool {
 }
 
 /// How many outcomes are kept, and how many bytes they may take serialized.
+#[cfg(feature = "model")]
 const MAX_ENTRIES: usize = 4096;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum Outcome {
+    #[cfg(feature = "model")]
     Completed { output: ActionOutput },
+    #[cfg(feature = "model")]
     Accepted,
+    #[cfg(feature = "model")]
     Refused { code: String, message: String },
 }
 
@@ -477,6 +480,7 @@ struct InvocationResults {
     /// never read as complete.
     #[serde(skip_serializing_if = "Option::is_none")]
     retention_error: Option<String>,
+    #[cfg(feature = "model")]
     #[serde(skip)]
     remaining: usize,
 }
@@ -488,10 +492,12 @@ impl InvocationResults {
             author,
             entries: Vec::new(),
             retention_error: None,
+            #[cfg(feature = "model")]
             remaining: MAX_BYTES.saturating_sub(1024),
         }
     }
 
+    #[cfg(feature = "model")]
     fn record(
         &mut self,
         address: &ActionAddress,

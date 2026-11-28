@@ -3,6 +3,7 @@
 use super::App;
 #[cfg(feature = "model")]
 use super::{BrokerReply, ResourceInvocation};
+#[cfg(feature = "model")]
 use crate::close_admission::{Choice, Command, OPERATION};
 use tilo_ui_base::widget::Widget;
 
@@ -44,6 +45,7 @@ impl App {
         self.request_close() && self.admit_close()
     }
 
+    #[cfg(feature = "model")]
     fn invalidate_close_presentation(&mut self) {
         #[cfg(feature = "model")]
         {
@@ -139,6 +141,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "model")]
     fn show_save_failed(&mut self, errors: &[String]) {
         self.close_admission.show(
             "close-save-failed",
@@ -151,6 +154,7 @@ impl App {
 
     /// The workspace did not take a change of the window: closing now would lose it. The person
     /// tries again, keeps the window, or closes it without the change.
+    #[cfg(feature = "model")]
     fn show_not_kept(&mut self, reason: &str) {
         self.close_admission.show(
             "close-save-failed",

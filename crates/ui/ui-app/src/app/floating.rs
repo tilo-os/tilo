@@ -22,7 +22,7 @@ fn sideways_travel_of(event: &WindowEvent, scale_factor: f64) -> Option<f64> {
 /// How soon the loop tries again to send what a shared page has to hand over, when the
 /// connection had no room for it: the shell reads on a thread of its own, so room comes
 /// within a few milliseconds.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "webview"))]
 const SHARE_BACKLOG_RETRY: crate::time::Duration = crate::time::Duration::from_millis(5);
 
 /// What the shell was last told on this connection, where telling it
@@ -103,6 +103,7 @@ pub(super) struct FloatingRuntime {
         std::collections::VecDeque<(u64, Vec<crate::app::PaintedActionMarker>)>,
     pub auxiliary_capture_frames: HashMap<String, AuxiliaryCaptureFrames>,
     /// The shell was told this app can stream its page.
+    #[cfg(feature = "webview")]
     pub paint_capable_sent: bool,
     /// The payload of this window's page that is being sent, and how much of it went: one too
     /// large for a message goes in parts, and the connection takes only so much at once.
@@ -264,6 +265,7 @@ impl FloatingRuntime {
             drawn_action_markers: Vec::new(),
             submitted_action_markers: std::collections::VecDeque::new(),
             auxiliary_capture_frames: HashMap::new(),
+            #[cfg(feature = "webview")]
             paint_capable_sent: false,
             #[cfg(feature = "webview")]
             share_sending: None,
@@ -1646,7 +1648,7 @@ fn tab_request_message(
 /// where the message about it travels, whatever window showed it. An item the
 /// window names but publishes no resource of (a message among thousands) is
 /// this app's own.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "model"))]
 fn publishing_app<'a>(
     subject: &tilo_ui_base::shared_subject::SharedSelection,
     published: &'a [tilo_actions::ResourceSpec],

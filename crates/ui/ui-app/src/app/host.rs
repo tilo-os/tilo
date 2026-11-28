@@ -332,6 +332,7 @@ fn draw_frame_content_owning(
         let (Point { x: x0, y: y0 }, card_w) = ap.place_in(window, &app.theme);
         match app.palette_source {
             PaletteSource::Owned { .. } => ap.layout(&app.theme, Point::new(x0, y0), card_w),
+            #[cfg(feature = "model")]
             PaletteSource::Host => ap.layout_with_text(
                 &app.theme,
                 Point::new(x0, y0),

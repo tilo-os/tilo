@@ -6,12 +6,15 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
 };
+#[cfg(feature = "model")]
 use vello::Scene;
+#[cfg(feature = "model")]
 use vello::kurbo::{Affine, Rect};
 
 use crate::widget::Button;
 use crate::widget::window_header::HistoryControl;
 use tilo_ui_base::i18n::I18nManager;
+#[cfg(feature = "model")]
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::HistoryEntryId;
 
@@ -70,6 +73,7 @@ pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<
 
 /// The edge under a bar of window chrome: the bar stands on the content ground and is told from the app
 /// by one hairline at its bottom, never by a raised fill.
+#[cfg(feature = "model")]
 pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
     let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
     if rule <= 0.0 || bar.height() <= 0.0 {
@@ -177,6 +181,7 @@ pub fn encode_entry(id: HistoryEntryId) -> String {
     tilo_ui_base::HistoryEntryId::hex(&id)
 }
 /// The change `value` names in its 32 lowercase hex digits, if it is one.
+#[cfg(feature = "model")]
 pub(crate) fn decode_entry(value: &str) -> Option<HistoryEntryId> {
     if value.len() != 32
         || !value

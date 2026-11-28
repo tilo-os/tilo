@@ -419,6 +419,7 @@ pub(crate) fn window_bar_part(root: &dyn Widget) -> Option<WindowBarPart> {
     root.children().into_iter().find_map(window_bar_part)
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_sync_status(status);
@@ -537,6 +538,7 @@ impl Widget for HeaderStatus {
     }
 }
 
+#[cfg(feature = "model")]
 pub(crate) fn offer_history_control(
     root: &mut dyn Widget,
     control: Option<HistoryControl>,

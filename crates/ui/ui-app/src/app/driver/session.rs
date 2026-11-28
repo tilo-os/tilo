@@ -301,6 +301,7 @@ impl Driver {
 
 /// The queue of owner models a worker woke for the components this tree hosts: what an idle host
 /// services between frames.
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(super) struct OwnerWakes {
     #[cfg(feature = "model")]

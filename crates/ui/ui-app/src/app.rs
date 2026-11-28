@@ -28,6 +28,7 @@ use winit::{
     window::{Fullscreen, Window, WindowId},
 };
 
+#[cfg(feature = "model")]
 use crate::app_core::ResourceInvocation;
 use std::cell::Cell;
 
@@ -148,7 +149,7 @@ mod session_tests;
 mod surface;
 #[cfg(feature = "native")]
 pub(crate) use native_runner::bind_window_app;
-#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
 pub(crate) use native_runner::startup::{prepare_native_renderer, warm_native_renderer};
 pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(all(feature = "native", feature = "model"))]
@@ -179,6 +180,7 @@ const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX
 const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
 #[cfg(feature = "model")]
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
+#[cfg(feature = "model")]
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
 /// The person at this machine, whom a window acts for unless its host says otherwise: the
@@ -409,8 +411,10 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 /// milliseconds. Winit delivers `CursorMoved` at up to 120 Hz (~8 ms/delta),
 /// which would saturate the Unix socket for no visual gain; 33 ms caps the
 /// wire rate at ~30 Hz, fluid enough without becoming the bottleneck.
+#[cfg(feature = "model")]
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
+#[cfg(feature = "model")]
 #[derive(Clone, Debug)]
 struct DirectedInvocation {
     wire_id: u64,
@@ -418,6 +422,7 @@ struct DirectedInvocation {
 }
 
 /// Public-in-crate so the throttle decision is unit-testable without a real event loop.
+#[cfg(feature = "model")]
 pub(crate) fn pointer_broadcast_allowed(
     last: Option<Instant>,
     now: Instant,
@@ -457,6 +462,7 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<tilo_ui_base::theme::Appeara
 
 #[cfg(feature = "model")]
 type PresenceBroadcastSink = Box<dyn Fn(&PresenceKey, &PresencePayload) + Send + Sync>;
+#[cfg(feature = "model")]
 type ResolvedResourceInvocation<'a> = (
     Option<serde_json::Map<String, serde_json::Value>>,
     &'a tilo_actions::ResourceSpec,
@@ -469,6 +475,7 @@ struct ResourceCacheKey {
     locale: u64,
 }
 
+#[cfg(feature = "model")]
 struct ResourceCache {
     key: ResourceCacheKey,
     declared: Vec<tilo_actions::ResourceSpec>,
@@ -479,6 +486,7 @@ struct ResourceCache {
     controls: std::collections::HashMap<String, u64>,
 }
 
+#[cfg(feature = "model")]
 struct LocalResourceCache {
     key: ResourceCacheKey,
     permission_generation: u64,
@@ -486,6 +494,7 @@ struct LocalResourceCache {
     allowed: std::collections::HashSet<tilo_actions::ActionAddress>,
 }
 
+#[cfg(feature = "model")]
 struct OpenResourceSearchCache {
     key: ResourceCacheKey,
     permission_generation: u64,
@@ -530,7 +539,7 @@ pub use crate::action_locus::{ActionUiRoute, PaintedActionMarker};
 pub struct App {
     #[cfg(feature = "model")]
     retirement: Option<crate::semantic_document_read::retirement::RootRetirementPrelude>,
-    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
     startup_renderer: Option<native_runner::startup::RendererPreparation>,
     control_domain: tilo_ui_base::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
@@ -676,9 +685,12 @@ impl<T> ConstructionValue<T> {
 #[derive(Clone, Copy)]
 enum PaletteSource {
     Owned {
+        #[cfg(feature = "model")]
         renderer: fn() -> TextRenderer,
+        #[cfg(feature = "model")]
         field: fn() -> crate::widget::SearchField,
     },
+    #[cfg(feature = "model")]
     Host,
 }
 
@@ -818,7 +830,9 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Lazy(Theme::configured),
             text_renderer: ConstructionValue::Lazy(TextRenderer::new),
             palette_source: PaletteSource::Owned {
+                #[cfg(feature = "model")]
                 renderer: TextRenderer::new,
+                #[cfg(feature = "model")]
                 field: crate::widget::SearchField::new,
             },
             watch_system_settings: true,
@@ -1273,7 +1287,7 @@ impl App {
 
     /// A window showing `factory`'s root that joins no workspace: what a launch shows while the record
     /// it opens arrives with the workspace's join ([`crate::launch::window`]).
-    #[cfg(feature = "native")]
+    #[cfg(feature = "host")]
     pub(crate) fn without_workspace(factory: impl FnOnce() -> Box<dyn Widget>) -> Self {
         Self::from_factory_with_inputs(State::new(), factory, AppConstructionInputs::production)
     }
@@ -1445,7 +1459,9 @@ impl App {
                 configured_theme: ConstructionValue::Ready(theme),
                 text_renderer: ConstructionValue::Ready(text),
                 palette_source: PaletteSource::Owned {
+                    #[cfg(feature = "model")]
                     renderer: TextRenderer::new,
+                    #[cfg(feature = "model")]
                     field: crate::widget::SearchField::new,
                 },
                 watch_system_settings: false,
@@ -1623,6 +1639,7 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme_epoch = self.theme_epoch.wrapping_add(1);
         self.theme = match self.palette_source {
+            #[cfg(feature = "model")]
             PaletteSource::Host => {
                 self.text_renderer
                     .set_text_scale(self.accessibility.text_scale);
@@ -2280,6 +2297,7 @@ impl App {
 /// invalidate its directory on each, so a directory continuation it had just
 /// issued was gone before it was asked for, and a hosted app's listing never
 /// settled.
+#[cfg(feature = "model")]
 pub(crate) fn forward_component_wake(
     handle: &crate::wake::WakeHandle,
     event: &crate::wake::WakeEvent,

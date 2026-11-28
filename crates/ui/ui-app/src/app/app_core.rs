@@ -3,6 +3,7 @@
 impl App {
     pub(crate) fn tree(&self) -> crate::app_core::AppTree<'_> {
         crate::app_core::AppTree {
+            #[cfg(feature = "model")]
             state: &self.state,
             root: self.root_widget.as_ref(),
             #[cfg(feature = "model")]
@@ -12,6 +13,7 @@ impl App {
             taffy: &self.layout.taffy,
             focused: self.focused_node,
             root_node: self.layout.root_node,
+            #[cfg(feature = "model")]
             pointer: &self.input.pointer,
         }
     }
@@ -202,6 +204,7 @@ impl App {
         self.layout.admissions = self.layout.admissions.wrapping_add(1);
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn composition_replaced(&mut self) -> bool {
         self.forget_replaced_widgets()
     }
@@ -250,10 +253,12 @@ impl App {
         self.mark_semantic_tree_stale();
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }
 
+    #[cfg(feature = "model")]
     pub(crate) fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
         crate::app_core::HostFocus {
             root: self.root_widget.as_mut(),

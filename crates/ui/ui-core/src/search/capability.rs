@@ -113,6 +113,7 @@ impl SearchProviderDescriptor {
     }
 
     /// This provider reached through the component lifetime `owner`.
+    #[cfg(feature = "model")]
     pub(crate) fn owned_by(self, owner: uuid::Uuid) -> Self {
         Self {
             owner: Some(owner),

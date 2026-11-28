@@ -14,7 +14,7 @@ mod linux_header;
 use super::part_bar;
 mod private_text_input;
 mod process_windows;
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
 pub(super) mod startup;
 
 use ime::{
@@ -1264,7 +1264,10 @@ impl AppHandler {
             // Drawn by the workspace's render service: the launch prepared its
             // connection, not a device (`startup::prepare_native_renderer`).
             if crate::render_thread::remote::requested() {
-                self.app.startup_renderer = None;
+                #[cfg(feature = "host")]
+                {
+                    self.app.startup_renderer = None;
+                }
                 self.render = Some(create_window_render(
                     window,
                     !self.app.root_widget.paints_ground(),
@@ -1272,6 +1275,7 @@ impl AppHandler {
                 )?);
                 return Ok(());
             }
+            #[cfg(feature = "host")]
             if let Some(preparation) = self
                 .app
                 .startup_renderer
@@ -1309,6 +1313,7 @@ impl AppHandler {
                 )?);
                 return Ok(());
             }
+            #[cfg(feature = "host")]
             if let Some(preparation) = self.app.startup_renderer.take() {
                 // How long the first redraw still waits on the preparation.
                 match tilo_startup_metrics::span("native-render-prepare-wait", || {
@@ -5252,7 +5257,7 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
     pub(crate) fn with_startup_renderer(
         mut self,
         renderer: Option<startup::RendererPreparation>,
@@ -5374,7 +5379,7 @@ impl App {
         #[cfg(feature = "local-daemons")]
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
         #[cfg(not(feature = "local-daemons"))]
-        let mut handler = process_windows::ProcessWindows::new(handler, proxy);
+        let mut handler = process_windows::ProcessWindows::new(handler);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
         // target winit's `run_app` is this same loop, consuming it.

@@ -4,17 +4,18 @@
 //! invalidation boundaries explicit without disconnecting actions, resources,
 //! or collaboration from the retained widget tree.
 
+use super::ResourceCacheKey;
 #[cfg(feature = "model")]
 use super::{ActionDirectoryCursor, PresenceBroadcastSink};
-use super::{
-    DirectedInvocation, LocalResourceCache, OpenResourceSearchCache, ResourceCache,
-    ResourceCacheKey,
-};
+#[cfg(feature = "model")]
+use super::{DirectedInvocation, LocalResourceCache, OpenResourceSearchCache, ResourceCache};
 #[cfg(feature = "model")]
 use crate::time::Instant;
 #[cfg(feature = "model")]
 use ::collaboration::CollaborationManager;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
+#[cfg(feature = "model")]
+use std::cell::RefCell;
 use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
@@ -26,6 +27,7 @@ use winit::window::CursorIcon;
 /// component or a record owner, and widgets that show or ask for undo or
 /// report an action bracket. Found once per admitted map, so a frame's
 /// history sweep visits them and not every row of a long list.
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(super) struct HistoryNodes {
     /// The admission and map size these were found for.
@@ -66,6 +68,7 @@ pub(super) struct LayoutRuntime {
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).
+    #[cfg(feature = "model")]
     pub(super) history_nodes: HistoryNodes,
     pub(super) layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
@@ -191,6 +194,7 @@ impl LayoutRuntime {
             node_map: std::collections::HashMap::new(),
             adopted: crate::retained_widgets::Adopted::default(),
             admissions: 0,
+            #[cfg(feature = "model")]
             history_nodes: HistoryNodes::default(),
             layout_dirty: true,
             structure_dirty: false,
@@ -437,6 +441,7 @@ pub(super) struct ActionRuntime {
     /// control each came from when one is on screen: said at that control,
     /// else in the window's bar, once the pass ends
     /// ([`super::App::refuse_visibly`]).
+    #[cfg(feature = "model")]
     pub(super) refusals: Vec<(String, Option<vello::kurbo::Rect>)>,
     /// Why the invocations made here that did not run did not, the person's and the app's own
     /// alike, oldest first: what the window's host reads of them after they were said.
@@ -447,6 +452,7 @@ pub(super) struct ActionRuntime {
     /// The window is a tile its host lays out in its own process (the
     /// shell): searches go to the host's one search through the app's
     /// component ([`super::App::hand_search_to_session`]).
+    #[cfg(feature = "model")]
     pub(super) search_in_host: bool,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
@@ -455,6 +461,7 @@ pub(super) struct ActionRuntime {
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
+    #[cfg(feature = "model")]
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     #[cfg(feature = "model")]
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
@@ -466,6 +473,7 @@ pub(super) struct ActionRuntime {
     pub(super) last_published_bound_route: Option<::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
+    #[cfg(feature = "model")]
     pub(super) refusals_logged: RefusalLog,
     #[cfg(feature = "model")]
     #[cfg(test)]
@@ -502,12 +510,16 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
     >,
+    #[cfg(feature = "model")]
     pub(super) local_resource_cache: RefCell<Option<LocalResourceCache>>,
+    #[cfg(feature = "model")]
     pub(super) open_resource_search_cache: RefCell<Option<OpenResourceSearchCache>>,
     pub(super) resource_generation: Cell<u64>,
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
+    #[cfg(feature = "model")]
     pub(super) local_history_status: Option<(bool, bool, bool)>,
+    #[cfg(feature = "model")]
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
@@ -515,6 +527,7 @@ pub(super) struct ActionRuntime {
     pub(super) published_surface: Option<::collaboration::SurfacePublication>,
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
+    #[cfg(feature = "model")]
     pub(super) action_surface_owed: bool,
     /// What the last publication was derived from
     /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
@@ -527,6 +540,7 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Background operations admitted by the retained widget tree.
+    #[cfg(feature = "model")]
     pub(super) directed_invocations:
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
     /// The invoker of each delivered invocation still running, for the
@@ -549,6 +563,7 @@ pub(super) struct ActionRuntime {
     >,
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
+    #[cfg(feature = "model")]
     pub(super) hosted_requests: std::collections::HashSet<u64>,
     /// Resolutions asked for a resource still being read, answered once its
     /// read lands ([`crate::widget::resources::PublishesResources::resource_pending`]).
@@ -556,9 +571,11 @@ pub(super) struct ActionRuntime {
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
+    #[cfg(feature = "model")]
     pub(super) held_answers: Vec<(u64, tilo_actions::InvocationUpdate)>,
     /// The held answers wait for a record's route still joining: the pass
     /// that finds it joined asks for the sync that answers them.
+    #[cfg(feature = "model")]
     pub(super) answers_await_route: bool,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
@@ -580,24 +597,29 @@ pub(super) struct ActionRuntime {
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
+    #[cfg(feature = "model")]
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
     /// Invocations of this app's own actions, in the order they were made,
     /// waiting for the route to carry the surface that offers them. The host
     /// resolves an invocation against the surface it last received from this
     /// connection, so one sent ahead of that surface is refused as unknown.
+    #[cfg(feature = "model")]
     pub(super) held_own_invocations: std::collections::VecDeque<HeldOwnInvocation>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) refused_broker_receipt: Option<String>,
     /// `None` means this process exhausted the complete request-id namespace.
+    #[cfg(feature = "model")]
     pub(super) next_broker_request_id: Option<u64>,
     /// Dirty tracking for the hosted worker pump (no window event loop).
+    #[cfg(feature = "model")]
     pub(super) hosted: super::model_lifecycle::HostedPumpState,
 }
 
 /// Which answer from the session action host a request is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg(feature = "model")]
 pub(super) enum BrokerReply {
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
@@ -606,6 +628,7 @@ pub(super) enum BrokerReply {
 
 /// An invocation of this app's own action waiting for the route to carry the
 /// surface that offers it, and since when it waits.
+#[cfg(feature = "model")]
 pub(super) struct HeldOwnInvocation {
     pub(super) request: tilo_actions::remote::InvokeRequest,
     pub(super) since: crate::time::Instant,
@@ -632,14 +655,17 @@ impl ActionRuntime {
             palette_window: None,
             #[cfg(feature = "model")]
             palette_return: None,
+            #[cfg(feature = "model")]
             refusals: Vec::new(),
             refused: RefusedLog::default(),
             control_notice: None,
+            #[cfg(feature = "model")]
             search_in_host: false,
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
+            #[cfg(feature = "model")]
             resource_cache: RefCell::new(None),
             #[cfg(feature = "model")]
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
@@ -649,6 +675,7 @@ impl ActionRuntime {
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             #[cfg(feature = "model")]
             last_published_bound_route: None,
+            #[cfg(feature = "model")]
             refusals_logged: RefusalLog::default(),
             #[cfg(feature = "model")]
             #[cfg(test)]
@@ -667,15 +694,20 @@ impl ActionRuntime {
             local_document_directory_pins: Vec::new(),
             #[cfg(feature = "model")]
             bound_invocations: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             local_resource_cache: RefCell::new(None),
+            #[cfg(feature = "model")]
             open_resource_search_cache: RefCell::new(None),
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
+            #[cfg(feature = "model")]
             local_history_status: None,
+            #[cfg(feature = "model")]
             last_published_actions: None,
             #[cfg(feature = "model")]
             published_surface: None,
+            #[cfg(feature = "model")]
             action_surface_owed: false,
             #[cfg(feature = "model")]
             published_stamp: None,
@@ -683,6 +715,7 @@ impl ActionRuntime {
             action_surface_publication_attempts: 0,
             #[cfg(feature = "model")]
             action_directory_cursors: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             directed_invocations: std::collections::HashMap::new(),
             #[cfg(feature = "model")]
             acting_for: std::collections::HashMap::new(),
@@ -690,10 +723,13 @@ impl ActionRuntime {
             waiting_controls: Vec::new(),
             #[cfg(feature = "model")]
             follow_ups: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             hosted_requests: std::collections::HashSet::new(),
             #[cfg(feature = "model")]
             awaited_resolutions: Vec::new(),
+            #[cfg(feature = "model")]
             held_answers: Vec::new(),
+            #[cfg(feature = "model")]
             answers_await_route: false,
             local_invocations: std::collections::HashMap::new(),
             #[cfg(feature = "model")]
@@ -701,11 +737,15 @@ impl ActionRuntime {
             #[cfg(feature = "model")]
             window_answers: std::collections::VecDeque::new(),
             pending_application_launches: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             broker_requests: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
             held_own_invocations: std::collections::VecDeque::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
+            #[cfg(feature = "model")]
             next_broker_request_id: Some(0),
+            #[cfg(feature = "model")]
             hosted: super::model_lifecycle::HostedPumpState::default(),
         }
     }
@@ -997,11 +1037,13 @@ impl WindowRuntime {
 
 /// The distinct publication refusals already reported. A refused surface is
 /// re-checked every frame; its reason is news only the first time.
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(crate) struct RefusalLog {
     seen: std::collections::HashSet<u64>,
 }
 
+#[cfg(feature = "model")]
 impl RefusalLog {
     /// Bounded: an app that keeps producing new reasons still logs them,
     /// and memory stays flat.
@@ -1030,8 +1072,10 @@ pub(crate) struct RefusedLog {
 impl RefusedLog {
     /// Bounded: a window refused again and again keeps its newest reasons, and memory stays
     /// flat.
+    #[cfg(feature = "model")]
     const LIMIT: usize = 256;
 
+    #[cfg(feature = "model")]
     pub(crate) fn push(&mut self, reason: String) {
         if self.reasons.len() >= Self::LIMIT {
             self.reasons.pop_front();

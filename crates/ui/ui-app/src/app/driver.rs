@@ -234,6 +234,7 @@ pub struct Driver {
     /// What a host that poses and compares frames keeps of them ([`session`]).
     records: session::FrameRecords,
     /// The owner models a worker woke for this tree's components ([`session`]).
+    #[cfg(feature = "model")]
     wakes: session::OwnerWakes,
     /// What a host placed over the app ([`uicore`]).
     overlay: uicore::Overlay,
@@ -299,6 +300,7 @@ impl Driver {
             metrics: metrics::Metrics::default(),
             jobs: jobs::Jobs::default(),
             records: session::FrameRecords::default(),
+            #[cfg(feature = "model")]
             wakes: session::OwnerWakes::default(),
             overlay: uicore::Overlay::default(),
             pictures: pictures::Pictures::default(),

@@ -104,6 +104,7 @@ impl HeldInput {
 
     #[cfg(feature = "native")]
     /// The window stands in for an app on its way ([`Self::stands_in`]).
+    #[cfg(feature = "host")]
     pub(crate) fn stand_in(&mut self) {
         self.stands_in = true;
     }
@@ -183,6 +184,7 @@ impl super::App {
     #[cfg(feature = "native")]
     /// This window stands in for an app still on its way to it: what is typed in it waits for that
     /// app ([`Self::hand_on_held_input`]).
+    #[cfg(feature = "host")]
     pub(crate) fn stand_in_for_arriving_app(&mut self) {
         self.input.held.stand_in();
     }

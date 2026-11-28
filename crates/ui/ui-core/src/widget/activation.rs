@@ -61,6 +61,7 @@ thread_local! {
 }
 
 /// The presses asked for since the last call, in order.
+#[cfg(all(feature = "native", feature = "model"))]
 pub fn take_presses() -> Vec<Point> {
     PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }

@@ -10,15 +10,25 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Stage {
+    #[cfg(feature = "model")]
     ResourceCache,
+    #[cfg(feature = "model")]
     DeclarationGeneration,
+    #[cfg(feature = "model")]
     SemanticConstruction,
+    #[cfg(feature = "model")]
     SurfaceValidation,
+    #[cfg(feature = "model")]
     LocalCache,
+    #[cfg(feature = "model")]
     LocalPermissionProjection,
+    #[cfg(feature = "model")]
     BoundDiscovery,
+    #[cfg(feature = "model")]
     BoundControlProjection,
+    #[cfg(feature = "model")]
     ControlCache,
+    #[cfg(feature = "model")]
     ControlRefresh,
     /// Deciding whether an input kept the published tree: `hit` kept it.
     InputCarry,
@@ -30,6 +40,7 @@ pub(crate) enum CacheResult {
     Hit,
     Miss,
     NotApplicable,
+    #[cfg(feature = "model")]
     NotObserved,
 }
 

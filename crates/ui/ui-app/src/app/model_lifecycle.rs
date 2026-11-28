@@ -15,6 +15,7 @@ fn host_perf_baseline() -> bool {
 }
 
 /// `TILO_HOSTED_PUMP_TIMING=1` prints one payload-free line per hosted pump.
+#[cfg(feature = "model")]
 fn hosted_pump_timing() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| crate::process::environment().diagnostics.hosted_pump_timing)
@@ -53,6 +54,7 @@ impl PublicationStamp {
     }
 }
 
+#[cfg(feature = "model")]
 #[derive(Default)]
 pub(super) struct HostedPumpState {
     #[cfg(test)]
@@ -112,7 +114,7 @@ impl super::App {
     }
 
     /// Presence and connection changes can change pixels without dirtying a widget.
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", feature = "model"))]
     pub(super) fn pump_embedded_model(&mut self) -> bool {
         self.pump_hosted_model_as(host_perf_baseline())
             .presentation_changed
@@ -155,7 +157,11 @@ impl super::App {
         // Detached or closed scopes remain conservatively model-dirty.
         let wakes = self.take_hosted_wakes();
         let authority_changed = self.refresh_hosted_authority();
-        let in_flight = !self.actions.directed_invocations.is_empty()
+        #[cfg(feature = "model")]
+        let directed = !self.actions.directed_invocations.is_empty();
+        #[cfg(not(feature = "model"))]
+        let directed = false;
+        let in_flight = directed
             || self.actions.bound_calls_running()
             || !self.actions.local_invocations.is_empty()
             || !self.actions.pending_application_launches.is_empty();

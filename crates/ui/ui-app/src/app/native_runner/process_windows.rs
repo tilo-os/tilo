@@ -12,10 +12,14 @@
 //! Each window keeps its own bar ([`crate::hosted_window::HostedWindow`]):
 //! the place one window shows is never the bar of another of the process.
 
-use super::{App, AppHandler, UserEvent};
+#[cfg(feature = "local-daemons")]
+use super::App;
+use super::{AppHandler, UserEvent};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
+#[cfg(feature = "local-daemons")]
+use winit::event_loop::EventLoopProxy;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
 /// Builds the window the shell asked for, or says why it cannot.
@@ -40,6 +44,7 @@ pub(super) struct ProcessWindows<'a, 'b> {
     windows: Vec<AppHandler>,
     /// Each window's bar, beside it in `windows`: what its app declares while it runs.
     bars: Vec<crate::hosted_window::HostedWindow>,
+    #[cfg(feature = "local-daemons")]
     proxy: EventLoopProxy<UserEvent>,
     #[cfg(feature = "local-daemons")]
     open: Option<&'a mut OpenWindow<'b>>,
@@ -53,7 +58,7 @@ pub(super) struct ProcessWindows<'a, 'b> {
 impl<'a, 'b> ProcessWindows<'a, 'b> {
     pub(super) fn new(
         first: AppHandler,
-        proxy: EventLoopProxy<UserEvent>,
+        #[cfg(feature = "local-daemons")] proxy: EventLoopProxy<UserEvent>,
         #[cfg(feature = "local-daemons")] open: Option<&'a mut OpenWindow<'b>>,
     ) -> Self {
         // The launch's window declared its bar before the loop ran it: it keeps that bar.
@@ -63,6 +68,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         Self {
             windows: vec![first],
             bars: vec![bar],
+            #[cfg(feature = "local-daemons")]
             proxy,
             #[cfg(feature = "local-daemons")]
             open,

@@ -15,6 +15,7 @@ pub fn news() -> u64 {
 }
 
 /// Something reached a History surface ([`NEWS`]).
+#[cfg(feature = "model")]
 pub(crate) fn note_news() {
     NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
@@ -78,6 +79,7 @@ use automerge::{AutoCommit, ChangeHash};
 use crate::history_source::{CompareError, HistorySource, compare_entries};
 #[cfg(feature = "model")]
 use crate::{DocumentId, HistoryEntry};
+#[cfg(feature = "model")]
 use tilo_ui_base::HistoryEntryId;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::MemberId;

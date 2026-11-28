@@ -95,11 +95,13 @@ pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_
 /// [`PresenceCtx::apply_remote_presence`]). Generous on purpose: a caret key is per *block*, so a
 /// stray mark is bounded to one paragraph, while too tight a cap would drop the marker on the edit
 /// most worth seeing.
+#[cfg(feature = "model")]
 const TYPING_DERIVE_MAX_RUN: usize = 512;
 
 /// How long after a remote text edit an advancing caret may still be read as
 /// that peer having written what it crossed — one network hop, no more, or a
 /// real edit would license markers for every caret that moves afterward.
+#[cfg(feature = "model")]
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 pub use tilo_member_types::identity_color;
@@ -433,6 +435,7 @@ pub struct PresenceCtx {
     composing: HashMap<(PresenceKey, MemberId), Instant>,
     /// The members of the workspace's last member list ([`Self::apply_members`]): a list that
     /// replaces it retires whoever is no longer on it.
+    #[cfg(feature = "model")]
     members: std::collections::HashSet<MemberId>,
     /// Faces that bounce because their person waved at this one.
     bounces: HashMap<MemberId, crate::motion::Attention>,
@@ -828,6 +831,7 @@ impl PresenceCtx {
     /// roster replacement no longer contains an exact self row. Local
     /// process identities remain in `own`; this only withdraws the workspace's
     /// authenticated answer.
+    #[cfg(feature = "model")]
     pub(crate) fn clear_self_member(&mut self) {
         self.self_member = None;
     }
@@ -1370,6 +1374,7 @@ impl PresenceCtx {
         self.last_remote_text_edit = Some(now);
     }
 
+    #[cfg(feature = "model")]
     fn edit_landed_recently(&self, now: Instant) -> bool {
         self.last_remote_text_edit
             .is_some_and(|t| now.saturating_duration_since(t) <= EDIT_PULSE_WINDOW)

@@ -7,6 +7,7 @@ use super::TextInput;
 /// holds now ([`TextInput::on_action`]) or the splice between the two
 /// ([`TextInput::on_text_edit`]).
 pub(super) struct Edited {
+    #[cfg(feature = "model")]
     pub(super) before: String,
     pub(super) after: String,
 }
@@ -47,6 +48,7 @@ impl TextInput {
                     physical_text,
                     || {
                         action.press(Edited {
+                            #[cfg(feature = "model")]
                             before: before.clone(),
                             after,
                         })
@@ -72,7 +74,11 @@ impl TextInput {
             let after = self.text.clone();
             let _ =
                 tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
-                    action.emit(Edited { before, after })
+                    action.emit(Edited {
+                        #[cfg(feature = "model")]
+                        before,
+                        after,
+                    })
                 });
         }
         // The field's own state stays the one a bound local edit reads: an

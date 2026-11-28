@@ -5,8 +5,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
+#[cfg(feature = "model")]
 use serde::Deserialize;
-use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
+#[cfg(feature = "model")]
+use tilo_actions::SelectionAnchor;
+use tilo_actions::{ActionResource, SelectionPlace};
 
 use crate::floating_surface::Recipient;
 #[cfg(feature = "model")]
@@ -16,7 +19,9 @@ use tilo_ui_base::presence::PresenceKey;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::capability::PublishesPresence;
 pub use tilo_ui_base::shared_subject::SharedSelection;
+#[cfg(feature = "model")]
 use tilo_ui_base::widget::Widget;
+#[cfg(feature = "model")]
 use tilo_ui_base::widget::capability::capability;
 
 /// The selection `widget` holds, if it is focused and holds one.

@@ -4,16 +4,16 @@
 
 use std::path::PathBuf;
 
-#[cfg(feature = "native")]
+#[cfg(feature = "host")]
 use crate::App;
 use crate::headless::{self, Driver};
 use tilo_ui_base::Theme;
 
-#[cfg(feature = "native")]
+#[cfg(any(feature = "host", all(target_os = "android", feature = "native")))]
 mod app_log;
-#[cfg(feature = "native")]
+#[cfg(feature = "host")]
 mod capture_clock;
-#[cfg(feature = "native")]
+#[cfg(feature = "host")]
 use app_log::init_app_log;
 #[cfg(feature = "host")]
 mod capture;
@@ -561,7 +561,7 @@ pub fn warm_window_process() {
     #[cfg(feature = "host")]
     let _ = tilo_content_device::device();
     prepare_font_database_beside();
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
     crate::app::warm_native_renderer();
 }
 

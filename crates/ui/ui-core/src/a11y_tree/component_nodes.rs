@@ -114,6 +114,7 @@ impl ComponentNodes {
 }
 
 impl ComponentNodes {
+    #[cfg(feature = "model")]
     pub(super) fn roots(&self) -> &[SemanticId] {
         &self.roots
     }
@@ -526,6 +527,7 @@ pub(super) fn resource_semantic_node(
     }
 }
 
+#[cfg(feature = "model")]
 fn exports_spec(action: &SemanticAction, spec: &ActionSpec) -> bool {
     let same_input = match (&action.kind, spec.input()) {
         (SemanticActionKind::App(encoded), ActionInput::Immediate(Some(next))) => {

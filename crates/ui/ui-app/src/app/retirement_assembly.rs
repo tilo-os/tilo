@@ -1,5 +1,5 @@
 //! Inner ownership during callback-bearing App assembly. No check is held here.
-#[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+#[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
 use super::native_runner;
 use super::{
     AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, FloatingRuntime,
@@ -71,7 +71,7 @@ impl Drop for AppAssemblyOwnership {
 )]
 #[derive(Default)]
 pub(super) struct AppAssemblyValues {
-    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
     pub startup_renderer: Option<Option<native_runner::startup::RendererPreparation>>,
     #[cfg(feature = "model")]
     pub history: Option<Option<crate::history_mode::host::HistoryChrome>>,
@@ -187,7 +187,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
         tilo_ui_base::control_domain::DomainAttachment::Initial,
     );
     control.finish_initial_installation();
-    #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
     {
         assembly.values.startup_renderer = Some(None);
     }
@@ -279,7 +279,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {
-        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
             startup_renderer: Some(startup_renderer),
         #[cfg(feature = "model")]
             history: Some(history),
@@ -362,7 +362,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     let mut app = Box::new(App {
         #[cfg(feature = "model")]
         retirement,
-        #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
+        #[cfg(all(any(windows, target_os = "linux"), feature = "host"))]
         startup_renderer,
         control_domain,
         wake_scope,
@@ -443,7 +443,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     // A host that owns its palette passes the theme it asks for: its text and UI scales are
     // the theme's, so a caller's scaled theme draws with the metrics it names. A theme the
     // host resolves lazily is built from the process's settings, which the inputs carry.
-    let from_theme = matches!(app.palette_source, PaletteSource::Host) || theme_was_ready;
+    let from_theme = !matches!(app.palette_source, PaletteSource::Owned { .. }) || theme_was_ready;
     app.accessibility.a11y.reduce_motion = if from_theme {
         app.accessibility.base_theme.reduce_motion
     } else {
@@ -451,6 +451,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     };
     app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
     app.accessibility.text_scale = match app.palette_source {
+        #[cfg(feature = "model")]
         PaletteSource::Host => app.text_renderer.text_scale(),
         PaletteSource::Owned { .. } if theme_was_ready => app.accessibility.base_theme.text_scale,
         PaletteSource::Owned { .. } => (inputs.text_scale)(),

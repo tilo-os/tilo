@@ -24,6 +24,7 @@ pub(crate) use tooltips::TooltipLayer;
 
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct AppTree<'a> {
+    #[cfg(feature = "model")]
     pub(crate) state: &'a crate::State,
     pub(crate) root: &'a dyn Widget,
     /// The app's registered framework History, when it has one.
@@ -35,6 +36,7 @@ pub(crate) struct AppTree<'a> {
     pub(crate) focused: Option<NodeId>,
     /// The laid-out root, once the host built its layout.
     pub(crate) root_node: Option<NodeId>,
+    #[cfg(feature = "model")]
     pub(crate) pointer: &'a PointerPlace,
 }
 
@@ -58,6 +60,7 @@ impl AppTree<'_> {
 
     /// The control the person acted on last, in window coordinates: under their last press, else the
     /// one holding the keyboard.
+    #[cfg(feature = "model")]
     pub(crate) fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
         crate::control_notice::acting_control(
             self.taffy,
@@ -332,6 +335,7 @@ pub(crate) struct HostDocument<'a> {
 /// context; whether the workspace admitted it (the person's yes included, where it waited for one); and
 /// the person's approve of the asked record it was kept as, when it is that call sent again.
 #[derive(Clone, Copy)]
+#[cfg(feature = "model")]
 pub(crate) struct ResourceInvocation<'a> {
     pub(crate) address: &'a tilo_actions::ActionAddress,
     pub(crate) actor: &'a tilo_actions::Actor,
@@ -345,6 +349,7 @@ pub(crate) struct ResourceInvocation<'a> {
     pub(crate) pressed: bool,
 }
 
+#[cfg(feature = "model")]
 impl<'a> ResourceInvocation<'a> {
     pub(crate) fn new(
         address: &'a tilo_actions::ActionAddress,
@@ -408,6 +413,7 @@ pub(crate) struct HostLayout<'a> {
 }
 
 /// What moving keyboard focus between the app and History touches.
+#[cfg(feature = "model")]
 pub(crate) struct HostFocus<'a> {
     pub(crate) root: &'a mut dyn Widget,
     #[cfg(feature = "model")]
@@ -515,6 +521,7 @@ impl crate::app::App {
     }
 
     /// Where focus is, as an identity that survives a rebuild.
+    #[cfg(feature = "model")]
     pub(crate) fn capture_focus_identity(
         &mut self,
     ) -> Option<tilo_ui_base::widget::layout::CompositionFocus> {

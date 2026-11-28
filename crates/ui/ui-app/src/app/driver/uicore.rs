@@ -6,6 +6,7 @@
 //! publication, its presence — so a caller sees what a window would.
 
 use super::Driver;
+#[cfg(feature = "model")]
 use tilo_ui_base::widget::Widget;
 
 /// What the driver keeps of what is shown over its app: the pointers a host placed on the
