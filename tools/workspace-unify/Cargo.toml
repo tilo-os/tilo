@@ -2291,6 +2291,7 @@ doc = false
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "system-status"] }
 "tilo-os-release" = { path = "../../crates/platform/os-release", default-features = false, features = [] }
 "tilo-paths" = { path = "../../crates/platform/tilo-paths", default-features = false, features = [] }
+"tilo-permissions" = { path = "../../crates/core/permissions", default-features = false, features = [] }
 "tilo-platform-caps" = { path = "../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-presence" = { path = "../../crates/platform/tilo-presence", default-features = false, features = [] }
 "tilo-process" = { path = "../../crates/platform/tilo-process", default-features = false, features = ["native"] }
