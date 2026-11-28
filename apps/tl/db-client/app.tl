@@ -602,11 +602,43 @@ action load_starter(d: Database, name: Text, sql: Text) {
     save_query(d, name)
 }
 
-/// Shows the view the segment at `index` names.
+/// Shows the view the segment at `index` names. The data view reads the selected table's rows
+/// and its count as it opens, so it shows the table rather than an empty pane, and a count from
+/// before the last statement is read again.
 action choose_tab(d: Database, index: Int) {
     if index == 1 {
         show_tab(d, .data)
+        let s = ensure_session(d)
+        if s.connected and s.selected_table != "" {
+            refresh_counts(d, s)
+            load_page(d)
+        }
     } else if index == 2 { show_tab(d, .structure) } else { show_tab(d, .query) }
+}
+
+/// Reads every table's row count again, so a page read after a statement names the table's
+/// count as it stands now.
+action refresh_counts(d: Database, s: Session) {
+    if not s.connected or s.handle == 0 {
+        return
+    }
+    match engine.call("tables", json.encode(Handle(connection: s.handle))) {
+        .ok(text) => match json.decode<List<TableInfo>>(text) {
+            .ok(found) => {
+                for one in found {
+                    if let held = s.tables.find(t -> t.schema == one.schema and t.name == one.name) {
+                        held.row_count = one.row_count
+                    }
+                }
+            }
+            .err(why) => {
+                s.notice = why
+            }
+        },
+        .err(why) => {
+            s.notice = why
+        }
+    }
 }
 
 /// Shows one of the window's three views.
@@ -1034,8 +1066,11 @@ action order_by(d: Database, column: Text) {
 action copy_row(d: Database, row: Row) uses clipboard {
     let s = ensure_session(d)
     if let o = s.queries.first() {
-        clipboard.copy(row_text(o, row))
-        s.status = "Row copied"
+        if clipboard.copy(row_text(o, row)) {
+            s.status = "Row copied"
+        } else {
+            s.status = "Could not copy to the clipboard"
+        }
     }
 }
 
@@ -1051,8 +1086,11 @@ action copy_result(d: Database) uses clipboard {
         for row in s.result_rows {
             rows = rows + [row]
         }
-        clipboard.copy(result_text(o, rows))
-        s.status = "Result copied"
+        if clipboard.copy(result_text(o, rows)) {
+            s.status = "Result copied"
+        } else {
+            s.status = "Could not copy to the clipboard"
+        }
     }
 }
 
@@ -1535,7 +1573,9 @@ view starter_queries(d: Database) {
 view result_grid(d: Database, o: Outcome, rows: Collection<Row>) {
     if rows.is_empty() {
         ui.EmptyState(
-            if o.columns.is_empty() { "The statement ran" } else { "The query returned no rows" },
+            if not o.columns.is_empty() {
+                "The query returned no rows"
+            } else if o.is_select { "The query returned no columns" } else { "The statement ran" },
             icon: .table,
             inline: true,
         )
@@ -1565,22 +1605,31 @@ view result_grid(d: Database, o: Outcome, rows: Collection<Row>) {
     }
 }
 
+/// Which rows of the table a page holds: its first and last place, and the table's whole count
+/// once the catalog counted it.
+fn page_range(s: Session) -> Text {
+    if s.selected_table == "" {
+        return "No table selected"
+    }
+    if s.page_rows.is_empty() {
+        return "No rows"
+    }
+    let from = s.offset + 1
+    let to = s.offset + s.page_rows.len()
+    if let t = s.tables.find(x -> x.schema == s.selected_schema and x.name == s.selected_table) {
+        if let total = t.row_count {
+            return "Rows {from} to {to} of {total}"
+        }
+    }
+    "Rows {from} to {to}"
+}
+
 /// One page of the selected table's rows, with the way from page to page.
 view data_tab(d: Database, s: Session) {
     if let o = s.pages.first() {
         stack(gap: .related) {
             row(gap: .related, align: .center) {
-                ui.Text(
-                    if s.selected_table == "" {
-                        "No table selected"
-                    } else if s.page_rows.is_empty() {
-                        "No rows"
-                    } else {
-                        "Rows {s.offset + 1} to {s.offset + s.page_rows.len()}"
-                    },
-                    role: .caption,
-                    secondary: true,
-                )
+                ui.Text(page_range(s), role: .caption, secondary: true)
                 spacer
                 ui.Button("Previous rows", icon: .chevron_left) {
                     on press: previous_page(d)

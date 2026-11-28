@@ -679,11 +679,24 @@ mod cases {
                 "artists is in the catalog: {:?}",
                 c.tables()
             );
-            c.browse("main.artists");
+            c.with(
+                "choose_tab",
+                &[("d", c.root_arg()), ("index", Value::Int(1))],
+            );
             let rows = c.rows("pages");
-            assert_eq!(rows.len(), 3, "one page of the table's rows");
+            assert_eq!(
+                rows.len(),
+                3,
+                "opening the data view reads the selected table's rows"
+            );
             assert_eq!(c.text(&c.session(), "selected_table"), "artists");
             assert_eq!(c.number(&c.session(), "offset"), 0);
+            // The page says which rows of the table it holds, the whole count included.
+            let words = dump(c.window().tree());
+            assert!(
+                words.contains("Rows 1 to 3 of 3"),
+                "the page names its rows of the table's count: {words}"
+            );
             // The page controls are dimmed when there is no other page, so nothing is asked.
             let columns = c.columns_of("main", "artists");
             assert_eq!(columns.len(), 2, "{:?}", c.tables());
@@ -787,6 +800,13 @@ mod cases {
             c.with("copy_result", &[("d", c.root_arg())]);
             assert_eq!(c.clip.text(), "said\tcounted\na,b\t2");
             assert_eq!(c.status(), "Result copied");
+            // A clipboard that will not take the text says so, instead of claiming a copy.
+            c.clip.refuse(true);
+            c.with("copy_row", &[("d", c.root_arg()), ("row", Value::resource(&row))]);
+            assert_eq!(c.status(), "Could not copy to the clipboard");
+            c.with("copy_result", &[("d", c.root_arg())]);
+            assert_eq!(c.status(), "Could not copy to the clipboard");
+            c.clip.refuse(false);
             let file = match c.with("export_csv", &[("d", c.root_arg())]) {
                 InvokeOutcome::Done(Value::Opt(Some(held))) => match &*held {
                     Value::File(file) => (*file).clone(),

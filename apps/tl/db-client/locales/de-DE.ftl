@@ -719,17 +719,22 @@ d-u3iyaqlr = Startabfragen
 d-4tzbmgf2 = Ergebnisraster
     .w-the-statement-ran = Die Anweisung lief
     .w-the-query-returned-no-rows = Die Abfrage gab keine Zeilen zurück
+    .w-the-query-returned-no-columns = Die Abfrage gab keine Spalten zurück
     .w-db-result-table = db.result.table
 
 d-vn42juiv = Datenansicht
     .w-no-table-selected = Keine Tabelle gewählt
-    .w-no-rows = Keine Zeilen
-    .w-rows-to = Zeilen { $value } bis { $value2 }
     .w-previous-rows = Vorherige Zeilen
     .w-next-rows = Nächste Zeilen
     .w-choose-a-table-to-see-its = Wähle eine Tabelle, um ihre Zeilen zu sehen.
     .w-no-rows-read-yet = Noch keine Zeilen gelesen
     .w-read-the-table-s-rows-from = Lies die Zeilen der Tabelle aus der Liste neben dem Fenster.
+
+d-ffuyz5wr = Seitenbereich
+    .w-no-table-selected = Keine Tabelle gewählt
+    .w-no-rows = Keine Zeilen
+    .w-rows-to-of = Zeilen { $from } bis { $to } von { $total }
+    .w-rows-to = Zeilen { $from } bis { $to }
 
 d-5u7lwulx = Strukturansicht
     .w-no-table-selected = Keine Tabelle gewählt
@@ -811,3 +816,8 @@ d-v2conrl7 = Abfrageeditor
 d-hmwoone4 = Tabellenzeilen
 
 d-ps6s2ain = Tabellenstruktur
+
+d-yyr6b46g = Zeilenzahlen lesen
+    .doc = Liest die Zeilenzahl jeder Tabelle erneut, damit eine Seite nach einer Anweisung die Zahl der Tabelle nennt, wie sie jetzt steht.
+
+d-yyr6b46g-s = S

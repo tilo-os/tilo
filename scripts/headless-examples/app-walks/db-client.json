@@ -161,7 +161,7 @@
         },
         {
           "must": {
-            "see": ["Rows 1 to 2", "Previous rows", "Next rows"]
+            "see": ["Rows 1 to 2 of 2", "Previous rows", "Next rows"]
           }
         }
       ]
