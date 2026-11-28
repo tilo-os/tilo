@@ -803,12 +803,13 @@ async fn flow_agent_signs_in_with_a_vault_entry_it_cannot_read_and_acts_on_the_p
         .expect("the entry's reference")
         .to_owned();
 
-    // An agent of theirs, certified for this workspace, joins as its own device.
+    // An agent of theirs comes in by an invitation their own device issues for it, and joins.
     let workspace = *uuid::Uuid::parse_str(&f.work).unwrap().as_bytes();
     let agent = flow::agent_device(&f.root, "claude-code", AgentScope::Workspace(workspace));
     let agent_session = flow::session(&f.host, &agent, &f.server_device.cert);
-    flow::join(&agent_session, &f.work, "Work").await;
     let agent_device = f.client(&agent_session, &agent, "claude-code");
+    flow::admit_agent(&desktop, &agent_device, &f.work, "claude-code").await;
+    flow::join(&agent_session, &f.work, "Work").await;
 
     // It cannot be shown the secret, nor have it copied.
     for showing in [workspace_vault::REVEAL, workspace_vault::COPY] {

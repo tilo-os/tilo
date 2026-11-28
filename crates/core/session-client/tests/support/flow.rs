@@ -112,6 +112,36 @@ pub async fn join(peer: &Link, workspace: &str, name: &str) -> WorkspaceId {
     id
 }
 
+/// Bring `agent`, a key of the person whose device `inviter` is, into `workspace`: by an
+/// invitation that device issues for them, which the agent's session redeems.
+pub async fn admit_agent(inviter: &Device, agent: &Device, workspace: &str, name: &str) {
+    use tilo_server_protocol::workspaces::{WorkspacesReply::Invitation, WorkspacesRequest};
+    let asked = inviter
+        .session()
+        .ask_workspaces(WorkspacesRequest::Invite {
+            workspace: workspace.to_owned(),
+            request_id: rand::random(),
+            role: tilo_peer_state::join::Role::Editor,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+            inviter_name: None,
+            wait_list_entry: None,
+            recipient: Some(inviter.cert().user_public_key),
+            administrator: false,
+        })
+        .expect("the session is open");
+    let answer = asked.await.expect("the host answers an invitation");
+    let Invitation {
+        signed_invitation, ..
+    } = answer.expect("the invitation is issued")
+    else {
+        panic!("the host answers an invitation")
+    };
+    agent
+        .redeem(&signed_invitation, name)
+        .await
+        .expect("the agent redeems its invitation");
+}
+
 /// Join `peer` to `workspace` (its UUID) through its entry, as someone a link let in does, and
 /// wait for its host to admit it.
 pub async fn join_entered(peer: &Link, workspace: &str) -> WorkspaceId {
