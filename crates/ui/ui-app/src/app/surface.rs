@@ -170,7 +170,7 @@ impl App {
         // next input: the entry (or return) it asked for has sealed or discarded what was
         // queued before it ([`Self::presentation_handle_event`]).
         self.input.passive_input = false;
-        let candidate = self.held_input_candidate(&event);
+        let candidate = Self::held_input_candidate(&event);
         crate::widget::context_menu::note_input(&event);
         // What this event opens or closes follows it: a press moves, a key
         // lands at once. A host that shows an app on a surface of its own
@@ -849,13 +849,11 @@ impl App {
 
         // Arrows, Enter and Space, search and typed keys, the shell's tab
         // chords (unless the window answers them) and range steps nobody
-        // consumed.
-        app.handle_unconsumed_key(
-            &event,
-            app.keyboard_nav_allowed(modal_rect),
-            !window.hosts_tab_chords(),
-            &mut handled,
-        );
+        // consumed, unless the window holds them for what it waits for.
+        if handled || !app.input.held.holding(app.root_widget.as_ref()) {
+            let navigation = app.keyboard_nav_allowed(modal_rect);
+            app.handle_unconsumed_key(&event, navigation, !window.hosts_tab_chords(), &mut handled);
+        }
 
         // Input framework chrome took (a press on the window's own History) runs no control a
         // widget queued, and neither does a window still opening: the entry it asks for seals it,

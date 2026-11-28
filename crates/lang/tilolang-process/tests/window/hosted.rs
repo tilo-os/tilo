@@ -1880,7 +1880,7 @@ fn body_text(session: &mut Session) -> String {
 }
 
 /// "+", the title, Enter, the body: Enter in the title, which submits nothing, moves the
-/// keyboard to the body, as native Notes does.
+/// keyboard to the body, as native Notes does, also when it is all typed straight after "+".
 fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
     let plus = session.control(&session.doing("Notebook", "new_note"));
     session.window.click_at(plus.0, plus.1);
@@ -1896,6 +1896,21 @@ fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
     let (title, body) = open_note(&mut session);
     assert_eq!(title, "Groceries");
     assert_eq!(body.trim_end(), "Milk");
+    // The next note written at once, before the window reads anything back: Enter still moves on.
+    press_new_note(&mut session);
+    for line in ["Trip to Lisbon", "## Packing", "- passport"] {
+        session.window.type_text(line);
+        session
+            .window
+            .press_key(ui::winit::keyboard::NamedKey::Enter);
+    }
+    session.settle();
+    let (title, body) = open_note(&mut session);
+    assert_eq!(title, "Trip to Lisbon", "the body: {body:?}");
+    assert!(
+        body.contains("Packing") && body.contains("passport"),
+        "{body:?}"
+    );
 }
 
 #[test]

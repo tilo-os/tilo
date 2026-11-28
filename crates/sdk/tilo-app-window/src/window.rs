@@ -3779,6 +3779,12 @@ impl ui::widget::AwaitsContent for AppWindow {
     fn awaits_content(&self) -> bool {
         self.shape == Shape::Window && self.root.is_none() && self.failed.is_none()
     }
+
+    fn awaits_answer(&self) -> bool {
+        self.shape == Shape::Window
+            && self.failed.is_none()
+            && (self.presses_unanswered() || self.landing.is_some())
+    }
 }
 
 /// The window bar's History shows the system's history of what the window shows: the app's

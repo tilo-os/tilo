@@ -1331,6 +1331,12 @@ impl ui::widget::AwaitsContent for HostedWindow {
             .as_ref()
             .is_none_or(|connected| ui::widget::AwaitsContent::awaits_content(&connected.view))
     }
+
+    fn awaits_answer(&self) -> bool {
+        self.connected
+            .as_ref()
+            .is_some_and(|connected| ui::widget::AwaitsContent::awaits_answer(&connected.view))
+    }
 }
 
 /// The window stands for what it shows (the app window's window, or the loading state before it)

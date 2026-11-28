@@ -38,6 +38,12 @@ pub trait ReservedShape {
 pub trait AwaitsContent {
     /// Whether the content is still on its way.
     fn awaits_content(&self) -> bool;
+
+    /// Whether what it shows is about to change under the keyboard: a press its app runs has not
+    /// been answered, so a key nothing takes now is meant for what that press opens.
+    fn awaits_answer(&self) -> bool {
+        false
+    }
 }
 
 /// What an [`ArrivingView`] shows.

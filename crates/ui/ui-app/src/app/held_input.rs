@@ -4,8 +4,8 @@
 //! Nothing in it can take a key then, and a key it does not take is gone: Ctrl+N pressed as Notes
 //! opens would make no note, and say nothing. So the keys, and the text an input method commits,
 //! wait in order, each with the modifiers held when it was pressed, until the content stands; the
-//! frame that first lays it out hands them on, as if they had just been typed. A window keeps
-//! nothing back once its content arrived: what comes after is the content's own business.
+//! frame that first lays it out hands them on, as if they had just been typed. Later, a key waits
+//! only while a press its app runs is unanswered, for what that press opens.
 //!
 //! A key something in the window takes (a chord the window's framework answers, Tab moving the
 //! keyboard) is not held: only what nothing took waits. A press of the pointer is not held: what it
@@ -58,11 +58,6 @@ impl HeldInput {
         !self.queue.is_empty() && Self::waits(event)
     }
 
-    /// Whether `event` might wait if nothing takes it: the window may still hold input.
-    pub(crate) fn may_keep(&self, event: &WindowEvent) -> bool {
-        (self.stands_in || !self.arrived) && Self::waits(event)
-    }
-
     /// Queue `event`, pressed with `modifiers`: behind what waits already, or because nothing in
     /// the window `root` took it while its content is on its way. Whether it was queued.
     pub(crate) fn keep(
@@ -71,7 +66,10 @@ impl HeldInput {
         event: WindowEvent,
         modifiers: Modifiers,
     ) -> bool {
-        if !self.queue.is_empty() || self.holding(root) {
+        // A key let go starts nothing: it waits only behind its own press.
+        let released = matches!(&event, WindowEvent::KeyboardInput { event, .. }
+            if event.state == winit::event::ElementState::Released);
+        if !self.queue.is_empty() || (!released && self.holding(root)) {
             self.queue.push_back((event, modifiers));
             return true;
         }
@@ -80,18 +78,17 @@ impl HeldInput {
 
     /// Whether the window holds input now: it stands in for an app, or its content has not arrived
     /// yet. Looking settles the second for good once the content stands.
-    fn holding(&mut self, root: &dyn Widget) -> bool {
+    pub(super) fn holding(&mut self, root: &dyn Widget) -> bool {
         if self.stands_in {
             return true;
         }
-        if self.arrived {
-            return false;
+        if !self.arrived {
+            if awaits(root, |widget| widget.awaits_content()) {
+                return true;
+            }
+            self.arrived = true;
         }
-        if awaits_content(root) {
-            return true;
-        }
-        self.arrived = true;
-        false
+        awaits(root, |widget| widget.awaits_answer())
     }
 
     /// What waited, in order, once the content of `root` stands; nothing while it does not.
@@ -123,14 +120,14 @@ impl HeldInput {
     }
 }
 
-/// Whether `widget`, or a widget under it, stands for content that has not arrived yet.
-fn awaits_content(widget: &dyn Widget) -> bool {
-    if capability::<dyn AwaitsContent>(widget).is_some_and(AwaitsContent::awaits_content) {
+/// Whether `widget`, or a widget under it, `waits` ([`AwaitsContent`]).
+fn awaits(widget: &dyn Widget, waits: fn(&dyn AwaitsContent) -> bool) -> bool {
+    if capability::<dyn AwaitsContent>(widget).is_some_and(waits) {
         return true;
     }
     let mut found = false;
     widget.for_each_child(&mut |child| {
-        found = found || awaits_content(child);
+        found = found || awaits(child, waits);
     });
     found
 }
@@ -150,8 +147,8 @@ impl super::App {
     }
 
     /// A copy of `event` to keep if nothing takes it while the window's content is on its way.
-    pub(super) fn held_input_candidate(&self, event: &WindowEvent) -> Option<WindowEvent> {
-        self.input.held.may_keep(event).then(|| event.clone())
+    pub(super) fn held_input_candidate(event: &WindowEvent) -> Option<WindowEvent> {
+        HeldInput::waits(event).then(|| event.clone())
     }
 
     /// Keep `event`, which nothing in the window took, when the window's content is still on its
