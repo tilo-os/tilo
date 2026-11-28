@@ -73,15 +73,20 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
 
-    // Bo's own identity, kept in their account's identity directory.
+    // Bo's own identity, kept in their account's identity directory: made where a device's daemon
+    // signs, which this process stands in for with a key of Bo's own.
     let bo_dir = root.join("bo").join("identity");
     std::fs::create_dir_all(&bo_dir).unwrap();
+    let bo_keys = tilo_device_identity::IdentityPaths::under(root.join("bo").join("keys"));
+    tilo_device_identity::persist::load_or_create_device_key(&bo_keys).unwrap();
+    let bo_key = tilo_device_identity::persist::take_device_key(&bo_keys).unwrap();
     tilo_identity::provisioning::ensure_collaboration_identity(
         &bo_dir,
-        &tilo_device_identity::IdentityPaths::under(root.join("bo").join("keys")),
+        &bo_keys,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
+    drop(bo_key);
     let bo = tilo_identity::store::load_from_path(
         tilo_identity::store::resolve_active_identity(&bo_dir).unwrap(),
     )
