@@ -432,6 +432,23 @@ fn an_icon_only_button_in_a_composer_row_is_listed_by_its_label() {
     );
 }
 
+/// A tree with a change no frame has drawn is not told: the shell keeps the controls of the
+/// frame the person sees until a frame draws this tree.
+#[test]
+fn a_change_no_frame_drew_is_not_told() {
+    let (mut app, _shell, _) = window();
+    app.needs_sync = true;
+    assert!(
+        app.window_targets_to_tell().is_none(),
+        "a change no frame drew is not what the window shows"
+    );
+    app.needs_sync = false;
+    assert!(
+        app.window_targets_to_tell().is_some(),
+        "the frame's controls are told once it is drawn"
+    );
+}
+
 /// What a window shows that has no menu of its own, counting the keys that reach it.
 struct Keys(Rc<Cell<u32>>);
 

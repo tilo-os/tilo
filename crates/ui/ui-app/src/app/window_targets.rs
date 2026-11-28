@@ -312,6 +312,11 @@ impl App {
     /// What it answers is what the shell is told from now on.
     #[cfg(feature = "native")]
     fn window_targets_to_tell(&mut self) -> Option<Vec<WindowTarget>> {
+        // A tree with a change no frame has drawn is not what the person sees: the shell keeps
+        // the controls of the frame that was drawn, and is told again once this tree is.
+        if self.unsettled() {
+            return None;
+        }
         // A tree its own consumers already refreshed on this pass is read as
         // it stands; one something marked stale is walked here, as they would.
         if !self.semantic_tree_current() {
