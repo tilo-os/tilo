@@ -702,6 +702,72 @@ class AStepThatListedItsControls(unittest.TestCase):
         self.assertIsNone(walked.listed)
 
 
+class AKindAStepNames(unittest.TestCase):
+    """A tilolang app publishes its kinds under its package (`tl.so.tilo.feeds.Library`), and a
+    step names the type as a person reads it: the same kind, and no other app's type of that
+    name."""
+
+    class Session:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def actions(self, query="", app=None):
+            return self.rows
+
+    row = {
+        "app_id": "so.tilo.feeds",
+        "action": {
+            "address": {
+                "resource": "tl.so.tilo.feeds.Library:1",
+                "action": "add-subscription",
+            },
+            "resource_kind": "tl.so.tilo.feeds.Library",
+        },
+        "resource": {"kind": "tl.so.tilo.feeds.Library", "label": "Feeds"},
+    }
+    # Another app's type of the same name: a person's snippets library, not Feeds'.
+    others = {
+        "app_id": "so.tilo.snippets",
+        "action": {
+            "address": {
+                "resource": "tl.so.tilo.snippets.Library:1",
+                "action": "new-snippet",
+            },
+            "resource_kind": "tl.so.tilo.snippets.Library",
+        },
+        "resource": {"kind": "tl.so.tilo.snippets.Library", "label": "Snippets"},
+    }
+
+    def walked(self, rows):
+        return walk.Walk({"tl": {"id": "so.tilo.feeds"}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"),
+                         session=self.Session(rows))
+
+    def test_the_type_a_person_reads_names_the_apps_own_kind(self):
+        row = self.walked([self.row]).published_row(
+            {"kind": "Library", "action": "add-subscription"})
+        self.assertIsNotNone(row, "`Library` finds `tl.so.tilo.feeds.Library`")
+
+    def test_the_packages_own_kind_names_it_too(self):
+        row = self.walked([self.row]).published_row(
+            {"kind": "tl.so.tilo.feeds.Library", "action": "add-subscription"})
+        self.assertIsNotNone(row)
+
+    def test_another_apps_type_of_that_name_is_no_row(self):
+        self.assertIsNone(
+            self.walked([self.others]).published_row(
+                {"kind": "Library", "action": "new-snippet"}),
+            "`Library` is the walked app's type, never another app's of the same name",
+        )
+
+    def test_another_type_is_no_row(self):
+        self.assertIsNone(
+            self.walked([self.row]).published_row(
+                {"kind": "Reader", "action": "add-subscription"}),
+            "a kind is one type, never a suffix of another's name",
+        )
+
+
 class AThemeThatIsAlreadySet(unittest.TestCase):
     """A theme op is the person looking at what they had: asking for the theme already shown
     changes nothing, and only the other one switches the desktop."""

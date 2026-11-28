@@ -2904,7 +2904,14 @@ class Walk:
                 continue
             action = row.get("action") or {}
             kind = action.get("resource_kind") or (row.get("resource") or {}).get("kind") or ""
-            if value.get("kind") not in (None, kind):
+            wanted = value.get("kind")
+            # A tilolang app publishes its kinds as its package names them
+            # (`tl.so.tilo.feeds.Library`), and a step names the type as a person reads it
+            # ("Library"): the row is that kind when it is the named app's own type — the
+            # step's app, or the one it names — and no other app's type of the same name.
+            named = value.get("app") or self.v.get("id")
+            own = f"tl.{named}.{wanted}" if wanted and named else None
+            if wanted not in (None, kind) and kind != own:
                 continue
             if value.get("app") not in (None, row.get("app_id")):
                 continue
