@@ -130,7 +130,13 @@
       "icon": "trash-2"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "new_snippet",
+      "label": "New snippet",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

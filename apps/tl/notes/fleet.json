@@ -197,6 +197,11 @@
   ],
   "commands": [
     {
+      "action": "new_note",
+      "label": "New note",
+      "key": "Ctrl+n"
+    },
+    {
       "action": "duplicate",
       "label": "Duplicate",
       "key": "Ctrl+Shift+d"

@@ -136,7 +136,13 @@
       "icon": "trash"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "add_account",
+      "label": "Add account",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

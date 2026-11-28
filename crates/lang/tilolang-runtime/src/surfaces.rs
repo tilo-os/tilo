@@ -1017,28 +1017,30 @@ impl Core {
         let Some(primary) = acted.iter().find(|action| flag(action, PRIMARY)) else {
             return Ok(None);
         };
-        let Some(shortcut) = opt_text(primary, KEY) else {
+        let (Some(shortcut), Some(id)) = (opt_text(primary, KEY), opt_text(primary, ID)) else {
             return Ok(None);
         };
-        if self.put_entry_key(at, shortcut)? {
+        if self.put_entry_key(at, shortcut, id)? {
             return Ok(Some(shortcut.to_owned()));
         }
         Ok(None)
     }
 
-    /// Give the entry at `at` or under it the key `shortcut`, unless a key already stands there.
-    /// Whether there is such an entry.
-    fn put_entry_key(&self, at: usize, shortcut: &str) -> Result<bool, RuntimeError> {
+    /// Give the entry at `at` or under it whose submit runs the primary action `primary` the key
+    /// `key`, unless a key already stands there. Whether there is such an entry.
+    fn put_entry_key(&self, at: usize, key: &str, primary: &str) -> Result<bool, RuntimeError> {
         let props = self.props(at)?;
-        let entry = self.kind(at)? == TEXT_INPUT && flag_prop(&props, "entry");
+        let entry = self.kind(at)? == TEXT_INPUT
+            && flag_prop(&props, "entry")
+            && (self.events(at)?.get("submit")).is_some_and(|run| runs(run, primary));
         if entry {
             if !props.contains_key("key") {
-                self.put_prop(at, "key", Value::text(shortcut))?;
+                self.put_prop(at, "key", Value::text(key))?;
             }
             return Ok(true);
         }
         for child in self.children(at)? {
-            if self.put_entry_key(child, shortcut)? {
+            if self.put_entry_key(child, key, primary)? {
                 return Ok(true);
             }
         }
@@ -1618,6 +1620,17 @@ fn opt_flag(action: &Value, at: usize) -> Option<bool> {
         },
         Some(Value::Bool(flag)) => Some(*flag),
         _ => None,
+    }
+}
+
+/// Whether a control's event `run` applies the action `id`, first of a `.then` if it is one.
+fn runs(run: &Value, id: &str) -> bool {
+    match run {
+        Value::Action(then) if then.action == crate::value::THEN_ACTION => {
+            then.args.first().is_some_and(|first| runs(first, id))
+        }
+        Value::Action(run) => run.action == id,
+        _ => false,
     }
 }
 

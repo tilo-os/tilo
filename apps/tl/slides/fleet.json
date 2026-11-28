@@ -239,7 +239,13 @@
       "icon": ""
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "add_slide",
+      "label": "Add slide",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

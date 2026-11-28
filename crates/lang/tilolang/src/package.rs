@@ -950,7 +950,18 @@ fn build_meta(
                     toggles: toggled_field(env, a, &c.params),
                     settles: c.present.settles.clone(),
                     field: c.present.field.clone(),
-                    key: c.present.key.clone(),
+                    // An app's primary action that makes a resource is on the platform's New
+                    // chord unless it names a key: every app's "new" answers it undeclared.
+                    key: c.present.key.clone().or_else(|| {
+                        let made = match &c.result {
+                            crate::types::Ty::Option(made) => made,
+                            made => made,
+                        };
+                        (c.present.role.as_deref() == Some("primary")
+                            && matches!(made, crate::types::Ty::Record(_))
+                            && c.present.opens.is_empty())
+                        .then(|| "Ctrl+n".to_owned())
+                    }),
                     group: c.present.group.clone(),
                     export: c.present.export.clone(),
                     guard: a

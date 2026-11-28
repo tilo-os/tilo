@@ -261,7 +261,7 @@ primary action new_event(
     day: Option<Date> = .none,
     at: Option<Time> = .none,
     minutes: Option<Int> = .none,
-) -> Event uses time (icon: .plus, label: "New event", key: "Ctrl+N") {
+) -> Event uses time (icon: .plus, label: "New event") {
     let d = day ?? today
     // A line that names only a day makes an event of the whole day, as the Rust app's quick
     // add did; a day's own entry says the time of day it starts at, and the bar's button starts

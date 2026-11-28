@@ -215,7 +215,13 @@
       "icon": ""
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "new_project",
+      "label": "New project",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": true,
   "listed": true,

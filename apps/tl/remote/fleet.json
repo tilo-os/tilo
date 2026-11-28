@@ -116,7 +116,13 @@
       "icon": "plus"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "add_connection",
+      "label": "Add connection",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

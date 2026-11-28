@@ -398,7 +398,13 @@
       "icon": ""
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "draft_report",
+      "label": "Create report draft",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

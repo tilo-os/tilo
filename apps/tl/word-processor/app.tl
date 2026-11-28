@@ -59,7 +59,6 @@ default view writer for Document
 primary action new_document(d: Document, template: Text = "blank") -> Document (
     icon: .file_plus,
     label: "New document",
-    key: "Ctrl+N",
 ) {
     d.title = ""
     d.body = RichText.from_markdown(template_body(template))

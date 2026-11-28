@@ -206,6 +206,11 @@
   ],
   "commands": [
     {
+      "action": "add_subscription",
+      "label": "Add subscription",
+      "key": "Ctrl+n"
+    },
+    {
       "action": "mark_read",
       "label": "Mark all as read",
       "key": "a"

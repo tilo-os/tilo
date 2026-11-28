@@ -395,7 +395,6 @@ action add_new(v: Vault, ask: Text) -> Option<Item> (icon: .plus, label: "Add to
 primary action new_item(v: Vault, title: Text = "") -> Option<Item> (
     icon: .plus,
     label: "New item",
-    key: "Ctrl+N",
     did: "added an item",
 ) {
     add_new(

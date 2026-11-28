@@ -35,7 +35,13 @@
       "icon": "plus"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "new_column",
+      "label": "New column",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

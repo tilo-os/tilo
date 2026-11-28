@@ -488,7 +488,7 @@ primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New mess
 
 /// Starts a message. A message is written before the workspace has an account to send it from:
 /// it waits in Drafts, and goes once the person adds one.
-primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message", key: "Ctrl+N") {
+primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
 }

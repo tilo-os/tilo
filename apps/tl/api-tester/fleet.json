@@ -404,7 +404,13 @@
       "icon": ""
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "new_request",
+      "label": "New request",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

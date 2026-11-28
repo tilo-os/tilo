@@ -607,7 +607,7 @@ primary action new_file(
     name: Text = "",
     folder: Option<Entry> = .none,
     text: Text = "",
-) -> Entry (icon: .file_plus, key: "Ctrl+N") {
+) -> Entry (icon: .file_plus) {
     require named(untitled_name(name)) "A file's name cannot hold a slash and cannot be empty"
     require free_in(p, folder, untitled_name(name), .none) "An entry of that name is in the folder already"
     let named = untitled_name(name)

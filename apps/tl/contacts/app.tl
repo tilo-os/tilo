@@ -156,7 +156,6 @@ place view contacts for Book
 primary action new_contact(book: Book, name: Text = "") -> Contact (
     icon: .plus,
     label: "New contact",
-    key: "Ctrl+N",
     did: "added a contact",
 ) {
     book.contacts.insert(Contact(name: name))

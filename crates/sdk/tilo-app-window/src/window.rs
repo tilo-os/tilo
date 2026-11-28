@@ -4356,7 +4356,11 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         // A field the keyboard is in takes the keys it uses, and says which they are by taking
         // them: the rest are the app's.
         let typing = self.typing();
-        if typing {
+        // A chord the window or its app declares is a command, never the field's to swallow.
+        let command = typing
+            && tilo_ui_base::PlatformConventions::default().command_modifier_down(modifiers)
+            && self.declared_shortcut(event, modifiers).is_some();
+        if typing && !command {
             self.body.handle_event(event, ctx);
             if *ctx.handled {
                 return;

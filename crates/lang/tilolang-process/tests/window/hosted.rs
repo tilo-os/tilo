@@ -1926,6 +1926,11 @@ fn enter_in_a_new_notes_title_moves_to_its_body(mut session: Session) {
     session.settle();
     let (title, body) = open_note(&mut session);
     assert_eq!((title.as_str(), body.as_str()), ("Lunch", "soup"));
+    // From that body, the window's key for a new note: what is typed next is its title.
+    session.window.chord(&["ctrl"], "n");
+    session.window.type_text("Dinner");
+    session.settle();
+    assert_eq!(open_note(&mut session).0, "Dinner");
 }
 
 #[test]

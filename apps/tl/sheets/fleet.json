@@ -233,6 +233,11 @@
   ],
   "commands": [
     {
+      "action": "new_sheet",
+      "label": "New sheet",
+      "key": "Ctrl+n"
+    },
+    {
       "action": "copy_cells",
       "label": "Copy",
       "key": "Ctrl+c"

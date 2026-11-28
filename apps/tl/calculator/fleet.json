@@ -103,7 +103,13 @@
       "icon": "trash"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "calculate",
+      "label": "Calculate",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

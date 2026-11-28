@@ -347,7 +347,7 @@ primary action new_task(
     title: Text = "",
     remind: Option<Time> = .none,
     notes: RichText = RichText(""),
-) -> Task uses time (icon: .plus, label: "New task", key: "Ctrl+N") {
+) -> Task uses time (icon: .plus, label: "New task") {
     require may_take(assignee, invoker) "{assignee?.name() ?? ""} is not in this workspace"
     tasks.numbers += 1
     // A task made for an agent is given to it as `assign` gives one: who gave it, and when, are
@@ -441,7 +441,6 @@ destructive action remove_project(p: Project) (icon: .trash, label: "Delete proj
 primary action add_to(p: Project, title: Text, status: Option<Status> = .none) -> Task (
     icon: .plus,
     label: "New task",
-    key: "Ctrl+N",
 ) {
     tasks.numbers += 1
     tasks.items.insert(

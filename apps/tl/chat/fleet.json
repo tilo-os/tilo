@@ -173,7 +173,13 @@
       "icon": "flag"
     }
   ],
-  "commands": [],
+  "commands": [
+    {
+      "action": "new_channel",
+      "label": "New channel",
+      "key": "Ctrl+n"
+    }
+  ],
   "windows_personal": false,
   "window_documents": false,
   "listed": true,

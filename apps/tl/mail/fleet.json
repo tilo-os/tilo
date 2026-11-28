@@ -294,6 +294,11 @@
       "key": "f5"
     },
     {
+      "action": "new_message",
+      "label": "New message",
+      "key": "Ctrl+n"
+    },
+    {
       "action": "new_draft",
       "label": "New message",
       "key": "Ctrl+n"
