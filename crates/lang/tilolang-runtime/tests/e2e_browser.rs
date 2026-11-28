@@ -1337,6 +1337,92 @@ mod cases {
             );
         }
 
+        phase a_website_account_opens_in_a_window_of_its_own;
+        // The person's own window lists their website accounts, the page's menu offers each, and
+        // the window an account opens in settles its engine on the account before it reads
+        // anything, says it is on its way, and stops saying so once the account opened.
+        {
+            let b = Browser::new();
+            b.run("opened_page", &[("p", Value::resource(&b.opened))]);
+            assert_eq!(
+                b.page.ops(),
+                ["sign_ins", "accounts", "asks"],
+                "the person's own window asks for their sign-ins and their accounts"
+            );
+            b.page(
+                "remember_accounts",
+                &[
+                    (
+                        "accounts",
+                        Value::text(
+                            json!([{"account": "slack-firefox-1", "service": "slack",
+                                "title": "Slack (Firefox)"}])
+                            .to_string(),
+                        ),
+                    ),
+                    ("message", Value::text("")),
+                ],
+            );
+            let view = b.page_view();
+            let row = of_kind(view.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|row| row.props.get("label") == Some(&Value::text("Open Slack (Firefox)")))
+                .unwrap_or_else(|| panic!("the menu offers the account: {}", dump(view.tree())));
+            view.fire(&row.key, "choose").expect("the account is chosen");
+            let Value::List(pages) = b.read(&b.root, "pages") else {
+                panic!("the pages are a list");
+            };
+            let Some(Value::Ref(made)) = pages.last() else {
+                panic!("the account opened a page");
+            };
+            let made = made.target.clone();
+            assert_eq!(b.text(&made, "account"), "slack-firefox-1");
+            assert_eq!(b.text(&made, "account_notice"), "Opening Slack (Firefox)…");
+
+            b.page.forget();
+            b.run("opened_page", &[("p", Value::resource(&made))]);
+            assert_eq!(
+                b.page.ops(),
+                ["account", "asks"],
+                "the account's engine is settled before the page is read"
+            );
+            assert_eq!(
+                b.page.asked_ops()[0]["account"].as_str(),
+                Some("slack-firefox-1")
+            );
+            let opening = b.view("page_view", vec![Value::resource(&made)]);
+            assert!(
+                of_kind(opening.tree(), "ui.Banner")
+                    .iter()
+                    .any(|banner| banner.props.get("title")
+                        == Some(&Value::text("Opening Slack (Firefox)…"))),
+                "the window says the account is on its way:\n{}",
+                dump(opening.tree())
+            );
+            b.run(
+                "remember_account",
+                &[
+                    ("p", Value::resource(&made)),
+                    ("open", Value::Bool(true)),
+                    ("message", Value::text("")),
+                ],
+            );
+            assert_eq!(b.text(&made, "account_notice"), "");
+
+            // A list the vault did not answer leaves the accounts as they were.
+            b.page(
+                "remember_accounts",
+                &[
+                    ("accounts", Value::text("[]")),
+                    ("message", Value::text("The vault did not answer")),
+                ],
+            );
+            let Value::List(accounts) = b.read(&b.root, "accounts") else {
+                panic!("the accounts are a list");
+            };
+            assert_eq!(accounts.len(), 1);
+        }
+
         phase the_extensions_toolbar_buttons_are_read_and_pressed_through_the_page;
         // The extensions' toolbar buttons are read from the page, a press reaches the engine with
         // the extension it stands for, and one the extension dimmed takes no press.
