@@ -57,9 +57,9 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
 use agent_keys::AgentKeys as _;
+use tilo_actions::remote::ReportsProgress;
 use tilo_person_services::PersonServices;
 use tilo_person_services::model_answers::{ModelAnswerer, ModelRefusal, Spender};
-use tilo_person_services::{LivePhase, LiveTurn};
 use tilo_workspace_service::workspaces::Workspaces;
 use turn_provider::TurnProvider;
 
@@ -690,6 +690,8 @@ struct Answer {
     /// The `#answer` invocation, and the stop its cancel sets.
     invocation: (InvocationId, Arc<AtomicBool>),
     started: tilo_actions::remote::Completer<Result<tilo_workspace_service::work::Started, String>>,
+    /// How far the turn gets, told to whoever follows its invocation.
+    progress: ReportsProgress,
 }
 
 impl tilo_workspace_service::work::AgentEngine for EngineKeys {
@@ -742,6 +744,27 @@ impl tilo_workspace_service::work::AgentEngine for EngineKeys {
         saver: String,
         invocation: (InvocationId, Arc<AtomicBool>),
     ) -> Pending<Result<tilo_workspace_service::work::Started, String>> {
+        self.answer_reporting(
+            workspace,
+            agent,
+            place,
+            event,
+            saver,
+            invocation,
+            Arc::new(|_, _, _| {}),
+        )
+    }
+
+    fn answer_reporting(
+        &self,
+        workspace: String,
+        agent: String,
+        place: tilo_workspace_service::work::Where,
+        event: tilo_automation::dispatch::DocumentEvent,
+        saver: String,
+        invocation: (InvocationId, Arc<AtomicBool>),
+        progress: ReportsProgress,
+    ) -> Pending<Result<tilo_workspace_service::work::Started, String>> {
         let (started, answer) = pending();
         let asked = Answer {
             workspace,
@@ -751,6 +774,7 @@ impl tilo_workspace_service::work::AgentEngine for EngineKeys {
             saver,
             invocation,
             started,
+            progress,
         };
         if let Err(refused) = self.answers.send(asked) {
             refused
@@ -1025,12 +1049,12 @@ impl ServerAgents {
             tokio::select! {
                 _ = again.tick() => Box::pin(self.read_answering(&mut known)).await,
                 answer = asked.recv() => {
-                    let Some(Answer { workspace, agent, place, event, saver, invocation, started }) = answer else {
+                    let Some(Answer { workspace, agent, place, event, saver, invocation, started, progress }) = answer else {
                         return;
                     };
                     let agents = self.clone();
                     tokio::spawn(async move {
-                        let taken = Box::pin(agents.triggered(&workspace, &agent, place, event, saver, invocation)).await;
+                        let taken = Box::pin(agents.triggered_reporting(&workspace, &agent, place, event, saver, invocation, progress)).await;
                         started.complete(taken);
                     });
                 }
@@ -1181,6 +1205,30 @@ impl ServerAgents {
         saver: String,
         (invocation, stop): (InvocationId, Arc<AtomicBool>),
     ) -> Result<tilo_workspace_service::work::Started, String> {
+        self.triggered_reporting(
+            workspace,
+            agent,
+            place,
+            event,
+            saver,
+            (invocation, stop),
+            Arc::new(|_, _, _| {}),
+        )
+        .await
+    }
+
+    /// [`Self::triggered`], telling whoever follows the turn's invocation how far it got: the
+    /// phase it is in and the calls of its answer it has carried out.
+    pub async fn triggered_reporting(
+        &self,
+        workspace: &str,
+        agent: &str,
+        place: tilo_workspace_service::work::Where,
+        event: tilo_automation::dispatch::DocumentEvent,
+        saver: String,
+        (invocation, stop): (InvocationId, Arc<AtomicBool>),
+        progress: ReportsProgress,
+    ) -> Result<tilo_workspace_service::work::Started, String> {
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
             .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
@@ -1263,8 +1311,9 @@ impl ServerAgents {
                 }
             }
         };
+        let progress = TurnProgress { report: progress };
         let (ended, used, failed) =
-            Box::pin(self.answer_going(workspace, &turn, &going, claim)).await;
+            Box::pin(self.answer_going(workspace, &turn, &going, claim, &progress)).await;
         if let Err(error) = &ended {
             tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an agent's turn did not finish");
         }
@@ -1388,38 +1437,6 @@ impl ServerAgents {
         Ok(scope)
     }
 
-    /// What follows `turn` as a live activity on its person's devices, where they started it
-    /// themselves: a cause asking for them (a reminder, an event, software acting for them) is
-    /// no turn they started and earns none.
-    fn live_run(&self, turn: &Turn, workspace: &str) -> Option<LiveRun> {
-        if !turn.typed {
-            return None;
-        }
-        let person: [u8; 32] = hex::decode(&turn.person).ok()?.try_into().ok()?;
-        Some(LiveRun {
-            workspaces: self.workspaces.clone(),
-            person,
-            turn: LiveTurn {
-                // The invocation that started it names it; a turn no invocation started is
-                // named by its agent and the change it answers.
-                id: turn
-                    .invocation
-                    .clone()
-                    .unwrap_or_else(|| format!("{}:{}", turn.agent.id.0, turn.cause)),
-                workspace: workspace.to_owned(),
-                conversation: turn.conversation.clone(),
-                agent: turn.agent.name.clone(),
-                asked: turn.asked.clone(),
-                phase: LivePhase::Working,
-                said: String::new(),
-                step: 0,
-                steps: 0,
-                outside: true,
-                at_ms: 0,
-            },
-        })
-    }
-
     /// Work `turn`, which holds its place as `going`: how it ended, what answered its model
     /// calls and what they used and cost, as the invocation that started it keeps them
     /// (`provider`, `model`, `tokens`, `cost_usd`), and why it failed where it may be asked
@@ -1430,6 +1447,7 @@ impl ServerAgents {
         turn: &Turn,
         going: &going::Going,
         claim: Arc<tilo_workspace_service::work::Claim>,
+        progress: &TurnProgress,
     ) -> (Result<(), String>, Value, Option<String>) {
         let scope = match self.scope(workspace, turn).await {
             Ok(scope) => scope,
@@ -1444,7 +1462,7 @@ impl ServerAgents {
         let mut reply = scope.reply(&turn);
         reply.claim = Some((claim, going.stop_flag()));
         let _run = TurnRun(reply.caller.execution_lease());
-        Box::pin(self.answer_by_model(workspace, (scope, turn, reply), going)).await
+        Box::pin(self.answer_by_model(workspace, (scope, turn, reply), going, progress)).await
     }
 
     /// The rest of [`Self::answer_going`] for a turn that the agent's model works: its scope,
@@ -1454,24 +1472,15 @@ impl ServerAgents {
         workspace: &str,
         (scope, mut turn, mut reply): (TurnScope, Turn, Reply),
         going: &going::Going,
+        progress: &TurnProgress,
     ) -> (Result<(), String>, Value, Option<String>) {
-        // A turn of their own is followed as a live activity from here to its answer, once
-        // there is a scope for it: the person asked, and this device works on it.
-        let live = self.live_run(&turn, workspace);
-        if let Some(live) = &live {
-            live.started();
-        }
         // A task is worked on over many agent sessions: the session is begun and its place
         // made before the model is asked, and one that may not begin ends here with its plain
         // line.
         let task = match Self::task_session(workspace, &mut turn, &reply).await {
             Ok(task) => task,
             Err(words) => {
-                let outcome = Outcome::Stopped(words);
-                if let Some(live) = &live {
-                    live.ended(&outcome);
-                }
-                let ended = reply.finished(&outcome).await;
+                let ended = reply.finished(&Outcome::Stopped(words)).await;
                 return (ended, Value::Null, None);
             }
         };
@@ -1510,6 +1519,7 @@ impl ServerAgents {
                     (day, task) => day.or(task),
                 };
                 let keeping = keeping.as_ref();
+                progress.began();
                 let web = self.web(workspace);
                 // What this server keeps of what was learned about the person, where the turn
                 // is their own keeper's conversation with the agent: the newest facts, as data.
@@ -1527,7 +1537,7 @@ impl ServerAgents {
                         told,
                         web,
                         keeping,
-                        live: live.as_ref(),
+                        progress,
                     },
                 ))
                 .await
@@ -1537,9 +1547,6 @@ impl ServerAgents {
             Some(task) => task.ended_as(outcome, cost, clock.elapsed()).await,
             None => outcome,
         };
-        if let Some(live) = &live {
-            live.ended(&outcome);
-        }
         logged_ended(&outcome, &turn, cost);
         if cost > 0 {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
@@ -2596,50 +2603,32 @@ async fn invoke_at(
 }
 
 /// What a turn has beside its agent's own tools: what it was told of its person, the public
-/// web it may look up, what it keeps of what it learns, and what shows it as it works.
+/// web it may look up, what it keeps of what it learns, and how far it tells its follower it got.
 struct Beside<'a> {
     told: Option<String>,
     web: web_search::Web,
     keeping: Option<&'a learned::Keeping>,
-    live: Option<&'a LiveRun>,
+    progress: &'a TurnProgress,
 }
 
-/// A turn of a person's own, as a live activity on their devices follows it: kept in their own
-/// store (`tilo_person_services::person_telling`), where whatever tells them outside Tilo reads
-/// it and one push goes to each device that shows live activities.
-struct LiveRun {
-    workspaces: Workspaces,
-    person: [u8; 32],
-    turn: LiveTurn,
+/// How far a turn got, as whoever follows its invocation is told: the phase it is in and the
+/// calls of its answer it has carried out. The broker keeps it on the turn's invocation, where
+/// Task Center and Chat read it and a live activity shows it.
+struct TurnProgress {
+    report: ReportsProgress,
 }
 
-impl LiveRun {
-    fn kept(&self) -> PersonServices {
-        PersonServices::of(&self.workspaces)
+impl TurnProgress {
+    fn began(&self) {
+        (self.report)("working", Some(0), None);
     }
 
-    fn started(&self) {
-        let _ = self.kept().live_started(&self.person, &self.turn);
-    }
-
-    fn stepped(&self, (nth, of): (usize, usize), phase: LivePhase) {
-        let step = u32::try_from(nth).unwrap_or(u32::MAX);
-        let steps = u32::try_from(of).unwrap_or(u32::MAX);
-        let _ = self
-            .kept()
-            .live_stepped(&self.person, &self.turn.id, phase, (step, steps));
-    }
-
-    fn ended(&self, outcome: &Outcome) {
-        let (phase, said) = match outcome {
-            Outcome::Answered(words) => (LivePhase::Answered, words.as_str()),
-            Outcome::Stopped(why) => (LivePhase::Stopped, why.as_str()),
-            Outcome::Failed(why) => (LivePhase::Failed, why.as_str()),
-            Outcome::Cancelled => (LivePhase::Cancelled, ""),
-        };
-        let _ = self
-            .kept()
-            .live_ended(&self.person, &self.turn.id, phase, said);
+    fn at(&self, phase: &str, (nth, of): (usize, usize)) {
+        (self.report)(
+            phase,
+            Some(u64::try_from(nth).unwrap_or(u64::MAX)),
+            Some(u64::try_from(of).unwrap_or(u64::MAX)),
+        );
     }
 }
 
@@ -2661,7 +2650,7 @@ async fn work(
         told,
         web,
         keeping,
-        live,
+        progress,
     } = beside;
     let Some(turns) = tokio::task::spawn_blocking(move || model())
         .await
@@ -2719,7 +2708,7 @@ async fn work(
         scope,
         going,
         keeping,
-        live,
+        progress,
         at: tokio::sync::Mutex::new((turn, reply)),
         written,
         server: &server,
@@ -2785,8 +2774,8 @@ impl tilo_agent_turn::Model for Asking {
 struct Answering<'a> {
     scope: &'a TurnScope,
     going: &'a going::Going,
-    /// What a turn of its person's own shows as it works, where one follows it.
-    live: Option<&'a LiveRun>,
+    /// How far the turn got, told to whoever follows its invocation.
+    progress: &'a TurnProgress,
     /// What a turn that knows and keeps facts keeps of what it learns ([`learned`]).
     keeping: Option<&'a learned::Keeping>,
     /// The ask the turn answers now, and where its answer is written.
@@ -2819,18 +2808,15 @@ impl tilo_agent_turn::Doing<McpServer<WorkspaceActionProvider>> for Answering<'_
         // The round its answer calls tools in ended: what it wrote stays in the reply, and the
         // answer that follows stands below it.
         self.written.ended();
-        // A question put to the person waits for them: the activity says so while it waits.
-        let asks = call.name == "tilo_ask";
-        if let Some(live) = self.live
-            && asks
-        {
-            live.stepped((step.nth, step.of), LivePhase::Asking);
+        // A question put to the person waits for them: whoever follows the turn is told so
+        // while it waits, and how far it got otherwise.
+        if call.name == "tilo_ask" {
+            self.progress.at("asking", (step.nth, step.of));
         }
         let timed = steps::Step::begin(&call.name, (step.nth, step.of));
         let answer = Box::pin(timed.carried_out(work)).await;
-        if let Some(live) = self.live {
-            live.stepped((step.nth.saturating_add(1), step.of), LivePhase::Working);
-        }
+        self.progress
+            .at("working", (step.nth.saturating_add(1), step.of));
         timed.say(answer.text.len(), answer.is_error);
         // A line of the log names the call's tool and each argument by its name and the bytes
         // of its value; of a refusal it keeps the sentence without anything the call wrote, and

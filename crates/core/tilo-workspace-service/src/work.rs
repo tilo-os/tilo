@@ -1031,6 +1031,28 @@ pub trait AgentEngine: Send + Sync {
             "this device's agent engine answers no trigger".to_owned()
         ))
     }
+
+    /// [`Self::answer`] for a turn of the person's own, whose progress is told to whoever
+    /// follows its invocation (`progress`): the phase it is in and the calls of its answer it
+    /// has carried out. A cause asking for them (a reminder, an event, software acting for
+    /// them) reports none and answers as [`Self::answer`] does.
+    #[cfg(feature = "agents")]
+    fn answer_reporting(
+        &self,
+        workspace: String,
+        agent: String,
+        place: Where,
+        event: tilo_automation::dispatch::DocumentEvent,
+        saver: String,
+        invocation: (
+            tilo_actions::InvocationId,
+            Arc<std::sync::atomic::AtomicBool>,
+        ),
+        progress: tilo_actions::remote::ReportsProgress,
+    ) -> Pending<Result<Started, String>> {
+        let _ = progress;
+        self.answer(workspace, agent, place, event, saver, invocation)
+    }
 }
 
 /// The change that starts a turn, as the answer action takes it: the app it was made in, the

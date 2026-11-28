@@ -396,7 +396,7 @@ impl Answers {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-        _admitted: &Admitted,
+        admitted: &Admitted,
     ) -> Result<Pending<Outcome>, String> {
         let address = &request.target.address;
         let agent = agent_of(&address.resource)
@@ -428,6 +428,9 @@ impl Answers {
             .map(|broker| Arc::clone(broker) as Arc<dyn MayRead>);
         let (done, outcome) = pending();
         let going = Arc::clone(&self.going);
+        // A turn of the person's own tells whoever follows its invocation how far it got; a
+        // cause asking for them (a reminder, an event, software acting for them) does not.
+        let progress = typed(&event).then(|| Arc::clone(&admitted.progress));
         let answering = async move {
             if let Some(why) = unreadable(
                 &workspaces,
@@ -444,34 +447,44 @@ impl Answers {
                 done.complete(Err(Box::new(not_started(why, false))));
                 return;
             }
-            engine
-                .answer(workspace, agent, place, event, saver, (invocation, stop))
-                .then(move |started| {
-                    going.lock_recover().remove(&invocation);
-                    done.complete(match started {
-                        Some(Ok(started)) => Ok(ActionOutput {
-                            value: Some(match started {
-                                Started::Taken(used) => {
-                                    let mut taken = Map::new();
-                                    taken.insert("taken".into(), json!(true));
-                                    if let Value::Object(used) = used {
-                                        taken.extend(used);
-                                    }
-                                    Value::Object(taken)
+            let answering = match progress {
+                Some(progress) => engine.answer_reporting(
+                    workspace,
+                    agent,
+                    place,
+                    event,
+                    saver,
+                    (invocation, stop),
+                    progress,
+                ),
+                None => engine.answer(workspace, agent, place, event, saver, (invocation, stop)),
+            };
+            answering.then(move |started| {
+                going.lock_recover().remove(&invocation);
+                done.complete(match started {
+                    Some(Ok(started)) => Ok(ActionOutput {
+                        value: Some(match started {
+                            Started::Taken(used) => {
+                                let mut taken = Map::new();
+                                taken.insert("taken".into(), json!(true));
+                                if let Value::Object(used) = used {
+                                    taken.extend(used);
                                 }
-                                Started::Elsewhere(why) => json!({"taken": false, "why": why}),
-                            }),
-                            resources: Vec::new(),
+                                Value::Object(taken)
+                            }
+                            Started::Elsewhere(why) => json!({"taken": false, "why": why}),
                         }),
-                        // The turn failed: the shortcut's one retry asks the answer again
-                        // with the same cause, until its attempts run out.
-                        Some(Err(why)) => Err(Box::new(not_started(why, true))),
-                        None => Err(Box::new(not_started(
-                            "this device's agents stopped".to_owned(),
-                            true,
-                        ))),
-                    });
+                        resources: Vec::new(),
+                    }),
+                    // The turn failed: the shortcut's one retry asks the answer again
+                    // with the same cause, until its attempts run out.
+                    Some(Err(why)) => Err(Box::new(not_started(why, true))),
+                    None => Err(Box::new(not_started(
+                        "this device's agents stopped".to_owned(),
+                        true,
+                    ))),
                 });
+            });
         };
         // The check reads the workspace's records, which a step's own thread never holds: the
         // device's one loop runs it.
@@ -499,6 +512,29 @@ struct Answer {
     workspace: String,
     /// The invocation it runs under.
     invocation: InvocationId,
+}
+
+/// The change the answer `request` answers, and where it was made: what a live activity says it
+/// works on and opens. None for a request that is no answer.
+#[must_use]
+pub fn answered(request: &InvokeRequest) -> Option<(Where, DocumentEvent)> {
+    let argument = request.argument.to_slot();
+    let arguments = argument
+        .as_deref()
+        .and_then(|text| text.strip_prefix(ARGUMENTS_JSON_PREFIX))?;
+    let arguments = tilo_failure::ignored!(
+        "an answer whose arguments do not read as JSON names no turn a live activity shows",
+        serde_json::from_str::<Map<String, Value>>(arguments).ok()
+    )?;
+    let place = tilo_failure::ignored!(
+        "an answer whose change does not read names no turn a live activity shows",
+        serde_json::from_value(arguments.get(CAUSE)?.clone()).ok()
+    )?;
+    let event = tilo_failure::ignored!(
+        "an answer whose event does not read names no turn a live activity shows",
+        serde_json::from_value(arguments.get(EVENT_INPUT)?.clone()).ok()
+    )?;
+    Some((place, event))
 }
 
 /// Read `request`'s argument as the [`Answer`] it names, started for `caller`.

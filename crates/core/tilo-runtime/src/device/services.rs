@@ -2791,6 +2791,11 @@ impl Daemon {
         }
         // What a server keeps beyond its copies, on the workspace service it runs.
         let serves_pages = keeping.is_some();
+        // The device's one record of the invocations it was asked for: the app broker keeps it,
+        // and a turn's progress is followed there. Made before this server serves its pages, so
+        // a live activity reads what the daemon's agents write.
+        let invocations: Arc<Invocations> = Arc::default();
+        workspaces.serve_invocations(Arc::clone(&invocations));
         let kept = if let (Some(keeping), Some(relay), Some(itself)) = (keeping, relay, itself) {
             stage("keeping what this server keeps");
             Some(keeping.keep(super::keep::On {
@@ -3229,7 +3234,6 @@ impl Daemon {
         stage("starting the collaboration broker");
         let shell_links = Arc::default();
         let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
-        let invocations: Arc<Invocations> = Arc::default();
         // No record of a call keeps what its action takes secret, nor what an action whose
         // declaration says so answers.
         invocations.keep_no_secrets(workspaces.copies().secret_parameters());
@@ -3368,7 +3372,6 @@ impl Daemon {
             hex::encode(identity.cert.user_public_key),
         ))
         .register(&workspaces.copies().providers());
-        workspaces.serve_invocations(Arc::clone(&invocations));
         stage("reading the calls that wait for the person");
         let asked = super::asked::DeviceAsked::new(
             asked_store(&workspaces)?,

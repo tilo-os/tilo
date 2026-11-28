@@ -9,6 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "A device's one record of each invocation it was asked for: who asked, what, how it stands, and the provider it runs at."
 
+[features]
+# What a test or a fixture sets a record up with, as a dispatch would have.
+test-support = []
+
 [lib]
 name = "tilo_invocations"
 path = "src/lib.rs"

@@ -29,13 +29,10 @@ pub use model_providers::OpenAiSignIn;
 /// A person's own model, asked for whatever this host runs for them.
 pub mod model_answers;
 pub mod person_learned;
-/// The turns of people's own agents that run now, as a live activity follows them.
-pub mod person_live;
 mod person_settings;
 /// What the person was told, kept where their workspace runs.
 pub mod person_telling;
 pub mod this_computer;
-pub use person_live::{LivePhase, LiveTurn};
 pub use person_telling::ToTell;
 /// Where a person's devices are reached while their Tilo is closed.
 pub use person_telling::addresses as push_addresses;
@@ -95,9 +92,6 @@ struct Kept {
     vault_uses: hosted_use::Uses,
     /// What its people were told, one writer at a time ([`person_telling`]).
     telling: person_telling::Telling,
-    /// The turns of its people's own agents that run now, as a live activity
-    /// follows them ([`person_live`]).
-    live: person_live::Live,
     /// Moves whenever a person's own settings kept here (their mail accounts) changed, so a
     /// window following them reads them again ([`person_settings`]).
     person_settings_moved: tokio::sync::watch::Sender<u64>,
@@ -139,7 +133,6 @@ impl Default for Kept {
             vault_uses: hosted_use::Uses::proving_within(models.mail_reach()),
             models,
             telling: person_telling::Telling::default(),
-            live: person_live::Live::new(),
             person_settings_moved: tokio::sync::watch::channel(0).0,
             secret_clipboard: std::sync::OnceLock::new(),
             vault_asks: std::sync::OnceLock::new(),
@@ -171,6 +164,13 @@ impl PersonServices {
     #[must_use]
     pub fn workspaces(&self) -> &Workspaces {
         &self.workspaces
+    }
+
+    /// The device's one record of the invocations it was asked for, once its dispatch serves it:
+    /// what a turn of an agent is followed by, and what a live activity shows.
+    #[must_use]
+    pub fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
+        self.inner.invocations.get().cloned()
     }
 
     /// These services, by weak reference to their workspaces.
