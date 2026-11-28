@@ -976,11 +976,7 @@ fn settled(outcomes: &[Outcome]) -> Result<Option<serde_json::Value>, ActionCall
             reason: NO_HISTORY.to_owned(),
         });
     }
-    let named = |share: &Share| match tilo_actions::remote::resource_parts(&share.at) {
-        Some((app, record)) if !record.is_empty() => format!("{app} {record}"),
-        Some((app, _)) => app.to_owned(),
-        None => share.at.clone(),
-    };
+    let named = |share: &Share| share.at.clone();
     let mut kept = serde_json::Map::new();
     let (mut taken, mut refused) = (Vec::new(), Vec::new());
     for (share, outcome) in outcomes {

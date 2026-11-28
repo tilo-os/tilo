@@ -295,16 +295,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             query.provider.as_deref(),
-            Some(
-                format!(
-                    "record:{}:{}",
-                    NotebookApp::ID,
-                    ResourceSegment::new(app.record().as_str())
-                        .unwrap()
-                        .provider_part()
-                )
-                .as_str()
-            )
+            Some(NotebookApp::ID)
         );
 
         let answer = app

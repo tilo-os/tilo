@@ -12,6 +12,14 @@ const RECORD_WAIT_MS: u32 = 25_000;
 /// Longest answer, in characters, a record read gives: a longer chain is read a part at a time.
 const RECORD_CHARS: usize = 200_000;
 
+/// The app and record a `tilo_read` path `record:<app>:<record>` reads. App ids hold no colon; a
+/// record id may (`uuid:…`), and an empty one is the app's own record.
+pub(super) fn read_path(path: &str) -> Option<(&str, &str)> {
+    path.strip_prefix("record:")?
+        .split_once(':')
+        .filter(|(app, _)| !app.is_empty())
+}
+
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_ls` of `record:<app>` (`record:` for every app's): the records of the workspace the
     /// record API lists for the agent, as a read with `listing` answers them, each by the path

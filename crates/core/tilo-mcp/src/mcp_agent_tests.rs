@@ -983,7 +983,6 @@ impl tilo_workspace_records::search::Answers for Notes {
                     ),
                     arguments: serde_json::Map::new(),
                     app: Some(APP.to_owned()),
-                    provider: None,
                     when: None,
                     ..tilo_workspace_records::search::Found::default()
                 },

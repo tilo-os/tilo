@@ -158,7 +158,7 @@ impl AppBrokerState {
             // network, a paired accessory): the eager listing holds the resources in front alone,
             // and its own catalogue names the row at the address the call asks.
             .or_else(|| {
-                let registered = self.registered(provider)?;
+                let registered = self.answering(&request.target)?;
                 let descriptor = self.services.providers.as_ref()?.descriptor(
                     &registered,
                     caller,

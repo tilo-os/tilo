@@ -823,7 +823,7 @@ async fn an_apps_connection_is_refused_the_persons_shell() {
         asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
-            provider: "record:so.tilo.settings:device:server".to_owned(),
+            provider: "so.tilo.settings".to_owned(),
             address: ActionAddress::new("device:server", "set-work"),
         },
         argument: InvokeArgument::Json(serde_json::Map::from_iter([(

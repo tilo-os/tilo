@@ -38,7 +38,7 @@ fn record_of(device: &Device) -> serde_json::Value {
 /// Apply one typed action to the person's devices record through `device`'s daemon.
 fn write(device: &Device, action: &str, arguments: serde_json::Value) {
     let target = RemoteActionTarget {
-        provider: "record:so.tilo.devices:devices".into(),
+        provider: "so.tilo.devices".into(),
         address: ActionAddress::new("tilo.devices", action),
     };
     let answer = device.act_wait(&target, &arguments);

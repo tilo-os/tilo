@@ -366,13 +366,12 @@ impl<H: ActionProvider + Clone + Send + Sync + 'static> Carrying<H> {
             on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
-                provider: format!(
-                    "{}:{TERMINAL}:{}",
-                    tilo_actions::remote::RESOURCE_PROVIDER,
-                    request.record
-                ),
+                provider: TERMINAL.to_owned(),
                 address: ActionAddress::new(
-                    workspace_terminal::RESOURCE,
+                    tilo_actions::remote::record_path(
+                        workspace_terminal::RESOURCE,
+                        &request.record,
+                    ),
                     workspace_terminal::ACTION,
                 ),
             },

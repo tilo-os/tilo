@@ -2589,7 +2589,7 @@ mod tests {
                 status: tilo_actions::remote::ReceiptStatus::Completed {
                     output: ActionOutput {
                         value: Some(
-                            serde_json::json!({"provider": "record:so.tilo.browser:abc", "record": "abc"}),
+                            serde_json::json!({"provider": "so.tilo.browser", "record": "abc"}),
                         ),
                         resources: Vec::new(),
                     },

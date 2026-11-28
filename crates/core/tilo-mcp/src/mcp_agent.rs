@@ -96,21 +96,6 @@ const SHELL_VERBS: [&str; 3] = ["run", "stop", OPEN_TERMINAL];
 /// The verb that opens the workspace's shell on a terminal for the device that asks.
 const OPEN_TERMINAL: &str = "open-terminal";
 
-/// The workspace's own Terminal session: the Terminal's root `session`, the one record its
-/// windows show and every device of the workspace meets on. A root's record is `root-<type id>`,
-/// and the Terminal package's ids lock gives `Session` the id `vgkud5dv`, which never changes.
-const WORKSPACE_SESSION: &str = "root-vgkud5dv";
-
-/// The provider naming the workspace's own Terminal session ([`WORKSPACE_SESSION`]), served by
-/// the device that keeps the workspace's machine.
-fn workspace_shell_provider() -> String {
-    format!(
-        "{}:{}:{WORKSPACE_SESSION}",
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        tilo_app_id::apps::TERMINAL,
-    )
-}
-
 /// Whether `name` names Terminal, whose sessions' shell the device that keeps the workspace's
 /// machine serves: its id, or the last part of it, in any case.
 fn names_terminal(name: &str) -> bool {
@@ -678,28 +663,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// Note the record a call resolved `in`: the one its provider names when
-    /// the workspace serves it as a record (`record:<app>:<record>`). A call
-    /// whose resource no record provider answers leaves the last one named:
-    /// the agent still acts there.
+    /// Note the record a call resolved `in`: the app's own record, when the workspace serves the
+    /// app's records under the app's id. A call whose resource no record provider answers leaves
+    /// the last one named: the agent still acts there.
     fn acted_in(&self, provider: &str, app_id: &str) {
-        // The workspace's shell record is the device that serves it answering, not an instance of
-        // the app: the app's name still finds its own directory, and its calls here move nothing.
-        let shell = app_id == tilo_app_id::apps::TERMINAL && provider == workspace_shell_provider();
-        if !shell {
+        // The workspace's shell is the device that serves it answering, not an instance of the
+        // app: the app's name still finds its own directory, and its calls here move nothing.
+        if app_id != tilo_app_id::apps::TERMINAL {
             // The app answered where it runs: the calls after this one reach it there, rather than
             // looking up again whether it runs and starting it when it does not.
             self.tree.saw_running(app_id, provider);
         }
-        let Some((app, document)) = tilo_actions::remote::resource_parts(provider) else {
-            return;
-        };
-        if app != app_id {
+        if provider != app_id {
             return;
         }
         *self.acted.lock_recover() = Some(super::ActedRecord {
-            app: app.to_owned(),
-            record: document.to_owned(),
+            app: app_id.to_owned(),
+            record: String::new(),
         });
     }
 
@@ -1179,7 +1159,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
-        if let Some((app, record)) = tilo_actions::remote::resource_parts(&args.path) {
+        if let Some((app, record)) = record::read_path(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
             return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
         }
@@ -1626,7 +1606,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if self.on_workspace_shell(parsed, action) {
             return Ok(Some((
                 tilo_app_id::apps::TERMINAL.to_owned(),
-                workspace_shell_provider(),
+                tilo_app_id::apps::TERMINAL.to_owned(),
                 true,
             )));
         }

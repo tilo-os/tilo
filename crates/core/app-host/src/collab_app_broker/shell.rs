@@ -9,9 +9,7 @@ use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
     DocumentWritten, SHELL_MAGIC, ShellCall, ShellMemberChange, ShellReply,
 };
-use tilo_actions::remote::{
-    Caller, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
-};
+use tilo_actions::remote::{Caller, ReceiptStatus, RemoteActionMessage, ResourceReadRequest};
 use tilo_peer_state::workspace_documents::DocumentWriting;
 
 use crate::services::{Caller as ServiceCaller, PublishedResources};
@@ -782,9 +780,9 @@ async fn served_reply(
     })
 }
 
-/// The frame the device's services publish the action of `request` as, where they publish what
-/// its provider names, changed by the app the request names as its own action: `None` where they
-/// do not, and the resource's provider answers instead.
+/// The frame the device's services publish the action of `request` as, where they publish the
+/// record it names (its app, and the record's path), changed by that app as its own action:
+/// `None` where they do not, and the dispatch answers instead.
 async fn published_invoke_answer(
     services: &ShellServices,
     workspace: Option<String>,
@@ -794,9 +792,13 @@ async fn published_invoke_answer(
     let Some(published) = &services.published else {
         return Ok(None);
     };
-    let Some((app, record)) = resource_parts(&request.target.provider) else {
+    let (app, record) = (
+        request.target.provider.as_str(),
+        request.target.address.resource.as_str(),
+    );
+    if !tilo_actions::remote::names_app(app) {
         return Ok(None);
-    };
+    }
     if !published_publishes(
         published,
         &ServiceCaller {
@@ -881,33 +883,15 @@ async fn dispatch(
             )
             .await?
         }
-        RemoteActionMessage::Invoke(request)
-            if tilo_actions::remote::is_resource_provider(&request.target.provider) =>
-        {
+        message => {
             // A resource the device's services publish themselves is changed by the app the
             // request names, as its own action.
-            if let Some(answer) =
-                published_invoke_answer(services, workspace.clone(), &request).await?
+            if let RemoteActionMessage::Invoke(request) = &message
+                && let Some(answer) =
+                    published_invoke_answer(services, workspace.clone(), request).await?
             {
                 return Ok(answer);
             }
-            let workspace =
-                workspace.ok_or("a resource's action is asked in the workspace that keeps it")?;
-            let caller = person.in_workspace(workspace);
-            let invocation = request.invocation;
-            let receipt = workspaces
-                .providers()
-                .invoke(&caller, request)
-                .ok_or("this device applies no action of that resource")?
-                .await
-                .ok_or("the action stopped before it answered")?
-                .unwrap_or_else(|error| tilo_actions::remote::InvocationReceipt {
-                    invocation,
-                    status: ReceiptStatus::Rejected { error },
-                });
-            RemoteActionMessage::Receipt(receipt)
-        }
-        message => {
             let (dispatch, admitted) = services
                 .actions
                 .dispatch(caller, workspace.clone(), pressed)

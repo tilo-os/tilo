@@ -36,31 +36,33 @@ pub const APPLICATION_START_ACTION: &str = "start";
 /// members, carrying no secret. A record's root always offers it.
 pub const SHARE_LINK_ACTION: &str = "share-link";
 
-/// Prefix of the provider token of one record of a workspace, served by a
-/// device that holds it whoever has it open: `record:<app id>:<record id>`
-/// (a provider serving its workspaces' records answers under these). Such a
-/// provider is the app's record, live, as a window of the app is.
-pub const RESOURCE_PROVIDER: &str = "record";
-
-/// Whether `provider` names one record of a workspace ([`RESOURCE_PROVIDER`]).
+/// Whether `provider` names an app, whose records a call of it acts on by their paths: no window
+/// (a numeric peer), and no token of a workspace's or of the host's own (`workspace:<id>`,
+/// `desktop:session`).
 #[must_use]
-pub fn is_resource_provider(provider: &str) -> bool {
-    provider
-        .strip_prefix(RESOURCE_PROVIDER)
-        .is_some_and(|rest| rest.starts_with(':'))
+pub fn names_app(provider: &str) -> bool {
+    !provider.is_empty() && provider.parse::<u64>().is_err() && !provider.contains(':')
 }
 
-/// The app and record ids `provider` names, when it names one record of a
-/// workspace ([`RESOURCE_PROVIDER`]): `record:<app id>:<record id>`. App ids
-/// hold no colon; a record id may (`uuid:…`), and an empty one is the app's
-/// own first record.
+/// The path of one of several records of a kind, as a call names it under the record's app: the
+/// kind's resource with the record's id nested under it (`tl.so.tilo.terminal.Session/<id>`).
+/// A record that is its kind's only one is the kind's resource itself.
 #[must_use]
-pub fn resource_parts(provider: &str) -> Option<(&str, &str)> {
-    provider
-        .strip_prefix(RESOURCE_PROVIDER)?
-        .strip_prefix(':')?
-        .split_once(':')
-        .filter(|(app, _)| !app.is_empty())
+pub fn record_path(resource: &str, record: &str) -> String {
+    if record.is_empty() {
+        resource.to_owned()
+    } else {
+        format!("{resource}/{record}")
+    }
+}
+
+/// The record `path` names under the kind's resource `resource` ([`record_path`]): `None` when it
+/// names none of that kind.
+#[must_use]
+pub fn record_in<'a>(path: &'a str, resource: &str) -> Option<&'a str> {
+    path.strip_prefix(resource)?
+        .strip_prefix('/')
+        .filter(|record| !record.is_empty())
 }
 
 #[cfg(test)]
@@ -73,23 +75,31 @@ mod tests {
 
     use super::*;
 
-    /// A record provider names its app and record, whichever shape the
-    /// record id has; nothing else names either.
+    /// A record's path nests its id under its kind's resource, and only that kind's path names
+    /// one, whichever shape the id has.
     #[test]
-    fn a_record_provider_names_its_app_and_record() {
+    fn a_record_path_nests_its_id_under_its_kind() {
+        let path = record_path("tl.so.tilo.terminal.Session", "uuid:7");
+        assert_eq!(path, "tl.so.tilo.terminal.Session/uuid:7");
         assert_eq!(
-            resource_parts("record:so.tilo.notes:uuid:7"),
-            Some(("so.tilo.notes", "uuid:7"))
+            record_in(&path, "tl.so.tilo.terminal.Session"),
+            Some("uuid:7")
+        );
+        assert_eq!(record_path("devices", ""), "devices");
+        assert_eq!(record_in("devices", "devices"), None);
+        assert_eq!(
+            record_in(
+                "tl.so.tilo.terminal.Sessions/7",
+                "tl.so.tilo.terminal.Session"
+            ),
+            None
         );
         assert_eq!(
-            resource_parts("record:so.tilo.chat:"),
-            Some(("so.tilo.chat", ""))
+            record_in(
+                "tl.so.tilo.terminal.Session/",
+                "tl.so.tilo.terminal.Session"
+            ),
+            None
         );
-        assert_eq!(resource_parts("record:so.tilo.chat"), None);
-        assert_eq!(resource_parts("record::main"), None);
-        assert_eq!(resource_parts("workspace:6b3f9a10"), None);
-        assert_eq!(resource_parts("4711"), None);
-        assert!(!is_resource_provider("4711"));
-        assert!(is_resource_provider("record:so.tilo.chat:"));
     }
 }

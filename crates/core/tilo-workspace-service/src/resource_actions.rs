@@ -1,8 +1,8 @@
 //! The typed actions of the workspace resources this device keeps for the person's own shell,
 //! applied here as each resource's owner declares them.
 //!
-//! A resource is named as every caller names one: `record:<app>:<id>` in the caller's workspace.
-//! Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
+//! A resource is named as every caller names one: its app, and its path in the caller's workspace
+//! (`so.tilo.devices` `devices#name-device`). Its type is the one its owner declares for it ([`Declared`]): the list of a workspace's
 //! agents (the workspace's), its emoji (Chat's), its contact directory (Contacts'), the person's
 //! settings, their list of workspaces and the record of their devices in the workspace whose only
 //! member is them (the settings', the identity's and the devices'). Any app's record also moves
@@ -11,8 +11,10 @@
 //! action changed is this device's write of the record in the workspace's store, so every app of
 //! the workspace and the person's other devices take it as any other.
 //!
-//! It is registered once on every device's providers ([`register`]) under the resource provider
-//! itself: a call made on this device reaches it ([`crate::workspaces::providers::Providers::invoke`]),
+//! Each is registered on every device's providers ([`register`]) for its app, publishing the tree
+//! its record has when founded, so a call naming the app and a path in that tree reaches it beside
+//! whatever else answers for the app ([`crate::workspaces::providers::Providers::answering`]): a
+//! call made on this device ([`crate::workspaces::providers::Providers::invoke`]),
 //! and so does a call a device of the workspace makes here, a person's server included, decided
 //! by the workspace's grants for that device and the record's app as every other device call is.
 
@@ -22,7 +24,7 @@ use serde_json::Map;
 use tilo_actions::api::{self, InvocationProvenance};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RESOURCE_PROVIDER, ReceiptStatus,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, LocalTransport};
 use tilo_server_protocol::WorkspaceId;
@@ -34,19 +36,33 @@ use crate::workspaces::person_workspace::{
     device_answers::{DEVICE_ANSWERS, DeviceAnswers},
     devices::{DEVICES, Devices},
 };
-use crate::workspaces::providers::Reach;
+use crate::workspaces::providers::{RECORD_MOVES, Reach};
 
 /// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
 /// its own callers and the devices of the workspaces it keeps.
 pub fn register(workspaces: &Workspaces) {
+    let taken_up = TakenUp::default();
+    for declared in Declared::all() {
+        let (kind, app) = (declared.kind.kind(), declared.app);
+        workspaces.providers().provide(
+            kind,
+            app,
+            Reach::Devices,
+            Arc::new(ResourceActions {
+                workspaces: workspaces.downgrade(),
+                declared: Some(Arc::new(declared)),
+                taken_up: taken_up.clone(),
+            }),
+        );
+    }
     workspaces.providers().provide(
-        RESOURCE_PROVIDER,
-        RESOURCE_PROVIDER,
+        RECORD_MOVES,
+        RECORD_MOVES,
         Reach::Devices,
         Arc::new(ResourceActions {
             workspaces: workspaces.downgrade(),
-            declared: Arc::from(Declared::all()),
-            taken_up: TakenUp::default(),
+            declared: None,
+            taken_up,
         }),
     );
 }
@@ -56,7 +72,9 @@ pub fn register(workspaces: &Workspaces) {
 struct ResourceActions {
     /// Held without keeping them alive: this answers from a provider they keep.
     workspaces: WeakWorkspaces,
-    declared: Arc<[Declared]>,
+    /// The record whose actions this applies; `None` for the provider moving any app's record
+    /// ([`RECORD_MOVES`]).
+    declared: Option<Arc<Declared>>,
     taken_up: TakenUp,
 }
 
@@ -128,8 +146,8 @@ fn settled_update(
 /// A resource its owner declares by the app it is of and its id, with the type its actions are:
 /// a kind every device declares, so the record is the workspace store's.
 struct Declared {
-    /// The app it is of; `None` for every app's.
-    app: Option<&'static str>,
+    /// The app it is of.
+    app: &'static str,
     id: String,
     kind: tilo_resource::ResourceKind,
 }
@@ -137,7 +155,7 @@ struct Declared {
 impl Declared {
     fn all() -> Vec<Self> {
         let workspace = |kind: tilo_resource::ResourceKind, app: &'static str| Self {
-            app: Some(app),
+            app,
             id: collab_types::workspace_document_id(kind.kind()),
             kind,
         };
@@ -158,21 +176,21 @@ impl Declared {
                 tilo_app_id::apps::CONTACTS,
             ),
             Self {
-                app: Some(tilo_user_identity::workspace_list::APP),
+                app: tilo_user_identity::workspace_list::APP,
                 id: tilo_user_identity::workspace_list::RESOURCE.to_owned(),
                 kind: tilo_user_identity::workspace_list::kind(),
             },
             // The record of the person's devices: what each of their devices says of itself (its
             // screens, its session, how it wakes), kept by that device's shell.
             Self {
-                app: Some(DEVICES.0),
+                app: DEVICES.0,
                 id: DEVICES.1.to_owned(),
                 kind: tilo_resource::ResourceKind::of::<Devices>().hosted_by(DEVICES.0, "Devices"),
             },
             // What the person answered about their devices' cameras and microphones, kept by the
             // device that asked them.
             Self {
-                app: Some(DEVICE_ANSWERS.0),
+                app: DEVICE_ANSWERS.0,
                 id: DEVICE_ANSWERS.1.to_owned(),
                 kind: tilo_resource::ResourceKind::of::<DeviceAnswers>()
                     .hosted_by(DEVICE_ANSWERS.0, "Devices"),
@@ -180,8 +198,12 @@ impl Declared {
         ]
     }
 
-    fn names(&self, app: &str, id: &str) -> bool {
-        self.app.is_none_or(|declared| declared == app) && self.id == id
+    /// The tree the record publishes when founded: its resource and the actions on it, which a
+    /// call names before the record is read.
+    fn founded(&self) -> Option<tilo_actions::ResourceSpec> {
+        let mut doc = automerge::AutoCommit::new();
+        self.kind.initialize(&mut doc).ok()?;
+        self.kind.publish(self.kind.kind(), &doc).ok()
     }
 }
 
@@ -392,8 +414,7 @@ impl ResourceActions {
                 reason: reason.to_owned(),
             })
         };
-        let (app, id) = tilo_actions::remote::resource_parts(&request.target.provider)
-            .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+        let app = request.target.provider.as_str();
         let workspace = caller
             .workspace()
             .ok_or_else(|| invalid("a resource's action is asked in the workspace that keeps it"))?
@@ -401,13 +422,16 @@ impl ResourceActions {
         // Any app's record moves to another workspace of the caller's: the store judges each
         // side of it as the caller's write there.
         if request.target.address.action == tilo_resource_store::MOVE_VERB {
+            let id = tilo_actions::remote::record_in(&request.target.address.resource, app)
+                .ok_or_else(|| invalid("a move names the record by its path under its app"))?;
             return self.moved(&workspace, app, id, caller, request).await;
         }
         let declared = self
             .declared
-            .iter()
-            .find(|declared| declared.names(app, id))
+            .as_deref()
+            .filter(|declared| declared.app == app)
             .ok_or_else(|| rejected(ActionCallError::UnknownAction))?;
+        let id = declared.id.as_str();
         let workspace_id =
             WorkspaceId::parse(&workspace).ok_or_else(|| invalid("that is not a workspace"))?;
         let workspaces = self
@@ -516,9 +540,12 @@ impl ResourceActions {
 }
 
 impl ActionProvider for ResourceActions {
-    fn serves(&self, provider: &str) -> bool {
-        tilo_actions::remote::resource_parts(provider)
-            .is_some_and(|(app, id)| self.declared.iter().any(|declared| declared.names(app, id)))
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.declared
+            .as_deref()
+            .and_then(Declared::founded)
+            .into_iter()
+            .collect()
     }
 
     /// Their actions are listed where the resources are read; nothing is listed here.

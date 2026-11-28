@@ -26,9 +26,7 @@ pub(super) fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::Catalo
         && query
             .provider
             .as_deref()
-            .and_then(|provider| provider.strip_prefix("record:"))
-            .and_then(|record| record.split_once(':'))
-            .is_some_and(|(app, _)| app == app_id)
+            .is_some_and(|provider| provider == app_id)
 }
 
 /// Whether `query` asks only what the person's catalogue says cannot run now, which a window's
@@ -138,24 +136,14 @@ mod own_view_lookup_tests {
                 }),
                 ..CatalogueQuery::default()
             };
-            assert!(own_view_lookup(
-                "so.tilo.notes",
-                &lookup("record:so.tilo.notes:", true)
-            ));
-            assert!(own_view_lookup(
-                "so.tilo.notes",
-                &lookup("record:so.tilo.notes:uuid:1", true)
-            ));
+            assert!(own_view_lookup("so.tilo.notes", &lookup("so.tilo.notes", true)));
             assert!(!own_view_lookup(
                 "so.tilo.notes",
-                &lookup("record:so.tilo.notes.evil:", true)
+                &lookup("so.tilo.notes.evil", true)
             ));
-            assert!(!own_view_lookup(
-                "so.tilo.chat",
-                &lookup("record:so.tilo.notes:", true)
-            ));
+            assert!(!own_view_lookup("so.tilo.chat", &lookup("so.tilo.notes", true)));
             assert!(
-                !own_view_lookup("so.tilo.notes", &lookup("record:so.tilo.notes:", false)),
+                !own_view_lookup("so.tilo.notes", &lookup("so.tilo.notes", false)),
                 "the action catalogue still needs declared access"
             );
         }
@@ -178,7 +166,7 @@ mod own_view_lookup_tests {
                 appearance: None,
                 signed: None,
             };
-            let record = "record:so.tilo.notes:";
+            let record = "so.tilo.notes";
             let app = "application:workspace-1:so.tilo.notes:uuid:1";
             assert!(super::reference_request(&request(record, "share-link")));
             assert!(!super::reference_request(&request(
@@ -354,7 +342,7 @@ mod invitation_request_tests {
             }
             assert!(
                 !super::invitation_request(&request(
-                    "record:so.tilo.notes:",
+                    "so.tilo.notes",
                     session_actions::INVITE_RESOURCE,
                     session_actions::ISSUE_INVITATION,
                 )),

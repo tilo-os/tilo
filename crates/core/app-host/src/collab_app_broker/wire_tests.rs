@@ -1042,7 +1042,7 @@ async fn an_apps_own_connection_is_never_answered_as_another_app() {
 
             let invoke = RemoteActionMessage::Invoke(InvokeRequest::plain(
                 tilo_actions::remote::RemoteActionTarget {
-                    provider: "record:so.tilo.settings:device:server".to_owned(),
+                    provider: "so.tilo.settings".to_owned(),
                     address: ActionAddress::new("device:server", "set-work"),
                 },
                 serde_json::Map::from_iter([(

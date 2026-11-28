@@ -67,7 +67,7 @@ impl ResourceSegment {
         }
     }
 
-    /// The record part of a `record:<app>:<record>` provider: empty for the primary.
+    /// The record's id as a link carries it: empty for the primary.
     #[must_use]
     pub fn provider_part(&self) -> &str {
         match self {
@@ -440,19 +440,6 @@ impl LinkTarget {
         }
     }
 
-    /// The app and record of a `record:<app>:<record>` provider.
-    ///
-    /// # Errors
-    ///
-    /// [`LinkError::BadProvider`] for any other shape.
-    pub fn from_provider(provider: &str) -> Result<(AppId, ResourceSegment), LinkError> {
-        let rest = provider
-            .strip_prefix("record:")
-            .ok_or(LinkError::BadProvider)?;
-        let (app, record) = rest.split_once(':').ok_or(LinkError::BadProvider)?;
-        Ok((AppId::parse(app)?, ResourceSegment::new(record)?))
-    }
-
     /// The structural rules a target must meet to be written.
     ///
     /// # Errors
@@ -702,19 +689,6 @@ mod tests {
         assert_eq!(ResourceSegment::new("").unwrap(), ResourceSegment::Primary);
         assert!(ResourceSegment::new("no-prefix").is_err());
         assert!(ResourceSegment::new(":x").is_err());
-        assert_eq!(
-            LinkTarget::from_provider("record:so.tilo.chat:").unwrap(),
-            (
-                AppId::parse("so.tilo.chat").unwrap(),
-                ResourceSegment::Primary
-            )
-        );
-        assert_eq!(
-            LinkTarget::from_provider("record:so.tilo.notes:uuid:1")
-                .unwrap()
-                .1,
-            ResourceSegment::Id("uuid:1".into())
-        );
     }
 
     #[test]

@@ -40,14 +40,8 @@ fn this_device() -> DeviceCert {
 
 /// `invoke`, a typed action on the record of the person's devices, run by their daemon as them.
 async fn record(host: &Host, invoke: &tilo_resource::Invoke<Devices>) {
-    let provider = format!(
-        "{}:{}:{}",
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        devices::DEVICES.0,
-        devices::DEVICES.1
-    );
     let request = host::call(
-        &provider,
+        devices::DEVICES.0,
         ActionAddress::new(<Devices as tilo_resource::Resource>::KIND, invoke.id),
         &Value::Object(invoke.arguments.clone()),
     );

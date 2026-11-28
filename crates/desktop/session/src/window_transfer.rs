@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 
-use tilo_actions::remote::{InvokeRequest, RESOURCE_PROVIDER, RemoteActionTarget};
+use tilo_actions::remote::{InvokeRequest, RemoteActionTarget, record_path};
 use tilo_session_client::daemon_documents::DaemonShell;
 use ui::application::NativeProfile;
 use ui::resource::{DocumentCheckout, DocumentId, DocumentPort, ResourceType};
@@ -89,9 +89,9 @@ pub(crate) fn move_record(
     arguments.insert("target".to_owned(), target.as_str().into());
     let request = InvokeRequest::plain(
         RemoteActionTarget {
-            provider: format!("{RESOURCE_PROVIDER}:{}:{}", from.app, id.as_str()),
+            provider: from.app.clone(),
             address: tilo_actions::ActionAddress::new(
-                from.app.as_str(),
+                record_path(&from.app, id.as_str()),
                 tilo_resource_store::MOVE_VERB,
             ),
         },

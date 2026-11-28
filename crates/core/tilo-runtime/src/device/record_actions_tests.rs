@@ -11,8 +11,7 @@ use automerge::ReadDoc as _;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    Caller, InvocationReceipt, InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, ReceiptStatus,
-    RemoteActionTarget,
+    Caller, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
@@ -131,7 +130,7 @@ async fn act(
                 asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
-                    provider: format!("{RESOURCE_PROVIDER}:{}:{}", record.app, record.id()),
+                    provider: record.app.to_owned(),
                     address: tilo_actions::ActionAddress::new(record.kind, action),
                 },
                 argument: InvokeArgument::Json(argument),

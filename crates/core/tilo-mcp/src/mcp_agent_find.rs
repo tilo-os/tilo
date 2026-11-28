@@ -420,25 +420,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 provider.clone(),
             ));
         }
-        // A hit that says its record is found there, and named by it where
-        // the app has several records: two PDFs publish their documents
-        // under one id, and the first record's would answer for both.
-        if let Some(own) = &found.provider
-            && let Some(at) = providers.iter().position(|(_, provider)| provider == own)
-        {
-            let (name, provider) = providers.remove(at);
-            let several = providers.iter().any(|(other, _)| *other == name);
-            let app = if several {
-                format!("{name}@{provider}")
-            } else {
-                name
-            };
-            if let Some((path, kind)) = self.ls_path(&provider, found, reads).await {
-                return Some((format!("{app}/{path}"), kind));
-            }
-            // A record the provider lists no rows of falls through: what its app published
-            // names it below.
-        }
         for (name, provider) in providers {
             let Some((path, kind)) = self.ls_path(&provider, found, reads).await else {
                 continue;
@@ -479,7 +460,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         for (provider, entry) in &running {
             if entry["app_id"].as_str() != Some(resolved.app_id.as_str())
                 || *provider == resolved.provider
-                || !tilo_actions::remote::is_resource_provider(provider)
+                || *provider != resolved.app_id
             {
                 continue;
             }

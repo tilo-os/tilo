@@ -1163,7 +1163,10 @@ impl Answers {
     /// here that reaches devices answers the token it names — an app process's
     /// token included — or published the address it calls.
     fn answers_action(&self, target: &RemoteActionTarget) -> bool {
-        self.work.providers.serves(&target.provider)
+        self.work
+            .providers
+            .answering(target, super::providers::Reach::Devices)
+            .is_some()
             || self
                 .work
                 .providers
@@ -1726,13 +1729,17 @@ impl Answers {
         // ([`crate::app_serving::AppActionServer::route`]), which decides who may.
         if let Some(placed) = caller.placed_records()
             && tilo_action_services::environment_device::action_of(&request.target).is_none()
-            && !self.work.providers.serves(&request.target.provider)
+            && self
+                .work
+                .providers
+                .answering(&request.target, super::providers::Reach::Devices)
+                .is_none()
             && self
                 .work
                 .providers
                 .published(&request.target, super::providers::Reach::Devices)
                 .is_none()
-            && !record_channel(&request.target).is_some_and(|channel| placed.reaches(&channel))
+            && !placed.reaches(&record_channel(&request.target))
         {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
@@ -1772,7 +1779,12 @@ impl Answers {
         if request.target.provider == WORK_PROVIDER {
             return self.work.take(caller, &request);
         }
-        if self.work.providers.serves(&request.target.provider) {
+        if self
+            .work
+            .providers
+            .answering(&request.target, super::providers::Reach::Devices)
+            .is_some()
+        {
             return self
                 .work
                 .providers
@@ -1802,17 +1814,11 @@ impl Answers {
     }
 }
 
-/// The channel of the app record `target` calls an action of, when it names one.
-fn record_channel(target: &tilo_actions::remote::RemoteActionTarget) -> Option<[u8; 32]> {
-    let app = tilo_actions::remote::resource_parts(&target.provider)
-        .map(|(app, _)| app)
-        .or_else(|| {
-            tilo_actions::remote::application_provider(&target.provider).map(|(_, app)| app)
-        })?;
-    Some(crate::environment::document_channel(
-        app,
-        &target.address.resource,
-    ))
+/// The channel of the app record `target` calls an action of.
+fn record_channel(target: &tilo_actions::remote::RemoteActionTarget) -> [u8; 32] {
+    let app = tilo_actions::remote::application_provider(&target.provider)
+        .map_or(target.provider.as_str(), |(_, app)| app);
+    crate::environment::document_channel(app, &target.address.resource)
 }
 
 /// A device that runs no apps serves none of their calls.

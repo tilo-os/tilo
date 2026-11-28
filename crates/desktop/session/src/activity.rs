@@ -2191,19 +2191,16 @@ mod run_undo {
     /// How long a record has to answer one request at all.
     const ANSWER: Duration = Duration::from_millis(100);
 
-    /// Where one record's changes may be taken back, in the order asked: the app's record, the
-    /// app's own record of the workspace, and the session's services for the records they keep.
-    fn candidates(app: &str, record: &str) -> Vec<(String, Option<String>)> {
-        let mut at = Vec::new();
-        if !record.is_empty() {
-            at.push((format!("record:{app}:{record}"), None));
-        }
-        at.push((format!("record:{app}:"), None));
-        at.push((
-            session_actions::PROVIDER.to_owned(),
-            Some(format!("tl:{app}:")),
-        ));
-        at
+    /// Where one record's changes may be taken back, in the order asked: the app's records, and
+    /// the session's services for the records they keep.
+    fn candidates(app: &str) -> [(String, Option<String>); 2] {
+        [
+            (app.to_owned(), None),
+            (
+                session_actions::PROVIDER.to_owned(),
+                Some(format!("tl:{app}:")),
+            ),
+        ]
     }
 
     /// Take back `undo` as `route`'s caller: the run whole through the workspace's record of its
@@ -2232,10 +2229,10 @@ mod run_undo {
         let mut done = Vec::new();
         let mut refused = Vec::new();
         for step in &undo.steps {
-            let (app, record) = step;
+            let (app, _) = step;
             let mut failure = None;
             let mut taken = false;
-            for (at, root) in candidates(app, record) {
+            for (at, root) in candidates(app) {
                 let left = until.saturating_duration_since(Instant::now());
                 let at = tilo_invocations::TakeBack {
                     at: &at,

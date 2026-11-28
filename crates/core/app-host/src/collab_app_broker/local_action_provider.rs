@@ -636,10 +636,19 @@ impl CertifiedLocalActionProvider {
     /// own admission decides under the application its registration names
     /// ([`AppBrokerState::invoke_registered`]).
     fn serves(&self, provider: &str, address: Option<&tilo_actions::ActionAddress>) -> bool {
-        address.map_or_else(
-            || certified_provider(provider),
-            |address| certified_target(provider, address),
-        ) || self.state.registered(provider).is_some()
+        match address {
+            None => certified_provider(provider) || self.state.registered(provider).is_some(),
+            Some(address) => {
+                certified_target(provider, address)
+                    || self
+                        .state
+                        .answering(&tilo_actions::remote::RemoteActionTarget {
+                            provider: provider.to_owned(),
+                            address: address.clone(),
+                        })
+                        .is_some()
+            }
+        }
     }
 
     /// `page` with only the rows and providers this dispatch serves ([`Self::serves`]): a
@@ -860,7 +869,8 @@ fn certified_provider(provider: &str) -> bool {
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()
         || super::launchable::is_launchable_provider(provider)
-        || tilo_actions::remote::is_resource_provider(provider)
+        // An app's record, named by its app and its path: the app's own dispatch decides it.
+        || tilo_actions::remote::names_app(provider)
         || tilo_actions::remote::provider_workspace(provider).is_some()
 }
 
@@ -969,11 +979,10 @@ mod tests {
         ));
         assert!(certified_target("42", &ActionAddress::new("note", "edit")));
         // An app's record is a provider this device serves like its workspace: a key's call
-        // reaches a built-in app's actions, and its listing keeps the record's rows.
-        let record = format!("{}:so.tilo.chat:", tilo_actions::remote::RESOURCE_PROVIDER);
-        assert!(certified_provider(&record), "{record}");
+        // reaches a built-in app's actions by the app and the record's path.
+        assert!(certified_provider("so.tilo.chat"));
         assert!(certified_target(
-            &record,
+            "so.tilo.chat",
             &ActionAddress::new("tl:so.tilo.chat:root", "send")
         ));
     }

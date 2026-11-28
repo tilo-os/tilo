@@ -675,12 +675,7 @@ const CONTACT_KIND: &str = "tilo.contacts.identities";
 
 impl ContactDirectory {
     fn provider() -> String {
-        format!(
-            "{}:{}:{}",
-            tilo_actions::remote::RESOURCE_PROVIDER,
-            tilo_app_id::apps::CONTACTS,
-            collab_types::workspace_document_id(CONTACT_KIND)
-        )
+        tilo_app_id::apps::CONTACTS.to_owned()
     }
 
     fn address() -> tilo_actions::ActionAddress {
@@ -691,8 +686,8 @@ impl ContactDirectory {
     fn providers(directory: Arc<Self>) -> tilo_workspace_service::workspaces::providers::Providers {
         let providers = tilo_workspace_service::workspaces::providers::Providers::default();
         providers.provide(
-            tilo_actions::remote::RESOURCE_PROVIDER,
-            tilo_actions::remote::RESOURCE_PROVIDER,
+            tilo_app_id::apps::CONTACTS,
+            tilo_app_id::apps::CONTACTS,
             tilo_workspace_service::workspaces::providers::Reach::Devices,
             directory as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
         );
@@ -701,10 +696,6 @@ impl ContactDirectory {
 }
 
 impl tilo_actions::remote::ActionProvider for ContactDirectory {
-    fn serves(&self, provider: &str) -> bool {
-        provider == Self::provider()
-    }
-
     fn query(
         &self,
         _caller: &Caller,

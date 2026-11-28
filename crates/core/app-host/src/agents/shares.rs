@@ -150,6 +150,7 @@ async fn read_as_the_turn(
     }
     tools
         .acted()
+        .await
         .map(|acted| (acted.app, acted.record))
         .filter(|(app, _)| names_app(path, app))
         .ok_or_else(|| format!("`{path}` names no document of an app the workspace keeps"))

@@ -222,7 +222,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                 output
                     .get("provider")
                     .and_then(serde_json::Value::as_str)
-                    .filter(|provider| crate::remote::is_resource_provider(provider))
+                    .filter(|provider| *provider == app_id)
                     .map(str::to_owned)
             })
             .ok_or_else(|| {

@@ -397,17 +397,6 @@ impl Attached {
         }
     }
 
-    /// The `record:<app>:<record>` provider of the record it is in, its
-    /// record empty for the app's primary one.
-    #[must_use]
-    pub fn provider(&self) -> Option<String> {
-        let at = self.at()?;
-        let record = crate::link::ResourceSegment::new(at.record.as_deref().unwrap_or_default())
-            .map(|segment| segment.provider_part().to_owned())
-            .unwrap_or_default();
-        Some(format!("record:{}:{record}", at.app))
-    }
-
     /// What it points at, as an agent asked about it reads it: the record by
     /// its app, kind and id, the items or the run of characters meant, and
     /// what the person saw it as. `None` for words quoted from nowhere and for
@@ -526,10 +515,6 @@ mod tests {
         assert_eq!(attached.label(), "Plan");
         assert_eq!(attached.at(), Some(&note));
         assert_eq!(attached.anchor(), Some(&Anchor::item("block-2")));
-        assert_eq!(
-            attached.provider().as_deref(),
-            Some("record:so.tilo.notes:uuid:7")
-        );
         let target = attached.open_target("ws-1").expect("opens");
         assert_eq!(
             tilo_actions::remote::application_provider_resource(&target.provider),
@@ -546,7 +531,6 @@ mod tests {
             None,
             "Hi",
         );
-        assert_eq!(primary.provider().as_deref(), Some("record:so.tilo.chat:"));
         let target = primary.open_target("ws-1").expect("opens");
         assert_eq!(
             tilo_actions::remote::application_provider_resource(&target.provider),
@@ -561,7 +545,6 @@ mod tests {
         });
         assert_eq!(file.label(), "report.pdf");
         assert_eq!(file.open_target("ws-1"), None);
-        assert_eq!(file.provider(), None);
     }
 
     #[test]

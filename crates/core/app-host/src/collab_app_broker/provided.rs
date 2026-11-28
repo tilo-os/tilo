@@ -413,14 +413,28 @@ impl AppBrokerState {
         self.services.providers.as_ref()?.get(provider)
     }
 
+    /// The provider registered on this device answering `target` from here, as the dispatch
+    /// takes it: one registered for the app it names publishing its path, else the one it names
+    /// ([`tilo_workspace_service::workspaces::providers::Providers::answering`]).
+    pub(super) fn answering(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<Registered> {
+        self.services.providers.as_ref()?.answering(
+            target,
+            tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+        )
+    }
+
     /// The provider registered on this device that a call of `target` from here reaches: the
-    /// one it names, else the one publishing the address it names, as the dispatch finds them.
+    /// one answering it, else the one publishing the address it names, as the dispatch finds
+    /// them.
     pub(super) fn provider_of(
         &self,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Option<Registered> {
         let providers = self.services.providers.as_ref()?;
-        providers.get(&target.provider).or_else(|| {
+        self.answering(target).or_else(|| {
             providers.published(
                 target,
                 tilo_workspace_service::workspaces::providers::Reach::ThisDevice,

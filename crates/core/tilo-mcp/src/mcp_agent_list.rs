@@ -38,8 +38,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             // A host service (the desktop's layout) runs with the session,
             // and has no window.
             let windowed = running.iter().any(|(provider, app)| {
-                (provider.parse::<u64>().is_ok()
-                    || tilo_actions::remote::is_resource_provider(provider))
+                (provider.parse::<u64>().is_ok() || provider == app_id)
                     && app["app_id"].as_str() == Some(app_id)
             });
             let workers = if windowed {

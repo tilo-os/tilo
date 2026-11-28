@@ -1120,9 +1120,9 @@ fn readmit(
         .and_then(|dispatch| dispatch.readmit(caller, request, context))
 }
 
-/// The app a call's target names: a record's app, an app's own provider, the app whose
-/// tilolang record (`tl:<app>:<id>`) the call is on wherever that app's process runs, or the
-/// provider.
+/// The app a call's target names: an app's own provider, the app whose tilolang record
+/// (`tl:<app>:<id>`) the call is on wherever that app's process runs, or the provider, which
+/// names the app whose record it calls.
 fn app_of(target: &tilo_actions::remote::RemoteActionTarget) -> &str {
     let provider = target.provider.as_str();
     if let Some(app) = target
@@ -1133,12 +1133,6 @@ fn app_of(target: &tilo_actions::remote::RemoteActionTarget) -> &str {
         .filter(|app| !app.is_empty())
     {
         return app;
-    }
-    if let Some(rest) = provider
-        .strip_prefix(tilo_actions::remote::RESOURCE_PROVIDER)
-        .and_then(|rest| rest.strip_prefix(':'))
-    {
-        return rest.split_once(':').map_or(rest, |(app, _)| app);
     }
     tilo_actions::remote::application_provider(provider).map_or(provider, |(_, app)| app)
 }

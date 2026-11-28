@@ -136,18 +136,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             )
             .into());
         };
-        let kept = tilo_actions::remote::resource_parts(&resolved.provider)
-            .filter(|(app, _)| *app == resolved.app_id)
-            .map(|(_, kept)| kept.to_owned())
-            .filter(|kept| !kept.is_empty());
         let mut reference = serde_json::Map::new();
         reference.insert("app".into(), json!(resolved.app_id));
         reference.insert("kind".into(), json!(node.resource_type));
         reference.insert("id".into(), json!(node.id));
         reference.insert("label".into(), json!(node.label));
-        if let Some(kept) = kept {
-            reference.insert("record".into(), json!(kept));
-        }
         arguments.insert(param.name.to_string(), Value::Object(reference));
         Ok(())
     }

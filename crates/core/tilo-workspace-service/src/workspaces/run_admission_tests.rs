@@ -278,7 +278,7 @@ async fn the_persons_admitted_run_answers_what_their_agent_asked_and_no_other_de
         .in_workspace(workspace.clone());
     let call = InvokeRequest::plain(
         RemoteActionTarget {
-            provider: "record:clocks:alarms".into(),
+            provider: "clocks".into(),
             address: tilo_actions::ActionAddress::new("clocks.alarms", "set-alarm"),
         },
         serde_json::Map::new(),

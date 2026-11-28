@@ -416,7 +416,7 @@ mod tests {
                 origin: "https://ada.tilo.cloud".into(),
                 workspace: WORKSPACE.into(),
                 host_device: "ab".repeat(32),
-                provider: "record:so.tilo.chat:".into(),
+                provider: "so.tilo.chat".into(),
                 web_entry: entry.map(str::to_owned),
             }),
             ..CataloguePage::default()
@@ -493,7 +493,7 @@ mod tests {
             assert_eq!(render(&minting, &page(None)).unwrap_err(), NO_WEB_ENTRY);
             let mut other = page(Some("https://tilo.so/"));
             if let Some(locator) = other.locator.as_mut() {
-                locator.provider = "record:so.tilo.notes:".into();
+                locator.provider = "so.tilo.notes".into();
             }
             assert!(render(&minting, &other).is_err());
         }

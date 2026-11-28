@@ -22,7 +22,7 @@
 //! the desktop answers them on its own thread, as it decides each one ([`records`]).
 //! A window that asks another app for an action is answered with what the action did there, or with
 //! its refusal, once it ran in that app's window ([`RevealAnswer`]): never before. An action asked of
-//! a record of the workspace (provider `record:<app>:<record>`, as a link to it is) is run by the
+//! a record of the workspace (provider: its app, the record by its path) is run by the
 //! workspace's host where the desktop reaches one ([`DesktopSession::serve_workspace_api`]), whoever
 //! has the record open, and else by the window that shows it; no window is opened for it.
 //! What the workspace's server keeps for its people, its accounts, model providers, vault and
@@ -427,8 +427,8 @@ impl DesktopSession {
             .insert(provider.to_owned(), api);
     }
 
-    /// Carry every action a window asks of a record of the workspace (provider
-    /// `record:<app>:<record>`) to `api` from now on: the action API of the workspace's host,
+    /// Carry every action a window asks of a record of the workspace (provider: its app) to
+    /// `api` from now on: the action API of the workspace's host,
     /// which runs it whoever has the record open and decides it by the caller's own access.
     pub fn serve_workspace_api(&self, api: Arc<dyn ActionProvider + Send + Sync>) {
         *self.workspace_api.lock_recover() = Some(api);
@@ -440,7 +440,7 @@ impl DesktopSession {
     fn ask_of_record(
         &self,
         caller: &Caller,
-        (app, record): (String, String),
+        app: String,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // As the broker: what a record offers is its workspace's members' to ask, in this
@@ -469,7 +469,7 @@ impl DesktopSession {
         let (answer, receipt) = pending();
         self.asked.lock_recover().push(Opening {
             app,
-            record: (!record.is_empty()).then_some(record),
+            record: None,
             content: None,
             name: None,
             resource: Some(request.target.address.resource),
@@ -712,10 +712,9 @@ impl ActionProvider for DesktopSession {
             self.woken.store(true, Ordering::Release);
             return receipt;
         }
-        let record = tilo_actions::remote::resource_parts(&request.target.provider)
-            .map(|(app, record)| (app.to_owned(), record.to_owned()));
-        if let Some(record) = record {
-            return self.ask_of_record(caller, record, request);
+        if tilo_actions::remote::names_app(&request.target.provider) {
+            let app = request.target.provider.clone();
+            return self.ask_of_record(caller, app, request);
         }
         let (app, record, content) = match self.app_to_open(caller, &request) {
             Ok((app, record, content)) => (

@@ -161,7 +161,7 @@ fn set_alarm() -> InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: "record:clocks:alarms".into(),
+            provider: "clocks".into(),
             address: ActionAddress::new("clocks.alarms", "set-alarm"),
         },
         argument: InvokeArgument::Json(arguments),

@@ -187,7 +187,7 @@ async fn answered<T: Send + 'static>(pending: Pending<T>) -> T {
 }
 
 /// The call that names Terminal's machine secrets record.
-fn call(provider: &str) -> InvokeRequest {
+fn call(record: &str) -> InvokeRequest {
     let mut arguments = serde_json::Map::new();
     arguments.insert("variable".into(), json!("GITHUB_TOKEN"));
     arguments.insert("item".into(), json!(ITEM));
@@ -195,8 +195,11 @@ fn call(provider: &str) -> InvokeRequest {
         asks: false,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: provider.to_owned(),
-            address: ActionAddress::new("tl.so.tilo.terminal.MachineSecrets", "add_secret"),
+            provider: terminal::TERMINAL_APP.to_owned(),
+            address: ActionAddress::new(
+                tilo_actions::remote::record_path("tl.so.tilo.terminal.MachineSecrets", record),
+                "add_secret",
+            ),
         },
         argument: InvokeArgument::Json(arguments),
         context: None,
@@ -280,8 +283,7 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     let dispatch: Arc<dyn AskedDispatch> = kept.clone();
     let records = store.for_dispatch("terminal test's dispatch", Arc::downgrade(&dispatch));
 
-    let provider = format!("record:{}:{DOCUMENT}", terminal::TERMINAL_APP);
-    let asked_for = call(&provider);
+    let asked_for = call(DOCUMENT);
     let first = answered(
         workspaces
             .providers()
@@ -323,16 +325,7 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     assert!(again.is_err(), "approved once: {again:?}");
 
     // Another call they decline runs nothing.
-    a_declined_call_runs_nothing(
-        &workspaces,
-        &caller,
-        &provider,
-        &workspace,
-        &records,
-        &app,
-        &kept,
-    )
-    .await;
+    a_declined_call_runs_nothing(&workspaces, &caller, &workspace, &records, &app, &kept).await;
 
     server.shutdown().await;
 }
@@ -380,13 +373,12 @@ async fn approve_runs_the_call(
 async fn a_declined_call_runs_nothing(
     workspaces: &Workspaces,
     caller: &Caller,
-    provider: &str,
     workspace: &str,
     records: &Arc<dyn AskedRecords>,
     app: &App,
     kept: &Kept,
 ) {
-    let declined_call = call(provider);
+    let declined_call = call(DOCUMENT);
     let Some(held) = workspaces.providers().invoke(caller, declined_call.clone()) else {
         unreachable!("Terminal serves its records");
     };
@@ -499,12 +491,11 @@ async fn a_fresh_tab_opens_its_shell_after_a_write() {
     .expect("the note is written");
 
     let fresh = collab_types::document::DocumentId::window_default(8);
-    let mut opening = call(&format!(
-        "record:{}:{}",
-        terminal::TERMINAL_APP,
-        fresh.route()
-    ));
-    opening.target.address = ActionAddress::new("terminal.session", "open-terminal");
+    let mut opening = call(fresh.route());
+    opening.target.address = ActionAddress::new(
+        tilo_actions::remote::record_path("tl.so.tilo.terminal.Session", fresh.route()),
+        "open-terminal",
+    );
     opening.argument = InvokeArgument::Json(serde_json::Map::new());
     let opened = answered(
         workspaces

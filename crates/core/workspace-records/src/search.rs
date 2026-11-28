@@ -102,11 +102,10 @@ pub struct Found {
     /// The app publishing it, when one does: what a caller names it as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
-    /// The provider of the record it is in, where the app keeps many records
-    /// (`record:<app>:<record>`): two PDFs publish their documents under the
-    /// same id, and only this says which record a result is of.
+    /// The record of its app it is in, where the app keeps many records: two PDFs publish
+    /// their documents under the same id, and only this says which record a result is of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub record: Option<String>,
     /// When it was said or happened, in seconds since the Unix epoch, where what its app tells
     /// search says so (a message: when it was written).
     #[serde(default, skip_serializing_if = "Option::is_none")]

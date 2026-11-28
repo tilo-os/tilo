@@ -150,24 +150,23 @@ mod tests {
         )
         .in_workspace(own.clone());
         let invocation = tilo_actions::InvocationId::new();
+        let target = |address| tilo_actions::remote::RemoteActionTarget {
+            provider: DEVICES.0.to_owned(),
+            address,
+        };
         let records = workspaces
             .providers()
-            .get(tilo_actions::remote::RESOURCE_PROVIDER)
+            .answering(
+                &target(Devices::keeping(&cert).unwrap().address()),
+                super::super::providers::Reach::ThisDevice,
+            )
             .expect("the device applies its person's record actions")
             .answers;
         let ask = |invocation, keep: Invoke<Devices>| {
             let request = tilo_actions::remote::InvokeRequest {
                 asks: false,
                 invocation,
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: format!(
-                        "{}:{}:{}",
-                        tilo_actions::remote::RESOURCE_PROVIDER,
-                        DEVICES.0,
-                        DEVICES.1
-                    ),
-                    address: keep.address(),
-                },
+                target: target(keep.address()),
                 argument: tilo_actions::remote::InvokeArgument::Json(keep.arguments),
                 context: None,
                 confirmation: None,

@@ -1438,7 +1438,7 @@ mod tests {
         let invocation = InvocationId::new();
         let request = serde_json::json!({"Invoke": {
             "invocation": invocation,
-            "target": {"provider": "record:notes:one",
+            "target": {"provider": "notes",
                         "address": {"resource": "notes.note:one", "action": "open"}},
         }});
         let answered = ask(&entry, &caller(), &request.to_string())
@@ -1843,7 +1843,7 @@ mod tests {
     fn write(invocation: InvocationId) -> InvokeRequest {
         serde_json::from_value(serde_json::json!({
             "invocation": invocation,
-            "target": {"provider": "record:notes:one",
+            "target": {"provider": "notes",
                         "address": {"resource": "notes.note:one", "action": "append-paragraph"}},
         }))
         .expect("a request")

@@ -108,15 +108,17 @@ pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionCallError> {
     Ok(())
 }
 
-/// The workspace and application a call naming `workspace:<ws>` with an app's own address
-/// (`app.<app>#<verb>`) asks of that workspace: the app whose own action it names, when the
-/// caller works in that workspace. `None` for any other address, and for another workspace:
-/// a call is never carried into a workspace its caller is not in.
-fn workspace_app_call<'a>(
-    caller: &Caller,
-    request: &'a InvokeRequest,
-) -> Option<(&'a str, &'a str)> {
-    let workspace = provider_workspace(&request.target.provider)?;
+/// The workspace and application a call asks of that workspace: an app's record named by the
+/// app and its path (`so.tilo.word-processor` `word-processor.document#append_paragraph`) in the
+/// caller's workspace, or `workspace:<ws>` with an app's own address (`app.<app>#<verb>`) when the
+/// caller works in that workspace. `None` for any other call: a call is never carried into a
+/// workspace its caller is not in.
+fn workspace_app_call(caller: &Caller, request: &InvokeRequest) -> Option<(String, String)> {
+    let provider = request.target.provider.as_str();
+    if tilo_actions::remote::names_app(provider) {
+        return Some((caller.workspace()?.to_owned(), provider.to_owned()));
+    }
+    let workspace = provider_workspace(provider)?;
     if caller.workspace() != Some(workspace) {
         return None;
     }
@@ -125,7 +127,7 @@ fn workspace_app_call<'a>(
         .address
         .resource
         .strip_prefix(APPLICATION_RESOURCE_PREFIX)?;
-    (!app_id.is_empty() && !app_id.contains(':')).then_some((workspace, app_id))
+    (!app_id.is_empty() && !app_id.contains(':')).then(|| (workspace.to_owned(), app_id.to_owned()))
 }
 
 pub(super) struct LaunchDestination {
@@ -2143,7 +2145,7 @@ impl AppBrokerState {
         // registered, which another device's call reaches through the same registry. A
         // workspace's governance is the service registered here, which answers the workspaces
         // it holds.
-        if let Some(registered) = self.registered(&request.target.provider) {
+        if let Some(registered) = self.answering(&request.target) {
             return self.invoke_registered(caller, origin, serving, &registered, request);
         }
         if request.target.provider == tilo_action_services::own_device::PROVIDER {
@@ -2194,7 +2196,8 @@ impl AppBrokerState {
     }
 
     /// `answered`, unless the workspace answered nothing at all to a call naming one of its
-    /// apps' own actions (`workspace:<ws>` and `app.<app>#<verb>`): then the app that publishes
+    /// apps' own actions (an app's record by the app and its path, or `workspace:<ws>` and
+    /// `app.<app>#<verb>`, [`workspace_app_call`]): then the app that publishes
     /// the verb answers it, by the same application dispatch any call to that app takes, with
     /// its own grant checks. Every action is callable from anywhere — a person, an agent or a
     /// script names the workspace it works in and the app's action, without having to know the
@@ -2213,7 +2216,7 @@ impl AppBrokerState {
             return answered;
         };
         let mut to_app = request.clone();
-        to_app.target.provider = application_provider_token(workspace, app_id);
+        to_app.target.provider = application_provider_token(&workspace, &app_id);
         let state = Arc::clone(self);
         let caller = caller.clone();
         let origin = origin.cloned();

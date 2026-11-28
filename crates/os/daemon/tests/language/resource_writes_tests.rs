@@ -626,7 +626,7 @@ fn viewed_put(
             asks: false,
             invocation: tilo_actions::InvocationId(uuid::Uuid::parse_str(&invocation).unwrap()),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::RESOURCE_PROVIDER.to_owned(),
+                provider: app.to_owned(),
                 address: tilo_actions::ActionAddress::new(app, verb),
             },
             argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::new()),

@@ -88,10 +88,6 @@ impl tilo_actions::remote::ActionProvider for RecordingHost {
 struct AppliesRecords(Arc<RecordingHost>);
 
 impl tilo_actions::remote::ActionProvider for AppliesRecords {
-    fn serves(&self, provider: &str) -> bool {
-        tilo_actions::remote::is_resource_provider(provider)
-    }
-
     fn query(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -234,14 +230,8 @@ async fn a_hosted_workspaces_record_action_runs_on_its_host() {
                 };
                 assert_eq!(caller, &person, "the provider decides it for the person");
                 assert_eq!(
-                    forwarded.target.provider,
-                    format!(
-                        "{}:{}:{}",
-                        tilo_actions::remote::RESOURCE_PROVIDER,
-                        fixture.route.app_id,
-                        fixture.route.document_id
-                    ),
-                    "the provider names the record"
+                    forwarded.target.provider, fixture.route.app_id,
+                    "the call names the record's app"
                 );
                 assert_eq!(forwarded.target.address, sent.target.address);
                 assert_eq!(forwarded.invocation, sent.invocation);
@@ -357,8 +347,8 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
     );
     let applied_here = Arc::new(RecordingHost::default());
     providers.provide(
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        tilo_actions::remote::RESOURCE_PROVIDER,
+        "notes",
+        "notes",
         tilo_workspace_service::workspaces::providers::Reach::Devices,
         Arc::new(AppliesRecords(Arc::clone(&applied_here))),
     );
@@ -366,7 +356,7 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
         asks: false,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
-            provider: format!("{}:notes:a-note", tilo_actions::remote::RESOURCE_PROVIDER),
+            provider: "notes".to_owned(),
             address: tilo_actions::ActionAddress::new("note", "rename"),
         },
         argument: InvokeArgument::Json(serde_json::Map::new()),
@@ -418,13 +408,13 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
     );
 
     // A workspace no host takes the work of is this device's to apply, and a call that names no
-    // record is none of the host's.
+    // app's record (a window) is none of the host's.
     let here = Caller::local_person("fixture-owner")
         .in_workspace("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_owned());
     assert!(providers.invoke(&here, request()).is_some());
     assert_eq!(applied_here.asked.lock().unwrap().len(), 1);
     let mut not_a_record = request();
-    not_a_record.target.provider = "so.tilo.elsewhere".to_owned();
+    not_a_record.target.provider = "7".to_owned();
     assert!(providers.invoke(&person, not_a_record).is_none());
     assert_eq!(provider.asked.lock().unwrap().len(), 1);
 
@@ -456,8 +446,8 @@ fn the_dispatch_sends_a_record_action_to_the_device_holding_its_workspace() {
     );
     let kept_here = Arc::new(RecordingHost::default());
     member.provide(
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        tilo_actions::remote::RESOURCE_PROVIDER,
+        "notes",
+        "notes",
         tilo_workspace_service::workspaces::providers::Reach::Devices,
         Arc::new(AppliesRecords(Arc::clone(&kept_here))),
     );

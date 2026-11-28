@@ -46,7 +46,6 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::{Answered as ModelAnswered, PlanTurns};
-use tilo_agent_session::resource_provider;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
@@ -2461,10 +2460,11 @@ pub async fn invoke_named(
     .await
 }
 
-/// `action` on `resource` of what is kept at `route`, as what an invocation names.
+/// `action` on `resource` of what is kept at `route`, as what an invocation names: the app, and
+/// the resource's path in its record.
 fn target_named(route: &DocumentRoute, resource: &str, action: &str) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: resource_provider(route),
+        provider: route.app_id.clone(),
         address: ActionAddress {
             resource: resource.to_owned(),
             action: action.to_owned(),

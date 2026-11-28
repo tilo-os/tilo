@@ -230,12 +230,12 @@ pub use agent::{Go, TaskProgram};
 pub use agent::{PersonStep, literals_in};
 
 /// The record an agent call worked in: the app's id and the workspace's
-/// record id, as the provider of the resource the call resolved names it.
+/// record id, as the workspace lists the app's records.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActedRecord {
     /// The app's stable id (`so.tilo.notes`).
     pub app: String,
-    /// The workspace's record id, which a provider's own token names.
+    /// The workspace's record id.
     pub record: String,
 }
 
@@ -648,10 +648,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The record this session's last agent call worked in, when the
-    /// workspace serves the resource it resolved as one of its records.
-    #[must_use]
-    pub fn acted(&self) -> Option<ActedRecord> {
-        self.acted.lock_recover().clone()
+    /// workspace serves the resource it resolved as one of its records: the
+    /// one the workspace lists the app's records on, read when it is asked.
+    pub async fn acted(&self) -> Option<ActedRecord> {
+        let mut acted = self.acted.lock_recover().clone()?;
+        if acted.record.is_empty() {
+            acted.record = self.listed_record(&acted.app).await.unwrap_or_default();
+        }
+        Some(acted)
     }
 
     /// Run the `tilo` tool's programs in task hosts `hosts` starts.

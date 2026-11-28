@@ -2,8 +2,8 @@
 //! device's dispatch admits: a hosted agent's tools, a person's `tilo do`, a view's button.
 //!
 //! Such an app (tl Chat, Tasks) is no catalogue app and no installed package, so no window of it
-//! answers for its record where nobody has it open. Each is registered under the provider a
-//! record of it is named by (`record:<app>:`) with the application whose grants decide its
+//! answers for its record where nobody has it open. Each is registered under its app id, the
+//! provider a call on its record names, with the application whose grants decide its
 //! actions ([`register`]). The dispatch admits a call against the workspace's policy, asks the
 //! person where the action's contract says so, and hands it here; this decides each page and
 //! call again by search's read decision ([`Workspaces::may_read_record`]), lists what the record
@@ -20,8 +20,7 @@ use serde_json::Map;
 use tilo_actions::remote::admitted::settled;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending,
-    RESOURCE_PROVIDER, pending,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{ActionContext, ActionFailure, ActionInvoker, OperationKind};
 
@@ -42,18 +41,14 @@ pub(crate) struct BuiltInRecords {
     rooted: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
-/// The provider and app names of the built-in apps, made once: a registration keeps them for as
-/// long as the process runs.
-fn names() -> &'static [(&'static str, &'static str)] {
-    static NAMES: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+/// The built-in apps, each the provider its records are called by, named once: a registration
+/// keeps them for as long as the process runs.
+fn names() -> &'static [&'static str] {
+    static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
     NAMES.get_or_init(|| {
         built_in_apps()
             .into_iter()
-            .map(|app| {
-                let provider: &'static str =
-                    Box::leak(format!("{RESOURCE_PROVIDER}:{app}:").into_boxed_str());
-                (provider, &*Box::leak(app.into_boxed_str()))
-            })
+            .map(|app| &*Box::leak(app.into_boxed_str()))
             .collect()
     })
 }
@@ -66,9 +61,9 @@ fn names() -> &'static [(&'static str, &'static str)] {
 pub fn register(workspaces: &Workspaces) {
     let runtime = tokio::runtime::Handle::current();
     let providers = workspaces.providers();
-    for (provider, app) in names() {
+    for app in names() {
         providers.provide(
-            provider,
+            app,
             app,
             Reach::Devices,
             Arc::new(BuiltInRecords {
@@ -334,10 +329,7 @@ impl ActionProvider for BuiltInRecords {
 pub mod calls {
     #![allow(clippy::expect_used, reason = "a fixture failing is its test failing")]
 
-    use super::{
-        Admitted, Arc, BuiltInRecords, Caller, InvokeArgument, InvokeRequest, RESOURCE_PROVIDER,
-        Workspaces,
-    };
+    use super::{Admitted, Arc, BuiltInRecords, Caller, InvokeArgument, InvokeRequest, Workspaces};
 
     /// Run the first `action` `app`'s record offers `caller`, with `arguments`, through the
     /// provider the dispatch hands the app's calls to: what it answered, or why not.
@@ -381,7 +373,7 @@ pub mod calls {
             asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: format!("{RESOURCE_PROVIDER}:{app}:"),
+                provider: app.to_owned(),
                 address,
             },
             argument: InvokeArgument::Json(arguments),
@@ -395,7 +387,7 @@ pub mod calls {
         };
         let served = workspaces
             .providers()
-            .get(&format!("{RESOURCE_PROVIDER}:{app}:"))
+            .get(app)
             .expect("the app's records are served on this device");
         let receipt = served
             .answers
@@ -486,7 +478,7 @@ mod tests {
             asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
-                provider: format!("{RESOURCE_PROVIDER}:{CHAT}:"),
+                provider: CHAT.to_owned(),
                 address: write_to.address.clone(),
             },
             argument: InvokeArgument::Json(arguments),
@@ -508,7 +500,7 @@ mod tests {
     ) -> Result<tilo_actions::ActionOutput, String> {
         let chat = workspaces
             .providers()
-            .get("record:so.tilo.chat:")
+            .get(CHAT)
             .expect("tl Chat's records are served on this device");
         let receipt = chat
             .answers
@@ -592,7 +584,7 @@ mod tests {
     /// their group (Discussion, Notes and Contacts, before Tasks) as much as the last; and
     /// installing one in a fresh workspace makes its root, empty, so what it offers on its whole
     /// is offered before anyone opened it: Discussion's `comment` at
-    /// `record:so.tilo.lang.discussion:`, where a first comment made from a task lands.
+    /// `so.tilo.lang.discussion`, where a first comment made from a task lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_installed_apps_root_actions_are_offered_and_a_first_comment_on_a_task_lands() {
         let dir = tempfile::tempdir().unwrap();
@@ -615,10 +607,7 @@ mod tests {
             TASKS,
         ] {
             assert!(
-                workspaces
-                    .providers()
-                    .get(&format!("{RESOURCE_PROVIDER}:{app}:"))
-                    .is_some(),
+                workspaces.providers().get(app).is_some(),
                 "{app}'s records are served on this device"
             );
         }
@@ -766,7 +755,7 @@ mod tests {
 
         let chat = workspaces
             .providers()
-            .get("record:so.tilo.chat:")
+            .get(CHAT)
             .expect("tl Chat's records are served on this device");
         assert_eq!(
             &*chat.app, "so.tilo.chat",
@@ -1195,7 +1184,7 @@ mod tests {
                         asks: false,
                         invocation: tilo_actions::InvocationId::new(),
                         target: tilo_actions::remote::RemoteActionTarget {
-                            provider: format!("{RESOURCE_PROVIDER}:{TASKS}:"),
+                            provider: TASKS.to_owned(),
                             address: new_tasks.address.clone(),
                         },
                         argument: InvokeArgument::Json(

@@ -20,7 +20,7 @@ use tilo_action_calls::settle_with;
 use tilo_actions::remote::asked::RecordRef;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, Completer, InvocationReceipt, InvokeRequest,
-    MAX_REMOTE_WAIT, Pending, RESOURCE_PROVIDER, ReceiptStatus, UpdateMark, pending,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, UpdateMark, pending,
 };
 
 use super::super::published_invocation::InvocationCaller;
@@ -65,8 +65,7 @@ impl AppBrokerState {
             .as_ref()?
             .host_actions(&route.cluster_id)?;
         let mut request = request.clone();
-        request.target.provider =
-            format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document_id);
+        request.target.provider.clone_from(&route.app_id);
         request.target.address = tilo_actions::ActionAddress::new(&action.resource, &action.action);
         // A revision names the action as this device's app published it; the
         // host decides on its own copy of the record.

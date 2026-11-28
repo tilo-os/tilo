@@ -32,20 +32,6 @@ fn field(result: &Value, name: &str) -> Value {
 /// Discussion's package id: the system's comments on any resource of the workspace.
 const DISCUSSION: &str = "so.tilo.lang.discussion";
 
-/// The provider that names the first record `app` keeps in the workspace.
-fn record(app: &str) -> String {
-    format!(
-        "{}:{app}:{}",
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        collab_types::document::DocumentId::workspace_default().as_str()
-    )
-}
-
-/// The provider that names the one record an app keeps for its whole workspace.
-fn workspace_record(app: &str) -> String {
-    format!("{}:{app}:", tilo_actions::remote::RESOURCE_PROVIDER)
-}
-
 /// A tracker's create, answered by the device's own agent, answers the issue it made, and it
 /// reads back there; a second create answers its own.
 #[test]
@@ -111,7 +97,7 @@ fn a_members_first_write_founds_a_chain_the_workspace_keeps_no_part_of() {
         let owner_device = host.member("its owner's computer", &workspace).await;
         let editor = guest(&host, &owner_device, "editor", "Grace").await;
         installs(&owner_device, &workspace, "so.tilo.tasks").await;
-        let tasks = workspace_record("so.tilo.tasks");
+        let tasks = "so.tilo.tasks".to_owned();
         let listed = editor.listed(&tasks).await;
         let new_task = listed
             .iter()
@@ -326,7 +312,7 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         // no window of it open anywhere: the record's provider is what the commenter reaches.
         installs(&owner_device, &workspace, DISCUSSION).await;
         let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
-        let discussion = workspace_record(DISCUSSION);
+        let discussion = DISCUSSION.to_owned();
         let listed = commenter.listed(&discussion).await;
         let says = listed
             .iter()
@@ -356,7 +342,7 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         // workspace's conversations, which installing Chat made.
         installs(&owner_device, &workspace, "so.tilo.chat").await;
         let moderator = guest(&host, &owner_device, "moderator", "Mo").await;
-        let chat = workspace_record("so.tilo.chat");
+        let chat = "so.tilo.chat".to_owned();
         let listed = moderator.listed(&chat).await;
         let new_channel = listed
             .iter()
@@ -385,7 +371,7 @@ fn a_carrier_names_no_edit_its_caller_is_then_refused() {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         installs(&owner_device, &workspace, "so.tilo.chat").await;
-        let chat = workspace_record("so.tilo.chat");
+        let chat = "so.tilo.chat".to_owned();
         let new_channel = |listing: &[tilo_actions::ActionDescriptor]| {
             listing
                 .iter()
@@ -450,7 +436,7 @@ fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
 /// their own device and makes their own edit as theirs.
 #[test]
 fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
-    host::run(|host| async move {
+    host::run_with(&["word-processor"], |host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
@@ -473,11 +459,23 @@ fn a_sealed_record_is_acted_on_for_its_owner_and_no_one_else() {
         );
         assert!(!is_error, "the owner's paragraph is made: {made}");
 
+        // The record, by the path Writer publishes it at in the workspace.
+        let page = host::listed(&host, "so.tilo.word-processor")
+            .await
+            .expect("the workspace lists Writer");
+        let append = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "append_paragraph")
+            .unwrap_or_else(|| panic!("Writer's record offers a paragraph: {:?}", page.rows))
+            .address
+            .clone();
         let editor = guest(&host, &owner_device, "editor", "Bo").await;
         let seen = editor
             .call(
-                &record("so.tilo.word-processor"),
-                tilo_actions::ActionAddress::new("word-processor.document", "append_paragraph"),
+                "so.tilo.word-processor",
+                append,
                 &json!({"text": "By the member"}),
             )
             .await

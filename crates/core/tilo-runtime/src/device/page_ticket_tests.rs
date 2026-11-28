@@ -448,12 +448,7 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         .author_agents(&workspace, |_| Ok(()))
         .await
         .expect("Studio's list of agents starts");
-    let agents =
-        tilo_agent_session::resource_provider(&tilo_peer_state::document_frame::DocumentRoute {
-            app_id: "tilo.workspace".to_owned(),
-            cluster_id: workspace.clone(),
-            document: collab_types::workspace_document_id(AGENTS),
-        });
+    let agents = "tilo.workspace".to_owned();
     let from_laptop = Arc::new(
         ActionService::new(laptop_key.clone(), Arc::new(NoActions)).remote(
             &laptop_endpoint,

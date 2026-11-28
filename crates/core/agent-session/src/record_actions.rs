@@ -1,19 +1,10 @@
-//! `actionsV1` for apps over the remote-action path: the providers a
-//! workspace's records are addressed by (`record:<app>:<record>`), the row a
-//! catalogue offers an app's open in, and how a refusal of an app's API
-//! reads as a receipt.
+//! `actionsV1` for apps over the remote-action path: the row a catalogue
+//! offers an app's open in, and how a refusal of an app's API reads as a
+//! receipt.
 
 use tilo_actions::ActionFailure;
 use tilo_actions::api::ApiError;
 use tilo_actions::remote::{ActionCallError, ReceiptStatus};
-use tilo_peer_state::document_frame::DocumentRoute;
-
-pub use tilo_actions::remote::RESOURCE_PROVIDER;
-
-#[must_use]
-pub fn resource_provider(route: &DocumentRoute) -> String {
-    format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document)
-}
 
 /// How an invocation the API refused ended.
 pub(crate) enum Outcome {

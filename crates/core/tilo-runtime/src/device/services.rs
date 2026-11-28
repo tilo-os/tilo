@@ -7278,8 +7278,11 @@ impl RuntimeActionProvider {
                 let device = self.workspaces.device_cert();
                 tilo_actions::remote::asked::Pressed {
                     device: hex::encode(device.device_public_key),
-                    app: tilo_actions::remote::resource_parts(&request.target.provider)
-                        .map_or_else(String::new, |(app, _)| app.to_owned()),
+                    app: if tilo_actions::remote::names_app(&request.target.provider) {
+                        request.target.provider.clone()
+                    } else {
+                        String::new()
+                    },
                     instance: pressed.instance.clone(),
                     resource: pressed.resource.clone(),
                     at: pressed.at,

@@ -489,12 +489,16 @@ pub fn not_running(app_id: &str, running: &[&str]) -> String {
     )
 }
 
-/// Whether `provider` is a window of an app, or a record a device serves whoever has it open
-/// (a host serving its workspace's records): the app, live, as opposed to a service of the
-/// host's that answers for an app id.
+/// Whether `provider`, listed as `entry`, is a window of an app, or a record a device serves under
+/// the app's own id whoever has it open (a host serving its workspace's records): the app, live,
+/// as opposed to a service of the host's that answers for an app id and names no record.
 #[must_use]
-pub fn is_window(provider: &str) -> bool {
-    provider.parse::<u64>().is_ok() || crate::remote::is_resource_provider(provider)
+pub fn is_window(provider: &str, entry: &Value) -> bool {
+    provider.parse::<u64>().is_ok()
+        || (entry["app_id"].as_str() == Some(provider)
+            && entry["document_id"]
+                .as_str()
+                .is_some_and(|record| !record.is_empty()))
 }
 
 /// The published tree of one workspace as one caller walks it, over `P`.
@@ -1004,15 +1008,10 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         if let Some(instance) = instance {
             return pinned_window(&running, name, instance);
         }
-        // A record a device serves whoever has it open (a host serving its
-        // workspace's records) is the app, live, as a window of it is.
-        let is_window = |provider: &str| {
-            provider.parse::<u64>().is_ok() || crate::remote::is_resource_provider(provider)
-        };
         let ids_where = |window: bool| {
             running
                 .iter()
-                .filter(|(provider, _)| is_window(provider) == window)
+                .filter(|(provider, app)| is_window(provider, app) == window)
                 .filter_map(|(_, app)| app["app_id"].as_str())
                 .collect::<Vec<_>>()
         };
@@ -1020,7 +1019,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
             running
                 .iter()
                 .rev()
-                .filter(|(provider, _)| is_window(provider) == window)
+                .filter(|(provider, app)| is_window(provider, app) == window)
                 .find(|(_, app)| app["app_id"].as_str() == Some(app_id))
                 .map(|(provider, _)| provider.clone())
         };
@@ -1822,10 +1821,7 @@ fn freely_named(
         running
             .iter()
             .rev()
-            .filter(|(provider, _)| {
-                (provider.parse::<u64>().is_ok() || crate::remote::is_resource_provider(provider))
-                    == window
-            })
+            .filter(|(provider, app)| is_window(provider, app) == window)
             .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
             .map(|(provider, _)| provider.clone())
     };
@@ -1966,7 +1962,6 @@ pub fn as_the_service(provider: &str, root: &mut Level) {
     // itself: its actions are the service's own (`workspace#member.list`),
     // and what it holds is listed as the service's.
     if provider.parse::<u64>().is_err()
-        && !crate::remote::is_resource_provider(provider)
         && root.own.is_empty()
         && let [only] = root
             .children

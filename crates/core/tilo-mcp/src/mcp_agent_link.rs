@@ -201,7 +201,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String, String> {
-        let resource = if tilo_actions::remote::is_resource_provider(provider) {
+        let resource = if tilo_actions::remote::names_app(provider) {
             String::new()
         } else {
             let mut levels = Levels::new();
@@ -269,7 +269,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// the person's: a session making many changes in one document opens it
     /// once.
     pub(super) async fn changed_shown(&self, provider: &str, value: &Value) -> Shown {
-        if tilo_actions::remote::resource_parts(provider).is_none() {
+        if !tilo_actions::remote::names_app(provider) {
             return Shown::default();
         }
         let first = {
@@ -304,25 +304,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     pub(super) async fn show(&self, provider: &str, app_id: &str) -> Result<(), Failure> {
         use tilo_actions::remote::{
             APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, InvokeArgument, InvokeRequest,
-            ReceiptStatus, application_action_target, application_resource_target,
+            ReceiptStatus, application_action_target,
         };
-        let (app, record) = match tilo_actions::remote::resource_parts(provider) {
-            Some((app, record)) => (app, record),
-            None if !app_id.is_empty() => (app_id, ""),
-            None => return Ok(()),
+        let app = if tilo_actions::remote::names_app(provider) {
+            provider
+        } else if !app_id.is_empty() {
+            app_id
+        } else {
+            return Ok(());
         };
         let resource = format!("{APPLICATION_RESOURCE_PREFIX}{app}");
-        let target = if record.is_empty() {
-            application_action_target(&self.workspace, app, resource, APPLICATION_OPEN_ACTION)
-        } else {
-            application_resource_target(
-                &self.workspace,
-                app,
-                record,
-                resource,
-                APPLICATION_OPEN_ACTION,
-            )
-        };
+        let target =
+            application_action_target(&self.workspace, app, resource, APPLICATION_OPEN_ACTION);
         let invocation = tilo_actions::InvocationId::new();
         let request = InvokeRequest {
             asks: false,
@@ -389,7 +382,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             value.pointer("/update/state").and_then(Value::as_str),
             Some("succeeded" | "failed" | "cancelled")
         );
-        if finished || !tilo_actions::remote::is_resource_provider(provider) {
+        if finished || !tilo_actions::remote::names_app(provider) {
             return;
         }
         let mut changing = self.changing.lock_recover();
@@ -424,24 +417,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         resource: String,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String, String> {
-        let value =
-            Box::pin(
-                self.invoke_one(OneCall {
-                    provider: Addressed {
-                        provider: provider.to_owned(),
-                        app_id: tilo_actions::remote::resource_parts(provider)
-                            .map(|(app, _)| app.to_owned()),
-                    },
-                    workspace: false,
-                    revision: None,
-                    resource,
-                    action: SHARE_LINK_ACTION.to_owned(),
-                    arguments,
-                    invocation_id: None,
-                    wait_ms: None,
-                }),
-            )
-            .await?;
+        let value = Box::pin(self.invoke_one(OneCall {
+            provider: Addressed {
+                provider: provider.to_owned(),
+                app_id: tilo_actions::remote::names_app(provider).then(|| provider.to_owned()),
+            },
+            workspace: false,
+            revision: None,
+            resource,
+            action: SHARE_LINK_ACTION.to_owned(),
+            arguments,
+            invocation_id: None,
+            wait_ms: None,
+        }))
+        .await?;
         url_of(&value)
     }
 }

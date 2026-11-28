@@ -185,29 +185,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // it on, so a caller opening an app that runs learns the window it
         // attached to and the record that window shows, as the open that made
         // it said.
-        let record = self
-            .tree
-            .providers()
-            .await
-            .ok()
-            .and_then(|(_, listed)| {
-                listed
-                    .into_iter()
-                    .find(|(provider, _)| *provider == resolved.provider)
-                    .map(|(_, entry)| entry)
-            })
-            .and_then(|entry| {
-                entry
-                    .get("document_id")
-                    .and_then(Value::as_str)
-                    .filter(|record| !record.is_empty())
-                    .map(str::to_owned)
-            });
+        let record = self.listed_record(&resolved.provider).await;
         let value = match record {
             Some(record) => json!({"update": {
                 "state": "succeeded",
                 "output": {"value": {
-                    "provider": format!("{}:{app_id}:{record}", tilo_actions::remote::RESOURCE_PROVIDER),
+                    "provider": app_id,
                     "record": record,
                 }},
             }}),
@@ -219,6 +202,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             reply,
             not_shown,
         })
+    }
+
+    /// The record the workspace lists `provider` on, the latest one it answers for: what a
+    /// window, or the app's records a device serves under the app's id, shows.
+    pub(crate) async fn listed_record(&self, provider: &str) -> Option<String> {
+        let (_, listed) = self.tree.providers().await.ok()?;
+        listed
+            .into_iter()
+            .rev()
+            .find(|(listed, _)| listed == provider)?
+            .1
+            .get("document_id")
+            .and_then(Value::as_str)
+            .filter(|record| !record.is_empty())
+            .map(str::to_owned)
     }
 
     /// What starting `app_id` answers once it runs: that it does, and what

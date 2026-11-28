@@ -1921,7 +1921,7 @@ fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
         open,
         arguments,
         app,
-        provider: None,
+        record: None,
         when: None,
         ..Found::default()
     })

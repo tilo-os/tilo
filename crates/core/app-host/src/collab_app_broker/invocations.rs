@@ -23,9 +23,7 @@ use tilo_action_services::workspace_invocations::{
     Origin,
 };
 use tilo_action_types::ActionKind;
-use tilo_actions::remote::{
-    ActionCallError, Caller, CataloguePage, CatalogueQuery, InvokeRequest, resource_parts,
-};
+use tilo_actions::remote::{ActionCallError, Caller, CataloguePage, CatalogueQuery, InvokeRequest};
 use tilo_actions::{EffectReceiptStatus, InvocationUpdate};
 use tilo_invocations::{Invocations, Recorded};
 
@@ -171,7 +169,9 @@ impl AppBrokerState {
         workspace: &str,
         recorded: &Recorded,
     ) -> Option<Invocation> {
-        let addressed = resource_parts(&recorded.request.target.provider);
+        let target = &recorded.request.target;
+        let addressed = tilo_actions::remote::names_app(&target.provider)
+            .then_some((target.provider.as_str(), target.address.resource.as_str()));
         if !self.may_read(caller, workspace, addressed) {
             return None;
         }
@@ -179,8 +179,8 @@ impl AppBrokerState {
         Some(described(recorded, action))
     }
 
-    /// Whether `caller`'s grants let them read what a call addressed now: the record `app` and
-    /// `record`, through its node and the Read answer there, or, for a call on no record, a Read
+    /// Whether `caller`'s grants let them read what a call addressed now: the resource of `app` at
+    /// the path `record`, through its node and the Read answer there, or, for a call on no record, a Read
     /// across the workspace.
     fn may_read(&self, caller: &Caller, workspace: &str, addressed: Option<(&str, &str)>) -> bool {
         self.decide_for(caller, workspace, |workspace, actor, now| match addressed {
@@ -248,8 +248,8 @@ impl AppBrokerState {
 }
 
 /// What a recorded call asked for, as the listing names it: the app that publishes it and its
-/// action (`notes#rename`), which for a record provider is the app that record belongs to and
-/// for a provider registered on this device is the app it registered under. A call outside any
+/// action (`so.tilo.notes#rename`): the app the provider registered on this device that answers
+/// it registered under, which for an app's record is that app. A call outside any
 /// app's tree names the resource it reached (`workspace/invitations#invite`).
 fn described_action(
     providers: Option<&tilo_workspace_service::workspaces::providers::Providers>,
@@ -257,10 +257,12 @@ fn described_action(
 ) -> String {
     let target = &recorded.request.target;
     let action = target.address.action.as_str();
-    if let Some((app, _)) = resource_parts(&target.provider) {
-        return format!("{}#{action}", app_path(app));
-    }
-    if let Some(registered) = providers.and_then(|providers| providers.get(&target.provider)) {
+    if let Some(registered) = providers.and_then(|providers| {
+        providers.answering(
+            target,
+            tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+        )
+    }) {
         return format!("{}#{action}", registered.app);
     }
     format!("{}#{action}", target.address.resource)
@@ -385,11 +387,6 @@ fn status(recorded: &Recorded) -> InvocationStatus {
         _ if recorded.waiting => InvocationStatus::Waiting,
         _ => InvocationStatus::Running,
     }
-}
-
-/// The app as a path names it: the last part of its id, in lower case.
-fn app_path(app_id: &str) -> String {
-    app_id.rsplit('.').next().unwrap_or(app_id).to_lowercase()
 }
 
 /// The runs of the member `by`, when the query asks for one member's, so an agent reads its own

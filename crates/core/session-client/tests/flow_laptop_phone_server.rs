@@ -561,7 +561,7 @@ async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
     let rung = flow::ask(
         &laptop,
         f.work_id(),
-        "record:so.tilo.clocks:",
+        "so.tilo.clocks",
         "tl:so.tilo.clocks",
         "add_alarm",
         json!({"label": "Standup", "hour": 7, "minute": 0}),
@@ -967,7 +967,7 @@ async fn flow_every_device_manages_every_other() {
         flow::ask(
             &phone,
             f.person_id(),
-            "record:so.tilo.devices:devices",
+            "so.tilo.devices",
             "tilo.devices",
             "name-device",
             json!({"device": key, "name": name}),

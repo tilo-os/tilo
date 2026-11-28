@@ -1636,7 +1636,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
                 asks: false,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
-                    provider: format!("record:{}:{}", DEVICES.0, DEVICES.1),
+                    provider: DEVICES.0.to_owned(),
                     address: keep.address(),
                 },
                 argument: InvokeArgument::Json(keep.arguments),

@@ -55,21 +55,17 @@ impl LinkHome {
     }
 }
 
-/// The `record:<app>:<record>` provider one record of `app` is served under, the record's primary
-/// one when `record` is empty: what a catalogue lookup names the link's page by, and what a locator
-/// must answer for the link to be minted.
+/// The provider a record of `app` is served under, its app, once `app` and `record` are ones a
+/// link can carry: what a catalogue lookup names the link's page by, and what a locator must
+/// answer for the link to be minted.
 ///
 /// # Errors
 ///
 /// The app id or the record id a link cannot carry.
 pub fn provider(app: &str, record: &str) -> Result<String, String> {
     let app = crate::link::AppId::parse(app).map_err(|error| error.to_string())?;
-    let record = crate::link::ResourceSegment::new(record).map_err(|error| error.to_string())?;
-    Ok(format!(
-        "record:{}:{}",
-        app.as_str(),
-        record.provider_part()
-    ))
+    crate::link::ResourceSegment::new(record).map_err(|error| error.to_string())?;
+    Ok(app.as_str().to_owned())
 }
 
 /// Why a link is refused when the host that serves the resource announces no page.

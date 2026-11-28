@@ -263,7 +263,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     )
     .await
     .expect("Bea opens Chat");
-    let chat_provider = format!("{}:{CHAT}:", tilo_actions::remote::RESOURCE_PROVIDER);
+    let chat_provider = CHAT.to_owned();
     let chat_answers = beas
         .providers()
         .get(&chat_provider)

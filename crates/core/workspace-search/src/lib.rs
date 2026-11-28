@@ -525,7 +525,7 @@ impl Snapshot {
             open: Some(open),
             arguments,
             app: Some(key.app.clone()),
-            provider: Some(format!("record:{}:{}", key.app, key.record)),
+            record: Some(key.record.clone()),
             when: entry.when,
             workspace: Some(key.workspace.clone()),
             key: Some(format!(

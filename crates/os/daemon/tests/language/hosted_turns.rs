@@ -32,7 +32,7 @@ const SCOUT_ID: &str = "scout";
 const INSTRUCTIONS: &str = "Put the weekly numbers first.";
 const CORRECTION: &str = "Put revenue and its source first.";
 /// The provider the built-in tl Chat record of a workspace is served under.
-const CHAT_PROVIDER: &str = "record:so.tilo.chat:";
+const CHAT_PROVIDER: &str = "so.tilo.chat";
 /// Chat's one root: the workspace's conversations and skills.
 const CONVERSATIONS: &str = "tl:so.tilo.chat:root-lmdoxbnn";
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.

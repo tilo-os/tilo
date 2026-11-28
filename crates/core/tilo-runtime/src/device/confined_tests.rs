@@ -10,8 +10,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    RESOURCE_PROVIDER, ReadAnswer, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
-    ResourceReadRequest,
+    ReadAnswer, ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReadRequest,
 };
 use tilo_app_host::services::HostedWorkspaces as _;
 use tilo_desktop_model::WorkspaceId;
@@ -399,7 +398,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
         &host,
         &workspace,
         call(
-            &format!("{RESOURCE_PROVIDER}:{}:{record}", tilo_app_id::apps::CHAT),
+            tilo_app_id::apps::CHAT,
             (emoji, "add-emoji"),
             json!({ "name": "vm_party", "image": PNG }),
         ),
@@ -689,7 +688,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
                 &Caller::authenticated(laptop_cert.user_public_key, laptop_cert.device_public_key)
                     .in_workspace(workspace.clone()),
                 call(
-                    &format!("{RESOURCE_PROVIDER}:{}:{record}", tilo_app_id::apps::CHAT),
+                    tilo_app_id::apps::CHAT,
                     (emoji, "add-emoji"),
                     json!({ "name": "offline_party", "image": PNG }),
                 ),

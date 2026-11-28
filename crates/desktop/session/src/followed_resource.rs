@@ -8,8 +8,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, ReceiptStatus, RemoteActionTarget,
-    ResourceReadRequest,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget, ResourceReadRequest,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Invoke, Resource};
@@ -664,7 +663,7 @@ impl Core {
             asks: false,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
-                provider: format!("{RESOURCE_PROVIDER}:{}:{}", self.app, self.id),
+                provider: self.app.to_owned(),
                 address,
             },
             argument: InvokeArgument::Json(arguments),

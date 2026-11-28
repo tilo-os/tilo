@@ -193,7 +193,7 @@ fn send_mail() -> InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: "record:mail:drafts".into(),
+            provider: "mail".into(),
             address: ActionAddress::new("mail.drafts:d1", "send"),
         },
         argument: InvokeArgument::Json(arguments),

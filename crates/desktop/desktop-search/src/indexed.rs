@@ -231,13 +231,11 @@ impl IndexedContent {
     /// `opens`, the row of `found`, which also brings the record it is in here when another
     /// workspace keeps it: choosing the row still opens it where it lives.
     fn bringing(&self, found: &Found, opens: InvokeTarget) -> InvokeTarget {
-        let (Some(here), Some(from), Some((app, record))) = (
+        let (Some(here), Some(from), Some(app), Some(record)) = (
             self.here.as_deref(),
             found.workspace.as_deref(),
-            found
-                .provider
-                .as_deref()
-                .and_then(|provider| provider.strip_prefix("record:")?.split_once(':')),
+            found.app.as_deref(),
+            found.record.as_deref(),
         ) else {
             return opens;
         };

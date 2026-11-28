@@ -3,7 +3,7 @@
 //! runs.
 
 use serde_json::json;
-use tilo_actions::{ActionAddress, InvocationUpdate, remote::RESOURCE_PROVIDER};
+use tilo_actions::{ActionAddress, InvocationUpdate};
 use ui::resource::DocumentId;
 
 use crate::language::host;
@@ -19,16 +19,14 @@ fn a_shared_workspaces_programs_stay_off_a_members_computer() {
         // Someone else is a member of the workspace.
         let (_grace, _) = host.other_person("Grace", &workspace).await;
         let record = DocumentId::window_default(0x927e_0000_0000_0005);
-        let provider = format!(
-            "{RESOURCE_PROVIDER}:{}:{}",
-            ui::apps::TERMINAL,
-            record.route()
-        );
+        let provider = ui::apps::TERMINAL;
+        let session =
+            tilo_actions::remote::record_path("tl.so.tilo.terminal.Session", record.route());
 
         let opened = laptop
             .call(
-                &provider,
-                ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal"),
+                provider,
+                ActionAddress::new(session.as_str(), "open-terminal"),
                 &json!({"cols": 100, "rows": 30}),
             )
             .await;
@@ -39,8 +37,8 @@ fn a_shared_workspaces_programs_stay_off_a_members_computer() {
 
         let ran = laptop
             .call(
-                &provider,
-                ActionAddress::new("tl.so.tilo.terminal.Session", "run"),
+                provider,
+                ActionAddress::new(session.as_str(), "run"),
                 &json!({"command": "echo hello"}),
             )
             .await;

@@ -37,7 +37,6 @@ pub enum LinkError {
     Encoding,
     NonCanonical(&'static str),
     NotNative,
-    BadProvider,
 }
 
 impl From<InvalidAppId> for LinkError {
@@ -94,7 +93,6 @@ impl LinkError {
             Self::Encoding => "encoding",
             Self::NonCanonical(_) => "non-canonical",
             Self::NotNative => "not-native",
-            Self::BadProvider => "bad-provider",
         }
     }
 }
@@ -130,7 +128,6 @@ impl fmt::Display for LinkError {
             Self::Encoding => f.write_str("This link contains invalid percent-encoding"),
             Self::NonCanonical(what) => write!(f, "This link is not written the way Tilo writes it: {what}"),
             Self::NotNative => f.write_str("This is not a tilo://open link"),
-            Self::BadProvider => f.write_str("This record provider is not record:<app>:<record>"),
         }
     }
 }

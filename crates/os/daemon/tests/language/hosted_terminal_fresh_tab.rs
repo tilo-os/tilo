@@ -7,7 +7,6 @@
 //! workspace's shells refuses the open, which is what a device's daemon does until it runs them.
 
 use serde_json::json;
-use tilo_actions::remote::RESOURCE_PROVIDER;
 use tilo_actions::{ActionAddress, InvocationUpdate};
 use ui::resource::DocumentId;
 
@@ -50,12 +49,13 @@ fn a_members_terminal_on_a_fresh_tab_gets_its_shell() {
             "the tab's session is not written yet"
         );
 
-        let provider = format!("{RESOURCE_PROVIDER}:{APP}:{}", record.route());
+        let session =
+            tilo_actions::remote::record_path("tl.so.tilo.terminal.Session", record.route());
         let opened = laptop
             .call(
-                &provider,
+                APP,
                 // What Terminal's session offers a device to open its shell on a terminal.
-                ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal"),
+                ActionAddress::new(session.as_str(), "open-terminal"),
                 &json!({"cols": 100, "rows": 30}),
             )
             .await

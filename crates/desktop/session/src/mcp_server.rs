@@ -1239,9 +1239,8 @@ impl SessionServices {
     /// the session's own provider: the session is that record's origin, so its action is one of
     /// the session's own steps.
     pub(crate) fn address_kept(&self, request: &mut InvokeRequest) {
-        if tilo_actions::remote::resource_parts(&request.target.provider)
-            .is_some_and(|(app, _)| self.keeps(app))
-        {
+        let provider = &request.target.provider;
+        if tilo_actions::remote::names_app(provider) && self.keeps(provider) {
             wire_provider().clone_into(&mut request.target.provider);
         }
     }
@@ -1922,8 +1921,11 @@ impl Host {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // The record an action of a record's own provider changes, before it is addressed to the
         // session when the session keeps that record.
-        let record = tilo_actions::remote::resource_parts(&request.target.provider)
-            .map(|(app, record)| (app.to_owned(), record.to_owned()));
+        let record = Some(&request.target.provider)
+            .filter(|provider| {
+                tilo_actions::remote::names_app(provider) && **provider != wire_provider()
+            })
+            .map(|app| (app.clone(), String::new()));
         self.session.address_kept(&mut request);
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with

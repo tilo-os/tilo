@@ -28,8 +28,8 @@ use tilo_action_services::environment_commands::CommandOutput;
 use tilo_action_services::environment_commands::Person;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, pending,
-    resource_parts,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, pending, record_in,
+    record_path,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
@@ -47,8 +47,8 @@ use super::applications::RecordAction;
 /// reads.
 pub const TERMINAL_APP: &str = ui::apps::TERMINAL;
 
-/// The provider id this device registers the Terminal shells under: a record's call names
-/// `record:<app id>:<record id>`, and the provider registered for the app answers it.
+/// The provider id this device registers the Terminal shells under: a session's call names the
+/// app, and the session by its path (`tl.so.tilo.terminal.Session/<record id>`).
 pub const PROVIDER: &str = ui::apps::TERMINAL;
 
 /// A session record's action that runs a command line.
@@ -59,6 +59,10 @@ const OPEN: &str = "open-terminal";
 const STOP: &str = "stop";
 /// The resource a session's own actions are on: the Terminal package's session record type.
 const SESSION_RESOURCE: &str = "tl.so.tilo.terminal.Session";
+/// The workspace's own Terminal session: the Terminal's root `session`, the one record its
+/// windows show and every device of the workspace meets on. A root's record is `root-<type id>`,
+/// and the Terminal package's ids lock gives `Session` the id `vgkud5dv`, which never changes.
+const WORKSPACE_SESSION: &str = "root-vgkud5dv";
 /// The key a Terminal session's record keeps where its shell runs under: the `target` field's id
 /// in the Terminal package's ids lock, which never changes once given.
 const SESSION_TARGET: &str = "fzio5css";
@@ -181,11 +185,14 @@ impl TerminalService {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(String, String), ActionCallError> {
-        let (app, record) =
-            resource_parts(&request.target.provider).ok_or(ActionCallError::UnknownAction)?;
-        if app != TERMINAL_APP {
-            return Err(ActionCallError::UnknownAction);
-        }
+        let resource = &request.target.address.resource;
+        let record = (request.target.provider == TERMINAL_APP)
+            .then(|| {
+                record_in(resource, SESSION_RESOURCE)
+                    .or_else(|| record_in(resource, SECRETS_RESOURCE))
+            })
+            .flatten()
+            .ok_or(ActionCallError::UnknownAction)?;
         let workspace = caller.workspace().map(str::to_owned).ok_or_else(|| {
             ActionCallError::InvalidRequest {
                 reason: "a Terminal session's shell runs in one workspace".into(),
@@ -666,7 +673,8 @@ fn names_the_host_shell(target: &str) -> bool {
 /// device's host shell. The app's own `run` stays what its surface declares, so invoking it on
 /// the app still asks its person first; a session's shell on the device that keeps the
 /// workspace's machine is the workspace's own work, as Files' verbs on its folder are.
-fn session_descriptor(action: &str) -> Option<ActionDescriptor> {
+/// The action `action` of the session `record` names, at the session's path.
+fn session_descriptor(record: &str, action: &str) -> Option<ActionDescriptor> {
     let (label, description, params, execution) = match action {
         RUN => (
             "Run command",
@@ -712,7 +720,7 @@ fn session_descriptor(action: &str) -> Option<ActionDescriptor> {
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
-        address: ActionAddress::new(SESSION_RESOURCE, action),
+        address: ActionAddress::new(record_path(SESSION_RESOURCE, record), action),
         resource_kind: SESSION_RESOURCE.into(),
         resource_label: "Terminal".into(),
         action_label: label.into(),
@@ -814,7 +822,7 @@ fn tail(output: &[u8], max: usize) -> (String, bool) {
 
 impl ActionProvider for TerminalService {
     fn serves(&self, provider: &str) -> bool {
-        provider == PROVIDER || resource_parts(provider).is_some_and(|(app, _)| app == TERMINAL_APP)
+        provider == PROVIDER
     }
 
     fn query(
@@ -823,11 +831,18 @@ impl ActionProvider for TerminalService {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // A session record's actions are its app's, and the catalogue lists them where the app
-        // runs. A call naming the record reaches this device's shells; a path resolving the
-        // record itself ([`crate::workspaces::providers`]) reads what its shell answers here.
-        let Some(provider) = query.provider.clone().filter(|provider| {
-            resource_parts(provider).is_some_and(|(app, _)| app == TERMINAL_APP)
-        }) else {
+        // runs. A call naming the session's path reaches this device's shells, and a query naming
+        // it ([`CatalogueQuery::target`]) reads what its shell answers here; one naming none reads
+        // the workspace's own session's.
+        let record = (query.provider.as_deref() == Some(PROVIDER)).then(|| {
+            query
+                .target
+                .as_ref()
+                .map_or(Some(WORKSPACE_SESSION), |target| {
+                    record_in(&target.resource, SESSION_RESOURCE)
+                })
+        });
+        let Some(record) = record.flatten() else {
             return Pending::ready(Ok(CataloguePage {
                 exhausted: true,
                 ..CataloguePage::default()
@@ -835,8 +850,8 @@ impl ActionProvider for TerminalService {
         };
         let rows: Vec<CatalogueRow> = SESSION_VERBS
             .iter()
-            .filter_map(|action| session_descriptor(action))
-            .map(|action| CatalogueRow::for_action(provider.clone(), TERMINAL_APP, action))
+            .filter_map(|action| session_descriptor(record, action))
+            .map(|action| CatalogueRow::for_action(PROVIDER.to_owned(), TERMINAL_APP, action))
             .collect();
         Pending::ready(Ok(CataloguePage::from_rows(
             rows.len().to_string(),
@@ -850,9 +865,8 @@ impl ActionProvider for TerminalService {
         address: &ActionAddress,
         _argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
-        (address.resource == SESSION_RESOURCE)
-            .then(|| session_descriptor(&address.action))
-            .flatten()
+        let record = record_in(&address.resource, SESSION_RESOURCE)?;
+        session_descriptor(record, &address.action)
     }
 
     fn invoke(
@@ -919,7 +933,9 @@ impl ActionProvider for TerminalService {
             }
             // What the workspace's machine reads: the items its programs get, changed by the
             // app's own actions on the record, which its process opens or founds.
-            ADD_SECRET | REMOVE_SECRET if request.target.address.resource == SECRETS_RESOURCE => {
+            ADD_SECRET | REMOVE_SECRET
+                if record_in(&request.target.address.resource, SECRETS_RESOURCE).is_some() =>
+            {
                 let arguments = match &request.argument {
                     InvokeArgument::Json(arguments) => arguments.clone(),
                     _ => Map::new(),

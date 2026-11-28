@@ -24,5 +24,3 @@ pub mod model;
 pub mod record_actions;
 pub mod shell;
 pub mod transform;
-
-pub use record_actions::{RESOURCE_PROVIDER, resource_provider};

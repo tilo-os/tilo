@@ -12,7 +12,7 @@ use tilo_actions::{
 };
 
 const APP: &str = "so.tilo.test";
-const PROVIDER: &str = "record:so.tilo.test:";
+const PROVIDER: &str = APP;
 const ROOT: &str = "test.note";
 const ITEM: &str = "test.note/items/42";
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";

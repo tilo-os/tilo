@@ -385,7 +385,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     }
     let route = record_route(&workspace, CHAT);
     let _ = beas.own_route_keys(&route, true).await;
-    let chat_provider = format!("{}:{CHAT}:", tilo_actions::remote::RESOURCE_PROVIDER);
+    let chat_provider = CHAT.to_owned();
     let caller_bea = Caller::authenticated(
         hosted.bea_cert.user_public_key,
         hosted.bea_cert.device_public_key,

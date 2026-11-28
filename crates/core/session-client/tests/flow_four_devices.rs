@@ -919,7 +919,7 @@ async fn device_action(
     flow::ask(
         &laptop,
         f.person_id(),
-        "record:so.tilo.devices:devices",
+        "so.tilo.devices",
         "tilo.devices",
         action,
         arguments,

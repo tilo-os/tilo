@@ -91,8 +91,8 @@ impl HostSearch {
             kind: ResourceKind::Record,
             provider: self.id().into(),
             id: format!(
-                "{}\u{1f}{}",
-                found.provider.as_deref().unwrap_or(&app),
+                "{app}\u{1f}{}\u{1f}{}",
+                found.record.as_deref().unwrap_or_default(),
                 found.resource
             ),
             title: found.label.clone(),
@@ -215,7 +215,7 @@ mod tests {
             open: Some("open".into()),
             arguments: serde_json::Map::new(),
             app: Some("so.tilo.notes".into()),
-            provider: Some("record:so.tilo.notes:1".into()),
+            record: Some("1".into()),
             when: None,
             ..Found::default()
         }

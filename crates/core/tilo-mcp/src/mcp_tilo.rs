@@ -1573,11 +1573,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         // A change of a tilolang app's record goes to the record's origin, which runs the
         // action against the record as it is then; no app's instance is asked.
-        if let Some(record) = call.get("record").and_then(Value::as_str) {
+        if call.get("record").and_then(Value::as_str).is_some() {
             return self
                 .task_change(
                     app,
-                    record,
                     resource,
                     action,
                     call["arguments"].as_object().cloned().unwrap_or_default(),
@@ -1612,20 +1611,19 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         program_answer(action, value)
     }
 
-    /// The task's change of `app`'s record `record`: an action of the record's own provider, run
+    /// The task's change of `app`'s record at `resource`: an action of the record's own app, run
     /// through the one dispatch as every other call is, so the workspace's invocations record keeps
     /// it as this task's step.
     async fn task_change(
         &self,
         app: &str,
-        record: &str,
         resource: &str,
         action: &str,
         arguments: Map<String, Value>,
     ) -> Value {
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
-                provider: format!("{}:{app}:{record}", tilo_actions::remote::RESOURCE_PROVIDER),
+                provider: app.to_owned(),
                 app_id: Some(app.to_owned()),
             },
             workspace: false,

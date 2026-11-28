@@ -486,7 +486,7 @@ pub fn record_invocation(
         asks: false,
         invocation,
         target: RemoteActionTarget {
-            provider: format!("record:{app}:"),
+            provider: app.to_owned(),
             address: tilo_actions::ActionAddress::new("", action),
         },
         argument: if arguments.is_empty() {
@@ -1215,7 +1215,7 @@ mod tests {
                 READ_ACTION,
                 serde_json::Map::new(),
             );
-            assert_eq!(read.target.provider, "record:so.tilo.discord:");
+            assert_eq!(read.target.provider, "so.tilo.discord");
             assert_eq!(read.target.address.resource, "");
             assert_eq!(read.target.address.action, READ_ACTION);
             assert_eq!(read.argument, tilo_actions::remote::InvokeArgument::None);

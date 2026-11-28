@@ -265,15 +265,12 @@ pub struct Landed {
 }
 
 impl Landed {
-    /// Where an answer of the workspace's `open` says the file landed: its `provider`,
-    /// `record:<app>:<record>`.
+    /// Where an answer of the workspace's `open` says the file landed: the app its `provider`
+    /// names and its `record`.
     #[must_use]
     pub fn of(value: &serde_json::Value) -> Option<Self> {
-        let provider = value.get("provider")?.as_str()?;
-        let (app, record) = provider
-            .strip_prefix(tilo_actions::remote::RESOURCE_PROVIDER)?
-            .strip_prefix(':')?
-            .split_once(':')?;
+        let app = value.get("provider")?.as_str()?;
+        let record = value.get("record")?.as_str()?;
         Some(Self {
             app: app.to_owned(),
             record: record.to_owned(),
@@ -356,7 +353,7 @@ mod tests {
 
     #[test]
     fn a_landing_answer_names_the_record() {
-        let answer = serde_json::json!({"provider": "record:so.tilo.pdf-viewer:abc", "record": {}});
+        let answer = serde_json::json!({"provider": "so.tilo.pdf-viewer", "record": "abc"});
         assert_eq!(
             Landed::of(&answer),
             Some(Landed {

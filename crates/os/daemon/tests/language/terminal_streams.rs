@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr};
 use serde_json::json;
-use tilo_actions::{ActionAddress, InvocationUpdate, remote::RESOURCE_PROVIDER};
+use tilo_actions::{ActionAddress, InvocationUpdate};
 use ush::environment_terminals::{
     FromTerminal, NOT_HANDED, ToTerminal,
     quic::{Receiving, Sending, dial},
@@ -158,11 +158,11 @@ fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() 
         let phone = host.member("phone", &workspace).await;
         // The workspace's own session, the one every Terminal window shows: the Terminal's root
         // `session`, whose id its package's ids lock fixes.
-        let provider = format!("{RESOURCE_PROVIDER}:{}:root-vgkud5dv", ui::apps::TERMINAL);
-        let open = ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal");
+        let provider = ui::apps::TERMINAL;
+        let open = ActionAddress::new("tl.so.tilo.terminal.Session/root-vgkud5dv", "open-terminal");
         let (stream, session) = opened(
             laptop
-                .call(&provider, open.clone(), &json!({"cols": 100, "rows": 30}))
+                .call(provider, open.clone(), &json!({"cols": 100, "rows": 30}))
                 .await,
         );
         let address = host.daemon().endpoint_addr();
@@ -211,7 +211,7 @@ fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() 
         let (back_stream, back_session) = opened(
             laptop
                 .call(
-                    &provider,
+                    provider,
                     open.clone(),
                     &json!({"cols": 100, "rows": 30, "attach": session}),
                 )
@@ -249,7 +249,7 @@ fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() 
         // Its shell exited: there is no session to come back to.
         let again = laptop
             .call(
-                &provider,
+                provider,
                 open,
                 &json!({"cols": 100, "rows": 30, "attach": session}),
             )

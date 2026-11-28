@@ -755,7 +755,7 @@ pub async fn write_to(
     ask(
         device,
         workspace,
-        "record:so.tilo.chat:",
+        "so.tilo.chat",
         "tl:so.tilo.chat:root-lmdoxbnn",
         "write_to",
         serde_json::json!({"who": who, "body": body}),
