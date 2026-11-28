@@ -3610,8 +3610,10 @@ view window(w: Workbench) {
         if w.sheet == "save" {
             save_sheet(w, d)
         }
-        if w.picker_for != .none {
-            picker(w, d)
+        if let picking = w.picker_for {
+            if picking == d {
+                picker(w, d)
+            }
         }
     }
 }
