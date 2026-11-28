@@ -268,6 +268,17 @@ async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
 /// The window runs `action` with `args`, as a press of the control that fronts it does: a window
 /// still taking its time answers that its call waits, and is asked again.
 async fn runs(session: &Session<'_>, workspace: &str, action: &str, args: Value) {
+    let (said, failed) = tried(session, workspace, action, args).await;
+    assert!(!failed, "the window runs {action} with {args}: {said}");
+}
+
+/// [`runs`] as the window answered it: its words and whether it refused.
+async fn tried(
+    session: &Session<'_>,
+    workspace: &str,
+    action: &str,
+    args: Value,
+) -> (String, bool) {
     let deadline = Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let (said, failed) = said(
@@ -275,13 +286,9 @@ async fn runs(session: &Session<'_>, workspace: &str, action: &str, args: Value)
                 .tool(workspace, "tilo_do", &json!({"path": action, "args": args}))
                 .await,
         );
-        if !failed {
-            return;
+        if !failed || !said.contains("not finished yet") {
+            return (said, failed);
         }
-        assert!(
-            said.contains("not finished yet"),
-            "the window runs {action} with {args}: {said}"
-        );
         assert!(
             Instant::now() < deadline,
             "the window never runs {action} with {args}: {said}",
@@ -342,7 +349,6 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
         // Back again, over the places the window came from, to the workspace's own folder.
         let deadline = Instant::now() + std::time::Duration::from_secs(30);
         loop {
-            runs(&session, &workspace, "files#back", json!({})).await;
             let lines = view(&session, &workspace).await;
             if !lines.contains("Couldn’t open") {
                 assert!(
@@ -355,6 +361,9 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
                 Instant::now() < deadline,
                 "the window never goes back to the workspace's own folder: {lines}",
             );
+            // A press of Back the window has nowhere to go on has done all it can: the window
+            // is read again either way.
+            let _ = tried(&session, &workspace, "files#back", json!({})).await;
         }
 
         // The person picks a folder, and its files are shown; the folder beside it was never
