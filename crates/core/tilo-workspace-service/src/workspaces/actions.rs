@@ -2247,6 +2247,12 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Answered, ActionCallError> {
         if let Some(answers) = self.providers().in_workspace(&request.target) {
+            // A provider answering in a workspace answers for the one the caller's connection
+            // was admitted to, where the address names none of its own: the mail accounts, the
+            // vault, the model providers are the workspace's, and a caller is confined to it
+            // ([`Caller::in_workspace`]).
+            let workspace_id =
+                workspace_id.or_else(|| caller.workspace().and_then(WorkspaceId::parse));
             let call = super::providers::WorkspaceCall {
                 workspace: workspace_id,
                 caller,

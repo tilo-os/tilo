@@ -17,13 +17,19 @@
 //! something that does not exist is told; one it has but whose grants do not
 //! reach is refused.
 //!
+//! An app acting by itself, with nobody at it to ask, reaches what the grants
+//! naming it allow: those installing it recorded at its own node, and those its
+//! signed manifest declares where the service answering the store publishes the
+//! action, which is also where the dispatch admits its call
+//! ([`Store::service_node`]).
+//!
 //! What stays a person's own (their formats and zone, what may interrupt
 //! them) is kept apart, under `people/<person>/`, and no workspace reaches it.
 
 use std::path::{Path, PathBuf};
 use tilo_action_policy::ActingPolicy as _;
 
-use tilo_action_policy::{Answer, Context, TreePath};
+use tilo_action_policy::{Answer, Basis, Context, TreePath};
 use tilo_action_types::ActionKind;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
@@ -32,12 +38,15 @@ use tilo_user_identity::DeviceCert;
 
 use super::{WorkspaceId, Workspaces};
 
-/// Where a store stands in the workspace's policy: an app's node, and the
-/// kind of resource it is in that app.
+/// Where a store stands in the workspace's policy: an app's node, the kind
+/// of resource it is in that app, and the service answering its actions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Store {
     app: &'static str,
     kind: &'static str,
+    /// The provider the store's actions are answered by: where an app acting by itself holds
+    /// the grant its signed manifest declares ([`Self::service_node`]).
+    service: &'static str,
 }
 
 impl Store {
@@ -45,37 +54,44 @@ impl Store {
     pub const MAIL: Self = Self {
         app: tilo_app_id::apps::MAIL,
         kind: tilo_workspace_records::accounts::PROVIDER,
+        service: tilo_workspace_records::accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
     #[cfg(feature = "agents")]
     pub const CALENDARS: Self = Self {
         app: tilo_app_id::apps::CALENDAR,
         kind: tilo_workspace_records::accounts::PROVIDER,
+        service: tilo_workspace_records::accounts::PROVIDER,
     };
     /// The items of the workspace's vault, in Passwords.
     pub const VAULT: Self = Self {
         app: tilo_app_id::apps::PASSWORDS,
         kind: tilo_actions::remote::VAULT_KIND,
+        service: tilo_workspace_records::vault::PROVIDER,
     };
     /// The workspace's model providers and their keys.
     pub const MODELS: Self = Self {
         app: tilo_workspace_records::models::PROVIDER,
         kind: tilo_workspace_records::models::RESOURCE,
+        service: tilo_workspace_records::models::PROVIDER,
     };
     /// The services the workspace connected.
     pub const CONNECTIONS: Self = Self {
         app: tilo_workspace_records::connections::PROVIDER,
         kind: tilo_workspace_records::connections::KIND,
+        service: tilo_workspace_records::connections::PROVIDER,
     };
     /// What the workspace's agents learned.
     pub const LEARNED: Self = Self {
         app: super::actions::LEARNED,
         kind: "facts",
+        service: super::actions::LEARNED,
     };
     /// The workspace's scheduled work and events, in Shortcuts.
     pub const EVENTS: Self = Self {
         app: tilo_app_id::apps::SHORTCUTS,
         kind: tilo_action_services::workspace_events::KIND,
+        service: tilo_action_services::workspace_events::PROVIDER,
     };
 
     /// The node `action` of this store stands at in `workspace`.
@@ -83,6 +99,17 @@ impl Store {
         TreePath::workspace(workspace)
             .app(self.app)
             .kind(self.kind)
+            .rest()
+            .action(action)
+    }
+
+    /// The node an app acting by itself reaches `action` of this store at in `workspace`: the
+    /// service answering it, wherever in that service's tree it publishes the action. The
+    /// dispatch admits the app's call of the service at this node too, so one grant of the
+    /// app's signed manifest declares the action once.
+    pub(super) fn service_node(self, workspace: &str, action: &str) -> TreePath {
+        TreePath::workspace(workspace)
+            .app(self.service)
             .rest()
             .action(action)
     }
@@ -265,7 +292,8 @@ impl Workspaces {
         let acting = caller.acting();
         // An app acting by itself holds the grants naming it, never a person's: those the
         // workspace recorded (what installing it gave it), and those its device hands it from
-        // its signed manifest. With nobody at it to ask, what none of them allows is refused.
+        // its signed manifest. With nobody at it to ask, what none of them allows is refused
+        // ([`app_alone_answer`]).
         if let Some(app) = acting.app()
             && acting.person_id().is_none()
         {
@@ -273,12 +301,11 @@ impl Workspaces {
                 .policy_of(&workspace.to_string())
                 .await
                 .ok_or(ActionCallError::UnknownAction)?;
-            let node = store.node(&policy.workspace, action);
-            let answer = app_answer(
-                app.as_str(),
-                (&policy, &caller.granted()),
-                (&node, effect),
-                &Context::at_time(tilo_clock::wall()),
+            let granted = caller.granted();
+            let answer = app_alone_answer(
+                (app.as_str(), &granted),
+                (&policy, &Context::at_time(tilo_clock::wall())),
+                (store, action, effect),
             );
             if answer != Answer::Allow {
                 return Err(ActionCallError::NotPermitted);
@@ -572,6 +599,39 @@ fn app_answer(
         (Answer::Deny, tilo_action_policy::Basis::NoGrant) => Answer::Ask,
         (answer, _) => answer,
     }
+}
+
+/// What an app acting by itself reaches of `store`'s `action` in `workspace`, as `policy` and
+/// the grants `granted` naming it decide at `cx`: at its own app's node, where the records
+/// installing it gave it are, and at the service answering the store, where the dispatch admits
+/// its call too ([`Store::service_node`]). A rule at either place that denies refuses it;
+/// otherwise either may allow it, and neither place covers the other.
+fn app_alone_answer(
+    (app, granted): (&str, &[tilo_action_policy::Grant]),
+    (policy, cx): (&tilo_action_policy::WorkspacePolicy, &Context<'_>),
+    (store, action, effect): (Store, &str, ActionKind),
+) -> Answer {
+    let at = |node: TreePath| {
+        policy
+            .party_of(tilo_action_policy::Grantee::app(app))
+            .with_grants(granted)
+            .decide(&node, effect, cx)
+    };
+    let decisions = [
+        at(store.node(&policy.workspace, action)),
+        at(store.service_node(&policy.workspace, action)),
+    ];
+    let denied = decisions
+        .iter()
+        .any(|decision| decision.answer == Answer::Deny && decision.basis != Basis::NoGrant);
+    if denied {
+        return Answer::Deny;
+    }
+    decisions
+        .iter()
+        .map(|decision| decision.answer)
+        .max()
+        .unwrap_or(Answer::Deny)
 }
 
 /// The agent `caller` acts as and the person it is the agent of, as its member names them: the

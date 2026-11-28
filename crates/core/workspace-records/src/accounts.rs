@@ -529,13 +529,13 @@ pub fn sign_in_grant_id(app: &str, workspace: &str) -> String {
 }
 
 /// Where reading the workspace's sign-ins ([`SIGN_INS`]) stands in its policy: the verb at the
-/// accounts Mail keeps. The grant an app's signed manifest declares names this node, and the
-/// workspace decides an app's read of the sign-ins by that grant as by any other.
+/// accounts service, which is also the app node the device's dispatch decides an app's call of
+/// it under. The grant an app's signed manifest declares names this node, so one grant admits
+/// the app's read of the sign-ins and nothing else of the accounts, however the call arrives.
 #[must_use]
 pub fn sign_ins_node(workspace: &str) -> tilo_action_policy::TreePath {
     tilo_action_policy::TreePath::workspace(workspace.to_owned())
-        .app(tilo_app_id::apps::MAIL)
-        .kind(PROVIDER)
+        .app(PROVIDER)
         .rest()
         .action(SIGN_INS)
 }
