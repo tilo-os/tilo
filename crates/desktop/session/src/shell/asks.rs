@@ -663,8 +663,24 @@ impl Shared {
     }
 
     /// Carry out a power effect the person chose: the power menu's rows and a
-    /// published action name the same effects.
+    /// published action name the same effects. Logging out and shutting down end every app, so
+    /// while one holds work that is not saved they wait for the person's answer on the question
+    /// that names it ([`crate::power_hold`]).
     pub(crate) fn power_effect(&self, effect: Effect) {
+        #[cfg(target_os = "linux")]
+        if matches!(effect, Effect::LogOut | Effect::ShutDown) {
+            let held = crate::power_hold::held_by_apps(self.power.as_ref());
+            if let Some(state) = self.power_hold.as_ref()
+                && self.power_asking.ask(effect, state, held)
+            {
+                return;
+            }
+        }
+        self.carry_out_power(effect);
+    }
+
+    /// Carry out a power effect now, as the person answered or as nothing held it back.
+    pub(crate) fn carry_out_power(&self, effect: Effect) {
         match effect {
             Effect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             Effect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),

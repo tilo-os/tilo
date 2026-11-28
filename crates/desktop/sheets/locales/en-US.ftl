@@ -641,3 +641,17 @@ portal-files-title = Choose files for { $app }
 portal-files-writable-folder = { $app } will be able to change what is in the folder you choose.
 portal-usb-writable = { $device } (can be written to)
 bluetooth-prompt-code = Code
+
+# Logging out or shutting down while an app holds work that is not saved: the
+# question names the apps and lets the person go ahead or stay.
+power-hold-log-out-title = Log out?
+power-hold-log-out-body = { $apps }. Logging out closes them.
+power-hold-shut-down-title = Shut down?
+power-hold-shut-down-body = { $apps }. Shutting down closes them.
+power-hold-log-out-anyway = Log out anyway
+power-hold-shut-down-anyway = Shut down anyway
+power-hold-cancel = Stay
+power-hold-question = Log out?
+so-tilo-power-hold-answer-carry = Go ahead anyway
+so-tilo-power-hold-answer-cancel = Stay signed in
+so-tilo-workspace-settings-change-transfer-ownership = Hand the workspace to a member, who becomes its owner

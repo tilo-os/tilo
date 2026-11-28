@@ -914,6 +914,13 @@ impl Session {
             self.confirmation
                 .follow(&mut self.compositor, confirm, &self.displays, &*notices);
         }
+        // The question logging out or shutting down asks while an app holds unsaved work: the
+        // effect the person asked for, carried out once they said it may go ahead.
+        if let Some(state) = self.shared.power_hold.as_ref()
+            && let Some(effect) = self.shared.power_asking.follow(state)
+        {
+            self.shared.carry_out_power(effect);
+        }
         self.display_sheet.follow(
             &self.compositor.outputs(),
             self.displays.awaiting_confirmation().is_some(),

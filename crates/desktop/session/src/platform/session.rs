@@ -1153,6 +1153,7 @@ impl Session {
             directory,
             invite,
             display_confirm,
+            power_hold,
             displays: displays_sheet,
             shortcut_guide: guide_sheet,
             lock_view,
@@ -1970,6 +1971,9 @@ impl Session {
             owner_devices,
             shell_home,
             display_confirm,
+            power_hold,
+            power_asking: crate::power_hold::Hold::default(),
+            power: options.power.clone(),
             notices,
             moves: crate::window_move::Moves::new(
                 crate::notifications::RoleNotices::of(&notifications),

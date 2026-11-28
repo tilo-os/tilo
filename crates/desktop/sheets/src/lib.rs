@@ -14,6 +14,7 @@ pub mod displays;
 pub mod invite;
 pub mod keyboard_shortcuts;
 pub mod lock;
+pub mod power_hold;
 mod presentation;
 pub mod shortcut_guide;
 pub mod workspace_settings;

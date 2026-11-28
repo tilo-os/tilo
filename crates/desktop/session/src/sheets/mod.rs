@@ -579,6 +579,13 @@ impl Session {
         self.shared.display_confirm.as_ref()
     }
 
+    /// The state of the question logging out or shutting down asks while an app holds work that
+    /// is not saved.
+    #[must_use]
+    pub fn power_hold(&self) -> Option<&tilo_sheets::power_hold::PowerHoldState> {
+        self.shared.power_hold.as_ref()
+    }
+
     /// The display sheet: the layouts the attached displays allow and the wireless displays the
     /// desktop can be streamed to, as it shows them.
     #[must_use]

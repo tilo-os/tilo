@@ -642,3 +642,17 @@ portal-files-title = Dateien für { $app } wählen
 portal-files-writable-folder = { $app } kann den Inhalt des gewählten Ordners ändern.
 portal-usb-writable = { $device } (beschreibbar)
 bluetooth-prompt-code = Code
+
+# Abmelden oder Herunterfahren, während eine App ungespeicherte Arbeit hält: die
+# Frage nennt die Apps und lässt die Person fortfahren oder bleiben.
+power-hold-log-out-title = Abmelden?
+power-hold-log-out-body = { $apps }. Beim Abmelden werden sie geschlossen.
+power-hold-shut-down-title = Herunterfahren?
+power-hold-shut-down-body = { $apps }. Beim Herunterfahren werden sie geschlossen.
+power-hold-log-out-anyway = Trotzdem abmelden
+power-hold-shut-down-anyway = Trotzdem herunterfahren
+power-hold-cancel = Bleiben
+power-hold-question = Abmelden?
+so-tilo-power-hold-answer-carry = Trotzdem fortfahren
+so-tilo-power-hold-answer-cancel = Angemeldet bleiben
+so-tilo-workspace-settings-change-transfer-ownership = Den Arbeitsbereich an ein Mitglied übergeben, das seine Inhaberin oder sein Inhaber wird

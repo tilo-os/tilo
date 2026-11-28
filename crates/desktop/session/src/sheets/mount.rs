@@ -11,6 +11,7 @@ use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::displays::DisplaysState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::lock::LockState;
+use tilo_sheets::power_hold::PowerHoldState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 
@@ -23,6 +24,8 @@ pub(crate) struct Sheets {
     pub(crate) directory: Option<DirectoryState>,
     pub(crate) invite: Option<InviteState>,
     pub(crate) display_confirm: Option<ConfirmState>,
+    /// The question logging out or shutting down asks while an app holds unsaved work.
+    pub(crate) power_hold: Option<PowerHoldState>,
     pub(crate) displays: Option<DisplaysState>,
     pub(crate) shortcut_guide: Option<GuideState>,
     /// The lock screen, drawn in the session's own process when the app that normally draws it is
@@ -43,6 +46,7 @@ impl Sheets {
             of(self.directory.as_ref()),
             of(self.invite.as_ref()),
             of(self.display_confirm.as_ref()),
+            of(self.power_hold.as_ref()),
             of(self.displays.as_ref()),
         ]
         .into_iter()
@@ -90,12 +94,21 @@ pub(crate) fn mount_sheets(
         options,
     );
     let (display_confirm, displays) = mount_displays(compositor, surfaces, who, options);
+    let power_hold = mount_sheet(
+        compositor,
+        surfaces,
+        tilo_sheets::power_hold::definition(),
+        PowerHoldState::default(),
+        who,
+        options,
+    );
     let lock_view = mount_lock_view(compositor, surfaces, who, options);
     Sheets {
         workspace_settings,
         directory,
         invite,
         display_confirm,
+        power_hold,
         displays,
         shortcut_guide,
         lock_view,

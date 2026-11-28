@@ -263,6 +263,18 @@ pub(crate) struct Shared {
     /// at once so it is seen even when the change blanked one of them.
     #[cfg(target_os = "linux")]
     pub(crate) display_confirm: Option<tilo_sheets::display_confirm::ConfirmState>,
+    /// The question logging out or shutting down asks while an app holds
+    /// work that is not saved, and what the person asked for until they
+    /// answer it.
+    #[cfg(target_os = "linux")]
+    pub(crate) power_hold: Option<tilo_sheets::power_hold::PowerHoldState>,
+    /// Which power effect waits for the answer above.
+    #[cfg(target_os = "linux")]
+    pub(crate) power_asking: crate::power_hold::Hold,
+    /// The machine's power service, when this session runs its own: what apps hold back logging
+    /// out, in their own words, read where a power effect is asked for.
+    #[cfg(target_os = "linux")]
+    pub(crate) power: Option<tilo_session_power::PowerLink>,
     /// The workspaces this computer may join or open.
     #[cfg(target_os = "linux")]
     pub(crate) directory: Option<tilo_sheets::directory::DirectoryState>,
