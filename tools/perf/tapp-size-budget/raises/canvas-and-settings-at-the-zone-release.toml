@@ -1,0 +1,8 @@
+reason = "The signed app release after hosted instances learned the person's zone (9d44fd63e52) measured two x86_64 packages over their budgets, so nothing could be published. Canvas is 761,344 bytes, 40,448 over: it gained marks on the clipboard, its missing tools and export options (0d3c5fe3130), the behaviours its port dropped (4187fe2eee4) and the platform's place in a document (8b8c09571f3). Settings is 1,226,240 bytes, 46,592 over: every pane became the shared page (d1189cb8ae1), the Agents page signs in to ChatGPT and runs this computer's models (e6487e6a6c9), and About shows the hardware check (ae83aa2ea6f). Each amount is the excess plus the budget's headroom, rounded up to 64 KiB, measured by t run raa12a82d47"
+run = "raa12a82d47"
+
+[apps."so.tilo.canvas"]
+x86_64 = 65536
+
+[apps."so.tilo.settings"]
+x86_64 = 65536
