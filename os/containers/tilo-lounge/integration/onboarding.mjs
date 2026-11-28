@@ -68,8 +68,11 @@ const said = [];
 let doing = 'starting';
 const step = name => { doing = name; };
 
-/** Where the host is as the pages know it: a workspace is stored per origin. */
-const hostOrigin = new URL(server).origin;
+/** Where the host is as the pages know it: a workspace is stored per origin, and the deployment's
+ * public origin is the site's, which names its home workspace's host (entry.json
+ * `home.host.origin`). A page is admitted, and keeps its membership and its person's envelope,
+ * at the address it visits, not at the server's own listener behind the site. */
+const hostOrigin = new URL(site).origin;
 /** The site's own origin: what its storage belongs to. */
 const siteOrigin = new URL(site).origin;
 

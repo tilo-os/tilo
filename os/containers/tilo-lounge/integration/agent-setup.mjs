@@ -318,11 +318,12 @@ const peopleOf = `[...document.querySelectorAll('#tilo-page .tilo-person')].map(
   here: row.hasAttribute('data-present'),
 }))`;
 
-// The person is who the page keeps its memberships as, on the server's host.
+// The person is who the page keeps its memberships as, at the host it visits: the site's own
+// origin, which its home workspace's host is named at.
 const person = tab => tab.evaluate(`JSON.stringify({
   user: (() => { try {
     const all = JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}');
-    return all[${JSON.stringify(new URL(server).origin)}]?.userPublicKey ?? null;
+    return all[${JSON.stringify(new URL(site).origin)}]?.userPublicKey ?? null;
   } catch { return null; } })(),
   title: document.title,
   workspace: (() => { try { return JSON.parse(globalThis.localStorage.getItem('tilo-chosen-workspace') ?? 'null')?.workspace ?? null; } catch { return null; } })(),
