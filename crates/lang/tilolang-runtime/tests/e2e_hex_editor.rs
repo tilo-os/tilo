@@ -602,6 +602,9 @@ mod cases {
             let path = s.file("window.bin", &[0xDE, 0xAD, 0xBE, 0xEF]);
             let d = s.open(&path);
             let window = s.window(&d);
+            // The window's own controls stand in its bar: Save is the first of them.
+            let save = find(window.tree(), "ui.Button").expect("the window's bar has its controls");
+            assert_eq!(save.props.get("label"), Some(&Value::text("Save")));
             let grid = find(window.tree(), "ui.HexGrid").expect("the grid stands in the window");
             match grid.props.get("rows") {
                 Some(Value::List(rows)) => {
@@ -620,6 +623,33 @@ mod cases {
                 "{words:?}"
             );
             assert!(words.iter().any(|w| w == "4 bytes"), "{words:?}");
+        }
+
+        phase a_library_row_opens_the_buffer_it_names;
+        {
+            let s = Desk::new();
+            let d = s.new_buffer();
+            let mut window = s
+                .rt
+                .open_view(&me(), &s.app.view("library"), vec![Value::resource(&s.root)])
+                .unwrap();
+            window.set_lazy_rows(false).unwrap();
+            let row = find(window.tree(), "ui.ListRow")
+                .unwrap_or_else(|| panic!("the buffer is a row: {}", dump(window.tree())));
+            let key = row.key.clone();
+            window.fire(&key, "activate").unwrap();
+            let opened: Vec<ResourceRef> = window
+                .poll_events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    tilolang_runtime::ViewEvent::Open { target, .. } => Some(target),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                opened.contains(&d),
+                "the row opens its document: {opened:?}"
+            );
         }
 
         phase the_library_lists_the_buffers_a_person_opened;

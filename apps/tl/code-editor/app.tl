@@ -2611,7 +2611,6 @@ view files(p: Project) {
     } else {
         ui.VirtualList(selection_follows_focus: true, in_column: true) {
             on select(x: Entry): open(x, front: false)
-            on activate(x: Entry): open(x)
             for e in p.files {
                 ui.ListItem(item: e) {
                     ui.ListRow(
@@ -2619,7 +2618,9 @@ view files(p: Project) {
                         meta: path_of(e),
                         secondary: if e.kind == .file { excerpt(e) } else { "" },
                         icon: if e.kind == .folder { .folder } else { .file_text },
-                    )
+                    ) {
+                        on activate: open(e)
+                    }
                 }
             }
         }

@@ -520,7 +520,7 @@ mod cases {
             &self,
             job: &str,
             state: &str,
-            detail: serde_json::Value,
+            detail: &serde_json::Value,
         ) -> tilolang_runtime::InvokeOutcome {
             let (_, handlers) = self.engine.last_started();
             let record = serde_json::json!({
@@ -1097,8 +1097,8 @@ mod cases {
                 labels.iter().any(|label| label == "Fetching from remote…"),
                 "{labels:?}"
             );
-            let loaded = s.engine.loaded();
-            s.end_remote(&job, "done", serde_json::json!(loaded));
+            let loaded = serde_json::json!(s.engine.loaded());
+            s.end_remote(&job, "done", &loaded);
             assert_eq!(s.text(&s.root, "remote_job"), "", "the job ended");
             assert_eq!(s.text(&s.session(), "notice"), "Fetched from origin");
 
@@ -1108,7 +1108,7 @@ mod cases {
             s.end_remote(
                 &job,
                 "failed",
-                serde_json::json!({"error": "the remote refused the branch"}),
+                &serde_json::json!({"error": "the remote refused the branch"}),
             );
             let said = s.text(&s.session(), "trouble");
             assert!(said.contains("stopped"), "{said}");

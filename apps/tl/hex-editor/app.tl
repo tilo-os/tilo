@@ -1356,7 +1356,6 @@ view library(lib: Library) {
                 }
             } else {
                 ui.VirtualList(name: "Open files", in_column: true) {
-                    on activate(d: Document): open(d)
                     for doc in lib.documents {
                         ui.ListItem(item: doc) {
                             menu: {
@@ -1372,7 +1371,9 @@ view library(lib: Library) {
                                     } else { size_text(doc.length) },
                                     icon: .file_code,
                                     value: if doc.path == "" { "Not on disk" } else { "Saved" },
-                                )
+                                ) {
+                                    on activate: open(doc)
+                                }
                             }
                         }
                     }

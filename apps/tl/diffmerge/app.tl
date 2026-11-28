@@ -985,7 +985,6 @@ view library(lib: Library) {
                 }
             } else {
                 ui.VirtualList(name: "Comparisons", in_column: true) {
-                    on activate(s: Session): open(s)
                     for s in lib.sessions {
                         ui.ListItem(item: s) {
                             menu: {
@@ -1005,7 +1004,9 @@ view library(lib: Library) {
                                     } else if s.folding {
                                         "Folders"
                                     } else if s.compared { "Comparison" } else { "" },
-                                )
+                                ) {
+                                    on activate: open(s)
+                                }
                             }
                         }
                     }
@@ -1325,7 +1326,6 @@ view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text, gap
 view changes_rail(s: Session, at: State<Int>) {
     ui.Section("Changes", fill: 1.0) {
         ui.VirtualList(name: "Changes", selection_follows_focus: true) {
-            on activate(b: Block): set(at, s.blocks.index_of(b) ?? 0)
             for b in s.blocks {
                 ui.ListItem(item: b) {
                     row: {
@@ -1339,7 +1339,9 @@ view changes_rail(s: Session, at: State<Int>) {
                             mark: if b.kind == "added" {
                                 .plus
                             } else if b.kind == "removed" { .minus } else { .pencil },
-                        )
+                        ) {
+                            on activate: set(at, s.blocks.index_of(b) ?? 0)
+                        }
                     }
                 }
             }
@@ -1911,7 +1913,6 @@ view folders_page(s: Session) {
                 )
             }
             ui.VirtualList(name: "Files that differ", in_column: true) {
-                on activate(e: FolderEntry): open_folder_entry(s, e)
                 for e in s.folder_entries {
                     ui.ListItem(item: e, keys: ["Enter"]) {
                         on shortcut(k): open_on_key(s, e, k)
@@ -1923,7 +1924,9 @@ view folders_page(s: Session) {
                                 tone: if e.kind == "added" {
                                     .success
                                 } else if e.kind == "removed" { .danger } else { .warning },
-                            )
+                            ) {
+                                on activate: open_folder_entry(s, e)
+                            }
                         }
                     }
                 }
