@@ -17,6 +17,23 @@ pub fn runtime_mount_for(version: &str) -> PathBuf {
     PathBuf::from("/run/tilo-runtime").join(version)
 }
 
+/// Where a sandbox's own store of runtime bundles is mounted, when it is handed one.
+pub const RUNTIME_STORE_MOUNT: &str = "/run/tilo-runtimes";
+
+/// Mount the device's runtime store at [`RUNTIME_STORE_MOUNT`], read-only, and name it to the
+/// sandbox: a process that runs no app yet finds any bundle it may become an app of. The Browser
+/// draws its pages with the Chromium engine, a runtime of its own, at the version its manifest
+/// names.
+pub fn push_runtime_store(argv: &mut Vec<String>, root: &Path) {
+    let mount = Path::new(RUNTIME_STORE_MOUNT);
+    push_bind(argv, "--ro-bind", root, mount);
+    argv.extend([
+        "--setenv".to_owned(),
+        runtime_bundle::RUNTIME_DIR_ENV.to_owned(),
+        mount.display().to_string(),
+    ]);
+}
+
 /// The `LD_LIBRARY_PATH` of a sandbox running on the runtime bundle mounted for `version`: the bundle's
 /// `lib/` directory.
 pub fn runtime_library_path(version: &str) -> PathBuf {

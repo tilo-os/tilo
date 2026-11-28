@@ -96,6 +96,15 @@ pub fn bwrap_argv(
             render.to_string(),
         ]);
     }
+    // A window of no app yet may be bound to any tilolang app, and an app may draw with a
+    // runtime of its own (the Browser's Chromium engine): the person's store of bundles stands
+    // where a sandbox looks for one, read-only, and is what the window may read and run.
+    let store = runtime_bundle::bundle_root()
+        .ok()
+        .filter(|root| root.is_dir());
+    if let Some(store) = &store {
+        crate::sandbox::push_runtime_store(&mut argv, store);
+    }
     crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
     let _ = crate::sandbox::push_required_runtime(&mut argv, runtime_root, version);
     crate::profile::push_system_profile(&mut argv, false);
@@ -111,6 +120,12 @@ pub fn bwrap_argv(
         "--ro".to_owned(),
         runtime_mount.display().to_string(),
     ]);
+    if store.is_some() {
+        argv.extend([
+            "--ro".to_owned(),
+            crate::sandbox::RUNTIME_STORE_MOUNT.to_owned(),
+        ]);
+    }
     super::push_runtime_landlock_rules(&mut argv, Some(app_runtime));
     for path in crate::profile::landlock_ro_paths(false) {
         argv.extend(["--ro".to_owned(), path.display().to_string()]);
