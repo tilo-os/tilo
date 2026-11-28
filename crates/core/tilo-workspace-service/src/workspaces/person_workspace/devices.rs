@@ -52,10 +52,9 @@
 //! moved there ([`Devices::show_window_on_device`]): that device opens it without asking and says
 //! whether it could, and a device that moved its window there closes its own once it did.
 //!
-//! What the person's root signs lives in their record: the mark of the device
-//! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
-//! takes back ([`Devices::revoke_device`]), each a signature a reader checks
-//! against that root where it reads the record. A revocation is kept once, in
+//! What the person's root signs lives in their record: the revocation of a device
+//! it takes back ([`Devices::revoke_device`]), a signature a reader checks against
+//! that root where it reads the record. A revocation is kept once, in
 //! the entry of the device it names, and an entry anything else signed is no
 //! revocation and every reader leaves it out.
 
@@ -78,8 +77,6 @@ const MAX_VALUE: usize = 256 * 1024;
 const MAX_NAME: usize = 32;
 /// The longest name of the agent a device runs.
 const MAX_AGENT: usize = 64;
-
-pub use tilo_user_identity::root_holder::root_holder_digest;
 
 /// The fact under which a device's entry keeps when a session of it was last
 /// with a host, ms since the epoch, little-endian.
@@ -439,9 +436,6 @@ pub struct Device {
     /// ([`Devices::revoke_device`]): it stays listed, marked, and every device of theirs refuses
     /// it. A reader verifies it against that root ([`Device::revocation`]).
     pub revocation: Option<String>,
-    /// It keeps the person's root: their root's signature over
-    /// [`root_holder_digest`] of its key, hex ([`Devices::mark_root_holder`]).
-    pub keeps_root: Option<String>,
     /// Each fact under its name, postcard in hex.
     pub facts: std::collections::BTreeMap<String, String>,
     /// How the person's session on it stands, as it said last ([`Devices::say_session`]).
@@ -474,14 +468,6 @@ impl Device {
             "a device's certificate is the person's root's to sign",
             postcard::from_bytes(&hex::decode(&self.certificate).ok()?).ok()
         )
-    }
-
-    /// Whether it keeps the person's root, as the root's own signature over its key says.
-    #[must_use]
-    pub fn keeps_root(&self, cert: &DeviceCert) -> bool {
-        self.keeps_root
-            .as_deref()
-            .is_some_and(|signature| root_signed(cert, signature))
     }
 
     /// The revocation the person's root signed for it, when the entry the record holds verifies
@@ -738,19 +724,6 @@ impl Devices {
             .retain(|id, kept| *id != key && kept.until_ns > starting_at);
         self.unlocks.push(key, answer);
         Ok(())
-    }
-
-    /// The devices of `person`'s that keep their root, as the root marked them: not one taken
-    /// back.
-    #[must_use]
-    pub fn root_holders(&self, person: &[u8; 32]) -> Vec<[u8; 32]> {
-        self.listed(person)
-            .into_iter()
-            .filter(|listed| {
-                !listed.device.revoked(&listed.cert) && listed.device.keeps_root(&listed.cert)
-            })
-            .map(|listed| listed.cert.device_public_key)
-            .collect()
     }
 
     /// The revocations the record holds, each verified against the root that certified the device
@@ -1118,26 +1091,6 @@ impl Devices {
             ));
         }
         kept.revocation = Some(revocation);
-        Ok(())
-    }
-
-    /// Mark `device` as the one that keeps the person's root, with `signature`, that root's over
-    /// [`root_holder_digest`] of its key (hex): checked against the root its certificate names.
-    #[action]
-    pub fn mark_root_holder(&mut self, device: String, signature: String) -> Result<(), Refusal> {
-        let kept = self
-            .devices
-            .get_mut(&Id::from_raw(device))
-            .ok_or_else(|| Refusal::new("that key is not one of your devices"))?;
-        let cert = kept
-            .cert()
-            .ok_or_else(|| Refusal::new("that device's certificate does not read"))?;
-        if !root_signed(&cert, &signature) {
-            return Err(Refusal::new(
-                "only the person's root marks the device that keeps it",
-            ));
-        }
-        kept.keeps_root = Some(signature);
         Ok(())
     }
 
@@ -2322,91 +2275,6 @@ pub async fn revoke(
 /// copy of their own workspace.
 pub async fn of(workspaces: &super::Workspaces, person: &[u8; 32]) -> Devices {
     workspaces.devices_of(person).await
-}
-
-/// Mark this device, `cert`'s, in the record of the person's own workspace `workspaces` holds, as
-/// one that keeps their root `root`, signed by that root: kept there first where it is not yet.
-///
-/// The entry that lists the device and the mark are one write of one document, so a record they
-/// found is founded once, at one author's first number. A mark this device cannot sign, or the
-/// record refuses, leaves the entry that lists the device all the same: the certificate their
-/// root signed is what lists it, and the mark only says it keeps that root.
-///
-/// # Errors
-/// The root did not sign, the record refused the device, or it refused the mark (and lists the
-/// device anyway).
-pub async fn mark_root_holder(
-    workspaces: &super::Workspaces,
-    root: &(dyn tilo_user_identity::StatementSigner + Sync),
-    cert: &DeviceCert,
-) -> Result<(), String> {
-    let device = cert.device_public_key;
-    let signature = match root.sign_digest(&root_holder_digest(&device)) {
-        Ok(signature) => signature,
-        // A root this device holds only part of signs nothing with it: the entry that lists the
-        // device is written on its own then, as the certificate their root signed is what lists
-        // it. That write is the first one, so the record is still founded once.
-        Err(error) => {
-            let listed = keep(workspaces, cert).await;
-            return match listed {
-                Ok(()) => Err(error.to_string()),
-                Err(refused) => Err(format!("{error}; {refused}")),
-            };
-        }
-    };
-    // The entry that lists this device and the mark that it keeps the root are one write, and a
-    // mark the record refuses keeps the entry all the same: the certificate their root signed is
-    // what lists it, and the mark only says it keeps that root.
-    super::apply_actions_on(
-        workspaces,
-        &super::workspace_id(workspaces),
-        DEVICES,
-        vec![
-            Devices::keeping(cert)?,
-            Devices::MARK_ROOT_HOLDER.with((hex::encode(device), hex::encode(signature))),
-        ],
-        Some(1),
-    )
-    .await
-}
-
-/// Whether the person's devices record marks `cert`'s device as one that keeps their root: what
-/// decides whether a call only that root signs runs on it ([`tilo_actions::ROOT_ONLY_TAG`]).
-pub async fn keeps_root(workspaces: &super::Workspaces, cert: &DeviceCert) -> bool {
-    let person = cert.user_public_key;
-    workspaces
-        .devices_of(&person)
-        .await
-        .root_holders(&person)
-        .contains(&cert.device_public_key)
-}
-
-/// The mark the person's devices record keeps for `cert`'s device as the one keeping their root:
-/// that root's own signature over [`root_holder_digest`] of its key, which a change only the root
-/// makes carries for its receivers to check ([`tilo_user_identity::root_holder::keeps_root`]).
-/// None where the record marks it as no such device, or the device was revoked.
-pub async fn root_mark(workspaces: &super::Workspaces, cert: &DeviceCert) -> Option<[u8; 64]> {
-    let person = cert.user_public_key;
-    let listed = workspaces
-        .devices_of(&person)
-        .await
-        .listed(&person)
-        .into_iter()
-        .find(|listed| listed.cert.device_public_key == cert.device_public_key)?;
-    if listed.device.revoked(&listed.cert) {
-        return None;
-    }
-    let mut mark = [0; 64];
-    hex::decode_to_slice(listed.device.keeps_root.as_deref()?, &mut mark).ok()?;
-    tilo_user_identity::root_holder::keeps_root(cert, &mark).then_some(mark)
-}
-
-/// Whether `signature` (hex) is the root `cert` names signing [`root_holder_digest`] of the key
-/// `cert` certifies.
-fn root_signed(cert: &DeviceCert, signature: &str) -> bool {
-    let mut bytes = [0; 64];
-    hex::decode_to_slice(signature, &mut bytes).is_ok()
-        && tilo_user_identity::root_holder::keeps_root(cert, &bytes)
 }
 
 /// What the certificate `certificate` (postcard in hex) certifies: a device when it does not read.

@@ -64,6 +64,10 @@ pub trait RootKept: Send + Sync {
         agent: &str,
         name: &str,
     ) -> Certifying;
+
+    /// `person`'s root signing that `device`, this host's, keeps it
+    /// ([`tilo_user_identity::root_holder::root_holder_digest`]): `None` where it does not sign.
+    fn mark(&self, person: [u8; 32], device: [u8; 32]) -> Option<[u8; 64]>;
 }
 
 /// The provider a make of one of the person's workspaces, asked by another device of theirs, is
@@ -442,7 +446,12 @@ impl Workspaces {
             .asked_store()
             .ok_or("the workspaces here keep no calls that wait")?;
         let at_root = AtRoot::new(&store, self, kept);
-        if self.inner.at_root.set(Arc::clone(&at_root)).is_err() {
+        if self
+            .inner
+            .at_root
+            .set(HeldAtRoot::Here(Arc::clone(&at_root)))
+            .is_err()
+        {
             return Ok(());
         }
         at_root.serve();
@@ -455,10 +464,58 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Whether this host runs what waits for a device that keeps the person's root.
+    /// Whether this host runs what waits for a device that keeps the person's root: whether it
+    /// keeps that root.
     #[must_use]
     pub fn serves_at_root(&self) -> bool {
-        self.inner.at_root.get().is_some()
+        self.inner.at_root.get().and_then(HeldAtRoot::get).is_some()
+    }
+
+    /// Take `at_root`, a runner its device holds and follows the records for itself, as the one
+    /// this host runs while the device keeps it. A host runs one: a second keeps the first.
+    pub fn runs_at_root(&self, at_root: &Arc<AtRoot>) {
+        if self
+            .inner
+            .at_root
+            .set(HeldAtRoot::Device(Arc::downgrade(at_root)))
+            .is_err()
+        {
+            tracing::warn!(
+                "this host runs what waits for its person's root already; it keeps that runner"
+            );
+        }
+    }
+
+    /// The person's root signing that this host keeps it, now: what a change only such a device
+    /// makes carries for its receivers to check ([`tilo_user_identity::root_holder`]). `None`
+    /// where this host keeps no root, or it does not sign.
+    #[must_use]
+    pub fn root_mark(&self) -> Option<[u8; 64]> {
+        let cert = self.device_cert();
+        self.inner
+            .at_root
+            .get()
+            .and_then(HeldAtRoot::get)?
+            .kept
+            .mark(cert.user_public_key, cert.device_public_key)
+    }
+}
+
+/// The runner a host keeps for what waits for its person's root.
+pub(crate) enum HeldAtRoot {
+    /// Started by the host itself ([`Workspaces::serve_at_root`]), which alone holds it.
+    Here(Arc<AtRoot>),
+    /// Held by the device that runs it ([`Workspaces::runs_at_root`]): its root keeps that
+    /// device's services, which hold these workspaces, so it is held here without keeping it.
+    Device(Weak<AtRoot>),
+}
+
+impl HeldAtRoot {
+    fn get(&self) -> Option<Arc<AtRoot>> {
+        match self {
+            Self::Here(at_root) => Some(Arc::clone(at_root)),
+            Self::Device(at_root) => at_root.upgrade(),
+        }
     }
 }
 
@@ -506,7 +563,15 @@ impl AtRoot {
                 && ask.outcome.is_none()
                 && ask.taken.is_none()
                 && self.store.kept_ask(&ask.at).is_none();
-            if !new || !is_found(&ask.request) {
+            if !new {
+                continue;
+            }
+            // Any other call waits for the person here: the device that asked reads that it
+            // reached a device that keeps their root before they answer.
+            if !is_found(&ask.request) {
+                if ask.seen.is_none() {
+                    asked.push(ask.at.clone());
+                }
                 continue;
             }
             let Some(workspaces) = self.workspaces.upgrade() else {

@@ -549,7 +549,7 @@ impl Workspaces {
     /// Take `device`, a device `workspace` removed, back onto its member list, signed by this
     /// device, which keeps its person's root: `servers add` naming a server the workspace took
     /// off is the deliberate admission that brings it back, and only that root makes it. The
-    /// change carries the root's mark of this device ([`super::person_workspace::devices::root_mark`])
+    /// change carries the root's mark of this device ([`Workspaces::root_mark`])
     /// for every receiver to check. A device the workspace lists, or never met, changes nothing.
     ///
     /// # Errors
@@ -575,9 +575,7 @@ impl Workspaces {
         if !removed {
             return Ok(());
         }
-        let Some(root) =
-            super::person_workspace::devices::root_mark(self, &self.inner.host.cert).await
-        else {
+        let Some(root) = self.root_mark() else {
             return Err(
                 "The workspace removed this server. Only the device that keeps your \
                         identity adds it back."
@@ -2056,11 +2054,7 @@ impl JoinWorkspaces for Workspaces {
         let issuer = tilo_peer_state::join_log::invitation_issuer(signed_invitation, now)?;
         // A device that did not issue the invitation, or keeps no root, takes no removed device
         // back: the challenge then refuses it as removed.
-        if issuer != self.inner.host.cert.device_public_key
-            || super::person_workspace::devices::root_mark(self, &self.inner.host.cert)
-                .await
-                .is_none()
-        {
+        if issuer != self.inner.host.cert.device_public_key || !self.serves_at_root() {
             return Ok(());
         }
         self.readmit_removed(workspace, device)

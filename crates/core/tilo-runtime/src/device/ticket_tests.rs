@@ -2524,7 +2524,6 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
 /// The person's root as this account keeps it, and the two devices the revoke test runs with:
 /// one computer that does not keep it and asks, and one that does and runs the call.
 struct RevokeAtRoot {
-    account_dir: std::path::PathBuf,
     issuer: Arc<super::workspaces::ServiceWorkspaces>,
     /// The service's directory, which the devices' places are kept in.
     _state: tempfile::TempDir,
@@ -2655,7 +2654,6 @@ impl RevokeAtRoot {
         let invocation = InvocationId::new();
         let revoke = Self::a_revoke_request(invocation);
         Self {
-            account_dir,
             issuer,
             _state: state,
             cert,
@@ -2756,10 +2754,8 @@ impl RevokeAtRoot {
     }
 
     /// A device that keeps the root comes online and takes the record up: the person's own
-    /// workspace is founded, their devices record marks it, and it asks the person there once.
+    /// workspace is founded, and it asks the person there once.
     async fn the_root_holder_comes_online(&mut self) {
-        let copies = self.issuer.copies();
-        let root = root_in(self.account_dir.clone())().unwrap().unwrap();
         // The person's own workspace keeps their devices record, founded at the id their key
         // names by the computer that made their root, as it does now.
         self.issuer
@@ -2769,18 +2765,13 @@ impl RevokeAtRoot {
             )
             .await
             .expect("the person's workspace is founded");
-        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-            copies, &root, &self.cert,
-        )
-        .await
-        .expect("the root marks the device that keeps it");
         self.holder_asked
             .serve_at_root(&self.issuer, self.holder.clone());
         let (taken, took) = tokio::sync::oneshot::channel();
         let taken = std::sync::Mutex::new(Some(taken));
         let follows = Arc::downgrade(&self.holder_asked);
         let invocation = self.invocation;
-        copies.follow_asked_at_root(move |asks| {
+        self.issuer.copies().follow_asked_at_root(move |asks| {
             let here = asks.iter().any(|ask| ask.request.invocation == invocation);
             if let Some(asked) = follows.upgrade() {
                 asked.kept_changed(asks);
@@ -2805,6 +2796,24 @@ impl RevokeAtRoot {
             1,
             "the person is asked there"
         );
+        // The record says it reached the device that keeps the root, so the device that asked
+        // tells a waiting call from one nobody took up: that is the record as it then stands.
+        let copies = self.issuer.copies();
+        assert!(
+            copies
+                .reached_at_root(
+                    &self.workspace.to_string(),
+                    self.invocation,
+                    Duration::from_secs(30)
+                )
+                .await,
+            "the record says the device that keeps the root took it up"
+        );
+        self.kept = copies
+            .asked_kept()
+            .await
+            .into_iter()
+            .find(|kept| Some(&kept.at) == self.kept.as_ref().map(|kept| &kept.at));
         self.holder_at = Some(at);
     }
 

@@ -1271,9 +1271,9 @@ struct WorkspacesInner {
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
     /// What runs here the calls kept for a device that keeps the person's root, once this host
-    /// keeps it ([`Workspaces::serve_at_root`]).
+    /// keeps it ([`Workspaces::serve_at_root`], [`Workspaces::runs_at_root`]).
     #[cfg(not(target_arch = "wasm32"))]
-    at_root: std::sync::OnceLock<Arc<at_root::AtRoot>>,
+    at_root: std::sync::OnceLock<at_root::HeldAtRoot>,
     /// The record of asked calls this site is placed for in each workspace it keeps for another
     /// operator's person ([`asks_placed`]).
     #[cfg(not(target_arch = "wasm32"))]

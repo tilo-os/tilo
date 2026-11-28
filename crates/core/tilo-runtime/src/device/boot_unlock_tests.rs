@@ -205,10 +205,8 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
         )
         .await
         .expect("the person's workspace is founded");
+
     let root = root_in(account_dir.clone())().unwrap().unwrap();
-    devices::mark_root_holder(copies, &root, &laptop_cert)
-        .await
-        .expect("the root marks the laptop that keeps it");
 
     // The desk: a computer of the person's, certified by their root, on its own endpoint.
     let desk_key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
@@ -295,18 +293,8 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
         workspaces: Arc::clone(&laptop_service),
     };
     let router = serve(&laptop_service, copies.action_service());
-    // The person's devices name the laptop as one that keeps their root, and the desk reaches it.
-    let laptop_key = laptop_cert.device_public_key;
-    let keeping_root = devices::of(copies, &person).await.root_holders(&person);
-    assert!(
-        keeping_root.contains(&laptop_key),
-        "the laptop is named as keeping the root: {keeping_root:?}"
-    );
-    desk_unlock
-        .tickets
-        .reach(laptop_key)
-        .await
-        .expect("the desk reaches the laptop");
+    // The laptop runs what waits for the person's root.
+    assert!(copies.serves_at_root(), "the laptop keeps the root");
 
     // The desk's identity store keeps no root of the person's; the laptop's does.
     let laptop_store = home.config().to_owned();
@@ -433,10 +421,12 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // The laptop goes away: with no device of theirs that keeps the root to ask, the desk is told
-    // so at once, and nothing waits for an answer nobody can give.
+    // The laptop goes away, and what it ran for the root with it: no device of theirs that
+    // keeps the root takes the desk's certificate up, so the desk is told so, and nothing waits
+    // for an answer nobody can give.
     let _ = router.shutdown().await;
     laptop_service.endpoint().close().await;
+    drop(laptop_asked);
     let unreachable = a_boot(3);
     let nobody = desk_unlock
         .enrol(&unreachable.args)
@@ -449,7 +439,7 @@ async fn a_computer_without_the_root_sets_up_its_disk_unlock_through_one_that_ke
          connect it to the internet and sign in, then try again."
     );
     assert!(
-        laptop_asked.store().asked_of(&person).is_empty(),
+        laptop_asks.asked_of(&person).is_empty(),
         "nothing waits for the person"
     );
 }

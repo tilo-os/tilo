@@ -2476,20 +2476,9 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         }
     };
     let store = super::asked_store(&daemon.workspaces).expect("the device keeps asked records");
-    // The device keeps the person's root: it marks itself in their devices record, as a start
-    // does, and answers what waits for that root from here.
-    let kept_root = super::root()
-        .expect("the device reads its root")
-        .expect("it keeps one");
+    // The device keeps the person's root: it answers what waits for that root from here.
     let tickets = (*daemon.tickets).clone();
     tilo_rt::app().handle().block_on(async {
-        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-            daemon.workspaces.copies(),
-            &kept_root,
-            &cert,
-        )
-        .await
-        .expect("the root marks the device that keeps it");
         daemon.asked.serve_at_root(&daemon.workspaces, tickets);
     });
     let requested = |invocation: tilo_actions::InvocationId| {

@@ -441,6 +441,39 @@ impl Workspaces {
         Err(ended)
     }
 
+    /// Whether a device that keeps the person's root took up the call `invocation` kept in
+    /// `workspace`'s record for it within `within`: it marked the record seen or taken, or wrote
+    /// how it ended.
+    pub async fn reached_at_root(
+        &self,
+        workspace: &str,
+        invocation: tilo_actions::InvocationId,
+        within: Duration,
+    ) -> bool {
+        use tokio::sync::broadcast::error::RecvError;
+
+        let mut writes = self.document_writes();
+        let mut within = std::pin::pin!(tokio::time::sleep(within));
+        loop {
+            if self
+                .asked_record(workspace, invocation)
+                .await
+                .is_some_and(|kept| {
+                    kept.seen.is_some() || kept.taken.is_some() || kept.outcome.is_some()
+                })
+            {
+                return true;
+            }
+            tokio::select! {
+                write = writes.recv() => match write {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return false,
+                },
+                () = within.as_mut() => return false,
+            }
+        }
+    }
+
     /// Whether this device waits itself on the call `invocation` it kept for a device that keeps
     /// the person's root ([`Self::ask_at_root`]).
     #[must_use]

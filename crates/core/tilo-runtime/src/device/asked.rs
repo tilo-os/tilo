@@ -358,6 +358,9 @@ impl DeviceAsked {
         if self.serving_at_root.set(Arc::clone(&at_root)).is_err() {
             return;
         }
+        // The workspaces here know they keep the root by it: a change only that root's device
+        // makes is made here, signed by it.
+        workspaces.copies().runs_at_root(&at_root);
         at_root.serve();
     }
 
@@ -893,6 +896,23 @@ struct DeviceRoot {
 }
 
 impl RootKept for DeviceRoot {
+    fn mark(&self, person: [u8; 32], device: [u8; 32]) -> Option<[u8; 64]> {
+        use tilo_user_identity::StatementSigner as _;
+        let record = super::services::root_record_for_person(person)
+            .inspect_err(
+                |error| tracing::warn!(%error, "the root this device keeps is not here to sign"),
+            )
+            .ok()?;
+        let root = tilo_identity::store::load_from_path(record)
+            .inspect_err(|error| tracing::warn!(%error, "the root this device keeps does not read"))
+            .ok()?;
+        root.sign_digest(&tilo_user_identity::root_holder::root_holder_digest(
+            &device,
+        ))
+        .inspect_err(|error| tracing::warn!(%error, "the root this device keeps did not sign"))
+        .ok()
+    }
+
     fn runs(&self, request: &InvokeRequest) -> bool {
         super::ticket::Tickets::root_only(request)
     }

@@ -1,5 +1,5 @@
 //! The mark a person's root gives the device that keeps it: the root's signature over the
-//! device's key. The person's devices record keeps it, and a change only that root may make
+//! device's key, signed by that device as it needs it. A change only that root may make
 //! carries it, so whoever reads the change checks for themselves that its writer keeps the root.
 
 use crate::DeviceCert;

@@ -2805,6 +2805,18 @@ pub struct RootIn(pub SigningKey);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl super::at_root::RootKept for RootIn {
+    fn mark(&self, person: [u8; 32], device: [u8; 32]) -> Option<[u8; 64]> {
+        use tilo_user_identity::StatementSigner as _;
+        if person != self.0.verifying_key().to_bytes() {
+            return None;
+        }
+        self.0
+            .sign_digest(&tilo_user_identity::root_holder::root_holder_digest(
+                &device,
+            ))
+            .ok()
+    }
+
     fn runs(&self, _: &tilo_actions::remote::InvokeRequest) -> bool {
         false
     }

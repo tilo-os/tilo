@@ -539,12 +539,9 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     tilo_workspace_service::workspaces::person_workspace::found(&own)
         .await
         .expect("Alice's own workspace is founded on her computer");
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        &own,
-        &alice.user_sk,
-        &laptop.cert,
-    )
-    .await
+    own.serve_at_root(std::sync::Arc::new(
+        tilo_workspace_service::workspaces::fixtures::RootIn(alice.user_sk.clone()),
+    ))
     .expect("her computer keeps her root");
     let main_hint = workspaces
         .hosts(&workspace.workspace)

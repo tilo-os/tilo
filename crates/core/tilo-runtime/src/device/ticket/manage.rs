@@ -24,9 +24,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_server_protocol::device_tickets;
 
-/// How long a device of the person's has to answer before it counts as out of reach.
-const REACH_WITHIN: Duration = Duration::from_secs(10);
-
 use std::sync::Arc;
 
 use crate::device::issuing::{Issuer, Role, Root};
@@ -59,26 +56,25 @@ impl Tickets {
         }
     }
 
-    /// Hand `then`, for a call only the person's root signs, whether their devices record marks
-    /// this device as one that keeps that root, and the record `workspace` keeps of the call
-    /// `invocation` already, where it was handed on before: once both are read.
+    /// Hand `then`, for a call only the person's root signs, the record `workspace` keeps of the
+    /// call `invocation` already, where it was handed on before: once it is read.
     pub(crate) fn root_only_call(
         &self,
         workspace: String,
         invocation: tilo_actions::InvocationId,
-        then: impl FnOnce(bool, Option<tilo_actions::remote::asked::KeptAsk>) + Send + 'static,
+        then: impl FnOnce(Option<tilo_actions::remote::asked::KeptAsk>) + Send + 'static,
     ) {
-        let (workspaces, cert) = (self.0.workspaces.clone(), self.0.cert.clone());
+        let workspaces = self.0.workspaces.clone();
         self.0.runtime.spawn(async move {
             let Some(workspaces) = workspaces else {
-                return then(false, None);
+                return then(None);
             };
-            let copies = workspaces.copies();
-            let marked = tilo_workspace_service::workspaces::person_workspace::devices::keeps_root(
-                copies, &cert,
-            )
-            .await;
-            then(marked, copies.asked_record(&workspace, invocation).await);
+            then(
+                workspaces
+                    .copies()
+                    .asked_record(&workspace, invocation)
+                    .await,
+            );
         });
     }
 
@@ -187,25 +183,6 @@ impl Tickets {
             Some(Ok(_)) | None => {
                 bail!("that device did not answer: it may be off or away from its network")
             }
-        }
-    }
-
-    /// Whether the person's device `device` answers this one now, within [`REACH_WITHIN`]: what
-    /// it says of itself, asked over the action service between their devices; why not where it
-    /// does not.
-    pub(crate) async fn reach(&self, device: [u8; 32]) -> Result<(), String> {
-        match tokio::time::timeout(
-            REACH_WITHIN,
-            self.ask_device(device, (RESOURCE, super::INFO), &json!({}), None),
-        )
-        .await
-        {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(why)) => Err(format!("{why:#}")),
-            Err(_) => Err(format!(
-                "it did not answer within {}s",
-                REACH_WITHIN.as_secs()
-            )),
         }
     }
 

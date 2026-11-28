@@ -3579,9 +3579,7 @@ impl Workspaces {
         // Which servers keep a workspace is changed under the key of a device
         // of the owner's that keeps their identity, never a server's: the
         // change is signed where it runs, so it runs only there.
-        if matches!(action, ADD_SERVER | REMOVE_SERVER | MOVE_SERVER)
-            && !super::person_workspace::devices::keeps_root(self, self.device_cert()).await
-        {
+        if matches!(action, ADD_SERVER | REMOVE_SERVER | MOVE_SERVER) && !self.serves_at_root() {
             return Err(ActionCallError::refused(
                 "only a device of the owner's that keeps their identity changes which servers \
                  keep a workspace; run it there",

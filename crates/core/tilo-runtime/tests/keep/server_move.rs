@@ -371,12 +371,9 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
     tilo_workspace_service::workspaces::person_workspace::found(&own)
         .await
         .expect("Alice's own workspace is founded on her computer");
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        &own,
-        &alice.user_sk,
-        &laptop.cert,
-    )
-    .await
+    own.serve_at_root(std::sync::Arc::new(
+        tilo_workspace_service::workspaces::fixtures::RootIn(alice.user_sk.clone()),
+    ))
     .expect("her computer keeps her root");
     let a_hint = a
         .workspaces()

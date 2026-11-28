@@ -327,7 +327,7 @@ pub(crate) fn not_held() -> String {
 
 /// What the daemon's start does for a person whose workspace it holds, done where their workspace
 /// comes to be held later: `cert`, this device, listed with their others in the devices record
-/// of their workspace, and the root this account keeps marked there.
+/// of their workspace.
 ///
 /// # Errors
 /// The record refused this device. The device goes on unlisted, and every host it is not listed
@@ -339,31 +339,17 @@ pub(super) async fn hold_person(
 ) -> Result<(), String> {
     use tilo_workspace_service::workspaces::person_workspace::devices;
     // A device confined to one workspace is listed by the root that certified it, in the same
-    // step, and keeps no root to mark: it writes nothing of its person's.
+    // step: it writes nothing of its person's.
     if super::confined::workspace_of(cert).is_some() {
         return Ok(());
     }
-    // One write lists this device. The root is this account's own, read by the account it runs
-    // as and not looked up through a sign-in record; the mark that it keeps the root is kept in
-    // the same record as the entry that lists it. A second write founded the record again from
-    // what it read before the first was carried, at the same author's first number.
-    let marking = match super::services::device_root_record() {
-        Ok(record) => tilo_identity::store::load_from_path(record).ok(),
-        Err(_) => None,
-    };
-    match &marking {
-        Some(root) => devices::mark_root_holder(copies, root, cert)
-            .await
-            .map_err(|error| {
-                format!("this device's root is not marked in its person's devices: {error}")
-            })?,
-        None => devices::keep(copies, cert)
-            .await
-            .map_err(|error| format!("this device is not listed with its person's: {error}"))?,
-    }
-    if marking.is_some() {
-        // The device keeping the person's root also writes their list, from what this host knows
-        // of the workspaces they are in.
+    devices::keep(copies, cert)
+        .await
+        .map_err(|error| format!("this device is not listed with its person's: {error}"))?;
+    // The device keeping the person's root also writes their list, from what this host knows of
+    // the workspaces they are in.
+    let keeps_root = super::services::device_root_record().is_ok();
+    if keeps_root {
         copies.list_known_for(&cert.user_public_key).await;
     }
     Ok(())

@@ -11,8 +11,8 @@
 //! devices, which every device of theirs carries and answers a boot from.
 //!
 //! Their no ends the enrolment declined, the disk as locked as it was ([`UNLOCK_DECLINED`]). A
-//! device without the root that reaches none of theirs that keeps it is told so before anything
-//! waits ([`NO_ROOT_DEVICE`]): nobody could answer.
+//! device without the root whose certificate no device of theirs that keeps it takes up in time
+//! is told so, and nothing waits on ([`NO_ROOT_DEVICE`]): nobody could answer.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +39,10 @@ use super::asked::DeviceAsked;
 use super::key_use::Refusal;
 use super::ticket::Tickets;
 use super::workspaces::ServiceWorkspaces;
+
+/// How long a device of the person's that keeps their root has to take up the certificate
+/// before the enrolment says none can be reached.
+const REACHED_WITHIN: Duration = Duration::from_secs(30);
 
 /// The fact a device publishes about disk unlock under, in its own entry of the person's devices.
 pub(crate) const UNLOCK_FACT: &str = "unlock";
@@ -83,9 +87,6 @@ impl BootUnlock {
                 || cert.device_label.clone(),
                 |listed| listed.device.called(&listed.cert),
             );
-        if !super::services::holds_root_for_person(person) {
-            self.reach_a_root_device(&record, &person, this).await?;
-        }
         let approval = request.unattended_chain.map(|chain| {
             AutoApproval::unsigned(person, this, vec![chain], tilo_clock::unix_now_ns())
         });
@@ -122,33 +123,6 @@ impl BootUnlock {
         Ok(json!({
             "enrolled": hex::encode(postcard::to_allocvec(&response).map_err(|error| failed(error.to_string()))?),
         }))
-    }
-
-    /// Whether a device of the person's that keeps their root answers this one now: one is
-    /// needed to ask them, and a request nobody can answer is refused before it waits.
-    async fn reach_a_root_device(
-        &self,
-        record: &devices::Devices,
-        person: &[u8; 32],
-        this: [u8; 32],
-    ) -> Result<(), Refusal> {
-        for device in record.root_holders(person) {
-            if device == this {
-                continue;
-            }
-            match self.tickets.reach(device).await {
-                Ok(()) => return Ok(()),
-                Err(why) => tracing::info!(
-                    device = %hex::encode(device),
-                    %why,
-                    "device unlock: a device that keeps the person's root did not answer"
-                ),
-            }
-        }
-        Err(Refusal {
-            code: NO_ROOT_DEVICE,
-            message: crate::i18n::t("boot-unlock-no-root-device"),
-        })
     }
 
     /// The person's `certifyKey` with `args`, through this device's one dispatch as the person on
@@ -196,7 +170,10 @@ impl BootUnlock {
                 invocation,
                 message,
             },
-            ReceiptStatus::Accepted => self.followed(&caller, invocation).await?,
+            ReceiptStatus::Accepted => {
+                self.reached_root(&caller, &workspace, invocation).await?;
+                self.followed(&caller, invocation).await?
+            }
         };
         match ended {
             InvocationUpdate::Succeeded { output, .. } => Ok(output.value.unwrap_or(Value::Null)),
@@ -214,6 +191,35 @@ impl BootUnlock {
             InvocationUpdate::Failed { error, .. } => Err(failed(error.message)),
             other => Err(failed(format!("the certificate ended as {other:?}"))),
         }
+    }
+
+    /// Whether a device of the person's that keeps their root took up the call `invocation`,
+    /// kept in `workspace`'s record for it, within [`REACHED_WITHIN`]: where none did, nobody
+    /// can answer it, so it ends now and nothing waits for the person.
+    async fn reached_root(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        invocation: InvocationId,
+    ) -> Result<(), Refusal> {
+        if self
+            .workspaces
+            .copies()
+            .reached_at_root(workspace, invocation, REACHED_WITHIN)
+            .await
+        {
+            return Ok(());
+        }
+        if let Some(Err(error)) =
+            tilo_actions::remote::ActionProvider::cancel(self.asked.as_ref(), caller, &invocation)
+                .await
+        {
+            tracing::warn!(%error, "device unlock: the certificate nobody took up still waits");
+        }
+        Err(Refusal {
+            code: NO_ROOT_DEVICE,
+            message: crate::i18n::t("boot-unlock-no-root-device"),
+        })
     }
 
     /// How the call `invocation` ended, followed where the device records it.

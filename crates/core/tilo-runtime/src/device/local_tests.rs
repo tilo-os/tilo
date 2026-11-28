@@ -1687,9 +1687,6 @@ fn a_daemon_founds_its_person_workspace_and_lists_itself_in_their_devices() {
     let cert = serving.device_cert();
     let person = cert.user_public_key;
     let copies = serving.copies().clone();
-    let keeps_root = crate::device::services::root()
-        .expect("the root this device keeps reads")
-        .is_some();
     let read = tilo_rt::app()
         .block_on({
             let copies = copies.clone();
@@ -1702,12 +1699,6 @@ fn a_daemon_founds_its_person_workspace_and_lists_itself_in_their_devices() {
             .any(|listed| listed.cert.device_public_key == cert.device_public_key),
         "the device that founded {own} is listed in the record of its person's devices: {read:?}"
     );
-    if keeps_root {
-        assert!(
-            read.root_holders(&person).contains(&cert.device_public_key),
-            "the device that founded {own} and keeps its person's root marks it there: {read:?}"
-        );
-    }
     // The record is placed: this device's own write of it after the founding finds it.
     let kept = tilo_rt::app()
         .block_on(async move {

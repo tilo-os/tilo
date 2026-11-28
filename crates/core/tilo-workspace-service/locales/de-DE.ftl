@@ -96,7 +96,6 @@ tilo-devices-give-up-move = Das Verschieben eines Zubehörs aufgeben
 tilo-devices-name-device = Ein Gerät umbenennen
 tilo-devices-keep-agent = Den Agenten behalten, den ein Gerät ausführt
 tilo-devices-revoke-device = Ein Gerät als zurückgenommen markieren
-tilo-devices-mark-root-holder = Das Gerät markieren, das den Stammschlüssel hält
 tilo-devices-say-speaker-endpoints = Sagen, welche Ausgänge und Mikrofone ein Gerät für Lautsprechergruppen anbietet
 tilo-devices-lead-speaker-group = Die Gruppe behalten, die ein Gerät leitet, mit ihren Lautsprechern und deren Rollen
 tilo-devices-drop-speaker-group = Eine Gruppe vergessen, die ein Gerät geleitet hat

@@ -377,13 +377,11 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     tilo_workspace_service::workspaces::person_workspace::found(workspaces)
         .await
         .expect("the laptop keeps Alice's own workspace");
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        workspaces,
-        &alice.user_sk,
-        &laptop.cert,
-    )
-    .await
-    .expect("the root marks the laptop as the device that keeps it");
+    workspaces
+        .serve_at_root(std::sync::Arc::new(
+            tilo_workspace_service::workspaces::fixtures::RootIn(alice.user_sk.clone()),
+        ))
+        .expect("the laptop keeps Alice's root");
     attach().await.unwrap();
     assert!(
         retained().await.is_some_and(|bodies| bodies.len() >= kept),

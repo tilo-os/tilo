@@ -96,7 +96,6 @@ tilo-devices-give-up-move = Give up moving an accessory
 tilo-devices-name-device = Rename a device
 tilo-devices-keep-agent = Keep the agent a device runs
 tilo-devices-revoke-device = Mark a device taken back
-tilo-devices-mark-root-holder = Mark the device that keeps the root
 tilo-devices-say-speaker-endpoints = Say the outputs and microphones a device offers to speaker groups
 tilo-devices-lead-speaker-group = Keep the group a device leads, with its speakers and their roles
 tilo-devices-drop-speaker-group = Forget a group a device led

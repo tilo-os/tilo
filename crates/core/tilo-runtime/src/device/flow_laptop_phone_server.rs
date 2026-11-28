@@ -1500,13 +1500,11 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
         refused.contains("Only the device that keeps your identity adds it back"),
         "the server is told who brings it back: {refused}"
     );
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        &hosted,
-        &root,
-        &server_cert,
-    )
-    .await
-    .expect("the root marks the server as the device that keeps it");
+    hosted
+        .serve_at_root(std::sync::Arc::new(
+            tilo_workspace_service::workspaces::fixtures::RootIn(root.clone()),
+        ))
+        .expect("the server keeps the person's root");
     hosted
         .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
         .await
@@ -1776,13 +1774,11 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         refused.contains("Only the device that keeps your identity adds it back"),
         "the machine is told who brings it back: {refused}"
     );
-    tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
-        &hosted,
-        &root,
-        &server_cert,
-    )
-    .await
-    .expect("the root marks the server as the device that keeps it");
+    hosted
+        .serve_at_root(std::sync::Arc::new(
+            tilo_workspace_service::workspaces::fixtures::RootIn(root.clone()),
+        ))
+        .expect("the server keeps the person's root");
     hosted
         .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
         .await

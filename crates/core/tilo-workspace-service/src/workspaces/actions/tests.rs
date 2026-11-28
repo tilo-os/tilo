@@ -1479,13 +1479,12 @@ async fn a_server_is_named_by_its_own_line_and_no_site_is_asked() {
     crate::workspaces::person_workspace::found(server.workspaces())
         .await
         .expect("the owner's own workspace is founded on their device");
-    crate::workspaces::person_workspace::devices::mark_root_holder(
-        server.workspaces(),
-        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
-        &owner,
-    )
-    .await
-    .expect("the owner's device keeps their root");
+    server
+        .workspaces()
+        .serve_at_root(std::sync::Arc::new(crate::workspaces::fixtures::RootIn(
+            ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+        )))
+        .expect("the owner's device keeps their root");
     let owner = caller(&owner);
     let inside = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
     for site in [

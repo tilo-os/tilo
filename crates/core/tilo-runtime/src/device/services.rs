@@ -3482,8 +3482,8 @@ impl Daemon {
             _served: identity.served,
         };
         let _ = daemon.live.set(Arc::clone(&live));
-        // A person founded while this daemon serves has their root marked in their devices record
-        // and their root-only asks served here from then on, without the person's services
+        // A person founded while this daemon serves has this device listed in their devices
+        // record and their root-only asks served here from then on, without the person's services
         // starting again: the first person a fresh computer founds and every account after it.
         // A confined device founds nobody.
         if !confined {
@@ -3492,7 +3492,7 @@ impl Daemon {
                 Arc::downgrade(&daemon.tickets),
                 Arc::downgrade(&daemon.workspaces),
             );
-            when_person_founded(Arc::new(move |person: [u8; 32], uid: u32| {
+            when_person_founded(Arc::new(move |person: [u8; 32], _: u32| {
                 let (Some(asked), Some(tickets), Some(serving)) =
                     (asked.upgrade(), tickets.upgrade(), serving.upgrade())
                 else {
@@ -3512,19 +3512,10 @@ impl Daemon {
                         );
                         return;
                     };
-                    // The root is the one the account `uid` just made, read by the account it
-                    // was made for: nobody looks the person up while they are being founded.
-                    let Ok(Some(root)) = root_for(uid) else {
-                        tracing::warn!(
-                            person = %hex::encode(person),
-                            "a founded person's root is not kept here"
-                        );
-                        return;
-                    };
+                    // Listed with their devices, as the device that founded them.
                     if let Err(error) =
-                        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+                        tilo_workspace_service::workspaces::person_workspace::devices::keep(
                             serving.copies(),
-                            &root,
                             &cert,
                         )
                         .await
@@ -3532,7 +3523,7 @@ impl Daemon {
                         tracing::warn!(
                             %error,
                             person = %hex::encode(person),
-                            "a founded person's root is not marked in their devices"
+                            "a founded person's device is not listed in their devices"
                         );
                     }
                     // Their root-only asks are answered here from now on, as their root is.
@@ -6337,8 +6328,8 @@ impl AdmittedRuntimeSession {
 /// listed and stopped as every other call is. A call whose answer is a secret is recorded as
 /// one: the record keeps neither its arguments nor its answer, only that it was given.
 ///
-/// What only the person's root signs is decided by the cap of a device their devices record does
-/// not mark as keeping that root: it waits in its record for one of their devices that does.
+/// What only the person's root signs runs on a computer that keeps that root; on any other it
+/// waits in its record for one of their devices that does.
 pub(crate) fn device_action(
     (invocations, asked): (&Arc<Invocations>, Option<&Arc<super::asked::DeviceAsked>>),
     tickets: &Tickets,
@@ -6374,7 +6365,7 @@ pub(crate) fn device_action(
         workspace.to_owned(),
     );
     let invocation = request.invocation;
-    tickets.root_only_call(workspace.clone(), invocation, move |_marked, kept| {
+    tickets.root_only_call(workspace.clone(), invocation, move |kept| {
         let answered = Pending::ready(hand_on_to_root(
             asked.as_deref(),
             (&callers.0, &callers.1),
