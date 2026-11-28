@@ -804,3 +804,18 @@ async fn one_sign_in_token_is_used_for_most_of_an_hour() {
     served.push.renew_bearer(START + 72 * MINUTE);
     assert_ne!(served.push.bearer(START + 72 * MINUTE).unwrap(), later);
 }
+
+/// The Swift notice extension's fixture names its thing as this host names it. The fixture
+/// (`dist/apple/Tests/ShellCoreTests/Fixtures/SealedPush.json`) was sealed by this sender once,
+/// and the Swift test opens it with the device's key.
+#[test]
+fn the_swift_notice_fixture_names_its_thing_as_this_host_names_it() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../dist/apple/Tests/ShellCoreTests/Fixtures/SealedPush.json");
+    let fixture: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let kept = hex::decode(fixture["kept"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        tilo_person_services::person_telling::known_as(&kept[32..], "reminder:ws-1:r_1"),
+        fixture["told"].as_str().unwrap()
+    );
+}

@@ -1,0 +1,10 @@
+{
+  "kept": "090909090909090909090909090909090909090909090909090909090909090907070707070707070707070707070707",
+  "told": "6b772338188df9437a7c79158c3ce70b",
+  "seq": 12,
+  "kind": "reminder",
+  "sealed": "vXt5+/bO7G1cvCS8xpwhbgAAEABBBA1dLRq0E1D0c9QMyAI5PlfOO2nZclwxp2eaLMOcem3sNBMPdWGe9Nb5UYOcCHVcvP9tdfbAFJRa71pig1n4O1oybKAHq4mhNCkdkDZYV0fGsMN0NtmXPt398NGb3z+Kx8wKAx4yv4E1auUEI0z0GO09+jMLLs09SLHIFc0veWLGWFuJnrjzmDVo1ydvaPhgifaAkIpZXk9jvXPaU3cEmRklB12iHIhXyTZuPKJEvKB1pHMfjQ87MbWGa72SIhC2KSn4TzM7Dd2t5dQrLweTGgUtmf0SjNCnqZr4wycqlq7349NA39kWr6VQx/jHlsbT",
+  "from": "Travel helper",
+  "words": "The form is ready to sign.",
+  "actions": [{ "id": "sign", "label": "Sign", "main": true }, { "id": "later", "label": "Later", "main": false }]
+}

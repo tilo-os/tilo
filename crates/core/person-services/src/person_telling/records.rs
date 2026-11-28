@@ -482,13 +482,19 @@ pub fn words_outside(told: &Told) -> (String, String) {
 /// one person together.
 #[must_use]
 pub fn known_as(auth: &[u8], id: &str) -> String {
-    let key = blake3::hash(auth);
-    let mut hasher = blake3::Hasher::new_keyed(key.as_bytes());
-    hasher.update(b"tilo told\0");
-    hasher.update(id.as_bytes());
-    let tag = hasher.finalize();
+    use hmac::{Hmac, KeyInit as _, Mac as _};
+    // HMAC-SHA256 is what a device can work out with what every Apple system gives it
+    // (CryptoKit), and a browser with the Web Crypto API, so a push and what the device shows
+    // itself name one thing one way.
+    // HMAC takes a key of any length, so this never refuses.
+    let Ok(mut mac) = Hmac::<sha2::Sha256>::new_from_slice(auth) else {
+        return String::new();
+    };
+    mac.update(b"tilo told\0");
+    mac.update(id.as_bytes());
     // A tag names it on the device alone: short enough for a notification.
-    tag.to_hex().get(..16).unwrap_or_default().to_owned()
+    let tag = mac.finalize().into_bytes();
+    hex::encode(tag.get(..16).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -500,6 +506,28 @@ mod tests {
     )]
 
     use super::*;
+
+    /// A thing's name on one device is the one the device itself works out: the first
+    /// sixteen bytes of HMAC-SHA256 under its secret over "tilo told", a zero byte and the
+    /// id, in hex. The names here were worked out outside this crate, and the device's own
+    /// test (`dist/apple`) reads the same ones.
+    #[test]
+    fn a_things_name_is_the_one_its_device_works_out() {
+        let secret = [7u8; 16];
+        assert_eq!(
+            known_as(&secret, "question:ws-1:m_ask_1"),
+            "adffaab0b7c0ff9f5bbae4b9cf6a4a7c"
+        );
+        assert_eq!(
+            known_as(&secret, "turn:ws-1:m_ask_1:0"),
+            "a5d9cf8f3af9ad5f1490eb71ed44f85d"
+        );
+        // Another device's secret names the same thing another way.
+        assert_ne!(
+            known_as(&[8u8; 16], "question:ws-1:m_ask_1"),
+            known_as(&secret, "question:ws-1:m_ask_1")
+        );
+    }
 
     /// A thing's mark says what kind of thing it is.
     #[test]

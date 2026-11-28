@@ -19200,6 +19200,7 @@ dependencies = [
  "fake-model-providers",
  "form_urlencoded",
  "hex",
+ "hmac 0.13.0",
  "rand 0.10.3",
  "russh",
  "rustls",
