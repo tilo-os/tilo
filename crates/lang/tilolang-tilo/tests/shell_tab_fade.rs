@@ -81,6 +81,110 @@ fn pixel(frame: &[u8], x: u32, y: u32) -> [u8; 4] {
     rgba
 }
 
+/// How far the bar's one row motion has come at `at`, as the strip itself says.
+fn row_progress(window: &StagedWindow, at: Instant) -> Option<f64> {
+    ui::time::testing::with_monotonic_time(at, || {
+        with_strip(window, ui::widget::tabs::TabBar::layout_progress).flatten()
+    })
+}
+
+/// What the window's strip of several places says, from the bar in its tree that carries more than
+/// one tab: the one bar a window's places stand in.
+fn with_strip<R>(
+    window: &StagedWindow,
+    read: impl FnOnce(&ui::widget::tabs::TabBar) -> R,
+) -> Option<R> {
+    fn find<R>(
+        widget: &dyn tilo_ui_base::widget::Widget,
+        read: &mut dyn FnMut(&ui::widget::tabs::TabBar) -> Option<R>,
+    ) -> Option<R> {
+        if let Some(bar) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::tabs::TabBar>())
+            && bar.tab_count() > 1
+        {
+            return read(bar);
+        }
+        for child in widget.children() {
+            if let Some(at) = find(child, read) {
+                return Some(at);
+            }
+        }
+        let mut found = None;
+        widget.for_each_layout_child(&mut |child| {
+            if found.is_none() {
+                found = find(child, read);
+            }
+        });
+        found
+    }
+    let mut read = Some(read);
+    find(window.harness.root_widget(), &mut |bar| {
+        read.take().map(|read| read(bar))
+    })
+}
+
+/// The bar's tabs as the strip lays them out, by index: the rect each pill stands in.
+fn bar_tabs(window: &StagedWindow) -> Vec<Rect> {
+    let mut out: Vec<(usize, Rect)> = window
+        .harness
+        .targets()
+        .into_iter()
+        .filter_map(|(name, rect)| {
+            let index = name.strip_prefix("window_tab:")?.parse().ok()?;
+            Some((index, rect))
+        })
+        .collect();
+    out.sort_by_key(|(index, _)| *index);
+    out.into_iter().map(|(_, rect)| rect).collect()
+}
+
+/// The colour at (`x`, `y`) in `frame`.
+fn rgb(frame: &[u8], x: u32, y: u32) -> [u8; 3] {
+    let at = at(x, y);
+    [frame[at], frame[at + 1], frame[at + 2]]
+}
+
+/// The bar's ground at a tab's place: the pixels above its pill, which the bar paints.
+fn ground_at(frame: &[u8], pill: Rect) -> [u8; 3] {
+    rgb(
+        frame,
+        pill.x0.midpoint(pill.x1) as u32,
+        (pill.y0.floor() as u32).saturating_sub(3),
+    )
+}
+
+/// How far `colour` stands from `ground`: the strongest channel, in levels.
+fn contrast(colour: [u8; 3], ground: [u8; 3]) -> u8 {
+    (0..3)
+        .map(|channel| colour[channel].abs_diff(ground[channel]))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The ground a box stands on and the furthest any pixel in it stands from that ground: the box's
+/// most common colour is what the control inside it is painted over, and a glyph's ink is what
+/// stands off it. A box of one ground has no mark in it.
+fn box_mark(frame: &[u8], box_: (u32, u32, u32, u32)) -> (u8, [u8; 3]) {
+    let (x0, y0, x1, y1) = box_;
+    let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            *counts.entry(rgb(frame, x, y)).or_default() += 1;
+        }
+    }
+    let Some((&ground, _)) = counts.iter().max_by_key(|(_, count)| **count) else {
+        return (0, [0, 0, 0]);
+    };
+    let mut mark = 0;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            mark = mark.max(contrast(rgb(frame, x, y), ground));
+        }
+    }
+    (mark, ground)
+}
+
 /// The body a window's tabs swap, as the frame lays it out: the content under the window's one
 /// bar, and so the rect the swap paints. It is read from the window itself, never inferred from
 /// what stands around it. The window here is the strip of several places, whose bar carries more
@@ -678,12 +782,14 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             "the window stands full, not a sliver: {body:?}"
         );
         let first = shown_pixels(&window, &mut canvas);
+        let bar_old = bar_tabs(&window);
         window
             .harness
             .render_png(&out.join(format!("{name}-old.png")));
         choose(&mut window, start, "p-1");
         settle(&mut window);
         let second = shown_pixels(&window, &mut canvas);
+        let bar_new = bar_tabs(&window);
         window
             .harness
             .render_png(&out.join(format!("{name}-new.png")));
@@ -755,6 +861,7 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
         let strength = |frame: &[u8]| old_strength(frame, &second, &first, &content);
         let path = out.join(format!("{name}-mid.png"));
         let mut best: Option<(f64, Vec<u8>)> = None;
+        let mut best_row: Option<f64> = None;
         let mut seen = Vec::new();
         for step in 1..=140 {
             // The fade is read on the clock the test keeps, a sample apart, not at the pace the
@@ -783,6 +890,7 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             {
                 // The frame this draw left is the scene, so it is the capture.
                 window.harness.render_png(&path);
+                best_row = row_progress(&window, back + MIDDLE * step);
                 best = Some((incoming, frame));
             }
             if best.is_some() && incoming > 0.8 {
@@ -811,6 +919,174 @@ fn the_midpoint_of_a_tab_swap_in_both_themes() {
             "the body is the linear mix of the two tabs at {mix:.2}: {over} channels of it are \
              not, the furthest {worst:.4} away at {worst_at:?}, in {box_:?}"
         );
+        // The tab strip moves as one: every tab's place at the middle frame stands on the one
+        // eased path from where it stood to where it stands, within a pixel.
+        assert_eq!(bar_old.len(), bar_new.len(), "the bar keeps its tabs");
+        let band_y = ((bar_old[0].y0 + 8.0) as u32, (bar_old[0].y1 - 6.0) as u32);
+        let ground = ground_at(&first, bar_old[0]);
+        let ink_in = |frame: &[u8], x0: u32, x1: u32, ground: [u8; 3]| -> Option<f64> {
+            for y in band_y.0..band_y.1 {
+                for x in x0..x1 {
+                    if contrast(rgb(frame, x, y), ground) > 40 {
+                        return Some(f64::from(x));
+                    }
+                }
+            }
+            None
+        };
+        let lerp = |was: f64, now: f64, t: f64| was + (now - was) * t;
+        let ink_old: Vec<Option<f64>> = bar_old
+            .iter()
+            .map(|r| ink_in(&first, (r.x0 + 2.0) as u32, (r.x1 - 2.0) as u32, ground))
+            .collect();
+        let ink_new: Vec<Option<f64>> = bar_new
+            .iter()
+            .map(|r| ink_in(&second, (r.x0 + 2.0) as u32, (r.x1 - 2.0) as u32, ground))
+            .collect();
+        // Fit the row's one share from where each moving title stands between the two bars.
+        let mut shares = Vec::new();
+        for i in 0..bar_old.len() {
+            let (Some(was), Some(now)) = (ink_old[i], ink_new[i]) else {
+                continue;
+            };
+            if (now - was).abs() <= 4.0 {
+                continue;
+            }
+            let centre = lerp(was, now, 0.5);
+            let window = ((centre - 16.0).max(0.0) as u32, (centre + 16.0) as u32);
+            if let Some(mid) = ink_in(&capture, window.0, window.1, ground) {
+                shares.push((mid - was) / (now - was));
+            }
+        }
+        assert!(!shares.is_empty(), "a tab's title moved with its pill");
+        let samples = u32::try_from(shares.len()).expect("a handful of samples");
+        let t_bar = shares.iter().sum::<f64>() / f64::from(samples);
+        assert!(
+            (0.05..=0.95).contains(&t_bar),
+            "the middle frame stands between the two bars: {t_bar:.2} of {shares:?}"
+        );
+        for i in 0..bar_old.len() {
+            let (Some(was), Some(now)) = (ink_old[i], ink_new[i]) else {
+                continue;
+            };
+            if (now - was).abs() <= 4.0 {
+                continue;
+            }
+            let on = lerp(was, now, t_bar);
+            let window = ((on - 3.0).max(0.0) as u32, (on + 4.0) as u32);
+            let mid = ink_in(&capture, window.0, window.1, ground)
+                .unwrap_or_else(|| panic!("tab {i}'s title stands on its eased path at {on}"));
+            assert!(
+                (mid - on).abs() <= 1.0,
+                "tab {i} stands on the one eased path: {mid} of {on}"
+            );
+        }
+        // Exactly one close control stands in the bar: the tab the selection arrives at shows the
+        // one it has, riding the pill as it is drawn, and the tab it leaves gives its close up
+        // with its pill, so the bar never shows two.
+        let row_t = best_row.unwrap_or(1.0);
+        let (chips, stands) = with_strip(&window, |bar| {
+            (bar.close_rects().to_vec(), bar.tab_rects().to_vec())
+        })
+        .expect("the strip of several places stands");
+        let mut inks = Vec::new();
+        let mut closes = vec![false; bar_old.len()];
+        for (i, (old, new)) in bar_old.iter().zip(&bar_new).enumerate() {
+            let drawn = Rect::new(
+                lerp(old.x0, new.x0, row_t),
+                old.y0,
+                lerp(old.x1, new.x1, row_t),
+                old.y1,
+            );
+            let (Some(chip), Some(stood)) = (chips.get(i), stands.get(i)) else {
+                continue;
+            };
+            if chip.area() <= 0.0 {
+                continue;
+            }
+            // The chip keeps the inset it holds at the target on the pill as it is drawn.
+            let (dx, dy) = (drawn.x1 - stood.x1, drawn.y0 - stood.y0);
+            let chip = Rect::new(chip.x0 + dx, chip.y0 + dy, chip.x1 + dx, chip.y1 + dy);
+            let (mark, ground) = box_mark(
+                &capture,
+                (
+                    chip.x0 as u32,
+                    chip.y0 as u32,
+                    chip.x1 as u32,
+                    chip.y1 as u32,
+                ),
+            );
+            inks.push((i, mark, ground, chip));
+            closes[i] = mark > 20;
+        }
+        assert_eq!(
+            closes.iter().filter(|stood| **stood).count(),
+            1,
+            "one close control stands in the bar: {inks:?}"
+        );
+        // The underline's alpha follows its pill: the line at a pill's foot carries the same
+        // strength as the pill's own fill, over the ground either stands on.
+        let mut checked = 0;
+        for i in 0..bar_old.len() {
+            let (old, new) = (bar_old[i], bar_new[i]);
+            let drawn = Rect::new(
+                lerp(old.x0, new.x0, row_t),
+                old.y0,
+                lerp(old.x1, new.x1, row_t),
+                old.y1,
+            );
+            let fill_at = |frame: &[u8], r: Rect| {
+                rgb(
+                    frame,
+                    (r.x0 + 6.0) as u32,
+                    (r.y0 + (r.y1 - r.y0) / 2.0) as u32,
+                )
+            };
+            let line_at = |frame: &[u8], r: Rect| {
+                rgb(
+                    frame,
+                    r.x0.midpoint(r.x1) as u32,
+                    (r.y1.floor() as u32).saturating_sub(2),
+                )
+            };
+            let (go, go_old, go_new) = (
+                ground_at(&capture, drawn),
+                ground_at(&first, old),
+                ground_at(&second, new),
+            );
+            let (fill_old, fill_new) = (fill_at(&first, old), fill_at(&second, new));
+            let (line_old, line_new) = (line_at(&first, old), line_at(&second, new));
+            // The state that carried the selection is the reference it faded from.
+            let fill_span =
+                |a: [u8; 3], b: [u8; 3]| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0);
+            let (fill_ref, line_ref) = if fill_span(fill_old, go_old) >= fill_span(fill_new, go_new)
+            {
+                (fill_old, line_old)
+            } else {
+                (fill_new, line_new)
+            };
+            let strength = |colour: [u8; 3], ref_: [u8; 3], ground: [u8; 3]| -> Option<f64> {
+                let (c, was) = (
+                    f64::from(colour[0]) - f64::from(ground[0]),
+                    f64::from(ref_[0]) - f64::from(ground[0]),
+                );
+                (was.abs() > 6.0).then(|| (c / was).clamp(0.0, 1.0))
+            };
+            let Some(fill) = strength(fill_at(&capture, drawn), fill_ref, go) else {
+                continue;
+            };
+            let Some(line) = strength(line_at(&capture, drawn), line_ref, go) else {
+                continue;
+            };
+            if (0.05..=0.95).contains(&fill) {
+                assert!(
+                    (line - fill).abs() <= 0.15,
+                    "tab {i}'s underline fades with its pill: line {line:.2}, fill {fill:.2}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "a tab's selection fades under the frame");
     }
     for name in ["fade-dark", "fade-light"] {
         for of in ["old", "new", "mid"] {

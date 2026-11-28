@@ -76,15 +76,20 @@ impl TabBar {
         self.pill_faces = (0..self.tabs.len())
             .map(|i| self.fit_pill_faces(i, &env))
             .collect();
-        self.visible_titles = (0..self.tabs.len())
-            .map(|i| self.visible_title(i, tr, theme))
-            .collect();
-
-        let layout_t = self.layout_anim_started.and_then(|t| {
-            let elapsed = crate::time::now().saturating_duration_since(t);
-            (elapsed < layout_anim())
-                .then(|| tab_progress(ListChange::MOVE, Direction::Enter, elapsed))
-        });
+        let layout_t = self.layout_progress_at(crate::time::now());
+        // A title elides to the pill as it is drawn, so a pill on its way to another width never
+        // cuts its name at the width it will take.
+        let mut titles = Vec::with_capacity(self.tabs.len());
+        for i in 0..self.tabs.len() {
+            let r = self
+                .drawn_tab_rect(i, layout_t)
+                .or_else(|| self.tab_rects.get(i).copied());
+            titles.push(match r {
+                Some(r) => self.visible_title_in(i, tr, theme, r),
+                None => self.visible_title(i, tr, theme),
+            });
+        }
+        self.visible_titles = titles;
 
         let fade_window = insert_fade();
         self.inserted_at.retain(|_, started| {

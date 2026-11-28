@@ -973,6 +973,28 @@ impl TabBar {
         );
     }
 
+    /// How many tabs the strip holds.
+    #[must_use]
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// How far the row has moved from where its tabs stood to where they stand now, while that
+    /// motion plays: one progress every pill, its close and its underline take together.
+    #[must_use]
+    pub fn layout_progress(&self) -> Option<f64> {
+        self.layout_progress_at(crate::time::now())
+    }
+
+    /// [`Self::layout_progress`] at `now`.
+    fn layout_progress_at(&self, now: Instant) -> Option<f64> {
+        self.layout_anim_started.and_then(|started| {
+            let elapsed = now.saturating_duration_since(started);
+            (elapsed < layout_anim())
+                .then(|| tab_progress(ListChange::MOVE, Direction::Enter, elapsed))
+        })
+    }
+
     /// How far the tabs' bodies have grown in: `0` while the window shows one tab as its title, `1`
     /// once it shows several, and between on the disclosure motion.
     fn tabbed_progress(&self) -> f64 {
@@ -1214,10 +1236,29 @@ impl TabBar {
                 scene.pop_layer();
             }
         }
+        // The keyline says the tab list holds the keyboard: it fades with the selection it marks,
+        // never ahead of the pill under it.
+        let now = tilo_ui_base::motion::frame_now();
+        let selection_alpha = if self.selection_moving(now) {
+            let progress = self.selection_progress(now, theme.motion());
+            match self.selection_move {
+                Some((_, to, _)) if to == t.id => progress,
+                Some((from, _, _)) if from == t.id => 1.0 - progress,
+                _ => 1.0,
+            }
+        } else {
+            1.0
+        };
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a progress in 0..=1 is exact enough as f32 alpha"
+        )]
+        let selection_alpha = selection_alpha as f32;
         if body >= 1.0
             && is_active
             && self.shows_group_focus
             && self.group_focus == GroupFocus::Focused
+            && selection_alpha > 0.02
         {
             // A restrained focus keyline separates "active tab in this group" from "group receiving
             // keyboard input", and sits inside the pill so it cannot collide with a neighbour's
@@ -1235,7 +1276,11 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.text_primary,
+                theme
+                    .tokens
+                    .colors
+                    .text_primary
+                    .with_alpha_factor(selection_alpha),
                 None,
                 &keyline,
             );
@@ -1675,7 +1720,7 @@ impl TabBar {
         let &PillPaint {
             i,
             tab: t,
-            offset,
+            rect: r,
             ref look,
             is_pinned,
             is_active,
@@ -1687,13 +1732,41 @@ impl TabBar {
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = self.idle_ink(theme);
         let close_rect_target = self.close_rects.get(i).copied().unwrap_or(Rect::ZERO);
+        let target = self.tab_rects.get(i).copied().unwrap_or(Rect::ZERO);
         let is_held = self.is_held(t.id);
         if !(close_affordance_visible(look, is_pinned || is_held) && close_rect_target.area() > 0.0)
         {
             return;
         }
-        let alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
-        let close_r = shift_rect(close_rect_target, offset);
+        // During a selection move the close control is the one where the selection arrives: the
+        // tab it leaves gives its close up with its pill, so the bar never shows two, and the one
+        // it arrives takes the row's progress like the pill it sits in.
+        let mut alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
+        if let Some((from, to, _)) = self.selection_move {
+            let progress =
+                self.selection_progress(tilo_ui_base::motion::frame_now(), theme.motion());
+            if t.id == from && progress < 0.98 {
+                return;
+            }
+            if t.id == to {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a progress in 0..=1 is exact enough as f32"
+                )]
+                {
+                    alpha *= progress as f32;
+                }
+            }
+        }
+        // The chip keeps the inset it held at the target, on the pill as it is drawn: it rides
+        // the trailing edge the pill takes now, never the edge it will take.
+        let trailing = target.x1 - close_rect_target.x1;
+        let close_r = Rect::new(
+            r.x1 - trailing - close_rect_target.width(),
+            r.y0 + (close_rect_target.y0 - target.y0),
+            r.x1 - trailing,
+            r.y0 + (close_rect_target.y0 - target.y0) + close_rect_target.height(),
+        );
         let close_hover =
             !suppress_hover && Some(i) == self.hover_close_idx && self.pointer_settled();
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
@@ -2295,6 +2368,36 @@ impl TabBar {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<String> {
+        let r = self.tab_rects.get(i).copied()?;
+        self.visible_title_in(i, tr, theme, r)
+    }
+
+    /// The rect a pill stands in this frame: from where it stood to where it stands, on the
+    /// row's one progress.
+    fn drawn_tab_rect(&self, i: usize, layout_t: Option<f64>) -> Option<Rect> {
+        let target = *self.tab_rects.get(i)?;
+        let id = self.tabs.get(i)?.id;
+        Some(match (layout_t, self.prev_tab_rects_by_id.get(&id)) {
+            (Some(t), Some(prev)) => Rect::new(
+                prev.x0 + (target.x0 - prev.x0) * t,
+                prev.y0 + (target.y0 - prev.y0) * t,
+                prev.x1 + (target.x1 - prev.x1) * t,
+                prev.y1 + (target.y1 - prev.y1) * t,
+            ),
+            _ => target,
+        })
+    }
+
+    /// [`Self::visible_title`] as the pill stands in `r`: the title elides to the room the pill
+    /// has now, so a pill on its way to another width never cuts its name at the width it will
+    /// take.
+    fn visible_title_in(
+        &mut self,
+        i: usize,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) -> Option<String> {
         self.touch();
         let t = self.tabs.get(i)?;
         if self.icon_only(t.id) {
@@ -2324,7 +2427,6 @@ impl TabBar {
         if previous.is_none_or(|(_, _, w)| (w - measured).abs() > 0.5) {
             self.advance_changed = true;
         }
-        let r = *self.tab_rects.get(i)?;
         let (zx0, zx1) = self.title_zone(i, r);
         // A pill's title zone is a few hundred px at most, well inside `f32`'s
         // exact-integer range.
@@ -2412,6 +2514,14 @@ impl TabBar {
         let Some((_, _, started)) = self.selection_move else {
             return 1.0;
         };
+        // The selection moves with the row it sits in: while the row's one spring runs, the
+        // pills, their closes and their underlines all take its progress, so the bar has one
+        // path and not four.
+        if motion.moves()
+            && let Some(at) = self.layout_progress_at(now)
+        {
+            return at.clamp(0.0, 1.0);
+        }
         let elapsed = now.saturating_duration_since(started);
         tab_progress(ListChange::FADE, Direction::Enter, elapsed)
             .clamp(0.0, 1.0)
@@ -2997,6 +3107,14 @@ impl TabBar {
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
+    /// The rect each tab's close control stands in, by tab index: `Rect::ZERO` for a tab without
+    /// one. Guarded `cfg(any(test, debug_assertions))` rather than `cfg(test)`, so integration
+    /// tests in other crates can resolve the control from live geometry.
+    #[cfg(any(test, debug_assertions))]
+    pub fn close_rects(&self) -> &[Rect] {
+        &self.close_rects
+    }
+
     /// Guarded `cfg(any(test, debug_assertions))` rather than `cfg(test)`, so integration tests in
     /// other crates can resolve the chip from live geometry.
     #[cfg(any(test, debug_assertions))]
@@ -3170,6 +3288,7 @@ impl TabBar {
                 } else {
                     look.fill = look.fill.with_alpha_factor(alpha);
                     look.border = look.border.map(|c| c.with_alpha_factor(alpha));
+                    look.inner_glow = look.inner_glow.map(|c| c.with_alpha_factor(alpha));
                 }
             }
         }
@@ -3431,6 +3550,14 @@ fn chip_hover_tint(ground: vello::peniko::Color, alpha: u8) -> vello::peniko::Co
 }
 
 impl Widget for TabBar {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3512,6 +3639,15 @@ impl Widget for TabBar {
         }
         self.advance_changed = false;
         self.face_demand_stale = false;
+        // The row's rects before this solve: a change of them animates the whole row from where
+        // it stood, every pill by the one progress, so a tab's place, its close and its underline
+        // move together.
+        let stood: Vec<(u64, Rect)> = self
+            .tabs
+            .iter()
+            .zip(self.tab_rects.iter())
+            .map(|(tab, rect)| (tab.id, *rect))
+            .collect();
         self.tab_rects.clear();
         self.close_rects.clear();
         self.close_hit_rects.clear();
@@ -3645,6 +3781,26 @@ impl Widget for TabBar {
             Rect::ZERO
         };
         self.lay_out_toolbar_row();
+        // Any pill that moved starts the one spring the whole row moves on: each pill, its close
+        // and its underline take the same progress from where they stood to where they stand.
+        let moved = stood.iter().any(|(id, was)| {
+            self.tabs
+                .iter()
+                .position(|tab| tab.id == *id)
+                .and_then(|i| self.tab_rects.get(i))
+                .is_some_and(|now| {
+                    (now.x0 - was.x0).abs() > 0.5
+                        || (now.x1 - was.x1).abs() > 0.5
+                        || (now.y0 - was.y0).abs() > 0.5
+                })
+        });
+        let running = self.layout_anim_started.is_some_and(|started| {
+            crate::time::now().saturating_duration_since(started) < layout_anim()
+        });
+        if moved && !running && stood.len() == self.tabs.len() {
+            self.prev_tab_rects_by_id = stood.into_iter().collect();
+            self.layout_anim_started = Some(crate::time::now());
+        }
     }
     /// An undrawn bar repaints, and so does one whose own state moved since it drew (every
     /// route that changes it says so through `TabBar::touch`) or whose people are not the
@@ -4270,9 +4426,16 @@ impl TabBar {
         self.reveal_anim.retain(|id, _| live.contains(id));
         let tab_ids: Vec<u64> = self.tabs.iter().map(|t| t.id).collect();
         let mut animated: Vec<f64> = Vec::with_capacity(tab_ids.len());
+        // The row's widths follow one layout: a pill opening under the pointer grows in its own
+        // spring, but a pill whose zone moved because the tab in front changed takes the row's
+        // rect, so the whole row moves on the one progress. The leaving pill's zone closes at
+        // once rather than pushing its neighbours for a frame.
         for (i, &id) in tab_ids.iter().enumerate() {
             let target = self.reserve_of(i, self.target_reveal(i));
-            animated.push(self.advance_reveal(id, target));
+            let resting = self.reserve_of(i, self.resting_reveal(i));
+            let spring = self.advance_reveal(id, target);
+            let opening = (target - resting).abs() > f64::EPSILON;
+            animated.push(if opening { spring } else { resting });
         }
         let mut visual_order: Vec<usize> = Vec::with_capacity(self.tabs.len());
         for (i, t) in self.tabs.iter().enumerate() {
@@ -4399,16 +4562,8 @@ impl TabBar {
         };
 
         for (i, (t, &target)) in self.tabs.iter().zip(self.tab_rects.iter()).enumerate() {
-            // prev → target lerp when a spring is in flight; otherwise render at target.
-            let r = match (layout_t, self.prev_tab_rects_by_id.get(&t.id)) {
-                (Some(tt), Some(prev)) => Rect::new(
-                    prev.x0 + (target.x0 - prev.x0) * tt,
-                    prev.y0 + (target.y0 - prev.y0) * tt,
-                    prev.x1 + (target.x1 - prev.x1) * tt,
-                    prev.y1 + (target.y1 - prev.y1) * tt,
-                ),
-                _ => target,
-            };
+            // From where it stood to where it stands, on the row's one progress.
+            let r = self.drawn_tab_rect(i, layout_t).unwrap_or(target);
 
             // Fade alpha 0→1 and y -10→0 on the list change's fade; `fade_alpha` < 1.0
             // wraps the paint in a `push_layer`.
