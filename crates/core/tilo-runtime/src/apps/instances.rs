@@ -276,6 +276,7 @@ fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_dialogs::chose
     use tilo_dialogs::chooser_service::Choice;
     match choice {
         Choice::Read => tilo_dialogs::chosen::Kind::Read,
+        Choice::Edit => tilo_dialogs::chosen::Kind::Edit,
         Choice::Folder { write } => tilo_dialogs::chosen::Kind::Folder { write },
         Choice::Save => tilo_dialogs::chosen::Kind::Save,
     }
@@ -286,6 +287,7 @@ fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> tilo_dialogs::chooser_ser
     use tilo_dialogs::chooser_service::{Choice, Granted};
     let choice = match chosen.kind {
         tilo_dialogs::chosen::Kind::Read => Choice::Read,
+        tilo_dialogs::chosen::Kind::Edit => Choice::Edit,
         tilo_dialogs::chosen::Kind::Folder { write } => Choice::Folder { write },
         tilo_dialogs::chosen::Kind::Save => Choice::Save,
     };

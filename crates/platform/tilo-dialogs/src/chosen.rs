@@ -106,6 +106,10 @@ pub(crate) fn is_app(name: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Read,
+    /// One file to read and replace: a document a word processor opens to edit, so its words save
+    /// back where they were read. Its save sibling (`.<name>.tilo-save`) may be written and
+    /// renamed over it, as a save's is, so the file is replaced whole or not at all.
+    Edit,
     /// One file to write, created if it does not exist yet: a Save. Its save sibling
     /// (`.<name>.tilo-save`) may be written and renamed over it, so a save replaces the file whole
     /// or not at all.
@@ -119,6 +123,7 @@ impl Kind {
     fn of_tag(tag: &str) -> Option<Self> {
         Some(match tag {
             "read" => Self::Read,
+            "edit" => Self::Edit,
             "save" => Self::Save,
             "folder" => Self::Folder { write: false },
             "folder-write" => Self::Folder { write: true },
@@ -129,6 +134,7 @@ impl Kind {
     fn tag(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::Edit => "edit",
             Self::Save => "save",
             Self::Folder { write: false } => "folder",
             Self::Folder { write: true } => "folder-write",
@@ -138,7 +144,7 @@ impl Kind {
     /// Whether the app may change what the choice names.
     #[must_use]
     pub fn writes(self) -> bool {
-        matches!(self, Self::Save | Self::Folder { write: true })
+        matches!(self, Self::Edit | Self::Save | Self::Folder { write: true })
     }
 }
 
@@ -162,7 +168,7 @@ impl Document {
     /// Where a save writes before its bytes replace the file.
     #[must_use]
     pub fn save_sibling(&self) -> Option<OsString> {
-        (self.kind == Kind::Save).then(|| {
+        matches!(self.kind, Kind::Edit | Kind::Save).then(|| {
             let mut sibling = OsString::from(".");
             sibling.push(self.name());
             sibling.push(".tilo-save");
@@ -524,7 +530,7 @@ fn entry(token: &str, document: Document) -> Chosen {
 
 fn resolve_choice(chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {
     match kind {
-        Kind::Read => {
+        Kind::Read | Kind::Edit => {
             let host = chosen.canonicalize().map_err(GrantError::Io)?;
             let meta = std::fs::metadata(&host).map_err(GrantError::Io)?;
             if meta.is_file() {
@@ -697,6 +703,24 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_edited_document_is_kept_to_be_written_back_over_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("Letter.docx");
+        std::fs::write(&document, b"draft").unwrap();
+        let table = ChosenTable::new();
+        let chosen = table.grant(&key(), &document, Kind::Edit).unwrap();
+        assert_eq!(
+            chosen.save_sibling,
+            Some(std::ffi::OsString::from(".Letter.docx.tilo-save")),
+            "an edited document is replaced whole, as a save writes"
+        );
+        assert!(Kind::Edit.writes());
+        let reopened = table.looked_up(&key(), &chosen.reference).unwrap();
+        assert_eq!(reopened.kind, Kind::Edit);
+        assert_eq!(reopened.host, document.canonicalize().unwrap());
     }
 
     #[test]
