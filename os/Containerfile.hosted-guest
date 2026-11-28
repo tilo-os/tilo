@@ -114,8 +114,9 @@ RUN test -s /out/fonts/manifest.toml
 # guest's own publisher list (below). It carries the native closure of the
 # runtime, its engines and `tilolang-process`, resolved from this stage's root
 # filesystem, so the guest needs none of those libraries itself. The tilolang
-# runtime bundle Browser executes is baked beside it, signed by the same key,
-# exactly as the desktop image bakes it (tools/apps/tilolang_packages.sh).
+# runtime bundle Browser executes is baked beside it, signed by the same key and
+# naming this build (/out/runtime-version), exactly as the desktop image bakes it
+# (tools/apps/tilolang_packages.sh): the packages packed below name that pair.
 RUN set -eu; \
     python3 /build/os/scripts/collect-runtime-dependencies.py --library-dir /out \
         /out/libruntime_dylib.so /out/thin-apps/tilolang-process \
@@ -135,7 +136,7 @@ RUN set -eu; \
     bash /build/os/scripts/verify-runtime-bundle-closure.sh \
         "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/tilolang-process; \
     . /build/tools/apps/tilolang_packages.sh; \
-    tilolang_version="$(tilolang_runtime_version /out)"; \
+    tilolang_version="$(tilolang_runtime_version /out "tilo-runtime/$(cat /out/runtime-version)")"; \
     tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-process \
         /out/tilolang-std /out /tmp/runtime-identity.json \
         "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \

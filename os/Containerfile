@@ -667,7 +667,10 @@ ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # The tilolang runtime bundle is baked here too, when the image's app set names a
 # tilolang package: beside the Tilo runtime, at `/usr/lib/tilo-runtime/<version>`,
 # signed by the same runtime publisher, so one trust root covers both. It is the
-# binaries alone (tools/apps/tilolang_packages.sh), run on the Tilo runtime.
+# binaries alone (tools/apps/tilolang_packages.sh), run on the Tilo runtime. Its
+# binary links that build's libraries, so its version names the build
+# (/out/runtime-version, baked just above) — the same id pack-apps.sh stamps into
+# every package: baked for any other build, `tilo-install` refuses each package.
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # libstd is not on the system loader path, so it is included by name. The
@@ -732,7 +735,7 @@ RUN --mount=type=secret,id=publisher_identity \
       && tilolang_packages="$(python3 -I -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("tilolang", [])))' /out/app-plan.json 2>/dev/null || echo 0)" \
       && if [ "$tilolang_packages" != 0 ]; then \
            . /build/tools/apps/tilolang_packages.sh \
-           && tilolang_version="$(tilolang_runtime_version /out)" \
+           && tilolang_version="$(tilolang_runtime_version /out "tilo-runtime/$(cat /out/runtime-version)")" \
            && tilolang_bake_runtime /out/tilo-runtime-bundle /out/thin-apps/tilolang-process \
                 /out/tilolang-std /out /out/runtime-bundle-identity.json \
                 "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
