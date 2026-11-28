@@ -547,6 +547,17 @@ class Session:
         if founded:
             return "no person", founded + "\n" + daemon_tail(self.log)
         self._phase("found", started)
+        # The device answers before its person's part runs, but the build and the install are
+        # the person's own act: `tilolang build --dev` asks the daemon for the id it compiles
+        # the app as, and an answer before that part runs is the device's alone, which refuses a
+        # development build. Both come once it serves the workspace it starts.
+        started = time.monotonic()
+        deadline = time.monotonic() + 120
+        while not daemon_serving(socket):
+            if self.daemon.poll() is not None or time.monotonic() >= deadline:
+                return "no workspace", "the device serves no workspace\n" + daemon_tail(self.log)
+            time.sleep(0.1)
+        self._phase("serving", started)
         if source is not None:
             # The development build is compiled for the id this device's daemon names for it,
             # which only that daemon answers: `tilolang build --dev` asks it, in this profile's
@@ -567,17 +578,6 @@ class Session:
                     daemon_tail(self.log) + "\n— the build's own output —\n"
                     + built.stdout + built.stderr)
             self._phase("build", started)
-        # The device answers its installs before its person's part runs, but an app starts in
-        # the workspace that part serves, and a development build is installed there too only
-        # while it serves it: the builds are installed once it does, which it began while the
-        # build ran.
-        started = time.monotonic()
-        deadline = time.monotonic() + 120
-        while not daemon_serving(socket):
-            if self.daemon.poll() is not None or time.monotonic() >= deadline:
-                return "no workspace", "the device serves no workspace\n" + daemon_tail(self.log)
-            time.sleep(0.1)
-        self._phase("serving", started)
         # The staging holds the app and every package it reads, each compiled for the id this
         # device names it: all of them are installed, as `tilolang dev` installs them, and the
         # app is the one of its own id.
