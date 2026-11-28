@@ -44,8 +44,12 @@ impl crate::Shared {
         match self.install_apps(&workspace, standing, dispatch) {
             Installed::All => {}
             Installed::Waits(on) => return waits(on),
+            // A person the workspace does not let install apps (an Editor) keeps the apps'
+            // records where the services started them, on this device, and works in them there:
+            // nothing is dropped, and the install is asked again only once how the workspace stands
+            // here moves on (an owner added the app, or gave the person the right to).
             Installed::Refused(why) => {
-                tracing::warn!(%why, "the apps the session runs were not installed in the workspace");
+                tracing::warn!(%why, "the apps the session runs were not installed in the workspace: their records stay on this device");
                 *self.app_stores.borrow_mut() = AppStores::Refused(standing, why);
                 return;
             }
