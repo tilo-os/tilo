@@ -335,7 +335,7 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool
 }
 
 /// A finished run as the app records it.
-fn finished_value(run: &crate::commands::FinishedCommand) -> Value {
+pub(crate) fn finished_value(run: &crate::commands::FinishedCommand) -> Value {
     let output = String::from_utf8_lossy(&run.output);
     json!({
         "command": run.command,
@@ -348,7 +348,8 @@ fn finished_value(run: &crate::commands::FinishedCommand) -> Value {
         "tool": crate::parse::tool_of(&run.command),
         "undoable": undoability::of(&run.command).unwrap_or(false),
         "number": run.number,
-        "job": run.job,
+        // The Terminal's `Finished` reads a run that is no background job as job 0.
+        "job": run.job.unwrap_or(0),
         "refusal": run.refusal,
         "items": crate::parse::items(&run.command, &run.output),
     })
@@ -710,6 +711,26 @@ mod tests {
             call("open", r#"{"target":"../../etc"}"#, &NoOpener),
             Err("`../../etc` is no target a session runs on".to_owned())
         );
+    }
+
+    /// A run reaches the Terminal app as its `Finished`, whose `job` is a whole number: a run
+    /// that is no background job is job 0, never left out or null, so the app reads every run.
+    #[test]
+    fn a_run_names_its_job_as_the_app_reads_it() {
+        let run = |job| crate::FinishedCommand {
+            command: "echo hi".to_owned(),
+            cwd: "/".to_owned(),
+            number: Some(1),
+            started_ms: 1,
+            ended_ms: 2,
+            exit: 0,
+            output: b"hi\n".to_vec(),
+            truncated: false,
+            job,
+            refusal: None,
+        };
+        assert_eq!(finished_value(&run(None))["job"], json!(0));
+        assert_eq!(finished_value(&run(Some(3)))["job"], json!(3));
     }
 
     /// What a public link is: an address a terminal may offer whoever reads it, never a local

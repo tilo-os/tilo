@@ -298,27 +298,7 @@ pub(crate) fn held_json(held: Option<&crate::live::HeldRun>) -> String {
 /// A finished run as the app records it: what it ran, where, how long, what it printed as text,
 /// and what its parsers found.
 fn finished_json(run: &crate::FinishedCommand) -> String {
-    let output = String::from_utf8_lossy(&run.output);
-    let plain = crate::parse::plain(&output);
-    let items = crate::parse::items(&run.command, &run.output);
-    let tool = crate::parse::tool_of(&run.command);
-    let undoable = crate::undoability::of(&run.command);
-    let value = serde_json::json!({
-        "command": run.command,
-        "cwd": run.cwd,
-        "started_ms": run.started_ms,
-        "ended_ms": run.ended_ms,
-        "exit": run.exit,
-        "output": plain,
-        "truncated": run.truncated,
-        "tool": tool,
-        "undoable": undoable.unwrap_or(false),
-        "number": run.number,
-        "job": run.job,
-        "refusal": run.refusal,
-        "items": items,
-    });
-    value.to_string()
+    crate::ops::finished_value(run).to_string()
 }
 
 /// The sessions this device keeps, as the process's `ui.Terminal` nodes read them.
