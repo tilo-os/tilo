@@ -310,6 +310,9 @@ pub struct Ceremony {
     /// mode starts on restore and never exposes the create-new branch, while
     /// still allowing a keyring unlock retry.
     recovery_only: bool,
+    /// Whether a sign-in opened setup for the person it just made or joined here: with no step
+    /// recorded, setup starts at the backup rather than asking for an identity.
+    after_sign_in: bool,
     minter: Shared<Minter>,
     importer: Shared<Importer>,
     words_importer: Shared<WordsImporter>,
@@ -446,6 +449,21 @@ impl Ceremony {
         Self::new_in_context(identity_dir, OnboardingContext::HostDesktop, true)
     }
 
+    /// Open the ceremony a sign-in made or joined this account's person for: with no step
+    /// recorded, it starts at the backup, as an identity this computer already holds leaves
+    /// nothing to choose before it.
+    #[must_use]
+    pub fn after_sign_in(mut self) -> Self {
+        self.after_sign_in = true;
+        if self.flow.minted().is_none() {
+            self.restore_progress();
+            if self.flow.minted().is_some() && self.refresh_backup_capability().is_err() {
+                self.error = Some(t("onboarding-connect-recovery-message"));
+            }
+        }
+        self
+    }
+
     /// Reopen the introduction after first login without repeating or
     /// weakening any identity ceremony.
     pub fn new_tour() -> Self {
@@ -571,6 +589,7 @@ impl Ceremony {
             asked: Vec::new(),
             context,
             recovery_only: false,
+            after_sign_in: false,
             minter: Arc::new(Mutex::new(minter)),
             importer: Arc::new(Mutex::new(importer)),
             words_importer: Arc::new(Mutex::new(Box::new(|_: &str| {
@@ -805,6 +824,10 @@ impl Ceremony {
             return;
         };
         let (stage, unreadable) = match progress::recorded(&paths) {
+            // A person a sign-in has just taken up has no step: their identity is here, so setup
+            // offers its backup and the tour rather than asking for an identity this computer
+            // already holds.
+            None if self.after_sign_in => (Stage::IdentityReady, None),
             None => return,
             Some(Ok(stage)) => (stage, None),
             // A step this build cannot name resumes at the earliest one an

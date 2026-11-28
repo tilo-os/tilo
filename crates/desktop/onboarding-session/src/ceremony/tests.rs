@@ -932,6 +932,34 @@ tilo_test_env::scenario! {
         assert_eq!(backup.page().step(), Step::Backup);
     }
 
+    phase a_person_a_sign_in_made_opens_setup_at_its_backup_with_no_step;
+    {
+        let directory = TempDir::new().expect("identity directory");
+        write_fixture_identity(directory.path());
+        let device = Device::new();
+        assert!(
+            !progress::unfinished(&device.paths),
+            "the sign-in recorded no step before the session read the settings"
+        );
+        let backup = Ceremony::new_in_session(
+            directory.path().to_path_buf(),
+            SessionPaths {
+                identity: Some(device.identity()),
+                ..SessionPaths::default()
+            },
+            OnboardingContext::FullSystem,
+            false,
+        )
+        .after_sign_in();
+        assert_eq!(backup.page().screen, Screen::Done);
+        assert_eq!(
+            backup.page().step(),
+            Step::Backup,
+            "the identity this computer already holds is not asked for again"
+        );
+        assert!(!backup.page().identity_ready_page);
+    }
+
     phase recovery_never_resumes_a_step_that_assumes_the_identity_signs;
     // Recovery opens because the identity cannot be used; a step recorded while it could must
     // not put the ready screen over that.
