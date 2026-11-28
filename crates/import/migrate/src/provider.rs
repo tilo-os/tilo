@@ -801,7 +801,9 @@ impl Running {
             going.insert(going_key.clone(), (self.id, Arc::clone(&self.step)));
         }
         let sequence = AtomicU64::new(0);
+        let mut said = Vec::new();
         let mut progress = |line: &str| {
+            said.push(line.to_owned());
             let sequence = sequence.fetch_add(1, Ordering::Relaxed).saturating_add(1);
             self.step.set(InvocationState::new(
                 self.id,
@@ -865,6 +867,14 @@ impl Running {
         } else {
             Ok(())
         };
+        // A follower sees how the run stands, not each line it said on the way: the answer
+        // carries them all, in order, for whoever looked too late for some.
+        let ran = ran.map(|mut answer| {
+            if let Some(answer) = answer.as_object_mut() {
+                answer.insert("said".into(), said.into());
+            }
+            answer
+        });
         let answer = match (ran, ended) {
             (ran, Ok(())) => ran,
             (Ok(_), Err(error)) => Err(error.context("the migration's record was not told")),

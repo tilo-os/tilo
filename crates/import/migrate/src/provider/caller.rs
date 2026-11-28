@@ -159,11 +159,21 @@ impl Steps {
     ) -> Result<std::result::Result<Value, ActionFailure>> {
         let stopped = || anyhow!("the device stopped answering");
         let mut seen = UpdateMark::Accepted;
+        // The progress lines said here, by their sequence: a run's answer lists every line it
+        // said, and those said while nobody looked are said once it ends.
+        let mut told = std::collections::BTreeSet::new();
         loop {
             match status {
                 ReceiptStatus::Accepted => {}
                 ReceiptStatus::Completed { output } => {
-                    return Ok(Ok(output.value.unwrap_or_default()));
+                    let answer = output.value.unwrap_or_default();
+                    let lines = answer.get("said").and_then(Value::as_array);
+                    for (sequence, line) in (1_u64..).zip(lines.into_iter().flatten()) {
+                        if !told.contains(&sequence) {
+                            (answering.say)(line.as_str().unwrap_or_default());
+                        }
+                    }
+                    return Ok(Ok(answer));
                 }
                 ReceiptStatus::Failed { error } => return Ok(Err(error)),
                 ReceiptStatus::Rejected { error } => bail!("{}", error.said()),
@@ -197,9 +207,11 @@ impl Steps {
             seen = UpdateMark::of(&state.update);
             if let InvocationUpdate::Progress {
                 message: Some(line),
+                sequence,
                 ..
             } = &state.update
             {
+                told.insert(*sequence);
                 (answering.say)(line);
             }
             status = state.receipt().status;

@@ -380,8 +380,9 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
                 .said
                 .iter()
                 .any(|line| line.contains(WORK_EMAIL) && line.contains("is connected")),
-            "{:?}",
-            approved.said
+            "{:?}, answered {:#}",
+            approved.said,
+            approved.answer
         );
         assert!(kept_accounts(&agent).await.contains(&WORK_EMAIL.to_owned()));
         let status = step(
