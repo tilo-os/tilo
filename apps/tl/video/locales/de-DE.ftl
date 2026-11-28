@@ -33,6 +33,9 @@ d-cmb3ivib = Untertitelspur
 d-iryxnejv = Kapitel
     .doc = Die Kapitel, die der Player darin gefunden hat, in der Reihenfolge, in der die Zeitleiste sie markiert.
 
+d-i7pv5r4r = Kapitelanfänge
+    .doc = Wo jedes Kapitel beginnt, in Sekunden, in der Reihenfolge, in der `chapters` sie nennt.
+
 d-dzmqpss7 = Wiedergabeliste
     .doc = Eine Wiedergabeliste, die alle im Arbeitsbereich sehen; ihre Videos sind die Einträge, die sie nennen.
     .noun = { $count ->
@@ -249,6 +252,13 @@ d-mmxw7gge-subtitles = Untertitel
 
 d-mmxw7gge-chapters = Kapitel
 
+d-mmxw7gge-times = Positionen
+
+d-rryapr2j = Zu Kapitel springen
+    .doc = Springt zum Kapitel namens `name`: Das Video spielt ab dem Anfang des Kapitels.
+
+d-rryapr2j-name = Name
+
 d-juxlv3zp = Diese Tonspur verwenden
     .doc = Verwendet die Tonspur namens `name` dieses Videos.
 
@@ -334,6 +344,7 @@ d-6o4owyb6 = Video
     .w-delete-timestamp-annotation = Zeitmarke löschen
     .w-play = Abspielen
     .w-can-t-play-this-video-yet = Dieses Video lässt sich noch nicht abspielen
+    .w-chapters = Kapitel
     .w-play-more-video-and-audio-formats = Weitere Video- und Audioformate abspielen
     .w-play-a-video-when-it-opens = Video beim Öffnen abspielen
     .w-repeat-the-video = Video wiederholen

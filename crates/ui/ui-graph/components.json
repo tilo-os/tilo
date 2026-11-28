@@ -8650,6 +8650,13 @@
           "value": {
             "list": "text"
           }
+        },
+        {
+          "name": "chapter_times",
+          "doc": "The chapters' start times, in seconds, in the order `chapters` names them, so a view can jump to where a chapter begins.",
+          "value": {
+            "list": "float"
+          }
         }
       ],
       "semantics": {

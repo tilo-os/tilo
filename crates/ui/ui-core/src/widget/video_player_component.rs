@@ -111,6 +111,10 @@ pub struct VideoPlayerProps {
     /// The chapters' labels, in the order `seek` indexes them.
     #[component(event(value = Vec<String>))]
     pub chapters: Event,
+    /// The chapters' start times, in seconds, in the order `chapters` names them, so a view
+    /// can jump to where a chapter begins.
+    #[component(event(value = Vec<f64>))]
+    pub chapter_times: Event,
     /// The engine the player runs the video on, which its app builds.
     #[component(skip)]
     pub engine: Option<media::MediaEngine>,
@@ -142,6 +146,7 @@ pub struct DeclaredVideo {
     audio_tracks: Event,
     subtitle_tracks: Event,
     chapters: Event,
+    chapter_times: Event,
     /// What the player last told the view, so only a reading that moved is reported.
     reported: Reported,
     /// The address the player was opened at: a view that answers with another one for the same
@@ -182,6 +187,7 @@ struct Reported {
     audio: Option<Vec<String>>,
     subtitles: Option<Vec<String>>,
     chapters: Option<Vec<String>>,
+    chapter_times: Option<Vec<f64>>,
 }
 
 /// The engine controls last applied from the view's props.
@@ -230,6 +236,7 @@ impl DeclaredVideo {
             audio_tracks,
             subtitle_tracks,
             chapters,
+            chapter_times,
             engine,
         } = props;
         let _ = set_volume;
@@ -316,6 +323,7 @@ impl DeclaredVideo {
             audio_tracks,
             subtitle_tracks,
             chapters,
+            chapter_times,
             reported: Reported::default(),
             applied: Applied::default(),
             wanted: Applied {
@@ -501,20 +509,20 @@ impl DeclaredVideo {
             self.reported.subtitles = Some(subtitles.clone());
             self.subtitle_tracks.fire(Some(labels(subtitles)));
         }
-        let chapters: Vec<String> = self
+        let (chapters, chapter_times) = self
             .player
             .engine()
-            .map(|engine| {
-                engine
-                    .chapters()
-                    .into_iter()
-                    .map(|chapter| chapter.label)
-                    .collect()
-            })
+            .map(|engine| chapters_and_times(engine.chapters()))
             .unwrap_or_default();
         if self.reported.chapters.as_ref() != Some(&chapters) {
             self.reported.chapters = Some(chapters.clone());
             self.chapters.fire(Some(labels(chapters)));
+        }
+        if self.reported.chapter_times.as_ref() != Some(&chapter_times) {
+            self.reported.chapter_times = Some(chapter_times.clone());
+            self.chapter_times.fire(Some(Value::List(
+                chapter_times.into_iter().map(Value::Float).collect(),
+            )));
         }
         if let Some((seconds, seq)) = self.jump
             && self.applied.seek_to_seq != Some(seq)
@@ -968,6 +976,19 @@ impl Described for DeclaredVideo {
     }
 }
 
+/// A video's chapters as a view reads them: their labels, and where each begins in seconds.
+fn chapters_and_times(chapters: Vec<media::MediaChapter>) -> (Vec<String>, Vec<f64>) {
+    let labels = chapters
+        .iter()
+        .map(|chapter| chapter.label.clone())
+        .collect();
+    let times = chapters
+        .iter()
+        .map(|chapter| chapter.start_ms as f64 / 1000.0)
+        .collect();
+    (labels, times)
+}
+
 /// The state the view used to declare, kept so a host that plays on its own reports each change.
 #[allow(dead_code, reason = "a host reports every change of this state")]
 fn _playing(_: PlaybackState) {}
@@ -993,6 +1014,26 @@ mod tests {
             "it is a control that runs when pressed: {:?}",
             setting.control
         );
+    }
+
+    /// A chapter's label and the place it begins travel together, so a view jumps to where the
+    /// chapter starts rather than guessing one.
+    #[test]
+    fn chapters_carry_where_each_begins() {
+        let (labels, times) = chapters_and_times(vec![
+            media::MediaChapter {
+                id: "opening".into(),
+                label: "Opening".into(),
+                start_ms: 0,
+            },
+            media::MediaChapter {
+                id: "market".into(),
+                label: "The market".into(),
+                start_ms: 8_500,
+            },
+        ]);
+        assert_eq!(labels, ["Opening", "The market"]);
+        assert_eq!(times, [0.0, 8.5], "each chapter's start, in seconds");
     }
 
     /// A person's reduced-motion setting reaches the player the view draws: the host walking the

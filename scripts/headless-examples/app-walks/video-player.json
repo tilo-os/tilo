@@ -532,6 +532,58 @@
       ]
     },
     {
+      "id": "chapters",
+      "said": "A chaptered video offers its chapters, and pressing one jumps to where it begins",
+      "ops": [
+        {
+          "clip": {
+            "name": "Chaptered.mkv",
+            "chapters": [
+              "Opening",
+              "The market"
+            ]
+          }
+        },
+        {
+          "press_any": [
+            "Open video"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Chaptered.mkv"
+          }
+        },
+        {
+          "point": [
+            640,
+            340
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        },
+        {
+          "scroll": {
+            "dy": -400
+          }
+        },
+        {
+          "must": [
+            "Opening",
+            "The market"
+          ]
+        },
+        {
+          "press_any": [
+            "The market"
+          ]
+        }
+      ]
+    },
+    {
       "id": "dark",
       "said": "The same video in the dark theme",
       "ops": [

@@ -3457,15 +3457,30 @@ class Walk:
         """Make a short VP9/AAC video where a person's file chooser reaches it, so a walk
         needs no committed media. The clip is generated once per walk (GStreamer, else
         ffmpeg), a few hundred kilobytes, and contains no third-party media. `subtitles`
-        adds one subtitle track carrying that line, so a walk can choose it and turn it off."""
+        adds one subtitle track carrying that line, so a walk can choose it and turn it off;
+        `chapters` names chapters a second apart, so a walk can jump to one."""
         name = value["name"]
         made_path = self.fixture(name)
         subtitles = value.get("subtitles")
+        chapters = value.get("chapters") or []
         cues = None
+        metadata = None
         if subtitles:
             cues = self.fixture(f"{name}.srt")
             cues.write_text(
                 "1\n00:00:00,000 --> 00:00:01,500\n%s\n" % subtitles)
+        if chapters:
+            metadata = self.fixture(f"{name}.ffmeta")
+            lines = [";FFMETADATA1"]
+            for at, chapter in enumerate(chapters):
+                lines += [
+                    "[CHAPTER]",
+                    "TIMEBASE=1/1000",
+                    "START=%d" % (at * 1000),
+                    "END=%d" % ((at + 1) * 1000),
+                    "title=%s" % chapter,
+                ]
+            metadata.write_text("\n".join(lines) + "\n")
         gst = [
             "gst-launch-1.0", "-e", "-q",
             "mp4mux", "name=mux", "!", "filesink", f"location={made_path}",
@@ -3483,12 +3498,14 @@ class Walk:
         ]
         if cues is not None:
             ffmpeg += ["-i", str(cues), "-c:s", "srt"]
+        if metadata is not None:
+            ffmpeg += ["-i", str(metadata), "-map_metadata", "1", "-map_chapters", "1"]
         ffmpeg += [
             "-shortest", "-c:v", "libvpx-vp9", "-b:v", "64k", "-c:a", "aac", str(made_path),
         ]
         made = None
         # A clip with subtitles is muxed by ffmpeg alone: the text stream is the point.
-        for program in ((ffmpeg,) if cues is not None else (gst, ffmpeg)):
+        for program in ((ffmpeg,) if cues is not None or metadata is not None else (gst, ffmpeg)):
             if shutil.which(program[0]) is None:
                 continue
             try:

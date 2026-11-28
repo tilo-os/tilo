@@ -27,6 +27,8 @@ type Clip (untitled: "Untitled video") {
     subtitle: Int = -1
     /// The chapters the player found in it, in the order the scrubber marks them.
     chapters: List<Text>
+    /// Where each chapter begins, in seconds, in the order `chapters` names them.
+    chapter_times: List<Float>
 
     search {
         sort title a_z
@@ -260,12 +262,29 @@ destructive action clear_recent(r: Recents) (
 
 /// Remembers the audio tracks, subtitles and chapters the player found in `c`, so the person
 /// can choose among them and the scrubber marks where a chapter begins.
-action found_tracks(c: Clip, audio: List<Text>, subtitles: List<Text>, chapters: List<Text>) (
-    label: "Found the video's tracks",
-) {
+action found_tracks(
+    c: Clip,
+    audio: List<Text>,
+    subtitles: List<Text>,
+    chapters: List<Text>,
+    times: List<Float>,
+) (label: "Found the video's tracks") {
     c.audio_tracks = audio
     c.subtitle_tracks = subtitles
     c.chapters = chapters
+    c.chapter_times = times
+}
+
+/// Where the chapter called `name` begins, in seconds; zero when the video has no such chapter.
+fn chapter_time(c: Clip, name: Text) -> Float {
+    if let i = c.chapters.index_of(name) { c.chapter_times.at(i) ?? 0.0 } else { 0.0 }
+}
+
+/// Jumps to the chapter called `name`: its video plays from where the chapter begins.
+action play_chapter(c: Clip, name: Text) uses time (icon: .list, label: "Go to chapter") {
+    let p = player(root Library)
+    playback.play_list(p, [playback.Item(ref: c.id, title: c.title, source: c.source)], at: 0)
+    playback.set_position(p, chapter_time(c, name))
 }
 
 /// Uses the audio track at `at` of this video.
@@ -564,18 +583,28 @@ view video(c: Clip) {
                             audio: labels,
                             subtitles: c.subtitle_tracks,
                             chapters: c.chapters,
+                            times: c.chapter_times,
                         )
                         on subtitle_tracks(labels: List<Text>): found_tracks(
                             c,
                             audio: c.audio_tracks,
                             subtitles: labels,
                             chapters: c.chapters,
+                            times: c.chapter_times,
                         )
                         on chapters(labels: List<Text>): found_tracks(
                             c,
                             audio: c.audio_tracks,
                             subtitles: c.subtitle_tracks,
                             chapters: labels,
+                            times: c.chapter_times,
+                        )
+                        on chapter_times(times: List<Float>): found_tracks(
+                            c,
+                            audio: c.audio_tracks,
+                            subtitles: c.subtitle_tracks,
+                            chapters: c.chapters,
+                            times: times,
                         )
                         on fail(what: Text, at: Float): set(
                             trouble,
@@ -642,7 +671,18 @@ view video(c: Clip) {
                 }
             }
             if not c.chapters.is_empty() {
-                text(c.chapters.join("  ·  "), role: .caption, secondary: true)
+                text("Chapters", role: .subheading)
+                row(gap: .related, wrap: true) {
+                    for name in c.chapters {
+                        ui.Button(name, icon: .list) {
+                            on press: {
+                                set(jump, chapter_time(c, name))
+                                set(jump_seq, jump_seq + 1)
+                                play_chapter(c, name)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
