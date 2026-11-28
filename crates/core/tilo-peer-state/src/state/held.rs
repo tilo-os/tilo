@@ -284,13 +284,22 @@ impl StatePeer {
         }
         report
     }
+    /// Whether `message` is a write sealed under its record's group: one that can seal the
+    /// record, and so waits behind the record's cleartext writes.
+    fn seals(message: &NeighbourMsg) -> bool {
+        matches!(
+            message,
+            NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()
+        )
+    }
+
     /// Decide every held message again now that the input `into` reports on
     /// landed: what each takes in is added to `into`, released writes
     /// included, and one that still waits is held again.
     ///
-    /// They are decided by record, author and sequence, never in the order this copy received
-    /// them: every copy holding the same messages decides them in the same order, so no two
-    /// take in different ones.
+    /// They are decided by record, cleartext before sealed, sequence and author, never in the
+    /// order this copy received them: every copy holding the same messages decides them in the
+    /// same order, so no two take in different ones.
     pub(super) fn retry_held(
         &mut self,
         into: &mut AdmissionReport,
@@ -298,8 +307,17 @@ impl StatePeer {
         strict_report: bool,
     ) {
         let mut pending: Vec<_> = std::mem::take(&mut self.core.pending).into();
+        // A write that seals a record waits behind the record's cleartext writes
+        // ([`StatePeer::holds_cleartext_of`]). Decided together, the cleartext ones go first: held
+        // none of them any more, the seal would otherwise be taken before the base it waits
+        // behind, and the cleartext write it stands over would then be refused as one after the
+        // seal.
         pending.sort_by_cached_key(|(author, message, replayed)| {
-            (super::written_route(message), *author, *replayed)
+            let (route, sequence) = match super::written_route(message) {
+                Some((route, sequence)) => (Some(route), sequence),
+                None => (None, 0),
+            };
+            (route, Self::seals(message), sequence, *author, *replayed)
         });
         self.core.pending_bytes = 0;
         for (author, message, replayed) in pending {
