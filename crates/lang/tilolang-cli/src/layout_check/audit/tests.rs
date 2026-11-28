@@ -731,6 +731,22 @@ tilo_test_env::scenario! {
         );
         let found = overlaps_layers(vec![band(), writing]);
         assert_eq!(found.len(), 1, "{found:?}");
+
+        // A view that paints its own ground over the band (a map that dims the shell under the
+        // cards a person picks) and holds its words on a card: the ground is behind what it
+        // covers by design, and so are the cards the ground holds.
+        let ground = holding(
+            node("Stack", "picker", [0.0, 44.0, 400.0, 256.0], None),
+            vec![
+                node("Map", "ground", [0.0, 44.0, 400.0, 200.0], None),
+                holding(
+                    node("Row", "words", [16.0, 60.0, 360.0, 60.0], None),
+                    vec![node("Card", "card", [16.0, 60.0, 360.0, 60.0], None)],
+                ),
+            ],
+        );
+        let found = overlaps_layers(vec![band(), ground]);
+        assert!(found.is_empty(), "{found:?}");
     }
 }
 

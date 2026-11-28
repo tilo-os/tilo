@@ -509,10 +509,18 @@ fn floats_opaque(node: &InspectionNode) -> bool {
         node.widget.as_str(),
         "FloatingPanel" | "Popover" | "ContextMenu" | "Tooltip"
     ) || (!node.children.is_empty()
-        && node
-            .children
-            .iter()
-            .all(|child| floats_opaque(child) || !has_area(rect(child.rect))))
+        && node.children.iter().all(|child| {
+            floats_opaque(child)
+                || paints_ground(&child.widget)
+                || paints_surface(&child.widget)
+                || !has_area(rect(child.rect))
+        }))
+}
+
+/// Whether a widget paints the ground under what it holds: a map dims the shell under its cards,
+/// and the cards over it stand on it, so neither is read through the other.
+fn paints_ground(widget: &str) -> bool {
+    matches!(widget, "Map" | "Backdrop" | "WindowWell")
 }
 
 fn layers(widget: &str) -> bool {
