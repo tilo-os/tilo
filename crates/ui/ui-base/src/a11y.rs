@@ -346,12 +346,11 @@ pub struct AccessNode {
     pub action_target: Option<String>,
     /// The primary label a screen reader announces.
     pub name: Option<String>,
-    /// The row's own title, the line its [`name`](Self::name) starts with, kept
-    /// apart from everything said after it. A list row's name joins its title
-    /// and its secondary line ("Grace Hopper, Welcome to the lab"); this is
-    /// the title alone, so a person or a test looking for a row by the line it
-    /// is titled with finds it whatever the rest says. `None` for anything
-    /// that is not a row.
+    /// The row's own title, the line its [`name`](Self::name) is, kept
+    /// apart from everything said after it: a list row is named by the line it
+    /// is titled with, and its secondary line is said as its description. A
+    /// person, a voice control or a test looking for a row by that line finds
+    /// it whatever the rest says. `None` for anything that is not a row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// `name` is a fallback the widget found for itself (the value it shows) rather than words given

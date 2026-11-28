@@ -322,15 +322,21 @@ tilo_test_env::scenario! {
         );
         assert_eq!(node.value, None, "the explanation is said once");
 
-        // A row's secondary line that explains nothing is its own text: a reader hears the
-        // whole row as its name, as a message is its sender and its subject.
+        // A row's secondary line that explains nothing is said after its name, as its
+        // description: a message is its sender, and its subject follows.
         let read = ListRow::new("path", "Home").secondary("/home/quinten");
         let node = Widget::accessibility(&read).unwrap();
-        assert_eq!(node.name.as_deref(), Some("Home, /home/quinten"));
-        assert_eq!(node.value, None, "the secondary line is said once, in the name");
-        assert_eq!(node.description, None);
+        assert_eq!(node.name.as_deref(), Some("Home"), "named by the line it is titled with");
+        assert_eq!(node.description.as_deref(), Some("/home/quinten"));
+        assert_eq!(node.value, None, "the secondary line is said once, after the name");
         // The title stays a field of its own, the line the row is found by.
         assert_eq!(node.title.as_deref(), Some("Home"));
+
+        // A row titled with nothing is named by its secondary line, which is all it says.
+        let untitled = ListRow::new("path", "").secondary("/home/quinten");
+        let node = Widget::accessibility(&untitled).unwrap();
+        assert_eq!(node.name.as_deref(), Some("/home/quinten"));
+        assert_eq!(node.value, None);
     }
 }
 

@@ -845,7 +845,23 @@ impl<'a> ListRowFace<'a> {
     }
 
     fn spoken_name(&self) -> String {
-        let title = self.shown_title();
+        // A row is named by the line it is titled with, so a person, a voice control or an agent
+        // that asks for it by that line reaches it whatever else the row says. Its secondary
+        // line is said after the name as its description. A row titled with nothing is named by
+        // its secondary line, which is then all it is known by.
+        let titled = !self.title.trim().is_empty();
+        let title: std::borrow::Cow<'_, str> = if titled {
+            std::borrow::Cow::Borrowed(self.title.trim())
+        } else if let Some(secondary) = self
+            .secondary
+            .as_ref()
+            .map(|secondary| secondary.trim())
+            .filter(|secondary| !secondary.is_empty())
+        {
+            std::borrow::Cow::Borrowed(secondary)
+        } else {
+            self.shown_title()
+        };
         let mut name = String::new();
         if let Some(RowLeading::Badge(badge)) = &self.leading {
             name.push_str(badge);
@@ -855,19 +871,12 @@ impl<'a> ListRowFace<'a> {
             name.push_str(prefix);
             name.push(' ');
         }
-        name.push_str(&title);
-        // A description explains the row after its name, and the secondary line is how it is
-        // painted: said once, there. Otherwise the secondary line is the row's own text, and a
-        // reader hears all of it as the row's name: a message is its sender and its subject.
-        if let Some(secondary) = self.secondary.filter(|s| !s.is_empty() && !self.described) {
-            name.push_str(", ");
-            name.push_str(secondary);
-        }
+        name.push_str(title.as_ref());
         name
     }
 
-    /// The row's accessibility node: a list item named by its badge, title and secondary
-    /// line, with the subtitle, meta, value, count, tags and status as its value, and one
+    /// The row's accessibility node: a list item named by its badge and title, with the
+    /// secondary line, the subtitle, meta, value, count, tags and status after it, and one
     /// button child per action. The title alone is kept as the node's
     /// [`title`](tilo_ui_base::a11y::AccessNode::title), the line the row is found by.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
@@ -3558,6 +3567,14 @@ impl Widget for ListRow {
         }
         if let Some(tooltip) = &self.leading_tooltip {
             node.description = Some(tooltip.clone());
+        }
+        // The secondary line is said under the name it does not change: a message is its
+        // sender, and its subject follows.
+        if node.description.is_none()
+            && !self.title.trim().is_empty()
+            && let Some(secondary) = self.secondary.as_deref().filter(|s| !s.is_empty())
+        {
+            node.description = Some(secondary.to_owned());
         }
         if let Some(description) = &self.description {
             node.description = Some(description.clone());
