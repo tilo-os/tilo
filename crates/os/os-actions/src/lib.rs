@@ -112,10 +112,7 @@ pub use peripheral_forwarding::{
     VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
-pub use privacy::{
-    ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
-    revoke_media_client,
-};
+pub use privacy::{KillState, PrivacyStatus, get_privacy_status, revoke_media_client};
 pub use runtime_interface::tools::{
     AppEntry, AppKind, AppRemoval, BackupsRoute, ContainerEngine, DisksRoute, DriveEntry,
     FirewallRoute, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, TOOL_CONTEXT_ENV,

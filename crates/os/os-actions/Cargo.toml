@@ -28,7 +28,6 @@ bounded-command = { package = "tilo-bounded-command", path = "../../platform/bou
 # crate keeps the bus follow the session's system service reads.
 tilo-printing = { version = "0.1.0", path = "../printing", features = ["follow"] }
 # What is capturing sound and whether the microphone is muted (src/privacy.rs).
-media = { package = "tilo-media", path = "../../engines/tilo-media" }
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process"] }
 tracing.workspace = true

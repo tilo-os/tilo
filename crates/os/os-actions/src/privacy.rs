@@ -1,37 +1,9 @@
-//! Kernel and `PipeWire` privacy state for shell indicators.
+//! The kernel's privacy switches: the radios, and the camera and microphone shutters.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::rfkill::{self, RfkillState};
-
-pub use media::audio::capture::MediaKind;
-
-/// One active `PipeWire` capture stream. `label` comes from the executable behind `PipeWire`'s
-/// server-assigned security PID, never from the client-supplied `application.name`, so an app cannot
-/// rename itself to another app in the indicator.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActiveMediaUse {
-    pub client_id: u32,
-    pub pid: u32,
-    pub app_id: String,
-    pub label: String,
-    pub binary: std::path::PathBuf,
-    pub kind: MediaKind,
-}
-
-impl From<media::audio::capture::MediaUse> for ActiveMediaUse {
-    fn from(use_: media::audio::capture::MediaUse) -> Self {
-        Self {
-            client_id: use_.client_id,
-            pid: use_.pid,
-            app_id: use_.app_id,
-            label: use_.label,
-            binary: use_.binary,
-            kind: use_.kind,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KillState {
@@ -57,44 +29,33 @@ impl From<RfkillState> for KillState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrivacyStatus {
-    pub microphone_muted: Option<bool>,
     pub microphone_kill: KillState,
     pub camera_present: bool,
     pub camera_kill: KillState,
     pub wifi_kill: KillState,
     pub bluetooth_kill: KillState,
     pub mobile_kill: KillState,
-    pub active_media: Vec<ActiveMediaUse>,
 }
 
 impl Default for PrivacyStatus {
     fn default() -> Self {
         Self {
-            microphone_muted: None,
             microphone_kill: KillState::Unavailable,
             camera_present: false,
             camera_kill: KillState::Unavailable,
             wifi_kill: KillState::Unavailable,
             bluetooth_kill: KillState::Unavailable,
             mobile_kill: KillState::Unavailable,
-            active_media: Vec::new(),
         }
     }
 }
 
 pub fn get_privacy_status() -> PrivacyStatus {
-    let mut status = get_privacy_status_from(Path::new("/sys/class/rfkill"), Path::new("/dev"));
-    status.active_media = active_media_uses().unwrap_or_default();
-    status
+    get_privacy_status_from(Path::new("/sys/class/rfkill"), Path::new("/dev"))
 }
 
 fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
     let mut status = PrivacyStatus {
-        microphone_muted: media::audio::default_node::volume_state(
-            media::audio::default_node::DefaultNode::Source,
-        )
-        .ok()
-        .map(|s| s.muted),
         camera_present: std::fs::read_dir(dev).is_ok_and(|entries| {
             entries
                 .flatten()
@@ -118,15 +79,6 @@ fn get_privacy_status_from(class: &Path, dev: &Path) -> PrivacyStatus {
     status.camera_kill = kill("camera");
     status.microphone_kill = kill("microphone");
     status
-}
-
-/// Active capture streams from `PipeWire`'s own graph, each attributed from `/proc`; see
-/// [`media::audio::capture`].
-pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
-    Ok(media::audio::capture::media_uses()?
-        .into_iter()
-        .map(ActiveMediaUse::from)
-        .collect())
 }
 
 /// Disconnects an offending client at once. Deliberately an ephemeral stop, not a pretend persistent

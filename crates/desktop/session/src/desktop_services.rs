@@ -68,6 +68,8 @@ pub struct DesktopServices {
     /// The watch that keeps the person's lockdown policy applied while the session runs:
     /// dropping it stops the policy reaching the services, so it is kept, never read.
     _lockdown: Option<tilo_portal::lockdown::PolicyWatch>,
+    /// What the sound service heard, handed to privacy each pass it moves.
+    heard: crate::privacy::Hearing,
 }
 
 impl DesktopServices {
@@ -139,6 +141,7 @@ impl DesktopServices {
             running,
             system,
             _lockdown: lockdown,
+            heard: crate::privacy::Hearing::default(),
         })
     }
 
@@ -177,9 +180,14 @@ impl DesktopServices {
             services.push(Box::new(crate::privacy::Privacy::new(
                 Some(portal.captures().clone()),
                 Some(portal.consents().clone()),
+                self.heard.clone(),
             )));
         } else {
-            services.push(Box::new(crate::privacy::Privacy::new(None, None)));
+            services.push(Box::new(crate::privacy::Privacy::new(
+                None,
+                None,
+                self.heard.clone(),
+            )));
         }
         if let Some((tray, _)) = &self.tray {
             services.push(Box::new(tilo_tray::service::TrayService::new(Arc::clone(
@@ -187,6 +195,12 @@ impl DesktopServices {
             ))));
         }
         services
+    }
+
+    /// Where privacy hears what the sound service publishes: the session follows that reading
+    /// into it each pass.
+    pub(crate) const fn heard(&self) -> &crate::privacy::Hearing {
+        &self.heard
     }
 
     /// The applications' tray items, once their watcher serves; the bar draws them and the person's

@@ -4,16 +4,16 @@
 //! theirs.
 //!
 //! The session is where these are known, so the reading is the session's (`session:privacy`):
-//! the switches are the machine's (`os_actions`), the uses are the capture streams `PipeWire`
-//! attributes to the program behind them and the captures this desktop's portal brokers, and the
-//! answers are the person's own, kept in their workspace and following them to their other
+//! the switches are the machine's (`os_actions`), the uses are the capture streams the sound
+//! service sees `PipeWire` attribute to the program behind them and the captures this desktop's
+//! portal brokers, and the answers are the person's own, kept in their workspace and following them to their other
 //! devices. A use is named by the program it is, never by a name the program gave itself.
 //!
 //! A device the platform asks the person about as each use — the location — is one this session
 //! does not see in use: its posture says so instead of counting no use.
 
 use std::cell::Cell;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -37,9 +37,9 @@ pub(crate) const RESOURCE: &str = "session:privacy";
 #[row(kind = "session.privacy", label = "Privacy")]
 pub struct PrivacyRoot;
 
-/// How often the machine is asked again what uses its devices: the capture streams and the
-/// stems are read off the machine, so the reading follows them at a pace of its own rather than
-/// on every pass of the loop.
+/// How often the machine's switches and the portal's captures are read again: nothing tells the
+/// session when a switch moves, so the reading follows them at a pace of its own rather than on
+/// every pass of the loop. What the sound service hears moves the reading at once instead.
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// How long a reading stays worth refreshing after something last read it: nothing follows the
@@ -66,9 +66,11 @@ const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
 /// Where the session reads the privacy of this machine's devices: the machine itself in a
 /// session, a stand-in in a test.
 pub(crate) trait Sources {
-    /// What the machine says of its switches, its camera and microphone, and what captures from
-    /// them through `PipeWire`.
+    /// What the machine says of its switches and whether it has a camera.
     fn status(&self) -> os_actions::PrivacyStatus;
+
+    /// What the sound service last heard of the microphone and of who captures.
+    fn heard(&self) -> &Hearing;
 
     /// The captures this desktop's portal brokers now, each the app it was granted to.
     fn captures(&self) -> Vec<Capture>;
@@ -102,8 +104,109 @@ pub(crate) struct Capture {
     pub capability: Capability,
 }
 
+/// What the sound service heard of the microphone and of the capture streams, as privacy reads
+/// it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Heard {
+    /// Whether the microphone is muted, once the service knows of one.
+    pub microphone_muted: Option<bool>,
+    /// The capture streams, each named by the program behind it.
+    pub uses: Vec<StreamUse>,
+}
+
+/// One capture stream `PipeWire` attributes to the program behind it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StreamUse {
+    /// The program's app, when its executable has one.
+    pub app_id: String,
+    /// The program, as its executable names it.
+    pub label: String,
+    /// The device it captures.
+    pub capability: Capability,
+}
+
+/// Where the session hands privacy what the sound service published: the one reader of the
+/// `PipeWire` graph is that service, and privacy reads again the moment what it heard moves
+/// rather than at the pace of its refresh.
+#[derive(Clone, Default)]
+pub(crate) struct Hearing(Arc<Mutex<Ear>>);
+
+#[derive(Default)]
+struct Ear {
+    /// Moves whenever `heard` does.
+    revision: u64,
+    heard: Heard,
+    /// The services' revision the sound reading was last taken at.
+    #[cfg(target_os = "linux")]
+    followed: Option<u64>,
+}
+
+impl Hearing {
+    /// Take `heard` in: whether it moved what privacy reads.
+    pub(crate) fn hear(&self, heard: Heard) -> bool {
+        let mut ear = self.0.lock_recover();
+        if ear.heard == heard {
+            return false;
+        }
+        ear.heard = heard;
+        ear.revision = ear.revision.wrapping_add(1);
+        true
+    }
+
+    /// What was heard last, and its revision.
+    fn now(&self) -> (u64, Heard) {
+        let ear = self.0.lock_recover();
+        (ear.revision, ear.heard.clone())
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.lock_recover().revision
+    }
+
+    /// Follow the sound service's reading among `services`: when what it heard moved, the
+    /// services are polled again, so privacy publishes the change on this same pass.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn follow(&self, services: &mut tilo_service::Services) -> bool {
+        let revision = services.revision();
+        if self.0.lock_recover().followed.replace(revision) == Some(revision) {
+            return false;
+        }
+        let heard = services
+            .published::<tilo_audio_service::sound::Sound>(tilo_audio_service::sound::SOUND)
+            .map(|sound| heard_of(&sound))
+            .unwrap_or_default();
+        if !self.hear(heard) {
+            return false;
+        }
+        services.poll();
+        true
+    }
+}
+
+/// What privacy reads of the sound service's reading.
+#[cfg(target_os = "linux")]
+fn heard_of(sound: &tilo_audio_service::sound::Sound) -> Heard {
+    use tilo_audio_service::sound::UseKind;
+    Heard {
+        microphone_muted: sound.input.map(|_| sound.input_muted),
+        uses: sound
+            .uses
+            .iter()
+            .map(|used| StreamUse {
+                app_id: used.app_id.clone(),
+                label: used.label.clone(),
+                capability: match used.kind {
+                    UseKind::Microphone => Capability::Microphone,
+                    UseKind::Camera => Capability::Camera,
+                },
+            })
+            .collect(),
+    }
+}
+
 /// This machine, as the person's session knows it.
 struct ThisMachine {
+    heard: Hearing,
     captures: Option<tilo_portal::captures::Captures>,
     consents: Option<tilo_portal::consent::Consents>,
     /// What the secret store held when it was last asked, and when.
@@ -115,6 +218,10 @@ struct ThisMachine {
 impl Sources for ThisMachine {
     fn status(&self) -> os_actions::PrivacyStatus {
         os_actions::get_privacy_status()
+    }
+
+    fn heard(&self) -> &Hearing {
+        &self.heard
     }
 
     fn captures(&self) -> Vec<Capture> {
@@ -178,21 +285,23 @@ impl Sources for ThisMachine {
 /// The privacy of this machine's devices, published as `session:privacy`.
 pub(crate) struct Privacy {
     sources: Box<dyn Sources>,
-    /// The reading last published, and when it was read: the machine is asked again only after
-    /// [`REFRESH`].
-    last: Mutex<Option<(Instant, Reading)>>,
+    /// The reading last published, when it was read and what had been heard by then: the machine
+    /// is asked again after [`REFRESH`], or once more was heard.
+    last: Mutex<Option<(Instant, u64, Reading)>>,
     /// When something last read the resource: nothing follows it while nothing reads it.
     asked: Cell<Option<Instant>>,
 }
 
 impl Privacy {
-    /// The privacy of `portal`'s captures and answers, and of the machine's own switches: the
-    /// session's reading.
+    /// The privacy of `portal`'s captures and answers, of what the sound service hears and of the
+    /// machine's own switches: the session's reading.
     pub(crate) fn new(
         captures: Option<tilo_portal::captures::Captures>,
         consents: Option<tilo_portal::consent::Consents>,
+        heard: Hearing,
     ) -> Self {
         Self::over(Box::new(ThisMachine {
+            heard,
             captures,
             consents,
             secrets: Mutex::default(),
@@ -209,23 +318,38 @@ impl Privacy {
         }
     }
 
-    /// The reading as it stands now, off `sources`.
-    fn read_now(&self) -> Reading {
-        reading_of(self.sources.as_ref())
+    /// Whether the reading last read still stands at `now`: younger than [`REFRESH`], and read
+    /// after everything heard since.
+    fn stands(&self, now: Instant) -> bool {
+        let heard = self.sources.heard().revision();
+        self.last
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|(at, revision, _)| {
+                *revision == heard && now.duration_since(*at) < REFRESH
+            })
     }
 
-    /// The reading last read, read now when it is older than [`REFRESH`].
+    /// The reading last read, read now when it no longer [stands](Self::stands).
     fn current(&self) -> Reading {
         let now = Instant::now();
-        let mut last = self.last.lock_recover();
-        if let Some((at, reading)) = last.as_ref()
-            && now.duration_since(*at) < REFRESH
+        if self.stands(now)
+            && let Some((_, _, reading)) = self.last.lock_recover().as_ref()
         {
             return reading.clone();
         }
-        let reading = self.read_now();
-        *last = Some((now, reading.clone()));
-        reading
+        self.read_again(now).1
+    }
+
+    /// Read the sources again: whether the reading moved, and the reading.
+    fn read_again(&self, now: Instant) -> (bool, Reading) {
+        let (revision, heard) = self.sources.heard().now();
+        let reading = reading_of(self.sources.as_ref(), &heard);
+        let was = self
+            .last
+            .lock_recover()
+            .replace((now, revision, reading.clone()));
+        (was.is_none_or(|(_, _, was)| reading != was), reading)
     }
 }
 
@@ -239,21 +363,12 @@ impl Service for Privacy {
         if now.duration_since(asked) > KEEP_WARM {
             return false;
         }
-        // A reading younger than the refresh stands: asking the machine takes the session's turn
-        // for as long as `pw-dump` runs, and the loop polls on every pass, a key's included.
-        if self
-            .last
-            .lock_recover()
-            .as_ref()
-            .is_some_and(|(at, _)| now.duration_since(*at) < REFRESH)
-        {
+        // A reading that still stands is not read again: the loop polls on every pass, a key's
+        // included.
+        if self.stands(now) {
             return false;
         }
-        let reading = self.read_now();
-        let mut last = self.last.lock_recover();
-        let changed = last.as_ref().is_none_or(|(_, was)| &reading != was);
-        *last = Some((now, reading));
-        changed
+        self.read_again(now).0
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -335,8 +450,9 @@ fn answers_of(sources: &dyn Sources) -> Vec<Answer> {
     answers
 }
 
-/// The reading `sources` gives now: the four devices, and the answers the person gave.
-fn reading_of(sources: &dyn Sources) -> Reading {
+/// The reading `sources` gives now, with what the sound service `heard`: the four devices, and the
+/// answers the person gave.
+fn reading_of(sources: &dyn Sources, heard: &Heard) -> Reading {
     let status = sources.status();
     let captures = sources.captures();
     let uses = |cap: Capability| -> Vec<InUse> {
@@ -355,17 +471,15 @@ fn reading_of(sources: &dyn Sources) -> Reading {
                 add(&capture.app);
             }
         }
-        if let Some(kind) = media_kind(cap) {
-            for use_ in &status.active_media {
-                if use_.kind == kind {
-                    // The stream names its program: its app when the session knows one, else the
-                    // program it is.
-                    add(if use_.app_id.trim().is_empty() {
-                        &use_.label
-                    } else {
-                        &use_.app_id
-                    });
-                }
+        for use_ in &heard.uses {
+            if use_.capability == cap {
+                // The stream names its program: its app when the session knows one, else the
+                // program it is.
+                add(if use_.app_id.trim().is_empty() {
+                    &use_.label
+                } else {
+                    &use_.app_id
+                });
             }
         }
         found
@@ -380,9 +494,9 @@ fn reading_of(sources: &dyn Sources) -> Reading {
             watched: cap != Capability::Location,
             in_use: uses(cap),
         };
-    let microphone_present = status.microphone_muted.is_some()
+    let microphone_present = heard.microphone_muted.is_some()
         || status.microphone_kill != os_actions::KillState::Unavailable;
-    let mute = status.microphone_muted;
+    let mute = heard.microphone_muted;
     let capabilities = vec![
         posture(
             Capability::Camera,
@@ -634,20 +748,6 @@ fn capability_of_capture(kind: tilo_portal::capture_broker::CaptureKind) -> Capa
     }
 }
 
-/// The `PipeWire` capture kind a capability's use is listed under, when the sound server sees
-/// those uses.
-fn media_kind(cap: Capability) -> Option<os_actions::MediaKind> {
-    match cap {
-        Capability::Camera => Some(os_actions::MediaKind::Camera),
-        Capability::Microphone => Some(os_actions::MediaKind::Microphone),
-        Capability::Screen
-        | Capability::Location
-        | Capability::Input
-        | Capability::SystemAudio
-        | Capability::Api => None,
-    }
-}
-
 /// The capability one of the person's answered devices is, when the pane lists answers about it.
 fn capability_of_device(cap: tilo_permissions::caps::DeviceCap) -> Option<Capability> {
     use tilo_permissions::caps::DeviceCap;
@@ -693,6 +793,7 @@ mod tests {
     /// A machine with the person's answers, and what a stand-in says uses them.
     struct Stand {
         status: os_actions::PrivacyStatus,
+        heard: Hearing,
         captures: Vec<Capture>,
         answers: Vec<tilo_peer_state::Kept>,
         secrets: SavedSecrets,
@@ -702,6 +803,10 @@ mod tests {
     impl Sources for Stand {
         fn status(&self) -> os_actions::PrivacyStatus {
             self.status.clone()
+        }
+
+        fn heard(&self) -> &Hearing {
+            &self.heard
         }
 
         fn captures(&self) -> Vec<Capture> {
@@ -747,23 +852,41 @@ mod tests {
         }
     }
 
+    /// The sound service hearing the microphone muted and the recorder on the camera.
+    fn heard_recorder() -> Hearing {
+        let hearing = Hearing::default();
+        hearing.hear(Heard {
+            microphone_muted: Some(true),
+            uses: vec![StreamUse {
+                app_id: "so.tilo.recorder".into(),
+                label: "recorder".into(),
+                capability: Capability::Camera,
+            }],
+        });
+        hearing
+    }
+
+    /// What `privacy` reads as using `cap`.
+    fn in_use(privacy: &Privacy, cap: Capability) -> Vec<String> {
+        let reading: Reading =
+            serde_json::from_value(privacy.read(RESOURCE).expect("the reading")).unwrap();
+        reading
+            .capabilities
+            .into_iter()
+            .find(|posture| posture.capability == cap)
+            .map(|posture| posture.in_use.into_iter().map(|use_| use_.app).collect())
+            .unwrap_or_default()
+    }
+
     fn machine() -> Stand {
         Stand {
             status: os_actions::PrivacyStatus {
-                microphone_muted: Some(true),
                 microphone_kill: os_actions::KillState::Allowed,
                 camera_present: true,
                 camera_kill: os_actions::KillState::SoftwareBlocked,
-                active_media: vec![os_actions::ActiveMediaUse {
-                    client_id: 7,
-                    pid: 90,
-                    app_id: "so.tilo.recorder".into(),
-                    label: "recorder".into(),
-                    binary: "/usr/bin/recorder".into(),
-                    kind: os_actions::MediaKind::Camera,
-                }],
                 ..os_actions::PrivacyStatus::default()
             },
+            heard: heard_recorder(),
             captures: vec![Capture {
                 app: "so.tilo.meet".into(),
                 capability: Capability::Screen,
@@ -803,7 +926,7 @@ mod tests {
     /// it now, and the location says the session cannot see its use.
     #[test]
     fn the_reading_says_what_uses_each_device() {
-        let reading = reading_of(&machine());
+        let reading = reading_of(&machine(), &heard_recorder().now().1);
         let posture = |cap: Capability| {
             reading
                 .capabilities
@@ -854,7 +977,7 @@ mod tests {
     /// The answers are the person's, each with the device it stands on and how long it stands.
     #[test]
     fn the_answers_name_their_app_and_their_device() {
-        let reading = reading_of(&machine());
+        let reading = reading_of(&machine(), &heard_recorder().now().1);
         assert_eq!(reading.answers.len(), 2);
         let camera = &reading.answers[0];
         assert_eq!(
@@ -875,7 +998,7 @@ mod tests {
     /// `forget` is called on is the one the answer carries.
     #[test]
     fn each_answer_carries_the_consent_its_forget_is_called_on() {
-        let reading = reading_of(&machine());
+        let reading = reading_of(&machine(), &heard_recorder().now().1);
         let placed: Vec<&str> = reading
             .answers
             .iter()
@@ -894,7 +1017,7 @@ mod tests {
     /// are published with the reading: a pane draws them from what the session read.
     #[test]
     fn the_reading_carries_the_saved_secrets_and_the_protection() {
-        let reading = reading_of(&machine());
+        let reading = reading_of(&machine(), &heard_recorder().now().1);
         let secrets = reading.secrets.expect("the store was read");
         assert_eq!(secrets.apps.len(), 1);
         assert_eq!(secrets.apps[0].app, "sandbox:so.tilo.mail");
@@ -932,7 +1055,7 @@ mod tests {
     }
 
     /// The machine is asked again only after its reading has aged: a pass of the loop does not
-    /// run `pw-dump` per frame.
+    /// read its switches per frame.
     #[test]
     fn the_machine_is_not_asked_again_within_the_refresh() {
         struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>, Stand);
@@ -940,6 +1063,9 @@ mod tests {
             fn status(&self) -> os_actions::PrivacyStatus {
                 self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 self.1.status()
+            }
+            fn heard(&self) -> &Hearing {
+                self.1.heard()
             }
             fn captures(&self) -> Vec<Capture> {
                 self.1.captures()
@@ -969,6 +1095,81 @@ mod tests {
             1,
             "a read within the refresh answers from the reading read before"
         );
+    }
+
+    /// A camera use that starts shows in the reading on the pass the sound service publishes it,
+    /// well within the refresh: no timer stands between the use and the person seeing it.
+    #[test]
+    fn a_camera_use_that_starts_shows_at_once() {
+        let mut stand = machine();
+        stand.heard = Hearing::default();
+        let hearing = stand.heard.clone();
+        let mut privacy = Privacy::over(Box::new(stand));
+        assert!(in_use(&privacy, Capability::Camera).is_empty());
+        assert!(!privacy.poll(), "nothing was heard yet");
+        assert!(hearing.hear(heard_recorder().now().1));
+        assert!(privacy.poll(), "what was heard moves the reading at once");
+        assert_eq!(
+            in_use(&privacy, Capability::Camera),
+            vec!["so.tilo.recorder"]
+        );
+    }
+
+    /// The same, through the session's services: the sound service publishes the use, and the
+    /// pass that follows its reading has privacy publish it too, without waiting on a refresh.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_camera_use_the_sound_service_publishes_reaches_privacy_on_the_same_pass() {
+        use tilo_audio_service::sound::{SOUND, Sound, Use, UseKind};
+        struct Published(std::rc::Rc<std::cell::RefCell<Sound>>);
+        impl Service for Published {
+            fn resources(&self) -> Vec<ResourceSpec> {
+                Vec::new()
+            }
+            fn read(&self, resource: &str) -> Option<Value> {
+                (resource == SOUND).then(|| serde_json::to_value(&*self.0.borrow()).unwrap())
+            }
+            fn invoke(
+                &mut self,
+                resource: &str,
+                action: &str,
+                _arguments: &Map<String, Value>,
+            ) -> Result<Started, ApiError> {
+                Err(ApiError::Unknown(ActionAddress::new(resource, action)))
+            }
+            fn poll(&mut self) -> bool {
+                true
+            }
+        }
+        let sound = std::rc::Rc::new(std::cell::RefCell::new(Sound::default()));
+        let mut stand = machine();
+        stand.heard = Hearing::default();
+        let hearing = stand.heard.clone();
+        let mut services = tilo_service::Services::default();
+        services.add(Box::new(Published(std::rc::Rc::clone(&sound))));
+        services.add(Box::new(Privacy::over(Box::new(stand))));
+        let read = |services: &tilo_service::Services| {
+            services
+                .published::<Reading>(RESOURCE)
+                .expect("privacy publishes")
+                .capabilities[0]
+                .in_use
+                .iter()
+                .map(|use_| use_.app.clone())
+                .collect::<Vec<_>>()
+        };
+        services.poll();
+        hearing.follow(&mut services);
+        assert!(read(&services).is_empty());
+        sound.borrow_mut().uses.push(Use {
+            app_id: "so.tilo.recorder".into(),
+            label: "recorder".into(),
+            kind: UseKind::Camera,
+            ..Use::default()
+        });
+        services.poll();
+        assert!(hearing.follow(&mut services), "the use was heard");
+        assert_eq!(read(&services), vec!["so.tilo.recorder"]);
     }
 }
 
