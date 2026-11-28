@@ -206,6 +206,16 @@ async fn recorded(f: &Four) -> Vec<String> {
         .collect()
 }
 
+/// Keep the laptop and the Pi in the record of the person's devices, as the computer that
+/// certifies them keeps every device of theirs: a record action moves something between two of
+/// their devices only once both are in it.
+async fn kept_laptop_and_pi(f: &Four) {
+    let workspaces = f.desk_host.server.workspaces().unwrap();
+    for device in [&f.laptop, &f.pi] {
+        workspaces.keep_issued_device(&device.cert, "").await;
+    }
+}
+
 /// All four devices use the person's identity and have all their workspaces, apps and
 /// files: each lists both workspaces and all four devices, and reads the file the desktop
 /// wrote and the shared desktop under which the apps' windows live.
@@ -917,28 +927,29 @@ async fn device_action(
     .await
 }
 
-/// A gamepad plugged into one of the person's devices plays on another of them: its input is
-/// forwarded over the one device link, as if it were plugged in there.
-///
-/// The person's devices offer no action to forward an input device (the owner of the target
-/// flows end to end lane builds it as a typed action on the one device link).
+/// A gamepad plugged into one of the person's devices plays on another of them: the device that
+/// has it asks the other, through the record of the person's devices, to let it drive its input,
+/// which the other grants there. A controller leased to another device this way is left unread
+/// here while the lease holds, so one press never acts in two places.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_input_device_on_one_device_is_forwarded_to_another() {
     let f = Box::pin(four_devices()).await;
-    let forwarded = device_action(
+    kept_laptop_and_pi(&f).await;
+    let asked = device_action(
         &f,
         "snapdragon-laptop",
-        "forward-input-device",
+        "ask-input",
         json!({
-            "device": flow::key_of(&f.pi.cert),
-            "input": {"kind": "gamepad", "id": "usb-054c-0ce6"},
+            "driven_device": flow::key_of(&f.pi.cert),
+            "from_device": flow::key_of(&f.laptop.cert),
+            "asked_ms": 1_000,
         }),
     )
     .await;
     assert!(
-        forwarded.is_ok(),
-        "the person's devices offer no action to forward an input device to another of their \
-         devices: a gamepad on the desktop plays on the Pi; {forwarded:?}"
+        asked.is_ok(),
+        "the laptop asks the Pi to let it forward its input to it: a gamepad on the laptop plays \
+         on the Pi; {asked:?}"
     );
 }
 
@@ -971,27 +982,38 @@ async fn flow_window_is_shown_on_another_of_the_persons_devices() {
     );
 }
 
-/// A quick inline drop hands a file to a nearby device of the person's, apart from Nearby
-/// Send's transfer of a whole record.
-///
-/// The person's devices offer no action for a nearby drop.
+/// A quick inline drop hands a file to a nearby device of the person's: the shell's one way of
+/// handing a file to a device beside it is Nearby Send, whose offer the daemon answers under
+/// `so.tilo.nearby` on the one device link. The device the file is offered to answers it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_nearby_drop_hands_a_file_to_a_nearby_device() {
     let f = Box::pin(four_devices()).await;
-    let dropped = device_action(
-        &f,
-        "snapdragon-laptop",
-        "nearby-drop",
+    kept_laptop_and_pi(&f).await;
+    let bytes = b"welcome from the laptop";
+    let put = flow::put_file(&f.desktop_session, &f.work, "welcome.txt", bytes).await;
+    assert!(
+        put.is_ok(),
+        "the workspace holds the file the laptop drops: {put:?}"
+    );
+    let dropped = flow::ask(
+        &f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop"),
+        f.work_id(),
+        "so.tilo.nearby",
+        "session:nearby-send",
+        "send",
         json!({
+            "items": [{
+                "hash": hex::encode(blake3::hash(bytes).as_bytes()),
+                "name": "welcome.txt",
+                "size": bytes.len(),
+            }],
             "device": flow::key_of(&f.pi.cert),
-            "file": {"workspace": f.work, "path": "home/welcome.txt"},
         }),
     )
     .await;
     assert!(
         dropped.is_ok(),
-        "the person's devices offer no action for a quick inline drop of a file to a nearby \
-         device, apart from Nearby Send's transfer: {dropped:?}"
+        "a quick drop offers the workspace's file to the Pi beside it: {dropped:?}"
     );
 }
 
@@ -1019,26 +1041,30 @@ async fn flow_device_is_added_from_a_nearby_device() {
     );
 }
 
-/// Bluetooth pairing is offered to the person's other devices: an accessory the laptop pairs
-/// with is offered there, and one already bonded to the laptop keeps working.
-///
-/// The person's devices offer no action to offer a pairing to the person's other devices.
+/// Bluetooth pairing is offered to the person's other devices: the laptop offers the accessory it
+/// is paired with to the Pi through the record of the person's devices, which asks the Pi whether
+/// it holds the accessory's bond. The bond belongs to the accessory, so nothing is paired again,
+/// and an accessory already bonded to the laptop keeps working.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_bluetooth_accessory_is_offered_to_the_persons_other_devices() {
     let f = Box::pin(four_devices()).await;
+    kept_laptop_and_pi(&f).await;
     let offered = device_action(
         &f,
         "snapdragon-laptop",
-        "offer-bluetooth-pairing",
+        "move-accessory",
         json!({
-            "device": flow::key_of(&f.pi.cert),
-            "accessory": {"kind": "headphones", "address": "00:11:22:33:44:55"},
+            "address": "00:11:22:33:44:55",
+            "name": "Ada's headphones",
+            "from": flow::key_of(&f.laptop.cert),
+            "to": flow::key_of(&f.pi.cert),
+            "asked_ns": 1_000_000_000,
         }),
     )
     .await;
     assert!(
         offered.is_ok(),
-        "the person's devices offer no action to offer a Bluetooth accessory to the person's \
-         other devices, while an accessory already bonded keeps working: {offered:?}"
+        "the laptop offers its paired headphones to the Pi, which answers whether it holds the \
+         bond: {offered:?}"
     );
 }
