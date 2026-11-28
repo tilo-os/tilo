@@ -340,7 +340,7 @@ fn app_first(app_id: &str, level: &mut Level) {
 
 /// Whether `id`, a published resource's id (`tl:<app>:<resource>`, or `tl:<app>` for the app's
 /// own resource), is one the app `app` keeps: its own resource or one of its documents.
-fn kept_by(id: &str, app: &str) -> bool {
+pub fn kept_by(id: &str, app: &str) -> bool {
     id.strip_prefix("tl:").is_some_and(|rest| {
         rest == app
             || rest

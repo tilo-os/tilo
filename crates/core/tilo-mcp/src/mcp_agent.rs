@@ -36,7 +36,7 @@ mod find;
 #[path = "mcp_agent_launch.rs"]
 mod launch;
 use launch::{opens_a_file, starts_app};
-use tilo_actions::tree::{DEEP_READS, names_files};
+use tilo_actions::tree::{DEEP_READS, kept_by, names_files};
 #[path = "mcp_agent_link.rs"]
 mod link;
 #[path = "mcp_agent_list.rs"]
@@ -1349,7 +1349,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // a document of a package the app's code uses may stand before the app's own. A read of
         // the app itself answers the app's own root resource.
         let app = resolved.app_id.clone();
-        let own = |id: &str| published_by(id, &app);
+        let own = |id: &str| kept_by(id, &app);
         let mut found = None;
         for own_first in [true, false] {
             for node in root
@@ -1854,17 +1854,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Err(other) => Err(other.into()),
         }
     }
-}
-
-/// Whether `id`, a published resource's id (`tl:<app>:<resource>`, or `tl:<app>` for the app's
-/// own resource), is one the app `app` keeps: its own resource or one of its documents.
-fn published_by(id: &str, app: &str) -> bool {
-    id.strip_prefix("tl:").is_some_and(|rest| {
-        rest == app
-            || rest
-                .strip_prefix(app)
-                .is_some_and(|rest| rest.starts_with(':'))
-    })
 }
 
 /// `why` naming `code`, unless it already names the documented code it was
