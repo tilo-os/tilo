@@ -3,10 +3,10 @@
 //! A workspace's own name is its governance's, which its owners change ([`Workspaces::rename`]).
 //!
 //! A person's is theirs, not one workspace's. They give it once, from any device of theirs (the
-//! `tilo` command, a page, their desktop); this server keeps it with their profile
-//! ([`PersonNames`]) and names them by it in every workspace it hosts, the ones they join later
-//! included. What a workspace's governance keeps of the name, which its lists, its invitations
-//! and its history read, follows the person's.
+//! `tilo` command, a page, their desktop), and that device names them by it in every workspace
+//! kept here that it is a member of, each a change it signs; this server keeps the name with
+//! their profile ([`PersonNames`]). What a workspace's governance keeps of the name, which its
+//! lists, its invitations and its history read, is what their device signed there.
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use tilo_lock::RwLockRecover as _;
 
 use tilo_peer_state::workspace_membership::valid_workspace_name;
 
-use super::{CollaborationError, HostedWorkspace, WorkspaceSummary, Workspaces, system_time};
+use super::{CollaborationError, HostedWorkspace, WorkspaceSummary, Workspaces};
 
 /// Where this server keeps the name each person gave themselves: their profile, which every device
 /// of theirs reads it from.
@@ -39,27 +39,9 @@ pub trait PersonNames: Send + Sync {
 }
 
 impl Workspaces {
-    /// Keep the name each person gives themselves in `names`, and name every person in each
-    /// workspace hosted here by the one `names` keeps for them, as soon as its governance moves
-    /// (someone joins, someone renames themselves on another device).
+    /// Keep the name each person gives themselves in `names`.
     pub fn person_names(&self, names: Arc<dyn PersonNames>) {
         *self.inner.person_names.write_recover() = Some(names);
-        let this = self.clone();
-        let mut moved = self.governance_changes();
-        tokio::spawn(async move {
-            loop {
-                match moved.recv().await {
-                    Ok(workspace) => this.names_follow_people(&workspace).await,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // Moves were missed: every workspace is read again.
-                        for workspace in this.administered_ids().await {
-                            this.names_follow_people(&workspace).await;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
     }
 
     /// The picture `person` set in their profile, as its image bytes: what a surface showing
@@ -74,42 +56,28 @@ impl Workspaces {
             .filter(|photo| !photo.is_empty())
     }
 
-    /// Keep `name` as `person`'s, then name them by it in every workspace hosted here that they
-    /// hold a part in. Whether any workspace changed.
+    /// The name `person` gave themselves, as their profile keeps it here.
+    pub(super) fn kept_person_name(&self, person: [u8; 32]) -> Option<String> {
+        let names = self.inner.person_names.read_recover().clone();
+        names?.name_of(&person)
+    }
+
+    /// Keep `name` as `person`'s, with their profile.
     ///
     /// # Errors
     ///
     /// The name could not be kept.
-    pub(crate) async fn name_person(
+    pub(super) fn keep_person_name(
         &self,
         person: [u8; 32],
         name: &str,
-        now: u64,
-    ) -> Result<bool, CollaborationError> {
+    ) -> Result<(), CollaborationError> {
         let names = self.inner.person_names.read_recover().clone();
-        if let Some(names) = names {
+        names.map_or(Ok(()), |names| {
             names
                 .keep_name(&person, name)
-                .map_err(CollaborationError::new)?;
-        }
-        Ok(self.name_person_everywhere(person, name, now).await)
-    }
-
-    /// Name `person` `name` in every workspace hosted here that they hold a part in, as the
-    /// profile their root signed says: whether any workspace changed. A workspace whose
-    /// governance could not be written says so in the log and keeps the name it had; the others
-    /// take it all the same.
-    pub async fn name_person_everywhere(&self, person: [u8; 32], name: &str, now: u64) -> bool {
-        let mut changed = false;
-        for workspace in self.administered_ids().await {
-            match self.name_in(&workspace, person, name, now).await {
-                Ok(named) => changed |= named,
-                Err(error) => {
-                    tracing::warn!(%error, workspace, "a person was not named by their own name");
-                }
-            }
-        }
-        changed
+                .map_err(CollaborationError::new)
+        })
     }
 
     /// The workspaces this server's person administers.
@@ -129,89 +97,6 @@ impl Workspaces {
             }
         }
         hosted
-    }
-
-    /// Name each person in `workspace` by the name they gave themselves, where it calls them
-    /// something else.
-    async fn names_follow_people(&self, workspace: &str) {
-        let Some(names) = self.inner.person_names.read_recover().clone() else {
-            return;
-        };
-        let Ok(state) = self.workspace(workspace).await else {
-            return;
-        };
-        let now = tilo_clock::unix_now_ns();
-        let read = {
-            let hosted = state.lock().await;
-            if !self.administers(&hosted) {
-                return;
-            }
-            hosted.peer().governance().member_list(system_time(now))
-        };
-        let members = match read {
-            Ok(list) => list.members,
-            Err(error) => {
-                tracing::warn!(%error, workspace, "the workspace's people were not read");
-                return;
-            }
-        };
-        for member in members.iter().filter(|member| !member.removed) {
-            let Some(person) = member.root() else {
-                continue;
-            };
-            let Some(name) = names.name_of(&person) else {
-                continue;
-            };
-            if member.name == name {
-                continue;
-            }
-            if let Err(error) = self.name_in(workspace, person, &name, now).await {
-                tracing::warn!(%error, workspace, "a person was not named by their own name");
-            }
-        }
-    }
-
-    /// Name `person` `name` in `workspace`, where they hold a part in it: whether it changed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the naming until it is settled"
-    )]
-    async fn name_in(
-        &self,
-        workspace: &str,
-        person: [u8; 32],
-        name: &str,
-        now: u64,
-    ) -> Result<bool, CollaborationError> {
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        let at = system_time(now);
-        let holds_a_part = hosted
-            .peer()
-            .governance()
-            .member_list(at)
-            .map_err(CollaborationError::new)?
-            .members
-            .iter()
-            .any(|member| member.root() == Some(person) && !member.removed);
-        if !holds_a_part {
-            return Ok(false);
-        }
-        let key = self.inner.host.key.clone();
-        let mut candidate = hosted.peer().clone();
-        if !candidate
-            .governance_mut()
-            .name_person(person, name, &key, at)
-            .map_err(CollaborationError::new)?
-        {
-            return Ok(false);
-        }
-        let log = hosted.collaboration().clone();
-        hosted
-            .keep(candidate, &key, at, |_, _| Ok(log))
-            .map_err(CollaborationError::new)?;
-        self.settle(&mut hosted).await?;
-        Ok(true)
     }
 
     /// Name `workspace` `name`, in its governance (what members show) and in

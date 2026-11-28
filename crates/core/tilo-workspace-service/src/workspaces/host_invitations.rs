@@ -271,10 +271,12 @@ mod tests {
             opens(&second_link.signed_invitation).inviter().is_some(),
             "a device of the person still asks as a person"
         );
-        workspaces
-            .name_self(&workspace, &newcomer, "Quinten", tilo_clock::unix_now_ns())
-            .await
-            .unwrap();
+        crate::workspaces::fixtures::remember_admitted(&newcomer, &newcomer_key);
+        crate::workspaces::fixtures::as_device(&newcomer, |ask| {
+            workspaces.name_self(&workspace, ask, "Quinten")
+        })
+        .await
+        .unwrap();
         let JoinReply::Invitation { inviter, .. } = workspaces
             .inspect_invitation(&second_link.signed_invitation)
             .await

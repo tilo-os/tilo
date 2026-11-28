@@ -224,6 +224,14 @@ impl Workspaces {
             ));
         };
         let (workspace, request_id) = match &request {
+            WorkspacesRequest::Name { workspace, name } => {
+                let ask = SignedAsk {
+                    device,
+                    request_id: rand::random(),
+                    signed,
+                };
+                return self.name_self(workspace, ask, name).await;
+            }
             WorkspacesRequest::EditRoles {
                 workspace,
                 request_id,
@@ -328,11 +336,10 @@ impl Workspaces {
                 )
             }
             // The changes a page signs itself ([`Self::page_answer`]).
-            WorkspacesRequest::EditRoles { .. } | WorkspacesRequest::SetDocumentAccess { .. } => {
+            WorkspacesRequest::EditRoles { .. }
+            | WorkspacesRequest::SetDocumentAccess { .. }
+            | WorkspacesRequest::Name { .. } => {
                 return Err(CollaborationError::new("the change is the page's to sign"));
-            }
-            WorkspacesRequest::Name { workspace, name } => {
-                self.name_self(&workspace, device, &name, now).await?
             }
             WorkspacesRequest::Servers { workspace } => {
                 self.page_servers(device, &workspace).await?
@@ -431,69 +438,83 @@ impl Workspaces {
         Ok(WorkspacesReply::Notices(workspace.admissions.notices()))
     }
 
-    /// Name `device`'s person `name`, asked in `workspace`: the name they go
-    /// by from now on, there and in every other workspace kept here, in its
-    /// member list and on the invitations they make, and the one their profile
-    /// keeps for every device of theirs. Only a person names themself, and only
-    /// in a workspace they are a member of: from any of their devices or keys —
-    /// one the workspace admitted as theirs, or a key of theirs it holds them by
-    /// their root, which is what a declared owner's key is before any device of
-    /// theirs arrived. A name they already go by writes nothing.
+    /// Name `ask`'s person `name`, asked in `workspace`: the name they go by there and in every
+    /// other workspace kept here that their device is a member of, each a change the device signs
+    /// in turn. Once every one took it, the name is kept with their profile, which every device of
+    /// theirs reads.
     pub(crate) async fn name_self(
         &self,
         workspace: &str,
-        device: &DeviceCert,
+        ask: SignedAsk<'_>,
         name: &str,
-        now: u64,
-    ) -> Result<WorkspacesReply, CollaborationError> {
+    ) -> Result<Signing<WorkspacesReply>, CollaborationError> {
+        let device = ask.device;
         let name = valid_name(name)?;
-        let person = hex::encode(device.user_public_key);
-        let own_key = device.capabilities.own_key_in(workspace);
-        let state = self.workspace(workspace).await?;
-        let mut workspace = state.lock().await;
-        let at = system_time(now);
-        // An agent's grant, a stand-in and a bot act as members of their own:
-        // they never name the person they act for.
-        let asking = workspace.peer().permissions(device.device_public_key, at);
-        let theirs = !device.capabilities.stand_in
-            && match asking {
-                Ok(member) => {
-                    !member.acting.delegated() && member.person_id() == Some(person.as_str())
-                }
-                Err(_) => own_key,
-            };
-        let names_themself = theirs
-            && workspace
-                .peer()
-                .governance()
-                .member_list(at)
-                .map_err(CollaborationError::new)?
-                .members
-                .iter()
-                .any(|member| member.root() == Some(device.user_public_key) && !member.removed);
-        if !names_themself {
+        let now = tilo_clock::unix_now_ns();
+        if !self.names_themself(workspace, device, None, now).await? {
             return Err(CollaborationError::new(
                 "only a person names themself, in a workspace they are a member of",
             ));
         }
-        let key = self.inner.host.key.clone();
-        let mut candidate = workspace.peer().clone();
-        if candidate
-            .governance_mut()
-            .name_person(device.user_public_key, &name, &key, at)
-            .map_err(CollaborationError::new)?
-        {
-            let log = workspace.collaboration().clone();
-            workspace
-                .keep(candidate, &key, at, |_, _| Ok(log))
-                .map_err(CollaborationError::new)?;
-            self.settle(&mut workspace).await?;
+        let named_in: Vec<String> = {
+            let held = self.inner.workspaces.lock().await;
+            std::iter::once(workspace.to_owned())
+                .chain(held.keys().filter(|other| *other != workspace).cloned())
+                .collect()
+        };
+        let command = WorkspaceMembershipCommand::NameSelf { name: name.clone() };
+        let mut signed = ask.signed;
+        for named in &named_in {
+            if !self.names_themself(named, device, Some(&name), now).await? {
+                continue;
+            }
+            let ask = SignedAsk {
+                device,
+                request_id: ask.request_id,
+                signed: signed.take(),
+            };
+            if let Signing::Sign(facts) = self.govern(named, ask, &command).await? {
+                return Ok(Signing::Sign(facts));
+            }
         }
+        self.keep_person_name(device.user_public_key, &name)?;
+        Ok(Signing::Done(WorkspacesReply::Named))
+    }
+
+    /// Whether `device` names its own person in `workspace`, one they are a member of through
+    /// it, and, given `name`, calls them something else there now. An agent's grant, a stand-in
+    /// and a bot act as members of their own: they never name the person they act for.
+    async fn names_themself(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        name: Option<&str>,
+        now: u64,
+    ) -> Result<bool, CollaborationError> {
+        let person = hex::encode(device.user_public_key);
+        let state = self.workspace(workspace).await?;
+        let workspace = state.lock().await;
+        let at = system_time(now);
+        let theirs = !device.capabilities.stand_in
+            && workspace
+                .peer()
+                .permissions(device.device_public_key, at)
+                .is_ok_and(|member| {
+                    !member.acting.delegated() && member.person_id() == Some(person.as_str())
+                });
+        let members = workspace
+            .peer()
+            .governance()
+            .member_list(at)
+            .map_err(CollaborationError::new)?
+            .members;
         drop(workspace);
-        // The name is the person's, not this workspace's: kept with their profile, which every
-        // device of theirs reads, and theirs in every other workspace kept here.
-        self.name_person(device.user_public_key, &name, now).await?;
-        Ok(WorkspacesReply::Named)
+        Ok(theirs
+            && members.iter().any(|member| {
+                member.root() == Some(device.user_public_key)
+                    && !member.removed
+                    && name.is_none_or(|name| member.name != name)
+            }))
     }
 
     /// Whether `device`'s person may make an undoable change at `node` of

@@ -88,8 +88,9 @@ impl<T> Signing<T> {
 
 /// What `ask` comes to as `device` signs it with `signer`, in one call: asked first, a host that
 /// is not that device answers what to sign on; the device signs the change it asked for on it
-/// ([`tilo_peer_state::asked_signing::signed_on`]) and asks again with that signature. What a
-/// device holding its own key in this process does; the first ask writes nothing.
+/// ([`tilo_peer_state::asked_signing::signed_on`]) and asks again with that signature, as long
+/// as the host names another change. What a device holding its own key in this process does; the
+/// first ask writes nothing.
 ///
 /// # Errors
 ///
@@ -102,26 +103,29 @@ pub async fn signed_through<'d, T, Asked>(
 where
     Asked: std::future::Future<Output = Result<Signing<T>, CollaborationError>>,
 {
-    let facts = match ask(SignedAsk::here(device, request_id)).await? {
-        Signing::Done(done) => return Ok(done),
-        Signing::Sign(facts) => facts,
-    };
-    let command = serde_json::from_value(facts.change.clone())
-        .map_err(|error| CollaborationError::new(error.to_string()))?;
-    let changes = tilo_peer_state::asked_signing::signed_on(
-        &facts,
-        &command,
-        (device, signer),
-        system_time(tilo_clock::unix_now_ns()),
-    )
-    .await?;
-    ask(SignedAsk {
-        device,
-        request_id,
-        signed: Some(changes),
-    })
-    .await?
-    .done()
+    let mut changes_signed = None;
+    loop {
+        let facts = match ask(SignedAsk {
+            device,
+            request_id,
+            signed: changes_signed,
+        })
+        .await?
+        {
+            Signing::Done(done) => return Ok(done),
+            Signing::Sign(facts) => facts,
+        };
+        let command = serde_json::from_value(facts.change.clone())
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        let changes = tilo_peer_state::asked_signing::signed_on(
+            &facts,
+            &command,
+            (device, signer),
+            system_time(tilo_clock::unix_now_ns()),
+        )
+        .await?;
+        changes_signed = Some(changes);
+    }
 }
 
 /// The name an invitation carries for a person: what the workspace shows them

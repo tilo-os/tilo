@@ -734,9 +734,13 @@ pub(super) async fn listed(
             Ok(Value::String(joined.to_string()))
         }
         JOIN => Ok(Value::String(
-            Box::pin(workspaces.copies().join_member(text("invite")?))
-                .await?
-                .to_string(),
+            Box::pin(
+                workspaces
+                    .copies()
+                    .join_member_as(text("invite")?, super::services::person_name().as_deref()),
+            )
+            .await?
+            .to_string(),
         )),
         BRANCH => {
             let source = text("workspace")?.to_owned();

@@ -13,7 +13,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::workspaces::PersonNames as _;
 use crate::workspaces::actions::tests::grant;
-use crate::workspaces::fixtures::{given, made_as};
+use crate::workspaces::fixtures::{as_device, given, made_as};
 use crate::workspaces::tests::{guest_device, hosting_device, signed_pre_admission, test_host};
 use crate::workspaces::{
     IssueInvitationRequest, PreAdmitRequest, WaitListMail, WaitListSecrets, WaitListed, Workspaces,
@@ -1095,10 +1095,45 @@ fn keyed_device_of(
     crate::workspaces::fixtures::device_cert(person, label, capabilities)
 }
 
+/// `device`, its person's, admitted to `workspace` through `owner`'s pre-admission naming them,
+/// under another name than theirs; its changes are signed with `key` from then on.
+async fn arrived(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    (key, device): (&SigningKey, &DeviceCert),
+    seed: u8,
+) {
+    let token = [seed; 8];
+    let issued = workspaces
+        .pre_admit(
+            owner,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission(workspace, &token),
+                recipient_user_public_key: Some(device.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            (device.clone(), key),
+            rand::random(),
+            "Quin's laptop",
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    crate::workspaces::fixtures::remember_admitted(device, key);
+}
+
 /// Someone a deployment's operator declares an owner of a workspace nobody is
 /// in yet, with the name they go by: the workspace lists them by it before a
-/// device of theirs has arrived, a key of theirs renames them without one, and
-/// the invitation their first device makes says who asked them in.
+/// device of theirs has arrived, keeps it when their first device joins under
+/// another, and the invitation that device makes says who asked them in.
 #[tokio::test]
 async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     let dir = tempfile::tempdir().unwrap();
@@ -1138,54 +1173,13 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
         summary.devices
     );
 
-    // A key of theirs names them without one, as their Tilo on the web would,
-    // and the name it sets is what the workspace shows from then on.
-    let theirs = device_of(
-        &person,
-        "a key of Quinten's",
-        DeviceCapabilities::server_key_grant(),
-    );
-    workspaces
-        .name_self(
-            &workspace,
-            &theirs,
-            "Quinten Wolff",
-            tilo_clock::unix_now_ns(),
-        )
-        .await
-        .unwrap();
-    let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert_eq!(named(&members), "Quinten Wolff");
-
     // Their first device joins, admitted through the owner's pre-admission
-    // under another name: the name they chose is the one the workspace keeps.
-    let token = [7u8; 8];
-    let issued = workspaces
-        .pre_admit(
-            &owner,
-            PreAdmitRequest {
-                request_id: [7; 32],
-                grant: signed_pre_admission(&workspace, &token),
-                recipient_user_public_key: Some(root),
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap();
+    // under another name: the name they were declared with is the one the workspace keeps.
     let (device_key, device) =
         keyed_device_of(&person, "Quinten's laptop", DeviceCapabilities::member());
-    let reply = workspaces
-        .admit_proven(
-            issued.signed_invitation,
-            (device.clone(), &device_key),
-            rand::random(),
-            "Quin's laptop",
-            Some(token.as_slice()),
-        )
-        .await;
-    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    arrived(workspaces, &workspace, &owner, (&device_key, &device), 7).await;
     let members = workspaces.summary(&workspace).await.unwrap().members;
-    assert_eq!(named(&members), "Quinten Wolff");
+    assert_eq!(named(&members), "Quinten");
 
     // The invitation their device makes says who asked them in.
     let issued = workspaces
@@ -1202,7 +1196,7 @@ async fn a_declared_owner_carries_the_name_they_were_declared_with() {
     .inviter()
     .cloned()
     .expect("the invitation names who it is from");
-    assert_eq!(from.name, "Quinten Wolff");
+    assert_eq!(from.name, "Quinten");
     assert_eq!(from.user_public_key, root);
     server.shutdown().await;
 }
@@ -1653,8 +1647,8 @@ impl crate::workspaces::PersonNames for KeptNames {
 }
 
 /// A person names themselves once, in one workspace, and goes by that name in every workspace
-/// this server hosts: the name is theirs, kept with their profile, and a workspace they are
-/// declared in later calls them by it too.
+/// here their device is a member of: the device signs it in each, the name is kept with their
+/// profile, and a workspace they join later takes it as their device joins.
 #[tokio::test]
 async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
     let dir = tempfile::tempdir().unwrap();
@@ -1668,7 +1662,9 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
 
     let person = SigningKey::from_bytes(&rand::random());
     let root = person.verifying_key().to_bytes();
-    for workspace in [&lounge, &own] {
+    let (device_key, device) =
+        keyed_device_of(&person, "their laptop", DeviceCapabilities::member());
+    for (seed, workspace) in [(41, &lounge), (42, &own)] {
         workspaces
             .change(
                 workspace,
@@ -1677,6 +1673,7 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
             )
             .await
             .unwrap();
+        arrived(workspaces, workspace, &owner, (&device_key, &device), seed).await;
     }
     let named = async |workspace: &str| {
         workspaces
@@ -1689,21 +1686,15 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
             .map(|member| member.name)
     };
 
-    let theirs = device_of(
-        &person,
-        "their laptop",
-        DeviceCapabilities::server_key_grant(),
-    );
-    workspaces
-        .name_self(&lounge, &theirs, "Quinten", tilo_clock::unix_now_ns())
+    as_device(&device, |ask| workspaces.name_self(&lounge, ask, "Quinten"))
         .await
         .unwrap();
     assert_eq!(kept.name_of(&root).as_deref(), Some("Quinten"));
     assert_eq!(named(&lounge).await.as_deref(), Some("Quinten"));
     assert_eq!(named(&own).await.as_deref(), Some("Quinten"));
 
-    // Declared in a third workspace under another name: the one they gave themselves wins as
-    // soon as that workspace's governance moves.
+    // Declared in a workspace later under another name: the device that joins it signs the name
+    // their profile keeps, as every join does.
     let later = workspaces.create("Later").await.unwrap().workspace;
     workspaces
         .change(
@@ -1713,15 +1704,12 @@ async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
         )
         .await
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while named(&later).await.as_deref() != Some("Quinten") {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the later workspace still calls them {:?}",
-            named(&later).await
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    arrived(workspaces, &later, &owner, (&device_key, &device), 44).await;
+    let theirs = kept.name_of(&root).expect("their profile keeps their name");
+    as_device(&device, |ask| workspaces.name_self(&later, ask, &theirs))
+        .await
+        .unwrap();
+    assert_eq!(named(&later).await.as_deref(), Some("Quinten"));
 }
 
 /// A person who changes their mind: the name they give last is the one they go by, in the
@@ -1755,21 +1743,15 @@ async fn a_person_renames_themselves_and_the_last_name_is_the_one_kept() {
             .find(|member| member.root() == Some(root) && !member.removed)
             .map(|member| member.name)
     };
-    let theirs = device_of(
-        &person,
-        "their laptop",
-        DeviceCapabilities::server_key_grant(),
-    );
+    let (device_key, device) =
+        keyed_device_of(&person, "their laptop", DeviceCapabilities::member());
+    arrived(workspaces, &lounge, &owner, (&device_key, &device), 43).await;
 
-    workspaces
-        .name_self(&lounge, &theirs, "Quinten", tilo_clock::unix_now_ns())
-        .await
-        .unwrap();
-    assert_eq!(named().await.as_deref(), Some("Quinten"));
-    workspaces
-        .name_self(&lounge, &theirs, "Quinten Wolff", tilo_clock::unix_now_ns())
-        .await
-        .unwrap();
+    for name in ["Quinten", "Quinten Wolff"] {
+        as_device(&device, |ask| workspaces.name_self(&lounge, ask, name))
+            .await
+            .unwrap();
+    }
     assert_eq!(
         named().await.as_deref(),
         Some("Quinten Wolff"),

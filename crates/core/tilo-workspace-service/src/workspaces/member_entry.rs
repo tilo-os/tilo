@@ -136,11 +136,36 @@ impl Workspaces {
             .await?;
         // The person's own computer asked for this join: it is theirs on every device, taken in
         // by their list where this device follows one.
-        if self.takes_in_by_list(&workspace.to_string()).await {
+        let joined = if self.takes_in_by_list(&workspace.to_string()).await {
             drop(one_join);
-            return self.take_in_joined(workspace, &hint).await;
+            self.take_in_joined(workspace, &hint).await
+        } else {
+            self.hold_member(&device, &bootstrap, &hint).await
+        };
+        if joined.is_ok() {
+            self.name_entered((&served.endpoint_addr, workspace), &device, name)
+                .await;
         }
-        self.hold_member(&device, &bootstrap, &hint).await
+        joined
+    }
+
+    /// Have `device`'s person go by the name they gave themselves in `workspace`, else the one
+    /// their profile keeps, as the device signs it at `at`, whatever the workspace called them.
+    async fn name_entered(
+        &self,
+        (at, workspace): (&iroh::EndpointAddr, WorkspaceId),
+        device: &super::MemberDevice,
+        name: Option<&str>,
+    ) {
+        let kept = self.kept_person_name(device.cert.user_public_key);
+        if let Some(own) = name
+            .or(kept.as_deref())
+            .map(str::trim)
+            .filter(|own| !own.is_empty())
+            && let Err(why) = self.name_at(at, workspace, own).await
+        {
+            tracing::debug!(%why, "the person is not named in the workspace they entered");
+        }
     }
 }
 

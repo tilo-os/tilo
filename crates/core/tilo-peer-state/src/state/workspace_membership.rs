@@ -353,6 +353,12 @@ impl PeerWorkspaceMut<'_> {
             return outcome;
         }
         self.signed_for_caller(caller, key, now)?;
+        if let WorkspaceMembershipCommand::NameSelf { name } = command {
+            return self
+                .peer
+                .governance_mut()
+                .name_person(caller.user_public_key, name, key, now);
+        }
         if matches!(
             command,
             WorkspaceMembershipCommand::Grant { .. } | WorkspaceMembershipCommand::Revoke { .. }

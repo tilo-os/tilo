@@ -11,6 +11,9 @@ use crate::workspace_membership::{
     AppPayload, AppRelease, MemberPlace, SettingsChange, WorkspaceMembershipCommand, flatpak_app_id,
 };
 
+/// The calling person's own name in the workspace: what its member list and the invitations
+/// they make show for them. Every member names themself, so no grant checks it.
+pub const NAME_SELF: &str = "member.name";
 /// Holding a person in the workspace at a place: a role, an administrator's or an owner's.
 pub const ADD_MEMBER: &str = "member.add";
 /// Keeping the version of an app the workspace runs: an update is refused until it is unpinned.
@@ -171,6 +174,7 @@ impl WorkspaceMembershipCommand {
                     reads: verb == tilo_actions::remote::WORKSPACE_READ_GRANT,
                 }
             }
+            NAME_SELF => Self::named_self(args.text("name")?),
             governance::RENAME => Self::Settings(SettingsChange::Rename {
                 name: args.text("name")?.to_owned(),
             }),
@@ -240,6 +244,14 @@ impl WorkspaceMembershipCommand {
         })
     }
 
+    /// Naming the caller's person `name`, as a display name reads it.
+    fn named_self(name: &str) -> Self {
+        let name = tilo_user_identity::display_name(name).unwrap_or(name);
+        Self::NameSelf {
+            name: name.to_owned(),
+        }
+    }
+
     /// The change a page's `/workspaces` request asks for, as the page's device signs it. `None`
     /// for a request that makes no change a device signs.
     #[must_use]
@@ -263,6 +275,7 @@ impl WorkspaceMembershipCommand {
                 document: document.clone(),
                 access: access.clone(),
             },
+            WorkspacesRequest::Name { name, .. } => Self::named_self(name),
             _ => return None,
         })
     }

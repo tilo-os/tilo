@@ -756,7 +756,11 @@ impl Workspaces {
         if bootstrap.workspace_id != workspace {
             return Err("the device admitted this to another workspace".into());
         }
+        // The name they go by: the one asked with, else the one their profile keeps, else the one
+        // the invitation gave them.
+        let kept = self.kept_person_name(device.cert.user_public_key);
         let name = name
+            .or(kept.as_deref())
             .or_else(|| join.grant().invitee_name.as_deref())
             .map(str::trim)
             .filter(|name| !name.is_empty());
@@ -836,12 +840,40 @@ impl Workspaces {
             appearance: None,
             signed: None,
         };
-        match remote.invoke_until_settled(request, NAMING_WITHIN).await {
-            Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. })) => Ok(()),
-            Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => Err(error.message),
-            Some(Ok(_)) => Err("no answer in time".to_owned()),
-            Some(Err(error)) => Err(error.to_string()),
-            None => Err("the device is not reached".to_owned()),
+        // The name is a change this device signs, in each workspace there it is a member of, as
+        // the device asks for each in turn.
+        let mut request = request;
+        let mut signed_on = None;
+        loop {
+            match Arc::clone(&remote)
+                .invoke_until_settled(request.clone(), NAMING_WITHIN)
+                .await
+            {
+                Some(Ok(tilo_actions::InvocationUpdate::Succeeded { .. })) => return Ok(()),
+                Some(Err(tilo_actions::remote::ActionCallError::SignatureRequired(facts)))
+                    if signed_on.as_ref() != Some(&facts) =>
+                {
+                    let device = self
+                        .inner
+                        .member
+                        .device()
+                        .ok_or("this service acts as no device")?;
+                    request = tilo_peer_state::asked_signing::signed_again(
+                        &request,
+                        &facts,
+                        (&device.cert, device.signer.as_ref()),
+                        super::system_time(tilo_clock::unix_now_ns()),
+                    )
+                    .await?;
+                    signed_on = Some(facts);
+                }
+                Some(Ok(tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                    return Err(error.message);
+                }
+                Some(Ok(_)) => return Err("no answer in time".to_owned()),
+                Some(Err(error)) => return Err(error.to_string()),
+                None => return Err("the device is not reached".to_owned()),
+            }
         }
     }
 

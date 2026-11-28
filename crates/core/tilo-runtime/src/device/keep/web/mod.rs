@@ -1424,22 +1424,12 @@ async fn route(
             };
             kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
-                .map(|root| {
+                .map(|_| {
                     // A profile is what every surface showing them as an author reads: the
                     // members' pictures moved with it, and the apps' member lists read them
                     // again.
                     if route == "/profile" {
                         tilo_identity::policy_change::announce();
-                        // A profile's name is the person's in every workspace here: each names
-                        // them by it from now on.
-                        let kept = (web.workspaces.clone(), web.profiles.kept_name(&root));
-                        if let (Some(workspaces), Some(name)) = kept {
-                            tokio::spawn(async move {
-                                workspaces
-                                    .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())
-                                    .await;
-                            });
-                        }
                     }
                     reply(StatusCode::NO_CONTENT, Vec::new())
                 })

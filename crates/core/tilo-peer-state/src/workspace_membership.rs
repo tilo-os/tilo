@@ -342,6 +342,8 @@ pub enum WorkspaceMembershipCommand {
         kept_ms: i64,
         progress: serde_json::Value,
     },
+    /// Name the caller's own person `name` in the workspace, one they are a member of.
+    NameSelf { name: String },
     /// Give `recipient` (a person, a role, or everyone) `access` to `document` of `app`, or to
     /// the whole workspace when `app` is empty: the member-list changes that makes, read from the
     /// caller's own copy of the workspace ([`collab_types::document_access_changes`]).

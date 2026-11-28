@@ -108,12 +108,8 @@ pub const CANCEL_INVITATION: &str = "invitation.cancel";
 /// Revoke a key the caller holds or one it minted: the workspace records the
 /// revocation, and every holder and API server refuses the key from then on.
 pub(crate) const REVOKE_KEY: &str = "key.revoke";
-/// The calling person's own name in the workspace: what its member list and
-/// the invitations they make show for them, from any of their devices or
-/// keys. Every member names themself, so it is no governance action and no
-/// grant checks it.
-pub(crate) const NAME: &str = "member.name";
 pub use tilo_peer_state::signed_actions::ADD_MEMBER;
+pub(crate) use tilo_peer_state::signed_actions::NAME_SELF as NAME;
 pub(crate) use tilo_peer_state::signed_actions::{
     ADD_ATTESTOR, ADD_REGISTRY, DISABLE_REGISTRY, ENABLE_REGISTRY, PIN_APP, PUBLISH,
     REGISTRY_CHANNEL, REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER, SET_CONTENT_POLICY,
@@ -3219,15 +3215,13 @@ impl Workspaces {
                 Ok(pending.iter().map(pending_json).collect())
             }
             NAME => {
-                self.name_self(
-                    workspace,
+                let ask = super::collaboration::SignedAsk {
                     device,
-                    args.required_text("name")?,
-                    tilo_clock::unix_now_ns(),
-                )
-                .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                Ok(json!({}))
+                    request_id,
+                    signed: args.signed()?,
+                };
+                let named = self.name_self(workspace, ask, args.required_text("name")?);
+                Self::signed_change(named.await).map(|_| json!({}))
             }
             CANCEL_INVITATION => {
                 self.cancel(
