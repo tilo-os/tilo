@@ -39,6 +39,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("notifications", Holder::Person),
     ("onboarding", Holder::Person),
     (crate::personal_dictionary::SECTION, Holder::Person),
+    ("presence", Holder::Person),
     ("quick_settings", Holder::Person),
     ("shell_views", Holder::Person),
     ("shortcuts", Holder::Person),

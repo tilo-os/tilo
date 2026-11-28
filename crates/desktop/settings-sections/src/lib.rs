@@ -20,6 +20,7 @@ pub mod network_usage;
 pub mod osk;
 pub mod personal_dictionary;
 pub mod prefs;
+pub mod presence;
 pub mod providers;
 pub mod search;
 pub mod service;
@@ -268,6 +269,7 @@ sections!(
     osk::OskSourceSettings,
     device_vpn::DeviceVpnPrefs,
     identity::IdentityPrefs,
+    presence::PresencePrefs,
     network_usage::NetworkUsage,
 );
 

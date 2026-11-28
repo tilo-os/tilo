@@ -42,6 +42,9 @@ pub enum PeopleAsk {
     /// Add another of this person's devices: the session's sheet prints the link a new one joins
     /// with.
     PairDevice,
+    /// What this person shares of what they are doing, or of where they are, changed: what their
+    /// devices say of them follows at once.
+    Presence,
 }
 
 /// The colour this person wears here: the one they chose in their own settings, else the one their

@@ -217,6 +217,18 @@ pub struct AboutSheet {
     /// Tilo's home on the web, as the sheet links it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub home: String,
+    /// The links under it, in reading order: where to read the code and where its people talk.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<AboutLink>,
+}
+
+/// One link the About sheet offers: what it is called, and the address it opens.
+#[derive(Clone, Debug, Serialize, tilo_resource::JsonSchema)]
+pub struct AboutLink {
+    /// What the link is called, in the person's language.
+    pub label: String,
+    /// The address it opens.
+    pub url: String,
 }
 
 /// Where a surface stands.

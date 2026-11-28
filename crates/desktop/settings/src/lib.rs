@@ -86,6 +86,7 @@ pub mod person_displays;
 pub mod personal_dictionary;
 pub mod placement;
 pub mod power;
+pub mod presence;
 pub mod published;
 pub mod relay;
 pub mod search_history;

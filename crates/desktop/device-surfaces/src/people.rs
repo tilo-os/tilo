@@ -65,6 +65,18 @@ pub struct People {
     /// it has none.
     #[serde(default)]
     pub control_hints: Option<bool>,
+    /// How this person shares what they are doing: `automatic` (their device may write it for
+    /// them), `manual` (only what they write) or `off` (nothing).
+    #[serde(default)]
+    pub sharing: String,
+    /// What the people in the workspace in front see of them: `where` (their face, the window they
+    /// are in and their pointer), `here` (their face alone) or `nothing`.
+    #[serde(default)]
+    pub visibility: String,
+    /// The workspace in front, as its own name: what the card names in what people there see of
+    /// them; empty where this session holds no workspace.
+    #[serde(default)]
+    pub workspace: String,
     /// Where everyone else here points, over the window of this workspace each is on, whatever
     /// the roster shows: a shell draws each over the place showing that window, and none over a
     /// window it does not show.
@@ -389,6 +401,22 @@ pub enum PeopleEffect {
         /// Whether the hints show
         #[param("Whether the hints show")]
         on: bool,
+    },
+    /// Share what you are doing this way from now on: their device may write it for them, only
+    /// their own words, or nothing. The person's own record, which every device of theirs reads
+    #[effect(kind = "undoable", label = "people-sharing")]
+    SetSharing {
+        /// `automatic`, `manual` or `off`
+        #[param("How what you are doing is shared: `automatic`, `manual` or `off`")]
+        sharing: String,
+    },
+    /// Let the people in the workspace in front see this much of you: where you are, that you are
+    /// here, or nothing. Kept for that workspace, so it reaches everyone in it
+    #[effect(kind = "undoable", label = "people-visibility")]
+    SetVisibility {
+        /// `where`, `here` or `nothing`
+        #[param("What they see: `where`, `here` or `nothing`")]
+        visibility: String,
     },
     /// Keep what the person typed in their own card once they pause, at the same place Enter and
     /// closing the card keep it: each change the field sends is kept once typing stops, so nothing

@@ -344,6 +344,7 @@ mod people_device;
 pub mod portal_link;
 #[cfg(target_os = "linux")]
 mod power;
+mod presence_privacy;
 #[cfg(target_os = "linux")]
 mod privacy;
 #[cfg(target_os = "linux")]

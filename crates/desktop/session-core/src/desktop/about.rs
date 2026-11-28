@@ -7,6 +7,12 @@ use crate::desktop::i18n::{t, t_args};
 /// Tilo's home on the web: where to read about it and get it.
 pub const TILO_HOME: &str = "https://tilo.so";
 
+/// Tilo's source code: where the people who build it work, and where its issues are.
+pub const TILO_SOURCE: &str = "https://code.tilo.so/tilo/tilo";
+
+/// Where the people who use and build Tilo talk, which the download page opens.
+pub const TILO_COMMUNITY: &str = "https://tilo.sh";
+
 /// Where the Tilo being described runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AboutVariant {
@@ -91,6 +97,10 @@ pub struct AboutCopy {
     /// Tilo's home on the web ([`TILO_HOME`]): in a browser, where to get Tilo; on a computer that
     /// has it, just its address.
     pub home: String,
+    /// Where to read the code and where its people talk, in reading order, each as
+    /// `(what it is called, its address)`: the deployment's own links where it names them, else
+    /// Tilo's ([`TILO_SOURCE`], [`TILO_COMMUNITY`]).
+    pub links: Vec<(String, String)>,
 }
 
 /// The words for Tilo running as `variant` . A browser tab is not "this computer": there it is
@@ -100,6 +110,7 @@ pub fn about_copy(variant: AboutVariant) -> AboutCopy {
         "tilo-about-version",
         &[("version", env!("CARGO_PKG_VERSION").into())],
     );
+    let links = AboutLinks::new("", TILO_SOURCE, TILO_COMMUNITY).shown();
     match variant {
         AboutVariant::Native => AboutCopy {
             title: t("tilo-about-title"),
@@ -107,6 +118,7 @@ pub fn about_copy(variant: AboutVariant) -> AboutCopy {
             body: None,
             version,
             home: t("tilo-about-link-home"),
+            links,
         },
         AboutVariant::Browser => AboutCopy {
             title: t("tilo-about-title-browser"),
@@ -114,6 +126,7 @@ pub fn about_copy(variant: AboutVariant) -> AboutCopy {
             body: Some(t("tilo-about-body-browser")),
             version,
             home: t("tilo-about-link-get"),
+            links,
         },
     }
 }
@@ -185,6 +198,24 @@ mod tests {
             }
             assert!(browser.home.contains("Get"), "{}", browser.home);
             assert_eq!(native.home, "tilo.so");
+        }
+
+        phase the_sheet_links_the_source_and_where_its_people_talk;
+        {
+            tilo_ui_base::i18n::I18nManager::init("en-US");
+            // A computer that names no deployment links its own: the code, and the place its
+            // people talk, both reachable from the sheet rather than from a search engine.
+            for variant in [AboutVariant::Native, AboutVariant::Browser] {
+                let copy = about_copy(variant);
+                assert_eq!(
+                    copy.links,
+                    vec![
+                        (t("tilo-about-link-source"), TILO_SOURCE.to_owned()),
+                        (t("tilo-about-link-community"), TILO_COMMUNITY.to_owned()),
+                    ],
+                    "{variant:?}"
+                );
+            }
         }
     }
 

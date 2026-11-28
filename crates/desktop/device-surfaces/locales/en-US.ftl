@@ -113,6 +113,8 @@ people-agent = Ask this of an agent
 people-colour = Your colour
 people-host-action = Do this about you
 people-control-hints = Show control hints
+people-sharing = Share what you are doing
+people-visibility = What people see of you
 people-draft = Keep what you typed
 # The invitations into a workspace, the sheet they are made in, and adding a device.
 so-tilo-session-invite-invitations = List invitations

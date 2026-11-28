@@ -113,6 +113,8 @@ people-agent = Dies von einem Agenten verlangen
 people-colour = Deine Farbe
 people-host-action = Dies über dich tun
 people-control-hints = Bedienhinweise zeigen
+people-sharing = Teilen, was du machst
+people-visibility = Was andere von dir sehen
 people-draft = Behalten, was du getippt hast
 # Die Einladungen in einen Arbeitsbereich, das Blatt, in dem sie entstehen, und ein Gerät.
 so-tilo-session-invite-invitations = Einladungen auflisten

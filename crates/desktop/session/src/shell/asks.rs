@@ -48,6 +48,7 @@ impl Shared {
                     }
                 }
                 people::PeopleAsk::PairDevice => self.open_add_device(),
+                people::PeopleAsk::Presence => self.resay_presence(),
                 people::PeopleAsk::Rename(name) => self.name_self(&name),
                 people::PeopleAsk::Picture(picture) => self.picture_self(&picture),
                 people::PeopleAsk::Status(status) => self.set_own_status(&status),
@@ -399,11 +400,14 @@ impl Shared {
     }
 
     /// What this person says they are doing, in their own words, beside their face here: clearing
-    /// the words stops saying it.
+    /// the words stops saying it. A person who shares nothing of what they do says none of it.
     fn set_own_status(&self, status: &str) {
         let Some(sync) = &self.sync else {
             return;
         };
+        if crate::presence_privacy::sharing() == ui::StatusSharing::Off {
+            return;
+        }
         let mut own = sync.own();
         let status = status.trim();
         own.status = (!status.is_empty()).then(|| tilo_live::presence::Status {
@@ -411,6 +415,22 @@ impl Shared {
             automatic: false,
         });
         sync.set_own(own);
+    }
+
+    /// Say what this person shares of themselves as their choice now stands: one of the two
+    /// changed, and what the people they work with read of them follows at once.
+    fn resay_presence(&self) {
+        let Some(sync) = &self.sync else {
+            return;
+        };
+        // What they are doing is theirs to share: choosing to share nothing takes back the words
+        // they said, so nobody reads what they no longer share.
+        if crate::presence_privacy::sharing() == ui::StatusSharing::Off {
+            let mut own = sync.own();
+            if own.status.take().is_some() {
+                sync.set_own(own);
+            }
+        }
     }
 
     /// Do what an app action names, in the workspace in front (where the person sees what the

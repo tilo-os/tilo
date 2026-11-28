@@ -585,3 +585,61 @@ fn a_name_is_kept_when_the_card_closes_and_a_blank_or_unchanged_one_changes_noth
         |session| (name_of(session) == "Ada").then_some(()),
     );
 }
+
+/// The person's own card says what they share of what they are doing and who sees where they are,
+/// and each choice is kept: what they type stops being shared when they share nothing, and what
+/// the people in the workspace see follows the chip they press.
+#[test]
+fn the_own_card_shares_what_you_are_doing_and_who_sees_where_you_are() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session();
+    open_own_card(&mut session);
+    says(&mut session, "Share what you're doing");
+    // What they are doing is shared the way the setting starts: their device may write it.
+    let says = |session: &Session, field: &str, value: &str| people(session)[field] == json!(value);
+    wait_for(&mut session, "the sharing it starts at", |session| {
+        says(session, "sharing", "automatic").then_some(())
+    });
+
+    // Only their own words from now on, and the field they say them in is there.
+    press(&mut session, "My words");
+    wait_for(&mut session, "the sharing they chose", |session| {
+        says(session, "sharing", "manual").then_some(())
+    });
+    shows(&mut session, "What you're doing");
+
+    // Nothing at all: the field goes with it, since there is nothing left to share.
+    press(&mut session, "Not at all");
+    wait_for(&mut session, "the sharing they chose to stop", |session| {
+        says(session, "sharing", "off").then_some(())
+    });
+    crate::common::until(
+        &mut session,
+        "the field to go with the sharing",
+        |session| session.shell_control("What you're doing").is_none(),
+    );
+    never_shows(
+        &session,
+        "What you're doing",
+        "a person who shares nothing of what they do has no field to say it in",
+    );
+
+    // Who sees where they are in the workspace in front: their face and where they are at first.
+    shows(&mut session, "That I'm here");
+    press(&mut session, "That I'm here");
+    wait_for(&mut session, "what people here see", |session| {
+        says(session, "visibility", "here").then_some(())
+    });
+    press(&mut session, "Nothing");
+    wait_for(&mut session, "what people here see then", |session| {
+        says(session, "visibility", "nothing").then_some(())
+    });
+    // A person who appears to nobody sees nobody's pointer either.
+    assert!(
+        people(&session)["pointers"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "sharing nothing of where you are keeps the others' pointers away too: {:?}",
+        people(&session)["pointers"]
+    );
+}

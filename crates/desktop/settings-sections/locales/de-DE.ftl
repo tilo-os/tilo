@@ -14,6 +14,7 @@ settings-automatic-display = Automatische Bildschirmeingabe
 settings-display-change = Bildschirmänderung
 settings-device-vpn = Deine Geräte als VPN
 settings-identity = Deine Farbe
+settings-presence = Was du teilst
 settings-personal-dictionary = Persönliches Wörterbuch
 settings-personal-dictionary-add = Ein Wort hinzufügen
 settings-personal-dictionary-remove = Ein Wort entfernen

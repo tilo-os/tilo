@@ -1030,11 +1030,48 @@ view own_card(board: device.People, someone: device.Person) {
                 }
             }
         }
-        ui.TextInput(bind: doing, placeholder: "What you're doing") {
-            on changed(text): device.draft(device.people, field: "doing", text: text)
-            on submit: device.set_doing(device.people, text: doing)
-            on blur: device.set_doing(device.people, text: doing)
+        // What they share of what they are doing: their device writing it for them, only their
+        // own words, or nothing. Choosing nothing takes back what was said, and the field goes
+        // with it: there is nothing left to share.
+        ui.Text("Share what you're doing", role: .caption, secondary: true)
+        row(gap: .tight, align: .center, wrap: true) {
+            for s in ["automatic", "manual", "off"] {
+                ui.Chip(
+                    sharing_named(s),
+                    selected: board.sharing == s,
+                    icon: if board.sharing == s { .check } else { .circle },
+                ) {
+                    on press: device.set_sharing(device.people, sharing: s)
+                }
+            }
         }
+        if board.sharing != "off" {
+            ui.TextInput(bind: doing, placeholder: "What you're doing") {
+                on changed(text): device.draft(device.people, field: "doing", text: text)
+                on submit: device.set_doing(device.people, text: doing)
+                on blur: device.set_doing(device.people, text: doing)
+            }
+        }
+        // Who sees where they are, in the workspace in front: their face and where they are, their
+        // face alone, or nothing of them at all. Kept for that workspace, and everyone in it reads
+        // it.
+        let here_workspace = board.workspace
+        let sight_title = if here_workspace != "" {
+            std.say("What people in {here_workspace} see")
+        } else { std.say("What people here see") }
+        ui.Text(sight_title, role: .caption, secondary: true)
+        row(gap: .tight, align: .center, wrap: true) {
+            for v in ["where", "here", "nothing"] {
+                ui.Chip(
+                    sight_named(v),
+                    selected: board.visibility == v,
+                    icon: if board.visibility == v { .check } else { .circle },
+                ) {
+                    on press: device.set_visibility(device.people, visibility: v)
+                }
+            }
+        }
+        ui.Text(sight_detail(board.visibility), role: .caption, secondary: true)
         // The colour their face is drawn in: the twelve people colours, the one they wear marked,
         // and a choice that reaches every device at once.
         if not board.colours.is_empty() {
@@ -1107,6 +1144,40 @@ fn availability_named(name: Text) -> Text {
         return "Idle"
     }
     return "Available"
+}
+
+/// How a way of sharing what you are doing is named on the card: their device writing it for
+/// them, only their own words, or nothing at all.
+fn sharing_named(mode: Text) -> Text {
+    if mode == "manual" {
+        return "My words"
+    }
+    if mode == "off" {
+        return "Not at all"
+    }
+    return "Automatically"
+}
+
+/// How much of them the people in a workspace see, as the card names the choice.
+fn sight_named(sight: Text) -> Text {
+    if sight == "here" {
+        return "That I'm here"
+    }
+    if sight == "nothing" {
+        return "Nothing"
+    }
+    return "Where I am"
+}
+
+/// What a choice of what people see means, in one line under the chips.
+fn sight_detail(sight: Text) -> Text {
+    if sight == "here" {
+        return std.say("Your face, never which window or your pointer")
+    }
+    if sight == "nothing" {
+        return std.say("You don't appear, and you don't see others' pointers")
+    }
+    return std.say("Your face, the window you're in and your pointer")
 }
 
 /// Back from a card to the roster: the card closes, the roster stays.

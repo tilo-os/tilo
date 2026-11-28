@@ -155,7 +155,9 @@ pub struct PowerMenuReading;
 /// What kind of resource [`POWER_MENU`] is.
 pub const POWER_MENU_KIND: &str = <PowerMenuReading as tilo_resource::words::RowType>::KIND;
 
-pub(crate) use tilo_device_surfaces::overlays::{AboutSheet, Area, Peek, PeekGroup, PeekHint};
+pub(crate) use tilo_device_surfaces::overlays::{
+    AboutLink, AboutSheet, Area, Peek, PeekGroup, PeekHint,
+};
 pub use tilo_device_surfaces::overlays::{OverlayEffect, PowerMenuEffect};
 
 /// What choosing a row of the power menu does.
@@ -350,6 +352,11 @@ impl ShellService {
                 heading: copy.heading.unwrap_or_default(),
                 version: copy.version,
                 home: copy.home,
+                links: copy
+                    .links
+                    .into_iter()
+                    .map(|(label, url)| AboutLink { label, url })
+                    .collect(),
             },
             power_offers,
             commands,

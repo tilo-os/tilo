@@ -45,6 +45,11 @@ view about_card(a: device.AboutSheet) {
             if a.home != "" {
                 ui.Link(a.home)
             }
+            // Where to read the code and where its people talk: what a person looks for under
+            // "About", beside where to read about it.
+            for l in a.links {
+                ui.Link(l.url, label: l.label)
+            }
             ui.Button("All details", icon: .info) {
                 on press: session
                     .open_settings(link: "settings://about")

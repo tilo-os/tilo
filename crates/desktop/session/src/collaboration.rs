@@ -6,6 +6,7 @@ use crate::sync::layout::live_record_as;
 use collab_types::presence::{ShellPresence, ShellWindow};
 use tilo_live::presence::{Point, Tile, anchor};
 use tilo_session_core::desktop::navigation;
+use ui::PresenceVisibility;
 
 use crate::Session;
 
@@ -185,6 +186,22 @@ impl Session {
                 },
             )
         });
+        // What the people in the workspace in front see of this person is their own choice: their
+        // face and where they are, their face alone, or nothing of them at all.
+        let sight = self
+            .shared
+            .handle
+            .read(|tree| {
+                tree.active_workspace().map(|workspace| {
+                    crate::presence_privacy::visibility(&workspace.id().to_string())
+                })
+            })
+            .unwrap_or(PresenceVisibility::WhereIAm);
+        let (pointer, shell) = match sight {
+            PresenceVisibility::WhereIAm => (pointer, shell),
+            PresenceVisibility::ThatImHere => (None, shell.map(crate::presence_privacy::face_only)),
+            PresenceVisibility::Nothing => (None, None),
+        };
         sync.set_where(pointer, shell);
     }
 

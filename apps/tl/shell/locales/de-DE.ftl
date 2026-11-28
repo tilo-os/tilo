@@ -2363,6 +2363,9 @@ d-sfputxmu = Eigene Karte
     .w-how-everyone-here-sees-you = So sehen dich alle hier
     .w-what-you-re-doing = Was du gerade machst
     .w-status = Status
+    .w-share-what-you-re-doing = Teilen, was du machst
+    .w-what-people-in-see = Was Menschen in { $here_workspace } sehen
+    .w-what-people-here-see = Was Menschen hier sehen
     .w-your-colour = Deine Farbe
     .w-your-identity = Deine Identität
     .w-show-control-hints = Bedienhinweise zeigen
@@ -2623,3 +2626,18 @@ d-racosa5u-text = Text
 d-frnkdv3w = Dein Winken ist angekommen
     .w-someone = Jemand
     .w-you-waved-at = Du hast { $name } gewunken
+
+d-pnt3r5fh = Wie du teilst
+    .w-my-words = Meine Worte
+    .w-not-at-all = Gar nicht
+    .w-automatically = Automatisch
+
+d-upzs3qkn = Wer was sieht
+    .w-that-i-m-here = Dass ich hier bin
+    .w-nothing = Nichts
+    .w-where-i-am = Wo ich bin
+
+d-pkrsaacd = Was die Wahl bedeutet
+    .w-your-face-never-which-window-or = Dein Gesicht, nie welches Fenster oder dein Zeiger
+    .w-you-don-t-appear-and-you = Du erscheinst nicht, und du siehst die Zeiger anderer nicht
+    .w-your-face-the-window-you-re = Dein Gesicht, das Fenster, in dem du bist, und dein Zeiger

@@ -156,6 +156,12 @@ struct Own {
     colour_slot: Option<u32>,
     given: String,
     chat: bool,
+    /// How this person shares what they are doing: `automatic`, `manual` or `off`.
+    sharing: String,
+    /// What the people in the workspace in front see of them: `where`, `here` or `nothing`.
+    visibility: String,
+    /// The workspace in front, as its own name; empty where this session holds none.
+    workspace: String,
     /// A new identity, and the identity record read again: a name or a picture written
     /// here or on another device.
     identity_generation: u64,
@@ -293,9 +299,41 @@ impl PeopleDevice {
             colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             given,
             chat: (self.chat)(),
+            sharing: Self::sharing().word().to_owned(),
+            visibility: self.visibility().id().to_owned(),
+            workspace: self.workspace_in_front(),
             identity_generation: ::collaboration::local_identity::generation(),
             record_generation: crate::identity::record_generation(),
         }
+    }
+
+    /// How this person shares what they are doing, as their own settings keep it.
+    fn sharing() -> ui::StatusSharing {
+        crate::presence_privacy::sharing()
+    }
+
+    /// What the people in the workspace in front see of this person: their choice for it, and
+    /// where they are for a workspace they never chose for.
+    fn visibility(&self) -> ui::PresenceVisibility {
+        crate::presence_privacy::visibility(&self.workspace_id().unwrap_or_default())
+    }
+
+    /// The id of the workspace in front, where this session holds one.
+    fn workspace_id(&self) -> Option<String> {
+        self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
+    }
+
+    /// The name of the workspace in front, where this session holds one.
+    fn workspace_in_front(&self) -> String {
+        self.handle
+            .read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.name.clone())
+            })
+            .unwrap_or_default()
     }
 
     /// The person's name and the identity their face is drawn from: what their own card opens on.
@@ -562,6 +600,11 @@ impl PeopleDevice {
         }) else {
             return Vec::new();
         };
+        // A person who shares nothing of where they are sees nothing of where the others are:
+        // the same choice keeps both directions shut.
+        if crate::presence_privacy::visibility(&workspace) == ui::PresenceVisibility::Nothing {
+            return Vec::new();
+        }
         self.shown(&workspace)
             .into_iter()
             .filter_map(|member| {
@@ -845,6 +888,9 @@ impl PeopleDevice {
             photo_change: self.photo_action(SET_PHOTO),
             photo_remove: self.photo_action(RESET_PHOTO),
             control_hints: Some(Self::control_hints()),
+            sharing: Self::sharing().word().to_owned(),
+            visibility: self.visibility().id().to_owned(),
+            workspace: self.workspace_in_front(),
             showing: self.surfaces.person.borrow().clone(),
             following,
             stopped,
@@ -945,6 +991,8 @@ impl PeopleDevice {
                     tracing::warn!(%error, "could not keep the control hints' switch");
                 }
             }
+            PeopleEffect::SetSharing { sharing } => self.choose_sharing(sharing)?,
+            PeopleEffect::SetVisibility { visibility } => self.choose_visibility(visibility)?,
             PeopleEffect::Draft { field, text } => self.draft(field, text)?,
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
@@ -1026,6 +1074,48 @@ impl PeopleDevice {
                 .push(crate::people::PeopleAsk::Message { key });
         }
         self.taken_elsewhere();
+    }
+
+    /// Share what this person is doing the way `sharing` names, keeping it with them so every
+    /// device of theirs reads it and the session says so where they are.
+    fn choose_sharing(&self, sharing: &str) -> Result<(), ApiError> {
+        let mode = ui::StatusSharing::from_word(sharing.trim()).ok_or_else(|| {
+            ApiError::InvalidArguments(format!("`{sharing}` is not one of automatic, manual, off"))
+        })?;
+        if let Err(error) = settings_store::presence::SHARING.set(mode.word().to_owned()) {
+            return Err(ApiError::Refused {
+                code: "sharing_not_kept".to_owned(),
+                reason: format!("the sharing choice was not kept: {error}"),
+            });
+        }
+        self.asks
+            .borrow_mut()
+            .push(crate::people::PeopleAsk::Presence);
+        Ok(())
+    }
+
+    /// Let the people in the workspace in front see `visibility` of this person: kept for that
+    /// workspace, so everyone in it sees their choice.
+    fn choose_visibility(&self, visibility: &str) -> Result<(), ApiError> {
+        let sight = ui::PresenceVisibility::from_id(visibility.trim()).ok_or_else(|| {
+            ApiError::InvalidArguments(format!("`{visibility}` is not one of where, here, nothing"))
+        })?;
+        let workspace = self.workspace_id().ok_or_else(|| ApiError::Refused {
+            code: "no_workspace".to_owned(),
+            reason: "this session holds no workspace to be seen in".to_owned(),
+        })?;
+        let mut kept = settings_store::presence::VISIBILITY.get();
+        kept.insert(workspace, sight.id().to_owned());
+        if let Err(error) = settings_store::presence::VISIBILITY.set(kept) {
+            return Err(ApiError::Refused {
+                code: "visibility_not_kept".to_owned(),
+                reason: format!("the choice of what people see was not kept: {error}"),
+            });
+        }
+        self.asks
+            .borrow_mut()
+            .push(crate::people::PeopleAsk::Presence);
+        Ok(())
     }
 
     /// Keep the availability `availability` names, where the card offers it.
