@@ -57,6 +57,7 @@ export {
   type DaemonConnection,
   type FetchLike,
   type PresenceMember,
+  type PresencePersona,
   type PresenceSaid,
   type Send,
 } from "./transport.ts";

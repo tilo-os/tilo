@@ -18,7 +18,7 @@ pub use crate::member::{Member, Person, joined_at_from_packed};
 pub use bridged::{Bridged, MAX_ACCOUNT_CHARS, MAX_BRIDGED_NAME_CHARS};
 pub use call::CallPresence;
 pub use composing::{COMPOSING_LINGER, Composers};
-pub use line::{Heard, Said};
+pub use line::{Heard, PERSONA_SESSION, Persona, Said};
 pub use payload::{PresencePayload, Spot};
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_member_types::{PersonId, identity_color};

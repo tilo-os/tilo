@@ -785,6 +785,7 @@ impl Broker {
             bus: Rc::clone(&self.bus),
             inbox: Rc::clone(&self.inbox),
             person: self.person.clone(),
+            app: self.route.app_id.clone(),
         })
     }
 
@@ -815,14 +816,21 @@ struct PresenceLine {
     bus: Rc<Bus>,
     inbox: Inbox,
     person: String,
+    app: String,
 }
 
 impl crate::presence::Line for PresenceLine {
     fn say(&self, said: &collab_types::presence::Said) -> Result<(), String> {
+        // A persona's word is the app's persona's, as the device's presence attributes it.
+        let member = said.persona.as_ref().map_or_else(
+            || collaboration::MemberId::person(self.person.clone()),
+            |persona| persona.member(&self.app),
+        );
         let heard = collab_types::presence::Heard {
-            member: collaboration::MemberId::person(self.person.clone()),
+            member,
             key: said.key.clone(),
             payload: said.payload.clone(),
+            persona: said.persona.clone(),
         };
         let joined: Vec<Inbox> = self
             .bus

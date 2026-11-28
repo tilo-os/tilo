@@ -431,6 +431,9 @@ pub struct Instance {
     /// The workspace's members' resource named a different list since the window was last told
     /// what people are called ([`Self::take_member_names`]).
     member_names_moved: bool,
+    /// What presence named the apps' personas it heard by, which the views' names read
+    /// ([`Self::set_persona_names`]).
+    personas: Rc<RefCell<HashMap<MemberId, String>>>,
     /// Who is in each call the call service told of, by the id it names the call's place by.
     calls: HashMap<String, Vec<crate::runtime::CallMember>>,
     /// The microphones each call's view offers, by the place the call is held on: what
@@ -584,7 +587,8 @@ impl Instance {
         transport: Box<dyn Transport>,
     ) -> Self {
         let host: Rc<RefCell<Option<Host>>> = Rc::default();
-        let names: Rc<dyn NameHost> = Rc::new(crate::names::HostNames::new(names, &host));
+        let names = crate::names::HostNames::new(names, &host);
+        let personas = names.personas();
         Self {
             app: config.app,
             root_view: config.root,
@@ -598,7 +602,7 @@ impl Instance {
             verdicts: RefCell::default(),
             content: Rc::default(),
             platform,
-            names,
+            names: Rc::new(names),
             host,
             publication: None,
             published_unavailable: tilolang_runtime::Unavailable::default(),
@@ -616,6 +620,7 @@ impl Instance {
             spots: HashMap::new(),
             lenses_changed: false,
             member_names_moved: false,
+            personas,
             calls: HashMap::new(),
             call_inputs: HashMap::new(),
             call_steps: Vec::new(),
@@ -1665,27 +1670,36 @@ impl Instance {
 
     // ----- presence ------------------------------------------------------------------------
 
-    /// Bring the lenses the views read up to date with presence: who else is at each resource
+    /// Bring the lenses the views read up to date with presence: everyone else at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
-    /// Someone composing a message in the detail view is a typist there: `composers` names
-    /// them, and their lens reads `composing` (`lenses(c)`), so a conversation can say
-    /// "… is typing" without reading a draft.
+    /// Everyone composing a message in the detail view is a typist there, whether or not they
+    /// said they are at it (someone an app carries in from another service only types):
+    /// `composers` names them, and their lens reads `composing` (`lenses(c)`), so a
+    /// conversation can say "… is typing" without reading a draft.
     pub fn set_peers_and_composers(
         &mut self,
-        peers: HashMap<String, MemberId>,
+        peers: HashMap<String, Vec<MemberId>>,
         composers: &[MemberId],
     ) {
+        let detail = self.detail_target().map(ResourceRef::id_string);
         let mut now: HashMap<String, Vec<(Actor, bool, bool)>> = HashMap::new();
-        for (resource, who) in peers {
-            let typing = composers.contains(&who);
-            now.entry(resource)
-                .or_default()
-                .push((Actor::Member(who), false, typing));
+        for (resource, here) in peers {
+            let at_detail = detail.as_ref() == Some(&resource);
+            let lenses = now.entry(resource).or_default();
+            for who in here {
+                let typing = at_detail && composers.contains(&who);
+                lenses.push((Actor::Member(who), false, typing));
+            }
         }
-        if let Some(detail) = self.detail_target() {
-            now.entry(detail.id_string())
-                .or_default()
-                .push((self.me_actor(), true, false));
+        if let Some(detail) = detail {
+            let me = self.me_actor();
+            let lenses = now.entry(detail).or_default();
+            for who in composers {
+                if !lenses.iter().any(|(at, _, _)| at.member_id() == Some(who)) {
+                    lenses.push((Actor::Member(who.clone()), false, true));
+                }
+            }
+            lenses.push((me, true, false));
         }
         if now == self.lenses {
             return;
@@ -3359,12 +3373,26 @@ impl Instance {
             return None;
         }
         let rows = self.host()?.member_rows();
+        let personas = self.personas.borrow();
         Some(
             rows.values()
                 .filter(|row| !row.removed && !row.name.trim().is_empty())
                 .map(|row| (row.id.clone(), row.name.clone()))
+                .chain(personas.iter().map(|(id, name)| (id.clone(), name.clone())))
                 .collect(),
         )
+    }
+
+    /// What presence names the apps' personas it heard by: someone an app carries in from
+    /// another service, who is no member, so the members' resource never names them. A view
+    /// that shows one of them shows it again when this names them differently.
+    pub fn set_persona_names(&mut self, personas: &HashMap<MemberId, String>) {
+        if *self.personas.borrow() == *personas {
+            return;
+        }
+        personas.clone_into(&mut self.personas.borrow_mut());
+        self.member_names_moved = true;
+        self.person_changed = true;
     }
 
     /// The person at the window, as the runtime names them.

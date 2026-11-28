@@ -230,8 +230,8 @@ impl Carets {
             let words = sync
                 .apps_heard(&workspace)
                 .into_iter()
-                .filter(|(who, _)| Some(who) != me.as_ref())
-                .map(|(who, frame)| ((who, frame.app, frame.key), frame.payload))
+                .filter(|(who, ..)| Some(who) != me.as_ref())
+                .map(|(who, _, app, key, payload)| ((who, app, key), payload))
                 .collect();
             self.hand_words(&workspace, words);
         }

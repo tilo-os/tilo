@@ -650,7 +650,7 @@ impl Calls {
         let said: collab_types::presence::Said = serde_json::from_value(said).map_err(|error| {
             ApiError::new(
                 "invalid_request",
-                format!("a presence word is {{key, payload}}: {error}"),
+                format!("a presence word is {{key, payload, persona?}}: {error}"),
             )
             .json()
         })?;
@@ -695,6 +695,7 @@ impl Calls {
                 member,
                 key,
                 payload,
+                ..
             } = match serde_json::from_str(&heard) {
                 Ok(heard) => heard,
                 Err(error) => {

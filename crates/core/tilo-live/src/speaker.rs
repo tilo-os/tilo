@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use collab_types::MemberId;
-use collab_types::presence::{Payload, Presence, PresenceKey, ShellPresence};
+use collab_types::presence::{Payload, Persona, Presence, PresenceKey, ShellPresence};
 use tilo_lock::MutexRecover as _;
 
 use crate::live::Track;
@@ -33,8 +33,9 @@ use crate::presence::{Board, BridgedMember, Call, LiveCall, Own};
 /// elsewhere wakes it at once.
 const IDLE: Duration = Duration::from_secs(1);
 
-/// What hears every other member's word in an app as it changes: who said it, and the frame.
-pub type Heard2Apps = Arc<dyn Fn(&MemberId, &Presence) + Send + Sync>;
+/// What hears every other member's word in an app as it changes: who said it, the persona it is
+/// when an app's persona said it, and the frame.
+pub type Heard2Apps = Arc<dyn Fn(&MemberId, Option<&Persona>, &Presence) + Send + Sync>;
 
 /// One member's word in one app under one key, as it was last handed on.
 type Word = (MemberId, String, PresenceKey);
@@ -60,8 +61,11 @@ struct State {
     apps: Vec<Presence>,
     joined: Option<Call>,
     bridged: Vec<BridgedMember>,
-    /// Every other member's words in their apps, as last handed on.
-    handed: HashMap<Word, Payload>,
+    /// The personas this device's apps speak as, each carried in as a call bridge carries a
+    /// person, with its words in its app.
+    personas: Vec<BridgedMember>,
+    /// Every other member's words in their apps, as last handed on, with the persona each is.
+    handed: HashMap<Word, (Option<Persona>, Payload)>,
 }
 
 impl State {
@@ -71,14 +75,15 @@ impl State {
         let mut own = match (&self.shell, &self.joined) {
             (Some(shell), _) => shell.clone(),
             (None, Some(_)) => self.base.clone(),
+            (None, None) if !self.personas.is_empty() => self.base.clone(),
             (None, None) => return None,
         };
         own.apps.extend(self.apps.iter().cloned());
         if own.call.is_none() {
             own.call.clone_from(&self.joined);
         }
-        if !self.bridged.is_empty() {
-            own.bridged.clone_from(&self.bridged);
+        if !self.bridged.is_empty() || !self.personas.is_empty() {
+            own.bridged = self.bridged.iter().chain(&self.personas).cloned().collect();
         }
         Some(own)
     }
@@ -93,37 +98,33 @@ impl State {
 
     /// What every other member said in their apps that moved since it was last handed on, and
     /// each word nobody says any more, as `Left`.
-    fn moved_words(&mut self) -> Vec<(MemberId, Presence)> {
-        let mut now: HashMap<Word, Payload> = HashMap::new();
-        for member in self.board.here() {
-            // An agent is its person's: one whose person its presence does not name yet is no
-            // member.
-            let Some(who) = (match (&member.member, &member.user) {
-                (Some(agent), Some(person)) => Some(MemberId::agent(agent.clone(), person.clone())),
-                (Some(_), None) => None,
-                (None, user) => user.clone().map(MemberId::person),
-            }) else {
-                continue;
-            };
-            for (app, key, payload) in &member.apps {
-                now.insert((who.clone(), app.clone(), key.clone()), payload.clone());
-            }
+    fn moved_words(&mut self) -> Vec<(MemberId, Option<Persona>, Presence)> {
+        let mut now: HashMap<Word, (Option<Persona>, Payload)> = HashMap::new();
+        for (who, persona, app, key, payload) in self.board.app_words() {
+            now.insert((who, app, key), (persona, payload));
         }
         let mut moved = Vec::new();
-        for ((who, app, key), _) in self
+        for ((who, app, key), (persona, _)) in self
             .handed
             .iter()
             .filter(|(word, _)| !now.contains_key(*word))
         {
             moved.push((
                 who.clone(),
+                persona.clone(),
                 Presence::app(app.clone(), &self.workspace, key.clone(), Payload::Left),
             ));
         }
-        for ((who, app, key), payload) in &now {
-            if self.handed.get(&(who.clone(), app.clone(), key.clone())) != Some(payload) {
+        for ((who, app, key), (persona, payload)) in &now {
+            if self
+                .handed
+                .get(&(who.clone(), app.clone(), key.clone()))
+                .map(|(_, held)| held)
+                != Some(payload)
+            {
                 moved.push((
                     who.clone(),
+                    persona.clone(),
                     Presence::app(app.clone(), &self.workspace, key.clone(), payload.clone()),
                 ));
             }
@@ -158,6 +159,7 @@ impl Speaker {
                 apps: Vec::new(),
                 joined: None,
                 bridged: Vec::new(),
+                personas: Vec::new(),
                 handed: HashMap::new(),
             }),
             moved: tokio::sync::Notify::new(),
@@ -205,33 +207,73 @@ impl Speaker {
         }
     }
 
-    /// One of this device's apps said `payload` under `key` in its own app `app`: kept as its
-    /// last word there, and taken back with `Left`.
-    pub fn set_app_word(&self, app: &str, key: PresenceKey, payload: Option<Payload>) {
+    /// One of this device's apps said `payload` under `key` in its own app `app`, of its person
+    /// or as its persona `persona`: kept as its last word there, and taken back with `Left`. A
+    /// persona is a stand-in of its own, carried in as a call bridge carries a person, and leaves
+    /// once it says nothing.
+    pub fn set_app_word(
+        &self,
+        app: &str,
+        persona: Option<&Persona>,
+        key: PresenceKey,
+        payload: Option<Payload>,
+    ) {
+        let payload = payload.filter(|payload| *payload != Payload::Left);
         self.change(|state| {
+            if let Some(persona) = persona {
+                let was = state.personas.clone();
+                let session = persona.session(app);
+                if !state
+                    .personas
+                    .iter()
+                    .any(|member| member.session == session)
+                {
+                    state.personas.push(BridgedMember {
+                        session: session.clone(),
+                        name: String::new(),
+                        bridged: collab_types::presence::Bridged {
+                            service: persona.service.clone(),
+                            account: persona.account.clone(),
+                            name: String::new(),
+                            avatar: None,
+                            linked: None,
+                        },
+                        call: None,
+                        words: Vec::new(),
+                    });
+                }
+                for member in state
+                    .personas
+                    .iter_mut()
+                    .filter(|member| member.session == session)
+                {
+                    member.name.clone_from(&persona.name);
+                    member.bridged.name.clone_from(&persona.name);
+                    member.words.retain(|(_, held, _)| *held != key);
+                    if let Some(payload) = payload.clone() {
+                        member.words.push((app.to_owned(), key.clone(), payload));
+                    }
+                }
+                state.personas.retain(|member| !member.words.is_empty());
+                return state.personas != was;
+            }
             let at = state
                 .apps
                 .iter()
                 .position(|frame| frame.app == app && frame.key == key);
-            match (payload, at) {
-                (None | Some(Payload::Left), Some(at)) => {
-                    state.apps.remove(at);
+            let Some(payload) = payload else {
+                return at.map(|at| state.apps.remove(at)).is_some();
+            };
+            let frame = Presence::app(app, &state.workspace, key, payload);
+            match at.and_then(|at| state.apps.get_mut(at)) {
+                Some(held) if *held == frame => false,
+                Some(held) => {
+                    *held = frame;
                     true
                 }
-                (None | Some(Payload::Left), None) => false,
-                (Some(payload), at) => {
-                    let frame = Presence::app(app, &state.workspace, key, payload);
-                    match at.and_then(|at| state.apps.get_mut(at)) {
-                        Some(held) if *held == frame => false,
-                        Some(held) => {
-                            *held = frame;
-                            true
-                        }
-                        None => {
-                            state.apps.push(frame);
-                            true
-                        }
-                    }
+                None => {
+                    state.apps.push(frame);
+                    true
                 }
             }
         });
@@ -349,8 +391,8 @@ impl Speaker {
         }
         let hand = self.heard.lock_recover().clone();
         if let Some(hand) = hand {
-            for (who, frame) in &moved {
-                hand(who, frame);
+            for (who, persona, frame) in &moved {
+                hand(who, persona.as_ref(), frame);
             }
         }
     }

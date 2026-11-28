@@ -179,36 +179,17 @@ impl Presence {
         true
     }
 
-    /// What each other member here in `workspace` last said in their apps: who said it, and each
-    /// word as the frame it came in.
+    /// What each other member here in `workspace` last said in their apps, an app's persona
+    /// among them ([`presence::Board::app_words`]).
     #[must_use]
-    pub fn apps_heard(&self, workspace: &str) -> Vec<(collab_types::MemberId, Frame)> {
+    pub fn apps_heard(&self, workspace: &str) -> Vec<presence::AppWord> {
         let present = self.present.borrow();
-        let Some(joined) = present
+        present
             .workspaces
             .iter()
             .find(|joined| joined.id == workspace)
-        else {
-            return Vec::new();
-        };
-        joined
-            .board
-            .here()
-            .filter_map(|member| {
-                let who = match (&member.member, &member.user) {
-                    (Some(agent), Some(person)) => {
-                        collab_types::MemberId::agent(agent.clone(), person.as_str())
-                    }
-                    (None, Some(person)) => collab_types::MemberId::person(person.clone()),
-                    (_, None) => return None,
-                };
-                Some(member.apps.iter().map(move |(app, key, payload)| {
-                    let frame = Frame::app(app.clone(), workspace, key.clone(), payload.clone());
-                    (who.clone(), frame)
-                }))
-            })
-            .flatten()
-            .collect()
+            .map(|joined| joined.board.app_words())
+            .unwrap_or_default()
     }
 
     /// Where this person is on this layout now: their `pointer` over the tile it is on, and their

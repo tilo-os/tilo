@@ -13,12 +13,16 @@
 //! its own workspace, a status is trimmed and bounded, an interaction is attributed to the
 //! connection's member and numbered by this lane, and the desktop's own word (its availability)
 //! is the shell's, never an app's.
+//!
+//! An app that carries people in from another service says their words as its personas
+//! ([`collab_types::presence::Persona`]), each the app's own member under its own stand-in, never
+//! the connection's person: what someone does in the app's resources, never a step or a status.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use collab_types::MemberId;
-use collab_types::presence::{Heard, PresenceKey, PresencePayload, Said};
+use collab_types::presence::{Heard, Persona, PresenceKey, PresencePayload, Said};
 use tilo_action_line::frame_line;
 use tilo_action_line_serve::{CallLanes, Take};
 use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
@@ -79,8 +83,9 @@ pub(crate) struct PresenceLane {
     watch: Watch,
     /// How far this connection got with each invocation it narrates.
     sequences: Mutex<HashMap<tilo_actions::InvocationId, u64>>,
-    /// The keys this connection said a word under, which it leaves when it goes.
-    said: Mutex<HashSet<PresenceKey>>,
+    /// The keys this connection said a word under, as its person or one of its personas, which
+    /// it leaves when it goes.
+    said: Mutex<HashSet<(Option<Persona>, PresenceKey)>>,
 }
 
 impl PresenceLane {
@@ -90,11 +95,12 @@ impl PresenceLane {
         let watch = setup
             .live
             .speaking
-            .watch_app(&workspace, move |member, frame| {
+            .watch_app(&workspace, move |member, persona, frame| {
                 let heard = Heard {
                     member,
                     key: frame.key,
                     payload: frame.payload,
+                    persona,
                 };
                 match serde_json::to_string(&heard) {
                     Ok(heard) => out(frame_line(RemoteActionMessage::PresenceHeard { heard })),
@@ -120,17 +126,45 @@ impl PresenceLane {
 
     fn say(&self, said: &str) -> Result<(), ActionCallError> {
         (self.setup.current)().map_err(|reason| ActionCallError::Refused { reason })?;
-        let Said { key, payload } =
-            serde_json::from_str(said).map_err(|error| ActionCallError::InvalidRequest {
-                reason: format!("a presence word does not read: {error}"),
-            })?;
+        let Said {
+            key,
+            payload,
+            persona,
+        } = serde_json::from_str(said).map_err(|error| ActionCallError::InvalidRequest {
+            reason: format!("a presence word does not read: {error}"),
+        })?;
         let payload = PresencePayload::from_live(payload)
             .map_err(|reason| ActionCallError::InvalidRequest { reason })?
             .filter(PresencePayload::reaches_apps)
             .ok_or_else(|| ActionCallError::Refused {
                 reason: "the desktop's own word is the shell's, never an app's".to_owned(),
             })?;
-        let payload = self.attributed(payload)?;
+        let persona = persona.map(Persona::cleaned);
+        let payload = match &persona {
+            None => self.attributed(payload)?,
+            Some(persona) if !persona.valid() => {
+                return Err(ActionCallError::InvalidRequest {
+                    reason: "a persona names a service, an account there without `/` or `:`, \
+                             and a name"
+                        .to_owned(),
+                });
+            }
+            Some(_)
+                if !matches!(
+                    payload,
+                    PresencePayload::Interaction(_) | PresencePayload::Status { .. }
+                ) =>
+            {
+                payload
+            }
+            Some(_) => {
+                return Err(ActionCallError::Refused {
+                    reason: "a persona says what someone does in the app's resources: an \
+                             action's steps and a status are a member's"
+                        .to_owned(),
+                });
+            }
+        };
         let live = payload
             .to_live()
             .ok_or_else(|| ActionCallError::InvalidRequest {
@@ -138,16 +172,17 @@ impl PresenceLane {
             })?;
         {
             let mut keys = self.said.lock_recover();
+            let said = (persona.clone(), key.clone());
             if matches!(live, collab_types::presence::Payload::Left) {
-                keys.remove(&key);
+                keys.remove(&said);
             } else {
-                keys.insert(key.clone());
+                keys.insert(said);
             }
         }
         self.setup.live.speaking.say_app(
             &self.setup.app,
             &self.setup.workspace,
-            &self.setup.member,
+            (&self.setup.member, persona.as_ref()),
             key,
             live,
             Some(self.watch.id()),
@@ -195,7 +230,8 @@ impl PresenceLane {
 
 impl Drop for PresenceLane {
     fn drop(&mut self) {
-        let keys: Vec<PresenceKey> = self.said.lock_recover().iter().cloned().collect();
+        let keys: Vec<(Option<Persona>, PresenceKey)> =
+            self.said.lock_recover().iter().cloned().collect();
         if !keys.is_empty() {
             self.setup.live.speaking.left_app(
                 &self.setup.app,

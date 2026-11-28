@@ -286,7 +286,11 @@ impl App {
             let Some(payload) = payload.to_live() else {
                 return;
             };
-            let said = collab_types::presence::Said { key, payload };
+            let said = collab_types::presence::Said {
+                key,
+                payload,
+                persona: None,
+            };
             match serde_json::to_value(&said) {
                 Ok(said) => {
                     if let Err(error) = line.say(&said) {
@@ -327,6 +331,14 @@ impl App {
                         continue;
                     }
                 };
+                // Someone an app carries in is no member: the word names them, by their name on
+                // the service the app carries them from.
+                if let Some(persona) = &heard.persona
+                    && heard.member.is_bot()
+                {
+                    self.presence_ctx
+                        .set_display_name(heard.member.clone(), persona.shown());
+                }
                 if let Ok(Some(payload)) =
                     collab_types::presence::PresencePayload::from_live(heard.payload)
                 {

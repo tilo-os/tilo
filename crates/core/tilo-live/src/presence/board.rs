@@ -9,9 +9,10 @@
 //! certificate named ([`Board::certify`]), so nobody here can be named as
 //! somebody else.
 
+use collab_types::MemberId;
 use collab_types::presence::{
-    Availability, Bridged, CallPresence, DESKTOP_APP, Payload, PointerSpace, Presence, PresenceKey,
-    ShellPresence, ShownWave as Wave,
+    Availability, Bridged, CallPresence, DESKTOP_APP, PERSONA_SESSION, Payload, Persona,
+    PointerSpace, Presence, PresenceKey, ShellPresence, ShownWave as Wave,
 };
 
 use super::publish::{KEEPALIVE_MS, Schedule};
@@ -138,7 +139,7 @@ pub struct Status {
 
 /// One person a bridge carries into a call: a member of the call of its own,
 /// said on this device's presence on behalf of them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BridgedMember {
     /// The stand-in's session, stable for as long as the person is on that
     /// service: the key every device derives their publisher by
@@ -148,8 +149,11 @@ pub struct BridgedMember {
     pub name: String,
     /// Who they are on the service, and the member they are linked to.
     pub bridged: Bridged,
-    /// The call they are in, as the bridge carries them into it.
-    pub call: Call,
+    /// The call they are in, as the bridge carries them into it: none for an app's persona
+    /// ([`collab_types::presence::Persona`]), who says only its words.
+    pub call: Option<Call>,
+    /// What they say in the app that carries them in: the app, the key and the word.
+    pub words: Vec<(String, PresenceKey, Payload)>,
 }
 
 impl BridgedMember {
@@ -170,6 +174,10 @@ impl BridgedMember {
             .unwrap_or_else(|| hex::encode(self.publisher(speaker)))
     }
 }
+
+/// One word a member said in an app here, as this device's apps are handed it: who said it (a
+/// person, an agent, or an app's persona and the persona itself), the app, the key and the word.
+pub type AppWord = (MemberId, Option<Persona>, String, PresenceKey, Payload);
 
 /// What one device says of itself here.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -394,6 +402,14 @@ impl Present {
         changed
     }
 
+    /// The persona's id, when this member is an app's persona a device speaks for
+    /// ([`collab_types::presence::Persona::id`]): never a person, whoever the device is.
+    #[must_use]
+    pub fn persona(&self) -> Option<&str> {
+        self.spoken_by?;
+        self.session.as_deref()?.strip_prefix(PERSONA_SESSION)
+    }
+
     /// Whether this member is an agent rather than a person.
     #[must_use]
     pub fn agent(&self) -> bool {
@@ -568,9 +584,11 @@ impl Board {
             // The run is said on its speaker's device: it lists as that device. A person's device
             // speaks for the runs it executes, which work for that person, as this device's own
             // runs work for its person; the host's runs are nobody's it can tell.
+            // An app's persona is the app's: it works for nobody here.
+            let persona = session.starts_with(PERSONA_SESSION);
             if let Some(speaker) = self.present(from) {
                 member.device.clone_from(&speaker.device);
-                if self.host != Some(from) {
+                if self.host != Some(from) && !persona {
                     member.user.clone_from(&speaker.user);
                 }
             }
@@ -662,6 +680,52 @@ impl Board {
             self.revision = self.revision.wrapping_add(1);
         }
         changed
+    }
+
+    /// Every word the members here said in their apps, as this device's apps are handed them: a
+    /// person's as theirs, an agent's as the agent of its person, and an app's persona's as that
+    /// app's persona, in that app alone. A member whose person is not known yet says none.
+    #[must_use]
+    pub fn app_words(&self) -> Vec<AppWord> {
+        let mut words = Vec::new();
+        for member in self.here() {
+            if let Some(id) = member.persona() {
+                let Some(bridged) = &member.bridged else {
+                    continue;
+                };
+                let persona = Persona {
+                    service: bridged.service.clone(),
+                    account: bridged.account.clone(),
+                    name: member.label().to_owned(),
+                };
+                for (app, key, payload) in
+                    member.apps.iter().filter(|(app, ..)| persona.id(app) == id)
+                {
+                    let who = persona.member(app);
+                    words.push((
+                        who,
+                        Some(persona.clone()),
+                        app.clone(),
+                        key.clone(),
+                        payload.clone(),
+                    ));
+                }
+                continue;
+            }
+            // An agent is its person's: one whose person its presence does not name yet is no
+            // member.
+            let Some(who) = (match (&member.member, &member.user) {
+                (Some(agent), Some(person)) => Some(MemberId::agent(agent.clone(), person.clone())),
+                (Some(_), None) => None,
+                (None, user) => user.clone().map(MemberId::person),
+            }) else {
+                continue;
+            };
+            for (app, key, payload) in &member.apps {
+                words.push((who.clone(), None, app.clone(), key.clone(), payload.clone()));
+            }
+        }
+        words
     }
 
     /// How many times what is known here changed: a surface drawing its
@@ -857,12 +921,25 @@ impl Board {
             }
         }
         for member in &own.bridged {
-            if said
+            let held = said
                 .bridged
                 .iter()
-                .any(|held| held.session == member.session && held == member)
-            {
+                .find(|held| held.session == member.session);
+            if held == Some(member) {
                 continue;
+            }
+            for (app, key, _) in held.into_iter().flat_map(|held| &held.words) {
+                if !member.words.iter().any(|(_, now, _)| now == key) {
+                    self.schedule.push(
+                        Presence::app(
+                            app.clone(),
+                            self.workspace.clone(),
+                            key.clone(),
+                            Payload::Left,
+                        )
+                        .spoken_for(member.session.clone(), member.person(self.publisher)),
+                    );
+                }
             }
             self.say_bridged(member);
         }
@@ -895,18 +972,26 @@ impl Board {
             )
             .spoken_for(session.clone(), named.clone()),
         );
-        self.schedule.push(
-            Presence::desktop(
-                workspace,
-                Payload::Availability {
-                    state: "available".to_owned(),
-                    call: Some(Call::encode(&member.call)),
-                    camera: member.call.camera,
-                    screen: member.call.screen,
-                },
-            )
-            .spoken_for(session, named),
-        );
+        if let Some(call) = &member.call {
+            self.schedule.push(
+                Presence::desktop(
+                    workspace.clone(),
+                    Payload::Availability {
+                        state: "available".to_owned(),
+                        call: Some(Call::encode(call)),
+                        camera: call.camera,
+                        screen: call.screen,
+                    },
+                )
+                .spoken_for(session.clone(), named.clone()),
+            );
+        }
+        for (app, key, payload) in &member.words {
+            self.schedule.push(
+                Presence::app(app.clone(), workspace.clone(), key.clone(), payload.clone())
+                    .spoken_for(session.clone(), named.clone()),
+            );
+        }
     }
 
     /// Say the whole of what this device is again: the frame set a member who
@@ -1247,7 +1332,7 @@ impl Board {
             .filter(|member| member.spoken_by == Some(from))
         {
             device.trim().clone_into(&mut run.device);
-            if persons && run.user.as_deref() != Some(user.as_str()) {
+            if persons && run.persona().is_none() && run.user.as_deref() != Some(user.as_str()) {
                 run.user = Some(user.clone());
                 runs = true;
             }

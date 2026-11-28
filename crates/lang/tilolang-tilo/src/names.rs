@@ -9,6 +9,7 @@
 //! who acted, never an internal id and never part of one.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use collab_types::history::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, name_words};
@@ -73,6 +74,11 @@ pub struct HostNames {
     /// The instance's host, not held: the host's runtime holds these names, and a strong hold
     /// here would keep the host, and the instance's connection, after the instance ended.
     host: std::rc::Weak<RefCell<Option<crate::host::Host>>>,
+    /// What presence named the apps' personas it heard by ([`Persona::shown`]): someone an app
+    /// carries in from another service is no member, so the members' resource never names them.
+    ///
+    /// [`Persona::shown`]: collab_types::presence::Persona::shown
+    personas: Rc<RefCell<HashMap<MemberId, String>>>,
     otherwise: Rc<dyn NameHost>,
 }
 
@@ -82,8 +88,15 @@ impl HostNames {
     pub fn new(otherwise: Rc<dyn NameHost>, host: &Rc<RefCell<Option<crate::host::Host>>>) -> Self {
         Self {
             host: Rc::downgrade(host),
+            personas: Rc::default(),
             otherwise,
         }
+    }
+
+    /// What presence names the apps' personas by, which its host sets as presence hears them.
+    #[must_use]
+    pub fn personas(&self) -> Rc<RefCell<HashMap<MemberId, String>>> {
+        Rc::clone(&self.personas)
     }
 
     /// The row the workspace keeps for `member`, as the host last read it.
@@ -99,6 +112,9 @@ impl NameHost for HostNames {
         let Some(member) = who.member_id() else {
             return self.otherwise.name(who);
         };
+        if let Some(persona) = self.personas.borrow().get(member) {
+            return persona.clone();
+        }
         if let Some(row) = self.row(member)
             && !row.name.trim().is_empty()
         {

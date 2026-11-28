@@ -62,7 +62,7 @@ describe("a presence lane", () => {
   it("is refused to a key's client", async () => {
     const lane = new Tilo({ key: "tilo_sk_test", url: "https://api.test" }).workspace(WORKSPACE).presenceLane;
     for (const attempt of [
-      () => lane.say({ key: { workspace: { id: WORKSPACE } }, payload: { composing: { composing: true } } }),
+      () => lane.say({ key: { Workspace: { id: WORKSPACE } }, payload: { Composing: { composing: true } } }),
       () => lane.composing("c1"),
     ]) {
       const refused = await attempt().catch((error: unknown) => error);
@@ -85,8 +85,9 @@ describe("a presence lane", () => {
     const connection = new AppConnection();
     const lane = new Tilo({ daemon: connection }).workspace().presenceLane;
     const word: PresenceSaid = {
-      key: { resource: { app: "so.tilo.discord", id: "c1", kind: "TextChannel" } },
-      payload: { composing: { composing: true } },
+      key: { Resource: { app: "so.tilo.chat", id: "c1", kind: "TextChannel" } },
+      payload: { Composing: { composing: true } },
+      persona: { service: "discord", account: "3001", name: "Dana" },
     };
     await lane.say(word);
     expect(connection.said).toEqual([word]);

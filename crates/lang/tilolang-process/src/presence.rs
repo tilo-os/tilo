@@ -59,6 +59,9 @@ pub struct Presence {
     said_spot_at: Option<[f64; 6]>,
     /// What the instance last said of the draft its person writes.
     said_composing: DraftSaid,
+    /// What each app's persona heard here is called: someone an app carries in from another
+    /// service, named by their name and the service's ("Dana (Discord)"), never a member's name.
+    personas: HashMap<MemberId, String>,
     /// What the window shows of the people here as a window with a connection of its own does,
     /// waiting to be sent to it: each step of an action taken on a resource of the app, which
     /// outlines the control the action stands for.
@@ -81,6 +84,7 @@ impl Presence {
             said_spot: None,
             said_spot_at: None,
             said_composing: DraftSaid::default(),
+            personas: HashMap::new(),
             for_window: Vec::new(),
         }
     }
@@ -90,6 +94,11 @@ impl Presence {
     pub fn heard(&mut self, heard: impl IntoIterator<Item = Heard>) -> bool {
         let mut took = false;
         for word in heard {
+            if let Some(persona) = &word.persona
+                && matches!(word.member, MemberId::Bot(_))
+            {
+                self.personas.insert(word.member.clone(), persona.shown());
+            }
             let Ok(Some(payload)) = PresencePayload::from_live(word.payload) else {
                 continue;
             };
@@ -125,9 +134,13 @@ impl Presence {
     pub fn show(&mut self, instance: &mut Instance) {
         let now = ui_core::time::now();
         self.heard.prune_composing(now);
-        let composing: Vec<MemberId> = instance.detail_target().map_or_else(Vec::new, |target| {
-            self.heard.composing_at_resource(&target.id_string(), now)
-        });
+        let mut composing: Vec<MemberId> =
+            instance.detail_target().map_or_else(Vec::new, |target| {
+                self.heard.composing_at_resource(&target.id_string(), now)
+            });
+        composing.retain(|who| *who != self.me);
+        // Someone an app carries in is named by presence, before the views read their name.
+        instance.set_persona_names(&self.personas);
         instance.set_peers_and_composers(self.peers(), &composing);
         // Where everyone is in the document each resource holds, as their app declared it:
         // what a view reads with `spots(r)` to place them on its surface.
@@ -190,6 +203,7 @@ impl Presence {
                 send(Said {
                     key: key.clone(),
                     payload: Payload::Selection { start: 0, end: 0 },
+                    persona: None,
                 });
             }
             self.said_at = at;
@@ -206,11 +220,13 @@ impl Presence {
             send(Said {
                 key: gone.clone(),
                 payload: Payload::Left,
+                persona: None,
             });
             if still_here {
                 send(Said {
                     key: gone,
                     payload: Payload::Selection { start: 0, end: 0 },
+                    persona: None,
                 });
             }
             self.said_spot_at = None;
@@ -228,6 +244,7 @@ impl Presence {
                         wide: to_f32(wide),
                         tall: to_f32(tall),
                     },
+                    persona: None,
                 });
                 self.said_spot_at = Some(at);
             }
@@ -236,7 +253,11 @@ impl Presence {
         if let Some((key, payload)) = self.said_composing.look(draft, now)
             && let Some(payload) = payload.to_live()
         {
-            send(Said { key, payload });
+            send(Said {
+                key,
+                payload,
+                persona: None,
+            });
         }
     }
 
@@ -284,10 +305,10 @@ impl Presence {
         spots
     }
 
-    /// Someone other than the person at each resource, by the resource's id, whoever published
+    /// Everyone other than the person at each resource, by the resource's id, whoever published
     /// it there: where their selection is, or their caret, which is how a selection of nothing
-    /// reaches a device from another one.
-    fn peers(&self) -> HashMap<String, MemberId> {
+    /// reaches a device from another one. Sorted by member, so a render is stable frame to frame.
+    fn peers(&self) -> HashMap<String, Vec<MemberId>> {
         let selected = self
             .heard
             .selections
@@ -298,14 +319,22 @@ impl Presence {
             .carets
             .iter()
             .map(|(key, at)| (key, at.iter().map(|(user, _)| user).collect::<Vec<_>>()));
-        let mut peers = HashMap::new();
+        let mut peers: HashMap<String, Vec<MemberId>> = HashMap::new();
         for (key, users) in selected.chain(caret) {
-            if let PresenceKey::Resource { id, .. } = key
-                && let Some(user) = users.into_iter().find(|user| **user != self.me)
-            {
-                peers.entry(id.clone()).or_insert_with(|| user.clone());
+            let PresenceKey::Resource { id, .. } = key else {
+                continue;
+            };
+            for user in users.into_iter().filter(|user| **user != self.me) {
+                let here = peers.entry(id.clone()).or_default();
+                if !here.contains(user) {
+                    here.push(user.clone());
+                }
             }
         }
+        for here in peers.values_mut() {
+            here.sort();
+        }
+        peers.retain(|_, here| !here.is_empty());
         peers
     }
 }
@@ -336,6 +365,7 @@ mod tests {
             member: MemberId::person(user),
             key: channel(),
             payload: payload.to_live().expect("a word the live session carries"),
+            persona: None,
         }]);
     }
 
@@ -392,6 +422,7 @@ mod tests {
                 member: MemberId::agent("scout", "ada"),
                 key,
                 payload: payload.to_live().expect("a word the live session carries"),
+                persona: None,
             }]));
         }
         let heard = sent(&mut presence);
@@ -492,11 +523,12 @@ mod tests {
                 member: MemberId::person("ada"),
                 key: channel(),
                 payload: payload.to_live().expect("a word the live session carries"),
+                persona: None,
             }]);
         }
         assert_eq!(
             bridge.peers(),
-            HashMap::from([("channel-1".to_owned(), MemberId::person("ada"))]),
+            HashMap::from([("channel-1".to_owned(), vec![MemberId::person("ada")])]),
             "the bridge reads who is at the conversation, whoever's app said it"
         );
         assert_eq!(
@@ -524,7 +556,7 @@ mod tests {
         heard(&mut presence, "bo", &PresencePayload::Caret { pos: 0 });
         assert_eq!(
             presence.peers(),
-            HashMap::from([("channel-1".to_owned(), MemberId::person("ada"))])
+            HashMap::from([("channel-1".to_owned(), vec![MemberId::person("ada")])])
         );
         let mut selected = Presence::new(APP, "bo");
         heard(

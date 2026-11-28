@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use collab_types::MemberId;
-use collab_types::presence::{CallPresence, Payload, Presence, PresenceKey, ShellPresence};
+use collab_types::presence::{
+    CallPresence, Payload, Persona, Presence, PresenceKey, ShellPresence,
+};
 use runtime_collab::wire::shell::{ShellInCall, ShellWord, SpokenFor};
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
@@ -116,8 +118,13 @@ pub(crate) fn join_asked_first(app: &str) -> String {
     )
 }
 
-/// What one app said of the person under one key: its app, the key, and the word.
-type AppWord = (String, PresenceKey, Payload);
+/// What one app said of the person, or as one of its personas, under one key: its app, the
+/// persona, the key, and the word.
+type AppWord = (String, Option<Persona>, PresenceKey, Payload);
+
+/// What an app's views are handed of a word said elsewhere: who said it, the persona it is when an
+/// app's persona said it, and the frame.
+type Sink = Arc<dyn Fn(MemberId, Option<Persona>, Presence) + Send + Sync>;
 
 /// What the person's shell says in one workspace, and the runs the device executes there.
 type ShellSaid = (Option<Own>, Vec<(String, String, ShellPresence)>);
@@ -127,7 +134,7 @@ type ShellSaid = (Option<Own>, Vec<(String, String, ShellPresence)>);
 /// the app that said it.
 pub(crate) struct AppWatch {
     id: u64,
-    sink: Arc<dyn Fn(MemberId, Presence) + Send + Sync>,
+    sink: Sink,
 }
 
 /// The apps' connections watching one workspace, and how the next is numbered.
@@ -188,7 +195,7 @@ impl Speaking {
     pub(crate) fn watch_app(
         &self,
         workspace: &str,
-        sink: impl Fn(MemberId, Presence) + Send + Sync + 'static,
+        sink: impl Fn(MemberId, Option<Persona>, Presence) + Send + Sync + 'static,
     ) -> Watch {
         let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut watchers) = self.watchers.lock() {
@@ -207,14 +214,15 @@ impl Speaking {
         }
     }
 
-    /// What the app `app` says of its person in `workspace` under `key`: kept for a live session
-    /// that opens later, said by the workspace's speaker for the device, and handed to the other
-    /// apps of the workspace here but the connection `except`.
+    /// What the app `app` says in `workspace` under `key`, `who` saying it: its person, or one of
+    /// its personas (the app's own member, never the person): kept for a live session that opens
+    /// later, said by the workspace's speaker, and handed to the other apps of the workspace here
+    /// but the connection `except`.
     pub(crate) fn say_app(
         &self,
         app: &str,
         workspace: &str,
-        member: &MemberId,
+        (member, persona): (&MemberId, Option<&Persona>),
         key: PresenceKey,
         payload: Payload,
         except: Option<u64>,
@@ -222,9 +230,16 @@ impl Speaking {
         {
             let mut all = self.apps.lock_recover();
             let apps = all.entry(workspace.to_owned()).or_default();
-            apps.retain(|(held_app, held, _)| held_app != app || *held != key);
+            apps.retain(|(held_app, held_as, held, _)| {
+                held_app != app || held_as.as_ref() != persona || *held != key
+            });
             if payload != Payload::Left {
-                apps.push((app.to_owned(), key.clone(), payload.clone()));
+                apps.push((
+                    app.to_owned(),
+                    persona.cloned(),
+                    key.clone(),
+                    payload.clone(),
+                ));
             }
             drop(all);
         }
@@ -234,57 +249,38 @@ impl Speaking {
             .get(workspace)
             .and_then(Weak::upgrade);
         if let Some(speaker) = speaker {
-            speaker.set_app_word(app, key.clone(), Some(payload.clone()));
+            speaker.set_app_word(app, persona, key.clone(), Some(payload.clone()));
         }
-        self.tell(
+        let member = persona.map_or_else(|| member.clone(), |persona| persona.member(app));
+        tell_watched(
+            &self.watchers,
             workspace,
-            member,
+            &member,
+            persona,
             &Presence::app(app.to_owned(), workspace.to_owned(), key, payload),
             except,
         );
     }
 
-    /// The app `app`'s connection in `workspace` ended, and it leaves every `key` it said there:
-    /// nobody is shown at a caret whose window closed.
+    /// The app `app`'s connection in `workspace` ended, and it leaves every key it said there as
+    /// `member` or one of its personas: nobody is shown at a caret whose window closed.
     pub(crate) fn left_app(
         &self,
         app: &str,
         workspace: &str,
         member: &MemberId,
-        keys: &[PresenceKey],
+        keys: &[(Option<Persona>, PresenceKey)],
     ) {
-        let speaker = self
-            .speakers
-            .lock_recover()
-            .get(workspace)
-            .and_then(Weak::upgrade);
-        for key in keys {
-            {
-                let mut all = self.apps.lock_recover();
-                let apps = all.entry(workspace.to_owned()).or_default();
-                apps.retain(|(held_app, held, _)| held_app != app || held != key);
-                drop(all);
-            }
-            if let Some(speaker) = &speaker {
-                speaker.set_app_word(app, key.clone(), Some(Payload::Left));
-            }
-            self.tell(
+        for (persona, key) in keys {
+            self.say_app(
+                app,
                 workspace,
-                member,
-                &Presence::app(
-                    app.to_owned(),
-                    workspace.to_owned(),
-                    key.clone(),
-                    Payload::Left,
-                ),
+                (member, persona.as_ref()),
+                key.clone(),
+                Payload::Left,
                 None,
             );
         }
-    }
-
-    /// `frame`, what `member` said on another device, is handed to the apps of its workspace.
-    fn tell(&self, workspace: &str, member: &MemberId, frame: &Presence, except: Option<u64>) {
-        tell_watched(&self.watchers, workspace, member, frame, except);
     }
 
     /// `frame`, what `member` said on another device, reaches the apps watching `workspace`, as
@@ -292,7 +288,7 @@ impl Speaking {
     /// run.
     #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn hear_from_other_device(&self, member: &MemberId, frame: &Presence) {
-        tell_watched(&self.watchers, &frame.cluster, member, frame, None);
+        tell_watched(&self.watchers, &frame.cluster, member, None, frame, None);
     }
 
     /// `workspace`'s live session opened, and `speaker` says the device's word in it: everything
@@ -306,12 +302,12 @@ impl Speaking {
             speaker.set_agents(agents);
         }
         let apps = self.apps.lock_recover().get(&workspace).cloned();
-        for (app, key, word) in apps.unwrap_or_default() {
-            speaker.set_app_word(&app, key, Some(word));
+        for (app, persona, key, word) in apps.unwrap_or_default() {
+            speaker.set_app_word(&app, persona.as_ref(), key, Some(word));
         }
         let watchers = Arc::clone(&self.watchers);
-        speaker.on_heard(Arc::new(move |member, frame| {
-            tell_watched(&watchers, &frame.cluster, member, frame, None);
+        speaker.on_heard(Arc::new(move |member, persona, frame| {
+            tell_watched(&watchers, &frame.cluster, member, persona, frame, None);
         }));
         self.speakers
             .lock_recover()
@@ -365,22 +361,29 @@ impl AppPresence for Live {
         origin: &CrdtRoute,
     ) {
         if let Some(live) = payload.to_live() {
-            self.speaking
-                .say_app(&origin.app_id, &origin.cluster_id, member, key, live, None);
+            self.speaking.say_app(
+                &origin.app_id,
+                &origin.cluster_id,
+                (member, None),
+                key,
+                live,
+                None,
+            );
         }
     }
 }
 
-/// Hand `frame`, what `member` said in `workspace`, to the apps watching it there but the
-/// connection `except`.
+/// Hand `frame`, what `member` said in `workspace` (as `persona`, an app's persona, when one
+/// said it), to the apps watching it there but the connection `except`.
 fn tell_watched(
     watchers: &Watchers,
     workspace: &str,
     member: &MemberId,
+    persona: Option<&Persona>,
     frame: &Presence,
     except: Option<u64>,
 ) {
-    let sinks: Vec<Arc<dyn Fn(MemberId, Presence) + Send + Sync>> = {
+    let sinks: Vec<Sink> = {
         let Ok(watchers) = watchers.lock() else {
             return;
         };
@@ -393,7 +396,7 @@ fn tell_watched(
             .collect()
     };
     for sink in sinks {
-        sink(member.clone(), frame.clone());
+        sink(member.clone(), persona.cloned(), frame.clone());
     }
 }
 

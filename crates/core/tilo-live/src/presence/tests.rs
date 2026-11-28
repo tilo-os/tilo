@@ -986,7 +986,7 @@ tilo_test_env::scenario! {
                 avatar: None,
                 linked: None,
             },
-            call: Call {
+            call: Some(Call {
                 call: CallPresence {
                     channel: "c_voice".into(),
                     name: "voice".into(),
@@ -996,7 +996,8 @@ tilo_test_env::scenario! {
                 screen: false,
                 muted: false,
                 deafened: false,
-            },
+            }),
+            words: Vec::new(),
         };
         let call = Call {
             call: CallPresence {
@@ -1075,5 +1076,70 @@ tilo_test_env::scenario! {
             theirs.calls().is_empty(),
             "the bridge is in no call and carries nobody"
         );
+    }
+
+    phase an_apps_persona_is_the_apps_never_a_person;
+    // A bridge on Ada's laptop says Dana, whom it carries in from Discord, types in a
+    // conversation. Bo's device hears her as the bridge's persona in the bridge's app, never as
+    // Ada, whose device said it; a device that is not here speaks as nobody.
+    {
+        use collab_types::presence::{Bridged, Persona, stand_in};
+        let channel = PresenceKey::resource("so.tilo.chat", "channel-1", "TextChannel");
+        let dana = Persona {
+            service: "discord".into(),
+            account: "3001".into(),
+            name: "Dana".into(),
+        };
+        let (app, laptop) = ("so.tilo.discord", [7; 32]);
+        let typing = |words: Vec<(String, PresenceKey, Payload)>| Own {
+            label: "Ada".into(),
+            user: Some("ada".into()),
+            bridged: vec![BridgedMember {
+                session: dana.session(app),
+                name: dana.name.clone(),
+                bridged: Bridged {
+                    service: dana.service.clone(),
+                    account: dana.account.clone(),
+                    name: dana.name.clone(),
+                    avatar: None,
+                    linked: None,
+                },
+                call: None,
+                words,
+            }],
+            ..Own::default()
+        };
+        let word = (app.to_owned(), channel.clone(), Payload::Composing { composing: true });
+        let mut ada = Board::new(WORKSPACE, laptop);
+        ada.say(&typing(vec![word]));
+        let (mut bo, mut stranger) = (board(), board());
+        for (_, frame) in ada.flush(0.0) {
+            bo.hear(laptop, &frame, 1.0);
+            if frame.on_behalf.is_some() {
+                stranger.hear(laptop, &frame, 1.0);
+            }
+        }
+        bo.certify(laptop, "ada".into(), "laptop");
+        assert_eq!(
+            bo.app_words(),
+            vec![(
+                collab_types::MemberId::bot("so.tilo.discord/discord:3001"),
+                Some(dana.clone()),
+                app.to_owned(),
+                channel,
+                Payload::Composing { composing: true },
+            )],
+            "Dana types, as the bridge's persona"
+        );
+        let stand = bo.present(stand_in(laptop, &dana.session(app))).expect("she is here");
+        assert_eq!((stand.user.as_deref(), stand.label()), (None, "Dana"), "never Ada");
+        assert!(stranger.app_words().is_empty(), "a device that is not here speaks as nobody");
+
+        // Dana stops typing: her word leaves, though she is still carried in.
+        ada.say(&typing(Vec::new()));
+        for (_, frame) in ada.flush(3.0) {
+            bo.hear(laptop, &frame, 4.0);
+        }
+        assert!(bo.app_words().is_empty(), "nobody types once she stopped");
     }
 }

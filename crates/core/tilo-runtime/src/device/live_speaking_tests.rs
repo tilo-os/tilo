@@ -686,11 +686,13 @@ fn dana_is_carried_into_the_call(
     }));
     assert_eq!(reported, serde_json::json!({ "Ok": null }), "{reported}");
     until("Dana carried into the call", || {
-        session
-            .speaker()
-            .bridged()
-            .iter()
-            .any(|member| member.bridged.account == DANA && member.call.call.channel == CALL)
+        session.speaker().bridged().iter().any(|member| {
+            member.bridged.account == DANA
+                && member
+                    .call
+                    .as_ref()
+                    .is_some_and(|call| call.call.channel == CALL)
+        })
     });
     let frame = vec![0xF8, 0xFF, 0xFE];
     assert!(matches!(

@@ -98,12 +98,23 @@ export interface CallAsk {
 
 /**
  * One presence word of an app's person: what they say (`payload`, such as
- * `{ composing: { composing: true } }`) under a presence key (`key`, such as
- * `{ resource: { app, id, kind } }`), in the shapes the workspace's live session carries.
+ * `{ Composing: { composing: true } }`) under a presence key (`key`, such as
+ * `{ Resource: { app, id, kind } }`), in the shapes the workspace's live session carries.
+ * With a `persona`, it is said by someone the app carries in from another service, as the
+ * app's persona: shown by their name there and the service's ("Dana (Discord)"), and never
+ * credited to a member here.
  */
 export interface PresenceSaid {
   key: Record<string, unknown>;
   payload: Record<string, unknown> | string;
+  persona?: PresencePersona;
+}
+
+/** Someone an app carries in from another service: the service, their account there, their name. */
+export interface PresencePersona {
+  service: string;
+  account: string;
+  name: string;
 }
 
 /** A member of the workspace, as presence names them: `{ person }`, `{ agent: { id, person } }`. */

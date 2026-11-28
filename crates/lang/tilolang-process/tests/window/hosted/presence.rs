@@ -36,6 +36,12 @@ fn composer(session: &mut Session) -> (f64, f64) {
 /// Ada and Bo, members of one workspace, each at a Chat window on its document, both in the
 /// conversation #design, which Ada made.
 fn ada_and_bo_in_design() -> (Session, Session) {
+    let (_, ada, bo, _) = design_on_a_bus();
+    (ada, bo)
+}
+
+/// [`ada_and_bo_in_design`], with the workspace's bus and the conversation's id.
+fn design_on_a_bus() -> (Rc<Bus>, Session, Session, String) {
     let bus = Rc::new(Bus::default());
     bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
     bus.member(ui::tilo_actions::MemberId::person("bo"), "Bo");
@@ -43,10 +49,14 @@ fn ada_and_bo_in_design() -> (Session, Session) {
     let mut ada = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
     let new_channel = ada.identity_doing("Conversations", "new_channel");
     let made = ada.invoke_doing(&new_channel, &serde_json::json!({ "name": "design" }));
-    assert!(
-        matches!(made, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
-        "the channel was made: {made:?}"
-    );
+    let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = made else {
+        panic!("the channel was made: {made:?}");
+    };
+    let channel = output
+        .resources
+        .into_iter()
+        .next()
+        .expect("the channel it made");
     ada.settle();
     // Bo's window reads and writes the workspace's one store, as Ada's does.
     let mut bo = Session::on_bus(&bus, &route, spec_of(&route, "bo"));
@@ -55,7 +65,7 @@ fn ada_and_bo_in_design() -> (Session, Session) {
         session.window.click_at(x, y);
         session.settle();
     }
-    (ada, bo)
+    (bus, ada, bo, channel)
 }
 
 #[test]
@@ -128,4 +138,57 @@ fn a_writer_whose_window_vanished_stops_reading_as_typing_when_they_go_quiet_wit
         "at that wake Bo no longer reads Ada typing: {:?}",
         bo.shown()
     );
+}
+
+/// A bridge carries Dana in from Discord and says she types in #design, as an app's persona: Bo
+/// and Ada both read "Dana (Discord) is typing…", whoever else is at the conversation, and
+/// nobody here is said to type.
+#[test]
+fn someone_a_bridge_carries_in_reads_as_typing_by_their_name_there_and_never_as_a_person_here() {
+    let (bus, mut ada, mut bo, channel) = design_on_a_bus();
+    let bridge = Broker::on(
+        &bus,
+        RouteSpec::app("so.tilo.discord", uuid::Uuid::new_v4()),
+        "ada",
+    )
+    .presence_line();
+    let dana = collab_types::presence::Persona {
+        service: "discord".into(),
+        account: "3001".into(),
+        name: "Dana".into(),
+    };
+    // The bridge holds the conversation by its published address; presence keys it by its id.
+    let id = channel
+        .strip_prefix(&format!("tl:{CHAT}:"))
+        .expect("the channel's published address");
+    let key = ui::presence::PresenceKey::resource(CHAT, id, "TextChannel");
+    let say = |composing: bool| {
+        bridge
+            .say(&collab_types::presence::Said {
+                key: key.clone(),
+                payload: collab_types::presence::Payload::Composing { composing },
+                persona: Some(dana.clone()),
+            })
+            .expect("the device takes the bridge's word");
+    };
+    say(true);
+    for session in [&mut ada, &mut bo] {
+        session.settle();
+        assert_eq!(
+            says_typing(session).as_deref(),
+            Some("Dana (Discord) is typing…"),
+            "the person carried in types, by their name on Discord: {:?}",
+            session.shown()
+        );
+    }
+    say(false);
+    for session in [&mut ada, &mut bo] {
+        session.settle();
+        assert_eq!(
+            says_typing(session),
+            None,
+            "she stopped: {:?}",
+            session.shown()
+        );
+    }
 }

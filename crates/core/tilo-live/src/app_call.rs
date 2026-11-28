@@ -428,7 +428,7 @@ impl ConnectorCall {
                     avatar: person.avatar.clone(),
                     linked: None,
                 },
-                call: Call {
+                call: Some(Call {
                     call: CallPresence {
                         channel: pair.tilo.clone(),
                         name: String::new(),
@@ -440,7 +440,8 @@ impl ConnectorCall {
                     // as such in the call, as anyone here would be.
                     muted: person.muted || person.deafened,
                     deafened: person.deafened,
-                },
+                }),
+                words: Vec::new(),
             })
             .collect()
     }
