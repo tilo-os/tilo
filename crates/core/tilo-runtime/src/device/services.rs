@@ -2735,7 +2735,9 @@ impl Daemon {
         if let Some(login) = entering {
             let (entering_with, cert) = (Arc::clone(&workspaces), identity.cert.clone());
             stage("entering the workspace the login named");
-            super::workspaces::block_on_owned(async move {
+            let (with, cert_again, login_again) =
+                (Arc::clone(&entering_with), cert.clone(), login.clone());
+            let entered = super::workspaces::block_on_owned(async move {
                 let entering = super::home::entered_while_running(&entering_with, &cert, &login);
                 match tokio::time::timeout(crate::daemon::WAITED_WITHIN, entering).await {
                     Ok(entered) => entered,
@@ -2746,10 +2748,33 @@ impl Daemon {
                         crate::daemon::WAITED_WITHIN.as_secs()
                     )),
                 }
-            })
-            .unwrap_or_else(
-                |why| tracing::warn!(%why, "the workspace this login named is not kept here yet"),
-            );
+            });
+            // The device keeping it is away (the person's other computer is closed): it is entered
+            // once that device answers, asked again less often each time, so the person's list
+            // and their workspaces arrive here without this part starting again.
+            if let Err(why) = entered {
+                tracing::warn!(%why, "the workspace this login named is not kept here yet");
+                tilo_rt::app().handle().spawn(async move {
+                    let mut pause = PERSONS_WORKSPACE_FIRST_PAUSE;
+                    loop {
+                        tokio::time::sleep(pause).await;
+                        if with.copies().stopped() {
+                            return;
+                        }
+                        match super::home::entered_while_running(&with, &cert_again, &login_again)
+                            .await
+                        {
+                            Ok(()) => return,
+                            Err(why) => tracing::info!(
+                                %why,
+                                retry_in_s = pause.as_secs(),
+                                "the workspace this login named is not kept here yet"
+                            ),
+                        }
+                        pause = pause.saturating_mul(2).min(PERSONS_WORKSPACE_LONGEST_PAUSE);
+                    }
+                });
+            }
         }
         let take_work = member
             .then(|| take_work::Server::from_login(home.get_blocking().as_ref()))
