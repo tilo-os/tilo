@@ -415,11 +415,6 @@
           }
         },
         {
-          "wait_for": {
-            "shown": "Subtitles"
-          }
-        },
-        {
           "click_any": [
             {
               "prefix": "Subtitles"
@@ -455,22 +450,30 @@
         },
         {
           "must": [
-            "Playback speed"
+            {
+              "prefix": "Playback speed"
+            }
           ]
         },
         {
           "press_any": [
-            "Playback speed"
+            {
+              "prefix": "Playback speed"
+            }
           ]
         },
         {
           "must": [
-            "1.5×"
+            {
+              "prefix": "1.5×"
+            }
           ]
         },
         {
           "press_any": [
-            "1.5×"
+            {
+              "prefix": "1.5×"
+            }
           ]
         },
         {
@@ -480,12 +483,16 @@
         },
         {
           "press_any": [
-            "Playback speed"
+            {
+              "prefix": "Playback speed"
+            }
           ]
         },
         {
           "must": [
-            "1.5×"
+            {
+              "prefix": "1.5×"
+            }
           ]
         }
       ]
@@ -507,12 +514,16 @@
         },
         {
           "must": [
-            "Picture in picture"
+            {
+              "prefix": "Picture in picture"
+            }
           ]
         },
         {
           "press_any": [
-            "Picture in picture"
+            {
+              "prefix": "Picture in picture"
+            }
           ]
         },
         {
