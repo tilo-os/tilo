@@ -561,17 +561,26 @@ class Session:
         if source is not None:
             # The development build is compiled for the id this device's daemon names for it,
             # which only that daemon answers: `tilolang build --dev` asks it, in this profile's
-            # environment.
+            # environment. Until the person's part answers, the device answers as itself — the
+            # system's, which refuses a development build — so it is asked again while that part
+            # comes up, and no longer.
             source_dir, runtime_id = source
             started = time.monotonic()
-            built = subprocess.run(
-                [str(args.bin_dir / "tilolang"), "build", str(source_dir), "--dev",
-                 "--search", str(source_dir.parent), "--out", str(tmp),
-                 "--tilo-runtime", runtime_id],
-                # From the app's own directory: the tool finds this checkout, and the packages the
-                # app reads, by it.
-                env=env, cwd=source_dir, capture_output=True, text=True, timeout=900,
-            )
+            deadline = time.monotonic() + 180
+            while True:
+                built = subprocess.run(
+                    [str(args.bin_dir / "tilolang"), "build", str(source_dir), "--dev",
+                     "--search", str(source_dir.parent), "--out", str(tmp),
+                     "--tilo-runtime", runtime_id],
+                    # From the app's own directory: the tool finds this checkout, and the packages
+                    # the app reads, by it.
+                    env=env, cwd=source_dir, capture_output=True, text=True, timeout=900,
+                )
+                refused = "a development build is installed by the person" in (
+                    built.stdout + built.stderr)
+                if built.returncode == 0 or not refused or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.5)
             if built.returncode != 0:
                 # The build's own words last: a log keeps its end, and the daemon's is long.
                 return "could not build", (
