@@ -81,6 +81,33 @@ pub(crate) struct Joined {
     pub(crate) pages: BTreeMap<[u8; 32], BTreeSet<tilo_live::live::Track>>,
     /// The picture demand this page last told its app.
     pub(crate) demand_at: u64,
+    /// The devices whose frames this live session refused for a roster that did not name them,
+    /// and this page has already asked its workspace's state for.
+    pub(crate) unroster_asked: BTreeSet<[u8; 32]>,
+}
+
+/// The devices this live session refused for a roster that did not name them, and that this
+/// page has not asked its workspace's state for yet: whether any is new. A frame from a device
+/// the roster does not name is refused before it is read, and the workspace's state names every
+/// device, so the page asks its host for it once per such device; the roster moves with the next
+/// pass that reads it.
+fn learnt_unroster(joined: &mut Joined) -> bool {
+    let mut asked = false;
+    for device in joined.live_session.unroster() {
+        asked |= joined.unroster_asked.insert(device);
+    }
+    asked
+}
+
+/// Keep `joined`'s roster as the workspace's governance names it: the devices that hold its
+/// keys now.
+fn set_joined_members(joined: &mut Joined, members: &BTreeSet<[u8; 32]>) {
+    if joined.members != *members {
+        joined
+            .live_session
+            .set_roster(Roster::new(members.iter().copied()));
+        joined.members.clone_from(members);
+    }
 }
 
 impl Joined {
@@ -613,14 +640,13 @@ impl Task {
                     joined.epoch = epoch;
                     joined.live_session.set_keys(keys);
                 }
-                if joined.members != members {
-                    joined
-                        .live_session
-                        .set_roster(Roster::new(members.iter().copied()));
-                    joined.members = members;
-                }
+                set_joined_members(joined, &members);
+                let asked = learnt_unroster(joined);
                 let live_session = Arc::clone(&joined.live_session);
                 self.hand_call_keys(&workspace, &live_session);
+                if asked {
+                    self.ask_replay(&route);
+                }
                 continue;
             }
             if !self.live_sessions.due(workspace_id, now) {
@@ -694,6 +720,7 @@ impl Task {
                         shown: BTreeMap::new(),
                         pages: BTreeMap::new(),
                         demand_at: u64::MAX,
+                        unroster_asked: BTreeSet::new(),
                     },
                 );
                 // The members' place goes back to listing who is on the live session.

@@ -239,22 +239,29 @@ async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
     // workspace, on the workspace scope's track.
     let events = member.events();
     let said = collab_types::presence::Presence::pointing(&lounge.workspace, 1, 0.5, 0.5);
-    wait_for(
-        "the member to hear the newcomer on the live session",
-        || {
-            newcomer
-                .send(Cmd::Presence(lounge.workspace_id, vec![said.clone()]))
-                .unwrap();
-            let events = events.drain();
-            async move {
-                events.into_iter().find_map(|event| match event {
-                    tilo_session_client::Event::LiveSession { from, .. } => Some(from),
-                    _ => None,
-                })
-            }
-        },
-    )
-    .await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        newcomer
+            .send(Cmd::Presence(lounge.workspace_id, vec![said.clone()]))
+            .unwrap();
+        if events
+            .drain()
+            .into_iter()
+            .any(|event| matches!(event, tilo_session_client::Event::LiveSession { .. }))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never heard the newcomer on the live session; the member's channels:\n{}\n\
+             the newcomer's:\n{}\ntheir failures: {:?} {:?}",
+            member.status().key_state,
+            newcomer.status().key_state,
+            member.status().failures,
+            newcomer.status().failures
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     for page in [member, newcomer] {
         page.close();

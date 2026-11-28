@@ -354,6 +354,9 @@ pub(crate) struct Shared {
     /// heard leaving: whether a member that lists nobody hears that device at all.
     presence_from: Mutex<BTreeMap<[u8; 32], (u64, u64)>>,
     refusals: Mutex<BTreeMap<String, usize>>,
+    /// The devices whose frames this live session refused because its roster does not name
+    /// them: who this page must learn of before it hears them.
+    unroster: Mutex<BTreeSet<[u8; 32]>>,
     ended: Mutex<bool>,
     /// What the workspace's calls allow, and the person each device is.
     call_rules: Mutex<CallRules>,
@@ -438,6 +441,7 @@ impl Shared {
             heard_total: AtomicU64::new(0),
             presence_from: Mutex::new(BTreeMap::new()),
             refusals: Mutex::new(BTreeMap::new()),
+            unroster: Mutex::new(BTreeSet::new()),
             ended: Mutex::new(false),
             call_rules: Mutex::default(),
             own_call: Mutex::new(None),
@@ -771,7 +775,10 @@ impl Shared {
             .is_some_and(|call| call.tag == tag)
     }
     /// One frame a reader got and this live session could not open, by why.
-    fn refused(&self, refusal: &Refusal) {
+    fn refused(&self, device: [u8; 32], refusal: &Refusal) {
+        if matches!(refusal, Refusal::OffRoster) {
+            self.unroster.lock_recover().insert(device);
+        }
         self.refusals
             .lock_recover()
             .entry(refusal.to_string())
@@ -1370,6 +1377,16 @@ impl LiveSession {
     #[must_use]
     pub fn refusals(&self) -> BTreeMap<String, usize> {
         self.shared.refusals.lock_recover().clone()
+    }
+
+    /// The devices whose frames this live session refused because its roster does not name
+    /// them, each once: who the reader must learn of before it hears them. Cleared as it
+    /// answers.
+    #[must_use]
+    pub fn unroster(&self) -> Vec<[u8; 32]> {
+        std::mem::take(&mut *self.shared.unroster.lock_recover())
+            .into_iter()
+            .collect()
     }
 
     /// How many devices are in this live session's scope now that it does not hear:
@@ -2256,7 +2273,7 @@ fn take_frame(
                 body,
             }),
             Ok(None) => {}
-            Err(refusal) => shared.refused(&refusal),
+            Err(refusal) => shared.refused(device, &refusal),
         }
         return false;
     }
@@ -2271,7 +2288,7 @@ fn take_frame(
             track == Track::Presence
         }
         Err(refusal) => {
-            shared.refused(&refusal);
+            shared.refused(device, &refusal);
             false
         }
     }
@@ -2283,7 +2300,7 @@ fn hear_voice(shared: &Shared, device: [u8; 32], name: &str, object: &VoiceObjec
     let opened = match shared.open(device, Track::Audio, name, &object.payload) {
         Ok(opened) => opened,
         Err(refusal) => {
-            shared.refused(&refusal);
+            shared.refused(device, &refusal);
             return false;
         }
     };
