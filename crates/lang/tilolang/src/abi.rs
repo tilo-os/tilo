@@ -307,6 +307,7 @@ imports! {
     UiBindState = "ui_bind_state" ([H, H] -> []);
     UiBindStateAt = "ui_bind_state_at" ([H, H, I64] -> []);
     StateGet = "state_get" ([H, H] -> [H]);
+    StateShown = "state_shown" ([H, H] -> [H]);
     ActSet = "act_set" ([H, H] -> [H]);
     WindowState = "window_state" ([H, H, H] -> []);
     ActThen = "act_then" ([H, H] -> [H]);

@@ -295,6 +295,7 @@ impl Checker<'_> {
             "agent" => return self.builtin_agent(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "state_shown" => return self.builtin_state_shown(args, span),
             "call_members" => return self.builtin_call_members(args, span),
             "call_inputs" => return self.builtin_call_inputs(args, span),
             "invoked" => return self.builtin_invoked(args, span),
@@ -1749,6 +1750,26 @@ impl Checker<'_> {
             (Imp::Call, Ty::Json)
         };
         Ex::host(imp, vec![resource, action, arguments], ty)
+    }
+
+    /// `state_shown(address, state)`: what the window showing `address` keeps of its declared
+    /// `state`, which another view of that resource reads. Nothing until a window keeps one.
+    fn builtin_state_shown(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [address, state] = args else {
+            self.err(
+                "E022",
+                span,
+                "`state_shown` takes the address and the state's name",
+            );
+            return Ex::error();
+        };
+        let address = self.expr_as(&address.value, &Ty::Text);
+        let state = self.expr_as(&state.value, &Ty::Text);
+        Ex::host(
+            Imp::StateShown,
+            vec![address, state],
+            Ty::Option(Box::new(Ty::Json)),
+        )
     }
 
     /// `set(name, value)`: an action reference that changes the view state `name`. Views only.

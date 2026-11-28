@@ -348,6 +348,27 @@ pub fn read(port: &dyn Port, app: &str, person: &str) -> Result<PersonalState, S
     ))
 }
 
+/// What the person's state of `app` keeps of the resource `address`'s declared `state`, as the
+/// JSON the window wrote it.
+///
+/// # Errors
+/// When the store cannot be read.
+pub fn shown_json(
+    port: &dyn Port,
+    app: &str,
+    person: &str,
+    address: &str,
+    state: &str,
+) -> Result<Option<Json>, String> {
+    let content = content(port, app, person)?.unwrap_or_default();
+    let key = view_key(&tilolang_runtime::view_state::shown_window(address), state);
+    Ok(content
+        .get(VIEWS)
+        .and_then(Json::as_object)
+        .and_then(|views| views.get(&key))
+        .cloned())
+}
+
 /// Keep `keeps`, the changes `person` made of their own state of the app `app`, in the store as
 /// the app's writes for them: their resource is made the first time, readable by them alone, and
 /// each change is its own write. A change of anyone else's state is refused, and keeps nothing.

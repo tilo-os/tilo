@@ -153,6 +153,13 @@ pub trait Invoker {
         let _ = (address, arguments);
         Err("This host calls no action by address".to_owned())
     }
+
+    /// What the window showing `address` keeps of its declared `state`, as the person's own
+    /// record holds it now; `None` where this host follows no other window's state.
+    fn state_shown(&self, address: &str, state: &str) -> Result<Option<Json>, String> {
+        let _ = (address, state);
+        Ok(None)
+    }
 }
 
 /// One thing a person asked to allow a call reads about it: what it is, in their language, the

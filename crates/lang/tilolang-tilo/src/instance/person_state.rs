@@ -56,12 +56,29 @@ impl Instance {
         true
     }
 
+    /// Give this window's views the slot another window of `address` keeps of its `state`: a
+    /// slot already holding it is left alone, so a host may run this every frame.
+    pub fn set_shown_state(&self, address: &str, state: String, value: crate::runtime::Value) {
+        if let Some(host) = self.host() {
+            host.runtime().set_view_state(
+                StateKey::shown(address, crate::personal::actor(self.me.as_str()), state),
+                value,
+            );
+        }
+    }
+
     /// What the person at the window `tab` changed of their own state since last asked, as the
     /// changes that keep it in the workspace's document of it, which holds `held` now: the view
-    /// state they set in this window, kept as this window's and as where they last were in the app
-    /// ([`personal::last_set`]), and what they marked seen. Someone else's mark is not theirs to
-    /// keep.
-    pub fn take_personal(&mut self, held: &PersonalState, tab: u64) -> Vec<Keep> {
+    /// state they set in this window, kept as this window's, as where they last were in the app
+    /// ([`personal::last_set`]) and as the state of each resource the window shows (`shown`), so
+    /// a view showing that resource elsewhere reads it, and what they marked seen. Someone
+    /// else's mark is not theirs to keep.
+    pub fn take_personal(
+        &mut self,
+        held: &PersonalState,
+        tab: u64,
+        shown: &std::collections::BTreeSet<String>,
+    ) -> Vec<Keep> {
         let Some(host) = self.host() else {
             return Vec::new();
         };
@@ -77,6 +94,14 @@ impl Instance {
                     state,
                     value,
                 }) => {
+                    for address in shown {
+                        keeps.push(Keep::View {
+                            person: person.clone(),
+                            window: crate::runtime::view_state::shown_window(address),
+                            state: state.clone(),
+                            value: value.clone(),
+                        });
+                    }
                     keeps.push(Keep::View {
                         person: person.clone(),
                         window: personal::last_set(&window),

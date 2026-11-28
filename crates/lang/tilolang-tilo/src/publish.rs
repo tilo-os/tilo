@@ -196,6 +196,17 @@ pub fn split_published(resource: &str) -> Option<(&str, &str)> {
     resource.strip_prefix("tl:")?.split_once(':')
 }
 
+/// The app a settled address names (`so.tilo.notes/notes/n1`, or the app alone): the first
+/// name before `/`. `None` for an address that names no app.
+#[must_use]
+pub fn app_of_address(address: &str) -> Option<&str> {
+    let app = address
+        .split_once('/')
+        .map_or(address, |(app, _)| app)
+        .trim();
+    (!app.is_empty() && app.contains('.') && !app.contains(':')).then_some(app)
+}
+
 /// What a resource of `schema` in the package `meta` is called while none of its own text names
 /// it: what its type declares (`(untitled: "Untitled")`, in the reader's words), else a
 /// package's root by the app's name ("Notes", "Notizen"), anything else by its type ("Todo

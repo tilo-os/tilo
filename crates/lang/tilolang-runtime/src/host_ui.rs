@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
+use crate::engine::HostFail;
 use crate::engine::Wasm;
 use crate::handles::{FrameKind, ViewState};
 use crate::render;
@@ -261,6 +262,39 @@ impl Core {
     fn state_key(&self, id: i32) -> HResult<StateKey> {
         let state = self.text(id)?;
         self.with_view(|vs| Ok(StateKey::view(vs.window.clone(), vs.viewer.clone(), state)))
+    }
+
+    /// `state_shown(address, state)`: what the window showing `address` keeps of its declared
+    /// `state`. Nothing until a window keeps one; the host keeps the answer as it moves.
+    fn state_shown(&self, address_h: i32, state_h: i32) -> HResult<Option<Wasm>> {
+        let (address, state) = (self.text(address_h)?, self.text(state_h)?);
+        let who = self.looking()?;
+        // The slots are the person's own: an agent acting for them reads them through its
+        // grants, never through a view of theirs.
+        if !matches!(who.member_id(), Some(crate::ids::MemberId::Person(_))) {
+            return trap(
+                "another window's state is the person's own, not a caller's acting for them",
+            );
+        }
+        let key = StateKey::shown(&address, who, state.clone());
+        let live = match self.invoker.borrow().as_ref() {
+            Some(invoker) => invoker
+                .state_shown(&address, &state)
+                .map_err(HostFail::Trap)?,
+            None => None,
+        };
+        if let Some(json) = live {
+            self.view_states
+                .borrow_mut()
+                .restore(key.clone(), Value::Json(Box::new(json)));
+        }
+        let (held, generation) = {
+            let states = self.view_states.borrow();
+            (states.get(&key).cloned(), states.generation(&key))
+        };
+        let value = held.map_or_else(Value::none, Value::some);
+        self.note_state_read(key, generation, &value);
+        self.ret_h(value)
     }
 
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -820,6 +854,7 @@ impl Core {
             Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
             Imp::RowOpen => ret_i32(i32::from(self.with_view(|vs| Ok(vs.open))?)),
             Imp::StateGet => self.state_get(a),
+            Imp::StateShown => self.state_shown(a.h(0)?, a.h(1)?),
             Imp::StateAt => self.state_at(a),
             Imp::ArgAt => self.arg_at(a),
             Imp::UiBindState => self.bind_state(a, None),

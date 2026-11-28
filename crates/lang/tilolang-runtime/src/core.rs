@@ -63,18 +63,19 @@ use Imp::{
     RichStyleNames, RichStyleRemoved, RichStyleSet, RichTableEdited, RichTime, RowKey, RowOpen,
     RunChanges, SeenBy, SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers,
     SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI,
-    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat,
-    StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches,
-    StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat,
-    StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take, TextBytes,
-    TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan,
-    TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith,
-    ToolTerminal, TryCall, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState,
-    UiBindStateAt, UiChild, UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI, UiPropPic,
-    Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd,
-    Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes,
-    WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
+    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, StateShown, Steps, StrCmp,
+    StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+    StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions,
+    StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take,
+    TextBytes, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift,
+    TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink,
+    ToolOpenWith, ToolTerminal, TryCall, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiBindStateAt, UiChild, UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH,
+    UiPropI, UiPropPic, Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode,
+    VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders,
+    WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word,
+    Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -900,10 +901,10 @@ impl Core {
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropB | UiPropF | UiPropPic | UiChild | UiBind
             | UiBindBegin | UiOn | UiChoose | UiAnchor | SpaceI | SpaceF | RowOpen
-            | UiBindState | UiBindStateAt | StateGet | StateAt | ArgAt | ActSet | ActThen
-            | ActAnswer | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
-            | UiAction | ActChoose | ActChooseFolder | ActSave | ActBlur | ActClose | ActCall
-            | ActCallInput | ActCallVolume | ActRunLine => self.ui_import(imp, a),
+            | UiBindState | UiBindStateAt | StateGet | StateShown | StateAt | ArgAt | ActSet
+            | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
+            | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave | ActBlur | ActClose
+            | ActCall | ActCallInput | ActCallVolume | ActRunLine => self.ui_import(imp, a),
             EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
             | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | VersionChange | Links
             | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy | Mentions | Steps

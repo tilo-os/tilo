@@ -6,6 +6,7 @@
 //! person changed of it as the app's own writes for them. So the place a person picked is still
 //! theirs after a restart and on their other devices.
 
+use tilo_resource_store::Port;
 use tilolang_tilo::personal::{self, Keep, PersonalState};
 use tilolang_tilo::resources::{ResourceStore, Watch};
 
@@ -82,5 +83,80 @@ impl PersonalDocument {
         let moved = self.moved;
         self.read(store);
         self.moved = moved;
+    }
+}
+
+/// What the person's own state of the app `address` names keeps of the resource `address`'s
+/// declared `state`: the system's shell, that app itself, or an app that declares it uses that
+/// app may read it; another app is refused. `None` when no window keeps one.
+///
+/// # Errors
+/// `address` names no app, or `reader` may not read that app's windows' state.
+pub fn shown_at(
+    port: &dyn Port,
+    person: &str,
+    reader: &str,
+    uses: bool,
+    address: &str,
+    state: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let app = tilolang_tilo::publish::app_of_address(address)
+        .ok_or_else(|| format!("`{address}` names no app"))?;
+    if !(reader == tilolang_tilo::shell::SHELL_APP || reader == app || uses) {
+        return Err(format!(
+            "{reader} may not read the state {app}'s windows keep"
+        ));
+    }
+    personal::shown_json(port, app, person, address, state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource_store::LocalPort;
+
+    fn find() -> Keep {
+        Keep::View {
+            person: "ada".to_owned(),
+            window: tilolang_tilo::runtime::view_state::shown_window("so.tilo.notes/notes/n1"),
+            state: "find".to_owned(),
+            value: serde_json::json!({"query": "x"}),
+        }
+    }
+
+    /// The read the host makes: the shell and the app itself read a window's state; another app
+    /// is refused unless it declares it uses that app, and only the person's own state is read.
+    #[test]
+    fn a_windows_state_reads_for_the_shell_its_app_and_what_it_uses() {
+        let port = LocalPort::in_memory();
+        personal::keep(&port, "so.tilo.notes", "ada", &[find()]).expect("kept");
+        let address = "so.tilo.notes/notes/n1";
+        let read = |reader: &str, uses: bool, person: &str| {
+            shown_at(&port, person, reader, uses, address, "find")
+        };
+        assert_eq!(
+            read("so.tilo.shell", false, "ada").expect("the shell reads"),
+            Some(serde_json::json!({"query": "x"}))
+        );
+        assert!(
+            read("so.tilo.notes", false, "ada")
+                .expect("its app")
+                .is_some()
+        );
+        assert!(
+            read("so.tilo.tasks", false, "ada").is_err(),
+            "another app is refused"
+        );
+        assert!(
+            read("so.tilo.tasks", true, "ada")
+                .expect("an app that uses it")
+                .is_some(),
+            "a declared use reads it"
+        );
+        assert_eq!(
+            read("so.tilo.shell", false, "bo").expect("nobody else's"),
+            None,
+            "another person keeps nothing here"
+        );
     }
 }

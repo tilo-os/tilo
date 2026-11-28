@@ -29,6 +29,16 @@ use crate::value::Value;
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
 
+/// What the window key of a slot kept by a resource starts with.
+const SHOWN: &str = "shown";
+
+/// The window key of the slots the resource `address` keeps: what any window showing it keeps
+/// its declared state at, and what another view of the resource reads.
+#[must_use]
+pub fn shown_window(address: &str) -> String {
+    format!("{SHOWN}:{address}")
+}
+
 /// One slot of view state.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StateKey {
@@ -51,6 +61,23 @@ impl StateKey {
             state: state.into(),
             declared: true,
         }
+    }
+
+    /// The slot of the `state` declaration `state` kept by the resource `address`, as the
+    /// window showing it declares it: what another view of that resource reads, whichever
+    /// window shows it.
+    pub fn shown(address: &str, person: Actor, state: impl Into<String>) -> Self {
+        Self {
+            window: shown_window(address),
+            actor: Some(person),
+            state: state.into(),
+            declared: true,
+        }
+    }
+
+    /// The resource this slot is kept by, when it is kept by one ([`StateKey::shown`]).
+    pub fn shown_resource(&self) -> Option<&str> {
+        self.window.strip_prefix(SHOWN)?.strip_prefix(':')
     }
 
     /// A slot the runtime keeps for itself, outside any view's declarations: a slot that
@@ -236,6 +263,17 @@ mod tests {
             assert!(!states.restore(view("filter"), Value::text("Today")));
             assert_eq!(states.generation(&view("filter")), generation);
             assert_eq!(states.take_writes(), Vec::new(), "a restore is no change");
+        }
+
+        phase a_slot_kept_by_a_resource_names_it_and_is_kept_like_a_views;
+        {
+            let mut states = ViewStates::default();
+            let key = StateKey::shown("so.tilo.notes/notes/n1", crate::ids::MemberId::person("ada").into(), "find");
+            assert_eq!(key.shown_resource(), Some("so.tilo.notes/notes/n1"));
+            assert_eq!(view("filter").shown_resource(), None, "a window keeps its own");
+            states.write(key.clone(), Value::text("x"));
+            assert_eq!(states.take_writes(), vec![(key.clone(), Value::text("x"))]);
+            assert!(!states.restore(key, Value::text("x")));
         }
     }
 }

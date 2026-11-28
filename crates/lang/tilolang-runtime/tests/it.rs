@@ -207,6 +207,8 @@ mod rich_text;
 mod runs;
 #[path = "seeded_ids.rs"]
 mod seeded_ids;
+#[path = "shown_state.rs"]
+mod shown_state;
 #[path = "styles.rs"]
 mod styles;
 #[path = "sync.rs"]

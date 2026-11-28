@@ -1962,6 +1962,10 @@ pub struct Hosted {
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
+    /// The person's own state of the resources this window reads another window's of, by app.
+    shown_state: BTreeMap<String, PersonalDocument>,
+    /// The resources this window's views read a state of (`state_shown`).
+    shown_asked: Rc<RefCell<BTreeSet<String>>>,
     /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
@@ -2450,6 +2454,8 @@ impl Hosted {
             identity: None,
             scope,
             personal,
+            shown_state: BTreeMap::new(),
+            shown_asked: Rc::default(),
             content: workspace_content,
             verdicts,
             presence,
@@ -2890,6 +2896,35 @@ impl Hosted {
 
     /// What the instance needs once the runtime's host is open, before anything the connection
     /// delivered is served.
+    /// Give the views the state another window of a resource keeps, as this window's views
+    /// asked for it with `state_shown`, each frame.
+    fn follow_shown(&mut self) {
+        let asked: Vec<String> = self.shown_asked.borrow().iter().cloned().collect();
+        let store = self.store.clone();
+        for address in asked {
+            let Some(app) = tilolang_tilo::publish::app_of(&address) else {
+                continue;
+            };
+            let person = self.spec.person.clone();
+            let document = self
+                .shown_state
+                .entry(app.to_owned())
+                .or_insert_with(|| PersonalDocument::open(app, &person, &store));
+            if !document.take_moved(&store) {
+                continue;
+            }
+            let window = tilolang_tilo::runtime::view_state::shown_window(&address);
+            for slot in
+                document.state().slots.iter().filter(|slot| {
+                    slot.person.eq_ignore_ascii_case(&person) && slot.window == window
+                })
+            {
+                self.instance
+                    .set_shown_state(&address, slot.state.clone(), slot.value.clone());
+            }
+        }
+    }
+
     fn prepare(&mut self) {
         // A run an earlier host over this store left waiting on a child call cannot be answered:
         // the invocation the call went out as died with that host, and the change the run held
@@ -2918,6 +2953,25 @@ impl Hosted {
                     },
                 ),
                 platform: Rc::clone(&self.platform),
+                shown_asked: Rc::clone(&self.shown_asked),
+                shown_read: {
+                    let store = self.store.clone();
+                    let person = self.spec.person.clone();
+                    let app = self.spec.app.clone();
+                    let uses: Vec<String> = self.callees.apps.keys().cloned().collect();
+                    Rc::new(move |address: &str, state: &str| {
+                        let declared = tilolang_tilo::publish::app_of_address(address)
+                            .is_some_and(|target| uses.iter().any(|used| used == target));
+                        crate::personal::shown_at(
+                            &*store.port(),
+                            &person,
+                            &app,
+                            declared,
+                            address,
+                            state,
+                        )
+                    })
+                },
                 prefs: self
                     .callees
                     .apps
@@ -2931,6 +2985,7 @@ impl Hosted {
             }
             self.sending = true;
         }
+        self.follow_shown();
     }
 
     /// One frame: what the connection delivered taken in, what the person did run (its writes
@@ -3031,10 +3086,12 @@ impl Hosted {
                 tracing::debug!(%error, "the person's presence was not said");
             }
         });
-        // What the person changed of their own state is kept in its document, as theirs.
+        // What the person changed of their own state is kept in its document, as theirs: the
+        // window's own slots and, per resource it shows, the ones another view of it reads.
+        let shown = self.instance.shown_resources();
         let keeps = self
             .instance
-            .take_personal(self.personal.state(), self.spec.instance);
+            .take_personal(self.personal.state(), self.spec.instance, &shown);
         self.personal.keep(&self.spec.person, &keeps, &self.store);
         // An invocation the broker cancelled before this frame ran it writes nothing: the caller
         // stopped waiting, so the app's code never runs for it.
@@ -5480,7 +5537,16 @@ struct Apis {
     /// Where this app's own preferences are published (`settings/apps/<app>`), when it declares
     /// any: a field set on them is that field's setter in the settings service.
     prefs: Option<String>,
+    /// The resources the window's views read another window's state of, which each frame
+    /// follows so a view runs again when it moves.
+    shown_asked: Rc<RefCell<BTreeSet<String>>>,
+    /// What the person's own record keeps of a resource's state now, read as this app.
+    shown_read: ShownRead,
 }
+
+/// Reads what the person's record keeps of a resource's state, as the app asking: `Ok(None)`
+/// when no window keeps one, and the refusal when the asking app may not read it.
+type ShownRead = Rc<dyn Fn(&str, &str) -> Result<Option<Json>, String>>;
 
 /// The instance's connection, as the calls its runtime makes reach the dispatch: each continues
 /// the invocation the broker is serving on this thread, decided as its caller's.
@@ -5598,13 +5664,20 @@ impl Invoker for Apis {
         self.calls.invoke(invocation)
     }
 
-    /// One action at the settled address, called on the daemon's line as this app: the
-    /// dispatch walks the address as an agent's call does.
+    /// One action at the settled address, called on the daemon's line as this app.
     fn call(&self, address: &str, arguments: &Json) -> Result<Json, String> {
         let Some(arguments) = arguments.as_object().cloned() else {
             return Err("`call` takes its arguments as one object, by name".to_owned());
         };
         crate::daemon_line::call_at(address, arguments)
+    }
+
+    /// What the window showing `address` keeps of its `state`, from the person's record: only
+    /// the shell, the app itself, and an app that uses it may read it.
+    fn state_shown(&self, address: &str, state: &str) -> Result<Option<Json>, String> {
+        let found = (self.shown_read)(address, state)?;
+        self.shown_asked.borrow_mut().insert(address.to_owned());
+        Ok(found)
     }
 }
 
