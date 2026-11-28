@@ -850,12 +850,18 @@ mod cases {
         {
             let feeds = Feeds::new();
             let window = feeds.feeds_window();
-            let empty = of_kind(window.tree(), "ui.EmptyState")
-                .into_iter()
+            let states = of_kind(window.tree(), "ui.EmptyState");
+            let empty = states
+                .iter()
                 .next()
                 .expect("the window's one empty state");
             assert_eq!(text(empty, "title"), "No feeds yet");
             assert_eq!(text(empty, "action"), "Add feed");
+            assert_eq!(
+                states.len(),
+                1,
+                "the first subscription is the one thing to do: the reading pane says nothing"
+            );
         }
     }
 }

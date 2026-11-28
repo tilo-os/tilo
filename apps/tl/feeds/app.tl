@@ -882,13 +882,16 @@ view feeds(lib: Library) {
             }
         }
         // What the reading pane says before an article is opened. An article's page stands in
-        // its place once one is.
+        // its place once one is. A library with no subscription says what to do first in its
+        // overview, and that one state is the window's.
         content: {
-            ui.EmptyState(
-                "No article selected",
-                message: "Choose a story from the list to read it here.",
-                icon: .file_text,
-            )
+            if not lib.feeds.is_empty() {
+                ui.EmptyState(
+                    "No article selected",
+                    message: "Choose a story from the list to read it here.",
+                    icon: .file_text,
+                )
+            }
         }
     }
 }
