@@ -798,23 +798,23 @@ impl App {
         let Some(root) = self.layout.root_node else {
             return;
         };
-        let _ = tilo_ui_base::widget::layout::solve_layout(
-            &mut self.layout.taffy,
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(logical.0 as f32),
-                height: taffy::AvailableSpace::Definite(logical.1 as f32),
-            },
-            &mut |known, available, node| {
-                if let Some(ptr) = self.layout.node_map.get(&node) {
-                    // SAFETY: the exclusive host owns this newly built dialog
-                    // map; changing or dismissing it clears the map first.
-                    unsafe { (**ptr).measure(known, available, &mut self.text_renderer) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        );
+        let available = taffy::Size {
+            width: taffy::AvailableSpace::Definite(logical.0 as f32),
+            height: taffy::AvailableSpace::Definite(logical.1 as f32),
+        };
+        // Laid out as the app's tree is: the dialog styles its body for the width it is given.
+        // SAFETY: the exclusive host owns this newly built dialog map; changing or dismissing it
+        // clears the map first.
+        let _ = unsafe {
+            tilo_ui_base::widget::compute_widget_layout(
+                &mut self.layout.taffy,
+                root,
+                available,
+                &self.layout.node_map,
+                &self.bindings,
+                &mut self.text_renderer,
+            )
+        };
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             dialog.apply_layout(&self.layout.taffy, root, self.layout.content_origin);
         }

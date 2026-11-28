@@ -2705,6 +2705,43 @@ mod tests {
         assert!((app.content_zoom() - before).abs() < f32::EPSILON);
     }
 
+    /// The close question on a phone's narrow window keeps its words and choices in its body.
+    #[test]
+    fn a_close_question_fits_a_phone() {
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (360, 800),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        use crate::close_admission::Choice;
+        let choices = [Choice::Retry, Choice::Discard, Choice::KeepEditing];
+        app.close_admission.show(
+            "close-save-failed",
+            "close-unsaved",
+            &choices,
+            app.input.platform,
+        );
+        app.layout.request_rebuild();
+        app.surface_frame(&region, &mut Scene::new());
+        let dialog = app.close_admission.dialog.as_ref().unwrap();
+        let body = dialog.body_rect();
+        let rows: Vec<_> = dialog
+            .children()
+            .iter()
+            .flat_map(|c| c.children())
+            .collect();
+        assert!(!rows.is_empty());
+        for row in rows {
+            let rect = row.get_rect();
+            assert!(
+                rect.x0 >= body.x0 && rect.x1 <= body.x1,
+                "{} at {rect:?} stands outside the sheet's body {body:?}",
+                row.name()
+            );
+        }
+    }
+
     #[test]
     fn physical_feedback_clears_when_framework_modal_takes_input() {
         let (mut app, _) = clicks_app();

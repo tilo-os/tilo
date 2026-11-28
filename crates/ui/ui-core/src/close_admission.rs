@@ -204,6 +204,7 @@ impl Admission {
         self.settling = false;
         let resource = resource_for(self.session, choices);
         let mut content = Column::new()
+            .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(Text::new(detail)));
         for choice in [
