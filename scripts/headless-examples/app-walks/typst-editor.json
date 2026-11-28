@@ -65,7 +65,9 @@
       "said": "A broken line is a problem the window says",
       "ops": [
         {
-          "click": "Write a Typst document"
+          "click": {
+            "doing": "wigkyjqk"
+          }
         },
         {
           "type": "\n#undefined_thing\n"
