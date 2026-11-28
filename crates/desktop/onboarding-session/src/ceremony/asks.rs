@@ -138,6 +138,7 @@ impl Ceremony {
             recovery_word_mistakes,
             key_answers_wrong,
             epoch: self.epoch.load(std::sync::atomic::Ordering::Acquire),
+            old_system: self.old_system.clone(),
         }
     }
 
@@ -173,6 +174,14 @@ impl Ceremony {
         for effect in asked {
             let step = self.page().step();
             match effect {
+                // The hand-off's ways to make Tilo the person's: each leaves setup, as entering
+                // the desktop does, and opens where it leads once setup is down.
+                OnboardingEffect::Choose { option }
+                    if step == Step::Ready && then_opens(&option).is_some() =>
+                {
+                    self.then_open = then_opens(&option).map(str::to_owned);
+                    self.pressed.press(super::KEY_FINISH);
+                }
                 OnboardingEffect::Acknowledge { checked } => match step {
                     Step::Protect if self.identity_idle() => {
                         self.flow.set_acknowledged(checked);
@@ -232,4 +241,14 @@ impl Ceremony {
             _ => return None,
         })
     }
+}
+
+/// Where the hand-off's choice `option` leads: the migration app, Settings' accounts, or the Store.
+fn then_opens(option: &str) -> Option<&'static str> {
+    Some(match option {
+        "migrate" => "tilo://open#/me/so.tilo.migrate",
+        "accounts" => "settings://accounts",
+        "store" => "tilo://open#/me/so.tilo.store",
+        _ => return None,
+    })
 }

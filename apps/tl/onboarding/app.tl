@@ -883,6 +883,39 @@ view done_page(s: session.Setup) {
                 "The desktop is ready. Start with anything: open an app, search for what you need, or invite someone to a workspace.",
             )
         }
+        // The ways to make Tilo the person's own: what the system they ran before kept, the
+        // accounts they already use, and the apps they want. Each leaves setup and opens there.
+        ui.Section(title: "Make Tilo yours") {
+            if s.old_system != "" {
+                ui.ListRow(
+                    "Bring your things from {s.old_system}",
+                    icon: .hard_drive,
+                    secondary: "Folders, browsers and mail come over. Nothing on that disk changes.",
+                    description: "Folders, browsers and mail come over. Nothing on that disk changes.",
+                    disclosure: true,
+                ) {
+                    on activate: session.choose(s, option: "migrate")
+                }
+            }
+            ui.ListRow(
+                "Connect your accounts",
+                icon: .user,
+                secondary: "Mail, calendars and cloud storage you already use",
+                description: "Mail, calendars and cloud storage you already use",
+                disclosure: true,
+            ) {
+                on activate: session.choose(s, option: "accounts")
+            }
+            ui.ListRow(
+                "Choose apps in the Store",
+                icon: .store,
+                secondary: "Add what you need beside the apps Tilo comes with",
+                description: "Add what you need beside the apps Tilo comes with",
+                disclosure: true,
+            ) {
+                on activate: session.choose(s, option: "store")
+            }
+        }
     }
 }
 

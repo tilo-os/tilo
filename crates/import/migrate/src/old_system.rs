@@ -275,6 +275,64 @@ pub fn found_here() -> Vec<OldHome> {
     find(&mounted())
 }
 
+/// The old system on this computer, by what a person calls it (`Windows`): one whose homes lie on
+/// a disk it has open, or a partition that holds one and is not open yet (Windows' NTFS data
+/// partition, macOS's APFS or HFS+ volume), as the kernel and udev describe its block devices.
+#[must_use]
+pub fn on_this_computer() -> Option<&'static str> {
+    if let Some(home) = found_here().first() {
+        return Some(home.os.label());
+    }
+    partition_holding_one(Path::new("/sys/class/block"), Path::new("/run/udev/data")).map(Os::label)
+}
+
+/// GPT's type of Windows' data partitions.
+const MICROSOFT_BASIC_DATA: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+/// The smallest NTFS data partition taken for a system's: smaller ones hold a recovery image or
+/// a person's files, not Windows.
+const SMALLEST_WINDOWS: u64 = 32 << 30;
+
+/// The system a partition among `sys_block`'s block devices holds, read from what udev keeps of
+/// each under `udev` (`b<major>:<minor>`).
+fn partition_holding_one(sys_block: &Path, udev: &Path) -> Option<Os> {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(sys_block)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.join("partition").is_file())
+        .collect();
+    entries.sort();
+    entries.into_iter().find_map(|partition| {
+        let number = std::fs::read_to_string(partition.join("dev")).ok()?;
+        let facts = std::fs::read_to_string(udev.join(format!("b{}", number.trim()))).ok()?;
+        let fact = |name: &str| {
+            facts.lines().find_map(|line| {
+                line.strip_prefix("E:")?
+                    .strip_prefix(name)?
+                    .strip_prefix('=')
+                    .map(str::to_ascii_lowercase)
+            })
+        };
+        let bytes = std::fs::read_to_string(partition.join("size"))
+            .ok()
+            .and_then(|sectors| sectors.trim().parse::<u64>().ok())
+            .map_or(0, |sectors| sectors.saturating_mul(512));
+        match fact("ID_FS_TYPE").as_deref() {
+            Some("ntfs")
+                if fact("ID_PART_ENTRY_TYPE").as_deref() == Some(MICROSOFT_BASIC_DATA)
+                    && bytes >= SMALLEST_WINDOWS =>
+            {
+                Some(Os::Windows)
+            }
+            Some("apfs" | "hfsplus") => Some(Os::MacOs),
+            _ => None,
+        }
+    })
+}
+
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +383,28 @@ mod tests {
         assert_eq!(OldHome::at(&mac.join("Users/bea")).unwrap().os, Os::MacOs);
         assert_eq!(OldHome::at(&linux.join("home/cy")).unwrap().os, Os::Linux);
         assert!(OldHome::at(&media.path().join("nothing")).is_err());
+    }
+
+    #[test]
+    fn windows_is_found_on_a_partition_not_open_yet_by_its_data_partition() {
+        let machine = tempfile::tempdir().unwrap();
+        let (sys, udev) = (machine.path().join("sys"), machine.path().join("udev"));
+        std::fs::create_dir_all(&udev).unwrap();
+        let partition = |name: &str, dev: &str, gib: u64, facts: &str| {
+            let at = sys.join(name);
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join("partition"), "1\n").unwrap();
+            std::fs::write(at.join("dev"), format!("{dev}\n")).unwrap();
+            std::fs::write(at.join("size"), format!("{}\n", gib * 2 * 1024 * 1024)).unwrap();
+            std::fs::write(udev.join(format!("b{dev}")), facts).unwrap();
+        };
+        let data = format!("E:ID_FS_TYPE=ntfs\nE:ID_PART_ENTRY_TYPE={MICROSOFT_BASIC_DATA}\n");
+        // A small NTFS data partition (a USB stick's, a recovery image) is no system.
+        partition("sda1", "8:1", 8, &data);
+        partition("nvme0n1p1", "259:1", 1, "E:ID_FS_TYPE=vfat\n");
+        assert_eq!(partition_holding_one(&sys, &udev), None);
+        partition("nvme0n1p3", "259:3", 200, &data);
+        assert_eq!(partition_holding_one(&sys, &udev), Some(Os::Windows));
     }
 
     #[test]

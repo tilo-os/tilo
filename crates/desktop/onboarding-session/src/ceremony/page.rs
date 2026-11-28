@@ -237,6 +237,9 @@ pub struct Page {
     pub recovery_key_copy: Option<KeyCopy>,
     pub recovery_key_written: bool,
     pub recovery_key_copy_confirmed: bool,
+    /// The old system found on this computer's disks, which the hand-off offers to bring things
+    /// over from.
+    pub old_system: Option<String>,
     /// Where in the typed recovery key the words of no recovery key stand, as character ranges.
     pub recovery_word_mistakes: Vec<std::ops::Range<usize>>,
     /// Which of the words typed back can no longer be the word asked for.
@@ -370,6 +373,7 @@ impl Page {
             "codecs_summary": self.codecs.summary,
             "codecs_when": text(&self.codecs.when_it_applies),
             "codecs_last_error": self.codecs.last_error,
+            "old_system": text(&self.old_system),
             "epoch": self.epoch,
         });
         if let (Some(reading), serde_json::Value::Object(rest)) = (reading.as_object_mut(), rest) {

@@ -3012,7 +3012,18 @@ impl Session {
     /// finishes itself and gives the layer to what a verified identity opens.
     pub(crate) fn follow_setup(&self) {
         if let Some(setup) = &self.setup {
-            setup.borrow_mut().step();
+            let mut setup = setup.borrow_mut();
+            setup.step();
+            // Where the person chose to go as they left setup opens on the desktop it uncovered,
+            // as a link or Settings' page opens anywhere on it.
+            if let Some(link) = setup.take_then_open() {
+                let ask = if link.starts_with("settings:") {
+                    tilo_session_core::desktop::host::contract::DesktopAsk::OpenSettings(link)
+                } else {
+                    tilo_session_core::desktop::host::contract::DesktopAsk::OpenLink(link)
+                };
+                self.shared.handle.ask(ask);
+            }
         }
     }
 

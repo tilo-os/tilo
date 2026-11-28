@@ -20575,6 +20575,7 @@ dependencies = [
  "tilo-media",
  "tilo-media-controls",
  "tilo-member-types",
+ "tilo-migrate",
  "tilo-model-client",
  "tilo-native-media",
  "tilo-neighbour-wire",

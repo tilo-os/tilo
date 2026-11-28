@@ -368,8 +368,17 @@ pub(crate) fn setup_due_now(host_desktop: bool, first_use: bool) -> Option<Cerem
         return None;
     }
     Some(match (host_desktop, recovery) {
-        (false, false) if first_use => Ceremony::new(identity_dir).after_sign_in(),
-        (false, false) => Ceremony::new(identity_dir),
+        // A computer Tilo now runs on whole may keep the system it ran before on a disk: the
+        // hand-off offers to bring the person's things over from it.
+        (false, false) => {
+            let ceremony = Ceremony::new(identity_dir)
+                .with_old_system(tilo_migrate::old_system::on_this_computer().map(str::to_owned));
+            if first_use {
+                ceremony.after_sign_in()
+            } else {
+                ceremony
+            }
+        }
         (false, true) => Ceremony::new_for_recovery(identity_dir),
         (true, false) if first_use => Ceremony::new_for_host_desktop(identity_dir).after_sign_in(),
         (true, false) => Ceremony::new_for_host_desktop(identity_dir),

@@ -1821,6 +1821,42 @@ fn first_login_footer_semantics_enter_the_desktop_and_complete_first_use() {
     assert!(!first_use(&ceremony));
 }
 
+/// The hand-off offers to bring things over from the Windows found on the disk, to connect the
+/// accounts the person uses and to choose apps: each leaves setup and opens there, once.
+#[test]
+fn the_hand_off_brings_things_over_connects_accounts_and_opens_the_store() {
+    for (option, link) in [
+        ("migrate", "tilo://open#/me/so.tilo.migrate"),
+        ("accounts", "settings://accounts"),
+        ("store", "tilo://open#/me/so.tilo.store"),
+    ] {
+        let root = TempDir::new().unwrap();
+        let directory = root.path().join("identity");
+        tilo_identity::provisioning::create_primary_identity(
+            &directory,
+            "Ada",
+            [128; 3],
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
+        let device = Device::new();
+        let mut ceremony =
+            real_backup_view(&directory, &device).with_old_system(Some("Windows".into()));
+        // Asked before the hand-off, a way out leads nowhere.
+        settled(&mut ceremony, OnboardingEffect::choose(option));
+        assert!(!ceremony.finished());
+        continue_without_backup(&mut ceremony);
+        assert_eq!(ceremony.page().step(), Step::Ready);
+        assert_eq!(ceremony.page().reading(false)["old_system"], "Windows");
+        assert_eq!(ceremony.take_then_open(), None, "nothing chosen yet");
+
+        settled(&mut ceremony, OnboardingEffect::choose(option));
+        assert!(ceremony.finished(), "{option} leaves setup");
+        assert_eq!(ceremony.take_then_open().as_deref(), Some(link));
+        assert_eq!(ceremony.take_then_open(), None, "{option} opens once");
+    }
+}
+
 #[test]
 fn first_login_codec_semantics_skip_to_ready_and_retire_only_at_finish() {
     let root = TempDir::new().unwrap();

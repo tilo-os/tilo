@@ -18,6 +18,7 @@ pub(super) fn admits_id(id: &str) -> bool {
             | "choose-preview"
             | "choose-and-continue-preview"
             | "set-migrate-ticket"
+            | "set-migrate-name"
             | "set-preview-device-name"
             | "set-preview-password"
             | "set-preview-confirmation"

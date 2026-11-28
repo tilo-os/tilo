@@ -12,43 +12,6 @@ use super::state::Place;
 use super::tests::test_env::{Recorded, Told, land_as, with_cx};
 use super::writer::Invocation;
 
-/// A disk Windows ran from: Ada's home with her documents, pictures, a `OneDrive` folder, an
-/// Outlook archive, and Chrome's default profile; and the system's own accounts beside hers.
-fn windows_disk(root: &Path) {
-    let home = root.join("Users/ada");
-    let write = |path: &str, bytes: &[u8]| {
-        let path = home.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
-    };
-    std::fs::create_dir_all(root.join("Windows/System32")).unwrap();
-    std::fs::create_dir_all(root.join("Users/Public/Documents")).unwrap();
-    std::fs::create_dir_all(root.join("Users/Default/AppData")).unwrap();
-    write("NTUSER.DAT", b"hive");
-    write("Documents/Taxes/2025.pdf", b"taxes");
-    write("Pictures/cat.jpg", b"cat");
-    write("Desktop/todo.txt", b"todo");
-    write("OneDrive/notes.txt", b"notes");
-    write("Documents/Outlook Files/archive.pst", b"pst");
-    write("AppData/Roaming/Microsoft/Windows/Start Menu/x.lnk", b"lnk");
-    let chrome = "AppData/Local/Google/Chrome/User Data/Default";
-    write(
-        &format!("{chrome}/Bookmarks"),
-        br#"{"roots":{"bookmark_bar":{"id":"1","type":"folder","name":"Bar","children":[{"id":"2","type":"url","url":"https://example.org/kept","name":"Kept"}]}}}"#,
-    );
-    let history = home.join(chrome).join("History");
-    let db = rusqlite::Connection::open(&history).unwrap();
-    db.execute_batch(
-        "CREATE TABLE urls(id INTEGER PRIMARY KEY, url TEXT, title TEXT, visit_count INTEGER, \
-         last_visit_time INTEGER); \
-         INSERT INTO urls VALUES(1, 'https://example.org/visited', 'Visited', 3, 13300000000000000);",
-    )
-    .unwrap();
-    drop(db);
-    // Chrome on Windows seals what it saved with the account's own key.
-    write(&format!("{chrome}/Login Data"), b"sealed by Windows");
-}
-
 /// One run of what `review` chose, as `start` makes it, its files copied into `into`: what the
 /// workspace was asked, and the journal the run left.
 fn landed(
@@ -94,28 +57,24 @@ fn browser_data_came_over(workspace: &Recorded) {
             .map(|args| args["bundle"].as_str().unwrap_or_default().to_owned())
             .collect()
     };
-    let bookmarks = called("browser/browser.personal-bookmarks#import-bookmarks");
+    let bookmarks = called("browser#import_bookmarks");
     assert!(
         bookmarks.len() == 1 && bookmarks[0].contains("https://example.org/kept"),
         "{bookmarks:?}"
     );
-    let history = called("browser/browser.browsing-history#import-history-bundle");
+    let history = called("browser#import_history");
     assert!(
         history.len() == 1 && history[0].contains("https://example.org/visited"),
         "{history:?}"
     );
-    assert!(
-        workspace
-            .of("passwords/passwords.vault#save-login")
-            .is_empty()
-    );
+    assert!(workspace.of("passwords#save_login").is_empty());
 }
 
 #[test]
 fn a_windows_disk_brings_its_folders_and_browser_data_over_offline() {
     let dir = tempfile::tempdir().unwrap();
     let disk = dir.path().join("disk");
-    windows_disk(&disk);
+    crate::old_system::fixture::write_windows_disk(&disk);
     let place = Place::at(&dir.path().join("state"));
     let row = registry::named("disk").unwrap();
     let here = dir.path().join("here");
@@ -209,7 +168,7 @@ fn a_windows_disk_brings_its_folders_and_browser_data_over_offline() {
 fn a_disk_with_several_peoples_homes_asks_which() {
     let dir = tempfile::tempdir().unwrap();
     let disk = dir.path().join("disk");
-    windows_disk(&disk);
+    crate::old_system::fixture::write_windows_disk(&disk);
     std::fs::create_dir_all(disk.join("Users/bea/Documents")).unwrap();
     let place = Place::at(&dir.path().join("state"));
     let row = registry::named("disk").unwrap();

@@ -446,6 +446,7 @@ fn setup_type_fields() -> Vec<TypeField> {
         text("codecs_summary"),
         text("codecs_when"),
         text("codecs_last_error"),
+        text("old_system"),
         int("epoch"),
     ]
 }

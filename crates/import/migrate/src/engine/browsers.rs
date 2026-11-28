@@ -1,15 +1,15 @@
 //! Browsers on this computer as a migration source: each profile's bookmarks, history and saved
 //! passwords, read by the installer's readers ([`crate::browsers`],
 //! [`browser_continuity`]) and landed through the apps' own actions: bookmarks into the person's
-//! library in Browser (`import-bookmarks`), history into their private history
-//! (`import-history-bundle`), each password into their vault in Passwords (`save-login`, whose
+//! library in Browser (`import_bookmarks`), history into their history there
+//! (`import_history`), each password into their vault in Passwords (`save_login`, whose
 //! password is a secret parameter that is never printed).
 
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use browser_continuity::imports::{ImportBatch, ImportBundle};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::registry::Row;
 use super::state::{Item, Review};
@@ -49,9 +49,9 @@ impl Source for Browsers {
     }
 }
 
-const IMPORT_BOOKMARKS: &str = "browser/browser.personal-bookmarks#import-bookmarks";
-const IMPORT_HISTORY: &str = "browser/browser.browsing-history#import-history-bundle";
-const SAVE_LOGIN: &str = "passwords/passwords.vault#save-login";
+const IMPORT_BOOKMARKS: &str = "browser#import_bookmarks";
+const IMPORT_HISTORY: &str = "browser#import_history";
+const SAVE_LOGIN: &str = "passwords#save_login";
 /// The most rows one import carries, so its arguments stay well under what one call takes.
 const ROWS_PER_CALL: usize = 4_000;
 
@@ -243,6 +243,33 @@ fn pieces(bundle: &ImportBundle) -> Result<Vec<ImportBundle>> {
     Ok(pieces)
 }
 
+/// `piece`'s bookmarks (`part` `bookmarks`) or visits as Browser's own import reads them:
+/// `{"bookmarks": [{"url", "title"}]}`, `{"visits": [{"url", "title", "last", "count"}]}`.
+fn for_browser(piece: &ImportBundle, part: &str) -> String {
+    let chunks = piece.chunks.iter();
+    let value = if part == "bookmarks" {
+        let rows: Vec<Value> = chunks
+            .flat_map(|chunk| &chunk.bookmarks)
+            .map(|row| json!({"url": row.url, "title": row.title}))
+            .collect();
+        json!({ "bookmarks": rows })
+    } else {
+        let rows: Vec<Value> = chunks
+            .flat_map(|chunk| &chunk.history)
+            .map(|row| {
+                json!({
+                    "url": row.url,
+                    "title": row.title,
+                    "last": row.last_visit,
+                    "count": row.visit_count,
+                })
+            })
+            .collect();
+        json!({ "visits": rows })
+    };
+    value.to_string()
+}
+
 /// Bring the chosen parts of each chosen profile over, each a step of the lander's invocation.
 ///
 /// # Errors
@@ -269,7 +296,7 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
         {
             lander.open("browser");
             for (index, piece) in pieces(bundle)?.iter().enumerate() {
-                let encoded = serde_json::to_string(piece)?;
+                let encoded = for_browser(piece, "bookmarks");
                 let named = format!(
                     "{key}/bookmarks/{index}/{}",
                     blake3::hash(encoded.as_bytes()).to_hex()
@@ -285,7 +312,7 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
         {
             lander.open("browser");
             for (index, piece) in pieces(bundle)?.iter().enumerate() {
-                let encoded = serde_json::to_string(piece)?;
+                let encoded = for_browser(piece, "history");
                 let named = format!(
                     "{key}/history/{index}/{}",
                     blake3::hash(encoded.as_bytes()).to_hex()

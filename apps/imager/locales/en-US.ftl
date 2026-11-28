@@ -215,11 +215,21 @@ installer-preview-another-body = Make an install plan and carry it to that compu
 
 installer-preview-migrate-heading = Bring your things over
 
-installer-preview-migrate-intro = Sign in with a ticket from one of your devices, then open Migrations to choose what comes over. You can also do this after setup.
+installer-preview-migrate-intro = Make your Tilo identity here, or sign in with a ticket from one of your devices. Then open Migrations to choose what comes over from this computer. You can also do this after setup.
 
 installer-preview-ticket-label = Ticket
 
 installer-migrate-sign-in = Sign in
+
+installer-migrate-create = Create my identity
+
+installer-migrate-creating = Making your identity and workspace…
+
+installer-migrate-created = Your identity and workspace are ready.
+
+installer-migrate-name-required = Enter the name people will see.
+
+installer-migrate-arrival-required = Say whether you’ve used Tilo before.
 
 installer-migrate-open = Open migrations
 
@@ -529,7 +539,11 @@ installer-preview-identity-heading = Have you used Tilo before?
 
 installer-preview-new-title = This is my first time
 
-installer-preview-new-body = Create your Tilo identity. Welcome!
+installer-preview-new-body = Create your Tilo identity and workspace here. Welcome!
+
+installer-preview-returning-title = I already use Tilo
+
+installer-preview-returning-body = Sign in with a ticket from `tilo device add` on one of your devices.
 
 installer-preview-profile-heading = Your profile
 
@@ -1405,7 +1419,8 @@ imager-installer-preview-set-preview-password = Enter the unlock password
 imager-installer-preview-set-storage-size = Choose the space for Tilo
 imager-installer-preview-set-target-architecture = Choose the architecture the medium starts on
 imager-installer-preview-set-target-identity-field = Name the other computer
-imager-installer-preview-sign-in-for-migration = Sign in to your workspace with the ticket
+imager-installer-preview-sign-in-for-migration = Make your identity here, or sign in with the ticket
+imager-installer-preview-set-migrate-name = Name your new Tilo identity
 imager-installer-preview-toggle-storage-details = Show or hide the disk's breakdown
 imager-installer-preview-cancel-desktop-download = Cancel the download
 imager-installer-preview-recheck-desktop = Check Tilo Desktop availability again

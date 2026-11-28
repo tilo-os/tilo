@@ -441,6 +441,15 @@ impl Setup {
         }
     }
 
+    /// What the person chose to open as they left setup, once setup is down: a `tilo://open#…`
+    /// link or a `settings://` page.
+    pub(crate) fn take_then_open(&mut self) -> Option<String> {
+        match &mut self.surface {
+            Surface::Ceremony(drawn) => drawn.ceremony.take_then_open(),
+            Surface::Screen { .. } => None,
+        }
+    }
+
     /// Whether the layer is still over the shell.
     pub(crate) fn up(&self) -> bool {
         match &self.surface {

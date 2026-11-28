@@ -326,6 +326,7 @@ fn the_internal_staging_route_walks_the_review_and_keeps_the_setup_when_no_relea
             "open-migrations",
             "read-preview",
             "restart-preview",
+            "set-migrate-name",
             "set-migrate-ticket",
             "sign-in-for-migration",
         ],
@@ -335,10 +336,50 @@ fn the_internal_staging_route_walks_the_review_and_keeps_the_setup_when_no_relea
         &[
             t("installer-preview-migrate-heading"),
             t("installer-preview-migrate-intro"),
-            t("installer-preview-ticket-label"),
-            t("installer-migrate-sign-in"),
+            t("installer-preview-identity-heading"),
+            t("installer-preview-new-title"),
+            t("installer-preview-returning-title"),
             t("installer-migrate-open"),
             t("installer-preview-continue"),
+        ],
+    );
+    // Someone new to Tilo names the identity this computer makes for them; until they do, there
+    // is nothing to make.
+    let chosen = app
+        .effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "new".into(),
+        })
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(chosen["page"], "migrate");
+    assert_shows(
+        &mut app,
+        &[
+            t("installer-preview-name-label"),
+            t("installer-migrate-create"),
+        ],
+    );
+    assert_refused(
+        &mut app,
+        &InstallerPreviewEffect::SignInForMigration,
+        "failed",
+        &t("installer-migrate-name-required"),
+    );
+    app.effect(&InstallerPreviewEffect::SetMigrateName {
+        name: "Ada Lovelace".into(),
+    })
+    .unwrap();
+    // Someone who already uses Tilo signs in with a ticket instead.
+    app.effect(&InstallerPreviewEffect::ChoosePreview {
+        choice: "returning".into(),
+    })
+    .unwrap();
+    assert_shows(
+        &mut app,
+        &[
+            t("installer-preview-ticket-label"),
+            t("installer-migrate-sign-in"),
         ],
     );
 

@@ -424,6 +424,12 @@ pub struct Ceremony {
     codec_watching: Option<tilo_files::native::ChangeWatch>,
     /// When `sync` last looked at the background work above.
     synced_at: Instant,
+    /// The old system found on this computer's disks (`Windows`), which the hand-off offers to
+    /// bring the person's things over from.
+    old_system: Option<String>,
+    /// What the person chose to open as they left setup: the migration app, Settings' accounts
+    /// or the Store, which the session opens once setup is down.
+    then_open: Option<String>,
 }
 
 impl Ceremony {
@@ -646,6 +652,8 @@ impl Ceremony {
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: None,
             synced_at: Instant::now(),
+            old_system: None,
+            then_open: None,
         }
     }
 
@@ -686,6 +694,24 @@ impl Ceremony {
         self.codec_step_offered = !self.codec_status.opted_in();
         self.codec_setup = Some(setup);
         self
+    }
+
+    /// Offer, on the hand-off, to bring the person's things over from `system`, an old system
+    /// found on this computer's disks (`Windows`).
+    #[must_use]
+    pub fn with_old_system(mut self, system: Option<String>) -> Self {
+        self.old_system = system;
+        self
+    }
+
+    /// What the person chose to open as they left setup, taken once: a `tilo://open#…` link or a
+    /// `settings://` page.
+    pub fn take_then_open(&mut self) -> Option<String> {
+        if self.finished() {
+            self.then_open.take()
+        } else {
+            None
+        }
     }
 
     /// Whether the media codecs page is showing.

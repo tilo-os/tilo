@@ -147,6 +147,13 @@ d-msne3et3 = Abschlussseite
     .w-device-added = Gerät hinzugefügt
     .w-welcome-to-tilo = Willkommen bei Tilo
     .w-the-desktop-is-ready-start-with = Der Desktop ist bereit. Beginne mit irgendetwas: Öffne eine App, suche, was du brauchst, oder lade jemanden in einen Arbeitsbereich ein.
+    .w-make-tilo-yours = Mach Tilo zu deinem
+    .w-bring-your-things-from = Bring deine Sachen von { $old_system } mit
+    .w-folders-browsers-and-mail-come-over = Ordner, Browser und Mail kommen mit. Auf dieser Festplatte ändert sich nichts.
+    .w-connect-your-accounts = Verbinde deine Konten
+    .w-mail-calendars-and-cloud-storage-you = Mail, Kalender und Cloud-Speicher, die du schon nutzt
+    .w-choose-apps-in-the-store = Wähle Apps im Store
+    .w-add-what-you-need-beside-the = Füge hinzu, was du neben den Apps von Tilo brauchst
 
 d-bnb64q2q = Seite der Tour
     .w-everything-is-close-at-hand = Alles in Reichweite

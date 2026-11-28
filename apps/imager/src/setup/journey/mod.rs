@@ -123,7 +123,14 @@ pub enum InstallerPreviewEffect {
         #[param(secret, "Ticket from tilo device add; never persisted or returned")]
         ticket: String,
     },
-    /// Sign this computer in to your workspace with the entered ticket.
+    /// Name the Tilo identity a person new to Tilo makes on this computer.
+    #[effect(kind = "outside", returns)]
+    SetMigrateName {
+        #[param("The name workspaces show for the new identity")]
+        name: String,
+    },
+    /// Sign this computer in: as a new identity made here, with its own workspace, or with the
+    /// entered ticket.
     #[effect(kind = "outside", returns)]
     SignInForMigration,
     /// Show the migration app, which brings over what this computer holds.
@@ -362,7 +369,7 @@ pub struct InstallerPreview {
     pending_slide: Option<f64>,
     layout_metrics: Option<(f32, f32, f32)>,
     profile_breakpoint: f64,
-    field_values: [tilo_ui_base::LocalState<String>; 4],
+    field_values: [tilo_ui_base::LocalState<String>; 5],
     storage: storage::Storage,
     install_preferences: crate::model::InstallProfile,
     /// The setup page the review handed over to, while it is shown.
@@ -643,7 +650,7 @@ impl InstallerPreview {
         let destination = self.journey.destination;
         match id {
             "set-preview-password" | "set-preview-confirmation" => page == Page::Password,
-            "set-migrate-ticket" => page == Page::Migrate,
+            "set-migrate-ticket" | "set-migrate-name" => page == Page::Migrate,
             "sign-in-for-migration" | "open-migrations" => page == Page::Migrate && self.live,
             "set-preview-device-name" => page == Page::Devices || page == Page::Machine,
             "set-target-identity-field"
@@ -790,6 +797,7 @@ impl InstallerPreview {
                     | InstallerPreviewEffect::BackInPreview
                     | InstallerPreviewEffect::RestartPreview
                     | InstallerPreviewEffect::SetMigrateTicket { .. }
+                    | InstallerPreviewEffect::SetMigrateName { .. }
                     | InstallerPreviewEffect::SignInForMigration
             )
         {
@@ -817,6 +825,14 @@ impl InstallerPreview {
         }
         match effect {
             InstallerPreviewEffect::ReadPreview => return Ok(()),
+            // Whether the person used Tilo before decides how this computer signs in.
+            InstallerPreviewEffect::ChoosePreview { choice }
+                if page == Page::Migrate && self.sign_in.choose(&choice) =>
+            {
+                self.error = None;
+                self.dirty = true;
+                return Ok(());
+            }
             InstallerPreviewEffect::ChoosePreview { choice } => {
                 if page == Page::Destination
                     && !self.guided_host_available()
@@ -913,6 +929,12 @@ impl InstallerPreview {
             InstallerPreviewEffect::SetMigrateTicket { ticket } => {
                 self.field_values[0].set(ticket.clone());
                 self.sign_in.set_ticket(ticket);
+                self.dirty = true;
+                return Ok(());
+            }
+            InstallerPreviewEffect::SetMigrateName { name } => {
+                self.field_values[4].set(name.clone());
+                self.sign_in.set_name(name);
                 self.dirty = true;
                 return Ok(());
             }
@@ -1484,11 +1506,13 @@ impl InstallerPreview {
             "ticket" => 0,
             "device-name" => 1,
             "password" => 2,
+            "name" => 4,
             _ => 3,
         };
         self.field_values[index].set(value.to_string());
         let set: fn(String) -> InstallerPreviewEffect = match key {
             "ticket" => |ticket| InstallerPreviewEffect::SetMigrateTicket { ticket },
+            "name" => |name| InstallerPreviewEffect::SetMigrateName { name },
             "device-name" => |value| InstallerPreviewEffect::SetPreviewDeviceName { value },
             "password" => |value| InstallerPreviewEffect::SetPreviewPassword { value },
             _ => |value| InstallerPreviewEffect::SetPreviewConfirmation { value },
@@ -1501,7 +1525,7 @@ impl InstallerPreview {
                 .with_secret(kind == TextInputKind::Password),
             set,
         );
-        let input = if key == "ticket" {
+        let input = if key == "ticket" || key == "name" {
             let commands = self.commands.clone();
             input.on_submit(move |_| {
                 if submit_enabled {
