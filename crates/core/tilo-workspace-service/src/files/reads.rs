@@ -396,7 +396,7 @@ impl OpenedFiles {
 
 /// A chunk of `workspace`'s file sealed as `sealed` says, opened with `keys`; `None` without
 /// them, or when it does not open.
-fn opened_chunk(
+pub(crate) fn opened_chunk(
     workspace: WorkspaceId,
     keys: Option<&key_group::ContentKeys>,
     sealed: SealedChunks,

@@ -15,6 +15,9 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{self, FILES_APP, ROOT_ID, Tree, TreeChunks};
 use serde_json::json;
 
+use crate::content::CrdtRoute;
+use crate::content::fixtures::{fan, pair};
+use crate::files::Paths;
 use crate::workspaces::fixtures::{hosting_device, test_host};
 
 use super::*;
@@ -965,4 +968,76 @@ async fn a_call_out_of_the_workspace_changes_nothing() {
         assert!(said.contains(why), "{verb} {arguments}: {said}");
     }
     assert_eq!(listed(""), ["Tasks"], "a refused call changed nothing");
+}
+
+/// A file Files put into the workspace — a manifest of chunks — reads whole on a device that
+/// keeps none of it, by its path and by its content address; a blob kept as it was written reads
+/// as it is; and a manifest whose chunk no device holds fails legibly, without waiting it out.
+#[test]
+fn a_file_reads_whole_from_a_device_that_holds_none_of_it() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the test's runtime starts");
+    let put = runtime.block_on(fixture());
+    let photo: Vec<u8> = (0..716_800)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let content = put_content(&put.shelf, put.workspace, &photo);
+    put.put(&json!({"content": content, "name": "photo.jpg"}))
+        .expect("the file is put into the workspace");
+    let tree = runtime.block_on(tree_of(&put.workspaces, &put.name));
+    let hash = file_at(&tree, "", "photo.jpg")
+        .expect("the file is in the tree")
+        .hash
+        .clone()
+        .expect("the file names its content");
+
+    // The serving device offers the file's manifest and every chunk; the others keep none of it.
+    let fan = fan();
+    let route = CrdtRoute::app(FILES_APP, &put.name);
+    let offered = {
+        let shelf = put.shelf.0.lock().unwrap();
+        shelf.get(&files_scope(put.workspace)).cloned()
+    }
+    .expect("the put keeps the file's content");
+    let manifest = offered.get(&hash).cloned().expect("the manifest is kept");
+    for (chunk, bytes) in &offered {
+        fan.a
+            .offer(&route, chunk, bytes)
+            .expect("the serving device offers the content");
+    }
+    assert!(fan.b.kept(&route, &hash).is_none() && fan.c.kept(&route, &hash).is_none());
+
+    // One device reads the file by its path, another by the content address an offer carries.
+    let reader = |content| Paths::new(put.workspaces.clone(), Some(content), &runtime);
+    let by_path = reader(Arc::clone(&fan.c)).read(&put.name, "photo.jpg");
+    assert_eq!(by_path.expect("the file reads by its path"), photo);
+    let by_hash = reader(Arc::clone(&fan.b));
+    assert_eq!(by_hash.read_content(&put.name, &hash).unwrap(), photo);
+
+    // A blob kept whole, as a write keeps one, reads back too.
+    reader(Arc::clone(&fan.a))
+        .write(&put.name, "note.txt", b"a note", false)
+        .expect("the note is written");
+    let note = hex::encode(blake3::hash(b"a note").as_bytes());
+    assert!(fan.b.kept(&route, &note).is_none(), "it is kept elsewhere");
+    assert_eq!(by_hash.read(&put.name, "note.txt").unwrap(), b"a note");
+    assert_eq!(by_hash.read_content(&put.name, &note).unwrap(), b"a note");
+
+    // A manifest whose chunk no device holds fails legibly, and the read gives up rather than
+    // waiting the file out.
+    let (serving, holding_none, _) = pair(true);
+    serving
+        .offer(&route, &hash, &manifest)
+        .expect("the serving device offers the manifest alone");
+    let started = std::time::Instant::now();
+    let error = reader(holding_none)
+        .read_content(&put.name, &hash)
+        .expect_err("a file whose chunk no device holds is refused");
+    assert!(error.contains("hands"), "{error}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the read gave up instead of waiting the file out: {error}"
+    );
 }

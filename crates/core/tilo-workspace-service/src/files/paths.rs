@@ -11,15 +11,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
+use iroh_blobs::Hash;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tilo_fs::content::{Manifest, is_manifest, whole_with};
 use tilo_fs::hydration::ContentSource as _;
 use tilo_fs::namespace::Namespace;
 use tilo_fs::node::FileType;
 use tilo_fs::tree_sync::FILES_APP;
 use tilo_server_protocol::WorkspaceId;
 
+use super::opened::{reads::opened_chunk, tree_route};
 use super::{FilesWatch, WorkspaceSource};
 use crate::content::{CrdtRoute, RouteContent};
 use crate::workspaces::Workspaces;
@@ -136,11 +140,12 @@ impl<'a> Paths<'a> {
     }
 
     /// The bytes of the file at `path` in `workspace`, fetched from a device of the workspace
-    /// when this one does not hold them.
+    /// when this one does not hold them: the content its tree names at that path, as
+    /// [`Self::read_content`] reads it.
     ///
     /// # Errors
-    /// A path that leaves the workspace or names nothing or a folder there, or no device of the
-    /// workspace hands the bytes over in time.
+    /// A path that leaves the workspace or names nothing or a folder there, or as
+    /// [`Self::read_content`] reads a content address.
     pub fn read(&self, workspace: &str, path: &str) -> Result<Vec<u8>, String> {
         let id = workspace_id(workspace)?;
         let path = path_of(path)?;
@@ -162,24 +167,93 @@ impl<'a> Paths<'a> {
             // A file the tree holds no content for: an empty file, as every device makes one.
             return Ok(Vec::new());
         };
-        let content = self.content()?;
-        let route = CrdtRoute::app(FILES_APP, workspace);
-        if let Some(bytes) = content.kept(&route, &hash) {
-            return Ok(bytes);
-        }
-        let address = hash
+        self.read_content(workspace, &hash)
+    }
+
+    /// The whole bytes the content address `hash` names in `workspace`: content kept as it was
+    /// written, or the file a manifest describes — how Files names a file it puts there —
+    /// assembled from the chunks this device holds and those a device of the workspace hands
+    /// over, each checked against its hash and opened with the workspace's Files keys where it is
+    /// sealed. A caller that holds an offer's `hash` reads it here, with no path to resolve.
+    ///
+    /// # Errors
+    /// `hash` is no content address, no device hands the content or one of its chunks over in
+    /// time, a chunk is not the bytes its hash names, the manifest does not read, or the
+    /// workspace's files are sealed and their keys are not here.
+    pub fn read_content(&self, workspace: &str, hash: &str) -> Result<Vec<u8>, String> {
+        let address: Hash = hash
             .parse()
             .map_err(|_| format!("{hash:?} is no content address"))?;
+        let content = self.content()?;
+        let route = CrdtRoute::app(FILES_APP, workspace);
         let source = WorkspaceSource::new(Arc::clone(&content), workspace, CONTENT_WAIT);
-        self.runtime
-            .block_on(source.fetch(address))
-            .map(|bytes| bytes.to_vec())
-            .ok_or_else(|| {
-                format!(
-                    "no device of the workspace hands {path:?} over within {}s",
-                    CONTENT_WAIT.as_secs()
-                )
-            })
+        let stored = match content.kept(&route, hash) {
+            Some(stored) => stored,
+            None => self.fetch(&source, address, hash)?.to_vec(),
+        };
+        if !is_manifest(&stored) {
+            return Ok(stored);
+        }
+        let id = workspace_id(workspace)?;
+        let manifest = Manifest::decode(&stored)
+            .map_err(|error| format!("{hash} is no file of the workspace: {error}"))?;
+        let keys = match manifest.sealed() {
+            Some(_) => Some(self.content_keys(id)?.ok_or_else(|| {
+                "this workspace's files are sealed, and their keys are not here".to_owned()
+            })?),
+            None => None,
+        };
+        let mut failure: Option<String> = None;
+        let file = whole_with(
+            stored,
+            u64::MAX,
+            |part| {
+                if failure.is_some() {
+                    return None;
+                }
+                let named = hex::encode(part);
+                let bytes = match content.kept(&route, &named) {
+                    Some(bytes) => bytes,
+                    None => match self.fetch(&source, Hash::from(*part), &named) {
+                        Ok(bytes) => bytes.to_vec(),
+                        Err(error) => {
+                            failure = Some(error);
+                            return None;
+                        }
+                    },
+                };
+                if blake3::hash(&bytes).as_bytes() != part {
+                    failure = Some(format!("a chunk of {hash} is not the bytes its hash names"));
+                    return None;
+                }
+                Some(bytes)
+            },
+            |sealed, bytes| opened_chunk(id, keys.as_ref(), sealed, bytes),
+        );
+        file.ok_or_else(|| {
+            failure.unwrap_or_else(|| format!("{hash} could not be put together from its chunks"))
+        })
+    }
+
+    /// What a device of `workspace` hands over for `address`, named `named` in an error.
+    fn fetch(&self, source: &WorkspaceSource, address: Hash, named: &str) -> Result<Bytes, String> {
+        self.runtime.block_on(source.fetch(address)).ok_or_else(|| {
+            format!(
+                "no device of the workspace hands {named} over within {}s",
+                CONTENT_WAIT.as_secs()
+            )
+        })
+    }
+
+    /// The keys `workspace`'s Files seals with, `None` where this device is in no key group.
+    fn content_keys(&self, id: WorkspaceId) -> Result<Option<key_group::ContentKeys>, String> {
+        match self
+            .runtime
+            .block_on(self.workspaces.own_route_keys(&tree_route(id), false))
+        {
+            Some(answer) => answer.map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Write `bytes` at `path` in `workspace`, making the folders on the way that are not there

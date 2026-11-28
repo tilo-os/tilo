@@ -180,7 +180,7 @@ fn put_scope(workspace: WorkspaceId) -> ContentScope {
 }
 
 /// The route the workspace's tree travels as, whose keys seal its files.
-fn tree_route(workspace: WorkspaceId) -> DocumentRoute {
+pub(super) fn tree_route(workspace: WorkspaceId) -> DocumentRoute {
     DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
@@ -585,7 +585,7 @@ impl OpenedFiles {
 #[path = "changes.rs"]
 mod changes;
 #[path = "reads.rs"]
-mod reads;
+pub(super) mod reads;
 
 #[cfg(test)]
 #[path = "opened_tests.rs"]
