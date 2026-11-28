@@ -20,7 +20,6 @@ pub mod contents;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
-pub mod lines;
 mod model_asks;
 pub mod names;
 pub mod openapi;

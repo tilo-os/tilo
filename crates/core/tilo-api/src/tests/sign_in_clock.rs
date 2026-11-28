@@ -40,9 +40,9 @@ impl PageAnswer {
     fn form(&self, pending: &str) -> String {
         let mut form = url::form_urlencoded::Serializer::new(String::new());
         form.append_pair("pending", pending)
-            .append_pair("proof", &sign_in::encode_proof(&self.proof).unwrap());
+            .append_pair("proof", &tilo_server_client::encode(&self.proof).unwrap());
         if let Some(grant) = &self.grant {
-            form.append_pair("grant", &sign_in::encode_cert(grant).unwrap());
+            form.append_pair("grant", &tilo_server_client::encode(grant).unwrap());
         }
         form.finish()
     }

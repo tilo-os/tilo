@@ -138,8 +138,8 @@ impl Person {
 pub(crate) fn answer_form(asked: &Asked, proof: &SignInProof, cert: &DeviceCert) -> String {
     url::form_urlencoded::Serializer::new(String::new())
         .append_pair("pending", &asked.pending)
-        .append_pair("proof", &sign_in::encode_proof(proof).unwrap())
-        .append_pair("grant", &sign_in::encode_cert(cert).unwrap())
+        .append_pair("proof", &tilo_server_client::encode(proof).unwrap())
+        .append_pair("grant", &tilo_server_client::encode(cert).unwrap())
         .finish()
 }
 
@@ -1414,7 +1414,7 @@ async fn the_grants_page_signs_a_person_in_and_asks_again_when_its_form_is_forgo
     let proof = SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, challenge).unwrap();
     let form = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("pending", &asked["pending"])
-        .append_pair("proof", &sign_in::encode_proof(&proof).unwrap())
+        .append_pair("proof", &tilo_server_client::encode(&proof).unwrap())
         .finish();
     let reply = answer(&server, &form).await;
     assert_eq!(reply.status(), StatusCode::SEE_OTHER);

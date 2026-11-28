@@ -708,9 +708,9 @@ impl Server {
         }
         let (Some(proof), Some(cert)) = (
             form.get("proof")
-                .and_then(|proof| sign_in::decode_proof(proof)),
+                .and_then(|proof| sign_in::decode::<tilo_user_identity::SignInProof>(proof)),
             form.get("grant")
-                .and_then(|cert| sign_in::decode_cert(cert)),
+                .and_then(|cert| sign_in::decode::<tilo_user_identity::DeviceCert>(cert)),
         ) else {
             return self.unconfirmed(&pending, "the answer carried no proof and certificate");
         };
@@ -839,7 +839,7 @@ impl Server {
         }
         let Some(proof) = form
             .get("proof")
-            .and_then(|proof| sign_in::decode_proof(proof))
+            .and_then(|proof| sign_in::decode::<tilo_user_identity::SignInProof>(proof))
         else {
             return self.unconfirmed(pending, "the answer carried no proof");
         };

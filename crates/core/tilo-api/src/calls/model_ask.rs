@@ -45,30 +45,18 @@ pub async fn ask_model(
     let workspace = calls
         .served_workspace()
         .ok_or_else(|| anyhow!("this computer serves no workspace to ask your model in"))?;
-    let mut arguments = Map::new();
-    arguments.insert("workspace".into(), json!(workspace));
-    arguments.insert("request".into(), request.clone());
-    let asked = InvokeRequest::plain(
-        RemoteActionTarget {
-            provider: crate::account::PROVIDER.into(),
-            address: ActionAddress::new(crate::account::MODELS, "ask"),
-        },
-        arguments,
-    );
-    let invocation = asked.invocation;
     // The daemon decides the ask as whoever connects; the caller here names nobody.
     let caller = Caller::local_person("");
-    let refused = |why: String| {
+    let refusal = |(code, message): (&str, String)| {
         anyhow::Error::new(Refusal {
-            code: "refused".into(),
-            message: why,
+            code: code.into(),
+            message,
         })
     };
-    let receipt = client
-        .invoke(&caller, asked)
-        .await
-        .ok_or_else(|| unavailable("the daemon did not answer".into()))?
-        .map_err(|error| refused(error.to_string()))?;
+    let (invocation, status) =
+        start_ask(&client, &caller, workspace, request.clone(), "the daemon")
+            .await
+            .map_err(refusal)?;
     let mut tell = |kind: &str, data: Value| {
         told(kind, &data);
         true
@@ -79,18 +67,45 @@ pub async fn ask_model(
         &client,
         &caller,
         invocation,
-        receipt.status,
+        status,
         "the daemon",
         &mut tell,
     )
     .await
     .map(Option::unwrap_or_default)
-    .map_err(|(code, message)| {
-        anyhow::Error::new(Refusal {
-            code: code.into(),
-            message,
-        })
-    })
+    .map_err(refusal)
+}
+
+/// Ask `provider` as `caller` for one turn of the model in `workspace`, `request` the
+/// conversation (`account/models#ask`): the ask and what its receipt said, for [`follow`].
+/// `answering` names who answers it.
+///
+/// # Errors
+/// Nothing answered (`unavailable`), or the ask was refused (`refused`).
+pub(crate) async fn start_ask<P: ActionProvider + Sync>(
+    provider: &P,
+    caller: &Caller,
+    workspace: &str,
+    request: Value,
+    answering: &str,
+) -> Result<(InvocationId, ReceiptStatus), (&'static str, String)> {
+    let mut arguments = Map::new();
+    arguments.insert("workspace".into(), json!(workspace));
+    arguments.insert("request".into(), request);
+    let asked = InvokeRequest::plain(
+        RemoteActionTarget {
+            provider: crate::account::PROVIDER.into(),
+            address: ActionAddress::new(crate::account::MODELS, "ask"),
+        },
+        arguments,
+    );
+    let invocation = asked.invocation;
+    let receipt = provider
+        .invoke(caller, asked)
+        .await
+        .ok_or_else(|| ("unavailable", format!("{answering} did not answer")))?
+        .map_err(|refused| ("refused", refused.to_string()))?;
+    Ok((invocation, receipt.status))
 }
 
 /// Follow the ask `invocation` of `provider`, whose receipt said `status`, to its end, telling

@@ -29,7 +29,7 @@ use tilo_mcp::McpServer;
 mod model_ask;
 
 pub use model_ask::ask_model;
-pub(crate) use model_ask::follow;
+pub(crate) use model_ask::{follow, start_ask};
 
 use crate::session::Provider;
 use crate::v1::answers;
@@ -441,20 +441,11 @@ impl Calls {
                 .call(workspace, "tilo_do", Value::Object(tool), None)
                 .await;
         }
-        let At::Daemon { line, .. } = &self.at else {
-            return Err(ApiError::new(
-                "not_permitted",
-                "a web call with a vault item's key is made only on an app's connection to this \
+        let (provider, caller) = self.on_daemon(
+            workspace,
+            "a web call with a vault item's key is made only on an app's connection to this \
                  computer's daemon",
-            )
-            .json());
-        };
-        let provider: Provider = line.clone();
-        let caller = tilo_actions::remote::Caller::local_person("");
-        let caller = match workspace {
-            Some(workspace) => caller.in_workspace(workspace),
-            None => caller,
-        };
+        )?;
         let answer = settled(&provider, caller, vault::web_call(), arguments)
             .await
             .map_err(|refused| refused.json())?;
@@ -471,20 +462,11 @@ impl Calls {
     /// # Errors
     /// The release was refused, or could not be asked for: its refusal's body.
     pub async fn release(&self, workspace: Option<&str>, item: &str) -> Result<Value, Value> {
-        let At::Daemon { line, .. } = &self.at else {
-            return Err(ApiError::new(
-                "not_permitted",
-                "a vault item's secret is released only to an app this computer's daemon \
+        let (provider, caller) = self.on_daemon(
+            workspace,
+            "a vault item's secret is released only to an app this computer's daemon \
                  started, over the connection it was handed",
-            )
-            .json());
-        };
-        let provider: Provider = line.clone();
-        let caller = tilo_actions::remote::Caller::local_person("");
-        let caller = match workspace {
-            Some(workspace) => caller.in_workspace(workspace),
-            None => caller,
-        };
+        )?;
         let target = tilo_actions::remote::RemoteActionTarget {
             provider: vault_actions::PROVIDER.into(),
             address: tilo_actions::ActionAddress::new(item, vault::RELEASE),
@@ -504,20 +486,11 @@ impl Calls {
         app: &str,
         purpose: &str,
     ) -> Result<Value, Value> {
-        let At::Daemon { line, .. } = &self.at else {
-            return Err(ApiError::new(
-                "not_permitted",
-                "a vault item is found only by an app this computer's daemon started, over the \
+        let (provider, caller) = self.on_daemon(
+            workspace,
+            "a vault item is found only by an app this computer's daemon started, over the \
                  connection it was handed",
-            )
-            .json());
-        };
-        let provider: Provider = line.clone();
-        let caller = tilo_actions::remote::Caller::local_person("");
-        let caller = match workspace {
-            Some(workspace) => caller.in_workspace(workspace),
-            None => caller,
-        };
+        )?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("app".into(), Value::String(app.to_owned()));
         arguments.insert("purpose".into(), Value::String(purpose.to_owned()));
@@ -553,6 +526,24 @@ impl Calls {
         )
         .await
         .map_err(|refused| anyhow!("{}", refused.body.message))
+    }
+
+    /// This computer's daemon and who it decides a call as, in `workspace` when one is named:
+    /// whoever connects, so the caller names nobody. Any other connection is refused with `why`.
+    fn on_daemon(
+        &self,
+        workspace: Option<&str>,
+        why: &str,
+    ) -> Result<(Provider, tilo_actions::remote::Caller), Value> {
+        let At::Daemon { line, .. } = &self.at else {
+            return Err(ApiError::new("not_permitted", why).json());
+        };
+        let caller = tilo_actions::remote::Caller::local_person("");
+        let caller = match workspace {
+            Some(workspace) => caller.in_workspace(workspace),
+            None => caller,
+        };
+        Ok((line.clone(), caller))
     }
 
     /// The call lane of this app's connection ([`LineClient::carry_call`]): an app the daemon
@@ -775,9 +766,7 @@ impl Calls {
                         Box::pin(there.typed(tool, arguments, group)).await
                     }
                 };
-                answer.map_err(|refused| {
-                    ApiError::of_answer(Some(&refused.error), refused.action.as_ref())
-                })
+                answer.map_err(ApiError::from)
             }
             // A program goes on in the program session the workspace's last one left, as it
             // does in the one session the other ways keep.
@@ -941,11 +930,10 @@ impl Calls {
             return Ok(named.to_owned());
         }
         let listed = self.workspaces().await?;
-        let wanted = slug(named);
         let matched: Vec<&account_actions::Workspace> = listed
             .workspaces
             .iter()
-            .filter(|workspace| slug(&workspace.name) == wanted)
+            .filter(|workspace| names(named, &workspace.name))
             .collect();
         match matched.as_slice() {
             [one] => Ok(one.id.clone()),
@@ -1517,9 +1505,6 @@ fn upload_over(line: &LineClient, again: bool, path: &Path) -> Result<String> {
     Box::new(put).finish().map_err(refused)
 }
 
-/// The account's workspaces as the daemon behind `provider` lists them to whoever connects:
-/// before a login names one, the workspace it serves is the one it founded. The account's actions
-/// are no workspace's, so they are invoked outright rather than walked in a workspace's tree.
 /// The address the bytes of the file at `path` keep in a workspace, lowercase BLAKE3 hex: what
 /// a put of it answers, read here so content the workspace has is not sent again.
 fn hash_file(path: &Path) -> Result<String> {
@@ -1528,6 +1513,9 @@ fn hash_file(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// The account's workspaces as the daemon behind `provider` lists them to whoever connects:
+/// before a login names one, the workspace it serves is the one it founded. The account's actions
+/// are no workspace's, so they are invoked outright rather than walked in a workspace's tree.
 async fn founded(provider: &Provider) -> Result<Value> {
     let target = tilo_actions::remote::RemoteActionTarget {
         provider: crate::account::PROVIDER.into(),
@@ -1544,8 +1532,6 @@ async fn founded(provider: &Provider) -> Result<Value> {
     .map_err(|refused| anyhow!("this computer's daemon refused: {}", refused.body.message))
 }
 
-/// `target` invoked with `arguments` as `caller` over `provider`, waited for until it settles:
-/// what it completed with, or its refusal as the API answers one.
 /// What a carried call said since an app last looked ([`Calls::said_call`]).
 pub struct CallSaid {
     /// Each frame a workspace participant said, by their account here, with its Opus bytes and
@@ -1566,6 +1552,8 @@ fn lane_refusal(error: &tilo_actions::remote::ActionCallError) -> Value {
     }
 }
 
+/// `target` invoked with `arguments` as `caller` over `provider`, waited for until it settles:
+/// what it completed with, or its refusal as the API answers one.
 async fn settled(
     provider: &Provider,
     caller: tilo_actions::remote::Caller,
@@ -1687,15 +1675,18 @@ pub fn is_uuid(text: &str) -> bool {
         })
 }
 
-/// A name as `-w` matches it: letters and digits, lower case, words joined by `-`
-/// (`Applicant: Jane Doe` and `applicant-jane-doe` match).
+/// Whether `named`, a workspace as a person or an agent writes it (`-w`, a tool's `workspace`),
+/// names the workspace called `name`: the same letters and digits in any case, words broken by
+/// anything else (`applicant-jane-doe` names `Applicant: Jane Doe`).
 #[must_use]
-pub fn slug(name: &str) -> String {
-    name.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+pub fn names(named: &str, name: &str) -> bool {
+    let words = |text: &str| {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    words(named) == words(name)
 }
 
 /// The workspaces a listing names, each as `Name (id ID)`: what an error says a key reaches, so
@@ -1748,4 +1739,20 @@ pub fn script_key(token: &str) -> Result<Option<crate::direct::KeyFile>> {
             }),
     };
     Ok(Some(file.with_token(token).map_err(anyhow::Error::msg)?))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The command and an agent's tools find a workspace by the same names.
+    #[test]
+    fn a_workspace_is_found_by_its_name_as_a_person_writes_it() {
+        for named in [
+            "Applicant: Jane Doe",
+            "applicant-jane-doe",
+            "applicant jane  doe",
+        ] {
+            assert!(super::names(named, "Applicant: Jane Doe"), "{named}");
+        }
+        assert!(!super::names("applicant", "Applicant: Jane Doe"));
+    }
 }

@@ -144,6 +144,23 @@ struct KeptKey {
     cert: String,
 }
 
+impl KeptKey {
+    fn of(key: &GrantKey) -> Self {
+        Self {
+            secret: hex::encode(key.secret()),
+            cert: hex::encode(key.cert_bytes()),
+        }
+    }
+
+    fn key(&self) -> Option<GrantKey> {
+        GrantKey::from_kept(
+            &hex::decode(&self.secret).ok()?,
+            &hex::decode(&self.cert).ok()?,
+        )
+        .ok()
+    }
+}
+
 impl std::fmt::Debug for KeptKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("KeptKey([redacted])")
@@ -160,12 +177,27 @@ impl Grant {
     #[must_use]
     pub fn key(&self) -> Option<GrantKey> {
         let kept = self.key.as_ref().filter(|_| self.revoked_ms.is_none())?;
-        GrantKey::from_kept(
-            &hex::decode(&kept.secret).ok()?,
-            &hex::decode(&kept.cert).ok()?,
-        )
-        .ok()
-        .map(|key| key.named(&self.client_name))
+        kept.key().map(|key| key.named(&self.client_name))
+    }
+
+    /// The grant `id` of `kind` that acts with `key`, made at no time by no client: what each
+    /// way of making one fills in.
+    fn of_key(id: String, key: &GrantKey, kind: GrantKind) -> Self {
+        Self {
+            id,
+            person: key.person(),
+            client_id: String::new(),
+            client_name: String::new(),
+            scope: scope_of(key),
+            kind,
+            expires_ms: expiry_ms(key),
+            browser_pages: key.browser_pages(),
+            created_ms: 0,
+            last_used_ms: None,
+            created_by: None,
+            revoked_ms: None,
+            key: Some(KeptKey::of(key)),
+        }
     }
 
     /// Whether the grant is live and its certificate holds at `now_ms`: a
@@ -467,22 +499,10 @@ impl Store {
         now_ms: u64,
     ) -> io::Result<String> {
         let grant = Grant {
-            id: format!("grant-{}", secret(12)?),
-            person: key.person(),
             client_id: client.id.clone(),
             client_name: client.name.clone(),
-            scope: scope_of(key),
-            kind: GrantKind::Agent,
-            expires_ms: expiry_ms(key),
-            browser_pages: key.browser_pages(),
             created_ms: now_ms,
-            last_used_ms: None,
-            created_by: None,
-            revoked_ms: None,
-            key: Some(KeptKey {
-                secret: hex::encode(key.secret()),
-                cert: hex::encode(key.cert_bytes()),
-            }),
+            ..Grant::of_key(format!("grant-{}", secret(12)?), key, GrantKind::Agent)
         };
         let code = secret(32)?;
         let mut codes = self
@@ -691,22 +711,10 @@ impl Store {
             });
         }
         let grant = Grant {
-            id,
-            person: key.person(),
-            client_id: String::new(),
             client_name: name,
-            scope: scope_of(&key),
-            kind: GrantKind::Key,
-            expires_ms: expiry_ms(&key),
-            browser_pages: key.browser_pages(),
             created_ms: key.cert().issued_at_ns / 1_000_000,
             last_used_ms: Some(now_ms),
-            created_by: None,
-            revoked_ms: None,
-            key: Some(KeptKey {
-                secret: hex::encode(key.secret()),
-                cert: hex::encode(key.cert_bytes()),
-            }),
+            ..Grant::of_key(id, &key, GrantKind::Key)
         };
         Ok(grant)
     }
@@ -776,22 +784,10 @@ impl Store {
     ) -> io::Result<(Grant, String)> {
         let token = key_token(name, key)?;
         let grant = Grant {
-            id: grant_id_of(key),
-            person: key.person(),
-            client_id: String::new(),
             client_name: name.to_owned(),
-            scope: scope_of(key),
-            kind,
-            expires_ms: expiry_ms(key),
-            browser_pages: key.browser_pages(),
             created_ms: now_ms,
-            last_used_ms: None,
             created_by,
-            revoked_ms: None,
-            key: Some(KeptKey {
-                secret: hex::encode(key.secret()),
-                cert: hex::encode(key.cert_bytes()),
-            }),
+            ..Grant::of_key(grant_id_of(key), key, kind)
         };
         self.change(|state| {
             if let Some(parent) = grant.parent()
@@ -928,8 +924,7 @@ pub fn key_token(name: &str, key: &GrantKey) -> io::Result<String> {
     use base64::Engine as _;
     let carried = KeyToken {
         name: name.to_owned(),
-        secret: hex::encode(key.secret()),
-        cert: hex::encode(key.cert_bytes()),
+        key: KeptKey::of(key),
     };
     let json = serde_json::to_vec(&carried).map_err(io::Error::other)?;
     Ok(format!(
@@ -946,12 +941,7 @@ pub fn carried_key(token: &str) -> Option<(String, GrantKey)> {
         .decode(encoded)
         .ok()?;
     let carried: KeyToken = serde_json::from_slice(&json).ok()?;
-    let key = GrantKey::from_kept(
-        &hex::decode(&carried.secret).ok()?,
-        &hex::decode(&carried.cert).ok()?,
-    )
-    .ok()?;
-    Some((carried.name, key))
+    Some((carried.name, carried.key.key()?))
 }
 
 /// The grant `key` is, by the same id every API server derives from it: its
@@ -967,10 +957,9 @@ pub fn grant_id_of(key: &GrantKey) -> String {
 struct KeyToken {
     /// What the person approved the key for, as it was asked ("Visa backend").
     name: String,
-    /// The key's 32 secret bytes, hex.
-    secret: String,
-    /// The certificate's canonical encoding, hex.
-    cert: String,
+    /// The key and its certificate.
+    #[serde(flatten)]
+    key: KeptKey,
 }
 
 /// `bytes` of fresh randomness, base64url without padding.

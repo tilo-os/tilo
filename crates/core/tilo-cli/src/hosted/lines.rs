@@ -1,4 +1,4 @@
-//! The lines a person reads for what the API answers of a path: a listing and a read, as
+//! The lines a person reads for what a workspace answers of a path: a listing and a read, as
 //! `tilo` prints them from the typed answer.
 
 use std::fmt::Write as _;

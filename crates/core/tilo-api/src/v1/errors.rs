@@ -12,6 +12,12 @@ pub struct ApiError {
     pub body: Box<ErrorBody>,
 }
 
+impl From<tilo_mcp::Refused> for ApiError {
+    fn from(refused: tilo_mcp::Refused) -> Self {
+        Self::of_answer(Some(&refused.error), refused.action.as_ref())
+    }
+}
+
 impl ApiError {
     /// `code` with `message`, at the status the code goes with.
     pub fn new(code: &str, message: impl Into<String>) -> Self {

@@ -422,9 +422,7 @@ async fn certified_with(
     agent: &str,
     label: Option<&str>,
 ) -> Result<CertifyAnswer> {
-    use tilo_actions::remote::{
-        ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget,
-    };
+    use tilo_actions::remote::{ActionCallError, InvokeRequest, RemoteActionTarget};
     use tilo_device_identity::login::{
         CERTIFY, CertifyInput, PROVIDER, RESOURCE, SCOPE, TICKET_LIFETIME_NS,
     };
@@ -449,22 +447,13 @@ async fn certified_with(
         )
         .remote(endpoint, &dialed.addr(), SCOPE),
     );
-    let request = InvokeRequest {
-        asks: false,
-        on_behalf_of: None,
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
+    let request = InvokeRequest::plain(
+        RemoteActionTarget {
             provider: PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(RESOURCE, CERTIFY),
         },
-        argument: InvokeArgument::Json(argument),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
+        argument,
+    );
     let now = std::time::Instant::now();
     let deadline = now
         .checked_add(std::time::Duration::from_nanos(TICKET_LIFETIME_NS))

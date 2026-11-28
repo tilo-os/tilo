@@ -773,17 +773,8 @@ impl Account {
             Asked::Models(ModelAction::Ask { workspace, request }) => {
                 let workspace = workspace.trim();
                 let asked = InvokeRequest {
-                    asks: false,
                     invocation: id,
-                    target: model_providers::models::ask(),
-                    argument: InvokeArgument::Json(request.clone()),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    on_behalf_of: None,
-                    wait_ms: None,
-                    appearance: None,
-                    signed: None,
+                    ..InvokeRequest::plain(model_providers::models::ask(), request.clone())
                 };
                 // The workspace's model is asked where the workspace is kept, which is here.
                 let Some((receipt, answers, runs_as)) =
@@ -969,17 +960,9 @@ impl Account {
         };
         let actions = key.device.actions(entered);
         let request = InvokeRequest {
-            asks: false,
             invocation: id,
-            target,
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
             wait_ms,
-            appearance: None,
-            signed: None,
+            ..InvokeRequest::plain(target, arguments)
         };
         let receipt = actions
             .invoke(&self.0.caller, request)
@@ -1058,13 +1041,7 @@ impl Account {
             crate::keys::Answer::Approved { token, grant } => InvocationUpdate::Succeeded {
                 invocation: id,
                 output: ActionOutput {
-                    value: Some(json!({
-                        "key": token,
-                        "grant": grant.id,
-                        "name": grant.client_name,
-                        "scope": grant.scope.name(),
-                        "expires_at_ms": grant.expires_ms,
-                    })),
+                    value: Some(crate::keys::approved(&token, &grant)),
                     ..ActionOutput::default()
                 },
             },
@@ -1313,20 +1290,17 @@ impl Certifying {
             );
         };
         let request = InvokeRequest {
-            asks: false,
             invocation: id,
-            target: RemoteActionTarget {
-                provider: crate::keys::CERTIFY_PROVIDER.to_owned(),
-                address: ActionAddress::new(crate::keys::CERTIFY_RESOURCE, crate::keys::CERTIFY),
-            },
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..InvokeRequest::plain(
+                RemoteActionTarget {
+                    provider: crate::keys::CERTIFY_PROVIDER.to_owned(),
+                    address: ActionAddress::new(
+                        crate::keys::CERTIFY_RESOURCE,
+                        crate::keys::CERTIFY,
+                    ),
+                },
+                arguments,
+            )
         };
         let own = tilo_server_protocol::servers::person_workspace_id(&key.cert().user_public_key);
         let Some((receipt, answers, runs_as)) = host.ask(key, own, request).await else {
@@ -1895,7 +1869,9 @@ fn persons_own(grant: &Grant) -> bool {
 async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Result<bool, Outcome> {
     let mut arguments = Map::new();
     arguments.insert("grant".to_owned(), json!(grant));
-    match governance(connection, workspace, REVOKE_KEY, arguments).await {
+    // Recorded as the API server itself asks, with no key behind the call.
+    let caller = Caller::local_person("tilo api");
+    match workspace_verb_as(connection, workspace, REVOKE_KEY, arguments, &caller).await {
         Ok(_) => Ok(true),
         // A workspace that holds no such grant, or already refuses the key as
         // revoked, has nothing left to record.
@@ -2015,19 +1991,10 @@ async fn workspace_verb_as(
         .enter(connection, workspace)
         .await
         .map_err(|error| refused(&error))?;
-    let request = InvokeRequest {
-        asks: false,
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget::workspace_governance(workspace, action),
-        argument: InvokeArgument::Json(arguments),
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
+    let request = InvokeRequest::plain(
+        RemoteActionTarget::workspace_governance(workspace, action),
+        arguments,
+    );
     let unanswered = || {
         failed(
             "unavailable",
@@ -2050,24 +2017,6 @@ async fn workspace_verb_as(
         }
         ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => Err(unanswered()),
     }
-}
-
-/// [`workspace_verb_as`] as the API server itself asks a workspace, for the calls it makes with no
-/// key behind them (a key's own record of its grants).
-async fn governance(
-    connection: &Connection,
-    workspace: &str,
-    action: &str,
-    arguments: Map<String, Value>,
-) -> Result<Value, Outcome> {
-    workspace_verb_as(
-        connection,
-        workspace,
-        action,
-        arguments,
-        &Caller::local_person("tilo api"),
-    )
-    .await
 }
 
 /// What a workspace's refusal of a key's listing or revocation, `error`, tells the caller.

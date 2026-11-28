@@ -52,7 +52,8 @@ const MAX_APPROVALS: usize = 4_096;
 
 /// How the person answered a key a poller waits for.
 pub(crate) struct Approval {
-    outcome: Outcome,
+    /// [`Answer::Approved`] or [`Answer::Declined`].
+    outcome: Answer,
     expires_ms: u64,
 }
 
@@ -71,12 +72,15 @@ pub(crate) enum Answer {
     Expired,
 }
 
-enum Outcome {
-    Approved {
-        token: String,
-        grant: Box<store::Grant>,
-    },
-    Declined,
+/// What a poller of an approved key is answered: the key itself, once, and what it reaches.
+pub(crate) fn approved(token: &str, grant: &store::Grant) -> Value {
+    json!({
+        "key": token,
+        "grant": grant.id,
+        "name": grant.client_name,
+        "scope": grant.scope.name(),
+        "expires_at_ms": grant.expires_ms,
+    })
 }
 
 /// A key's name, as asked: 1 to [`MAX_NAME_CHARS`] printable characters.
@@ -300,10 +304,7 @@ impl Server {
             approved.remove(&digest)
         };
         if let Some(approval) = answered {
-            return match approval.outcome {
-                Outcome::Approved { token, grant } => Answer::Approved { token, grant },
-                Outcome::Declined => Answer::Declined,
-            };
+            return approval.outcome;
         }
         let waiting = lock(&self.pending).iter().find_map(|(id, pending)| {
             (pending.expires_ms > now
@@ -384,16 +385,9 @@ impl Server {
             );
         };
         match self.key_answer(poll) {
-            Answer::Approved { token, grant } => json_reply(
-                StatusCode::OK,
-                &json!({
-                    "key": token,
-                    "grant": grant.id,
-                    "name": grant.client_name,
-                    "scope": grant.scope.name(),
-                    "expires_at_ms": grant.expires_ms,
-                }),
-            ),
+            Answer::Approved { token, grant } => {
+                json_reply(StatusCode::OK, &approved(&token, &grant))
+            }
             Answer::Declined => error(
                 StatusCode::FORBIDDEN,
                 "access_denied",
@@ -474,7 +468,7 @@ impl Server {
     ) -> crate::Reply {
         if form.get("decision").map(String::as_str) == Some("deny") {
             if let Some(poll) = poll {
-                self.answer_poller(poll, Outcome::Declined, now);
+                self.answer_poller(poll, Answer::Declined, now);
             }
             return html(
                 StatusCode::OK,
@@ -488,9 +482,9 @@ impl Server {
         }
         let (Some(proof), Some(cert)) = (
             form.get("proof")
-                .and_then(|proof| sign_in::decode_proof(proof)),
+                .and_then(|proof| sign_in::decode::<tilo_user_identity::SignInProof>(proof)),
             form.get("grant")
-                .and_then(|cert| sign_in::decode_cert(cert)),
+                .and_then(|cert| sign_in::decode::<tilo_user_identity::DeviceCert>(cert)),
         ) else {
             return self.unconfirmed(pending, "the answer carried no proof and certificate");
         };
@@ -519,7 +513,7 @@ impl Server {
             Some(poll) => {
                 self.answer_poller(
                     poll,
-                    Outcome::Approved {
+                    Answer::Approved {
                         token,
                         grant: Box::new(grant),
                     },
@@ -543,7 +537,7 @@ impl Server {
         reply
     }
 
-    fn answer_poller(&self, poll: &str, outcome: Outcome, now: u64) {
+    fn answer_poller(&self, poll: &str, outcome: Answer, now: u64) {
         let mut approved = lock(&self.approved_keys);
         approved.retain(|_, approval| approval.expires_ms > now);
         if approved.len() < MAX_APPROVALS {

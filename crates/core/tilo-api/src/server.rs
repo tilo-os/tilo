@@ -14,6 +14,7 @@
 //! revocations, a minted grant's issuer included.
 
 use crate::grant_key::GrantKey;
+use crate::lock;
 use collab_types::WorkspaceId;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
@@ -729,10 +730,4 @@ impl Connection {
             other => other,
         })
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

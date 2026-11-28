@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::api::{Calls, Reach};
-use tilo_api::v1::lines;
+mod lines;
 use tilo_server_client::https::{HttpClient as _, Origin};
 
 #[derive(Subcommand)]

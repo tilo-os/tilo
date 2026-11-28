@@ -119,41 +119,15 @@ pub fn set_cookie(value: &str) -> String {
     )
 }
 
-/// A posted proof, decoded: base64url of its canonical encoding.
+/// A posted proof or grant certificate, decoded: base64url of its canonical encoding, as
+/// [`tilo_server_client::encode`] writes it.
 #[must_use]
-pub fn decode_proof(text: &str) -> Option<SignInProof> {
+pub fn decode<T: serde::de::DeserializeOwned>(text: &str) -> Option<T> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(text.trim().trim_end_matches('='))
         .ok()?;
     tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
-}
-
-/// A posted grant certificate, decoded: base64url of its canonical encoding.
-#[must_use]
-pub fn decode_cert(text: &str) -> Option<tilo_user_identity::DeviceCert> {
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text.trim().trim_end_matches('='))
-        .ok()?;
-    tilo_user_identity::canonical::from_canonical_bytes(&bytes).ok()
-}
-
-/// `cert`, encoded as a sign-in page posts it.
-#[must_use]
-pub fn encode_cert(cert: &tilo_user_identity::DeviceCert) -> Option<String> {
-    use base64::Engine as _;
-    let bytes = tilo_user_identity::canonical::canonical_bytes(cert).ok()?;
-    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
-}
-
-/// `proof`, encoded as a sign-in page posts it; `None` if it has no
-/// canonical encoding.
-#[must_use]
-pub fn encode_proof(proof: &SignInProof) -> Option<String> {
-    use base64::Engine as _;
-    let bytes = tilo_user_identity::canonical::canonical_bytes(proof).ok()?;
-    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// Check `proof` answers `challenge` for the server at `issuer`, under the

@@ -688,15 +688,9 @@ impl Session {
     /// Answer `request` in `workspace`'s session, showing the person what a
     /// tool call did beside the agent.
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
-        self.serve_in(workspace, None, request).await
-    }
-
-    /// [`Self::serve`], on the queue of the program session `program` when it
-    /// names one.
-    async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let entering = timing_start();
-        let served = match self.served(workspace, program).await {
+        let served = match self.served(workspace, None).await {
             Ok(held) => held,
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
@@ -810,12 +804,11 @@ impl Session {
         if uuid::Uuid::parse_str(named).is_ok() {
             return Some(named.to_owned());
         }
-        let wanted = named.trim().to_lowercase().replace(' ', "-");
         self.workspaces(&Labels::new())
             .await
             .ok()?
             .into_iter()
-            .find(|workspace| workspace.name.trim().to_lowercase().replace(' ', "-") == wanted)
+            .find(|workspace| crate::calls::names(named, &workspace.name))
             .map(|workspace| workspace.id)
     }
 
@@ -919,9 +912,7 @@ impl Session {
             (None, None) if on_account(Some(&arguments)) => {
                 return Box::pin(self.own.typed(tool, arguments, group))
                     .await
-                    .map_err(|refused| {
-                        ApiError::of_answer(Some(&refused.error), refused.action.as_ref())
-                    });
+                    .map_err(ApiError::from);
             }
             (None, None) => return Err(ApiError::new("invalid_request", NAME_THE_WORKSPACE)),
         };
@@ -942,7 +933,7 @@ impl Session {
         let served = self.served(workspace, program).await?;
         Box::pin(served.server.typed(tool, arguments, group))
             .await
-            .map_err(|refused| ApiError::of_answer(Some(&refused.error), refused.action.as_ref()))
+            .map_err(ApiError::from)
     }
 
     /// The account's actions, as this session reaches them.
