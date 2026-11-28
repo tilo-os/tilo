@@ -213,6 +213,11 @@ type Repository {
     /// records it draws.
     snapshot: Text = ""
     sessions: Collection<Session>
+    /// The device's job while a remote operation runs, what it is, and the remote it names;
+    /// empty otherwise.
+    remote_job: Text = ""
+    remote_op: Text = ""
+    remote_name: Text = ""
     /// The last check the project's host ran for it, which every member sees.
     check: ApprovedCheck
 }
@@ -1027,45 +1032,88 @@ action create_worktree(g: Repository, path: Text, branch: Text, start: Text) (
 /// Fetches from a remote.
 // ---------------------------------------------------------------- remotes
 action fetch(g: Repository, remote: Text = "") (icon: .cloud_download, label: "Fetch from remote") {
-    let s = g.sessions.first() ?? g.sessions.insert(Session())
-    match engine.call("fetch", json.encode(RemoteAsk(path: s.path, remote: remote))) {
-        .err(why) => {
-            s.trouble = why
-        }
-        .ok(text) => keep(g, s, text),
-    }
-    if s.trouble == "" {
-        s.notice = "Fetched from {remote}"
-    }
+    require g.remote_job == "" "Wait for the current remote operation to finish."
+    start_remote(g, "fetch", remote)
 }
 
 /// Fetches, then fast-forwards the current branch to its upstream.
 action pull(g: Repository, remote: Text = "") (icon: .arrow_down, label: "Pull from remote") {
-    let s = g.sessions.first() ?? g.sessions.insert(Session())
-    match engine.call("pull", json.encode(RemoteAsk(path: s.path, remote: remote))) {
-        .err(why) => {
-            s.trouble = why
-        }
-        .ok(text) => keep(g, s, text),
-    }
-    if s.trouble == "" {
-        s.notice = "Pulled from {remote}"
-    }
+    require g.remote_job == "" "Wait for the current remote operation to finish."
+    start_remote(g, "pull", remote)
 }
 
 /// Pushes the current branch to a like-named branch on a remote. What it sends leaves the system
 /// for good: everyone who reads the remote has it.
 action push(g: Repository, remote: Text = "") (icon: .arrow_up, label: "Push to remote") {
+    require g.remote_job == "" "Wait for the current remote operation to finish."
+    start_remote(g, "push", remote)
+}
+
+/// Starts the remote operation as a job the person can stop: the window says what it is doing
+/// while it runs, and the answer comes back to `remote_ended`.
+action start_remote(g: Repository, op: Text, remote: Text) {
     let s = g.sessions.first() ?? g.sessions.insert(Session())
-    match engine.call("push", json.encode(RemoteAsk(path: s.path, remote: remote))) {
+    let ask = json.encode(RemoteAsk(path: s.path, remote: remote))
+    let started = if op == "fetch" {
+        engine.start("fetch", ask, done: j -> remote_ended(g, j))
+    } else if op == "pull" {
+        engine.start("pull", ask, done: j -> remote_ended(g, j))
+    } else {
+        engine.start("push", ask, done: j -> remote_ended(g, j))
+    }
+    match started {
         .err(why) => {
             s.trouble = why
         }
-        .ok(text) => keep(g, s, text),
+        .ok(job) => {
+            g.remote_job = job
+            g.remote_op = op
+            g.remote_name = remote
+            s.trouble = ""
+            s.notice = ""
+        }
     }
-    if s.trouble == "" {
-        s.notice = "Pushed to {remote}"
+}
+
+/// What the remote operation came to: the repository as it now stands, or why it stopped.
+action remote_ended(g: Repository, j: host.Job) {
+    if g.remote_job != j.id {
+        return
     }
+    let op = g.remote_op
+    let remote = g.remote_name
+    g.remote_job = ""
+    g.remote_op = ""
+    g.remote_name = ""
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    if j.state == .done {
+        keep(g, s, j.detail)
+        let word = if op == "fetch" {
+            "Fetched"
+        } else if op == "pull" { "Pulled" } else { "Pushed" }
+        if op == "push" {
+            s.notice = if remote == "" { word } else { "{word} to {remote}" }
+        } else {
+            s.notice = if remote == "" { word } else { "{word} from {remote}" }
+        }
+    } else if j.state == .failed and j.error != "" {
+        s.trouble = "The remote operation stopped: {j.error}"
+    } else if j.state == .cancelled {
+        s.trouble = "The remote operation was stopped."
+    } else {
+        s.trouble = "The remote operation stopped unexpectedly. Check the repository before trying again."
+    }
+}
+
+/// Stops the remote operation the person started, and says so.
+action cancel_remote(g: Repository) (icon: .square, label: "Stop the remote operation") {
+    require g.remote_job != "" "No remote operation is running"
+    engine.cancel(g.remote_job)
+    g.remote_job = ""
+    g.remote_op = ""
+    g.remote_name = ""
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.trouble = "The remote operation was stopped."
 }
 
 /// Runs a check this project's host approved, by its id: the host picks the commands, the sources
@@ -1502,6 +1550,20 @@ view changes(g: Repository) {
                             commit_box(g, s, message)
                         }
                         stack {
+                            if g.remote_job != "" {
+                                ui.Banner(
+                                    title: if g.remote_op == "fetch" {
+                                        "Fetching from remote…"
+                                    } else if g.remote_op == "pull" {
+                                        "Pulling from remote…"
+                                    } else { "Pushing to remote…" },
+                                    kind: .info,
+                                    icon: .cloud_download,
+                                    action: "Stop",
+                                ) {
+                                    on act: cancel_remote(g)
+                                }
+                            }
                             if s.trouble != "" {
                                 ui.Banner(title: s.trouble, kind: .error, icon: .circle_alert) {
                                     on dismiss: clear_trouble(g)

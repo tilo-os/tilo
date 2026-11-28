@@ -929,16 +929,19 @@ d-kn6abrns-start = Start
 
 d-7lpwxrhi = Vom Remote abrufen
     .doc = Ruft von einem Remote ab.
+    .w-wait-for-the-current-remote-operation = Warte, bis der laufende Vorgang mit dem Remote beendet ist.
 
 d-7lpwxrhi-remote = Remote
 
 d-c2uabswh = Vom Remote ziehen
     .doc = Ruft ab und spult den aktuellen Zweig auf seinen Upstream vor.
+    .w-wait-for-the-current-remote-operation = Warte, bis der laufende Vorgang mit dem Remote beendet ist.
 
 d-c2uabswh-remote = Remote
 
 d-aqzo32et = Zum Remote pushen
     .doc = Pusht den aktuellen Zweig auf einen gleichnamigen Zweig eines Remotes.
+    .w-wait-for-the-current-remote-operation = Warte, bis der laufende Vorgang mit dem Remote beendet ist.
 
 d-aqzo32et-remote = Remote
 
@@ -1082,6 +1085,10 @@ d-464a2hax = Änderungen
     .w-stash-and-switch = Stash and switch
     .w-cancel = Cancel
     .w-keep-my-changes = Keep my changes
+    .w-fetching-from-remote = Wird vom Remote abgerufen…
+    .w-pulling-from-remote = Wird vom Remote gezogen…
+    .w-pushing-to-remote = Wird zum Remote geschoben…
+    .w-stop = Stoppen
 
 d-sbvmzuej = Änderungszeile
     .w-unstage = Unstage
@@ -1298,3 +1305,34 @@ d-kkgzl4i7 = Beobachtet
 d-yj3fdk54 = Angehalten
 
 d-kjqu7kvq = Abgelehnt
+
+d-oyjyqniq = Remote-Vorgang
+    .doc = Der Auftrag des Geräts, während ein Vorgang mit dem Remote läuft, was er ist und welches Remote er nennt; sonst leer.
+
+d-o4e5fx4s = Remote-Vorgang
+
+d-5oxal5br = Remote-Name
+
+d-g2kl5q7g = Remote-Vorgang starten
+    .doc = Startet den Vorgang mit dem Remote als Auftrag, den die Person stoppen kann: das Fenster sagt, was er tut, während er läuft, und die Antwort kommt an `remote_ended`.
+
+d-g2kl5q7g-op = Vorgang
+
+d-g2kl5q7g-remote = Remote
+
+d-ve5jpid4 = Remote-Vorgang beendet
+    .doc = Was der Vorgang mit dem Remote ergeben hat: das Repository, wie es jetzt steht, oder warum er endete.
+
+d-ve5jpid4-j = Auftrag
+
+d-ksjbeief = Vorgang mit dem Remote stoppen
+    .doc = Stoppt den Vorgang mit dem Remote, den die Person gestartet hat, und sagt es.
+    .w-no-remote-operation-is-running = Kein Vorgang mit dem Remote läuft
+
+d-ey73qaym = Abrufen~present
+
+d-4sxoy2ut = Ziehen~present
+
+d-ju7wdqi2 = Schieben~present
+
+d-io2lkcmy = Vorgang abbrechen~present

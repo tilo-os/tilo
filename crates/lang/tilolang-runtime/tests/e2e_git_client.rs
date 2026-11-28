@@ -62,6 +62,9 @@ mod cases {
         asked: Rc<RefCell<Vec<(String, String)>>>,
         repo: Rc<RefCell<Repo>>,
         host: Rc<RefCell<Host>>,
+        /// The jobs it started, with what each runs as it ends, and how many it has started.
+        started: Rc<RefCell<Vec<(String, tilolang_runtime::host_work::JobHandlers)>>>,
+        next_job: Rc<std::cell::Cell<u32>>,
     }
 
     impl Engine {
@@ -118,6 +121,15 @@ mod cases {
                 .filter(|(asked, _)| asked == op)
                 .map(|(_, input)| input.clone())
                 .collect()
+        }
+
+        /// The job the last transfer started, and what it runs as it ends.
+        fn last_started(&self) -> (String, tilolang_runtime::host_work::JobHandlers) {
+            self.started
+                .borrow()
+                .last()
+                .cloned()
+                .expect("a transfer started a job")
         }
 
         fn loaded(&self) -> String {
@@ -393,12 +405,21 @@ mod cases {
             _app: &str,
             op: &str,
             input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
+            handlers: &tilolang_runtime::host_work::JobHandlers,
         ) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
-            Err("this device answers transfers now".to_owned())
+            if !matches!(op, "fetch" | "pull" | "push") {
+                return Err("this device answers transfers now".to_owned());
+            }
+            let n = self.next_job.get().saturating_add(1);
+            self.next_job.set(n);
+            let job = format!("devices/test/jobs/{op}-{n}");
+            self.started
+                .borrow_mut()
+                .push((job.clone(), handlers.clone()));
+            Ok(job)
         }
 
         fn check(&self, _app: &str, check_id: &str) -> Result<String, String> {
@@ -425,6 +446,11 @@ mod cases {
         fn cancel(&self, job: &str) -> bool {
             self.host.borrow_mut().stopped.push(job.to_owned());
             job == CHECK_JOB
+                || self
+                    .started
+                    .borrow()
+                    .iter()
+                    .any(|(started, _)| started == job)
         }
     }
 
@@ -486,6 +512,31 @@ mod cases {
                 root,
                 engine,
             }
+        }
+
+        /// The transfer job ends as `state`, its detail `detail`: the device records it and runs
+        /// what the app's start named for its end, as the person who started it.
+        fn end_remote(
+            &self,
+            job: &str,
+            state: &str,
+            detail: serde_json::Value,
+        ) -> tilolang_runtime::InvokeOutcome {
+            let (_, handlers) = self.engine.last_started();
+            let record = serde_json::json!({
+                "id": job, "app": "so.tilo.git-client", "op": "fetch", "state": state,
+                "error": detail.get("error").cloned().unwrap_or_default(),
+                "detail": detail,
+            });
+            self.rt.set_job(job, &record);
+            let done = handlers
+                .done
+                .expect("the transfer names what runs as it ends");
+            let call = self
+                .rt
+                .job_call(&done, &record)
+                .expect("`done:` names an action");
+            self.rt.invoke_action(&me(), call).expect("`done:` runs")
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> tilolang_runtime::InvokeOutcome {
@@ -1021,17 +1072,58 @@ mod cases {
             assert_eq!(s.snapshot_len("worktrees"), 2);
         }
 
-        phase remotes_are_fetched_pulled_and_pushed;
+        phase remotes_are_fetched_pulled_and_pushed_as_jobs_the_window_follows;
         {
             let s = Site::new();
             s.open(REPO);
+            // A transfer runs on the device as a job: the window says what it is doing, and no
+            // second one starts while it runs.
             s.call("fetch", vec![Value::resource(&s.root), Value::text("origin")]);
-            s.call("pull", vec![Value::resource(&s.root), Value::text("origin")]);
-            s.call("push", vec![Value::resource(&s.root), Value::text("origin")]);
             assert_eq!(s.engine.asked_with("fetch").len(), 1);
-            assert_eq!(s.engine.asked_with("pull").len(), 1);
-            assert_eq!(s.engine.asked_with("push").len(), 1);
-            assert_eq!(s.text(&s.session(), "notice"), "Pushed to origin");
+            let (job, _) = s.engine.last_started();
+            assert_eq!(s.text(&s.root, "remote_job"), job);
+            assert_eq!(s.text(&s.root, "remote_op"), "fetch");
+            assert_eq!(s.text(&s.session(), "trouble"), "");
+            let refused = s.try_call(
+                "pull",
+                vec![Value::resource(&s.root), Value::text("origin")],
+            );
+            assert!(
+                format!("{refused:?}").contains("Wait for the current remote operation"),
+                "a second transfer waits: {refused:?}"
+            );
+            let labels = s.labels();
+            assert!(
+                labels.iter().any(|label| label == "Fetching from remote…"),
+                "{labels:?}"
+            );
+            let loaded = s.engine.loaded();
+            s.end_remote(&job, "done", serde_json::json!(loaded));
+            assert_eq!(s.text(&s.root, "remote_job"), "", "the job ended");
+            assert_eq!(s.text(&s.session(), "notice"), "Fetched from origin");
+
+            // A transfer that fails says so and leaves the window usable.
+            s.call("push", vec![Value::resource(&s.root), Value::text("origin")]);
+            let (job, _) = s.engine.last_started();
+            s.end_remote(
+                &job,
+                "failed",
+                serde_json::json!({"error": "the remote refused the branch"}),
+            );
+            let said = s.text(&s.session(), "trouble");
+            assert!(said.contains("stopped"), "{said}");
+            assert_eq!(s.text(&s.root, "remote_job"), "");
+
+            // And one the person stops.
+            s.call("pull", vec![Value::resource(&s.root), Value::text("")]);
+            let (job, _) = s.engine.last_started();
+            s.call("cancel_remote", vec![Value::resource(&s.root)]);
+            assert!(s.engine.host.borrow().stopped.contains(&job));
+            assert_eq!(s.text(&s.root, "remote_job"), "");
+            assert_eq!(
+                s.text(&s.session(), "trouble"),
+                "The remote operation was stopped."
+            );
         }
 
         phase a_conflict_says_what_each_side_costs_and_is_settled;
