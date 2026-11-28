@@ -117,10 +117,11 @@ impl StatePeer {
     /// Hold `message` until `prerequisite` arrives: every later workspace change
     /// and admitted document retries what is held. The queue is bounded
     /// ([`MAX_HELD_INPUTS`], [`MAX_HELD_BYTES`]) and never refuses the input
-    /// being admitted: when it is full, the message held longest is decided
-    /// again and, when still undecidable, let go with what it waited for in
-    /// the report's `dropped`. Nothing let go was applied, and the workspace's
-    /// host still retains it.
+    /// being admitted: when it is full, the message of the same writer held
+    /// longest is decided again and, when still undecidable, let go with what
+    /// it waited for in the report's `dropped`; a writer holding none has this
+    /// message let go instead. One writer never pushes out another's. Nothing
+    /// let go was applied, and the workspace's host still retains it.
     pub(super) fn defer(
         &mut self,
         source: [u8; 32],
@@ -160,47 +161,34 @@ impl StatePeer {
         let full = |held: usize, held_bytes: usize| {
             held >= MAX_HELD_INPUTS || held_bytes.saturating_add(bytes) > MAX_HELD_BYTES
         };
-        if bytes > MAX_HELD_BYTES {
-            let input = dropped_input(
-                &source,
-                &message,
-                Some(prerequisite.clone()),
-                DropReason::TooLarge,
-            );
-            self.remember_missed(&input, in_the_clear(&message));
-            let mut report = deferred(vec![input], lacks_history);
-            report.summary.deferred = false;
-            return Ok(report);
-        }
-        if prerequisite == MissingPrerequisite::Rules
+        // Let go, not refused: the governance it waits for may simply not be here yet (a replay
+        // to a peer that just started reaches it ahead of the workspace's governance). Its server
+        // is asked for it again once the governance moves.
+        let over_share = prerequisite == MissingPrerequisite::Rules
             && self
                 .core
                 .pending
                 .iter()
                 .filter(|(author, ..)| author == &source)
                 .count()
-                >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER
-        {
-            // Let go, not refused: the governance it waits for may simply
-            // not be here yet (a replay to a peer that just started reaches
-            // it ahead of the workspace's governance). Its server is asked for
-            // it again once the governance moves.
-            let input = dropped_input(
-                &source,
-                &message,
-                Some(prerequisite.clone()),
-                DropReason::Superseded,
-            );
-            self.remember_missed(&input, in_the_clear(&message));
-            let mut report = deferred(vec![input], lacks_history);
-            report.summary.deferred = false;
-            return Ok(report);
-        }
+                >= MAX_HELD_FOR_GOVERNANCE_PER_WRITER;
+        let mut let_go = if bytes > MAX_HELD_BYTES {
+            Some(DropReason::TooLarge)
+        } else {
+            over_share.then_some(DropReason::Superseded)
+        };
         let mut dropped = Vec::new();
         let mut settled = Vec::new();
         let mut released = Vec::new();
-        while full(self.core.pending.len(), self.core.pending_bytes) {
-            let Some((author, oldest, replayed)) = self.core.pending.pop_front() else {
+        while let_go.is_none() && full(self.core.pending.len(), self.core.pending_bytes) {
+            let own = self
+                .core
+                .pending
+                .iter()
+                .position(|(author, ..)| author == &source);
+            let Some((author, oldest, replayed)) = own.and_then(|at| self.core.pending.remove(at))
+            else {
+                let_go = Some(DropReason::Superseded);
                 break;
             };
             let size = crate::postcard_sink::encoded_len(&oldest, usize::MAX)
@@ -217,6 +205,11 @@ impl StatePeer {
                 }
             }
         }
+        if let Some(reason) = let_go.clone() {
+            let input = dropped_input(&source, &message, Some(prerequisite.clone()), reason);
+            self.remember_missed(&input, in_the_clear(&message));
+            dropped.push(input);
+        }
         // An action one of whose writes was let go is never whole: its other writes go with it.
         for input in dropped.clone() {
             if let Some(waiting @ MissingPrerequisite::ActionParts { action, .. }) =
@@ -225,11 +218,15 @@ impl StatePeer {
                 dropped.extend(self.let_go_action(action, waiting, &input.reason));
             }
         }
-        self.core.pending_bytes = self.core.pending_bytes.saturating_add(bytes);
-        self.core
-            .pending
-            .push_back((source, message, retained_replay));
         let mut report = deferred(dropped, lacks_history);
+        if let_go.is_some() {
+            report.summary.deferred = false;
+        } else {
+            self.core.pending_bytes = self.core.pending_bytes.saturating_add(bytes);
+            self.core
+                .pending
+                .push_back((source, message, retained_replay));
+        }
         report.settled.extend(settled);
         report.released = released;
         Ok(report)

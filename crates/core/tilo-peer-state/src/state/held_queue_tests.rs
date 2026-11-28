@@ -123,11 +123,12 @@ tilo_test_env::scenario! {
         assert_eq!(value(&receiver, "kept").as_deref(), Some("kept"));
     }
 
-    phase a_held_message_whose_prerequisite_arrived_is_applied_when_its_place_is_needed;
+    phase one_writer_filling_the_queue_pushes_out_only_its_own_writes;
     {
         let (mut receiver, owner_key, member_key, member, now) = seeded();
         receiver.select_exact_admissions().unwrap();
         let mut author = receiver.clone();
+        let filler = incremental(&mut receiver.clone(), &owner_key, now, "filler");
         // The member's certificate has not reached this replica yet.
         receiver.core.certificates.remove(&member.device_public_key);
         let write = incremental(&mut author, &member_key, now, "late");
@@ -142,42 +143,41 @@ tilo_test_env::scenario! {
             held.primary(),
             &InputDisposition::RetryLater(MissingPrerequisite::Certificate)
         );
-        // Its certificate arrives on its own, which retries nothing.
+        // A stranger fills the rest of the queue, then writes past it: only its own writes go.
+        let stranger = SigningKey::from_bytes(&[78; 32]);
+        let origin = crate::fixture::origin(&stranger);
+        let mut let_go = Vec::new();
+        for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() + 4 {
+            let report = receiver
+                .receive_from_report(origin, as_author(&filler, &stranger, seq), now)
+                .unwrap();
+            let_go.extend(report.summary().dropped.iter().cloned());
+        }
+        assert_eq!(let_go.len(), 5, "the stranger's writes past the queue are let go");
+        assert!(
+            let_go
+                .iter()
+                .all(|input| input.author == stranger.verifying_key().to_bytes()),
+            "another writer's held write is never pushed out: {let_go:?}"
+        );
+        assert_eq!(receiver.pending_count(), MAX_HELD_INPUTS);
+        // Its certificate arrives: the member's write held all along is taken in.
         receiver
             .receive_from(
                 TransportOrigin::UntrustedPresence(member.device_public_key),
                 NeighbourMsg::IdentityHello {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(member.clone()),
+                    cert: Box::new(member),
                     revocations: vec![],
                 },
                 now,
             )
             .unwrap();
-        assert_eq!(receiver.pending_count(), 1);
-        let stranger = SigningKey::from_bytes(&[78; 32]);
-        let filler = incremental(&mut receiver.clone(), &owner_key, now, "filler");
-        let origin = crate::fixture::origin(&stranger);
-        let mut settled = Vec::new();
-        for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() {
-            let report = receiver
-                .receive_from_report(origin, as_author(&filler, &stranger, seq), now)
-                .unwrap();
-            assert!(
-                report.summary().dropped.is_empty(),
-                "a held message that can be decided now is not let go: {:?}",
-                report.summary().dropped
-            );
-            settled.extend(report.settled().iter().cloned());
-        }
+        let admitted = receiver
+            .receive_from_report(crate::fixture::origin(&owner_key), filler, now)
+            .unwrap();
+        assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
         assert_eq!(value(&receiver, "late").as_deref(), Some("late"));
-        assert!(
-            settled
-                .iter()
-                .any(|admission| admission.key.author == member.device_public_key),
-            "its admission is reported settled"
-        );
-        assert_eq!(receiver.pending_count(), MAX_HELD_INPUTS);
     }
 
     phase a_message_let_go_is_asked_for_again_once_what_it_waited_for_lands_and_then_applies;
@@ -195,14 +195,14 @@ tilo_test_env::scenario! {
             held.primary(),
             &InputDisposition::RetryLater(MissingPrerequisite::CausalDependencies)
         );
-        // The queue fills behind it, and the change it builds on has not come.
+        // The member's own later writes fill the queue behind it, and the change they build on
+        // has not come.
         let stranger = SigningKey::from_bytes(&[79; 32]);
         let origin = crate::fixture::origin(&stranger);
         let mut let_go = Vec::new();
         for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() {
-            let report = receiver
-                .receive_from_report(origin, as_author(&first, &stranger, seq), now)
-                .unwrap();
+            let later = incremental(&mut author, &key, now, &format!("later {seq}"));
+            let report = receiver.receive_from_report(member, later, now).unwrap();
             assert!(
                 !report.summary().replay_wanted,
                 "nothing it waited for landed yet"
