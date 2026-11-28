@@ -3629,10 +3629,24 @@ impl DirectSync {
                 opened.write_recover().extend(eager.followed());
             }
             if opens_an_ask && !state_sent {
+                // A device whose tell named the heads it holds is sent the workspace's changes
+                // it lacks, not the state again: it took the state in as it joined, and a
+                // workspace of hundreds of members is not merged twice on it. A device that
+                // said nothing is answered the whole state, exactly as builds before the tell
+                // were.
                 // The store's frames follow the state, from where the device
                 // asking stands.
+                let told = opening.holds.lock_recover().clone().filter(|heads| {
+                    !heads.is_empty()
+                        && self
+                            .read(|peer| heads.iter().all(|head| peer.workspace_holds_change(head)))
+                });
+                let answering = match &told {
+                    Some(heads) => self.state_since(heads),
+                    None => self.answer_state_request(false),
+                };
                 state.extend(
-                    self.answer_state_request(false)
+                    answering
                         .into_iter()
                         .filter(|state| reaches(&state.message))
                         .filter(|state| {
