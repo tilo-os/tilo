@@ -237,11 +237,14 @@ fn a_person_pages_toward_the_oldest_change_and_searches_past_the_first_page() {
     let mut window = open_history(&app);
     assert!(contains(&window, "Change 199"), "{:?}", shown(&window));
     assert!(!contains(&window, "Change 250"), "the first page holds 200");
-    assert!(has(&window, "Show more"), "older changes are reachable");
+    assert!(
+        has(&window, "Show earlier changes"),
+        "older changes are reachable"
+    );
 
     // Showing more reads a larger page, and the changes only it holds appear.
     app.device_says(&feed(400), &page(changes(400), 500));
-    press(&mut window, "Show more");
+    press(&mut window, "Show earlier changes");
     assert!(contains(&window, "Change 250"), "{:?}", shown(&window));
 
     // The search reads further back than the page shown, and shows what it kept of what it
@@ -255,7 +258,7 @@ fn a_person_pages_toward_the_oldest_change_and_searches_past_the_first_page() {
         shown(&window)
     );
     assert!(
-        !has(&window, "Show more"),
+        !has(&window, "Show earlier changes"),
         "the page holds every change the history matched"
     );
 }
@@ -453,4 +456,510 @@ fn a_brief_opens_its_own_changes_in_history() {
         Some(Value::text("e012")),
         "the brief's newest change is selected"
     );
+}
+
+/// A change with the group it was made in, when, by whom, and which devices refused it.
+fn grouped(
+    id: &str,
+    summary: &str,
+    group: Option<&str>,
+    at_ms: i64,
+    author: &str,
+    refused: Json,
+) -> Json {
+    let mut one = change(id, summary);
+    one["group"] = json!(group);
+    one["at_ms"] = json!(at_ms);
+    one["author"]["name"] = json!(author);
+    one["refused"] = refused;
+    one
+}
+
+/// A page whose changes and work groups the test names.
+fn grouped_page(entries: Vec<Json>, groups: Json) -> String {
+    json!({
+        "feed": {
+            "workspace": "Home",
+            "scope": "this-workspace",
+            "total": entries.len(),
+            "entries": entries,
+            "groups": groups,
+            "people": ["Ada", "Bo"],
+            "lenses": [],
+            "pending": false,
+            "mutations": true,
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn a_work_sessions_changes_stand_under_it_and_are_selected_together() {
+    let app = installed("{}");
+    app.device_says(
+        &feed(0),
+        &grouped_page(
+            vec![
+                grouped(
+                    "e003",
+                    "Renamed a note",
+                    Some("g1"),
+                    1_700_000_000_000,
+                    "Ada",
+                    json!([]),
+                ),
+                grouped(
+                    "e002",
+                    "Moved a paragraph",
+                    Some("g1"),
+                    1_700_000_000_000,
+                    "Ada",
+                    json!([]),
+                ),
+                grouped(
+                    "e001",
+                    "Tidied the plan",
+                    None,
+                    1_700_000_000_000,
+                    "Bo",
+                    json!([]),
+                ),
+            ],
+            json!([{"id": "g1", "label": "Tidy the notes", "start": "e003", "end": "e002",
+                    "named_by": null}]),
+        ),
+    );
+    let mut window = open_history(&app);
+    assert!(
+        has(&window, "Tidy the notes"),
+        "the session names its changes: {:?}",
+        shown(&window)
+    );
+    press(&mut window, "Select");
+    assert_eq!(window.view_state("first"), Some(Value::text("e003")));
+    assert_eq!(window.view_state("last"), Some(Value::text("e002")));
+}
+
+#[test]
+fn a_change_without_a_time_sits_under_undated() {
+    let app = installed("{}");
+    app.device_says(
+        &feed(0),
+        &grouped_page(
+            vec![grouped(
+                "e001",
+                "Tidied the plan",
+                None,
+                0,
+                "Ada",
+                json!([]),
+            )],
+            json!([]),
+        ),
+    );
+    let window = open_history(&app);
+    assert!(has(&window, "Undated"), "{:?}", shown(&window));
+}
+
+#[test]
+fn a_refused_change_says_which_device_refused_it_and_why() {
+    let app = installed("{}");
+    app.device_says(
+        &feed(0),
+        &grouped_page(
+            vec![grouped(
+                "e001",
+                "Tidied the plan",
+                None,
+                1_700_000_000_000,
+                "Ada",
+                json!([{"change": "e001", "device": "home", "label": "Home laptop",
+                      "reason": "the device is offline", "permanent": false}]),
+            )],
+            json!([]),
+        ),
+    );
+    let window = open_history(&app);
+    assert!(
+        has(&window, "Not on Home laptop: the device is offline"),
+        "{:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn the_person_filter_narrows_and_clearing_it_changes_nothing() {
+    let app = installed("{}");
+    app.device_says(
+        &feed(0),
+        &grouped_page(
+            vec![
+                grouped(
+                    "e002",
+                    "Renamed a note",
+                    None,
+                    1_700_000_000_000,
+                    "Ada",
+                    json!([]),
+                ),
+                grouped(
+                    "e001",
+                    "Tidied the plan",
+                    None,
+                    1_700_000_000_000,
+                    "Bo",
+                    json!([]),
+                ),
+            ],
+            json!([]),
+        ),
+    );
+    let mut window = open_history(&app);
+    app.sent.take();
+    pick(&mut window, "writer", Value::text("Bo"));
+    assert!(contains(&window, "Tidied the plan"), "{:?}", shown(&window));
+    assert!(!contains(&window, "Renamed a note"), "{:?}", shown(&window));
+    assert!(has(&window, "1 of 2 changes"), "{:?}", shown(&window));
+    assert!(
+        app.sent.calls().is_empty(),
+        "choosing a person writes nothing: {:?}",
+        app.sent.calls()
+    );
+
+    pick(&mut window, "first", Value::text("e001"));
+    press(&mut window, "Clear filters");
+    assert_eq!(window.view_state("writer"), Some(Value::text("")));
+    assert_eq!(window.view_state("first"), Some(Value::text("")));
+    assert!(contains(&window, "Renamed a note"), "{:?}", shown(&window));
+}
+
+#[test]
+fn a_work_session_is_named_and_the_name_goes_to_the_history() {
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(2), 2));
+    app.device_says(&range("e000", "e000"), &detail(Some("run-1"), json!([])));
+    let mut window = open_history(&app);
+    pick(&mut window, "first", Value::text("e000"));
+    pick(&mut window, "last", Value::text("e000"));
+    assert!(
+        of_kind(window.tree(), "ui.TextInput")
+            .iter()
+            .any(|node| node.props.get("placeholder")
+                == Some(&Value::text("Name this work session"))),
+        "the field says what it names: {:?}",
+        shown(&window)
+    );
+    pick(&mut window, "name", Value::text("Morning tidy"));
+    press(&mut window, "Save name");
+    assert_eq!(
+        app.sent.arg("name", "label"),
+        Some(Value::text("Morning tidy")),
+        "the typed words are the session's name"
+    );
+    let named = app.sent.arg("name", "range").expect("the range is named");
+    let Value::Rec(range) = named else {
+        panic!("the range is a record: {named:?}")
+    };
+    assert!(
+        range
+            .fields
+            .values()
+            .any(|value| value == &Value::text("e000")),
+        "the range is the selected change: {range:?}"
+    );
+}
+
+/// The range compared, with the changes the history says it made.
+fn comparison(changes: Json, comparison: Json) -> String {
+    json!({
+        "detail": {
+            "title": "Renamed a note",
+            "provenance": "Ada renamed it",
+            "authors": ["Ada"],
+            "resources": [],
+            "group": null,
+            "group_label": null,
+            "offers": [{"action": "compare", "label": "Compare"}],
+            "changes": changes,
+            "comparison": comparison,
+            "gone": false,
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn the_fields_a_change_touched_read_before_and_after() {
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(2), 2));
+    app.device_says(&range("e000", "e000"), &comparison(json!([]), json!(null)));
+    app.device_says(
+        &compare("e000", "e000"),
+        &comparison(
+            json!([
+                {"field": "Title", "before": "Draft", "after": "Final"},
+                {"field": "Pinned", "before": "yes", "after": ""},
+            ]),
+            json!(null),
+        ),
+    );
+    let mut window = open_history(&app);
+    pick(&mut window, "first", Value::text("e000"));
+    pick(&mut window, "last", Value::text("e000"));
+    press(&mut window, "Compare");
+    let words = shown(&window);
+    for wanted in ["Fields", "Title", "Pinned"] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
+    }
+    let secondary = |title: &str| {
+        of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .find(|node| node.props.get("title") == Some(&Value::text(title)))
+            .and_then(|node| node.props.get("secondary").cloned())
+    };
+    assert_eq!(
+        secondary("Title"),
+        Some(Value::text("Was Draft")),
+        "what the field held before"
+    );
+    assert_eq!(
+        secondary("Pinned"),
+        Some(Value::text("Nothing now")),
+        "a field that now holds nothing says so"
+    );
+}
+
+#[test]
+fn a_preview_that_could_not_be_read_says_so() {
+    let app = installed("{}");
+    app.device_says(&feed(0), &page(changes(2), 2));
+    app.device_says(&range("e000", "e000"), &comparison(json!([]), json!(null)));
+    app.device_says(
+        &compare("e000", "e000"),
+        &comparison(json!([]), json!({"state": "unavailable"})),
+    );
+    let mut window = open_history(&app);
+    pick(&mut window, "first", Value::text("e000"));
+    pick(&mut window, "last", Value::text("e000"));
+    press(&mut window, "Compare");
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "Preview unavailable"),
+        "{words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text
+            == "The workspace as it was before and after this change could not be read."),
+        "{words:?}"
+    );
+}
+
+/// A replay of the checkpoints `frames` holds.
+fn replay_page(frames: Json, unavailable: i64, note: Json) -> String {
+    json!({
+        "replay": {
+            "frames": frames,
+            "unavailable": unavailable,
+            "note": note,
+            "pending": false,
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn replay_plays_its_checkpoints_and_names_each_window() {
+    let app = installed(&replay_page(
+        json!([
+            {"entry": "e001", "summary": "Moved a note", "at_ms": 1_700_000_000_000_i64,
+             "author": {"name": "Ada", "rgb": [200, 120, 90], "identity": "ada",
+                        "relation": "reader", "on_behalf_of": null, "for_reader": true,
+                        "task": null},
+             "workspaces": [{"name": "Home", "groups": [
+                 {"tabs": ["Notes"], "active": 0, "width_permille": 500},
+                 {"tabs": [], "active": 0, "width_permille": 500},
+             ]}],
+             "pointers": [{"name": "Ada", "rgb": [200, 120, 90]}]},
+            {"entry": "e002", "summary": "Renamed a note", "at_ms": 1_700_000_060_000_i64,
+             "author": {"name": "Ada", "rgb": [200, 120, 90], "identity": "ada",
+                        "relation": "reader", "on_behalf_of": null, "for_reader": true,
+                        "task": null},
+             "workspaces": [], "pointers": []},
+        ]),
+        0,
+        json!(null),
+    ));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("replay"));
+    let words = shown(&window);
+    for wanted in ["One tab, 50% of the width", "Empty window", "Present: Ada"] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
+    }
+    assert!(has(&window, "Checkpoint 1 of 2"), "{:?}", shown(&window));
+    press(&mut window, "Play");
+    let clock = of_kind(window.tree(), "ui.Timer").first().map_or_else(
+        || panic!("playing carries a clock: {:?}", shown(&window)),
+        |node| node.key.clone(),
+    );
+    window.fire(&clock, "tick").expect("the clock strikes");
+    window.poll_patches().expect("the window runs again");
+    assert!(
+        has(&window, "Checkpoint 2 of 2"),
+        "the tick moved the place: {:?}",
+        shown(&window)
+    );
+    assert!(has(&window, "Checkpoint 2 of 2"), "{:?}", shown(&window));
+    assert!(
+        has(&window, "The workspace did not exist at this checkpoint"),
+        "a frame with no workspace says so: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn an_unavailable_replay_says_so() {
+    let app = installed(&replay_page(
+        json!([]),
+        2,
+        json!("The checkpoints were compacted"),
+    ));
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("replay"));
+    let words = shown(&window);
+    assert!(
+        words
+            .iter()
+            .any(|text| text == "Workspace replay is unavailable for these checkpoints"),
+        "{words:?}"
+    );
+    assert!(
+        words
+            .iter()
+            .any(|text| text == "The checkpoints were compacted"),
+        "{words:?}"
+    );
+}
+
+#[test]
+fn marking_the_new_changes_viewed_is_offered_while_there_are_any() {
+    let app = installed(
+        &json!({
+            "summary": {
+                "workspace": "Home",
+                "briefs": [{
+                    "title": "Tidy the notes",
+                    "detail": "Four notes put in order",
+                    "authors": [],
+                    "apps": [],
+                    "resources": [],
+                    "changes": 4,
+                    "actions": [],
+                    "first_ms": 1_700_000_000_000_i64,
+                    "last_ms": 1_700_000_060_000_i64,
+                    "group": null,
+                    "work_session": null,
+                    "entries": ["e010", "e011"],
+                }],
+                "narrative": null,
+                "resume": null,
+                "away": true,
+                "sources_available": false,
+                "sources": [],
+                "pending": false,
+            }
+        })
+        .to_string(),
+    );
+    let mut window = app.window();
+    assert!(has(&window, "While you were away"), "{:?}", shown(&window));
+    press(&mut window, "Mark as viewed");
+    let named = app
+        .sent
+        .arg("mark-viewed", "entries")
+        .expect("the entries are named");
+    let Value::List(entries) = named else {
+        panic!("the changes are a list: {named:?}")
+    };
+    assert_eq!(entries.len(), 2, "every change the brief showed");
+}
+
+#[test]
+fn a_morning_source_opens_refreshes_and_is_removed() {
+    let app = installed(
+        &json!({
+            "summary": {
+                "workspace": "Home",
+                "briefs": [],
+                "narrative": null,
+                "resume": null,
+                "away": false,
+                "sources_available": true,
+                "sources": [{
+                    "key": "mail",
+                    "label": "Morning mail",
+                    "text": "3 new messages",
+                    "refreshable": true,
+                    "status": null,
+                }],
+                "pending": false,
+            }
+        })
+        .to_string(),
+    );
+    let mut window = app.window();
+    let row = of_kind(window.tree(), "ui.ListRow")
+        .into_iter()
+        .find_map(|node| {
+            (node.props.get("title") == Some(&Value::text("Morning mail")))
+                .then(|| node.key.clone())
+        });
+    let Some(row) = row else {
+        panic!("the source is a row: {:?}", shown(&window))
+    };
+    window.fire(&row, "activate").expect("the source opens");
+    assert_eq!(
+        last_command(&app),
+        "open",
+        "the row opens what it heard about"
+    );
+    press(&mut window, "Refresh source");
+    assert_eq!(last_command(&app), "refresh");
+    press(&mut window, "Remove morning source");
+    assert_eq!(last_command(&app), "remove");
+}
+
+/// The command of the last `source` call the app sent.
+fn last_command(app: &Pane) -> String {
+    let (_, args) = app
+        .sent
+        .calls()
+        .into_iter()
+        .rev()
+        .find(|(name, _)| name == "source")
+        .expect("the app asks the source's verb");
+    let command = args
+        .into_iter()
+        .find(|(named, _)| named == "command")
+        .map(|(_, value)| value);
+    command_of(command.expect("the call names its command"))
+}
+
+/// The name of an enum value an action was given.
+fn command_of(value: Value) -> String {
+    match value {
+        Value::Enum(case) => case
+            .variant
+            .rsplit('.')
+            .next()
+            .unwrap_or(&case.variant)
+            .to_owned(),
+        Value::Text(name) => name,
+        other => panic!("a command is an enum value, not {other:?}"),
+    }
 }
