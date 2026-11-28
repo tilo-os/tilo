@@ -41,7 +41,7 @@ use tilo_action_services::environment_machines::{
 };
 use tilo_action_services::environment_terminals::{self, OpenTerminal, TerminalOpened};
 use tilo_action_services::environment_window::{self as vm, Holds, Launch};
-use tilo_action_services::linux_apps::{self, AppLaunch, OpenApp};
+use tilo_action_services::linux_apps;
 use tilo_action_services::server_account::Refusal;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
@@ -54,7 +54,7 @@ use tilo_server_protocol::hosted_vm::{ENVIRONMENT, VmSize};
 use ush::environment_terminals::quic::{Receiving, Sending, dial};
 use ush::environment_terminals::{HANDED_FOR, Handed, NOT_HANDED, Ran as TerminalRan, wire};
 
-use crate::device::keep::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Started};
+use crate::device::keep::browser_sessions::{BrowserSessions, Sessions, Started};
 use tilo_workspace_service::workspaces::{WorkspaceMachines, Workspaces};
 
 /// What a run says while no device takes it.
@@ -1083,53 +1083,6 @@ impl BrowserSessions for Environments {
         let certificate = serde_json::to_string(cert).map_err(|error| error.to_string())?;
         self.ask_machine(device, workspace, vm::RENEW, &vm::Renewal { certificate })
             .map(drop)
-    }
-
-    /// Start the workspace's machine with `material` when it is not, and start `launch` in its
-    /// Linux apps session.
-    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Started, AppRefusal> {
-        let paid = self.paid().map_err(AppRefusal::Words)?;
-        let written = serde_json::to_string(material).map_err(|error| {
-            tracing::warn!(%error, "the apps session's material could not be written");
-            AppRefusal::Words("The app couldn't start. Try again in a minute.".to_owned())
-        })?;
-        let asked = OpenApp {
-            workspace: material.workspace.clone(),
-            account: paid.account.clone(),
-            material: written,
-        };
-        let device = match self.machine(&material.workspace, linux_apps::target(), &asked) {
-            Ok(device) => device,
-            Err(NotRun::Failed(failure)) => {
-                return Err(plan_refusal(&failure).map_or_else(
-                    || {
-                        tracing::warn!(%failure.message, "a machine failed to start a session");
-                        AppRefusal::Words("The machine couldn't start it.".to_owned())
-                    },
-                    AppRefusal::Refused,
-                ));
-            }
-            Err(NotRun::NoDevice) => {
-                return Err(AppRefusal::Words(format!("{WAITING} None has room yet.")));
-            }
-            Err(not_run) => return Err(AppRefusal::Words(not_run.to_string())),
-        };
-        let launch = Launch {
-            workspace: material.workspace.clone(),
-            holds: Holds::Apps,
-            record: None,
-            app: Some(launch.clone()),
-        };
-        let provider = self.launched(device, &launch).map_err(|error| {
-            tracing::warn!(%error, "a Linux app did not start in its machine");
-            AppRefusal::Words("The machine couldn't start it.".to_owned())
-        })?;
-        Ok(Started { provider })
-    }
-
-    /// End the Linux apps session in the workspace's machine now.
-    fn stop_apps(&self, workspace: &str) {
-        self.stop_session(workspace, Holds::Apps);
     }
 
     fn ask_from(

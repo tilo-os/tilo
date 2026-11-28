@@ -435,16 +435,14 @@ impl HostedBrowsers {
         confined(&environments, &cert)?;
         placing.renewed = Some(cert.clone());
         drop(placements);
-        for open in [&self.open, &self.apps] {
-            if let Some(up) = open.lock_recover().get_mut(&workspace_id)
-                && up.device.device_public_key == cert.device_public_key
-            {
-                up.device = cert.clone();
-            }
+        let mut open = self.open.lock_recover();
+        let workspace = open.get(&workspace_id).map(|up| up.workspace.clone());
+        if let Some(up) = open.get_mut(&workspace_id)
+            && up.device.device_public_key == cert.device_public_key
+        {
+            up.device = cert.clone();
         }
-        let workspace = [&self.open, &self.apps]
-            .into_iter()
-            .find_map(|open| Some(open.lock_recover().get(&workspace_id)?.workspace.clone()));
+        drop(open);
         if let Some(workspace) = workspace {
             self.sessions.renewed(&workspace, &cert)?;
         }

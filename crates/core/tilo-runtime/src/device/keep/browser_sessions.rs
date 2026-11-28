@@ -3,8 +3,6 @@
 //! (`tilo_runtime`'s `LinuxDevices`), and the host places, routes and counts the windows
 //! ([`crate::device::keep::hosted_browser`]).
 
-use tilo_action_services::linux_apps::AppLaunch;
-use tilo_action_services::server_account::Refusal;
 use tilo_server_protocol::hosted::Material;
 
 /// The sessions a host's Browser starts through, and the account that pays for their
@@ -61,27 +59,6 @@ pub trait BrowserSessions: Send + Sync {
     /// forgotten and its window no longer exists.
     fn stop(&self, workspace: &str);
 
-    /// Start `launch` in the workspace's Linux apps session, starting that
-    /// session with `material` when none runs, and answer once it is up and
-    /// was told to start the app. The app's windows join the shell as they
-    /// map.
-    ///
-    /// # Errors
-    ///
-    /// The words to refuse the open with, and the plans' typed refusal when
-    /// the account may not run Linux.
-    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Started, AppRefusal> {
-        let _ = (material, launch);
-        Err(AppRefusal::Words(
-            "this host starts no Linux apps session".to_owned(),
-        ))
-    }
-
-    /// The workspace's Linux apps session stopped, or must.
-    fn stop_apps(&self, workspace: &str) {
-        let _ = workspace;
-    }
-
     /// The workspace's VM device was certified again, with `cert`, before its certificate ended:
     /// hand it to the VM, whose daemon holds it from then on. Sessions whose VM takes no
     /// certificate from its host ignore it.
@@ -109,24 +86,5 @@ pub trait BrowserSessions: Send + Sync {
         runtime: tokio::runtime::Handle,
     ) {
         let _ = (actions, endpoint, workspaces, runtime);
-    }
-}
-
-/// Why a workspace's Linux app did not open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppRefusal {
-    /// The account's plan does not let it run Linux: the plans' own typed
-    /// refusal, which says what would let it through.
-    Refused(Refusal),
-    /// Anything else, in words for whoever opened it.
-    Words(String),
-}
-
-impl std::fmt::Display for AppRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Refused(refusal) => f.write_str(&refusal.message),
-            Self::Words(words) => f.write_str(words),
-        }
     }
 }
