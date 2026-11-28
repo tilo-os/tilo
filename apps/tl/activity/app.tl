@@ -34,6 +34,9 @@ view activity(w: Window) {
     state last: Text = ""
     // The name the person is giving the range they selected.
     state name: Text = ""
+    // One file or folder's changes alone, by its path in the workspace's files: empty for the
+    // whole workspace's.
+    state path: Text = ""
     // The ask from outside this window this one has already shown.
     state claimed: Int = 0
     let h = history.history
@@ -71,6 +74,7 @@ view activity(w: Window) {
                             .then(set(lens, f.lens ?? ""))
                             .then(set(first, f.entry ?? ""))
                             .then(set(last, f.entry ?? ""))
+                            .then(set(path, f.path ?? ""))
                             .then(
                                 history.focused(history.history, serial: f.serial),
                             )
@@ -79,7 +83,7 @@ view activity(w: Window) {
                 if place == "whats-new" {
                     whats_new(h, place, first, last)
                 } else if place == "history" {
-                    changes(h, found, scope, period, writer, lens, first, last, name)
+                    changes(h, found, scope, period, writer, lens, first, last, name, path)
                 } else {
                     replay(h)
                 }
@@ -237,6 +241,7 @@ view changes(
     first: State<Text>,
     last: State<Text>,
     name: State<Text>,
+    path: State<Text>,
 ) {
     // How many of the newest changes the page holds: one page, and two more at each "Show more".
     state limit: Int = 0
@@ -248,10 +253,17 @@ view changes(
     // them: another window on another period reads its own page.
     let key_scope = if scope == "all-workspaces" { "all" } else { "this" }
     let key_lens = if lens == "" { "-" } else { lens }
-    let page = resource(
-        "workspace.activity/feed~{key_scope}~{period}~{key_lens}~{asked}",
-        of: history.FeedReading,
-    )
+    let page = if path == "" {
+        resource(
+            "workspace.activity/feed~{key_scope}~{period}~{key_lens}~{asked}",
+            of: history.FeedReading,
+        )
+    } else {
+        resource(
+            "workspace.activity/feed~{key_scope}~{period}~{key_lens}~{asked}~{path}",
+            of: history.FeedReading,
+        )
+    }
     let feed = page.feed
     row(gap: .related, wrap: true, align: .center) {
         ui.Button("This workspace", toggled: scope == "this-workspace") {

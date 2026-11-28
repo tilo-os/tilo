@@ -369,6 +369,10 @@ impl OpenedFiles {
                         entries.push(FilesEntry {
                             path,
                             folder: is_folder,
+                            id: tree
+                                .id_for_ino(child)
+                                .map(str::to_owned)
+                                .unwrap_or_default(),
                         });
                     }
                 }

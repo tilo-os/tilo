@@ -357,6 +357,7 @@ impl WorkspaceActivityPane {
             period(query.period),
             query.author.as_deref(),
             &lens_of(query.lens.as_deref()),
+            query.path.as_deref(),
         );
         let groups = self.groups_by_entry();
         let refused = self.refusals_by_change();
@@ -953,6 +954,7 @@ impl WorkspaceActivityPane {
             author: link.author.clone(),
             lens: lens.as_ref().map(lens_key),
             entry: entry.as_ref().map(hex),
+            path: link.path.clone(),
         });
     }
 

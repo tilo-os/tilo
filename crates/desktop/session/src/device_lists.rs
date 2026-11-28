@@ -48,10 +48,86 @@ pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 pub(crate) const WALLPAPER_RESOURCE: &str = "session:wallpaper";
 
 pub(crate) use tilo_device_surfaces::lists::{
-    AgentsEffect, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard, Said,
-    SaidAction, SaidEffect, Search, SearchGroup, SearchResult, ShippedWallpaper, Tray, TrayEffect,
-    TrayItem, Wallpaper,
+    AgentsEffect, CloudFolder, Folder, Folders, Invite, InviteEffect, Launchpad, LaunchpadCard,
+    Said, SaidAction, SaidEffect, Search, SearchGroup, SearchResult, ShippedWallpaper, Tray,
+    TrayEffect, TrayItem, Wallpaper,
 };
+
+/// The cloud storage mounts this computer's account service holds. One thread keeps them, so a
+/// socket that stalls never holds the shell, and every session's reading reads the same list.
+static CLOUD_MOUNTS: std::sync::OnceLock<Arc<Mutex<Vec<CloudFolder>>>> = std::sync::OnceLock::new();
+
+/// How long the cloud mounts are read again: an account signed in again, paused or gone shows
+/// within this.
+const CLOUD_READ_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The cloud storage accounts this computer mounts, as its account service last said.
+pub(crate) fn cloud_mounts() -> Vec<CloudFolder> {
+    let held = CLOUD_MOUNTS.get_or_init(|| {
+        let reading: Arc<Mutex<Vec<CloudFolder>>> = Arc::default();
+        let writing = Arc::clone(&reading);
+        let _ = std::thread::Builder::new()
+            .name("cloud-mounts".to_owned())
+            .spawn(move || {
+                loop {
+                    let mounts = tilo_fs_client::cloud::default_socket()
+                        .and_then(|socket| tilo_fs_client::cloud::CloudClient::connect(socket).ok())
+                        .and_then(|mut client| client.mounts().ok())
+                        .unwrap_or_default();
+                    let folders: Vec<CloudFolder> = mounts.iter().map(cloud_folder).collect();
+                    if let Ok(mut held) = writing.lock() {
+                        *held = folders;
+                    }
+                    std::thread::sleep(CLOUD_READ_EVERY);
+                }
+            });
+        reading
+    });
+    held.lock().map(|held| held.clone()).unwrap_or_default()
+}
+
+/// What the cloud mounts stood as, as one number: the lists move when an account, a place or a
+/// health moved, so the shell reads them again.
+fn cloud_revision(cloud: &[CloudFolder]) -> u64 {
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for folder in cloud {
+        for part in [&folder.account, &folder.path, &folder.health] {
+            for byte in part.bytes() {
+                hash ^= u64::from(byte);
+                hash = hash.wrapping_mul(1_099_511_628_211);
+            }
+        }
+        hash ^= u64::from(folder.paused);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    hash
+}
+
+/// One mounted account as the reading lists it: where its folder stands and how its sync went.
+fn cloud_folder(mount: &tilo_fs_client::cloud::CloudMount) -> CloudFolder {
+    use tilo_fs_client::cloud::MountHealth;
+    let health = if mount.paused {
+        "paused"
+    } else {
+        match mount.health {
+            Some(MountHealth::Healthy) => "in-sync",
+            Some(MountHealth::Syncing) | None => "syncing",
+            Some(MountHealth::Offline) => "offline",
+            Some(MountHealth::NeedsAuthentication) => "sign-in",
+            Some(MountHealth::Error) => "error",
+        }
+    };
+    CloudFolder {
+        account: mount.account.clone(),
+        name: mount.mount_point.file_name().map_or_else(
+            || mount.account.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
+        path: mount.mount_point.to_string_lossy().into_owned(),
+        health: health.to_owned(),
+        paused: mount.paused,
+    }
+}
 
 /// The glyph a welcome card shows: the app's own glyph where it opens one, and the shell's own for
 /// inviting someone and catching up.
@@ -562,7 +638,12 @@ impl DeviceLists {
                 0,
                 false,
             ),
-            (self.folders.revision(), 0, 0, false),
+            (
+                self.folders.revision(),
+                cloud_revision(&cloud_mounts()),
+                0,
+                false,
+            ),
             (self.handle.search_revision(), 0, 0, false),
             (self.lists_source.snapshot().0, 0, 0, false),
             {
@@ -601,6 +682,7 @@ impl DeviceLists {
                     .into_iter()
                     .map(Folder::from)
                     .collect(),
+                cloud: cloud_mounts(),
             })),
             SEARCH_RESOURCE => Some(reading(&self.search())),
             WALLPAPER_RESOURCE => Some(reading(&self.wallpaper())),
@@ -1567,5 +1649,57 @@ mod tests {
         assert!(!surfaces.overlays.is_open(Part::QuickSettings));
         surfaces.close(crate::quick_settings::SURFACE);
         assert_eq!(surfaces.overlays.here(), Overlay::Rest);
+    }
+}
+
+#[cfg(test)]
+mod cloud_mounts_tests {
+    use super::*;
+
+    fn mount(
+        health: Option<tilo_fs_client::cloud::MountHealth>,
+        paused: bool,
+    ) -> tilo_fs_client::cloud::CloudMount {
+        tilo_fs_client::cloud::CloudMount {
+            account: "acct-1".to_owned(),
+            mount_point: std::path::PathBuf::from("/home/ada/Remote/Drive"),
+            health,
+            paused,
+            capabilities: tilo_fs_client::cloud::CloudCapabilities::default(),
+            signed_in: true,
+        }
+    }
+
+    /// A mounted account reads as the folder a person opens, with the health they act on, and a
+    /// health that moves moves the lists.
+    #[test]
+    fn a_cloud_mount_reads_as_its_folder_and_health() {
+        let folder = cloud_folder(&mount(
+            Some(tilo_fs_client::cloud::MountHealth::NeedsAuthentication),
+            false,
+        ));
+        assert_eq!(folder.account, "acct-1");
+        assert_eq!(folder.name, "Drive");
+        assert_eq!(folder.path, "/home/ada/Remote/Drive");
+        assert_eq!(folder.health, "sign-in");
+        assert_ne!(
+            cloud_revision(std::slice::from_ref(&folder)),
+            cloud_revision(&[])
+        );
+        assert_ne!(
+            cloud_revision(&[folder]),
+            cloud_revision(&[cloud_folder(&mount(
+                Some(tilo_fs_client::cloud::MountHealth::Healthy),
+                false,
+            ))])
+        );
+        assert_eq!(
+            cloud_folder(&mount(
+                Some(tilo_fs_client::cloud::MountHealth::Healthy),
+                true
+            ))
+            .health,
+            "paused"
+        );
     }
 }

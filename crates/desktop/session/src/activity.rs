@@ -1717,6 +1717,7 @@ mod tests {
                     workspace: self.workspace.to_string(),
                     view: ActivityView::Explore,
                     author: None,
+                    path: None,
                 })
                 .expect("the history is admitted");
             self.frame();

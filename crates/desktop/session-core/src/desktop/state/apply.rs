@@ -129,9 +129,10 @@ fn resolve(shared: &mut Shared, tiles: &dyn TileSource, command: Admitted) -> Ad
         },
         // The workspace's history is the Activity app's to show: it opens, or comes forward, and
         // is offered the view.
-        Admitted::Activity(_, view, author) => {
+        Admitted::Activity(_, view, author, path) => {
             let link = crate::desktop::activity::ActivityDeepLink {
                 author,
+                path,
                 ..crate::desktop::activity::ActivityDeepLink::default()
             };
             shared.activity_focus = Some((view, link));

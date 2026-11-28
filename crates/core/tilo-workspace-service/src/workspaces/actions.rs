@@ -58,9 +58,9 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_GRANT_SET,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_governance_address,
-    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
-    workspace_member, workspace_named_argument,
+    WORKSPACE_SERVERS, WORKSPACE_SHARE_FILE, WORKSPACE_TRUST, WORKSPACE_WAITING,
+    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
+    workspace_governance_resource, workspace_member, workspace_named_argument,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -221,7 +221,7 @@ pub struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 54] = [
+const VERBS: [Verb; 55] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -633,6 +633,15 @@ const VERBS: [Verb; 54] = [
         check: governance::REVOKE,
         kind: roles::GOVERNANCE_KIND,
         params: reading_params,
+    },
+    Verb {
+        id: WORKSPACE_SHARE_FILE,
+        label: "Share a file or folder",
+        // A member shares the item they hold as their own say: the handler checks they read it
+        // and writes the role over its node.
+        check: "",
+        kind: roles::GOVERNANCE_KIND,
+        params: file_share_params,
     },
 ];
 
@@ -1056,6 +1065,27 @@ fn reading_params() -> Vec<ActionParam> {
             "Everyone holding a role, when no member is named.",
         )
         .with_choices(["viewer", "commenter", "editor", "moderator", "owner"]),
+    ]
+}
+
+fn file_share_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "path",
+            ParamType::Text,
+            "The file or folder's path in the workspace's files, such as `Trip/notes.md`.",
+        ),
+        ActionParam::required(
+            "member",
+            ParamType::Object,
+            "The member: a person, an agent or a bot, as a program names them.",
+        ),
+        ActionParam::optional(
+            "role",
+            ParamType::Text,
+            "The role over that item alone; none takes the share back.",
+        )
+        .with_choices(["viewer", "commenter", "editor"]),
     ]
 }
 
@@ -2478,6 +2508,7 @@ impl Workspaces {
             WEBHOOKS | CREATE_WEBHOOK | DELETE_WEBHOOK => self.webhook_actions(action, call).await,
             WORKSPACE_GRANT_REVOKE => Ok(json!({ "revoked": call.args.required_text("grant")? })),
             WORKSPACE_GRANT_SET => self.set_grant(call).await,
+            WORKSPACE_SHARE_FILE => self.set_file_share(call).await,
             WORKSPACE_READ_GRANT | WORKSPACE_READ_REVOKE => Ok(json!({
                 "resource": call.args.required_text("resource")?,
                 "reads": action == WORKSPACE_READ_GRANT,
@@ -2771,6 +2802,106 @@ impl Workspaces {
             .await
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         Ok(json!({ "scope": scope.to_string(), "changed": changed }))
+    }
+
+    /// Share one file or folder of the workspace with a member, or take that share back
+    /// (`workspace/members#share-file`): a role over the tree node the item stands at, so the
+    /// person opens that item and nothing beside it. Answers the path and whether anything
+    /// changed.
+    async fn set_file_share(&self, call: GovernanceCall<'_>) -> Result<Value, ActionCallError> {
+        #[cfg(not(feature = "files"))]
+        {
+            let _ = call;
+            return Err(ActionCallError::refused(
+                "This host serves no workspace files to share",
+            ));
+        }
+        #[cfg(feature = "files")]
+        {
+            let path = call
+                .args
+                .required_text("path")?
+                .trim()
+                .trim_matches('/')
+                .to_owned();
+            if path.is_empty() {
+                return Err(ActionCallError::invalid_request(
+                    "a share names one file or folder; `grant.set` shares the workspace's parts",
+                ));
+            }
+            let member = call
+                .args
+                .object::<tilo_member_types::MemberId>("member")?
+                .ok_or_else(|| {
+                    ActionCallError::invalid_request("`member` names who the item is shared with")
+                })?;
+            let role = call
+                .args
+                .text("role")?
+                .map(|role| {
+                    tilo_action_policy::Role::parse(role)
+                        .filter(|role| {
+                            matches!(
+                                role,
+                                tilo_action_policy::Role::Viewer
+                                    | tilo_action_policy::Role::Commenter
+                                    | tilo_action_policy::Role::Editor
+                            )
+                        })
+                        .ok_or_else(|| {
+                            ActionCallError::invalid_request(format!(
+                                "`{role}` is no role over one item"
+                            ))
+                        })
+                })
+                .transpose()?;
+            let workspace_id = tilo_server_protocol::WorkspaceId::parse(call.workspace)
+                .ok_or_else(|| {
+                    ActionCallError::invalid_request("the workspace has no id this device reads")
+                })?;
+            let tree = self.tree_items(workspace_id);
+            let Some(node) = tree
+                .iter()
+                .find(|(_, at, _)| at == &path)
+                .map(|(node, ..)| node.clone())
+            else {
+                return Err(ActionCallError::invalid_request(format!(
+                    "`{path}` is no file or folder of this workspace"
+                )));
+            };
+            let policy = self.policy_of(call.workspace).await.ok_or_else(|| {
+                ActionCallError::refused("the workspace's policy is not here to decide the share")
+            })?;
+            let person = hex::encode(call.device.user_public_key);
+            let acting = tilo_member_types::Acting::person(person.clone());
+            let context = tilo_action_policy::Context::at_time(tilo_clock::wall());
+            if !crate::files::access::reads_path(
+                &policy,
+                call.workspace,
+                &person,
+                &acting,
+                &path,
+                &tree,
+                &context,
+            ) {
+                return Err(ActionCallError::refused(
+                    "You can share only what you can read",
+                ));
+            }
+            let scope = TreePath::workspace(call.workspace)
+                .joined(&fs_protocol::file_action::tree_node())
+                .item(node);
+            let changed = self
+                .set_scoped_role(
+                    call.workspace,
+                    call.device,
+                    (tilo_action_policy::Grantee::member(member), &scope),
+                    role,
+                )
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+            Ok(json!({ "path": path, "changed": changed }))
+        }
     }
 
     /// Making the workspace a public workspace, taking it back, and what its entry

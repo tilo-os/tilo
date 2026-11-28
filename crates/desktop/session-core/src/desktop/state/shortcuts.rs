@@ -161,6 +161,7 @@ impl DesktopHandle {
                         workspace,
                         view,
                         author: None,
+                        path: None,
                     });
                 }
             }

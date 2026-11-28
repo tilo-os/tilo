@@ -425,6 +425,8 @@ pub struct ActivityDeepLink {
     pub entry_id: Option<[u8; 16]>,
     pub resource_id: Option<String>,
     pub resource_version: Option<[u8; 16]>,
+    /// One tree item's history, by its path in the workspace's files.
+    pub path: Option<String>,
 }
 #[cfg(test)]
 mod admitted_history_tests {

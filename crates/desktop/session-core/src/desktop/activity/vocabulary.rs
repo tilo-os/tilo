@@ -122,6 +122,10 @@ pub struct FeedQuery {
     /// app's own History lists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<WindowResources>,
+    /// Only the changes to the tree item at this path: one file's or folder's
+    /// history, as Files asks for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// The newest this many changes; `0` for the first page.
     pub limit: usize,
 }
@@ -411,6 +415,9 @@ pub struct Focus {
     /// This change, selected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    /// Only the changes to the tree item at this path: one file's history, as Files opens it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// One action of a work session's evidence.
@@ -1668,6 +1675,7 @@ mod tests {
                     resources: vec!["window:0000000000000000".into()],
                     item: Some("note-1".into()),
                 }),
+                path: Some("Trip/notes.md".into()),
                 limit: 400,
             };
             let sent = serde_json::to_value(&query).unwrap();

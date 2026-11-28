@@ -850,6 +850,9 @@ pub enum ChromeEffect {
         /// Only what the person named did.
         #[param("Show only what this person did")]
         author: Option<String>,
+        /// Only the changes to the tree item at this path: one file's history.
+        #[param("Show only this file or folder's changes")]
+        path: Option<String>,
     },
 
     /// Close the workspace's history
@@ -1181,8 +1184,8 @@ pub enum Admitted {
     /// Move the tab's own navigation history.
     History(RouteIds, HistoryDirection),
     /// Open the workspace's history at a view, showing only what the named person did when one is
-    /// named.
-    Activity(WorkspaceId, ActivityView, Option<String>),
+    /// named, and only one tree item's changes when a path is.
+    Activity(WorkspaceId, ActivityView, Option<String>, Option<String>),
     CloseActivity(WorkspaceId),
     /// Open or close the notification centre.
     NotificationCenter(bool),
@@ -1355,11 +1358,12 @@ fn admit_activity(
     workspace: WorkspaceId,
     view: ActivityView,
     author: Option<String>,
+    path: Option<String>,
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
     match view.unavailable(capabilities) {
         Some(reason) => Err(reason.into()),
-        None => Ok(Admitted::Activity(workspace, view, author)),
+        None => Ok(Admitted::Activity(workspace, view, author, path)),
     }
 }
 
@@ -1553,10 +1557,12 @@ fn admit_chrome(
             workspace: w,
             view,
             author,
+            path,
         } => admit_activity(
             active_workspace(tree, w)?,
             *view,
             author.clone(),
+            path.clone(),
             capabilities,
         ),
         ChromeEffect::CloseActivity { workspace: w } => {
@@ -2566,6 +2572,7 @@ mod tests {
                 Ok(Admitted::Activity(
                     WorkspaceId::from_u128(u128::MAX),
                     view,
+                    None,
                     None
                 ))
             );

@@ -6,8 +6,11 @@
 //! ([`fs_protocol::file_action::verb_node`]), and reading at the tree's own records' node, so
 //! the mount, the service and every receiver answer the same question.
 
-use tilo_action_policy::{Answer, Context, TreePath, WorkspacePolicy};
+use std::collections::BTreeMap;
+
+use tilo_action_policy::{Answer, Context, Grantee, TreePath, WorkspacePolicy};
 use tilo_action_types::ActionKind;
+use tilo_member_types::Acting;
 use tilo_permissions::caps::Access;
 
 /// The nodes a member's access to `workspace`'s files is decided at: the tree's records, listing
@@ -55,6 +58,86 @@ pub fn decide(
 /// Where a workspace's files appear in the mount: the path a role's access ranges over.
 pub const WORKSPACE_FILES: &str = "/var/workspace";
 
+/// One tree item shared with someone, by the path it stands at now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeShare {
+    pub grantee: Grantee,
+    pub path: String,
+    pub folder: bool,
+    pub access: Access,
+}
+
+/// The tree items `policy` shares, each by the path its node stands at in `tree`: `(node id,
+/// path, folder)` per entry, as the workspace's tree lists it now. A share is a grant on the
+/// tree's own node of one item ([`fs_protocol::file_action::node_scope`]), which the shared
+/// folder tree model writes for a person let into one file or folder.
+#[must_use]
+pub fn tree_shares(policy: &WorkspacePolicy, tree: &[(String, String, bool)]) -> Vec<TreeShare> {
+    policy
+        .grants
+        .iter()
+        .filter(|grant| grant.answer == Answer::Allow)
+        .filter_map(|grant| {
+            let node = fs_protocol::file_action::node_of_scope(&grant.node)?;
+            let (path, folder) = tree
+                .iter()
+                .find(|(id, ..)| id == node)
+                .map(|(_, path, folder)| (path.clone(), *folder))?;
+            let access = if grant.kinds.contains(ActionKind::Undoable) {
+                Access::Write
+            } else if grant.kinds.contains(ActionKind::Read) {
+                Access::Read
+            } else {
+                return None;
+            };
+            Some(TreeShare {
+                grantee: grant.grantee.clone(),
+                path,
+                folder,
+                access,
+            })
+        })
+        .collect()
+}
+
+/// Whether `acting` reads the tree item at `path`: by their role over the whole workspace, by a
+/// share of that item, or by a share of a folder above it.
+#[must_use]
+pub fn reads_path(
+    policy: &WorkspacePolicy,
+    workspace: &str,
+    member: &str,
+    acting: &Acting,
+    path: &str,
+    tree: &[(String, String, bool)],
+    context: &Context<'_>,
+) -> bool {
+    if decide(policy, workspace, member, context).is_some() {
+        return true;
+    }
+    tree_shares(policy, tree).iter().any(|share| {
+        grantee_reaches(&share.grantee, acting)
+            && (share.path == path
+                || (share.folder
+                    && path
+                        .strip_prefix(&share.path)
+                        .is_some_and(|rest| rest.starts_with('/'))))
+    })
+}
+
+/// Whether `grantee` is `acting` or one of the people they act for: the reach a capability has,
+/// asked of the grantee alone.
+#[must_use]
+pub fn grantee_reaches(grantee: &Grantee, acting: &Acting) -> bool {
+    tilo_permissions::caps::CapOverride::new(
+        grantee.clone(),
+        tilo_permissions::caps::Scope::FsPath(String::new()),
+        tilo_permissions::caps::Effect::WorkspaceFileAccess,
+        Access::Read,
+    )
+    .reaches(acting)
+}
+
 /// The access list the Files mounts enforce, and when it next changes by itself.
 pub struct Listed {
     /// Who may read and write which files, in the mounts' terms.
@@ -77,6 +160,7 @@ pub fn list<'a>(
     workspaces: impl IntoIterator<Item = &'a tilo_desktop_model::Workspace>,
     person: &str,
     device: Option<[u8; 32]>,
+    trees: &BTreeMap<String, Vec<(String, String, bool)>>,
 ) -> Listed {
     use tilo_action_policy::Grantee;
     use tilo_action_types::Lifetime;
@@ -148,6 +232,21 @@ pub fn list<'a>(
             .lasting(refresh_at.map_or(Lifetime::UntilRevoked, Lifetime::Until));
             push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
         }
+        // Each item shared with someone is their own reach into the mount: a file's path, or a
+        // folder's whole subtree, so a person let into one item reads only it.
+        if let Some(tree) = trees.get(&id) {
+            for share in tree_shares(&workspace.policy, tree) {
+                let capability = CapOverride::new(
+                    share.grantee.clone(),
+                    Scope::FsPath(path.join(&share.path).to_string_lossy().into_owned()),
+                    Effect::WorkspaceFileAccess,
+                    share.access,
+                )
+                .with_id(format!("file-share:{id}:{}", share.path))
+                .lasting(Lifetime::UntilRevoked);
+                push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
+            }
+        }
     }
     Listed {
         authority: tilo_permissions::caps::FsAuthority { capabilities },
@@ -187,6 +286,7 @@ impl crate::workspaces::Workspaces {
     /// hold in it, both as the workspace's governance keeps them.
     pub async fn files_access(&self, person: &str, device: Option<[u8; 32]>) -> Listed {
         let mut held = Vec::new();
+        let mut trees = BTreeMap::new();
         for id in self.held_workspaces() {
             let Some(parsed) = tilo_desktop_model::WorkspaceId::parse(&id) else {
                 continue;
@@ -198,8 +298,38 @@ impl crate::workspaces::Workspaces {
             workspace.policy = policy;
             workspace.sandbox = self.sandbox_of(&id).await;
             held.push(workspace);
+            trees.insert(id.clone(), self.tree_items(parsed));
         }
-        list(&held, person, device)
+        list(&held, person, device, &trees)
+    }
+
+    /// Every node of `workspace`'s tree as `(id, path, folder)`, the node a share of it is given
+    /// at with the path it stands at now, so a grant on the node reaches its place in the mount.
+    pub(crate) fn tree_items(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+    ) -> Vec<(String, String, bool)> {
+        let mut items = Vec::new();
+        let read = tilo_rt::app().block_on(self.puts().read(workspace, &mut |tree| {
+            for node in tree.live_node_ids() {
+                let Some(entry) = tree.entry_for_node(&node) else {
+                    continue;
+                };
+                let Some(path) = tree.path_for_id(&node) else {
+                    continue;
+                };
+                items.push((
+                    node,
+                    path.trim_start_matches('/').to_owned(),
+                    entry.kind == tilo_fs::namespace::NodeKind::Dir,
+                ));
+            }
+            Ok(serde_json::Value::Null)
+        }));
+        if !matches!(read, Ok(Ok(_))) {
+            return Vec::new();
+        }
+        items
     }
 }
 
@@ -223,9 +353,82 @@ mod tests {
     use tilo_permissions::caps::FsAuthority;
     use tilo_permissions::caps::Scope;
 
+    /// A share of one item is the one item: the mount is told its place alone, and a reading asks
+    /// for it and denies what stands beside it.
+    #[test]
+    fn a_shared_item_is_the_only_one_the_mount_and_a_reading_let_in() {
+        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Home");
+        let id = workspace.id().to_string();
+        let tree = vec![
+            ("record:trip".to_owned(), "Trip".to_owned(), true),
+            ("record:notes".to_owned(), "Trip/notes.md".to_owned(), false),
+            ("record:other".to_owned(), "Trip/other.md".to_owned(), false),
+        ];
+        let mut policy = tilo_action_policy::WorkspacePolicy::new(id.clone(), "owner");
+        policy.grants.push(tilo_action_policy::Grant::new(
+            "share:notes",
+            Grantee::person(PERSON),
+            fs_protocol::file_action::node_scope(&id, "record:notes"),
+            tilo_action_types::KindSet::READ,
+            Answer::Allow,
+            Grantee::person("owner"),
+        ));
+        workspace.policy = policy;
+
+        let shares = tree_shares(&workspace.policy, &tree);
+        assert_eq!(shares.len(), 1, "one item is shared: {shares:?}");
+        assert_eq!(shares[0].path, "Trip/notes.md");
+        assert!(!shares[0].folder);
+
+        let acting = Acting::person(PERSON);
+        let context =
+            Context::at_time(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1));
+        assert!(reads_path(
+            &workspace.policy,
+            &id,
+            PERSON,
+            &acting,
+            "Trip/notes.md",
+            &tree,
+            &context
+        ));
+        assert!(
+            !reads_path(
+                &workspace.policy,
+                &id,
+                PERSON,
+                &acting,
+                "Trip/other.md",
+                &tree,
+                &context
+            ),
+            "a file beside the shared one is not shared"
+        );
+
+        let mut trees = BTreeMap::new();
+        trees.insert(id.clone(), tree);
+        let listed = list(std::slice::from_ref(&workspace), PERSON, None, &trees).authority;
+        let root = tilo_paths::workspace_tree(std::path::Path::new(WORKSPACE_FILES), &id)
+            .expect("the workspace's place in the mount");
+        let notes = root.join("Trip/notes.md").to_string_lossy().into_owned();
+        let other = root.join("Trip/other.md").to_string_lossy().into_owned();
+        let capability = |path: &str| {
+            listed.capabilities.iter().find(|cap| {
+                matches!(&cap.scope, Scope::FsPath(at) if at == path)
+                    && cap.effect == Effect::WorkspaceFileAccess
+            })
+        };
+        let allowed = capability(&notes).expect("the shared file's place is in the list");
+        assert_eq!(allowed.access, Access::Read);
+        assert!(
+            capability(&other).is_none(),
+            "the file beside it is nowhere in the list"
+        );
+    }
+
     /// The list the mounts of the device `device` are told for `tree`'s workspaces, as `person`.
     fn listed(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {
-        list(&tree.workspaces, person, device).authority
+        list(&tree.workspaces, person, device, &BTreeMap::new()).authority
     }
 
     const PERSON: &str = "1111111111111111111111111111111111111111111111111111111111111111";

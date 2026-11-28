@@ -233,6 +233,7 @@ tilo-workspace-workspace-fetch-grant = Grant your page the host's fetch proxy to
 tilo-workspace-grant-revoke = Revoke a grant
 tilo-workspace-reading-grant = Let read
 tilo-workspace-reading-revoke = Stop reading
+tilo-workspace-file-share = Share a file or folder
 tilo-workspace-server-rename = Rename a server
 tilo-workspace-server-keep = Choose whether a server keeps a workspace
 tilo-workspace-server-retire = Take a server out of service

@@ -613,6 +613,90 @@ mod availability_control_tests {
         drop(fs);
     }
 
+    /// A file the person kept offline opens from this device's own bytes once the device that
+    /// held them is gone: the pin fetched it whole, the cache budget cannot take it, and the
+    /// mount serves it with no source to ask.
+    #[tokio::test]
+    async fn a_file_kept_offline_opens_with_the_device_that_held_it_gone() {
+        use crate::store::area::Retention;
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let data: Vec<u8> = (0..size)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        let peer = Arc::new(ContentStore::memory());
+        let hash = peer.write_content(&data).await.unwrap().unwrap();
+        // The other device, reachable while it is set and gone once it is not.
+        let source = Arc::new(Arriving::default());
+        *source.0.lock_recover() = Some(Arc::clone(&peer));
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(Arc::clone(&store)).with_source(source.clone()));
+        let namespace = host();
+        let ino = {
+            let mut namespace = namespace.lock().unwrap();
+            namespace
+                .create_file(ROOT_INO, "kept.bin", Some(&hash), size, 1)
+                .unwrap()
+        };
+        let registry = registry_in(&dir);
+        let fs = Arc::new(
+            QuickFS::over(Arc::clone(&namespace), Arc::clone(&hydrator))
+                .with_availability(Arc::clone(&registry)),
+        );
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+
+        fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
+        let _ = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes.clone(),
+        )
+        .await;
+        assert!(
+            store.local(hash).await.is_some(),
+            "keeping the file offline fetched it whole"
+        );
+        let retention = |hash: Hash| {
+            store
+                .files()
+                .entry(hash.as_bytes())
+                .map(|entry| entry.retention)
+        };
+        assert_eq!(
+            retention(hash),
+            Some(Retention::Pinned),
+            "the pin holds it against the cache budget"
+        );
+
+        // The device that held the bytes disconnects, and the cache is made as small as it goes.
+        *source.0.lock_recover() = None;
+        store.files().set_budget(0);
+        store.files().evict_to_budget(&[]);
+        assert!(
+            store.local(hash).await.is_some(),
+            "the cache keeps what the pin holds"
+        );
+
+        // Read through the mount's own path on a thread that enters no runtime, as a FUSE
+        // worker's thread does: the kept file opens with nothing to ask.
+        let reader = Arc::clone(&fs);
+        let (read, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = read.send(
+                reader
+                    .read_path(std::path::Path::new("kept.bin"))
+                    .expect("a kept file opens with the device that held it gone"),
+            );
+        });
+        let read = answered
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the mount answers the read");
+        assert_eq!(read, data, "the bytes are the ones the device kept");
+    }
+
     #[tokio::test]
     async fn a_pinned_download_never_evicts_a_file_the_same_pin_already_holds() {
         use crate::store::area::Retention;

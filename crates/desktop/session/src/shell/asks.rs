@@ -266,6 +266,7 @@ impl Shared {
                         workspace,
                         view: tilo_session_core::desktop::navigation::ActivityView::CatchUp,
                         author: None,
+                        path: None,
                     })
                 {
                     tracing::warn!(%error, "the workspace's history did not open");

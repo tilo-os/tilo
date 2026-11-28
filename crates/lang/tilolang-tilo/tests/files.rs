@@ -476,6 +476,8 @@ fn reading(kind: &str) -> ResourceRef {
         "apps" => ("session:apps", "so.tilo.device#Apps"),
         "folders" => ("session:folders", "so.tilo.device#Folders"),
         "nearby_send" => ("session:nearby-send", "so.tilo.device#NearbySend"),
+        "access" => ("workspace/access", "tilo.workspace#Access"),
+        "workspace_folder" => ("files/folder~", "tilo.workspace#Folder"),
         _ => panic!("no such device root"),
     };
     ResourceRef::parse_id(published, ty).expect("a resource id")
@@ -1362,6 +1364,86 @@ fn the_inspector_says_how_long_a_recording_plays_and_how_many_pages_a_document_h
     for gone in ["Duration", "Pages", "Codec"] {
         assert!(!words.iter().any(|word| word == gone), "{gone}: {words:?}");
     }
+}
+
+#[test]
+fn a_cloud_folder_whose_sign_in_lapsed_signs_in_again_from_files() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    std::fs::create_dir_all(home.join("Remote/Drive")).expect("the account's folder");
+    app.host
+        .runtime()
+        .set_reading(
+            &reading("folders"),
+            r#"{"folders": [], "cloud": [{"account": "acct-1", "name": "Drive",
+                "path": "~/Remote/Drive", "health": "sign-in", "paused": false}]}"#,
+        )
+        .expect("the folders reading is set");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Remote/Drive")]);
+    let mut window = app.window();
+    let words = shown(&mut window);
+    assert!(
+        words
+            .iter()
+            .any(|word| word.contains("Drive") && word.contains("Sign in again")),
+        "the account says it needs signing in again: {words:?}"
+    );
+    let button = nodes_of(&mut window, "ui.Button")
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::text("Sign in again")))
+        .expect("a sign-in button stands over the folder")
+        .key;
+    window
+        .fire_answering(&app.host, &me(), &button, "press")
+        .expect("the press runs");
+    let calls = app.sent.calls();
+    assert!(
+        calls.iter().any(|(name, args)| name == "reconnect"
+            && args
+                .iter()
+                .any(|(key, value)| key == "account" && value == &Value::text("acct-1"))),
+        "the account is signed in again: {calls:?}"
+    );
+}
+
+#[test]
+fn a_files_version_history_asks_the_system_history_for_that_file() {
+    let app = Files::new();
+    app.host
+        .runtime()
+        .set_reading(
+            &reading("access"),
+            r#"{"known": true, "workspaces": [{"id": "w1", "name": "Home", "grants": []}],
+                "outside": [], "shares": []}"#,
+        )
+        .expect("the access reading is set");
+    app.host
+        .runtime()
+        .set_reading(
+            &reading("workspace_folder"),
+            r#"{"folder": "", "from": 0, "next": null, "total": 1, "error": "", "entries": [
+                {"id": "record:notes", "name": "notes.md", "path": "notes.md", "kind": "file",
+                 "size": 3, "changed": "2026-01-01T00:00:00Z"}]}"#,
+        )
+        .expect("the workspace's folder is set");
+    app.call("arrive", vec![app.root_value()]);
+    app.call(
+        "choose",
+        vec![app.root_value(), Value::List(vec![Files::text("notes.md")])],
+    );
+    app.call(
+        "show_history",
+        vec![app.root_value(), Files::text("notes.md")],
+    );
+    let calls = app.sent.calls();
+    assert!(
+        calls.iter().any(|(name, args)| name == "activity"
+            && args
+                .iter()
+                .any(|(key, value)| key == "path" && format!("{value:?}").contains("notes.md"))),
+        "the system's history opens on that file: {calls:?}"
+    );
 }
 
 #[test]

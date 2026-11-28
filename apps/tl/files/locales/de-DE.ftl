@@ -512,6 +512,7 @@ d-n9jkqy4o = Dateien
 d-z6cheebf = Orte
     .w-places = Orte
     .w-workspaces = Arbeitsbereiche
+    .w-cloud = Cloud
     .w-drives = Laufwerke
     .w-favorites = Favoriten
     .w-folders = Ordner
@@ -882,10 +883,6 @@ d-5l3tzbid = Konflikt beantworten
     .doc = Beantwortet die Frage, die die Namen des Ordners stellen: `skip` überspringt die Einträge, deren Namen zusammentreffen, `keep-both` legt sie unter „Name (2)“ ab, und `replace` ersetzt, was der Ordner hält; leer legt die Frage weg und legt nichts ab.
 d-5l3tzbid-answer = Antwort
 
-d-4yv24xt6 = Eintrag teilen
-    .doc = Öffnet das Einladungsblatt des Systems für den Eintrag unter `path`: etwas zu teilen heißt, Menschen in den Arbeitsbereich einzuladen, der es hält, und die Ressource benennt, was geteilt wird.
-d-4yv24xt6-path = Pfad
-
 d-znji25hc = Teilen schließen
     .doc = Legt das Einladungsblatt weg.
 
@@ -900,6 +897,7 @@ d-taexnozm-path = Pfad
 
 d-fm27szvc = Verlauf zeigen
     .doc = Öffnet den Verlauf des Systems zu diesem Arbeitsbereich, wo frühere Fassungen einer Datei wiederhergestellt werden: der Verlauf, in dem die Änderungen jeder App liegen, nie eine Kopie, die Files hält.
+d-fm27szvc-path = Pfad
 
 d-g4offtzv = Konflikttitel
     .w-already-exists-in = „{ $name_of }“ ist bereits in „{ $name_of2 }“
@@ -913,7 +911,12 @@ d-xvrwceq2 = Konfliktzeile
     .w-cancel = Abbrechen
 
 d-2op5ougp = Teilenzeile
-    .w-sharing-with-your-workspace = „{ $name_of }“ wird mit deinem Arbeitsbereich geteilt
+    .w-share = „{ $name_of }“ teilen
+    .w-they-can-open-this-item-and = Sie können diesen Eintrag öffnen und sonst nichts im Arbeitsbereich.
+    .w-can-view = Kann ansehen
+    .w-can-edit = Kann bearbeiten
+    .w-remove = Entfernen
+    .w-invite-someone-new = Jemanden einladen…
     .w-done = Fertig
 
 d-ttry6qg6 = Aufbewahrung
@@ -1046,3 +1049,31 @@ d-5suu4ddc = Baum ändern
 d-5suu4ddc-verb = Verb
 
 d-5suu4ddc-ask = Auftrag
+
+d-okvbu6k4 = Teilen beginnen
+    .doc = Öffnet das Teilen-Blatt für den Eintrag unter `path`: mit wem im Arbeitsbereich er geteilt wird und was jeder Einzelne damit allein tun darf.
+d-okvbu6k4-path = Pfad
+
+d-zchjzxyy = Mit jemandem teilen
+    .doc = Teilt den Eintrag, den das Blatt nennt, mit `being` als `role`: Ein Betrachter oder Kommentator liest ihn, ein Bearbeiter ändert ihn, und eine leere Rolle nimmt die Freigabe zurück.
+d-zchjzxyy-being = Person
+d-zchjzxyy-role = Rolle
+
+d-2sq5qdjm = Cloud-Konto erneut anmelden
+    .doc = Meldet das Cloud-Speicherkonto `account` erneut an, wie die Einstellungen: Der Tresor des Arbeitsbereichs behält die Anmeldung, und der Ordner des Kontos nimmt sie bei der nächsten Synchronisierung auf.
+d-2sq5qdjm-account = Konto
+
+d-o4pvehaj = Cloud-Beschriftung
+    .w-sign-in-again = Erneut anmelden
+    .w-paused = Pausiert
+    .w-offline = Offline
+    .w-sync-failed = Synchronisierung fehlgeschlagen
+
+d-drtaxuwn = Cloud-Meldung
+    .w-needs-you-to-sign-in-again = „{ $name }“ erfordert eine erneute Anmeldung.
+    .w-is-not-syncing-its-sync-is = „{ $name }“ synchronisiert nicht: Die Synchronisierung ist pausiert.
+    .w-is-offline-what-is-here-still = „{ $name }“ ist offline; was hier liegt, öffnet weiterhin.
+    .w-could-not-sync-its-last-changes = „{ $name }“ konnte die letzten Änderungen nicht synchronisieren.
+
+d-ggtfwqk6 = Cloud-Zeile
+    .w-sign-in-again = Erneut anmelden

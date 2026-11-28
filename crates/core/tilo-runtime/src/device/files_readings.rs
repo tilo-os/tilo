@@ -18,12 +18,14 @@ use std::sync::{Arc, Mutex};
 
 use fs_protocol::tree::{self, FILES_APP};
 use serde_json::{Map, Value};
-use tilo_action_policy::Answer;
+use tilo_action_policy::{Answer, Context};
 use tilo_action_types::ActionKind;
 use tilo_app_host::services::Caller;
 use tilo_app_host::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::Acting;
 use tilo_server_protocol::WorkspaceId;
+use tilo_workspace_service::files::access;
 use tilo_workspace_service::workspaces::ResourceWrite;
 use tokio::sync::{mpsc, oneshot};
 
@@ -65,7 +67,88 @@ fn may_read(folders: &dyn Folders, caller: &Caller, workspace: &str) -> bool {
         },
     };
     let records = collab_types::document_node(workspace, FILES_APP, &tree::document_id());
-    actor.answer_in(&held, &records, ActionKind::Read, folders.now()) == Answer::Allow
+    if actor.answer_in(&held, &records, ActionKind::Read, folders.now()) == Answer::Allow {
+        return true;
+    }
+    // A person let into one item of the tree alone reads that item: the listing shows only
+    // theirs, and says the folder is empty of the rest.
+    let person = reader_person(folders, caller);
+    let acting = Acting::person(person);
+    tree_of(folders, workspace).is_some_and(|tree| {
+        access::tree_shares(&held.policy, &tree)
+            .iter()
+            .any(|share| access::grantee_reaches(&share.grantee, &acting))
+    })
+}
+
+/// The person `caller` reads as, by their key: whose policy decides what the view reads. The
+/// device's own person when the window is theirs, and whoever the instance was opened for.
+fn reader_person(folders: &dyn Folders, caller: &Caller) -> String {
+    caller
+        .opened_for
+        .as_ref()
+        .and_then(|opened| opened.acting().person_id())
+        .map_or_else(|| folders.person(), str::to_owned)
+}
+
+/// Every node of `workspace`'s tree as `(id, path, folder)`: the items a share can be given on,
+/// each by where it stands now.
+fn tree_of(folders: &dyn Folders, workspace: &str) -> Option<Vec<(String, String, bool)>> {
+    let puts = folders.puts()?;
+    let id = WorkspaceId::parse(workspace)?;
+    puts.entries(id, "", true).ok().map(|entries| {
+        entries
+            .into_iter()
+            .map(|entry| (entry.id, entry.path, entry.folder))
+            .collect()
+    })
+}
+
+/// `listing` without the entries `caller` may not read: a member whose role is over the whole
+/// workspace reads every entry, and one let into items alone reads theirs and the folders above
+/// them.
+fn only_their_items(
+    folders: &dyn Folders,
+    caller: &Caller,
+    workspace: &str,
+    mut listing: Value,
+) -> Value {
+    let Some(held) = folders.workspace(workspace) else {
+        return listing;
+    };
+    let person = reader_person(folders, caller);
+    let context = Context::at_time(
+        std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(folders.now()))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+    );
+    if access::decide(&held.policy, workspace, &person, &context).is_some() {
+        return listing;
+    }
+    let Some(tree) = tree_of(folders, workspace) else {
+        return listing;
+    };
+    let acting = Acting::person(person.clone());
+    let allowed = |at: &str| {
+        access::reads_path(
+            &held.policy,
+            workspace,
+            &person,
+            &acting,
+            at,
+            &tree,
+            &context,
+        )
+    };
+    if let Some(entries) = listing.get_mut("entries").and_then(Value::as_array_mut) {
+        entries.retain(|entry| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(allowed)
+        });
+    }
+    listing
 }
 
 /// What the folder `resource` names holds, as the workspace's tree has it now.
@@ -82,6 +165,7 @@ fn reading(folders: &dyn Folders, caller: &Caller, resource: &str) -> Result<Val
         .ok_or("The workspace's folder is not served on this computer.")?;
     let arguments = Map::from_iter([("folder".to_owned(), Value::String(path.to_owned()))]);
     let listing = puts.read(id, tree::LIST, &arguments)?;
+    let listing = only_their_items(folders, caller, workspace, listing);
     Ok(with_changed_as_times(listing))
 }
 
@@ -257,5 +341,231 @@ impl PublishedResources for Readings {
             message: format!("`{resource}` answers no `{action}`: a folder is read, and changed through Files' verbs"),
         });
         answered
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "test fixtures: a failed step is the assertion"
+)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use tilo_action_policy::{Grant, WorkspacePolicy};
+    use tilo_action_types::KindSet;
+    use tilo_app_host::services::{FilesEntry, FilesPutCall, FilesTreePuts};
+    use tilo_desktop_model::Workspace;
+    use tilo_server_protocol::WorkspaceId;
+
+    const ME: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const OWNER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    /// The workspace's folder, with the entries it holds and the reading Files' LIST answers.
+    struct Tree {
+        workspace: Workspace,
+        entries: Vec<(String, String, bool)>,
+    }
+
+    impl FilesTreePuts for Tree {
+        fn put(
+            &self,
+            _workspace: WorkspaceId,
+            _arguments: &serde_json::Map<String, Value>,
+            _call: Option<FilesPutCall<'_>>,
+            _confirm: &dyn Fn() -> bool,
+        ) -> Result<Value, String> {
+            Err("a put is not this test's".to_owned())
+        }
+
+        fn entries(
+            &self,
+            _workspace: WorkspaceId,
+            folder: &str,
+            below: bool,
+        ) -> Result<Vec<FilesEntry>, String> {
+            Ok(self
+                .entries
+                .iter()
+                .filter(|(_, path, _)| {
+                    let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+                    parent == folder || (below && path.starts_with(folder))
+                })
+                .map(|(id, path, folder)| FilesEntry {
+                    path: path.clone(),
+                    folder: *folder,
+                    id: id.clone(),
+                })
+                .collect())
+        }
+
+        fn read(
+            &self,
+            _workspace: WorkspaceId,
+            action: &str,
+            arguments: &serde_json::Map<String, Value>,
+        ) -> Result<Value, String> {
+            if action != tree::LIST {
+                return Err("this test reads a folder".to_owned());
+            }
+            let folder = arguments
+                .get("folder")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let entries: Vec<Value> = self
+                .entries
+                .iter()
+                .filter(|(_, path, _)| {
+                    let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+                    parent == folder
+                })
+                .map(|(id, path, folder)| {
+                    serde_json::json!({
+                        "id": id,
+                        "name": path.rsplit_once('/').map_or(path.as_str(), |(_, name)| name),
+                        "path": path,
+                        "kind": if *folder { "folder" } else { "file" },
+                        "size": 1,
+                        "changed": 0,
+                    })
+                })
+                .collect();
+            Ok(
+                serde_json::json!({ "folder": folder, "entries": entries, "from": 0, "next": null, "total": entries.len() }),
+            )
+        }
+
+        fn change(
+            &self,
+            _workspace: WorkspaceId,
+            _verb: &str,
+            _arguments: &serde_json::Map<String, Value>,
+            _call: Option<FilesPutCall<'_>>,
+            _confirm: &dyn Fn() -> bool,
+        ) -> Result<Value, String> {
+            Err("a change is not this test's".to_owned())
+        }
+    }
+
+    struct Folders {
+        tree: Arc<Tree>,
+    }
+
+    impl Folders {
+        fn new(policy: WorkspacePolicy, entries: Vec<(String, String, bool)>) -> Self {
+            let id = policy.workspace.clone();
+            let mut workspace = Workspace::new(WorkspaceId::parse(&id).unwrap(), "Home");
+            workspace.policy = policy;
+            Self {
+                tree: Arc::new(Tree { workspace, entries }),
+            }
+        }
+    }
+
+    impl super::Folders for Folders {
+        fn workspace(&self, id: &str) -> Option<Workspace> {
+            (self.tree.workspace.id().to_string() == id).then(|| self.tree.workspace.clone())
+        }
+
+        fn now(&self) -> u64 {
+            1
+        }
+
+        fn puts(&self) -> Option<Arc<dyn FilesTreePuts>> {
+            Some(self.tree.clone() as Arc<dyn FilesTreePuts>)
+        }
+
+        fn writes(&self) -> tokio::sync::broadcast::Receiver<ResourceWrite> {
+            let (_send, received) = tokio::sync::broadcast::channel(1);
+            received
+        }
+
+        fn person(&self) -> String {
+            ME.to_owned()
+        }
+    }
+
+    /// A person's read share of `node` in the workspace `policy` is about.
+    fn share(policy: &mut WorkspacePolicy, node: &str) {
+        policy.grants.push(Grant::new(
+            "share:one",
+            tilo_action_policy::Grantee::person(ME),
+            fs_protocol::file_action::node_scope(&policy.workspace, node),
+            KindSet::READ,
+            Answer::Allow,
+            tilo_action_policy::Grantee::person(OWNER),
+        ));
+    }
+
+    fn caller(workspace: &str) -> Caller {
+        Caller {
+            app_id: "so.tilo.file-explorer".to_owned(),
+            workspace: workspace.to_owned(),
+            opened_for: Some(
+                tilo_actions::remote::Caller::local_person(ME).in_workspace(workspace),
+            ),
+        }
+    }
+
+    fn entry_paths(listing: &Value) -> Vec<String> {
+        listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// A person shared one file of a folder reads that file alone: the listing says the folder
+    /// holds the file they were let into, and not the one beside it.
+    #[test]
+    fn a_member_shared_one_file_reads_only_it() {
+        let id = WorkspaceId::new().to_string();
+        let mut policy = WorkspacePolicy::new(id.clone(), OWNER);
+        share(&mut policy, "record:notes");
+        let folders = Folders::new(
+            policy.clone(),
+            vec![
+                ("record:trip".into(), "Trip".into(), true),
+                ("record:notes".into(), "Trip/notes.md".into(), false),
+                ("record:other".into(), "Trip/other.md".into(), false),
+            ],
+        );
+        let listing = reading(&folders, &caller(&id), "files/folder~Trip")
+            .expect("a person let into a file reads the folder that holds it");
+        assert_eq!(entry_paths(&listing), ["Trip/notes.md"], "{listing}");
+    }
+
+    /// A person the workspace lets read all its files reads every entry, and one with no share
+    /// reads no folder at all.
+    #[test]
+    fn a_role_over_the_workspace_reads_everything_and_a_stranger_nothing() {
+        let id = WorkspaceId::new().to_string();
+        let mut policy = WorkspacePolicy::new(id.clone(), OWNER);
+        policy.grants.push(Grant::new(
+            "role:viewer",
+            tilo_action_policy::Grantee::person(ME),
+            tilo_action_policy::TreePath::workspace(id.clone()),
+            KindSet::READ,
+            Answer::Allow,
+            tilo_action_policy::Grantee::person(OWNER),
+        ));
+        let entries = vec![
+            ("record:notes".into(), "Trip/notes.md".into(), false),
+            ("record:other".into(), "Trip/other.md".into(), false),
+        ];
+        let folders = Folders::new(policy, entries.clone());
+        let listing = reading(&folders, &caller(&id), "files/folder~Trip")
+            .expect("a viewer reads the folder");
+        assert_eq!(entry_paths(&listing), ["Trip/notes.md", "Trip/other.md"]);
+
+        let nothing = Folders::new(WorkspacePolicy::new(id.clone(), OWNER), entries);
+        assert!(
+            reading(&nothing, &caller(&id), "files/folder~Trip").is_err(),
+            "a person with no share reads no folder"
+        );
     }
 }

@@ -7,6 +7,7 @@ app so.tilo.file-explorer "Files" (
 
 use so.tilo.device as device
 use so.tilo.session as session
+use tilo.accounts as accounts
 use tilo.workspace as workspace
 
 op "transfer"
@@ -658,9 +659,9 @@ fn workspace_key() -> Text {
     if let one = workspace.access.workspaces.first() { one.id } else { "" }
 }
 
-/// Opens the system's invitation sheet for the entry at `path`: sharing something is inviting
-/// people into the workspace that holds it, and the resource names what is shared.
-action share_entry(f: Files, path: Text) uses files {
+/// Opens the share panel for the entry at `path`: who in the workspace it is shared with, and
+/// what each of them may do with it alone.
+action start_share(f: Files, path: Text) uses files {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if not workspace_place(s.here) {
         s.notice = "Only something in a workspace can be shared"
@@ -670,13 +671,30 @@ action share_entry(f: Files, path: Text) uses files {
         s.notice = "Sharing isn’t available on this device"
         return
     }
-    let entry = entry_at(f, s, path) ?? Entry(name: name_of(path), path: path)
-    let resource = if entry.folder { "folder:" + path } else { "file:" + path }
-    device.nearby_send.invite_people(resource: resource)
     s.sharing = path
 }
 
-/// Puts the invitation sheet away.
+/// Shares the entry the panel names with `being` at `role`: a viewer or a commenter reads it, an
+/// editor changes it, and an empty role takes the share back. The share reaches that item alone.
+action share_with(f: Files, being: Actor, role: Text) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if s.sharing == "" {
+        return
+    }
+    workspace.share_file(
+        workspace.members,
+        path: s.sharing,
+        member: being,
+        role: if role == "" { .none } else { .some(role) },
+    )
+    if role == "" {
+        s.notice = "“{name_of(s.sharing)}” is no longer shared with {being.name()}"
+    } else {
+        s.notice = "Shared “{name_of(s.sharing)}” with {being.name()}"
+    }
+}
+
+/// Puts the share panel away.
 action close_share(f: Files) {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     s.sharing = ""
@@ -718,16 +736,20 @@ action free_entry(f: Files, path: Text) uses files, time {
     device.storage.scan()
 }
 
-/// Opens the system's History on this workspace, where a file's earlier versions are restored:
-/// the history every app's changes are kept in, never a copy of its own.
-action show_history(f: Files) uses files, time {
+/// Opens the system's History on the entry at `path`, where its earlier versions are restored:
+/// the history every app's changes are kept in, never a copy Files keeps, narrowed to that item.
+action show_history(f: Files, path: Text = "") uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     let key = workspace_key()
     if not workspace_place(s.here) or key == "" {
         s.notice = "Only something in a workspace has history"
         return
     }
-    session.activity(workspace: key, view: "history")
+    session.activity(
+        workspace: key,
+        view: "history",
+        path: if path == "" { .none } else { .some(path) },
+    )
 }
 
 /// How far the transfer `t` has got, as the device records each move.
@@ -1898,6 +1920,14 @@ view files(f: Files) {
                             on act: dismiss_notice(f)
                         }
                     }
+                    // The cloud folder shown stands in step or says why it does not, and an
+                    // account whose sign-in lapsed is signed in again from here.
+                    let cloud_here = device.folders.cloud.find(c -> c.path == s.here)
+                    if let c = cloud_here {
+                        if c.health != "in-sync" and c.health != "syncing" {
+                            cloud_row(f, c)
+                        }
+                    }
                     for t in s.transfers {
                         transfer_row(f, t)
                     }
@@ -2032,6 +2062,17 @@ view places(f: Files, s: Session) {
                 }
             }
         }
+        // The cloud storage accounts this computer mounts, each a folder under its own account.
+        let cloud = device.folders.cloud
+        if not cloud.is_empty() {
+            ui.NavSection("Cloud") {
+                for folder in cloud {
+                    ui.NavItem(folder.path, cloud_label(folder), icon: .cloud) {
+                        on select: go(f, folder.path)
+                    }
+                }
+            }
+        }
         let drives = device.drives.drives
         if not drives.is_empty() {
             ui.NavSection("Drives") {
@@ -2131,8 +2172,29 @@ view places(f: Files, s: Session) {
     }
 }
 
+/// What a cloud storage account's folder is called in the sidebar, with where its sync stands
+/// when it is not plainly in step: an account whose sign-in lapsed says to sign in again.
+fn cloud_label(folder: device.CloudFolder) -> Text {
+    let health = if folder.health == "sign-in" {
+        "Sign in again"
+    } else if folder.health == "paused" {
+        "Paused"
+    } else if folder.health == "offline" {
+        "Offline"
+    } else if folder.health == "error" { "Sync failed" } else { "" }
+    if health == "" { folder.name } else { "{folder.name} — {health}" }
+}
+
+/// Signs the cloud storage account `account` in again, as Settings does: the workspace's vault
+/// keeps the sign-in, and the account's folder picks it up when it syncs next.
+action reconnect_cloud(f: Files, account: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    accounts.reconnect(accounts.accounts, account: account)
+    s.notice = "Signing in to the cloud account again…"
+}
+
 /// What a mounted folder is called in the sidebar, with where its sync stands when it is not
-/// plainly in step: a cloud account whose server refused the sign-in says to sign in again.
+/// plainly in step: a workspace whose server refused the person's changes says so.
 fn folder_label(folder: device.Folder) -> Text {
     let health = if folder.refused != "" {
         "Sign in again"
@@ -2243,14 +2305,14 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
             }
             ui.MenuSeparator()
             ui.MenuItem("Share…", icon: .share, disabled: acted_on(f).is_empty()) {
-                on choose: share_entry(f, s.selected)
+                on choose: start_share(f, s.selected)
             }
             ui.MenuItem(
                 "Version history…",
                 icon: .history,
                 disabled: not workspace_place(s.here),
             ) {
-                on choose: show_history(f)
+                on choose: show_history(f, s.selected)
             }
             ui.MenuItem("Keep offline", icon: .pin, disabled: acted_on(f).is_empty()) {
                 on choose: keep_entry(f, s.selected, true)
@@ -2351,17 +2413,42 @@ fn clash_title(c: Clash) -> Text {
     }
 }
 
-/// The invitation sheet the system opened for the entry being shared.
+/// The share panel for the entry the person asked about: everyone in the workspace with what
+/// each may do with that item alone, and the way to invite someone new.
 view share_row(f: Files, s: Session) {
-    row(gap: .related, align: .center, wrap: true) {
-        ui.Icon(.share, size: .small, secondary: true)
+    let people = workspace.members.people.filter(p -> p.kind() == .person and p != invoker)
+    stack(padding: .related, gap: .related) {
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Icon(.share, size: .small, secondary: true)
+            text("Share “{name_of(s.sharing)}”", role: .label)
+        }
         text(
-            "Sharing “{name_of(s.sharing)}” with your workspace",
+            "They can open this item, and nothing else in the workspace.",
             role: .caption,
             secondary: true,
         )
-        ui.Button("Done", role: .plain) {
-            on press: close_share(f)
+        for person in people {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Avatar(name: person.name())
+                text(person.name(), role: .label, fill: 1.0)
+                ui.Button("Can view", size: .small) {
+                    on press: share_with(f, person, "viewer")
+                }
+                ui.Button("Can edit", size: .small) {
+                    on press: share_with(f, person, "editor")
+                }
+                ui.Button("Remove", size: .small, role: .destructive) {
+                    on press: share_with(f, person, "")
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Invite someone new…", icon: .user_plus, size: .small) {
+                on press: device.show_invite(device.invite)
+            }
+            ui.Button("Done", role: .plain) {
+                on press: close_share(f)
+            }
         }
     }
 }
@@ -2440,6 +2527,33 @@ view keeping(f: Files, s: Session, e: Entry) {
                 }
             }
         }
+    }
+}
+
+/// A cloud storage account's folder whose sync is not plainly in step: what it needs, and the
+/// way to sign in again.
+view cloud_row(f: Files, c: device.CloudFolder) {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Icon(.cloud, size: .small, secondary: true)
+        text(cloud_said(c), role: .caption, secondary: true)
+        if c.health == "sign-in" {
+            ui.Button("Sign in again", icon: .log_in, size: .small) {
+                on press: reconnect_cloud(f, c.account)
+            }
+        }
+    }
+}
+
+/// What a cloud folder that is not in step needs, in one line.
+fn cloud_said(c: device.CloudFolder) -> Text {
+    if c.health == "sign-in" {
+        "“{c.name}” needs you to sign in again."
+    } else if c.health == "paused" {
+        "“{c.name}” is not syncing: its sync is paused."
+    } else if c.health == "offline" {
+        "“{c.name}” is offline; what is here still opens."
+    } else {
+        "“{c.name}” could not sync its last changes."
     }
 }
 
@@ -2525,7 +2639,7 @@ view entry_list(
                     }
                     if workspace_place(s.here) {
                         ui.MenuItem("Share…", icon: .share) {
-                            on choose: share_entry(f, e.path)
+                            on choose: start_share(f, e.path)
                         }
                         ui.MenuItem("Keep offline", icon: .pin) {
                             on choose: keep_entry(f, e.path, true)
@@ -2537,7 +2651,7 @@ view entry_list(
                             on choose: free_entry(f, e.path)
                         }
                         ui.MenuItem("Version history…", icon: .history) {
-                            on choose: show_history(f)
+                            on choose: show_history(f, e.path)
                         }
                     }
                     ui.MenuSeparator()
@@ -2848,10 +2962,10 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                 if workspace_place(s.here) {
                     row(gap: .related, align: .center, wrap: true) {
                         ui.Button("Share…", icon: .share, size: .small) {
-                            on press: share_entry(f, e.path)
+                            on press: start_share(f, e.path)
                         }
                         ui.Button("Version history…", icon: .history, size: .small) {
-                            on press: show_history(f)
+                            on press: show_history(f, e.path)
                         }
                     }
                 }

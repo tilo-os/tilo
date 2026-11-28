@@ -80,6 +80,7 @@ impl FilesTreePuts for Recorder {
             .map(|(path, folder)| FilesEntry {
                 path: path.to_owned(),
                 folder,
+                id: path.to_owned(),
             })
             .collect())
     }

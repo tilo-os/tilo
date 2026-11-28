@@ -125,6 +125,8 @@ pub struct HistoryFilter {
     pub apps: Vec<String>,
     pub resource_kinds: Vec<String>,
     pub resources: Vec<String>,
+    /// The trees' items, by the path each change named: a folder's history narrowed to one file.
+    pub targets: Vec<String>,
     pub work_groups: Vec<String>,
     /// Selected browse facets. All selected key/value pairs must match.
     pub facets: Vec<ActionFacet>,
@@ -235,6 +237,18 @@ impl HistoryFilter {
                 candidate.eq_ignore_ascii_case(&resource.id)
                     || candidate.eq_ignore_ascii_case(&resource.label)
             }) {
+                return false;
+            }
+        }
+        if !self.targets.is_empty() {
+            let Some(target) = entry.target.as_ref() else {
+                return false;
+            };
+            if !self
+                .targets
+                .iter()
+                .any(|candidate| candidate == &target.label)
+            {
                 return false;
             }
         }
@@ -609,6 +623,34 @@ mod tests {
             relative_time_changes_at(at, ago(8 * 86_400)),
             None,
             "a week on, nothing wakes for it"
+        );
+    }
+
+    /// A history narrowed to one tree item lists that item's changes alone: a file's history,
+    /// as Files opens it.
+    #[test]
+    fn a_filter_on_targets_lists_only_that_items_changes() {
+        let named = |label: &str, id: &str, at: u64| {
+            let mut row = entry(EntryKind::Text, "Alice", at);
+            row.target = Some(EntryTarget {
+                action: "Edited".to_owned(),
+                label: label.to_owned(),
+                id: id.to_owned(),
+            });
+            row
+        };
+        let notes = named("Trip/notes.md", "record:notes", 0);
+        let other = named("Trip/other.md", "record:other", 1);
+        let none = entry(EntryKind::Text, "Alice", 2);
+        let filter = HistoryFilter {
+            targets: vec!["Trip/notes.md".to_owned()],
+            ..HistoryFilter::default()
+        };
+        assert!(filter.matches(&notes), "the item's change is listed");
+        assert!(!filter.matches(&other), "another item's is not");
+        assert!(
+            !filter.matches(&none),
+            "a change naming no item is not the item's"
         );
     }
 }

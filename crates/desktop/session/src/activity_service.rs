@@ -539,11 +539,11 @@ pub(crate) fn empty() -> Value {
 }
 
 /// The query a feed reading names: this workspace's changes or every workspace's, how far back,
-/// the lens (a dash for none) and how many of the newest changes it holds (`0` for the first
-/// page).
+/// the lens (a dash for none), how many of the newest changes it holds (`0` for the first page)
+/// and, after them, one tree item's path where the history is that item's alone.
 pub(crate) fn feed_query_of(resource: &str) -> Option<wire::FeedQuery> {
     let rest = resource.strip_prefix(FEED_PREFIX)?;
-    let mut parts = rest.splitn(4, '~');
+    let mut parts = rest.splitn(5, '~');
     let scope = match parts.next()? {
         "all" => wire::Scope::AllWorkspaces,
         "this" => wire::Scope::ThisWorkspace,
@@ -561,10 +561,16 @@ pub(crate) fn feed_query_of(resource: &str) -> Option<wire::FeedQuery> {
         Some(limit) => limit.parse().ok()?,
         None => 0,
     };
+    // The path is everything after the limit's separator: a name holds any `~` it likes.
+    let path = parts
+        .next()
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned);
     Some(wire::FeedQuery {
         scope,
         period,
         lens: (lens != "-").then(|| lens.to_owned()),
+        path,
         limit,
         ..wire::FeedQuery::default()
     })

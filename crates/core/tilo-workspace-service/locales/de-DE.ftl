@@ -233,6 +233,7 @@ tilo-workspace-workspace-fetch-grant = Deiner Seite das Abruf-Proxy-Token des Ho
 tilo-workspace-grant-revoke = Eine Berechtigung zurücknehmen
 tilo-workspace-reading-grant = Lesen erlauben
 tilo-workspace-reading-revoke = Nicht mehr lesen
+tilo-workspace-file-share = Eine Datei oder einen Ordner teilen
 tilo-workspace-server-rename = Einen Server umbenennen
 tilo-workspace-server-keep = Wählen, ob ein Server einen Arbeitsbereich behält
 tilo-workspace-server-retire = Einen Server außer Betrieb nehmen

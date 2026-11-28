@@ -1481,12 +1481,14 @@ impl WorkspaceActivityPane {
         period: Period,
         author: Option<&str>,
         lens: &LensSelection,
+        path: Option<&str>,
     ) -> HistoryFilter {
         let mut filter = HistoryFilter {
             time_range: period.range(self.now()),
             ..HistoryFilter::default()
         };
         filter.authors.extend(author.map(str::to_owned));
+        filter.targets.extend(path.map(str::to_owned));
         match lens {
             LensSelection::All => {}
             LensSelection::AgentTasks => {

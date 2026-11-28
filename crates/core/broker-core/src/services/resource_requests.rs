@@ -241,6 +241,8 @@ pub struct FilesEntry {
     pub path: String,
     /// Whether it is a folder rather than a file.
     pub folder: bool,
+    /// The tree's own name for the entry: the node a share of it is given at.
+    pub id: String,
 }
 
 /// The call a put into a workspace's folder is made for: the context the tree's change is made

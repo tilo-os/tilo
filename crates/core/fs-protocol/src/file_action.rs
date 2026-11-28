@@ -332,6 +332,39 @@ pub fn tree_node() -> tilo_actions::policy::TreePath {
         ))
 }
 
+/// The scope a share of the tree's node `node` is given at in `workspace`: the tree's own node,
+/// per item, so a person let into one file reads it and nothing beside it.
+#[must_use]
+pub fn node_scope(workspace: &str, node: &str) -> tilo_actions::policy::TreePath {
+    tilo_actions::policy::TreePath::workspace(workspace)
+        .joined(&tree_node())
+        .item(node)
+}
+
+/// The tree node `scope` is a share of, when it is one of a workspace's tree's nodes.
+#[must_use]
+pub fn node_of_scope(scope: &tilo_actions::policy::TreePath) -> Option<&str> {
+    use tilo_actions::policy::Level;
+    let (workspace, rest) = scope.segments().split_first()?;
+    if workspace.level() != Some(Level::Workspace) {
+        return None;
+    }
+    let tree = tree_node();
+    let named = tree.segments();
+    if rest.len() != named.len().saturating_add(1) {
+        return None;
+    }
+    let (head, item) = rest.split_at(named.len());
+    if head != named {
+        return None;
+    }
+    let item = item.first()?;
+    if item.level() != Some(Level::Item) {
+        return None;
+    }
+    item.id()
+}
+
 /// The node below the workspace the file action `verb` on the tree's node `node` is decided
 /// at, or on the whole tree with no node named. It is the node a receiver of the change
 /// decides it at (`collab_types::receipt::claim_node`), so a mount writing a file, a call

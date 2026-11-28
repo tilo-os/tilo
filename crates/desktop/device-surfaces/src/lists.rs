@@ -239,6 +239,35 @@ pub enum SaidEffect {
 )]
 pub struct Folders {
     pub folders: Vec<Folder>,
+    /// The cloud storage accounts this computer mounts, each a folder a person opens, kept
+    /// apart from the workspaces' own folders.
+    #[serde(default)]
+    pub cloud: Vec<CloudFolder>,
+}
+
+/// One cloud storage account's folder on this computer, as the account service keeps it.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct CloudFolder {
+    /// The account, by the id Settings names it.
+    pub account: String,
+    /// What its folder is called.
+    pub name: String,
+    /// Where its folder stands on this computer, the place a person opens.
+    pub path: String,
+    /// How its last sync went: `in-sync`, `syncing`, `paused`, `offline`, `sign-in` (the account
+    /// must be signed in again) or `error`.
+    pub health: String,
+    /// Background sync and uploads are paused.
+    pub paused: bool,
 }
 
 /// One workspace's folder, as the person is told where it stands.

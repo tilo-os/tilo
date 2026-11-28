@@ -263,6 +263,10 @@ pub const WORKSPACE_READ_GRANT: &str = "reading.grant";
 /// The operation that keeps a person or a role from reading one resource
 /// (`workspace/members#revoke-read`), admitted by the workspace's grant on revoking.
 pub const WORKSPACE_READ_REVOKE: &str = "reading.revoke";
+/// The operation that shares one item of the workspace's files with a person
+/// (`workspace/members#share-file`): a role over that file or folder alone, on the tree node it
+/// stands at, so the person opens it and nothing beside it. A role of none takes it back.
+pub const WORKSPACE_SHARE_FILE: &str = "file.share";
 /// The roles a workspace's people hold over its parts, under its member list
 /// (`workspace/grants`).
 pub const WORKSPACE_GRANTS: &str = "grants";
@@ -332,7 +336,7 @@ pub fn workspace_agent_effects(operation: &str) -> Vec<crate::ActionEffect> {
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
 /// is its `person`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 48] = [
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),
@@ -394,6 +398,7 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
         Some(WORKSPACE_MEMBERS),
         "revoke-read",
     ),
+    (WORKSPACE_SHARE_FILE, Some(WORKSPACE_MEMBERS), "share-file"),
     (WORKSPACE_GRANT_SET, Some(WORKSPACE_GRANTS), "set"),
     (WORKSPACE_AGENT_CREATE, Some(WORKSPACE_AGENTS), "create"),
     (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
