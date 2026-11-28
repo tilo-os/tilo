@@ -224,14 +224,22 @@ fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_session_its_noti
         "the centre shows the notice"
     );
     let before = part.work();
+    assert!(
+        before.measuring > 0,
+        "the frames that laid the centre out measured the room its chrome leaves"
+    );
     for _ in 0..20 {
         part.prepare_frame();
     }
     let after = part.work();
     assert_eq!(
-        (after.turns - before.turns, after.drawn - before.drawn),
-        (0, 0),
-        "idle, the centre runs and draws nothing"
+        (
+            after.turns - before.turns,
+            after.drawn - before.drawn,
+            after.measuring - before.measuring
+        ),
+        (0, 0, 0),
+        "idle, the centre runs, draws and measures nothing"
     );
     // The idle frames ran and drew nothing, so the centre the presses land on is the one that
     // settled. Each press is answered, as the session's turn answers it, before the next.

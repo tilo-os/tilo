@@ -2411,6 +2411,14 @@ impl Device {
     pub fn install_dev_apps(&self) {
         super::dev_apps::install(&self.store(), &self.home.path().join("state/tilolang"));
         super::dev_apps::install_runtimes(&self.home.path().join("data/tilo-apps/runtimes"));
+        self.seed_apps();
+    }
+
+    /// Have this device's session serve the tilolang apps already in its store as a development
+    /// session does (`--seed-apps`): each app's records published from the session itself, and the
+    /// sample answers the apps' connectors read served where the session keeps them. A test that
+    /// installs a subset of the apps ([`super::dev_apps::install_named`]) seeds the same way.
+    pub fn seed_apps(&self) {
         self.seeds.set(true);
     }
 

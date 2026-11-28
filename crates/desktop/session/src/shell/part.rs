@@ -680,6 +680,9 @@ pub struct ShellWork {
     pub turns: u64,
     /// Frames the toolkit drew and the CPU rasterized.
     pub drawn: u64,
+    /// Times the room the style's chrome leaves was measured: once per frame that drew, and never
+    /// on a pass that drew nothing, whose chrome stands where the last frame laid it.
+    pub measuring: u64,
     /// Time the instance and the window spent answering each other (the view run, its
     /// patches, the widgets reconciled) and the layout after it.
     pub turning: std::time::Duration,
@@ -1354,10 +1357,11 @@ impl ShellPart {
     /// laid out: every bar and dock it drew takes the display's band it rides, and the views read
     /// what is left as `device.room` to keep a widget clear of both. Whether what they read
     /// changed.
-    fn measure_room(&self) -> bool {
+    fn measure_room(&mut self) -> bool {
         if self.hidden() {
             return false;
         }
+        self.work.measuring = self.work.measuring.wrapping_add(1);
         let (width, height) = self.widgets.placement().size;
         let display = (0.0, 0.0, f64::from(width.max(1)), f64::from(height.max(1)));
         let mut chrome = Vec::new();
