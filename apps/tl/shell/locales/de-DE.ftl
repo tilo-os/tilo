@@ -1740,6 +1740,8 @@ d-d63pkwee = Zuletzt geöffnet an einem Nachmittag
 
 d-7ugeomrq = Meldungsauswahl
     .w-what-the-report-is-about = Worum es in der Meldung geht
+    .w-nothing-is-open-to-report-about = Nichts ist geöffnet, worüber zu berichten wäre
+    .w-click-the-window-that-isn-t = Klicke das Fenster an, das nicht funktioniert, oder ziehe ein Rechteck darüber
     .w-cancel = Abbrechen
 
 d-6mnqsxi6 = Bedienhinweise
@@ -1756,6 +1758,10 @@ d-6eidrgir = Verlaufszeile
 d-o5w6ulql = Hinweise über Fenstern
 
 d-txupy4rf = Streifenleiste
+
+d-p6z3qse6 = Streifenleiste
+
+d-ifgvywgk = Reihen-Tabs
 
 d-2dvbjocr = Streifenleiste
     .w-of = { $number } von { $len }
@@ -1871,6 +1877,8 @@ d-buc46sub = Gefragt vorbei
 
 d-q7w2n4x9 = Gefragt beim Drücken
     .w-hold-shift-to-skip = Zum Überspringen Umschalt gedrückt halten
+
+d-o7szomwg = Gefragtes Banner
 
 d-i7735z6w = Gefragte Banner
 
@@ -2362,6 +2370,8 @@ d-lmr4ktas = Folgen-Chip
     .w-stop-following = { $name } nicht mehr folgen
 
 d-xr7n4tqa = Gesicht der gefolgten Person
+
+d-ehkl2kj3 = Gesicht der Person
 
 d-ckxeoehf = Uhr, wessen Ansicht du folgst oder Neuigkeiten daneben
 
