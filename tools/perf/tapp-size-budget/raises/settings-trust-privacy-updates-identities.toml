@@ -1,0 +1,5 @@
+reason = "The signed app release after the window of a tilolang app opened on a desktop with no Tilo session (99eb7b701bf) measured Settings at 1,283,072 bytes on x86_64, 37,888 over its budget, so nothing could be published. It gained Bluetooth trust, network privacy, the update policy and identities (8099a9cd491). The amount is the excess plus the budget's headroom, rounded up to 64 KiB, measured by t run r447cdc3de6"
+run = "r447cdc3de6"
+
+[apps."so.tilo.settings"]
+x86_64 = 65536
