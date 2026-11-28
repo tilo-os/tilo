@@ -23,8 +23,8 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {dirname, join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
@@ -95,6 +95,8 @@ const finish = async (code, message) => {
   }
   writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
   for (const browser of browsers) await browser.close().catch(() => {});
+  // The computer's daemon goes with the flow: nothing of it is left running.
+  daemon?.kill('SIGTERM');
   if (message) {
     for (const {name} of tabs) console.error(`--- ${name} at ${report[`${name}At`]}, answering ${report[`${name}Answers`]}\n--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}\n--- ${name} channels: ${report[`${name}Channels`]}\n--- ${name} layout: ${report[`${name}Layout`]}`);
     console.error(`FAIL: ${message}`);
@@ -141,17 +143,34 @@ exit 0
 `;
 writeFileSync(join(computer, 'bin', 'claude'), claude);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
+// This computer's runtime directory, where its daemon's sockets live: the daemon and the
+// commands that ask it name the same one.
+const run = join(computer, 'run');
+mkdirSync(run, {recursive: true, mode: 0o700});
 const env = {
   PATH: `${join(computer, 'bin')}:${process.env.PATH}`,
   HOME: computer,
   XDG_STATE_HOME: join(computer, 'state'),
   XDG_CONFIG_HOME: join(computer, 'config'),
+  XDG_RUNTIME_DIR: run,
   // The tool this computer's commands run under, as every tool names itself to the commands it
   // runs.
   CLAUDECODE: '1',
   // The computer's peer logs each window it shows on the person's layout.
   RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
+// The computer's daemon, started here as its service would run it: this machine has no user
+// manager to start it through, and its installation as one is cli-user-service-x86_64's to prove.
+// `tilo login` reaches the daemon that answers, so it starts no service of its own.
+const daemonLog = openSync(join(out, 'daemon.log'), 'a');
+const daemon = spawn(join(dirname(tiloBin), 'tilo-runtime'), [], {
+  env, stdio: ['ignore', daemonLog, daemonLog], detached: true,
+});
+closeSync(daemonLog);
+daemon.unref();
+const native = join(run, 'tilo', 'native.sock');
+for (let tried = 0; tried < 600 && !existsSync(native); tried++) await sleep(50);
+if (!existsSync(native)) await fail("the computer's daemon did not start");
 // Run one `tilo …` as the agent does: its words, as the agent reads them.
 const tilo = (args, {input} = {}) => new Promise(resolve => {
   const child = execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20}, (error, stdout, stderr) =>

@@ -8219,6 +8219,19 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/lounge-check/cli/**"]
 default = false
 
+# A person's first Tilo on stock Linux: `tilo login --new-identity` installs this computer's daemon
+# as their systemd user unit and systemd starts it, a second login reinstalls nothing, and a fresh
+# manager starts the enabled unit again, as after a reboot. A job's sandbox has no writable
+# cgroups, so the check runs in a VM and starts its user manager there as a login's is.
+[[check]]
+name = "cli-user-service-x86_64"
+run = "bash tools/ci/cli-user-service.sh /target/publish/lounge-check/cli"
+needs = ["lounge-check-cli"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+timeout_secs = 600
+on = ["idle", "stable", "dispatch"]
+
 # The web page and the stack it runs on, end to end, on every change that reaches either, in
 # minutes: tilo.sh as production's manifests bring it up (stack.sh: the Lounge's server, the front
 # API server and the web entry, with their images' entrypoints and environment behind production's Caddy)
