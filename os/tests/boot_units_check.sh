@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check a booted installed image on two things a working desktop can hide:
+# Check a booted installed image on three things a working desktop can hide:
 #
 #   * no system unit failed. A failed unit marks the system degraded, and the
 #     rollback confirmation refuses to confirm a degraded generation, so one
@@ -7,6 +7,10 @@
 #   * tilo-rollback-confirm ran and succeeded, and on an enrolled machine it
 #     confirmed the running generation. Its timer fires ten minutes after boot,
 #     so the check starts it itself when the timer has not got there yet.
+#   * no tilo service died on a syscall its own filter refuses (SIGSYS, the
+#     kernel's audit type=1326), and the device's daemon has not restarted this
+#     boot: a unit with Restart=on-failure is active again seconds later, so a
+#     service that loses that call on every restart never shows as failed.
 #
 # Run as root inside the guest, once the first session has come up:
 #   sudo /usr/libexec/tilo/boot-units-check.sh
@@ -69,6 +73,33 @@ else
     ok "nothing to confirm on this machine (${reason:-no reason logged})"
   fi
 fi
+
+# A syscall a unit's filter refuses kills its process with SIGSYS: systemd
+# records `status=31/SYS`, and the kernel's audit record is `type=1326`. A
+# unit with `Restart=on-failure` comes back within seconds, so it is active
+# again and never failed while it loses that call on every restart: the
+# device's daemon crash-looped that way with this check green. The services a
+# boot starts are what it must keep, so any such record from them is a failure.
+if ! boot_log="$(journalctl -b -o cat --no-pager 2>/dev/null)"; then
+  bad 'this boot has no readable journal: a refused syscall would go unseen'
+  boot_log=
+fi
+refused="$(grep -E 'status=31/SYS|type=1326|SECCOMP' <<<"$boot_log" \
+  | grep -E 'tilo[-a-z0-9@._]*\.service|comm="tilo|exe="/usr/(libexec/tilo/|bin/tilo)' || true)"
+if [ -z "$refused" ]; then
+  ok 'no tilo service was killed by a refused syscall'
+else
+  bad 'a tilo service was killed by a refused syscall (SIGSYS or seccomp):'
+  printf '%s\n' "$refused" | tail -8 | sed 's/^/      /' >&2
+fi
+# The device's daemon is the machine's: a restart is a failure it recovered
+# from, never a state a boot may end in.
+runtime_restarts="$(systemctl show -p NRestarts --value tilo-runtime.service 2>/dev/null || true)"
+case "$runtime_restarts" in
+  0) ok 'the device daemon has not restarted this boot' ;;
+  ''|*[!0-9]*) bad 'tilo-runtime.service restart count is unavailable' ;;
+  *) bad "tilo-runtime.service restarted $runtime_restarts times this boot" ;;
+esac
 
 failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
 unexpected=()

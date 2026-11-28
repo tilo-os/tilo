@@ -18,6 +18,7 @@ case "$*" in
   'start tilo-rollback-confirm.service') touch "$STUB_DIR/started" ;;
   'show -p Result --value tilo-rollback-confirm.service') echo "${STUB_CONFIRM_RESULT:-success}" ;;
   'show -p ExecMainStatus --value tilo-rollback-confirm.service') echo "${STUB_CONFIRM_STATUS:-0}" ;;
+  'show -p NRestarts --value tilo-runtime.service') echo "${STUB_RUNTIME_RESTARTS:-0}" ;;
   'list-units --state=failed --no-legend --plain')
     for unit in ${STUB_FAILED:-}; do printf '%s loaded failed failed Something\n' "$unit"; done ;;
   *) echo "unexpected systemctl $*" >&2; exit 99 ;;
@@ -25,7 +26,10 @@ esac
 EOF
 cat >"$work/bin/journalctl" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "${STUB_CONFIRM_LOG:-}"
+case "$*" in
+  '-b -o cat --no-pager') printf '%s\n' "${STUB_BOOT_LOG:-}" ;;
+  *) printf '%s\n' "${STUB_CONFIRM_LOG:-}" ;;
+esac
 EOF
 cat >"$work/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
@@ -70,6 +74,14 @@ grep -Fq '1 unit(s) failed on this boot' "$work/out" \
   || { cat "$work/out"; echo 'FAIL: the failed confirmation must be listed as a failed unit' >&2; exit 1; }
 
 expect_fail 'an unrelated failed unit' 'tilo-runtime.service' STUB_FAILED='tilo-runtime.service'
+
+expect_fail 'a service killed by a refused syscall' 'SIGSYS or seccomp' \
+  STUB_BOOT_LOG='tilo-runtime.service: Main process exited, code=killed, status=31/SYS'
+expect_fail 'a failed syscall the kernel audited' 'type=1326' \
+  STUB_BOOT_LOG='audit: type=1326 audit(1.2:3): pid=1 comm="tilo-runtime" exe="/usr/libexec/tilo/tilo-runtime" syscall=305'
+expect_pass 'a refused syscall outside every tilo service' \
+  STUB_BOOT_LOG='audit: type=1326 audit(1.2:3): pid=9 comm="chromium" exe="/usr/lib64/chromium-browser/chromium-browser" syscall=305'
+expect_fail 'the device daemon restarted' 'tilo-runtime.service restarted 3 times' STUB_RUNTIME_RESTARTS=3
 
 expect_fail 'a missing confirmation unit' 'tilo-rollback-confirm.service is not installed' \
   STUB_CONFIRM_INSTALLED=no
