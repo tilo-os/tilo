@@ -134,7 +134,10 @@ impl ClockWait {
             self.check = None;
             match outcome {
                 Check::Verified => {
-                    return ClockWaitStep::Verified(startup::setup_due_now(self.host_desktop));
+                    return ClockWaitStep::Verified(startup::setup_due_now(
+                        self.host_desktop,
+                        false,
+                    ));
                 }
                 Check::Clock(refusal) => {
                     tracing::info!(

@@ -43,6 +43,10 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--";
 
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session's process reads its startup in one place, from the sign-in's link to its first screen"
+)]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
@@ -196,15 +200,15 @@ fn main() -> std::process::ExitCode {
         return ExitCode::FAILURE;
     };
     // The sign-in answered this session a founding link, not a shell's: the person it made or
-    // joined is here now, so the session asks its service for their link before it starts. A
-    // service that never answers leaves the session reading no workspace, as any other the
-    // daemon did not start; the words it answered with go to the screen in front of the session.
+    // joined is here, so the session asks its service for their link before it starts; a service
+    // that never answers leaves it reading no workspace, and its words go to the screen in front.
     let (launch_link, refusal) = session_link(launch_link);
     start(
         ours,
         command,
         line,
         host_desktop,
+        founding,
         &identity,
         launch_link,
         refusal,
@@ -656,6 +660,7 @@ fn start(
     command: &[String],
     line: CommandLine,
     host_desktop: bool,
+    first_use: bool,
     identity: &tilo_session::startup::Identity,
     launch_link: Option<std::os::fd::OwnedFd>,
     refusal: Option<String>,
@@ -781,7 +786,7 @@ fn start(
             drop(tilo_session::startup::settle_before_the_shell(identity));
             None
         } else {
-            tilo_session::startup::before_shell(identity, host_desktop)
+            tilo_session::startup::before_shell(identity, host_desktop, first_use)
         },
         captures: Some(captures),
         asks: desktop.as_ref().map(|desktop| desktop.asks().clone()),

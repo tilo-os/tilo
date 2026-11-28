@@ -268,7 +268,8 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
     let before =
         persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate");
 
-    let setup = startup::before_shell(&identity, false).expect("the wait stands before the shell");
+    let setup =
+        startup::before_shell(&identity, false, false).expect("the wait stands before the shell");
     assert!(matches!(setup, BeforeShell::WaitForClock(_)));
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],

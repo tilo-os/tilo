@@ -2062,7 +2062,7 @@ fn a_slow_daemon_shows_that_tilo_is_starting_and_the_person_is_taken_up() {
     let identity = tilo_session::startup::Identity::Starting {
         identity_dir: identity_dir.clone(),
     };
-    let setup = tilo_session::startup::before_shell(&identity, false)
+    let setup = tilo_session::startup::before_shell(&identity, false, false)
         .expect("the wait for the daemon stands before the shell");
     assert!(matches!(&setup, tilo_session::BeforeShell::Starting(_)));
     let mut session = crate::common::headless(Options {

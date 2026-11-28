@@ -23,8 +23,9 @@ use crate::startup;
 
 /// What the worker asked of the daemon found.
 enum Answer {
-    /// The person this account acts as was taken up here, or there was none to take up.
-    Settled,
+    /// The person this account acts as was taken up here (`taken`: made or joined now, so first
+    /// use is due), or there was none to take up.
+    Settled { taken: bool },
     /// The daemon answered a failure, saying why.
     Failed(String),
 }
@@ -99,9 +100,9 @@ impl StartingWait {
         };
         self.answer = None;
         match answered {
-            Answer::Settled => {
-                StartingStep::Settled(startup::setup_due_now(self.host_desktop).map(Box::new))
-            }
+            Answer::Settled { taken } => StartingStep::Settled(
+                startup::setup_due_now(self.host_desktop, taken).map(Box::new),
+            ),
             Answer::Failed(why) => {
                 // A daemon of this account's own that could not make the person leaves the
                 // session with the setup the device still needs, as it always did; the system
@@ -111,7 +112,9 @@ impl StartingWait {
                     return StartingStep::Failed(why);
                 }
                 tracing::warn!(%why, "this account's person is not taken up here");
-                StartingStep::Settled(startup::setup_due_now(self.host_desktop).map(Box::new))
+                StartingStep::Settled(
+                    startup::setup_due_now(self.host_desktop, false).map(Box::new),
+                )
             }
         }
     }
@@ -132,7 +135,7 @@ impl StartingWait {
                 let found = startup::found_here(&identity_dir);
                 // The receiver may be gone with the session: nothing to tell.
                 let _ = sender.send(match found {
-                    Ok(()) => Answer::Settled,
+                    Ok(taken) => Answer::Settled { taken },
                     Err(why) => Answer::Failed(why),
                 });
                 waiter.wake_by_ref();

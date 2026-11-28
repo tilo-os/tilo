@@ -1720,6 +1720,7 @@ fn a_first_login_that_made_no_person_says_why_and_never_locks() {
     let setup = tilo_session::startup::before_shell(
         &tilo_session::startup::Identity::NotStarted(why.to_owned()),
         false,
+        false,
     );
     let mut session = crate::common::headless(Options {
         services: vec![service],

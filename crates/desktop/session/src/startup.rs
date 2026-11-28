@@ -296,7 +296,7 @@ pub fn settle_before_the_shell(identity: &Identity) -> Identity {
         return identity.clone();
     };
     match found_here(identity_dir) {
-        Ok(()) => Identity::Shell,
+        Ok(_) => Identity::Shell,
         Err(why) if stands_in_place_of_the_shell() => Identity::NotStarted(why),
         // `found_here` said what failed; this session shows no layer to say it in, so it goes on
         // with the setup the device still needs, as it did before the wait had a screen.
@@ -317,8 +317,16 @@ pub(crate) fn stands_in_place_of_the_shell() -> bool {
 /// What this session shows before its shell is used, given what `identity` settled: the wait for the
 /// clock or for the daemon to answer who this account is, the setup this device still needs, or
 /// nothing and the shell opens.
+///
+/// `first_use` is a sign-in that held a founding link: the person was made or joined as this
+/// session started, so first use on this computer has not finished, whatever an identity record
+/// says.
 #[must_use]
-pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShell> {
+pub fn before_shell(
+    identity: &Identity,
+    host_desktop: bool,
+    first_use: bool,
+) -> Option<BeforeShell> {
     match identity {
         Identity::WaitForClock {
             identity_dir,
@@ -335,16 +343,17 @@ pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShe
             why: Some(why.clone()),
         }),
         Identity::Shell | Identity::Recovery(_) | Identity::Refused(_) => {
-            setup_due_now(host_desktop).map(|view| BeforeShell::Ceremony(Box::new(view)))
+            setup_due_now(host_desktop, first_use).map(|view| BeforeShell::Ceremony(Box::new(view)))
         }
     }
 }
 
 /// The setup this device still needs once its identity verifies: the first use when it has no
-/// identity yet, setup it started and did not finish, the recovery of its identity when startup
-/// found it unusable; `None` when there is nothing left to set up.
+/// identity yet, the first use of `first_use`, a person the sign-in just made or joined here,
+/// setup it started and did not finish, the recovery of its identity when startup found it
+/// unusable; `None` when there is nothing left to set up.
 #[must_use]
-pub(crate) fn setup_due_now(host_desktop: bool) -> Option<Ceremony> {
+pub(crate) fn setup_due_now(host_desktop: bool, first_use: bool) -> Option<Ceremony> {
     use crate::firstboot::setup_due;
     let identity_path = match tilo_identity::store::active_identity_path() {
         Ok(path) => path,
@@ -355,12 +364,14 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<Ceremony> {
     };
     let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
     let identity_dir = identity_path.parent()?.to_path_buf();
-    if !setup_due(needs_first_run_flow(&identity_path), recovery) {
+    if !(first_use || setup_due(needs_first_run_flow(&identity_path), recovery)) {
         return None;
     }
     Some(match (host_desktop, recovery) {
+        (false, false) if first_use => Ceremony::new(identity_dir).after_sign_in(),
         (false, false) => Ceremony::new(identity_dir),
         (false, true) => Ceremony::new_for_recovery(identity_dir),
+        (true, false) if first_use => Ceremony::new_for_host_desktop(identity_dir).after_sign_in(),
         (true, false) => Ceremony::new_for_host_desktop(identity_dir),
         (true, true) => Ceremony::new_for_host_desktop_recovery(identity_dir),
     })
@@ -461,11 +472,14 @@ fn certify_this_computers_key(identity_path: &Path) {
 /// The session after a login that made no identity reads and writes nothing of a person's, so
 /// that is logged as the error it is (a session logs errors alone unless asked for more), and
 /// answered as the words the screen in front of it shows.
-pub(crate) fn found_here(identity_dir: &Path) -> Result<(), String> {
+///
+/// Answers whether this login took up a person now, which is what makes first use due for them:
+/// an account whose person another of their programs took up first is answered `false`.
+pub(crate) fn found_here(identity_dir: &Path) -> Result<bool, String> {
     let failed = match found_and_certify(identity_dir) {
         Ok(true) => {
             tracing::info!("this account made its Tilo identity on this computer");
-            return Ok(());
+            return Ok(true);
         }
         // A person another device of theirs certifies this account for is on the way; an
         // account the daemon names no person at all is left with none.
@@ -475,7 +489,7 @@ pub(crate) fn found_here(identity_dir: &Path) -> Result<(), String> {
         {
             "this computer's daemon has no person for this account and lets it make none".to_owned()
         }
-        Ok(false) => return Ok(()),
+        Ok(false) => return Ok(false),
         Err(error) => error,
     };
     tracing::error!(error = %failed, "this account's identity was not made on this computer");
@@ -589,5 +603,112 @@ fn open_recovery(problem: Option<IdentityProblem>) {
         if let Some(problem) = problem {
             std::env::set_var(IdentityProblem::RECOVERY_ENV, problem.as_str());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sign-in makes this account's person before the session installs the person's settings,
+    /// so the step startup records to say first use has not finished is kept in the profile's
+    /// file alone. The sign-in itself makes first use due; a person who finished it is not asked
+    /// again, and one whose setup stopped at a step is reopened there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_person_a_sign_in_made_gets_first_use_and_a_finished_one_does_not() {
+        use std::sync::Arc;
+        use std::time::{Duration, SystemTime};
+
+        use settings_store::outside::{self, Outside};
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let config = root.path().join("config");
+        let system = root.path().join("system");
+        let runtime = root.path().join("run");
+        let profile = root.path().join("profile");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::create_dir_all(&profile).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &home)
+            .set("XDG_CONFIG_HOME", &config)
+            .set("XDG_STATE_HOME", home.join(".local/state"))
+            .set("XDG_RUNTIME_DIR", &runtime)
+            .set("TILO_IDENTITY_ROOT", &system)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+            .set(tilo_machine::DAEMON_PROFILE_VAR, &profile)
+            .remove(tilo_machine::DAEMON_NATIVE_VAR);
+        // This account signed in with an identity made here, and setup has not run: the record
+        // is there, and nothing says setup stopped at a step.
+        let identity_path = tilo_identity::store::active_identity_path().unwrap();
+        std::fs::create_dir_all(identity_path.parent().unwrap()).unwrap();
+        let record = tilo_identity::store::IdentityRecord::from_root(
+            &ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            "Person",
+            [40, 90, 160],
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        );
+        tilo_files::native::atomic::write_with_mode(
+            &identity_path,
+            &record.to_json_bytes().unwrap(),
+            0o600,
+        )
+        .unwrap();
+        // The device's key, taken here as this computer's daemon takes it: the step setup keeps
+        // is named by its public half.
+        let paths = firstboot::collaboration_identity_paths();
+        let device = tilo_device_identity::persist::adopt_device_key(&paths, &[5; 32]).unwrap();
+        let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
+        // Before the session installs its settings, the profile's file is the one source there
+        // is; it is where this login records the step.
+        let _scope = settings_store::scoped_source(Some(Arc::new(Outside::at(
+            settings_store::outside::path(),
+            Box::new(outside::set_on_this_device),
+        ))
+            as Arc<dyn settings_store::SettingsSource>));
+        assert!(
+            !tilo_onboarding_session::ceremony::setup_unfinished(),
+            "an identity with no setup under way reads as set up"
+        );
+        assert!(
+            setup_due_now(false, false).is_none(),
+            "an identity alone asks nothing of a person who has not signed in anew"
+        );
+        assert!(
+            setup_due_now(false, true).is_some(),
+            "the person the sign-in just took up gets first use"
+        );
+
+        tilo_onboarding_session::ceremony::record_backup_step()
+            .expect("the backup step is kept for a person just taken up");
+        assert!(
+            tilo_onboarding_session::ceremony::setup_unfinished(),
+            "the step this login recorded is read back"
+        );
+        assert!(
+            setup_due_now(false, false).is_some(),
+            "a restart in the middle of setup opens it again"
+        );
+
+        // Onboarding reached its end: this device's step is removed, as finishing does.
+        settings_store::update_section_by(
+            tilo_onboarding_session::ceremony::PROGRESS_SECTION,
+            serde_json::Map::from_iter([(
+                hex::encode(device.verifying_key().to_bytes()),
+                serde_json::Value::Null,
+            )]),
+            &settings_store::ChangeOrigin::default(),
+        )
+        .expect("the finished step is cleared");
+        assert!(
+            !tilo_onboarding_session::ceremony::setup_unfinished(),
+            "a finished setup has no step"
+        );
+        assert!(
+            setup_due_now(false, false).is_none(),
+            "a person who finished first use is not asked again"
+        );
     }
 }
