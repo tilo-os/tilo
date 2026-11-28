@@ -1665,6 +1665,11 @@ d-q6bzrju7-surface = Oberfläche
 d-n2ucmbpe = Launcher schließen
     .doc = Verlässt den Starter: der Stapel der Flächen geht zurück zur Shell in Ruhe.
 
+d-fzhgfiq2 = Als Tab öffnen
+    .doc = Öffnet den Text der Person als Tab der vordersten Leiste und verlässt den Launcher, wie die Wahl einer Zeile es tut.
+
+d-fzhgfiq2-text = Text
+
 d-rfepr4yx = Leistenteil
     .w-strip-name = Name der Leiste
     .w-new-strip = Neue Leiste

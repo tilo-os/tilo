@@ -139,13 +139,7 @@ view launcher() {
             row(gap: .related, align: .center, wrap: true) {
                 if typed and front_strip() != "" {
                     ui.Button("Open as a tab", icon: .columns_2, role: .primary, size: .small) {
-                        on press: session.place_found(
-                            text: query,
-                            view: .none,
-                            strip: front_strip(),
-                            x: .none,
-                            y: .none,
-                        )
+                        on press: open_as_a_tab(query)
                     }
                 }
                 // Enter is the field's own: it takes the row the person reached, or what they
@@ -273,6 +267,14 @@ action choose_launcher_row_as(packed: Text, current: Bool) {
         }
     }
     choose_launcher_row(choice, current)
+}
+
+/// What the launcher's "Open as a tab" does with the text the person typed: it opens as a tab of
+/// the strip in front, and the launcher leaves with the launch it made, as choosing a row does,
+/// so what they see is the tab arriving rather than the search it came from.
+action open_as_a_tab(text: Text) {
+    session.place_found(text: text, view: .none, strip: front_strip(), x: .none, y: .none)
+    close_launcher()
 }
 
 /// The launcher's field was edited: the open search's query is the text it now holds, so the

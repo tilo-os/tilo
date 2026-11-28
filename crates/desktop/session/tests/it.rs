@@ -143,6 +143,8 @@ mod join;
 mod kept_apps;
 #[path = "launch.rs"]
 mod launch;
+#[path = "launcher_launch.rs"]
+mod launcher_launch;
 #[path = "layout.rs"]
 mod layout;
 #[path = "layout_gestures.rs"]
