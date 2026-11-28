@@ -129,17 +129,19 @@ type Address (title: label) {
 
 /// A page open in a window: its address, what it is called, and what was done in it, newest
 /// last. The page itself lives in the engine on this device; what every member of the workspace
-/// reads of it is this.
-type Page (title: title) {
+/// reads of it is this. A private window's page is its author's alone, and goes when its window
+/// closes.
+type Page (title: title, readers: author until shared) {
     url: Text
     title: Text
     /// History is paused in this page's window: pages opened there are not added to the person's
     /// history.
     paused: Bool = false
-    /// The page's window browses privately: its engine runs on a profile of its own, which holds
-    /// nothing the person signed in to, is not offered their saved logins, and goes when the window
-    /// closes. Nothing it opens joins the person's history.
-    private: Bool = false
+    /// Every member of the workspace reads the page. A private window's page is not shared: no
+    /// other member or their agents read it, its engine runs on a profile of its own, which holds
+    /// nothing the person signed in to, is not offered their saved logins, and goes when the
+    /// window closes, as the page does. Nothing it opens joins the person's history.
+    shared: Bool = true
     /// What was done in the page, newest last. The newest thousand are kept.
     steps: Collection<PageStep>
     /// What the page's own script asks, and the menu it showed, as its window last read them.
@@ -655,7 +657,15 @@ action new_private_page(b: Browser) -> Page (
     label: "New private window",
     key: "Ctrl+Shift+P",
 ) {
-    b.pages.insert(Page(url: b.homepage, title: "", private: true))
+    b.pages.insert(Page(url: b.homepage, title: "", shared: false))
+}
+
+/// A private window closed: its page goes with it, so nothing of it outlives the window.
+closed action close_private_page(p: Page) {
+    if not p.shared {
+        let b = root Browser
+        b.pages.remove(p)
+    }
 }
 
 /// The browser opens on a page: a workspace with none gets its home page as one.
@@ -1218,7 +1228,7 @@ action refresh_page(p: Page) -> Answer uses page (
 /// The page's window opened: it settles a private page's engine before anything is read, then
 /// reads what the page asks and shows before anyone looks.
 opened action opened_page(p: Page) uses page {
-    if p.private {
+    if not p.shared {
         let _ = page.call(json.encode(Ask(op: "private")))
     }
     refresh_page(p)
@@ -2335,7 +2345,7 @@ action went_to(p: Page, url: Text) uses time {
         p.pip = false
     }
     p.url = url
-    if not p.paused and not p.private { arrived_at(root Browser, url) }
+    if not p.paused and p.shared { arrived_at(root Browser, url) }
 }
 
 /// Pauses or resumes the person's history in a page's window.
@@ -3291,7 +3301,7 @@ view page_view(p: Page) {
             }
             content: {
                 stack {
-                    if p.private {
+                    if not p.shared {
                         ui.Banner(
                             "Private window",
                             message: "This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.",

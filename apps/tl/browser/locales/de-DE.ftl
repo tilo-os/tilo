@@ -272,8 +272,8 @@ d-hh26i3w2-filter-addresses_enabled = Addresses enabled
 d-l4fklfdf = Neue Seite
     .doc = Öffnet eine Seite in einem eigenen Fenster.
 
-d-s6ryunn5 = Privat
-    .doc = Das Fenster der Seite browst privat: sein Motor läuft auf einem eigenen Profil, das nichts enthält, womit die Person angemeldet ist, ihr keine gespeicherten Anmeldungen anbietet und mit dem Fenster verschwindet.
+d-b7o3stu4 = Geteilt
+    .doc = Jedes Mitglied des Arbeitsbereichs liest die Seite. Die Seite eines privaten Fensters ist nicht geteilt: kein anderes Mitglied und keiner seiner Agenten liest sie, ihr Motor läuft auf einem eigenen Profil, das nichts enthält, womit die Person angemeldet ist, ihr keine gespeicherten Anmeldungen anbietet und mit dem Fenster verschwindet, wie die Seite selbst. Nichts, was sie öffnet, kommt in den Verlauf der Person.
 
 d-vzmpfm6h = Neues privates Fenster
     .doc = Öffnet ein Fenster, das privat browst: nichts, was es liest, womit es sich anmeldet oder was es herunterlädt, kommt zu dem, was dieses Gerät über die Person behält.
@@ -1090,6 +1090,9 @@ d-4djvsjzf = Fragen der Seite prüfen
 
 d-u7fbemnk = Seite geöffnet
     .doc = Das Fenster der Seite wurde geöffnet: es legt den Motor einer privaten Seite fest, bevor etwas gelesen wird, und liest dann, was die Seite fragt und zeigt, bevor jemand hinsieht.
+
+d-kenq7n3b = Private Seite schließen
+    .doc = Ein privates Fenster wurde geschlossen: seine Seite geht mit ihm, sodass nichts von ihr das Fenster überdauert.
 
 d-qbox6son = Befehl des Seitenmenüs
     .doc = Nimmt eine Zeile des Seitenmenüs, über den Befehl, den der Engine ihr gab.

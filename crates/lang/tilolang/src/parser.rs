@@ -990,10 +990,11 @@ impl<'a> Parser<'a> {
             Tok::Ident(n) if n == "migration" => ActionRole::Migration,
             Tok::Ident(n) if n == "initial" => ActionRole::Initial,
             Tok::Ident(n) if n == "opened" => ActionRole::Opened,
+            Tok::Ident(n) if n == "closed" => ActionRole::Closed,
             Tok::Ident(n) if n == "agents" => ActionRole::Agents,
             _ => return None,
         };
-        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if matches!(n.as_str(), "primary" | "destructive" | "migration" | "initial" | "opened" | "agents"));
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if matches!(n.as_str(), "primary" | "destructive" | "migration" | "initial" | "opened" | "closed" | "agents"));
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 

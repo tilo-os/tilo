@@ -1271,6 +1271,15 @@ impl Runtime {
         pkg.meta.opened_of(&info.id).map(|action| action.id.clone())
     }
 
+    /// The `closed action` of the resource type `ty` (an id), by its id: what closing a window of
+    /// one of its resources runs, as the person whose window it was. `None` for a type that
+    /// declares none.
+    pub fn closed_action(&self, ty: &str) -> Option<String> {
+        let registry = self.core.registry.borrow();
+        let (pkg, info) = registry.type_info(ty)?;
+        pkg.meta.closed_of(&info.id).map(|action| action.id.clone())
+    }
+
     /// The view a window of the resource type `ty` (an id) shows by default.
     pub fn default_view(&self, ty: &str) -> Option<String> {
         self.core.registry.borrow().default_view(ty)

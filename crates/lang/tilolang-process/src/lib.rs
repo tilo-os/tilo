@@ -1248,7 +1248,7 @@ impl TilolangProcess {
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
             if running.window.as_ref().is_some_and(window_closed) {
-                running.hosted.page_closed();
+                running.hosted.window_closed();
                 running.hosted.flush();
                 running.window = None;
                 running.closed = true;

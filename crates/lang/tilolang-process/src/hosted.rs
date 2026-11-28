@@ -5441,11 +5441,13 @@ impl Hosted {
     pub fn flush(&mut self) {}
 
     /// The window closed, and its page with it: every call raised for what the page waited on is
-    /// withdrawn, so its person is asked no more.
-    pub fn page_closed(&mut self) {
+    /// withdrawn, so its person is asked no more, and what closing a window of what it showed
+    /// does runs ([`Instance::window_closed`]).
+    pub fn window_closed(&mut self) {
         let connection = &self.connection;
         self.page_prompts
             .withdraw_all(|request| connection.manager().send(request));
+        self.instance.window_closed();
     }
 
     /// Whether the person's press is still on its way through the dispatch, or a run of the

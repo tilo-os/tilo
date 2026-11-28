@@ -1298,7 +1298,7 @@ mod cases {
         {
             let b = Browser::new();
             let made = returned_ref(b.run("new_private_page", &[("b", Value::resource(&b.root))]));
-            assert_eq!(b.read(&made, "private"), Value::Bool(true));
+            assert_eq!(b.read(&made, "shared"), Value::Bool(false));
 
             b.run("opened_page", &[("p", Value::resource(&made))]);
             assert_eq!(

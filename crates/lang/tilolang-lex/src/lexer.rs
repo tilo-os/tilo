@@ -12,7 +12,7 @@ pub const KEYWORDS: &[&str] = &[
 
 /// Words that are keywords only where a declaration starts (`state` at the start of a statement,
 /// `root`, `default`, `row`, `scenario`, `op`, `trigger`, `every`, `at`, `primary`,
-/// `destructive`, `migration`, `initial` and `opened` before an item's keyword). Elsewhere they
+/// `destructive`, `migration`, `initial`, `opened` and `closed` before an item's keyword). Elsewhere they
 /// are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "state",
@@ -29,6 +29,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "migration",
     "initial",
     "opened",
+    "closed",
 ];
 
 /// `@app.Type:id@version`: a reference literal, carried whole for the parser to read.

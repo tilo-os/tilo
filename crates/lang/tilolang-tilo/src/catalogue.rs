@@ -28,8 +28,8 @@ use tilolang_runtime::meta::{
 };
 
 use crate::action::{
-    CREATE_ACTION, DELETE_BLOCK_ACTION, EDIT_BLOCK_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION,
-    INSERT_BLOCK_ACTION, OPENED_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
+    CLOSED_ACTION, CREATE_ACTION, DELETE_BLOCK_ACTION, EDIT_BLOCK_ACTION, EDIT_FLAG_ACTION,
+    EDIT_TEXT_ACTION, INSERT_BLOCK_ACTION, OPENED_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
 };
 
 /// The authored surface of an app directory, next to its manifest: the build tools compile it
@@ -539,6 +539,7 @@ fn platform_verb(verb: &VerbSurface) -> bool {
         ORIGIN_ACTION,
         SCENARIO_ACTION,
         OPENED_ACTION,
+        CLOSED_ACTION,
         EDIT_TEXT_ACTION,
         EDIT_FLAG_ACTION,
         EDIT_BLOCK_ACTION,

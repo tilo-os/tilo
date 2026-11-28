@@ -925,11 +925,18 @@ impl ActionMeta {
         self.role.as_deref() == Some("opened")
     }
 
-    /// Whether only the platform applies it: a migration, an initial or an opened action, which no
-    /// person, agent or code invokes by name.
+    /// Whether it is a `closed action`: never offered, run by the platform as the person whose
+    /// window of a resource of its type closes.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.role.as_deref() == Some("closed")
+    }
+
+    /// Whether only the platform applies it: a migration, an initial, an opened or a closed
+    /// action, which no person, agent or code invokes by name.
     #[must_use]
     pub fn platform_applies(&self) -> bool {
-        self.is_migration() || self.is_initial() || self.is_opened()
+        self.is_migration() || self.is_initial() || self.is_opened() || self.is_closed()
     }
 
     /// Whether it takes a `File`. A form cannot ask it — the person gives it with the chooser —
@@ -1284,6 +1291,15 @@ impl PackageMeta {
         self.actions
             .iter()
             .find(|a| a.is_opened() && self.target_type(a).is_some_and(|target| target.id == ty))
+    }
+
+    /// The `closed action` of the type `ty` (an id): what closing a window of one of its
+    /// resources does.
+    #[must_use]
+    pub fn closed_of(&self, ty: &str) -> Option<&ActionMeta> {
+        self.actions
+            .iter()
+            .find(|a| a.is_closed() && self.target_type(a).is_some_and(|target| target.id == ty))
     }
 
     /// The type of the resource `action` takes first: what a migration or an initial action

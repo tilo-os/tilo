@@ -100,6 +100,7 @@ mod passwords_vault;
 mod platform_packages;
 mod policy;
 mod print_centre;
+mod private_window;
 mod publication;
 mod quick_network;
 mod quick_states_shot;

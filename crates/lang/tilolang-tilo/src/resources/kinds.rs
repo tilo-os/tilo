@@ -109,6 +109,8 @@ pub struct Kinds {
     scenarios: std::collections::HashSet<String>,
     /// The action ids of every loaded package's `opened action`s.
     opened: std::collections::HashSet<String>,
+    /// The action ids of every loaded package's `closed action`s.
+    closed: std::collections::HashSet<String>,
 }
 
 /// The kind a type of an app is stored as.
@@ -181,6 +183,12 @@ impl Kinds {
                 .filter(|action| action.is_opened())
                 .map(|action| action.id.clone()),
         );
+        self.closed.extend(
+            meta.actions
+                .iter()
+                .filter(|action| action.is_closed())
+                .map(|action| action.id.clone()),
+        );
         self.take_former(&meta.app, former);
     }
 
@@ -194,6 +202,12 @@ impl Kinds {
     #[must_use]
     pub fn is_opened(&self, action: &str) -> bool {
         self.opened.contains(action)
+    }
+
+    /// Whether `action` is a loaded package's `closed action`, which only the platform runs.
+    #[must_use]
+    pub fn is_closed(&self, action: &str) -> bool {
+        self.closed.contains(action)
     }
 
     /// The type `declared` of `app`, as the store names it and its fields.

@@ -584,6 +584,12 @@ pub const SCENARIO_ACTION: &str = "$scenario";
 /// store admits it on a package's types as it does any declared verb, and no catalogue offers it.
 pub const OPENED_ACTION: &str = "$opened";
 
+/// The verb the writes of a `closed action` are stamped with: what closing a window of a resource
+/// does, which the platform runs as the person whose window it was and no caller may invoke.
+/// Every device's store admits it on a package's types as it does any declared verb, and no
+/// catalogue offers it.
+pub const CLOSED_ACTION: &str = "$closed";
+
 /// The action id of a change a bound control makes to the text field it shows.
 pub const EDIT_TEXT_ACTION: &str = "edit-text";
 

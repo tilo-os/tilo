@@ -17,7 +17,8 @@ use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
 use crate::action::{
-    BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, OPENED_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
+    BLOCK_EDITS, CLOSED_ACTION, CREATE_ACTION, DIRECT_EDITS, OPENED_ACTION, ORIGIN_ACTION,
+    SCENARIO_ACTION,
 };
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
@@ -656,6 +657,17 @@ fn opened_verb() -> VerbSurface {
     }
 }
 
+fn closed_verb() -> VerbSurface {
+    VerbSurface {
+        id: CLOSED_ACTION.to_owned(),
+        label: "Close".to_owned(),
+        description: Some(
+            "What closing a window of it does, as the person whose window it was.".to_owned(),
+        ),
+        ..scenario_verb()
+    }
+}
+
 fn field_surfaces(
     meta: &Meta,
     ty: &TypeMeta,
@@ -756,6 +768,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     let seeded = !meta.scenarios.is_empty();
     let opens = meta.actions.iter().any(ActionMeta::is_opened);
+    let closes = meta.actions.iter().any(ActionMeta::is_closed);
     for ty in &meta.types {
         // An app's preferences are the settings service's record (`settings/apps/<app>`), not a
         // kind of the app's own document: another package reads them through that service, not
@@ -781,6 +794,10 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         if opens {
             verbs.push(opened_verb());
         }
+        // So does what closing a window of one does, as the person whose window it was.
+        if closes {
+            verbs.push(closed_verb());
+        }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.
         verbs.extend(
@@ -792,14 +809,14 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
                 })
                 .map(|action| verb(meta, action, &mut types, true)),
         );
-        // An `opened action` is no offer, but opening one of the type's resources runs it, and
-        // what it writes is the app's own: the workspace's store judges a change by the verb it
-        // names, so the type declares the verbs the platform runs on the app's behalf beside the
-        // ones a caller may invoke.
+        // An `opened action` is no offer, but opening one of the type's resources runs it (and a
+        // `closed action` closing a window of one), and what it writes is the app's own: the
+        // workspace's store judges a change by the verb it names, so the type declares the verbs
+        // the platform runs on the app's behalf beside the ones a caller may invoke.
         verbs.extend(
             meta.actions
                 .iter()
-                .filter(|action| action.is_opened())
+                .filter(|action| action.is_opened() || action.is_closed())
                 .filter(|action| {
                     meta.targets_of(&action.params)
                         .iter()

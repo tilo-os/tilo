@@ -424,6 +424,21 @@ change; the open is never refused. A past version and a scenario's capture chang
 has at most one, it takes the opened resource and nothing else and answers nothing, and nothing
 invokes it by name; no surface offers it.
 
+What closing a window of a resource does is a `closed action`, under the same rules: the platform
+runs it as the window closes, for each resource the window showed, as the person whose window it
+was. A record that must not outlive its window goes there; with `readers: author`, nobody else
+ever held it:
+
+```
+/// A private window closed: its page goes with it.
+closed action close_private_page(p: Page) {
+    if not p.shared {
+        let b = root Browser
+        b.pages.remove(p)
+    }
+}
+```
+
 ## Triggers
 
 An action that runs without anyone pressing anything is a `trigger`: the package says when it

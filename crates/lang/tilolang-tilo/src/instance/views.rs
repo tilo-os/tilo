@@ -348,6 +348,53 @@ impl Instance {
         }
     }
 
+    /// The window closed: what closing it does runs for each resource it showed, its type's
+    /// `closed action`, as the person whose window it was, and is committed. A private
+    /// browser page goes with its window this way. Nothing runs for an instance no window
+    /// showed, or for a past version or a capture, which nobody had open.
+    pub fn window_closed(&mut self) {
+        if self.mode != Mode::Live || self.windowless {
+            return;
+        }
+        let Some(host) = self.host() else {
+            return;
+        };
+        let shown: Vec<ResourceRef> = [
+            self.detail.as_ref().map(|shown| &shown.target),
+            self.facts.as_ref().map(|facts| &facts.target),
+            self.root.as_ref().map(|shown| &shown.target),
+        ]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+        for target in shown {
+            let Some(action) = host.runtime().closed_action(&target.ty) else {
+                continue;
+            };
+            let closed = host.runtime().invoke_action(
+                &self.me_actor(),
+                (
+                    action.as_str(),
+                    vec![tilolang_runtime::Value::resource(&target)],
+                ),
+            );
+            match closed {
+                Ok(tilolang_runtime::InvokeOutcome::Denied) => {
+                    tracing::warn!(ty = %target.ty, "closing a window was not allowed to change it");
+                }
+                Ok(tilolang_runtime::InvokeOutcome::Asked(_)) => {
+                    tracing::warn!(ty = %target.ty, "closing a window asks the person");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, ty = %target.ty, "closing a window did not change it");
+                }
+            }
+        }
+        self.commit_planned();
+    }
+
     /// Show `target` where the window's list shows it: what the root view answers for an item of
     /// its type (`on show`) in its own state, so a list opens the item's row where it stands and
     /// the window follows the item to the place it belongs to. Whether the view opened it there;

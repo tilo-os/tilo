@@ -4324,14 +4324,16 @@ impl ResourceStore {
         });
         // A scenario's writes are the package's seed data, under the verb every store admits
         // for it.
-        // What opening a resource does is the platform's run, under the verb every store admits
-        // for it.
+        // What opening a resource, or closing a window of it, does is the platform's run, under
+        // the verb every store admits for it.
         let verb = {
             let kinds = self.inner.kinds.borrow();
             if kinds.is_scenario(&note.action) {
                 crate::action::SCENARIO_ACTION.to_owned()
             } else if kinds.is_opened(&note.action) {
                 crate::action::OPENED_ACTION.to_owned()
+            } else if kinds.is_closed(&note.action) {
+                crate::action::CLOSED_ACTION.to_owned()
             } else {
                 published_verb(note)
             }

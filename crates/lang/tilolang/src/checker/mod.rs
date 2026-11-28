@@ -570,7 +570,10 @@ fn lower(
             && !matches!(
                 a.role.as_ref().map(|(role, _)| *role),
                 Some(
-                    ast::ActionRole::Migration | ast::ActionRole::Initial | ast::ActionRole::Opened
+                    ast::ActionRole::Migration
+                        | ast::ActionRole::Initial
+                        | ast::ActionRole::Opened
+                        | ast::ActionRole::Closed
                 )
             )
             && !c.last_writes.is_empty()

@@ -2916,15 +2916,21 @@ impl Resolver<'_> {
         }
     }
 
-    /// What an `opened action` may be: it takes one resource of a type of the package's own and
-    /// nothing else, and answers nothing, since the platform runs it with nothing but the resource
-    /// a person opened. A type has one.
+    /// What an `opened action` or a `closed action` may be: it takes one resource of a type of
+    /// the package's own and nothing else, and answers nothing, since the platform runs it with
+    /// nothing but the resource a person opened, or whose window closed. A type has one of each.
     fn opened_actions(&mut self, module: &ast::Module) {
-        let mut seen: Vec<(TypeKey, String)> = Vec::new();
+        let mut seen: Vec<(ast::ActionRole, TypeKey, String)> = Vec::new();
         for item in &module.items {
             let Item::Action(a) = item else { continue };
-            let Some((ast::ActionRole::Opened, span)) = a.role else {
+            let Some((role @ (ast::ActionRole::Opened | ast::ActionRole::Closed), span)) = a.role
+            else {
                 continue;
+            };
+            let (word, doing) = if role == ast::ActionRole::Opened {
+                ("opened", "opening")
+            } else {
+                ("closed", "closing a window of")
             };
             let name = &a.name.name;
             let target = self
@@ -2937,17 +2943,17 @@ impl Resolver<'_> {
                     _ => None,
                 });
             let Some(target) = target else {
-                self.err("E143", span, format!("an opened action says what opening a resource of one of the package's types does, so it takes that resource first; `{name}` takes none. Write `opened action {name}(r: T)` with `T` a type of this package"));
+                self.err("E143", span, format!("an {word} action says what {doing} a resource of one of the package's types does, so it takes that resource first; `{name}` takes none. Write `{word} action {name}(r: T)` with `T` a type of this package"));
                 continue;
             };
             let refusal = if a.params.len() > 1 {
                 Some(format!(
-                    "the platform runs `{name}` as a `{0}` is opened, with nothing but that `{0}`; it takes no other parameter. Remove the others",
+                    "the platform runs `{name}` on {doing} a `{0}`, with nothing but that `{0}`; it takes no other parameter. Remove the others",
                     target.name
                 ))
             } else if a.result.is_some() {
                 Some(format!(
-                    "the platform runs `{name}` as a `{}` is opened and reads no answer; remove its result type",
+                    "the platform runs `{name}` on {doing} a `{}` and reads no answer; remove its result type",
                     target.name
                 ))
             } else {
@@ -2957,11 +2963,11 @@ impl Resolver<'_> {
                 self.err("E143", span, refusal);
                 continue;
             }
-            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == target) {
-                self.err("E143", span, format!("opening a `{}` already runs `{first}`; a type has one opened action. Write what `{name}` adds in `{first}`", target.name));
+            if let Some((_, _, first)) = seen.iter().find(|(r, k, _)| *r == role && *k == target) {
+                self.err("E143", span, format!("{doing} a `{}` already runs `{first}`; a type has one {word} action. Write what `{name}` adds in `{first}`", target.name));
                 continue;
             }
-            seen.push((target, name.clone()));
+            seen.push((role, target, name.clone()));
         }
     }
 

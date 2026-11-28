@@ -134,6 +134,10 @@ pub const SCENARIO_ACTION: &str = tilolang_runtime::store::SCENARIO_ACTION;
 /// platform runs.
 pub const OPENED_ACTION: &str = tilolang_runtime::store::OPENED_ACTION;
 
+/// The verb of what a `closed action` writes: what closing a window of a resource does, which only
+/// the platform runs.
+pub const CLOSED_ACTION: &str = tilolang_runtime::store::CLOSED_ACTION;
+
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship {
