@@ -399,6 +399,16 @@
             "wait_for": "Possibly the same person"
           },
           {
+            "press_any": [
+              "Select all"
+            ]
+          },
+          {
+            "press_any": [
+              "Select none"
+            ]
+          },
+          {
             "click_any": [
               {
                 "prefix": "Take their organization"

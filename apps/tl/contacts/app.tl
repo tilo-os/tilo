@@ -1951,6 +1951,28 @@ view duplicates(book: Book, c: Contact) {
                     }
                 }
                 text("They share {shared_with(c, other)}.", role: .caption, secondary: true)
+                row(gap: .related) {
+                    ui.Button("Select all", role: .plain, size: .small) {
+                        on press: {
+                            set(take_name, true)
+                            set(take_org, true)
+                            set(take_role, true)
+                            set(take_website, true)
+                            set(take_birthday, true)
+                            set(take_notes, true)
+                        }
+                    }
+                    ui.Button("Select none", role: .plain, size: .small) {
+                        on press: {
+                            set(take_name, false)
+                            set(take_org, false)
+                            set(take_role, false)
+                            set(take_website, false)
+                            set(take_birthday, false)
+                            set(take_notes, false)
+                        }
+                    }
+                }
                 row(gap: .related, wrap: true) {
                     toggle(bind: take_name, label: "Take their name")
                     toggle(bind: take_org, label: "Take their organization")
