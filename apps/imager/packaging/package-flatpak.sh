@@ -24,11 +24,33 @@ else
   exit 1
 fi
 
-"${CARGO:-cargo}" build --locked --release -p imager --bin imager --features flatpak-media-writer
-binary="${TILO_IMAGER_BINARY:-${CARGO_TARGET_DIR:-$repo/target}/release/imager}"
-
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+target="${CARGO_TARGET_DIR:-$repo/target}"
+# The compiler's tree and the LLVM library its linker loads live under the host's /usr, which a
+# Flatpak sandbox reserves for its runtime: the link reads a copy under the build directory,
+# which the sandbox is given.
+sysroot="$("${RUSTC:-rustc}" --print sysroot)"
+triple="$("${RUSTC:-rustc}" -vV | sed -n 's/^host: //p')"
+rustdir="$target/rust-sysroot"
+mkdir -p "$rustdir/lib/rustlib"
+cp -aL "$sysroot/lib/rustlib/$triple" "$rustdir/lib/rustlib/"
+for lib in "$sysroot"/lib/libLLVM.so*; do
+  if [ -e "$lib" ]; then cp -aL "$lib" "$rustdir/lib/"; fi
+done
+# Link the binary against the runtime's C library, not this host's: the sandbox it is exported
+# into carries the runtime's glibc, and a host newer than it (Fedora 44's on the arm64 release
+# runner, beside a 25.08 runtime) would otherwise bake in symbol versions the runtime lacks.
+# Compilation stays on the host, so the compiler cache keeps the objects; only the link runs in
+# the SDK, which resolves libc and the startup files from the runtime's own tree.
+linker="$work/sdk-linker"
+printf '#!/bin/bash\nexec flatpak run %q --command=gcc --env=%q --filesystem=%q --filesystem=%q org.freedesktop.Sdk//25.08 "$@"\n' \
+  "$flatpak_scope" "LD_LIBRARY_PATH=$rustdir/lib" "$repo" "$target" >"$linker"
+chmod 0755 "$linker"
+"${CARGO:-cargo}" rustc --locked --release -p imager --bin imager --features flatpak-media-writer \
+  -- -C "linker=$linker" --sysroot="$rustdir"
+binary="${TILO_IMAGER_BINARY:-$target/release/imager}"
+
 stage="$work/manifest"
 mkdir -p "$stage" "$out"
 cp "$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml" "$stage/"
