@@ -363,13 +363,18 @@ struct Ran {
 /// See the module docs.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent frame flags of one window: started, staged, moved, loading, follows"
+    reason = "independent frame flags of one window: started, staged, moved, loading, follows, \
+              placed"
 )]
 pub struct Instance {
     app: String,
     /// The root and the view the window opens over, by name.
     root_view: RootView,
     me: PersonId,
+    /// Whether the window took its first place from the person's own state: where its own place
+    /// was kept, or, for a window that has none yet, where they last were in the app
+    /// ([`Self::bring_personal`]).
+    placed: bool,
     mode: Mode,
     device: Option<String>,
     /// Where this window's resources open on the web, when its embedder knows it: what
@@ -559,6 +564,7 @@ impl Instance {
             app: config.app,
             root_view: config.root,
             me: config.me,
+            placed: false,
             mode: config.mode,
             device: config.device,
             link_home: config.link_home,

@@ -97,3 +97,50 @@ fn the_place_a_person_picks_and_what_they_saw_are_theirs_again_after_a_restart()
         "the run they reviewed is still seen"
     );
 }
+
+/// A person quits Gallery on a page and opens it again: the shell gives the new window a tab of
+/// its own, with no place kept under it, and the window opens on the page they left rather than
+/// on the first. That page is theirs: another member opening Gallery over the same workspace
+/// starts on the first page.
+#[test]
+fn an_app_opened_again_after_a_quit_shows_the_page_the_person_left() {
+    let storage = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("hosted-personal-reopen");
+    let _ = std::fs::remove_dir_all(&storage);
+    let gallery = |person, tab| {
+        Session::in_store_at(
+            super::GALLERY,
+            person,
+            &storage,
+            tab,
+            super::Window::in_harness,
+        )
+    };
+    let mut first = gallery("ada", 1);
+    assert_eq!(
+        picked(&mut first),
+        ["Basics"],
+        "a new gallery opens on its first page"
+    );
+    pick(&mut first, "States");
+    first.close();
+
+    let mut again = gallery("ada", 2);
+    assert_eq!(
+        picked(&mut again),
+        ["States"],
+        "the window opened again shows the page the person left"
+    );
+    // What they pick in this window is where they are now, for the next window too.
+    pick(&mut again, "Release board");
+    again.close();
+    let mut third = gallery("ada", 3);
+    assert_eq!(picked(&mut third), ["Release board"]);
+    third.close();
+
+    let mut other = gallery("grace", 4);
+    assert_eq!(
+        picked(&mut other),
+        ["Basics"],
+        "another member's window does not open on Ada's page"
+    );
+}

@@ -117,6 +117,8 @@ const BOOKS: &str = "so.tilo.ebook";
 const RICHBODY: &str = "so.tilo.lang.richbody";
 /// The task list the person keeps.
 const TASKS: &str = "so.tilo.tasks";
+/// The widget gallery, whose sidebar picks one page of many.
+const GALLERY: &str = "so.tilo.lang.gallery";
 /// The conversations the workspace has.
 const CHAT: &str = "so.tilo.chat";
 /// What people said about the workspace's resources.
@@ -936,8 +938,19 @@ impl Session {
         dir: &std::path::Path,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
+        Self::in_store_at(app, person, dir, 1, window)
+    }
+
+    /// [`Self::in_store`] for the window that takes the shell's tab `tab`.
+    fn in_store_at(
+        app: &str,
+        person: &str,
+        dir: &std::path::Path,
+        tab: u64,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
-        let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language("en-US");
+        let spec = Spec::new(app, route.cluster_id.to_string(), tab, person).in_language("en-US");
         let bus = Rc::new(tilolang_process::testing::Bus::default());
         let broker = Broker::on(&bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());

@@ -13,8 +13,11 @@ impl Instance {
     /// Give the views what `held`, the workspace's document of each person's own state, keeps of
     /// the person at the window `tab` (the shell's tab it takes): how this window shows their
     /// resources, where they are in it, and what they have seen. Another window's place is its
-    /// own. A slot already holding its value is left alone, so a host may run this every frame.
-    /// Whether the instance had views to give it to.
+    /// own. A window that has no place of its own kept (one opened again after its app quit, under
+    /// a new tab) starts where the person last was in the app ([`personal::last_set`]), once: what
+    /// they then do in another window of the app does not move this one. A slot already holding
+    /// its value is left alone, so a host may run this every frame. Whether the instance had views
+    /// to give it to.
     ///
     /// Everyone's marks reach the runtime, not the person looking's alone: a conversation says
     /// who has read to a line, and the line is theirs, not a count the app keeps.
@@ -24,11 +27,22 @@ impl Instance {
         };
         let runtime = host.runtime();
         let kept = held.of(self.me.as_str());
+        let own = kept
+            .slots
+            .iter()
+            .any(|slot| personal::of_window(tab, &slot.window).is_some());
+        let from_last = !own && !self.placed;
+        self.placed |= !kept.slots.is_empty();
         for slot in &kept.slots {
-            if let Some(view) = personal::of_window(tab, &slot.window) {
-                let key = StateKey::view(view, personal::actor(&slot.person), slot.state.clone());
-                runtime.set_view_state(key, slot.value.clone());
-            }
+            let view = match personal::of_window(tab, &slot.window) {
+                Some(view) => view,
+                None => match personal::of_last_set(&slot.window) {
+                    Some(view) if from_last => view,
+                    _ => continue,
+                },
+            };
+            let key = StateKey::view(view, personal::actor(&slot.person), slot.state.clone());
+            runtime.set_view_state(key, slot.value.clone());
         }
         for seen in &held.seen {
             runtime.set_seen(
@@ -44,8 +58,9 @@ impl Instance {
 
     /// What the person at the window `tab` changed of their own state since last asked, as the
     /// changes that keep it in the workspace's document of it, which holds `held` now: the view
-    /// state they set in this window, and what they marked seen. Someone else's mark is not theirs
-    /// to keep.
+    /// state they set in this window, kept as this window's and as where they last were in the app
+    /// ([`personal::last_set`]), and what they marked seen. Someone else's mark is not theirs to
+    /// keep.
     pub fn take_personal(&mut self, held: &PersonalState, tab: u64) -> Vec<Keep> {
         let Some(host) = self.host() else {
             return Vec::new();
@@ -61,12 +76,20 @@ impl Instance {
                     window,
                     state,
                     value,
-                }) => keeps.push(Keep::View {
-                    person,
-                    window: personal::in_window(tab, &window),
-                    state,
-                    value,
-                }),
+                }) => {
+                    keeps.push(Keep::View {
+                        person: person.clone(),
+                        window: personal::last_set(&window),
+                        state: state.clone(),
+                        value: value.clone(),
+                    });
+                    keeps.push(Keep::View {
+                        person,
+                        window: personal::in_window(tab, &window),
+                        state,
+                        value,
+                    });
+                }
                 Ok(keep) => keeps.push(keep),
                 Err(why) => tracing::debug!(%why, "the slot is no person's state"),
             }

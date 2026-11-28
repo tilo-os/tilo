@@ -70,6 +70,25 @@ pub fn of_window(tab: u64, kept: &str) -> Option<&str> {
     kept.strip_prefix(&format!("{tab}/"))
 }
 
+/// What a window that has no place of its own yet stands on: `view`'s state where the person last
+/// set it in any window of the app. Every slot a window keeps is kept here too, so a window opened
+/// again after its app quit (a new tab, with nothing kept under it) opens where the person left
+/// it, as one the shell put back under its own tab does.
+#[must_use]
+pub fn last_set(view: &str) -> String {
+    format!("{LAST_SET}/{view}")
+}
+
+/// The view whose state is kept under `kept` as where the person last set it ([`last_set`]);
+/// `None` for a window's own.
+#[must_use]
+pub fn of_last_set(kept: &str) -> Option<&str> {
+    kept.strip_prefix(LAST_SET)?.strip_prefix('/')
+}
+
+/// What [`last_set`] keeps its slots under in place of a window's tab.
+const LAST_SET: &str = "last";
+
 /// The person `id` as the runtime names them.
 #[must_use]
 pub fn actor(id: &str) -> Actor {
