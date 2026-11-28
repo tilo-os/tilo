@@ -1235,3 +1235,54 @@ fn the_time_zones_are_searchable_and_the_chosen_one_is_mapped() {
         .expect("the zone is the time resource's own verb");
     assert_eq!(zone, Value::text("Asia/Tokyo"));
 }
+
+/// Clearing the apps' caches is previewed app by app, each by the bytes it takes and the files
+/// it holds, under the whole it gives back.
+#[test]
+fn the_apps_cache_preview_names_each_app_before_clearing_it() {
+    let (host, _) = settings();
+    crate::fixtures::reading_at(
+        &host,
+        "storage",
+        "so.tilo.device#Storage",
+        serde_json::json!({
+            "disk": null,
+            "residency": [],
+            "residency_error": null,
+            "cache_policy": null,
+            "kept": [],
+            "reclaimable": [],
+            "reclaimable_bytes": 0,
+            "sync_error": null,
+            "categories": [],
+            "largest": [],
+            "cache_bytes": 1100,
+            "app_cache": {
+                "items": [
+                    {"app": "so.tilo.mail", "bytes": 500, "files": 3},
+                    {"app": "so.tilo.notes", "bytes": 300, "files": 2},
+                ],
+                "total_bytes": 1100,
+            },
+            "scanned": true,
+            "read_error": null,
+            "pending": [],
+            "problem": null,
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("storage")]);
+    let view = open_window(&host);
+    let shown = texts(&view);
+    for words in [
+        "Clearing gives back 1 KB from 2 apps.",
+        "so.tilo.mail",
+        "500 B in 3 files",
+        "so.tilo.notes",
+        "300 B in 2 files",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the cache preview: {shown:?}"
+        );
+    }
+}

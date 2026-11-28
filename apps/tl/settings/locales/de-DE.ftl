@@ -1713,6 +1713,7 @@ d-v6duuqqr = Storage pane
     .w-can-be-freed-apps-download-it = { $size_words } lassen sich freigeben; Apps laden sie bei Bedarf erneut herunter
     .w-nothing-to-free = Nichts freizugeben
     .w-clear-the-cache = Den Cache leeren
+    .w-clearing-gives-back-from-apps = Das Leeren gibt { $size_words } von { $len } Apps zurück.
     .w-largest-items = Größte Einträge
     .w-nothing-large-was-found = Es wurde nichts Großes gefunden.
     .w-storage-tools = Speicherwerkzeuge

@@ -211,6 +211,10 @@ pub struct Storage {
     /// What clearing the apps' cache would free.
     #[serde(default)]
     pub cache_bytes: u64,
+    /// What clearing the apps' cache would free, app by app: the preview a person reads before
+    /// clearing it.
+    #[serde(default)]
+    pub app_cache: Option<AppCache>,
     /// Whether a scan has answered since the service started.
     #[serde(default)]
     pub scanned: bool,
@@ -223,6 +227,28 @@ pub struct Storage {
     /// Why the last action did not happen, until the next one.
     #[serde(default)]
     pub problem: Option<String>,
+}
+
+/// What clearing the apps' caches would free, app by app.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct AppCache {
+    /// Each app's cache, largest first.
+    pub items: Vec<AppCacheItem>,
+    /// What clearing all of them gives back.
+    pub total_bytes: u64,
+}
+
+/// One app's cache as clearing it would leave the device.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct AppCacheItem {
+    /// The app, by the id its cache is kept under.
+    pub app: String,
+    pub bytes: u64,
+    pub files: u64,
 }
 
 /// The `storage` resource's actions.

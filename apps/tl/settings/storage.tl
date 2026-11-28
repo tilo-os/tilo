@@ -195,6 +195,23 @@ view storage_pane() {
                 }
             }
         }
+        // The preview: what each app's cache takes, before the person clears them all.
+        if let cache = storage.app_cache {
+            if not cache.items.is_empty() {
+                ui.Text(
+                    "Clearing gives back {size_words(cache.total_bytes)} from {cache.items.len()} apps.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for item in cache.items.take(8) {
+                ui.ListRow(
+                    item.app,
+                    secondary: "{size_words(item.bytes)} in {item.files} files",
+                    icon: .database,
+                )
+            }
+        }
     }
     ui.Section("Largest items") {
         if storage.largest.is_empty() {

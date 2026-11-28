@@ -20,8 +20,8 @@ use tilo_fs_client::storage::{
 use tilo_service::offer;
 use tilo_storage_scan::{StorageCategory, StorageRoots};
 use tilo_system_resources::storage::{
-    CACHE_SIZES, CachePolicy, CategoryUsage, DiskUsage, KEPT_SHOWN, KeptFile, ReclaimableFile,
-    STORAGE, Storage, StorageAction, StoredItem, WorkspaceHold,
+    AppCache, AppCacheItem, CACHE_SIZES, CachePolicy, CategoryUsage, DiskUsage, KEPT_SHOWN,
+    KeptFile, ReclaimableFile, STORAGE, Storage, StorageAction, StoredItem, WorkspaceHold,
 };
 
 use crate::i18n::name;
@@ -196,11 +196,12 @@ fn unread(what: &str, error: &std::io::Error) -> String {
 pub fn scan() -> Storage {
     let roots = StorageRoots::discover();
     let snapshot = tilo_storage_scan::scan_storage(&roots);
-    let cache_bytes = roots
+    let cache = roots
         .app_cache
         .as_deref()
-        .and_then(|root| tilo_storage_scan::preview_cache_cleanup(root).ok())
-        .map_or(0, |preview| preview.total_bytes);
+        .and_then(|root| tilo_storage_scan::preview_cache_cleanup(root).ok());
+    let cache_bytes = cache.as_ref().map_or(0, |preview| preview.total_bytes);
+    let app_cache = cache.as_ref().map(app_cache_of);
     let disk = std::env::var_os("HOME")
         .map(PathBuf::from)
         .and_then(|home| os_actions::disk_capacity(&home).ok())
@@ -245,6 +246,7 @@ pub fn scan() -> Storage {
         categories,
         largest,
         cache_bytes,
+        app_cache,
         scanned: true,
         read_error: (!snapshot.unavailable.is_empty()).then(|| {
             let kinds: Vec<&str> = snapshot
@@ -259,6 +261,29 @@ pub fn scan() -> Storage {
     };
     fill_synced(&mut storage);
     storage
+}
+
+/// What clearing the apps' caches would free, app by app: each direct child of the cache root is
+/// one app's cache, named by the id it is kept under.
+#[must_use]
+pub fn app_cache_of(preview: &tilo_storage_scan::CleanupPreview) -> AppCache {
+    let mut items: Vec<AppCacheItem> = preview
+        .items
+        .iter()
+        .map(|item| AppCacheItem {
+            app: item
+                .path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            bytes: item.bytes,
+            files: item.files,
+        })
+        .collect();
+    items.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.app.cmp(&b.app)));
+    AppCache {
+        items,
+        total_bytes: preview.total_bytes,
+    }
 }
 
 /// Remove the apps' caches.
@@ -472,4 +497,34 @@ fn evict(
         return Err(format!("Nothing was freed: {}", report.skipped.join("; ")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    /// The preview's direct children are the apps' caches, largest first, each under the id its
+    /// directory is named.
+    #[test]
+    fn the_app_cache_lists_each_apps_cache_largest_first() {
+        let preview = tilo_storage_scan::CleanupPreview::fixture(
+            "/tmp/tilo-cache",
+            [
+                ("/tmp/tilo-cache/so.tilo.notes".into(), 300),
+                ("/tmp/tilo-cache/so.tilo.mail".into(), 500),
+                ("/tmp/tilo-cache/so.tilo.tasks".into(), 300),
+            ],
+        );
+        let cache = app_cache_of(&preview);
+        assert_eq!(
+            cache
+                .items
+                .iter()
+                .map(|item| item.app.as_str())
+                .collect::<Vec<_>>(),
+            ["so.tilo.mail", "so.tilo.notes", "so.tilo.tasks"]
+        );
+        assert_eq!(cache.total_bytes, 1100);
+        assert_eq!(cache.items[0].bytes, 500);
+    }
 }
