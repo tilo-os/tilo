@@ -17,6 +17,23 @@
 /// and holds the way to clear them all, an Undo band brings them back after a Clear all, and each
 /// sender's group opens as one on the toolkit's disclosure motion.
 view notices() {
+    // A notice the person asked to read whole takes the panel: the page says its sender, its
+    // title and everything it says, and the way back names the list it returns to.
+    let all = device.notifications.notices
+    if let id = device.notifications.reading {
+        if let n = all.find(x -> x.number == id) {
+            reading_page(n)
+        } else {
+            notice_list()
+        }
+    } else {
+        notice_list()
+    }
+}
+
+/// The centre's list: how many are waiting, the way to clear them all, an Undo band after it, and
+/// each sender's notices under its name.
+view notice_list() {
     state query: Text = ""
     let all = device.notifications.notices
     let shown = all.matching(query)
@@ -73,6 +90,51 @@ view notices() {
             }
         }
     }
+}
+
+/// One notice read whole: its title, who sent it and everything it says, scrolling under them in
+/// the centre's own panel. The way back names the list it returns to, and Escape reads the same.
+/// Nothing here changes the notice: reading it is not opening, dismissing or answering it.
+view reading_page(n: device.Notice) {
+    let compact = space.compact
+    row(fill, distribute: .end, padding: .related) {
+        ui.FloatingPanel(width: if not compact { 360.0 }, fill: compact, fill_height: compact) {
+            header: {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Button(
+                        "Notifications",
+                        icon: .chevron_left,
+                        accessible_name: "Back to notifications",
+                        role: .plain,
+                        size: .small,
+                        key: "Escape",
+                    ) {
+                        on press: device.close_reading(device.notifications)
+                    }
+                    spacer
+                }
+            }
+            body: {
+                // Another notice is another page: it opens at its own top, not where the last was
+                // left.
+                ui.Scroll(shows: "{n.number}") {
+                    stack(gap: .section) {
+                        ui.Text(n.title, role: .heading)
+                        if n.from != "" {
+                            ui.Text(n.from, role: .caption, secondary: true)
+                        }
+                        ui.Text(notice_body(n), role: .body)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a notice says in full. A sender that asked for no preview keeps its words unseen: the
+/// page says only that the preview is hidden.
+fn notice_body(n: device.Notice) -> Text {
+    if n.preview { n.body } else { "Notification preview hidden" }
 }
 
 /// Bring back what a Clear all took, while the session still holds it.

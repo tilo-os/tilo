@@ -94,6 +94,7 @@ mod notes;
 mod notes_checklist;
 mod notes_export;
 mod notice;
+mod notices;
 mod open_refused;
 mod opened;
 mod opens_page;

@@ -1358,6 +1358,67 @@ scenario "the notification centre, all read" {
     )
 }
 
+/// A notice nothing can open, read whole in the centre: the page names who sent it, its title
+/// and everything it says, above the way back to the list. Nothing of the list stands beside it.
+scenario "the notification centre, reading a notice" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                device.Notice(
+                    number: 1,
+                    title: "Disk almost full",
+                    body: "A backup of 40 GB is still writing to Home. Free up space, or move the backup to Studio and let it finish there. Until it does, saving a document may wait for room and the update will not start. Everything already written is safe; this is only about the space the rest of it still needs. Settings will say again when the backup finishes or if it stops.",
+                    from: "Settings",
+                    kind: "warning",
+                    seen: false,
+                    preview: true,
+                ),
+                device.Notice(
+                    number: 2,
+                    title: "Backup finished",
+                    body: "12 GB of changes are safe.",
+                    from: "Settings",
+                    kind: "info",
+                    seen: true,
+                    preview: true,
+                ),
+            ],
+            reading: 1,
+        ),
+    )
+}
+
+/// A notice whose sender asked for no preview, read whole: the page says that the preview is
+/// hidden and none of the words it was sent with.
+scenario "the notification centre, reading a notice it may not preview" {
+    let d = root Layout
+    d.person = "Ada Lovelace"
+    d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
+    stage(device.overlays, device.Overlays(here: "centre"))
+    stage(
+        device.notifications,
+        device.Notifications(
+            notices: [
+                device.Notice(
+                    number: 1,
+                    title: "Message from Mia",
+                    body: "The launch date is the 14th.",
+                    from: "Chat",
+                    kind: "info",
+                    seen: false,
+                    preview: false,
+                ),
+            ],
+            reading: 1,
+        ),
+    )
+}
+
 /// The quick settings over the shell, on a computer that publishes no sound, display or
 /// battery: the tiles stand, and the sliders and the battery line wait for what is there.
 scenario "the quick settings" {

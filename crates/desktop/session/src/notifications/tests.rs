@@ -1720,3 +1720,82 @@ fn a_call_is_answered_and_declined_from_its_banner() {
         );
     }
 }
+
+/// What the centre is reading whole, as its reading says.
+fn reading_of(served: &Served) -> Option<u64> {
+    let reading = served.read(RESOURCE).expect("the centre is published");
+    reading.get("reading").and_then(Value::as_u64)
+}
+
+/// A notice nothing can open (the session's own, with no app and no actions) is read whole in
+/// the centre, and the way back lists its notices again.
+#[test]
+fn a_notice_nothing_can_open_is_read_in_full_and_back_returns_to_the_list() {
+    let rig = rig();
+    let mut note = sent(rig.daemon.alloc_id());
+    note.app_name = String::new();
+    note.actions.clear();
+    rig.daemon.push(note);
+    rig.step();
+    // The centre is open on the shell: the banner up when it opened went into it.
+    rig.desktop.set_shell_centre(true);
+    rig.step();
+    let mut served = Served::new(Rc::clone(&rig.bridge));
+    assert!(served.poll(), "what the centre keeps is a reading");
+    let shown = rig
+        .desktop
+        .log()
+        .history()
+        .last()
+        .expect("the notice is kept")
+        .id;
+    assert_eq!(reading_of(&served), None, "the centre lists its notices");
+
+    invoke(
+        &mut served,
+        "open-notice",
+        serde_json::json!({ "notification": shown }),
+    );
+    rig.bridge.borrow().open(shown);
+    assert!(served.poll(), "the centre moved");
+    assert_eq!(
+        reading_of(&served),
+        Some(shown),
+        "a notice that names nowhere to lead is read whole"
+    );
+
+    invoke(&mut served, "close-reading", serde_json::json!({}));
+    assert!(served.poll(), "the centre moved");
+    assert_eq!(
+        reading_of(&served),
+        None,
+        "the way back lists the centre's notices"
+    );
+}
+
+/// A banner the person asks to read in full moves to the centre and lands on its page, without
+/// answering or dismissing its sender.
+#[test]
+fn a_banner_read_in_full_lands_on_its_page_in_the_centre() {
+    let (rig, mut served, id) = banner_rig(&[]);
+    assert_eq!(reading_of(&served), None, "nothing is read whole yet");
+    invoke_banner(&mut served, "read", serde_json::json!({}));
+    assert!(served.poll(), "the centre moved");
+    assert_eq!(
+        reading_of(&served),
+        Some(id),
+        "the banner's notice is read whole in the centre"
+    );
+    assert!(
+        rig.feed().banners.is_empty(),
+        "the banner left the stack for the centre"
+    );
+    assert!(
+        rig.heard.taken.lock().unwrap().is_empty(),
+        "reading a notice answers its sender nothing"
+    );
+    assert!(
+        rig.heard.closed.lock().unwrap().is_empty(),
+        "and closes nothing: it stays in the centre"
+    );
+}

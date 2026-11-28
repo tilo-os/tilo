@@ -395,6 +395,9 @@ pub(crate) struct SessionNotifications {
     /// The banner the person sent keyboard focus to ([`BannerAction::FocusNewest`]), while it
     /// stands: the shell draws it as the one the keys act on.
     focused: Cell<Option<u64>>,
+    /// The notice the centre is reading in full, by its id: one that names nowhere to lead, or one
+    /// the person asked to read from its banner. `None` lists the centre's notices.
+    reading: Cell<Option<u64>>,
     /// Where the centre is written between sessions; `None` keeps it in memory.
     history: Option<KeptCentre>,
     /// What continues on the person's other devices, and what they showed here.
@@ -514,6 +517,7 @@ impl SessionNotifications {
             generation: 0,
             quiet_changed: Cell::new(None),
             focused: Cell::new(None),
+            reading: Cell::new(None),
             history,
             mirror,
             noted,
@@ -809,9 +813,14 @@ impl SessionNotifications {
         });
     }
 
-    /// Choose a retained notification in the centre, as the panel asks.
+    /// Choose a retained notification in the centre, as the panel asks: one that names nowhere to
+    /// lead is read whole there instead, where it stays until the way back.
     pub(crate) fn open(&self, id: u64) -> notifications::HistoryActivation {
-        self.desktop.activate_history(id)
+        let activation = self.desktop.activate_history(id);
+        if activation == notifications::HistoryActivation::Unavailable {
+            self.read_in_centre(id);
+        }
+        activation
     }
 
     /// Open the retained notification `id` in the app that sent it: what a press on it in the
@@ -823,6 +832,36 @@ impl SessionNotifications {
     /// The notifications the person chose to open since the last look.
     pub(crate) fn take_opening(&self) -> Vec<u64> {
         std::mem::take(&mut *self.opening.borrow_mut())
+    }
+
+    /// Read the notification `id` in full in the centre: what a notice that names nowhere to lead
+    /// opens as, and what a banner's Read lands on.
+    pub(crate) fn read_in_centre(&self, id: u64) {
+        if self.notice_of(id).is_some() {
+            self.reading.set(Some(id));
+        }
+    }
+
+    /// Back from reading a notice in full: the centre lists its notices again.
+    pub(crate) fn close_reading(&self) {
+        self.reading.set(None);
+    }
+
+    /// The notice the centre is reading in full, while it is still one it keeps.
+    fn reading_notice(&self) -> Option<u64> {
+        let id = self.reading.get()?;
+        let log = self.desktop.log();
+        let kept = log
+            .active()
+            .iter()
+            .chain(log.history().iter())
+            .any(|notice| notice.id == id);
+        if kept {
+            Some(id)
+        } else {
+            self.reading.set(None);
+            None
+        }
     }
 
     /// Hand the notification `id` the centre shows to the agent the person keeps in the
@@ -1168,7 +1207,8 @@ impl SessionNotifications {
                 }
             }
             Ask::Read(id) => {
-                // It moves to the centre, which opens on it.
+                // It opens as the page that reads it whole, once it has moved to the centre.
+                self.read_in_centre(id);
                 if self.banner(id).is_some() {
                     self.desktop.answer(BannerAsk::Dismiss(id));
                 }
@@ -1375,6 +1415,7 @@ impl Served {
             banner: centre.banner,
             undo: centre.undo,
             focused: self.notifications.borrow().focused_banner(),
+            reading: self.notifications.borrow().reading_notice(),
         }
     }
 }
@@ -1559,6 +1600,7 @@ impl Service for Served {
                 .run_action(notification, &action),
             CentreAction::Clear => self.notifications.borrow().clear(),
             CentreAction::UndoClear => self.notifications.borrow().undo_clear(),
+            CentreAction::CloseReading => self.notifications.borrow().close_reading(),
             CentreAction::Reply { notification, text } => {
                 self.notifications.borrow().reply(notification, &text);
             }

@@ -36,6 +36,10 @@ pub enum CentreAction {
     #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoClear,
+    /// Back to notifications
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    CloseReading,
     /// Reply in a banner that offers a reply: what the person typed reaches its sender, and the
     /// banner goes
     #[effect(kind = "outside")]
@@ -206,6 +210,10 @@ pub struct NotificationsView {
     /// The banner the keyboard is on, while it stands.
     #[serde(default)]
     pub focused: Option<u64>,
+    /// The notice the centre is reading in full, by its id: a notice that names nowhere to lead,
+    /// or one the person asked to read from its banner. `None` lists the centre's notices.
+    #[serde(default)]
+    pub reading: Option<u64>,
 }
 
 /// The notice a view reads, kept in a module of its own so its published name stays `Notice`

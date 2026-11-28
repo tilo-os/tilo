@@ -68,6 +68,7 @@ so-tilo-session-continuity-take = Continue the app another device has in front
 so-tilo-session-continuity-dismiss = Put the offer to continue away
 so-tilo-session-notifications-act = Choose an action
 so-tilo-session-notifications-clear = Clear all
+so-tilo-session-notifications-close-reading = Back to notifications
 so-tilo-session-notifications-dismiss = Dismiss
 so-tilo-session-notifications-notify = Post a notification
 so-tilo-session-notifications-hand-to-agent = Hand to agent

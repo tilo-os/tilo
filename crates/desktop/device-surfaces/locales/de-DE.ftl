@@ -68,6 +68,7 @@ so-tilo-session-continuity-take = Die App eines anderen Geräts hier fortsetzen
 so-tilo-session-continuity-dismiss = Das Fortsetzen-Angebot wegwischen
 so-tilo-session-notifications-act = Eine Aktion wählen
 so-tilo-session-notifications-clear = Alle löschen
+so-tilo-session-notifications-close-reading = Zurück zu den Benachrichtigungen
 so-tilo-session-notifications-dismiss = Verwerfen
 so-tilo-session-notifications-notify = Benachrichtigung senden
 so-tilo-session-notifications-hand-to-agent = An den Agenten geben

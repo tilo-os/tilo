@@ -53,16 +53,6 @@ fn staged() -> StagedWindow {
     shell
 }
 
-/// Every word the window shows, as a screen reader reads them.
-fn said(shell: &StagedWindow) -> Vec<String> {
-    tilo_ui_base::a11y::texts(shell.harness.root_widget())
-}
-
-/// Whether any word the window shows holds `words`.
-fn shows(shell: &StagedWindow, words: &str) -> bool {
-    said(shell).iter().any(|text| text.contains(words))
-}
-
 /// Press the field `name` so the keyboard types into it.
 fn press_field(shell: &mut StagedWindow, name: &str) {
     // A field's accessible node names it but stands nowhere: what stands is the widget, whose
@@ -135,11 +125,11 @@ fn asked(shell: &StagedWindow, name: &str) -> serde_json::Map<String, serde_json
 fn a_search_that_failed_says_why_and_looks_again() {
     let mut shell = staged();
     assert!(
-        shows(&shell, "NetworkManager is not running"),
+        shell.shows("NetworkManager is not running"),
         "the reason the search failed: {:?}",
-        said(&shell)
+        shell.said()
     );
-    assert!(shows(&shell, "Look again"), "{:?}", said(&shell));
+    assert!(shell.shows("Look again"), "{:?}", shell.said());
 
     shell.press("Look again");
     assert_eq!(asked(&shell, "scan-wifi"), serde_json::Map::new());
@@ -151,26 +141,26 @@ fn a_search_that_failed_says_why_and_looks_again() {
 fn a_wrong_password_stays_on_its_row_and_is_typed_again() {
     let mut shell = staged();
     assert!(
-        shows(&shell, "Secrets were required, but not provided"),
+        shell.shows("Secrets were required, but not provided"),
         "the network's own row says why: {:?}",
-        said(&shell)
+        shell.said()
     );
     assert!(
-        !shows(&shell, "Enter the password for Studio"),
+        !shell.shows("Enter the password for Studio"),
         "no field is open until the row is pressed: {:?}",
-        said(&shell)
+        shell.said()
     );
 
     shell.press("Studio");
     assert!(
-        shows(&shell, "Enter the password for Studio"),
+        shell.shows("Enter the password for Studio"),
         "the field stands under the row that was refused: {:?}",
-        said(&shell)
+        shell.said()
     );
     assert!(
-        shows(&shell, "Secrets were required, but not provided"),
+        shell.shows("Secrets were required, but not provided"),
         "with the reason still on it: {:?}",
-        said(&shell)
+        shell.said()
     );
 
     // The person types the next password in the field and joins.
@@ -189,22 +179,18 @@ fn a_wrong_password_stays_on_its_row_and_is_typed_again() {
 fn a_saved_networks_menu_offers_forgetting_it() {
     let mut shell = staged();
     assert!(
-        !shows(&shell, "Forget this network"),
+        !shell.shows("Forget this network"),
         "the menu is closed until its button is pressed: {:?}",
-        said(&shell)
+        shell.said()
     );
 
     shell.press("This network");
     assert!(
-        shows(&shell, "Forget this network"),
+        shell.shows("Forget this network"),
         "the menu's rows stand over the panel: {:?}",
-        said(&shell)
+        shell.said()
     );
-    assert!(
-        shows(&shell, "Stop joining by itself"),
-        "{:?}",
-        said(&shell)
-    );
+    assert!(shell.shows("Stop joining by itself"), "{:?}", shell.said());
 
     shell.press("Forget this network");
     // The profile the row stands for is its own address, which the action is
@@ -219,9 +205,9 @@ fn a_saved_networks_menu_offers_forgetting_it() {
 fn an_accessory_opens_its_page_and_is_forgotten_from_it() {
     let mut shell = staged();
     assert!(
-        shows(&shell, "Sony WH-1000XM5"),
+        shell.shows("Sony WH-1000XM5"),
         "the accessory's row: {:?}",
-        said(&shell)
+        shell.said()
     );
 
     shell.press("Sony WH-1000XM5");
@@ -237,9 +223,9 @@ fn an_accessory_opens_its_page_and_is_forgotten_from_it() {
         "Forget this device",
     ] {
         assert!(
-            shows(&shell, fact),
+            shell.shows(fact),
             "the accessory's page shows {fact}: {:?}",
-            said(&shell)
+            shell.said()
         );
     }
 
@@ -247,11 +233,11 @@ fn an_accessory_opens_its_page_and_is_forgotten_from_it() {
     let asked = asked(&shell, "forget");
     assert_eq!(asked, serde_json::Map::new(), "forgot on its own address");
     assert!(
-        shows(&shell, "Quick settings"),
+        shell.shows("Quick settings"),
         "the panel comes back once the page closes: {:?}",
-        said(&shell)
+        shell.said()
     );
-    assert!(!shows(&shell, "Connected here"), "{:?}", said(&shell));
+    assert!(!shell.shows("Connected here"), "{:?}", shell.said());
 }
 
 /// Renaming on the page runs the accessory's own rename with what was typed: every list that

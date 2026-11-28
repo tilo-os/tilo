@@ -324,4 +324,21 @@ impl StagedWindow {
             .focused_access_node()
             .and_then(|node| node.name)
     }
+
+    /// Every word the window shows, as a screen reader reads them.
+    pub(crate) fn said(&self) -> Vec<String> {
+        tilo_ui_base::a11y::texts(self.harness.root_widget())
+    }
+
+    /// Whether any word the window shows holds `words`.
+    pub(crate) fn shows(&self, words: &str) -> bool {
+        self.said().iter().any(|text| text.contains(words))
+    }
+
+    /// Whether the view asked `name` since it opened.
+    pub(crate) fn ran(&self, name: &str) -> bool {
+        self.called.all().iter().any(|invocation| {
+            matches!(invocation, tilolang_runtime::delegate::Invocation::Action { name: asked, .. } if asked == name)
+        })
+    }
 }

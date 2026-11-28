@@ -716,12 +716,21 @@ d-e25dashr = Dockeinstellungen
     .w-magnification = Vergrößerung
 
 d-clgbrhsn = Hinweise
+
+d-gjg6noug = Hinweisliste
     .w-notifications = Benachrichtigungen
     .w-clear-all = Alle löschen
     .w-nothing-to-catch-up-on = Nichts aufzuholen
     .w-search-notifications = Benachrichtigungen durchsuchen
     .w-nothing-matches-that = Nichts passt dazu
     .w-clear-the-search-to-see-every = Lösche die Suche, um jeden Hinweis zu sehen
+
+d-y4qdfmpi = Hinweis ganz lesen
+    .w-notifications = Benachrichtigungen
+    .w-back-to-notifications = Zurück zu den Benachrichtigungen
+
+d-rhowmcuw = Hinweistext
+    .w-notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 d-ytz24ncc = Rückgängig-Leiste
     .w-notifications-cleared = Benachrichtigungen gelöscht
