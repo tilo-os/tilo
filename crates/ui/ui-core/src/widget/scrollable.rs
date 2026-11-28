@@ -740,6 +740,15 @@ impl Scrollable {
         self.cursor_initialized = false;
     }
 
+    /// Keep the place the person scrolled to, as a scroller built with its cell does
+    /// ([`Self::with_persisted_offset`]): the first layout clamps it to the content the scroller
+    /// comes to hold, so a place past the end of shorter content never shows a blank frame.
+    pub fn keep_offset(&mut self, x: f32, y: f32) {
+        self.offset_x = x;
+        self.offset_y = y;
+        self.cursor_initialized = false;
+    }
+
     pub fn vertical_overflows(&self) -> bool {
         self.content_h > self.effective_viewport_h() + FIT_EPS
     }

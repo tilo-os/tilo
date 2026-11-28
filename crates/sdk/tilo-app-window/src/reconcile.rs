@@ -2118,7 +2118,23 @@ impl Reconciler {
                 return replaced;
             }
         }
-        self.update_node(widget, old_node, new_node)
+        self.renew(widget, old_node, new_node)
+    }
+
+    /// `widget` brought to `new_node` ([`Self::update_node`]), a scroller it holds built again in
+    /// its place keeping the place the person scrolled to: a page, a list or a reader whose
+    /// content changed does not take them back to the top.
+    fn renew(
+        &mut self,
+        widget: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
+        let mut replaced = self.update_node(widget, old_node, new_node);
+        if let Some(fresh) = &mut replaced {
+            keep_scrolled_place(widget.as_mut(), fresh.as_mut());
+        }
+        replaced
     }
 
     /// Bring `widget`, built for the drawn tree `drawn` was before the subtrees `dirt` names
@@ -2132,7 +2148,7 @@ impl Reconciler {
         dirt: Dirt,
     ) -> Option<Element> {
         let held = self.dirt.replace(dirt);
-        let replaced = self.update_node(widget, drawn, drawn);
+        let replaced = self.renew(widget, drawn, drawn);
         self.dirt = held;
         replaced
     }
@@ -2473,6 +2489,41 @@ impl Reconciler {
             }
             container.set_placement(index, placement);
         }
+    }
+}
+
+/// The scroller `widget` is, or the first one it frames under its own parts (a page's, under its
+/// gutter).
+fn scroller_in(
+    widget: &mut dyn tilo_ui_base::widget::Widget,
+) -> Option<&mut ui::widget::Scrollable> {
+    if widget
+        .as_any_mut()
+        .is_some_and(|any| any.is::<ui::widget::Scrollable>())
+    {
+        return widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::Scrollable>());
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(|child| scroller_in(child))
+}
+
+/// A scroller built again where one stood keeps the place the person scrolled to: the one in
+/// what was shown gives its offset to the one built in its stead, which the first layout clamps
+/// to what it comes to hold.
+fn keep_scrolled_place(
+    old: &mut dyn tilo_ui_base::widget::Widget,
+    new: &mut dyn tilo_ui_base::widget::Widget,
+) {
+    let Some((x, y)) = scroller_in(old).map(|scroller| (scroller.offset_x(), scroller.offset_y()))
+    else {
+        return;
+    };
+    if let Some(scroller) = scroller_in(new) {
+        scroller.keep_offset(x, y);
     }
 }
 
@@ -3574,6 +3625,44 @@ mod tests {
         assert!(
             (gap - 24.0).abs() < 0.5,
             "the call put in the page stands its sections a group apart: {gap}"
+        );
+    }
+
+    /// A page scrolled down is built again when what it holds changes, and the page that comes
+    /// keeps the place the person scrolled to: a reading that updates under them does not take
+    /// them back to the top.
+    #[test]
+    fn a_page_built_again_keeps_the_place_the_person_scrolled_to() {
+        use tilo_ui_base::widget::Widget;
+
+        fn scroller(widget: &mut dyn Widget) -> &mut ui::widget::Scrollable {
+            scroller_in(widget).expect("the page holds a scroller")
+        }
+        fn page(call: &str) -> UiNode {
+            let mut body = node("fragment", call);
+            body.children = (0..40)
+                .map(|line| text(&format!("{call}-{line}"), "A line of the page"))
+                .collect();
+            UiNode {
+                children: vec![body],
+                ..node("ui.Page", "page")
+            }
+        }
+        let (old, new) = (page("one"), page("two"));
+        let mut reconciler = reconciler();
+        let mut built = reconciler.build(&old);
+        {
+            let scroll = scroller(built.as_mut());
+            scroll.set_viewport_size(720.0, 400.0);
+            scroll.set_content_size(720.0, 2000.0);
+            scroll.set_offset_y(600.0);
+            assert_eq!(scroll.offset_y(), 600.0, "the fixture scrolled");
+        }
+        let mut updated = reconciler.update(built, &old, &new);
+        assert_eq!(
+            scroller(updated.as_mut()).offset_y(),
+            600.0,
+            "the page built again keeps the place the person scrolled to"
         );
     }
 

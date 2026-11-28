@@ -185,147 +185,145 @@ view settings_window(s: Settings) {
             }
         }
         content: {
-            // The Apps page is one list of every app's grants: the list is the column's own body,
-            // so it scrolls itself rather than standing inside the page's scroller, and ten
-            // thousand grants keep only the rows in view.
+            // The Apps page is its own view: two sections, the second the list of every app's and
+            // person's grant, which the page scrolls with the section over it and virtualises, so
+            // ten thousand grants keep only the rows in view.
             if s.pane == "apps" {
                 read_pane(of: workspace.access, what: pane_title(s.pane)) {
                     apps_access_pane()
                 }
             } else {
-                ui.Scroll {
-                    stack(padding: .group, max: 64rem, gap: .section) {
-                        let what = pane_title(s.pane)
-                        if s.pane == "network" {
-                            read_pane(of: device.network, what: what) {
-                                network_pane()
-                            }
-                        } else if s.pane == "bluetooth" {
-                            read_pane(of: device.bluetooth, what: what) {
-                                bluetooth_pane()
-                            }
-                        } else if s.pane == "usage" {
-                            read_pane(of: settings.network_usage, what: what) {
-                                data_usage_pane()
-                            }
-                        } else if s.pane == "displays" {
-                            read_pane(of: device.displays, what: what) {
-                                displays_pane()
-                            }
-                        } else if s.pane == "sound" {
-                            read_pane(of: device.sound, what: what) {
-                                sound_pane()
-                            }
-                        } else if s.pane == "speakers" {
-                            read_pane(of: device.speakers, what: what) {
-                                speakers_page()
-                            }
-                        } else if s.pane == "power" {
-                            read_pane(of: device.power, what: what) {
-                                power_pane()
-                            }
-                        } else if s.pane == "drives" {
-                            read_pane(of: device.drives, what: what) {
-                                drives_pane()
-                            }
-                        } else if s.pane == "server" {
-                            read_pane(of: device.server, what: what) {
-                                device_server_pane()
-                            }
-                        } else if s.pane == "input" {
-                            read_pane(of: settings.input_device, what: what) {
-                                input_pane()
-                            }
-                        } else if s.pane == "accessibility" {
-                            read_pane(of: settings.accessibility, what: what) {
-                                accessibility_pane()
-                            }
-                        } else if s.pane == "notifications" {
-                            read_pane(of: settings.notifications, what: what) {
-                                notifications_pane()
-                            }
-                        } else if s.pane == "shortcuts" {
-                            read_pane(of: settings.shortcuts_table, what: what) {
-                                shortcuts_pane()
-                            }
-                        } else if s.pane == "region" {
-                            read_pane(of: settings.locale, what: what) {
-                                region_pane()
-                            }
-                        } else if s.pane == "spelling" {
-                            read_pane(of: settings.text_assistance, what: what) {
-                                spelling_pane()
-                            }
-                        } else if s.pane == "default_apps" {
-                            read_pane(of: device.apps, what: what) {
-                                default_apps_pane()
-                            }
-                        } else if s.pane == "time" {
-                            read_pane(of: device.time, what: what) {
-                                date_time_pane()
-                            }
-                        } else if s.pane == "content" {
-                            read_pane(of: workspace.content, what: what) {
-                                content_pane()
-                            }
-                        } else if s.pane == "accounts" {
-                            read_pane(of: accounts.accounts, what: what) {
-                                accounts_pane()
-                            }
-                        } else if s.pane == "billing" {
-                            billing_pane()
-                        } else if s.pane == "agent_models" {
-                            read_pane(of: models.models, what: what) {
-                                agent_models_pane()
-                            }
-                        } else if s.pane == "devices" {
-                            read_pane(of: device.devices, what: what) {
-                                devices_pane()
-                            }
-                        } else if s.pane == "continuity" {
-                            read_pane(of: settings.continuity, what: what) {
-                                continuity_pane()
-                            }
-                        } else if s.pane == "firmware" {
-                            read_pane(of: device.firmware, what: what) {
-                                firmware_pane()
-                            }
-                        } else if s.pane == "compatibility" {
-                            read_pane(of: device.codec_pack, what: what) {
-                                compatibility_pane()
-                            }
-                        } else if s.pane == "disk_unlock" {
-                            read_pane(of: device.disk_unlock, what: what) {
-                                disk_unlock_pane()
-                            }
-                        } else if s.pane == "storage" {
-                            read_pane(of: device.storage, what: what) {
-                                storage_pane()
-                            }
-                        } else if s.pane == "updates" {
-                            read_pane(of: device.update, what: what) {
-                                updates_pane()
-                            }
-                        } else if s.pane == "themes" {
-                            read_pane(of: settings.appearance, what: what) {
-                                themes_pane(s)
-                            }
-                        } else if s.pane == "shell" {
-                            shell_pane()
-                        } else if s.pane == "users" {
-                            read_pane(of: device.users, what: what) {
-                                users_pane(s)
-                            }
-                        } else if s.pane == "permissions" {
-                            permissions_pane()
-                        } else if s.pane == "about" {
-                            read_pane(of: device.host_info, what: what) {
-                                about_pane()
-                            }
-                        } else {
-                            read_pane(of: settings.appearance, what: what) {
-                                appearance_pane()
-                            }
+                ui.Page {
+                    let what = pane_title(s.pane)
+                    if s.pane == "network" {
+                        read_pane(of: device.network, what: what) {
+                            network_pane()
+                        }
+                    } else if s.pane == "bluetooth" {
+                        read_pane(of: device.bluetooth, what: what) {
+                            bluetooth_pane()
+                        }
+                    } else if s.pane == "usage" {
+                        read_pane(of: settings.network_usage, what: what) {
+                            data_usage_pane()
+                        }
+                    } else if s.pane == "displays" {
+                        read_pane(of: device.displays, what: what) {
+                            displays_pane()
+                        }
+                    } else if s.pane == "sound" {
+                        read_pane(of: device.sound, what: what) {
+                            sound_pane()
+                        }
+                    } else if s.pane == "speakers" {
+                        read_pane(of: device.speakers, what: what) {
+                            speakers_page()
+                        }
+                    } else if s.pane == "power" {
+                        read_pane(of: device.power, what: what) {
+                            power_pane()
+                        }
+                    } else if s.pane == "drives" {
+                        read_pane(of: device.drives, what: what) {
+                            drives_pane()
+                        }
+                    } else if s.pane == "server" {
+                        read_pane(of: device.server, what: what) {
+                            device_server_pane()
+                        }
+                    } else if s.pane == "input" {
+                        read_pane(of: settings.input_device, what: what) {
+                            input_pane()
+                        }
+                    } else if s.pane == "accessibility" {
+                        read_pane(of: settings.accessibility, what: what) {
+                            accessibility_pane()
+                        }
+                    } else if s.pane == "notifications" {
+                        read_pane(of: settings.notifications, what: what) {
+                            notifications_pane()
+                        }
+                    } else if s.pane == "shortcuts" {
+                        read_pane(of: settings.shortcuts_table, what: what) {
+                            shortcuts_pane()
+                        }
+                    } else if s.pane == "region" {
+                        read_pane(of: settings.locale, what: what) {
+                            region_pane()
+                        }
+                    } else if s.pane == "spelling" {
+                        read_pane(of: settings.text_assistance, what: what) {
+                            spelling_pane()
+                        }
+                    } else if s.pane == "default_apps" {
+                        read_pane(of: device.apps, what: what) {
+                            default_apps_pane()
+                        }
+                    } else if s.pane == "time" {
+                        read_pane(of: device.time, what: what) {
+                            date_time_pane()
+                        }
+                    } else if s.pane == "content" {
+                        read_pane(of: workspace.content, what: what) {
+                            content_pane()
+                        }
+                    } else if s.pane == "accounts" {
+                        read_pane(of: accounts.accounts, what: what) {
+                            accounts_pane()
+                        }
+                    } else if s.pane == "billing" {
+                        billing_pane()
+                    } else if s.pane == "agent_models" {
+                        read_pane(of: models.models, what: what) {
+                            agent_models_pane()
+                        }
+                    } else if s.pane == "devices" {
+                        read_pane(of: device.devices, what: what) {
+                            devices_pane()
+                        }
+                    } else if s.pane == "continuity" {
+                        read_pane(of: settings.continuity, what: what) {
+                            continuity_pane()
+                        }
+                    } else if s.pane == "firmware" {
+                        read_pane(of: device.firmware, what: what) {
+                            firmware_pane()
+                        }
+                    } else if s.pane == "compatibility" {
+                        read_pane(of: device.codec_pack, what: what) {
+                            compatibility_pane()
+                        }
+                    } else if s.pane == "disk_unlock" {
+                        read_pane(of: device.disk_unlock, what: what) {
+                            disk_unlock_pane()
+                        }
+                    } else if s.pane == "storage" {
+                        read_pane(of: device.storage, what: what) {
+                            storage_pane()
+                        }
+                    } else if s.pane == "updates" {
+                        read_pane(of: device.update, what: what) {
+                            updates_pane()
+                        }
+                    } else if s.pane == "themes" {
+                        read_pane(of: settings.appearance, what: what) {
+                            themes_pane(s)
+                        }
+                    } else if s.pane == "shell" {
+                        shell_pane()
+                    } else if s.pane == "users" {
+                        read_pane(of: device.users, what: what) {
+                            users_pane(s)
+                        }
+                    } else if s.pane == "permissions" {
+                        permissions_pane()
+                    } else if s.pane == "about" {
+                        read_pane(of: device.host_info, what: what) {
+                            about_pane()
+                        }
+                    } else {
+                        read_pane(of: settings.appearance, what: what) {
+                            appearance_pane()
                         }
                     }
                 }

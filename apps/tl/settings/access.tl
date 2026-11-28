@@ -11,79 +11,77 @@
 view apps_access_pane() {
     let access = workspace.access
     let entries = access.workspaces.flat_map(w -> w.grants)
-    ui.Scroll {
-        stack(padding: .group, max: 64rem, gap: .section) {
-            ui.Section("Beyond the workspace") {
+    ui.Page {
+        ui.Section("Beyond the workspace") {
+            ui.Text(
+                "Each app's code can queue these to go out of the workspace, such as sending a message or calling a service. Turning one off makes what it queues for that capability settle as refused, and nothing leaves; turning it back on lets it go.",
+                role: .caption,
+                secondary: true,
+            )
+            if not access.known {
                 ui.Text(
-                    "Each app's code can queue these to go out of the workspace, such as sending a message or calling a service. Turning one off makes what it queues for that capability settle as refused, and nothing leaves; turning it back on lets it go.",
+                    "What the apps here can reach beyond the workspace can't be checked, so it is unknown rather than nothing.",
                     role: .caption,
                     secondary: true,
                 )
-                if not access.known {
-                    ui.Text(
-                        "What the apps here can reach beyond the workspace can't be checked, so it is unknown rather than nothing.",
-                        role: .caption,
-                        secondary: true,
-                    )
-                } else if access.outside.is_empty() {
-                    ui.Text(
-                        "No app here reaches beyond the workspace.",
-                        role: .caption,
-                        secondary: true,
-                    )
-                }
-                for granted_in in access.outside {
-                    ui.Text(
-                        if granted_in.workspace_name == "" {
-                            "This workspace"
-                        } else { granted_in.workspace_name },
-                        role: .label,
-                    )
-                    for each in granted_in.apps {
-                        ui.Text(each.name, role: .body)
-                        for capability in each.capabilities {
-                            ui.ListRow(
-                                outside_words(capability.capability),
-                                secondary: outside_standing(capability),
-                                icon: .arrow_up_right,
-                            ) {
-                                trailing: {
-                                    if capability.can_change {
-                                        ui.Toggle(
-                                            shown: capability.allowed,
-                                            label: if capability.allowed {
-                                                "Allowed"
-                                            } else { "Blocked" },
-                                        ) {
-                                            on check(on): workspace.access.set_outside(
-                                                workspace: granted_in.workspace,
-                                                app: each.app,
-                                                capability: capability.capability,
-                                                allowed: on,
-                                            )
-                                        }
-                                    } else if capability.allowed {
-                                        ui.Chip("Allowed", tone: .neutral)
-                                    } else {
-                                        ui.Chip("Blocked", tone: .warning)
+            } else if access.outside.is_empty() {
+                ui.Text(
+                    "No app here reaches beyond the workspace.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for granted_in in access.outside {
+                ui.Text(
+                    if granted_in.workspace_name == "" {
+                        "This workspace"
+                    } else { granted_in.workspace_name },
+                    role: .label,
+                )
+                for each in granted_in.apps {
+                    ui.Text(each.name, role: .body)
+                    for capability in each.capabilities {
+                        ui.ListRow(
+                            outside_words(capability.capability),
+                            secondary: outside_standing(capability),
+                            icon: .arrow_up_right,
+                        ) {
+                            trailing: {
+                                if capability.can_change {
+                                    ui.Toggle(
+                                        shown: capability.allowed,
+                                        label: if capability.allowed {
+                                            "Allowed"
+                                        } else { "Blocked" },
+                                    ) {
+                                        on check(on): workspace.access.set_outside(
+                                            workspace: granted_in.workspace,
+                                            app: each.app,
+                                            capability: capability.capability,
+                                            allowed: on,
+                                        )
                                     }
+                                } else if capability.allowed {
+                                    ui.Chip("Allowed", tone: .neutral)
+                                } else {
+                                    ui.Chip("Blocked", tone: .warning)
                                 }
                             }
                         }
                     }
                 }
             }
-            ui.Section("Files and folders") {
-                if entries.is_empty() {
-                    ui.Text("No app or person was given a file.", role: .caption, secondary: true)
-                } else {
-                    files.access_list(
-                        entries: entries.sort_by(e -> e.path).sort_by(e -> e.holder),
-                        empty: "",
-                        by_app: true,
-                        in_column: false,
-                    )
-                }
+        }
+        ui.Section("Files and folders") {
+            if entries.is_empty() {
+                ui.Text("No app or person was given a file.", role: .caption, secondary: true)
+            } else {
+                files.access_list(
+                    entries: entries.sort_by(e -> e.path).sort_by(e -> e.holder),
+                    empty: "",
+                    by_app: true,
+                    in_column: false,
+                )
             }
         }
     }
