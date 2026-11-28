@@ -11,11 +11,11 @@ use tilo_ui_app::component_testing::*;
 use tilo_ui_app::headless::harness;
 use tilo_ui_app::{
     widget::Badge, widget::BadgeProps, widget::Breadcrumb, widget::BreadcrumbProps,
-    widget::DisclosureRow, widget::DisclosureRowProps, widget::StatGroup, widget::StatGroupProps,
-    widget::Toolbar, widget::ToolbarProps,
+    widget::DisclosureRow, widget::DisclosureRowProps, widget::Toolbar, widget::ToolbarProps,
 };
 use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_charts::{StatGroup, StatGroupProps};
 
 tilo_test_env::scenario! {
     fn the_feedback_components_read_their_parts_and_report_presses;
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
             Node::new("Badge", "new", &queue).prop("count", Value::Int(3)),
         );
         assert_eq!(
-            <Vec<tilo_ui_app::widget::StatTileProps> as PartType>::accepts(),
+            <Vec<tilo_ui_charts::StatTileProps> as PartType>::accepts(),
             Accepts::Component("StatTile".into())
         );
         assert!(StatGroupProps::from_source(&mut group).is_err());

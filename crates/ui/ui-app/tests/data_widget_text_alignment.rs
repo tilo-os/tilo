@@ -32,10 +32,9 @@ use tilo_ui_app::headless::{Driver, InspectionNode};
 use tilo_ui_app::search::{SearchGroup, SearchResult};
 use tilo_ui_app::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui_app::{
-    widget::Banner, widget::Button, widget::Chart, widget::Column, widget::DescribedTreeView,
-    widget::ListRowFace, widget::SearchResultsView, widget::Section, widget::SectionHeader,
-    widget::Series, widget::StatGroup, widget::StatTile, widget::Text, widget::TreeViewNodeProps,
-    widget::TreeViewProps, widget::Trend,
+    widget::Banner, widget::Button, widget::Column, widget::DescribedTreeView, widget::ListRowFace,
+    widget::SearchResultsView, widget::Section, widget::SectionHeader, widget::Text,
+    widget::TreeViewNodeProps, widget::TreeViewProps,
 };
 use tilo_ui_base::TextRole;
 use tilo_ui_base::icons::Icon;
@@ -43,6 +42,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Element;
 use tilo_ui_base::{chrome::disclosure_gutter, chrome::row_bleed};
 use tilo_ui_base::{component::Described, component::ResourceId};
+use tilo_ui_charts::{Chart, Series, StatGroup, StatTile, Trend};
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.
@@ -595,7 +595,7 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
                 chart.x0 + 16.0,
                 legend_top,
                 chart.x0 + 80.0,
-                legend_top + tilo_ui_app::widget::chart_legend::ROW_HEIGHT,
+                legend_top + tilo_ui_charts::chart_legend::ROW_HEIGHT,
             );
             let label = ink(&cap.image, name);
             // The rasterized ink of a small line can sit a little above the

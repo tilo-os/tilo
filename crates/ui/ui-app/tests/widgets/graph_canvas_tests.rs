@@ -91,8 +91,7 @@ fn a_titled_graph_shows_its_title_over_its_nodes() {
     let inspection = harness.inspection();
     let output = target(&inspection.root, "output").expect("the node");
     let theme = tilo_ui_base::Theme::light();
-    let band =
-        tilo_ui_app::widget::chart_navigation::title_band_for_tests(&theme, "Release pipeline");
+    let band = tilo_ui_charts::chart_navigation::title_band_for_tests(&theme, "Release pipeline");
     assert!(
         (output.rect[1] - band).abs() < 1.0,
         "the nodes start a chart's title band under the title: {:?}, band {band}",

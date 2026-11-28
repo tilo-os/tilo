@@ -34,7 +34,7 @@ use winit::keyboard::*;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
 fn toolkit() -> Registry {
-    Registry::of(&[&TOOLKIT])
+    Registry::of(&[&TOOLKIT, &tilo_ui_charts::COMPONENTS])
 }
 
 tilo_test_env::scenario! {

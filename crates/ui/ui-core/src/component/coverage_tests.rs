@@ -124,41 +124,4 @@ tilo_test_env::scenario! {
             "the catalogue holds one component per declared props: {declared:?} against {generated:?}"
         );
     }
-
-    // The gallery app (`apps/tl/gallery`) shows every described component of the toolkit as
-    // `ui.<Name>`, so a widget described here is seen in one window the day it is written, and
-    // tilolang's check lays it out there. A component a window cannot meaningfully show says so at
-    // its declaration (`#[component(not_in_gallery = "…")]`).
-    phase the_gallery_shows_every_described_component;
-    {
-        let sources = gallery_sources();
-        let catalogue = tilo_ui_base::component::Registry::of(&[&TOOLKIT]).catalogue();
-        let coverage = tilo_ui_base::component::gallery::coverage(&catalogue, &sources);
-        let problems = coverage.problems();
-        assert!(problems.is_empty(), "{}", problems.join("\n"));
-        for name in ["Button", "Section", "Text"] {
-            assert!(
-                tilo_ui_base::component::gallery::names(&sources, name),
-                "the gallery's sources are read: `ui.{name}` is found in them"
-            );
-        }
-    }
-}
-
-fn gallery_sources() -> String {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/gallery");
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|error| panic!("the gallery app reads at {}: {error}", dir.display()))
-        .map(|entry| entry.expect("the gallery reads").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "tl"))
-        .collect();
-    entries.sort();
-    let mut sources = String::new();
-    for path in entries {
-        sources.push_str(
-            &std::fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("{} reads: {error}", path.display())),
-        );
-    }
-    sources
 }

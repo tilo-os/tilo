@@ -804,7 +804,7 @@ pub struct BlockEditor {
     formula_chrome: Vec<Option<FormulaChrome>>,
     visual_formulas: HashMap<usize, VisualFormulaState>,
     visual_formula_focus: Option<usize>,
-    preferred_formula_mode: ui::math::FormulaMode,
+    preferred_formula_mode: tilo_ui_math::FormulaMode,
     /// Canonical binding stays read-only even after its last block is removed.
     canonical_existing: bool,
     /// An empty canonical list has a local paragraph until the first effective edit.
@@ -1046,7 +1046,7 @@ impl BlockEditor {
             formula_chrome: Vec::new(),
             visual_formulas: HashMap::new(),
             visual_formula_focus: None,
-            preferred_formula_mode: ui::math::FormulaMode::Visual,
+            preferred_formula_mode: tilo_ui_math::FormulaMode::Visual,
             canonical_existing: false,
             canonical_empty: false,
             interception_before: None,
@@ -3040,7 +3040,7 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    fn set_formula_mode(&mut self, start: usize, mode: ui::math::FormulaMode) {
+    fn set_formula_mode(&mut self, start: usize, mode: tilo_ui_math::FormulaMode) {
         let Some(mut descriptor) = self
             .blocks
             .get(start)
@@ -3068,7 +3068,7 @@ impl BlockEditor {
             block.line.set_focus(false);
         }
         self.preferred_formula_mode = mode;
-        if mode == ui::math::FormulaMode::Visual {
+        if mode == tilo_ui_math::FormulaMode::Visual {
             self.visual_formulas
                 .insert(start, VisualFormulaState::new(descriptor.syntax, &source));
             self.visual_formula_focus = Some(start);
@@ -3090,7 +3090,7 @@ impl BlockEditor {
         &mut self,
         start: usize,
         end: usize,
-        syntax: ui::math::FormulaSyntax,
+        syntax: tilo_ui_math::FormulaSyntax,
     ) {
         let Some(visual) = self.visual_formulas.get_mut(&start) else {
             return;
@@ -3503,8 +3503,8 @@ impl BlockEditor {
             .filter_map(|(start, chrome)| {
                 let chrome = chrome.as_ref()?;
                 let syntax = match chrome.descriptor.syntax {
-                    ui::math::FormulaSyntax::Tex => "TeX",
-                    ui::math::FormulaSyntax::Typst => "Typst",
+                    tilo_ui_math::FormulaSyntax::Tex => "TeX",
+                    tilo_ui_math::FormulaSyntax::Typst => "Typst",
                 };
                 let source = self
                     .blocks
@@ -3522,12 +3522,12 @@ impl BlockEditor {
                             AccessNode::new(Role::ToggleButton)
                                 .with_name(widget_text("block-a11y-formula-source"))
                                 .with_state(AccessState::new().checked(
-                                    chrome.descriptor.mode == ui::math::FormulaMode::Source,
+                                    chrome.descriptor.mode == tilo_ui_math::FormulaMode::Source,
                                 )),
                             AccessNode::new(Role::ToggleButton)
                                 .with_name(widget_text("block-a11y-formula-visual"))
                                 .with_state(AccessState::new().checked(
-                                    chrome.descriptor.mode == ui::math::FormulaMode::Visual,
+                                    chrome.descriptor.mode == tilo_ui_math::FormulaMode::Visual,
                                 )),
                         ]),
                 )
@@ -5654,11 +5654,11 @@ impl HandleMetrics {
     }
 }
 
-fn formula_descriptor(kind: &BlockKind) -> Option<ui::math::FormulaDescriptor> {
+fn formula_descriptor(kind: &BlockKind) -> Option<tilo_ui_math::FormulaDescriptor> {
     let BlockKind::CodeBlock { lang } = kind else {
         return None;
     };
-    ui::math::FormulaDescriptor::from_fence_language(lang.as_deref())
+    tilo_ui_math::FormulaDescriptor::from_fence_language(lang.as_deref())
 }
 
 // A table is one paragraph of its Markdown source; the grid, the preview and an app's actions
@@ -6114,14 +6114,14 @@ fn compute_is_formula_end(blocks: &[Block]) -> Vec<bool> {
 #[derive(Clone)]
 struct FormulaRunPreview {
     end: usize,
-    descriptor: ui::math::FormulaDescriptor,
+    descriptor: tilo_ui_math::FormulaDescriptor,
     source: String,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct FormulaChrome {
     end: usize,
-    descriptor: ui::math::FormulaDescriptor,
+    descriptor: tilo_ui_math::FormulaDescriptor,
     syntax_badge: Rect,
     source_button: Rect,
     visual_button: Rect,
@@ -6130,22 +6130,22 @@ struct FormulaChrome {
 
 struct VisualFormulaState {
     source: String,
-    syntax: ui::math::FormulaSyntax,
-    editor: ui::math::edit::Editor,
-    layout: Option<ui::math::Layout>,
+    syntax: tilo_ui_math::FormulaSyntax,
+    editor: tilo_ui_math::edit::Editor,
+    layout: Option<tilo_ui_math::Layout>,
 }
 
 impl VisualFormulaState {
-    fn new(syntax: ui::math::FormulaSyntax, source: &str) -> Self {
+    fn new(syntax: tilo_ui_math::FormulaSyntax, source: &str) -> Self {
         Self {
             source: source.to_string(),
             syntax,
-            editor: ui::math::edit::Editor::new(syntax.parse(source).expr),
+            editor: tilo_ui_math::edit::Editor::new(syntax.parse(source).expr),
             layout: None,
         }
     }
 
-    fn sync_source(&mut self, syntax: ui::math::FormulaSyntax, source: &str) {
+    fn sync_source(&mut self, syntax: tilo_ui_math::FormulaSyntax, source: &str) {
         if self.syntax != syntax || self.source != source {
             *self = Self::new(syntax, source);
         }
@@ -6158,7 +6158,7 @@ fn draw_formula_preview(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     rect: Rect,
-    syntax: ui::math::FormulaSyntax,
+    syntax: tilo_ui_math::FormulaSyntax,
     source: &str,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -6185,16 +6185,16 @@ fn draw_formula_preview(
     let available_width = (rect.width() - 16.0).max(1.0);
     let available_height = (rect.height() - diagnostic_height - 8.0).max(1.0);
     let mut size = 25.0f32;
-    let mut formula = ui::math::layout(&parsed.expr.root, text_renderer, size);
+    let mut formula = tilo_ui_math::layout(&parsed.expr.root, text_renderer, size);
     while size > 13.0 && (formula.width > available_width || formula.height > available_height) {
         size -= 1.5;
-        formula = ui::math::layout(&parsed.expr.root, text_renderer, size);
+        formula = tilo_ui_math::layout(&parsed.expr.root, text_renderer, size);
     }
     let origin = Point::new(
         rect.x0 + (rect.width() - formula.width).max(0.0) * 0.5,
         rect.y0 + (available_height - formula.height).max(0.0) * 0.5,
     );
-    ui::math::draw_layout(
+    tilo_ui_math::draw_layout(
         scene,
         transform,
         text_renderer,
@@ -6234,8 +6234,8 @@ fn draw_formula_chrome(
 
     let colors = &theme.tokens.colors;
     let syntax = match chrome.descriptor.syntax {
-        ui::math::FormulaSyntax::Tex => "TeX",
-        ui::math::FormulaSyntax::Typst => "Typst",
+        tilo_ui_math::FormulaSyntax::Tex => "TeX",
+        tilo_ui_math::FormulaSyntax::Typst => "Typst",
     };
     scene.fill(
         Fill::NonZero,
@@ -6257,12 +6257,12 @@ fn draw_formula_chrome(
         (
             chrome.source_button,
             widget_text("block-formula-source"),
-            chrome.descriptor.mode == ui::math::FormulaMode::Source,
+            chrome.descriptor.mode == tilo_ui_math::FormulaMode::Source,
         ),
         (
             chrome.visual_button,
             widget_text("block-formula-visual"),
-            chrome.descriptor.mode == ui::math::FormulaMode::Visual,
+            chrome.descriptor.mode == tilo_ui_math::FormulaMode::Visual,
         ),
     ] {
         let shape = vello::kurbo::RoundedRect::from_rect(rect, 5.0);
@@ -6290,7 +6290,7 @@ fn draw_formula_chrome(
     }
 }
 
-fn visual_formula_origin(rect: Rect, layout: &ui::math::Layout) -> Point {
+fn visual_formula_origin(rect: Rect, layout: &tilo_ui_math::Layout) -> Point {
     Point::new(
         rect.x0 + (rect.width() - layout.width).max(0.0) * 0.5,
         rect.y0 + (rect.height() - layout.height).max(0.0) * 0.5,
@@ -6307,11 +6307,11 @@ fn draw_visual_formula_editor(
     focused: bool,
 ) {
     let mut size = 25.0f32;
-    let mut layout = ui::math::layout(&state.editor.expr.root, text_renderer, size);
+    let mut layout = tilo_ui_math::layout(&state.editor.expr.root, text_renderer, size);
     while size > 13.0 && (layout.width > rect.width() - 16.0 || layout.height > rect.height() - 8.0)
     {
         size -= 1.5;
-        layout = ui::math::layout(&state.editor.expr.root, text_renderer, size);
+        layout = tilo_ui_math::layout(&state.editor.expr.root, text_renderer, size);
     }
     let origin = visual_formula_origin(rect, &layout);
     if let Some(selection) = state.editor.selection() {
@@ -6352,7 +6352,7 @@ fn draw_visual_formula_editor(
             );
         }
     }
-    ui::math::draw_layout(
+    tilo_ui_math::draw_layout(
         scene,
         transform,
         text_renderer,
@@ -6383,7 +6383,7 @@ fn draw_visual_formula_editor(
 }
 
 fn handle_visual_formula_key(
-    editor: &mut ui::math::edit::Editor,
+    editor: &mut tilo_ui_math::edit::Editor,
     key: &winit::keyboard::Key,
     modifiers: Modifiers,
 ) -> bool {
@@ -7964,7 +7964,7 @@ fn draw_block(
         BlockKind::CodeBlock { .. } => {
             draw_code_block_prefix(idx, line_rect, line_rect.x0 - prefix_x0, ctx, formulas);
             let descriptor = formula_descriptor(&b.kind);
-            if descriptor.is_none_or(|value| value.mode == ui::math::FormulaMode::Source) {
+            if descriptor.is_none_or(|value| value.mode == tilo_ui_math::FormulaMode::Source) {
                 b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
@@ -8259,7 +8259,7 @@ fn draw_formula_run(idx: usize, ctx: &mut BlockDrawCtx<'_>, formulas: &mut Formu
         );
     }
     match formula.descriptor.mode {
-        ui::math::FormulaMode::Source => draw_formula_preview(
+        tilo_ui_math::FormulaMode::Source => draw_formula_preview(
             ctx.scene,
             ctx.transform,
             ctx.text_renderer,
@@ -8268,7 +8268,7 @@ fn draw_formula_run(idx: usize, ctx: &mut BlockDrawCtx<'_>, formulas: &mut Formu
             formula.descriptor.syntax,
             &formula.source,
         ),
-        ui::math::FormulaMode::Visual => {
+        tilo_ui_math::FormulaMode::Visual => {
             let visual = formulas.visual_formulas.entry(idx).or_insert_with(|| {
                 VisualFormulaState::new(formula.descriptor.syntax, &formula.source)
             });
@@ -8871,7 +8871,7 @@ impl BlockEditor {
             }
             if is_formula_end.get(i).copied().unwrap_or(false) {
                 stack_box.min = if formula_descriptor(&b.kind)
-                    .is_some_and(|descriptor| descriptor.mode == ui::math::FormulaMode::Visual)
+                    .is_some_and(|descriptor| descriptor.mode == tilo_ui_math::FormulaMode::Visual)
                 {
                     FORMULA_VISUAL_MIN_HEIGHT
                 } else {
@@ -9883,19 +9883,20 @@ impl Widget for BlockEditor {
             } else {
                 original.y0 + code_headers[index]
             };
-            let source_bottom =
-                if descriptor.is_some_and(|value| value.mode == ui::math::FormulaMode::Visual) {
-                    source_top
-                } else if ends_formula {
-                    (source_top + FORMULA_SOURCE_HEIGHT).min(original.y1)
-                } else {
-                    original.y1
-                };
+            let source_bottom = if descriptor
+                .is_some_and(|value| value.mode == tilo_ui_math::FormulaMode::Visual)
+            {
+                source_top
+            } else if ends_formula {
+                (source_top + FORMULA_SOURCE_HEIGHT).min(original.y1)
+            } else {
+                original.y1
+            };
             if ends_formula {
-                let mode = descriptor.map_or(ui::math::FormulaMode::Source, |value| value.mode);
+                let mode = descriptor.map_or(tilo_ui_math::FormulaMode::Source, |value| value.mode);
                 let preview = Rect::new(
                     original.x0 + pad + 12.0,
-                    (if mode == ui::math::FormulaMode::Source {
+                    (if mode == tilo_ui_math::FormulaMode::Source {
                         source_bottom + FORMULA_PREVIEW_GAP
                     } else {
                         source_top + 2.0
@@ -9911,7 +9912,7 @@ impl Widget for BlockEditor {
             if gutter > 0.0
                 || indent_px > 0.0
                 || starts_formula
-                || descriptor.is_some_and(|value| value.mode == ui::math::FormulaMode::Visual)
+                || descriptor.is_some_and(|value| value.mode == tilo_ui_math::FormulaMode::Visual)
                 || ends_formula
             {
                 let shifted =
@@ -12259,19 +12260,19 @@ impl BlockEditor {
             .filter(|(_, chrome)| {
                 chrome.source_button.contains(self.last_mouse_pos)
                     || chrome.visual_button.contains(self.last_mouse_pos)
-                    || (chrome.descriptor.mode == ui::math::FormulaMode::Visual
+                    || (chrome.descriptor.mode == tilo_ui_math::FormulaMode::Visual
                         && chrome.editor_rect.contains(self.last_mouse_pos))
             })
         {
             if chrome.source_button.contains(self.last_mouse_pos) {
-                self.set_formula_mode(start, ui::math::FormulaMode::Source);
+                self.set_formula_mode(start, tilo_ui_math::FormulaMode::Source);
             } else if chrome.visual_button.contains(self.last_mouse_pos) {
-                self.set_formula_mode(start, ui::math::FormulaMode::Visual);
+                self.set_formula_mode(start, tilo_ui_math::FormulaMode::Visual);
             } else if let Some(visual) = self.visual_formulas.get_mut(&start)
                 && let Some(layout) = &visual.layout
             {
                 let origin = visual_formula_origin(chrome.editor_rect, layout);
-                if let Some(gap) = ui::math::nearest_gap(
+                if let Some(gap) = tilo_ui_math::nearest_gap(
                     &layout.gaps,
                     self.last_mouse_pos.x - origin.x,
                     self.last_mouse_pos.y - origin.y,

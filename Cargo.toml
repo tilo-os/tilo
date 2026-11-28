@@ -127,6 +127,8 @@ members = [
     "crates/core/tilo-surface-compile",
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
+    "crates/ui/ui-charts",
+    "crates/ui/ui-math",
     "crates/core/tilo-resource-macros",
     "crates/sdk/tilo-model-guest",
     "crates/engines/tilo-recurrence",

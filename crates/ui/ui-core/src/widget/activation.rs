@@ -67,11 +67,11 @@ pub fn take_presses() -> Vec<Point> {
 }
 
 #[derive(Default)]
-pub(crate) struct Activation {
+pub struct Activation {
     id: String,
     action: Option<ActionEmitter<()>>,
     on_activate: Option<Box<dyn FnMut()>>,
-    pub(crate) state: Interaction,
+    pub state: Interaction,
     held: HeldPress,
     cursor: Point,
     /// It opens or shows something (a view operation), which a double-click asks for once.
@@ -91,36 +91,36 @@ std::thread_local! {
 }
 
 impl Activation {
-    pub(crate) fn new(id: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             ..Self::default()
         }
     }
 
-    pub(crate) fn id(&self) -> &str {
+    pub fn id(&self) -> &str {
         &self.id
     }
 
-    pub(crate) fn set_callback(&mut self, f: Box<dyn FnMut()>) {
+    pub fn set_callback(&mut self, f: Box<dyn FnMut()>) {
         self.on_activate = Some(f);
         self.action = None;
         self.opens = false;
     }
 
-    pub(crate) fn set_action(&mut self, binding: impl crate::Bind<()>) {
+    pub fn set_action(&mut self, binding: impl crate::Bind<()>) {
         self.action = Some(ActionEmitter::new(crate::Bind::bound(binding)));
         self.on_activate = None;
         self.opens = false;
     }
 
     /// A press that opens or shows something: a double-click asks for it once.
-    pub(crate) fn set_open(&mut self, handler: Box<dyn FnMut()>) {
+    pub fn set_open(&mut self, handler: Box<dyn FnMut()>) {
         self.set_callback(handler);
         self.opens = true;
     }
 
-    pub(crate) fn set_event(&mut self, event: tilo_ui_base::component::Event) {
+    pub fn set_event(&mut self, event: tilo_ui_base::component::Event) {
         match event {
             tilo_ui_base::component::Event::None => self.clear_event(),
             tilo_ui_base::component::Event::Action(binding) => self.set_action(binding),
@@ -130,34 +130,34 @@ impl Activation {
         }
     }
 
-    pub(crate) fn clear_event(&mut self) {
+    pub fn clear_event(&mut self) {
         self.on_activate = None;
         self.action = None;
     }
 
-    pub(crate) fn is_bound(&self) -> bool {
+    pub fn is_bound(&self) -> bool {
         self.action.is_some() || self.on_activate.is_some()
     }
 
-    pub(crate) fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         self.is_bound()
             && !self.state.disabled
             && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
 
-    pub(crate) fn cursor(&self) -> Point {
+    pub fn cursor(&self) -> Point {
         self.cursor
     }
 
     /// Whether a pointer press on it is taken: an action the person may not run still takes it,
     /// and the dispatch says why it does not run ([`Self::click`]).
-    pub(crate) fn takes_press(&self) -> bool {
+    pub fn takes_press(&self) -> bool {
         self.is_bound() && !self.state.disabled
     }
 
     /// The person's own click: it activates, or sends the press of an action they may not run
     /// here, to be refused with why ([`ActionEmitter::press`]).
-    pub(crate) fn click(&mut self) -> bool {
+    pub fn click(&mut self) -> bool {
         if self.is_enabled() {
             return self.activate();
         }
@@ -172,7 +172,7 @@ impl Activation {
         true
     }
 
-    pub(crate) fn activate(&mut self) -> bool {
+    pub fn activate(&mut self) -> bool {
         if !self.is_enabled() {
             return false;
         }
@@ -189,7 +189,7 @@ impl Activation {
         false
     }
 
-    pub(crate) fn handle_pointer(
+    pub fn handle_pointer(
         &mut self,
         event: &WindowEvent,
         ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
@@ -275,7 +275,7 @@ impl Activation {
         self.state.pressed = false;
     }
 
-    pub(crate) fn attach(
+    pub fn attach(
         &mut self,
         domain: &tilo_ui_base::ControlDomain,
         attachment: tilo_ui_base::control_domain::DomainAttachment,
@@ -285,18 +285,18 @@ impl Activation {
         }
     }
 
-    pub(crate) fn take_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    pub fn take_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
-    pub(crate) fn bindings(&self) -> Vec<ControlBindingMetadata> {
+    pub fn bindings(&self) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             return vec![action.metadata(self.id.clone())];
         }
         Vec::new()
     }
 
-    pub(crate) fn refresh_availability(
+    pub fn refresh_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) -> bool {
@@ -312,7 +312,9 @@ impl Activation {
 /// Implement [`ActionControls`](tilo_ui_base::widget::controls::ActionControls) for
 /// a widget whose own press is an [`Activation`] at `self.$field` and whose
 /// children (if any) are reached through the default walks.
-macro_rules! activation_controls {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __activation_controls {
     ($ty:ty, $($field:tt).+) => {
         impl tilo_ui_base::widget::controls::ActionControls for $ty {
             fn attach_controls(
@@ -325,7 +327,7 @@ macro_rules! activation_controls {
                     tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
                 }
             }
-            fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+            fn take_control_invocation(&mut self) -> Option<$crate::tilo_actions::ControlInvocation> {
                 self.$($field).+.take_invocation().or_else(|| {
                     tilo_ui_base::widget::Widget::children_mut(self)
                         .into_iter()
@@ -341,7 +343,7 @@ macro_rules! activation_controls {
             }
             fn refresh_control_action_availability(
                 &mut self,
-                allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+                allowed: &std::collections::HashSet<$crate::tilo_actions::ActionAddress>,
             ) {
                 self.$($field).+.refresh_availability(allowed);
                 for child in tilo_ui_base::widget::Widget::children_mut(self) {
@@ -351,4 +353,4 @@ macro_rules! activation_controls {
         }
     };
 }
-pub(crate) use activation_controls;
+pub use crate::__activation_controls as activation_controls;

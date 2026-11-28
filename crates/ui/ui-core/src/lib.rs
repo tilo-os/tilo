@@ -162,7 +162,6 @@ pub use collab_types::app_surface;
 pub mod auth_backdrop;
 #[cfg(feature = "model")]
 pub mod call_pictures;
-pub mod charts;
 #[cfg(feature = "model")]
 pub use tilo_actions::shown as shown_actions;
 
@@ -253,7 +252,6 @@ pub mod launch_error;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
-pub mod math;
 #[cfg(feature = "model")]
 pub mod operation_target;
 #[cfg(all(feature = "local-daemons", feature = "model"))]

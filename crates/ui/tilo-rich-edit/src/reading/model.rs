@@ -120,7 +120,7 @@ pub enum Block {
     },
     /// A display formula, laid out by the toolkit's shared math.
     Math {
-        expr: ui::math::MathExpr,
+        expr: tilo_ui_math::MathExpr,
         /// Its linear form, for a reader's text and for search.
         source: String,
         display: bool,
@@ -174,7 +174,7 @@ impl Block {
 pub struct Span {
     pub text: String,
     /// Structured inline math; `text` stays its linear form.
-    pub math: Option<ui::math::MathExpr>,
+    pub math: Option<tilo_ui_math::MathExpr>,
     pub bold: bool,
     pub italic: bool,
     pub code: bool,

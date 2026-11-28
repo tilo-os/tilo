@@ -589,7 +589,7 @@ line breaking, hyphenation, BiDi and pagination rules.
 
 ## Mathematical composition
 
-Structured formulas use the single compositor in `ui::math`. Its semantic tree,
+Structured formulas use the single compositor in `tilo-ui-math`. Its semantic tree,
 recursive 2D box layout, insertion-gap geometry, and painter are shared by the
 calculator's live editor and the reading page's immutable MathML content. The
 calculator alone owns mutation, caret-navigation, clipboard, and collaborative
@@ -607,7 +607,7 @@ The same tree has source front ends for practical TeX math and Typst math.
 Notes treats fenced `tex`/`latex`/`math` and `typst`/`typst-math` blocks as
 formula cards with an explicit syntax badge and a persisted Source/Visual mode.
 Source mode is editable text with a live preview; Visual mode reuses the
-calculator's structured editor core, promoted into `ui::math::edit`. Switching
+calculator's structured editor core, promoted into `tilo_ui_math::edit`. Switching
 modes is lossless until a structured edit occurs, at which point the shared
 tree serializes to canonical native TeX or Typst. Both parsers are total: package-specific
 or unsupported input is preserved visibly and reported as a preview diagnostic

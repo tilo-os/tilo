@@ -47,6 +47,8 @@ ENGINE_OWNERS = (
     # and marks.
     "crates/core/tilo-resource/",
     "crates/ui/ui-core/",
+    "crates/ui/ui-charts/",
+    "crates/ui/ui-math/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.
     "tools/ui-examples/",

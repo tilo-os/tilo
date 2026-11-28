@@ -15028,6 +15028,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-charts",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15436,6 +15437,7 @@ dependencies = [
  "tilo-rich-edit",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-charts",
  "tilo-ui-graph",
  "tilo-webview",
  "tracing",
@@ -19805,6 +19807,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-graph",
+ "tilo-ui-math",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
@@ -21629,6 +21632,7 @@ dependencies = [
  "tilo-ui",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-charts",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21778,6 +21782,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-charts"
+version = "0.1.0"
+dependencies = [
+ "tilo-component-scan",
+ "tilo-sort",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-ui-graph",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ui-graph"
 version = "0.1.0"
 dependencies = [
@@ -21815,6 +21835,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-math"
+version = "0.1.0"
+dependencies = [
+ "tilo-test-env",
+ "tilo-ui-base",
+ "tilo-vello",
  "workspace-hack",
 ]
 

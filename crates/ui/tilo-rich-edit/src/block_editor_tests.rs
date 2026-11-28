@@ -1781,7 +1781,7 @@ tilo_test_env::scenario! {
         let clipboard = Arc::new(Clipboard::default());
         let services = ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
         let _host = ui::process::enter(&services);
-        let mut editor = ui::math::edit::Editor::from_linear("x + y");
+        let mut editor = tilo_ui_math::edit::Editor::from_linear("x + y");
         editor.select_all();
         let before = editor.to_linear();
         let selected = editor.selected_linear();
@@ -2333,15 +2333,15 @@ tilo_test_env::scenario! {
                 "vec(alpha, beta, gamma)",
             )]);
             let original = editor.blocks[0].text().to_string();
-            editor.set_formula_mode(0, ui::math::FormulaMode::Visual);
+            editor.set_formula_mode(0, tilo_ui_math::FormulaMode::Visual);
             assert!(matches!(
                 &editor.blocks[0].kind,
                 BlockKind::CodeBlock { lang: Some(language) } if language == "typst visual"
             ));
             assert_eq!(editor.blocks[0].text(), original);
-            editor.set_formula_mode(0, ui::math::FormulaMode::Source);
+            editor.set_formula_mode(0, tilo_ui_math::FormulaMode::Source);
             assert_eq!(editor.blocks[0].text(), original);
-            editor.set_formula_mode(0, ui::math::FormulaMode::Visual);
+            editor.set_formula_mode(0, tilo_ui_math::FormulaMode::Visual);
 
             let source = editor.blocks[0].text().to_string();
             assert_eq!(source, original);
@@ -2352,7 +2352,7 @@ tilo_test_env::scenario! {
                 .editor
                 .type_char('+');
             editor.begin_edit();
-            editor.commit_visual_formula_edit(0, 0, ui::math::FormulaSyntax::Typst);
+            editor.commit_visual_formula_edit(0, 0, tilo_ui_math::FormulaSyntax::Typst);
             assert!(editor.blocks[0].text().starts_with("vec("));
             assert!(editor.blocks[0].text().ends_with('+'));
             assert!(!editor.take_edit_ops().is_empty());

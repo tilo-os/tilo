@@ -562,112 +562,12 @@ pub mod diff_grid;
 pub use {diff_grid::DiffGrid, diff_grid::DiffGridProps, diff_grid::DiffSide};
 pub mod paint_surface;
 pub use {paint_surface::PaintSurface, paint_surface::PaintSurfaceProps};
-pub mod chart;
-pub use {
-    chart::Chart, chart::ChartStyle, chart::RollingSeries, chart::Series, chart::Sparkline,
-    chart::TrendCurve, chart::TrendFill, chart::TrendMarks, chart::TrendRange, chart::TrendStyle,
-};
-pub(crate) mod chart_data;
-pub(crate) mod chart_geometry;
-pub(crate) mod chart_labels;
-pub mod chart_readout;
-pub(crate) use {
-    chart_data::ChartBranch, chart_data::hierarchy, chart_data::link_description,
-    chart_data::node_description, chart_data::part_description,
-};
-pub use {
-    chart_data::ChartItem, chart_data::ChartLink, chart_data::ChartNode, chart_data::ChartPart,
-    chart_data::GraphSelection,
-};
-pub mod chart_legend;
-pub mod chart_navigation;
-pub use {
-    chart_navigation::ChartNavAction, chart_navigation::ChartTouchAction,
-    chart_navigation::ChartTouchTracker, chart_navigation::chart_nav_action,
-    chart_navigation::moved_index as move_chart_index,
-    chart_navigation::moved_item as move_chart_item,
-};
-pub mod plot;
-pub use {plot::Plot, plot::PlotFrame, plot::PlotItem, plot::PlotMarks};
-pub mod cartesian_plot;
-pub use {
-    cartesian_plot::AxisLabelFormat, cartesian_plot::AxisRange, cartesian_plot::AxisScale,
-    cartesian_plot::AxisTick, cartesian_plot::CartesianAnimationStyle,
-    cartesian_plot::CartesianAnnotation, cartesian_plot::CartesianAnnotationKind,
-    cartesian_plot::CartesianBrush, cartesian_plot::CartesianBrushSelection,
-    cartesian_plot::CartesianGesturePolicy, cartesian_plot::CartesianPan,
-    cartesian_plot::CartesianPlot, cartesian_plot::CartesianPlotProps,
-    cartesian_plot::CartesianRenderingStyle, cartesian_plot::CartesianStyle,
-    cartesian_plot::CartesianTooltipAnchor, cartesian_plot::CartesianTooltipStyle,
-    cartesian_plot::CartesianZoom, cartesian_plot::Curve, cartesian_plot::Marker,
-    cartesian_plot::MarkerShape, cartesian_plot::PlotAxis, cartesian_plot::PlotDatum,
-    cartesian_plot::PlotPoints, cartesian_plot::PlotSeries, cartesian_plot::SeriesKind,
-};
-pub mod pie_chart;
-pub use {
-    pie_chart::PieChart, pie_chart::PieSlice, pie_chart::PieStyle, pie_chart::PieTooltipAnchor,
-};
-pub mod polar_area_chart;
-pub use {polar_area_chart::PolarAreaChart, polar_area_chart::PolarAreaStyle};
-pub mod heatmap;
-pub use {heatmap::Heatmap, heatmap::HeatmapCell, heatmap::HeatmapStyle};
-pub mod histogram;
-pub use {
-    histogram::Histogram, histogram::HistogramChart, histogram::HistogramNormalization,
-    histogram::HistogramProps, histogram::HistogramScale,
-};
-pub mod candlestick_chart;
-pub use {
-    candlestick_chart::Candle, candlestick_chart::CandleObservation,
-    candlestick_chart::CandlestickChart, candlestick_chart::CandlestickChartProps,
-    candlestick_chart::CandlestickStyle,
-};
-pub mod chord_chart;
-pub use {
-    chord_chart::ChordChart, chord_chart::ChordChartProps, chord_chart::ChordSelection,
-    chord_chart::ChordStyle,
-};
-pub mod treemap;
-pub use {treemap::Treemap, treemap::TreemapProps, treemap::TreemapStyle};
-pub mod radar_chart;
-pub use {
-    radar_chart::RadarAxis, radar_chart::RadarChart, radar_chart::RadarLegendStyle,
-    radar_chart::RadarSeries, radar_chart::RadarStyle,
-};
-pub mod range_chart;
-pub use {
-    range_chart::RangeBar, range_chart::RangeChart, range_chart::RangeChartProps,
-    range_chart::RangeKind, range_chart::RangeSpan, range_chart::RangeStyle,
-};
-pub mod category_chart;
-pub use {
-    category_chart::Category, category_chart::CategoryChart, category_chart::CategoryChartStyle,
-    category_chart::CategoryLayout, category_chart::CategorySeries, category_chart::CategoryValue,
-};
-pub mod distribution_chart;
-pub use {
-    distribution_chart::DistributionChart, distribution_chart::DistributionKind,
-    distribution_chart::DistributionSeries, distribution_chart::DistributionStyle,
-};
-pub mod sankey;
-pub use {
-    sankey::SankeyChart, sankey::SankeyChartProps, sankey::SankeySelection, sankey::SankeyStyle,
-};
-pub mod sunburst;
-pub use {
-    sunburst::SunburstChart, sunburst::SunburstChartProps, sunburst::SunburstNode,
-    sunburst::SunburstStyle,
-};
-pub mod funnel_chart;
-pub use {funnel_chart::FunnelChart, funnel_chart::FunnelDirection, funnel_chart::FunnelStyle};
 pub mod gauge;
 pub use {
     gauge::BarGauge, gauge::BarGaugeProps, gauge::GaugeReading, gauge::GaugeStyle,
     gauge::GaugeThresholds, gauge::ProgressRing, gauge::ProgressRingFace, gauge::ProgressRingProps,
     gauge::ProgressRingSize, gauge::RingReading,
 };
-pub mod function_plane;
-pub use function_plane::FunctionPlane;
 pub mod split_handle;
 pub use {split_handle::SplitHandle, split_handle::SplitOrientation, split_handle::SplitRatio};
 pub mod video_player;
@@ -708,7 +608,9 @@ pub use {
     virtual_list::TreeRow, virtual_list::VecListModel, virtual_list::VirtualList,
     virtual_list::VirtualListProps, virtual_list::VirtualRows, virtual_list::row_content_box,
 };
-mod activation;
+/// What makes a composite one pressable target: its press, its bound action and the controls it
+/// publishes, for a widget above the toolkit as for the toolkit's own rows and cards.
+pub mod activation;
 mod dismissal;
 #[cfg(feature = "model")]
 #[cfg(feature = "model")]
@@ -853,11 +755,6 @@ pub use {
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;
-pub mod stat_tile;
-pub use {
-    stat_tile::StatGroup, stat_tile::StatGroupProps, stat_tile::StatTile, stat_tile::StatTileFace,
-    stat_tile::StatTileProps, stat_tile::Trend,
-};
 pub mod banner;
 pub use {
     banner::Banner, banner::BannerContent, banner::BannerHit, banner::BannerKind,
@@ -1029,9 +926,6 @@ pub mod internals {
     }
     pub mod stage {
         pub use crate::widget::stage::*;
-    }
-    pub mod stat_tile {
-        pub use crate::widget::stat_tile::*;
     }
     pub mod text_input {
         pub use crate::widget::text_input::*;

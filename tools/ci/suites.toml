@@ -702,9 +702,6 @@ inputs = [
   # The theme bundle's test loads a theme written only against the theme SDK.
   "crates/ui/themes/bauhaus/theme.json",
   "tools/test-assets.py",
-  # The catalogue test reads the gallery app's sources: every component the
-  # toolkit describes is shown there, or says at its declaration why it cannot.
-  "apps/tl/gallery/",
   "crates/ui/themes/liquid-glass/theme.json",
   "crates/ui/themes/liquid-glass-light/theme.json",
   # The base's catalogue and finish fixtures, which the widgets' tests read.
@@ -742,9 +739,13 @@ inputs = [
   "vendor/winit/src/platform_impl/quit_request.rs",
   # The startup probe compiles the toolkit's startup cache fixture by path.
   "crates/ui/ui-core/examples/startup_cache_fixture.rs",
+  # The catalogue test reads the gallery app's sources: every component the toolkit and the
+  # charts describe is shown there, or says at its declaration why it cannot.
+  "apps/tl/gallery/",
 ]
 readers = [
   "crates/ui/ui-app/examples/startup_frame_probe.rs",
+  "crates/ui/ui-app/tests/component_coverage.rs",
   "crates/ui/ui-app/src/app/close_admission.rs",
   "crates/ui/ui-app/tests/finish_render.rs",
   "crates/ui/ui-app/tests/history_mode_host.rs",
@@ -814,8 +815,8 @@ readers = [
 [[cargo]]
 package = "tilolang"
 # The multi-package tests resolve and compile the built-in packages, and the coverage check
-# reads the sources of the toolkit and the editor for the components they describe.
-inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-core/"]
+# reads the sources of the toolkit, the editor and the charts for the components they describe.
+inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-charts/", "crates/ui/ui-core/"]
 readers = [
   "crates/lang/tilolang/tests/it/coverage.rs",
   "crates/lang/tilolang/tests/it/multifile.rs",

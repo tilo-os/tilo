@@ -874,6 +874,7 @@ CATALOGUE_INPUTS = (
     "crates/ui/ui-core/src/",
     "crates/ui/ui-app/src/",
     "crates/ui/tilo-rich-edit/src/",
+    "crates/ui/ui-charts/src/",
     "crates/sdk/tilo-app-window/",
     "crates/ui/ui-graph/",
 )

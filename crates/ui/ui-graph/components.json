@@ -838,48 +838,6 @@
       }
     },
     {
-      "name": "CandlestickChart",
-      "doc": "A price per period as candles: what rose and fell when. Each period is a candle from its open to its close, its wick reaching the period's high and low; a period that closed above its open is drawn in the theme's success ink, one that closed below it in its danger ink, and a flat one dim. The traded volume stands under the prices when shown.",
-      "props": [
-        {
-          "name": "candles",
-          "doc": "The periods, oldest first: `.candle(label: \"Monday\", open: 82.0, high: 88.0, low: 80.0, close: 86.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Candle"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "volume",
-          "doc": "The traded volume under the prices; off unless said.",
-          "type": "bool"
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "Place",
       "doc": "A resource's view on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
       "props": [
@@ -1062,131 +1020,6 @@
       }
     },
     {
-      "name": "CartesianPlot",
-      "doc": "Readings on numeric axes: a trend over time, a relationship between two measures, a comparison. Each series takes the next colour of the theme's palette and is named in a legend; it draws as a line, an area, steps, points, bars or stems.",
-      "props": [
-        {
-          "name": "points",
-          "doc": "What is measured, each with its readings: `.points(x: [1.0, 2.0], y: [4.0, 6.0], label: \"Latency\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Points"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "x_title",
-          "doc": "What the x axis measures, under it (\"Minute\", \"Distance\").",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "y_title",
-          "doc": "What the y axis measures, beside it (\"Milliseconds\").",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
-      "name": "BarChart",
-      "doc": "Bars over named categories: how much there is of each, to compare. Several measured things stand beside each other in a category, stack on each other, or stack as shares of the category's whole; each takes the next colour of the theme's palette and is named in a legend.",
-      "props": [
-        {
-          "name": "bars",
-          "doc": "What is measured, each with its reading in every category: `.bars(values: done, label: \"Done\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Bars"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "categories",
-          "doc": "What each group of bars is of, in order, under it: a week, a team, a stage.",
-          "type": {
-            "list": "text"
-          },
-          "required": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "layout",
-          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole, or `waterfall` for the first measured thing's rises and falls, each standing on the one before.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "BarLayout",
-                "cases": [
-                  "grouped",
-                  "stacked",
-                  "share",
-                  "waterfall"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "readings",
-          "doc": "Each bar's reading written at it.",
-          "type": "bool"
-        },
-        {
-          "name": "unit",
-          "doc": "What a reading counts, written after each value a person pointing at a category reads (\"GB\", \"ms\", \"/s\").",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "ChangeMark",
       "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it.",
       "props": [
@@ -1287,167 +1120,6 @@
       "semantics": {
         "role": "Button",
         "label": "run"
-      }
-    },
-    {
-      "name": "Chart",
-      "doc": "A titled chart of one or more lines over a shared scale, with a grid and the labels of its scale: a history worth reading closely, where a sparkline only hints at a trend.",
-      "props": [
-        {
-          "name": "series",
-          "doc": "The lines, each over the ones before it: `.series(values: cpu, label: \"CPU\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Series"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "max",
-          "doc": "The top of its scale, which may be more than the readings reach; the highest reading unless said.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "area",
-          "doc": "The area under each line washed in its ink.",
-          "type": "bool"
-        },
-        {
-          "name": "top_label",
-          "doc": "The label at the top of its scale: \"100%\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "bottom_label",
-          "doc": "The label at the foot of its scale: \"0%\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "labels",
-          "doc": "What each reading is at, oldest first (\"9:51\", \"Monday\"): the position a person pointing at the chart reads the lines at.",
-          "type": {
-            "list": "text"
-          }
-        },
-        {
-          "name": "unit",
-          "doc": "What a reading counts, written after each value read (\"ms\", \"/s\").",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "height",
-          "doc": "Its height in logical pixels: 160 unless said.",
-          "type": {
-            "option": "float"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
-      "name": "Sparkline",
-      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card.",
-      "props": [
-        {
-          "name": "samples",
-          "doc": "The samples, oldest first.",
-          "type": {
-            "list": "float"
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "label",
-          "doc": "What the trend is of, as assistive technology announces it: \"Requests per second\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "max",
-          "doc": "The vertical maximum, which may be more than the samples reach; without one it is the highest sample.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "filled",
-          "doc": "The area under the line filled in the same colour, which a sparkline draws unless it is told not to: `true` unless said.",
-          "type": {
-            "option": "bool"
-          }
-        },
-        {
-          "name": "smooth",
-          "doc": "The line's shape between samples: the smooth curve rather than straight segments.",
-          "type": "bool"
-        },
-        {
-          "name": "leading_dot",
-          "doc": "A dot of this radius on the newest sample: the live edge of a streaming series.",
-          "type": {
-            "option": "float"
-          }
-        },
-        {
-          "name": "tone",
-          "doc": "What its line means, when it means something: a status, a person.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "Tone",
-                "cases": [
-                  "neutral",
-                  "success",
-                  "warning",
-                  "danger",
-                  "info"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "unit",
-          "doc": "What its readings count, written after them in the hover readout (\"/s\", \"h\").",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "label"
       }
     },
     {
@@ -1729,55 +1401,6 @@
       "semantics": {
         "role": "Button",
         "label": "label"
-      }
-    },
-    {
-      "name": "ChordChart",
-      "doc": "How much moves between a set of things: which teams hand work to which, which services call which, which people write to whom. Each thing takes an arc as wide as everything that touches it, a ribbon as wide as its weight joins each pair, and a person pointing at an arc or a ribbon reads what it carries.",
-      "props": [
-        {
-          "name": "nodes",
-          "doc": "The things it relates, around the ring, in order: `.node(id: \"design\", label: \"Design\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "FlowNode"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "links",
-          "doc": "How much moves between them, in either direction: `.link(from: \"design\", to: \"engineering\", value: 32.0)`, `from` and `to` naming nodes by their ids.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "FlowLink"
-              }
-            }
-          },
-          "required": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, over it and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -2640,59 +2263,6 @@
       ],
       "semantics": {
         "role": "Group"
-      }
-    },
-    {
-      "name": "DistributionChart",
-      "doc": "The spread of each measured thing: where its readings centre and how far they run, as a box, a violin or both. Callers give the readings themselves, never quartiles or bins; each series takes the next colour of the theme's palette and is named under the chart.",
-      "props": [
-        {
-          "name": "samples",
-          "doc": "What was measured, each with the readings taken: `.samples(values: hours, label: \"Before\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Samples"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "kind",
-          "doc": "How each distribution is drawn: `box` for its quartiles, `violin` for its shape, `both` for the two together unless said.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "DistributionKind",
-                "cases": [
-                  "box",
-                  "violin",
-                  "both"
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -3641,58 +3211,6 @@
       }
     },
     {
-      "name": "FunnelChart",
-      "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
-      "props": [
-        {
-          "name": "stages",
-          "doc": "The stages from the first to the last: `.stage(label: \"Visited\", value: 1200.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Stages"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "direction",
-          "doc": "How the stages stand: `funnel` narrowing by how many reach each unless said, `pyramid` widening.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "FunnelDirection",
-                "cases": [
-                  "funnel",
-                  "pyramid"
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "BarGauge",
       "doc": "A labelled level as a bar: a disk's use, a quota, a battery.",
       "props": [
@@ -3970,52 +3488,6 @@
       }
     },
     {
-      "name": "Heatmap",
-      "doc": "How a value varies across two axes at once: a week by weekday and hour, a year by month and region. Each cell's colour places it between the lowest and the highest value in the theme's ramp; pointing at it reads its value.",
-      "props": [
-        {
-          "name": "cells",
-          "doc": "Each cell, by the row and column it lies at: `.cell(row: \"Monday\", column: \"9h\", value: 12.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Cells"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "rows",
-          "doc": "The rows from top to bottom.",
-          "type": {
-            "list": "text"
-          },
-          "required": true
-        },
-        {
-          "name": "columns",
-          "doc": "The columns from left to right.",
-          "type": {
-            "list": "text"
-          },
-          "required": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "HexGrid",
       "doc": "Bytes as a dense grid: an offset down the side, hexadecimal pairs and the same bytes as text across, with the cursor, the selection and a search's matches drawn over them.",
       "props": [
@@ -4133,62 +3605,6 @@
       "semantics": {
         "role": "Table",
         "label": "label"
-      }
-    },
-    {
-      "name": "Histogram",
-      "doc": "Raw observations as a distribution: how many fell in each bin, so a spread is read at a glance. The bars take the theme's first palette colour and the axis is fitted to the data.",
-      "props": [
-        {
-          "name": "samples",
-          "doc": "The observations, in any order: `samples: [12.0, 18.0, 15.0, 22.0]`.",
-          "type": {
-            "list": "float"
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "bins",
-          "doc": "How many bins the range is cut into; twelve unless said.",
-          "type": {
-            "option": "int"
-          }
-        },
-        {
-          "name": "scale",
-          "doc": "What a bin reads: its `count` unless said, a `probability`, or a `density`.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "HistogramScale",
-                "cases": [
-                  "count",
-                  "probability",
-                  "density"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -6194,99 +5610,6 @@
       }
     },
     {
-      "name": "PieChart",
-      "doc": "The parts of one whole as the slices of a pie: how a total divides. Each slice takes the next colour of the theme's palette and is named in a legend with its share.",
-      "props": [
-        {
-          "name": "slices",
-          "doc": "The parts, in order: `.slice(label: \"Open\", value: 12.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Slice"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "ring",
-          "doc": "A ring rather than a full pie, with `total` read at its centre.",
-          "type": "bool"
-        },
-        {
-          "name": "total",
-          "doc": "What a ring reads at its centre: the whole, as it reads (\"128 issues\").",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "unit",
-          "doc": "What a part's value counts, written after it where a person pointing at it reads it (\"GB\", \"h\").",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
-      "name": "PolarAreaChart",
-      "doc": "A cycle's magnitudes around a circle: months of the year, hours of the day, weekdays. Every direction takes the same angle and its length carries the value, so seasonal shape is read at a glance; each takes the next colour of the theme's palette.",
-      "props": [
-        {
-          "name": "areas",
-          "doc": "The directions in order, clockwise from the top: `.area(label: \"January\", value: 12.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Areas"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "BarChip",
       "doc": "A bar control for people: their faces, a label and a press, with faces opening who is here and an invite opening the host's invite flow.",
       "props": [
@@ -7058,55 +6381,6 @@
       }
     },
     {
-      "name": "RadarChart",
-      "doc": "Several measures of the same things on axes around a circle, each axis with its own scale: a thing's shape reads at a glance, and several things compare by overlay. Each series takes the next colour of the theme's palette and is named in a legend.",
-      "props": [
-        {
-          "name": "axes",
-          "doc": "The axes in order, around the circle from the top: `.axis(label: \"Speed\", max: 100.0)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Axes"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "series",
-          "doc": "Each thing read across the axes: `.series(values: [12.0, 8.0], label: \"This week\")`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "RadarSeries"
-              }
-            }
-          },
-          "required": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
-      }
-    },
-    {
       "name": "RadioGroup",
       "doc": "A short list of choices, exactly one of which is made, each a radio beside its words: for a choice a person reads before making (how a report is sent, who may open a page). A few short choices that switch a setting at once are a `ToggleGroup`; many are a `Dropdown`. The group is one stop of the keyboard's order, and the arrow keys move the choice along it.",
       "props": [
@@ -7158,74 +6432,6 @@
       "semantics": {
         "role": "Group",
         "label": "label"
-      }
-    },
-    {
-      "name": "RangeChart",
-      "doc": "What takes a span of something, one row each: when things happen on a timeline, a plan's rows and how far each has come, the hours a room is booked, or the moments something happened. Each row is named before its bar and read out with its interval.",
-      "props": [
-        {
-          "name": "ranges",
-          "doc": "The rows, top to bottom: `.range(label: \"Design review\", start: 2.0, end: 5.0, progress: 0.6)`.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Range"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, at its head and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "kind",
-          "doc": "What it shows: `timeline` spans unless said, a `plan` whose rows fill to their progress, `intervals` between numbers, or `milestones` at points.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "RangeKind",
-                "cases": [
-                  "timeline",
-                  "plan",
-                  "intervals",
-                  "milestones"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "axis",
-          "doc": "What the axis under the rows measures (\"October\", \"Hour\").",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "unit",
-          "doc": "What an axis value counts, written after it (\"min\", \"°C\").",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -7307,55 +6513,6 @@
       "semantics": {
         "role": "Separator",
         "label": "label"
-      }
-    },
-    {
-      "name": "SankeyChart",
-      "doc": "Where a quantity moves between stages: visits that become trials, hours that become work, money that becomes cost. Each stage is a column of nodes as tall as what passes through them, each link a ribbon as thick as its share, its nodes and links named where they fit; a person pointing at one reads what it carries.",
-      "props": [
-        {
-          "name": "nodes",
-          "doc": "The stages and sources, in order: `.node(id: \"visits\", label: \"Visits\")`. Its stage is the longest chain of links that leads to it.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "FlowNode"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "links",
-          "doc": "What moves between them: `.link(from: \"visits\", to: \"signup\", value: 72.0)`, `from` and `to` naming nodes by their ids.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "FlowLink"
-              }
-            }
-          },
-          "required": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, over it and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -8281,126 +7438,6 @@
       }
     },
     {
-      "name": "StatGroup",
-      "doc": "Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four), then one per row; separated by space, never boxed.",
-      "parts": [
-        {
-          "name": "tiles",
-          "doc": "The tiles, in order.",
-          "accepts": {
-            "component": "StatTile"
-          },
-          "many": true,
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "Group"
-      }
-    },
-    {
-      "name": "StatTile",
-      "doc": "One number and what it measures (a dashboard's reading, a backup's size), read top to bottom as a label, the value with its unit, a note, its trend and a sparkline; a tile that opens a detail is pressed.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What the number measures, in sentence case: \"Active users\".",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "value",
-          "doc": "The number, as it reads: \"1,284\", \"99.9\".",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "unit",
-          "doc": "Its unit, after the value: \"GB\", \"ms\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "note",
-          "doc": "A neutral qualifier read with the value: \"of 2 TB\", \"estimated\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "change",
-          "doc": "How it changed, beside an arrow of its trend: \"12% this week\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "trend",
-          "doc": "Which way it moved: `up` unless said, when it has a change; its tone, not the arrow, says whether that is good.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "Trend",
-                "cases": [
-                  "up",
-                  "down",
-                  "flat"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "tone",
-          "doc": "The state of what it measures, as a ticker down its leading edge: a failed backup is danger, a healthy tunnel success.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "Tone",
-                "cases": [
-                  "neutral",
-                  "success",
-                  "warning",
-                  "danger",
-                  "info"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "hero",
-          "doc": "The one hero number of a screen, set large.",
-          "type": "bool"
-        },
-        {
-          "name": "samples",
-          "doc": "Its recent readings, oldest first, as a sparkline under it.",
-          "type": {
-            "list": "float"
-          }
-        },
-        {
-          "name": "selected",
-          "doc": "Whether it is the selected one, when it opens a detail.",
-          "type": "bool"
-        }
-      ],
-      "events": [
-        {
-          "name": "activate",
-          "doc": "The tile was pressed: open its detail."
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "label"
-      }
-    },
-    {
       "name": "Stepper",
       "doc": "Where a person is in a short sequence: a setup wizard's steps, an import's. Each step is a station with a disc and its name; a done one carries a check and may be gone back to. Too narrow for its stations, it reads \"Step 2 of 4\" over the current step.",
       "props": [
@@ -8463,50 +7500,6 @@
       "semantics": {
         "role": "Image",
         "label": "label"
-      }
-    },
-    {
-      "name": "SunburstChart",
-      "doc": "A hierarchy as rings: how a whole divides, and how each part divides, down to the smallest ones. Each ring is a level, a part as wide as its share of the one it belongs to, and each part takes its colour from the theme; a person pointing at one reads its path and its value.",
-      "props": [
-        {
-          "name": "parts",
-          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent stands at the centre ring.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Part"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, over it and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "total",
-          "doc": "What the whole is, read at its centre (\"128 hours\"); without it the centre reads the sum of the parts, so the hole always says how large the whole is.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -9584,43 +8577,6 @@
       "semantics": {
         "role": "Tree",
         "label": "name"
-      }
-    },
-    {
-      "name": "Treemap",
-      "doc": "A hierarchy as rectangles: each part of the first level a rectangle as large as its share of the whole, its label written on it where it fits, in a colour from the theme. Use it where labels have to be read, rather than followed round a ring.",
-      "props": [
-        {
-          "name": "parts",
-          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent is a rectangle of its own, as large as everything under it.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "Part"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What it shows, over it and as assistive technology announces it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "empty",
-          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Image",
-        "label": "title"
       }
     },
     {
@@ -10815,6 +9771,1050 @@
       "semantics": {
         "role": "TextInput",
         "label": "placeholder"
+      }
+    },
+    {
+      "name": "CandlestickChart",
+      "doc": "A price per period as candles: what rose and fell when. Each period is a candle from its open to its close, its wick reaching the period's high and low; a period that closed above its open is drawn in the theme's success ink, one that closed below it in its danger ink, and a flat one dim. The traded volume stands under the prices when shown.",
+      "props": [
+        {
+          "name": "candles",
+          "doc": "The periods, oldest first: `.candle(label: \"Monday\", open: 82.0, high: 88.0, low: 80.0, close: 86.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Candle"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "volume",
+          "doc": "The traded volume under the prices; off unless said.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "CartesianPlot",
+      "doc": "Readings on numeric axes: a trend over time, a relationship between two measures, a comparison. Each series takes the next colour of the theme's palette and is named in a legend; it draws as a line, an area, steps, points, bars or stems.",
+      "props": [
+        {
+          "name": "points",
+          "doc": "What is measured, each with its readings: `.points(x: [1.0, 2.0], y: [4.0, 6.0], label: \"Latency\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Points"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "x_title",
+          "doc": "What the x axis measures, under it (\"Minute\", \"Distance\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "y_title",
+          "doc": "What the y axis measures, beside it (\"Milliseconds\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "BarChart",
+      "doc": "Bars over named categories: how much there is of each, to compare. Several measured things stand beside each other in a category, stack on each other, or stack as shares of the category's whole; each takes the next colour of the theme's palette and is named in a legend.",
+      "props": [
+        {
+          "name": "bars",
+          "doc": "What is measured, each with its reading in every category: `.bars(values: done, label: \"Done\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Bars"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "categories",
+          "doc": "What each group of bars is of, in order, under it: a week, a team, a stage.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "layout",
+          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole, or `waterfall` for the first measured thing's rises and falls, each standing on the one before.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "BarLayout",
+                "cases": [
+                  "grouped",
+                  "stacked",
+                  "share",
+                  "waterfall"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "readings",
+          "doc": "Each bar's reading written at it.",
+          "type": "bool"
+        },
+        {
+          "name": "unit",
+          "doc": "What a reading counts, written after each value a person pointing at a category reads (\"GB\", \"ms\", \"/s\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Chart",
+      "doc": "A titled chart of one or more lines over a shared scale, with a grid and the labels of its scale: a history worth reading closely, where a sparkline only hints at a trend.",
+      "props": [
+        {
+          "name": "series",
+          "doc": "The lines, each over the ones before it: `.series(values: cpu, label: \"CPU\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Series"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "max",
+          "doc": "The top of its scale, which may be more than the readings reach; the highest reading unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "area",
+          "doc": "The area under each line washed in its ink.",
+          "type": "bool"
+        },
+        {
+          "name": "top_label",
+          "doc": "The label at the top of its scale: \"100%\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "bottom_label",
+          "doc": "The label at the foot of its scale: \"0%\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "labels",
+          "doc": "What each reading is at, oldest first (\"9:51\", \"Monday\"): the position a person pointing at the chart reads the lines at.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What a reading counts, written after each value read (\"ms\", \"/s\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "Its height in logical pixels: 160 unless said.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Sparkline",
+      "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "The samples, oldest first.",
+          "type": {
+            "list": "float"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the trend is of, as assistive technology announces it: \"Requests per second\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "max",
+          "doc": "The vertical maximum, which may be more than the samples reach; without one it is the highest sample.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "filled",
+          "doc": "The area under the line filled in the same colour, which a sparkline draws unless it is told not to: `true` unless said.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "smooth",
+          "doc": "The line's shape between samples: the smooth curve rather than straight segments.",
+          "type": "bool"
+        },
+        {
+          "name": "leading_dot",
+          "doc": "A dot of this radius on the newest sample: the live edge of a streaming series.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "What its line means, when it means something: a status, a person.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What its readings count, written after them in the hover readout (\"/s\", \"h\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
+      }
+    },
+    {
+      "name": "ChordChart",
+      "doc": "How much moves between a set of things: which teams hand work to which, which services call which, which people write to whom. Each thing takes an arc as wide as everything that touches it, a ribbon as wide as its weight joins each pair, and a person pointing at an arc or a ribbon reads what it carries.",
+      "props": [
+        {
+          "name": "nodes",
+          "doc": "The things it relates, around the ring, in order: `.node(id: \"design\", label: \"Design\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowNode"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "links",
+          "doc": "How much moves between them, in either direction: `.link(from: \"design\", to: \"engineering\", value: 32.0)`, `from` and `to` naming nodes by their ids.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowLink"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "DistributionChart",
+      "doc": "The spread of each measured thing: where its readings centre and how far they run, as a box, a violin or both. Callers give the readings themselves, never quartiles or bins; each series takes the next colour of the theme's palette and is named under the chart.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "What was measured, each with the readings taken: `.samples(values: hours, label: \"Before\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Samples"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "How each distribution is drawn: `box` for its quartiles, `violin` for its shape, `both` for the two together unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "DistributionKind",
+                "cases": [
+                  "box",
+                  "violin",
+                  "both"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "FunnelChart",
+      "doc": "How many reach each stage of a sequence: the steps of a sign-up, a checkout, a build. Stages narrow as fewer arrive, each with the share of the one before it, or widen as a pyramid; each takes the next colour of the theme's palette.",
+      "props": [
+        {
+          "name": "stages",
+          "doc": "The stages from the first to the last: `.stage(label: \"Visited\", value: 1200.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Stages"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "direction",
+          "doc": "How the stages stand: `funnel` narrowing by how many reach each unless said, `pyramid` widening.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "FunnelDirection",
+                "cases": [
+                  "funnel",
+                  "pyramid"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Heatmap",
+      "doc": "How a value varies across two axes at once: a week by weekday and hour, a year by month and region. Each cell's colour places it between the lowest and the highest value in the theme's ramp; pointing at it reads its value.",
+      "props": [
+        {
+          "name": "cells",
+          "doc": "Each cell, by the row and column it lies at: `.cell(row: \"Monday\", column: \"9h\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Cells"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "rows",
+          "doc": "The rows from top to bottom.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "columns",
+          "doc": "The columns from left to right.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Histogram",
+      "doc": "Raw observations as a distribution: how many fell in each bin, so a spread is read at a glance. The bars take the theme's first palette colour and the axis is fitted to the data.",
+      "props": [
+        {
+          "name": "samples",
+          "doc": "The observations, in any order: `samples: [12.0, 18.0, 15.0, 22.0]`.",
+          "type": {
+            "list": "float"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "bins",
+          "doc": "How many bins the range is cut into; twelve unless said.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "scale",
+          "doc": "What a bin reads: its `count` unless said, a `probability`, or a `density`.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "HistogramScale",
+                "cases": [
+                  "count",
+                  "probability",
+                  "density"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "PieChart",
+      "doc": "The parts of one whole as the slices of a pie: how a total divides. Each slice takes the next colour of the theme's palette and is named in a legend with its share.",
+      "props": [
+        {
+          "name": "slices",
+          "doc": "The parts, in order: `.slice(label: \"Open\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Slice"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "ring",
+          "doc": "A ring rather than a full pie, with `total` read at its centre.",
+          "type": "bool"
+        },
+        {
+          "name": "total",
+          "doc": "What a ring reads at its centre: the whole, as it reads (\"128 issues\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What a part's value counts, written after it where a person pointing at it reads it (\"GB\", \"h\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "PolarAreaChart",
+      "doc": "A cycle's magnitudes around a circle: months of the year, hours of the day, weekdays. Every direction takes the same angle and its length carries the value, so seasonal shape is read at a glance; each takes the next colour of the theme's palette.",
+      "props": [
+        {
+          "name": "areas",
+          "doc": "The directions in order, clockwise from the top: `.area(label: \"January\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Areas"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "RadarChart",
+      "doc": "Several measures of the same things on axes around a circle, each axis with its own scale: a thing's shape reads at a glance, and several things compare by overlay. Each series takes the next colour of the theme's palette and is named in a legend.",
+      "props": [
+        {
+          "name": "axes",
+          "doc": "The axes in order, around the circle from the top: `.axis(label: \"Speed\", max: 100.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Axes"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "series",
+          "doc": "Each thing read across the axes: `.series(values: [12.0, 8.0], label: \"This week\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "RadarSeries"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "RangeChart",
+      "doc": "What takes a span of something, one row each: when things happen on a timeline, a plan's rows and how far each has come, the hours a room is booked, or the moments something happened. Each row is named before its bar and read out with its interval.",
+      "props": [
+        {
+          "name": "ranges",
+          "doc": "The rows, top to bottom: `.range(label: \"Design review\", start: 2.0, end: 5.0, progress: 0.6)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Range"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What it shows: `timeline` spans unless said, a `plan` whose rows fill to their progress, `intervals` between numbers, or `milestones` at points.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "RangeKind",
+                "cases": [
+                  "timeline",
+                  "plan",
+                  "intervals",
+                  "milestones"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "axis",
+          "doc": "What the axis under the rows measures (\"October\", \"Hour\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "unit",
+          "doc": "What an axis value counts, written after it (\"min\", \"°C\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "SankeyChart",
+      "doc": "Where a quantity moves between stages: visits that become trials, hours that become work, money that becomes cost. Each stage is a column of nodes as tall as what passes through them, each link a ribbon as thick as its share, its nodes and links named where they fit; a person pointing at one reads what it carries.",
+      "props": [
+        {
+          "name": "nodes",
+          "doc": "The stages and sources, in order: `.node(id: \"visits\", label: \"Visits\")`. Its stage is the longest chain of links that leads to it.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowNode"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "links",
+          "doc": "What moves between them: `.link(from: \"visits\", to: \"signup\", value: 72.0)`, `from` and `to` naming nodes by their ids.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "FlowLink"
+              }
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "StatGroup",
+      "doc": "Stat tiles that reflow by width: one row when they fit, then half per row (2 by 2 for four), then one per row; separated by space, never boxed.",
+      "parts": [
+        {
+          "name": "tiles",
+          "doc": "The tiles, in order.",
+          "accepts": {
+            "component": "StatTile"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
+      "name": "StatTile",
+      "doc": "One number and what it measures (a dashboard's reading, a backup's size), read top to bottom as a label, the value with its unit, a note, its trend and a sparkline; a tile that opens a detail is pressed.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the number measures, in sentence case: \"Active users\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "value",
+          "doc": "The number, as it reads: \"1,284\", \"99.9\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "unit",
+          "doc": "Its unit, after the value: \"GB\", \"ms\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "note",
+          "doc": "A neutral qualifier read with the value: \"of 2 TB\", \"estimated\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "change",
+          "doc": "How it changed, beside an arrow of its trend: \"12% this week\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "trend",
+          "doc": "Which way it moved: `up` unless said, when it has a change; its tone, not the arrow, says whether that is good.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Trend",
+                "cases": [
+                  "up",
+                  "down",
+                  "flat"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The state of what it measures, as a ticker down its leading edge: a failed backup is danger, a healthy tunnel success.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "hero",
+          "doc": "The one hero number of a screen, set large.",
+          "type": "bool"
+        },
+        {
+          "name": "samples",
+          "doc": "Its recent readings, oldest first, as a sparkline under it.",
+          "type": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected one, when it opens a detail.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The tile was pressed: open its detail."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
+      "name": "SunburstChart",
+      "doc": "A hierarchy as rings: how a whole divides, and how each part divides, down to the smallest ones. Each ring is a level, a part as wide as its share of the one it belongs to, and each part takes its colour from the theme; a person pointing at one reads its path and its value.",
+      "props": [
+        {
+          "name": "parts",
+          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent stands at the centre ring.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Part"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "total",
+          "doc": "What the whole is, read at its centre (\"128 hours\"); without it the centre reads the sum of the parts, so the hole always says how large the whole is.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
+      "name": "Treemap",
+      "doc": "A hierarchy as rectangles: each part of the first level a rectangle as large as its share of the whole, its label written on it where it fits, in a colour from the theme. Use it where labels have to be read, rather than followed round a ring.",
+      "props": [
+        {
+          "name": "parts",
+          "doc": "The parts, each naming the part it belongs to: `.part(id: \"build\", parent: \"ci\", label: \"Build\", value: 12.0)`. A part nothing names as its parent is a rectangle of its own, as large as everything under it.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Part"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -14424,6 +14424,139 @@
       ]
     },
     {
+      "name": "Connection",
+      "doc": "One connection of a graph, between two of its nodes.",
+      "cases": [
+        {
+          "name": "connection",
+          "doc": "From the node (or a control in one) named `from` to the one named `to`.",
+          "fields": [
+            {
+              "name": "from",
+              "ty": "text",
+              "doc": "Where it starts."
+            },
+            {
+              "name": "to",
+              "ty": "text",
+              "doc": "Where it ends."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetCell",
+      "doc": "One cell of a sheet as it shows: its reference, the text it shows and how it reads.",
+      "cases": [
+        {
+          "name": "cell",
+          "doc": "A cell at its A1 reference, showing `text`.",
+          "fields": [
+            {
+              "name": "cell",
+              "ty": "text",
+              "doc": "Its A1 reference, such as `A1`."
+            },
+            {
+              "name": "text",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What it shows, already through its format."
+            },
+            {
+              "name": "kind",
+              "ty": {
+                "choice": {
+                  "name": "SheetCellKind",
+                  "cases": [
+                    "text",
+                    "number",
+                    "bool",
+                    "error"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "text"
+              },
+              "doc": "How it reads: a number sits at its right edge and a word at its left."
+            },
+            {
+              "name": "bold",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Set heavier than its neighbours."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetPeer",
+      "doc": "Another person at work in the sheet: the cells they chose and who they are.",
+      "cases": [
+        {
+          "name": "peer",
+          "doc": "A person's selection, drawn in their colour.",
+          "fields": [
+            {
+              "name": "area",
+              "ty": "text",
+              "doc": "Their selection, as `A1` or `A1:B2`."
+            },
+            {
+              "name": "who",
+              "ty": "actor",
+              "doc": "Whose selection it is."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SheetSize",
+      "doc": "A column's width or a row's height, as the person set it.",
+      "cases": [
+        {
+          "name": "column",
+          "doc": "A column made wider or narrower than the rest.",
+          "fields": [
+            {
+              "name": "column",
+              "ty": "text",
+              "doc": "Its letter, such as `A`."
+            },
+            {
+              "name": "width",
+              "ty": "float",
+              "doc": "Its width in pixels."
+            }
+          ]
+        },
+        {
+          "name": "row",
+          "doc": "A row made taller or shorter than the rest.",
+          "fields": [
+            {
+              "name": "row",
+              "ty": "float",
+              "doc": "Its number, counting from 1."
+            },
+            {
+              "name": "height",
+              "ty": "float",
+              "doc": "Its height in pixels."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Series",
       "doc": "One line of a chart: its readings, oldest first.",
       "cases": [
@@ -14470,28 +14603,6 @@
                 "choice": "accent"
               },
               "doc": "The theme's ink it is drawn in."
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Connection",
-      "doc": "One connection of a graph, between two of its nodes.",
-      "cases": [
-        {
-          "name": "connection",
-          "doc": "From the node (or a control in one) named `from` to the one named `to`.",
-          "fields": [
-            {
-              "name": "from",
-              "ty": "text",
-              "doc": "Where it starts."
-            },
-            {
-              "name": "to",
-              "ty": "text",
-              "doc": "Where it ends."
             }
           ]
         }
@@ -14661,117 +14772,6 @@
               "name": "value",
               "ty": "float",
               "doc": "How many reach it; nothing at or below zero is drawn."
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "SheetCell",
-      "doc": "One cell of a sheet as it shows: its reference, the text it shows and how it reads.",
-      "cases": [
-        {
-          "name": "cell",
-          "doc": "A cell at its A1 reference, showing `text`.",
-          "fields": [
-            {
-              "name": "cell",
-              "ty": "text",
-              "doc": "Its A1 reference, such as `A1`."
-            },
-            {
-              "name": "text",
-              "ty": "text",
-              "default": {
-                "text": ""
-              },
-              "doc": "What it shows, already through its format."
-            },
-            {
-              "name": "kind",
-              "ty": {
-                "choice": {
-                  "name": "SheetCellKind",
-                  "cases": [
-                    "text",
-                    "number",
-                    "bool",
-                    "error"
-                  ]
-                }
-              },
-              "default": {
-                "choice": "text"
-              },
-              "doc": "How it reads: a number sits at its right edge and a word at its left."
-            },
-            {
-              "name": "bold",
-              "ty": "bool",
-              "default": {
-                "bool": false
-              },
-              "doc": "Set heavier than its neighbours."
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "SheetPeer",
-      "doc": "Another person at work in the sheet: the cells they chose and who they are.",
-      "cases": [
-        {
-          "name": "peer",
-          "doc": "A person's selection, drawn in their colour.",
-          "fields": [
-            {
-              "name": "area",
-              "ty": "text",
-              "doc": "Their selection, as `A1` or `A1:B2`."
-            },
-            {
-              "name": "who",
-              "ty": "actor",
-              "doc": "Whose selection it is."
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "SheetSize",
-      "doc": "A column's width or a row's height, as the person set it.",
-      "cases": [
-        {
-          "name": "column",
-          "doc": "A column made wider or narrower than the rest.",
-          "fields": [
-            {
-              "name": "column",
-              "ty": "text",
-              "doc": "Its letter, such as `A`."
-            },
-            {
-              "name": "width",
-              "ty": "float",
-              "doc": "Its width in pixels."
-            }
-          ]
-        },
-        {
-          "name": "row",
-          "doc": "A row made taller or shorter than the rest.",
-          "fields": [
-            {
-              "name": "row",
-              "ty": "float",
-              "doc": "Its number, counting from 1."
-            },
-            {
-              "name": "height",
-              "ty": "float",
-              "doc": "Its height in pixels."
             }
           ]
         }

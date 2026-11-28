@@ -2,11 +2,11 @@
 //! a glance, the devices it shows on and its place among the person's
 //! workspaces, and leaving it, last and apart.
 
+use ui::charts::{StatGroup, StatTile};
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Divider, Element, ListRow, Row, Section, StatGroup, StatTile, Text,
-    TextInput,
+    Button, ButtonRole, Column, Divider, Element, ListRow, Row, Section, Text, TextInput,
 };
 
 use super::{Confirm, Decision, Parts, Settings, WorkspaceSettingsEffect};

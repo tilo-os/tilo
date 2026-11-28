@@ -42,6 +42,7 @@ pub fn components() -> &'static tilo_ui_base::component::Registry {
         tilo_ui_base::component::Registry::of(&[
             &ui::component_catalogue::TOOLKIT,
             &tilo_rich_edit::COMPONENTS,
+            &tilo_ui_charts::COMPONENTS,
         ])
     })
 }

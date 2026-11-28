@@ -1,0 +1,42 @@
+[package]
+name = "tilo-ui-charts"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "CHARTS.md"
+repository.workspace = true
+homepage.workspace = true
+description = "Charts and plots for the Tilo UI toolkit: lines, bars, pies, distributions, hierarchies, flows, ranges and stat tiles, as retained widgets."
+
+[features]
+# The hooks the app runner's chart tests read from outside a chart (a tile group's rect, a
+# chart's title band).
+test-support = ["tilo-ui/test-support"]
+
+# `tilo-component-scan` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["tilo-component-scan"]
+
+[dependencies]
+tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+taffy = { workspace = true, features = ["content_size"] }
+vello.workspace = true
+winit.workspace = true
+
+[build-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
+
+[dev-dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false, features = ["test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

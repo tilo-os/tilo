@@ -37,7 +37,7 @@ pub struct LineRun {
     pub bold: bool,
     pub italic: bool,
     pub mono: bool,
-    pub math: Option<ui::math::Layout>,
+    pub math: Option<tilo_ui_math::Layout>,
     /// Char offset of this run's first character within the block's canonical
     /// text (see [`LaidBlock::text`]).
     pub char_start: usize,
@@ -73,7 +73,7 @@ pub enum LayoutKind {
 
 #[derive(Clone, Debug)]
 pub struct LaidMath {
-    pub layout: ui::math::Layout,
+    pub layout: tilo_ui_math::Layout,
     pub x: f32,
     pub y_offset: f32,
 }
@@ -266,7 +266,7 @@ struct Word {
     bold: bool,
     italic: bool,
     mono: bool,
-    math: Option<ui::math::Layout>,
+    math: Option<tilo_ui_math::Layout>,
     w: f32,
     /// Whether a space separates this word from the previous one. `false` lets
     /// punctuation and clitics hug the preceding word across a style boundary.
@@ -381,7 +381,7 @@ fn visual_order(words: &[Word], start: usize, end: usize, bidi: &BidiInfo<'_>) -
 /// and widening `line_height` to fit the formula.
 fn push_math_word(
     built: &mut BuiltWords,
-    expr: &ui::math::MathExpr,
+    expr: &tilo_ui_math::MathExpr,
     span: &Span,
     text: &mut TextRenderer,
     style: &BlockStyle,
@@ -400,7 +400,7 @@ fn push_math_word(
     let char_len = span.text.chars().count();
     built.canonical_text.push_str(&span.text);
     built.char_count += char_len;
-    let math_layout = ui::math::layout(&expr.root, text, style.size);
+    let math_layout = tilo_ui_math::layout(&expr.root, text, style.size);
     built.line_height = built
         .line_height
         .max(math_layout.height as f32 + style.size * 0.18);
@@ -1138,7 +1138,7 @@ fn compose_block_lines(
 struct MathBlockInput<'a> {
     index: usize,
     top: f32,
-    expression: &'a ui::math::MathExpr,
+    expression: &'a tilo_ui_math::MathExpr,
     source: &'a str,
     style: &'a BlockStyle,
     body_size: f32,
@@ -1146,7 +1146,7 @@ struct MathBlockInput<'a> {
 }
 
 fn laid_math_block(text: &mut TextRenderer, input: &MathBlockInput<'_>) -> LaidBlock {
-    let math_layout = ui::math::layout(&input.expression.root, text, input.style.size);
+    let math_layout = tilo_ui_math::layout(&input.expression.root, text, input.style.size);
     let vertical_pad = input.body_size * 0.35;
     let height = math_layout.height as f32 + vertical_pad * 2.0;
     let math_x = ((input.content_width - math_layout.width as f32) * 0.5).max(0.0);
@@ -1857,17 +1857,17 @@ mod tests {
 
             {
                 let mut tr = TextRenderer::new();
-                let expr = ui::math::MathExpr {
-                    root: vec![ui::math::Node::Frac {
+                let expr = tilo_ui_math::MathExpr {
+                    root: vec![tilo_ui_math::Node::Frac {
                         num: vec![
-                            ui::math::Node::Char('x'),
-                            ui::math::Node::Sup {
-                                exp: vec![ui::math::Node::Char('2')],
+                            tilo_ui_math::Node::Char('x'),
+                            tilo_ui_math::Node::Sup {
+                                exp: vec![tilo_ui_math::Node::Char('2')],
                             },
                         ],
-                        den: vec![ui::math::Node::Sqrt {
+                        den: vec![tilo_ui_math::Node::Sqrt {
                             index: None,
-                            radicand: vec![ui::math::Node::Char('y')],
+                            radicand: vec![tilo_ui_math::Node::Char('y')],
                         }],
                     }],
                 };
@@ -1893,7 +1893,7 @@ mod tests {
                     math.layout
                         .boxes
                         .iter()
-                        .any(|math_box| matches!(math_box.kind, ui::math::BoxKind::FracBar))
+                        .any(|math_box| matches!(math_box.kind, tilo_ui_math::BoxKind::FracBar))
                 );
             }
 

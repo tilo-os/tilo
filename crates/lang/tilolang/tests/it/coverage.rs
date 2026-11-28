@@ -24,8 +24,9 @@ fn toolkit_src() -> PathBuf {
 }
 
 /// The sources of the widget crates whose components a window builds besides the toolkit's.
-fn widget_crate_srcs() -> [PathBuf; 1] {
-    [Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/tilo-rich-edit/src")]
+fn widget_crate_srcs() -> [PathBuf; 2] {
+    let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui");
+    [ui.join("tilo-rich-edit/src"), ui.join("ui-charts/src")]
 }
 
 /// The components tilolang reaches as `ui.<Name>`: the toolkit's catalogue, which is what the

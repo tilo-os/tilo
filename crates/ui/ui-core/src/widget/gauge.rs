@@ -814,7 +814,28 @@ impl BarGauge {
 impl Widget for BarGauge {
     tilo_ui_base::described!();
 
-    crate::widget::chart_navigation::chart_leaf!();
+    /// A leaf as wide as its parent and `self.height` tall, dirty until first placed.
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::length(self.height),
+            },
+            ..Default::default()
+        };
+        tilo_ui_base::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+    }
+
+    tilo_ui_base::rect_geometry!();
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(

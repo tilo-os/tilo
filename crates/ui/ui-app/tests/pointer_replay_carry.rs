@@ -330,7 +330,7 @@ fn a_stat_tile_carries_its_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                tilo_ui_app::widget::StatTile::new("Revenue", "1,204")
+                tilo_ui_charts::StatTile::new("Revenue", "1,204")
                     .on_open("revenue", log(clicks, generation)),
             )
         },

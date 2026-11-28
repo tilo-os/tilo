@@ -80,7 +80,7 @@ pub fn draw_blocks(
             continue;
         }
         if let Some(math) = &block.math {
-            ui::math::draw_layout(
+            tilo_ui_math::draw_layout(
                 scene,
                 transform
                     * Affine::translate((
@@ -238,7 +238,7 @@ fn draw_lines(
                 );
             }
             if let Some(math) = &run.math {
-                ui::math::draw_layout(
+                tilo_ui_math::draw_layout(
                     scene,
                     transform
                         * Affine::translate((x, run_y))

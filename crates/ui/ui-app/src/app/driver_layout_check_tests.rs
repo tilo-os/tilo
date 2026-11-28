@@ -171,7 +171,7 @@ fn pictures(composition: &crate::composition::Composition) -> Vec<Picture> {
 
 #[test]
 fn a_page_shows_a_charts_paint_as_its_picture_drawn_once_while_it_stays() {
-    let chart = crate::widget::Chart::new(vec![crate::widget::Series::new(
+    let chart = tilo_ui_charts::Chart::new(vec![tilo_ui_charts::Series::new(
         vec![1.0, 4.0, 2.0],
         vello::peniko::Color::WHITE,
     )])

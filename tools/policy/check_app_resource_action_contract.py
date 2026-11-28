@@ -230,7 +230,7 @@ NOT_ACTION_BUTTONS = {
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
     "tertiary_action": "a dialog's footer button, published as the dialog's own control",
 }
-CONTROL_CALLBACK_SOURCES = ("crates/ui/ui-base/src", "crates/ui/ui-core/src", "crates/sdk/tilo-app/src/framework")
+CONTROL_CALLBACK_SOURCES = ("crates/ui/ui-base/src", "crates/ui/ui-core/src", "crates/ui/ui-charts/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(
     r"\bpub\s+fn\s+(on_[a-z_]+|[a-z_]*action[a-z_]*)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
     re.DOTALL,

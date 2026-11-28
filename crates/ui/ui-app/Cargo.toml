@@ -152,6 +152,8 @@ tilo-ui = { path = "../ui-core", default-features = false, features = ["test-sup
 tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
+# The charts and stat tiles the runner's tests mount, and the registry its component tests build.
+tilo-ui-charts = { path = "../ui-charts", features = ["test-support"] }
 # The closure-built action host the driver's job tests answer calls with.
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 # The manager's fixtures the App-driven collaboration tests drive.
