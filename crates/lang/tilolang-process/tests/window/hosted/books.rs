@@ -17,9 +17,11 @@ use tilolang_tilo::runtime::Value;
 use super::{BOOKS, Session};
 
 /// The book a person drops in the folder they watch.
-const TIDE_GLASS: &str = include_str!("../fixtures/tideglass.epub.b64");
+const TIDE_GLASS: &str =
+    include_str!("../../../../tilolang-runtime/tests/fixtures/tideglass.epub.b64");
 /// The book that arrives in it while it is watched.
-const SALT_ROAD: &str = include_str!("../fixtures/saltroad.epub.b64");
+const SALT_ROAD: &str =
+    include_str!("../../../../tilolang-runtime/tests/fixtures/saltroad.epub.b64");
 
 /// The bytes of the book `base64` holds.
 fn epub(base64: &str) -> Vec<u8> {
