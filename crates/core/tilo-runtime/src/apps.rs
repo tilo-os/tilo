@@ -429,6 +429,12 @@ impl Apps {
         self.instances.keep_person(person.to_owned());
     }
 
+    /// The person's formats, language or zone changed: handed with every instance started after,
+    /// and told to every process running here.
+    pub(crate) fn locale_changed(&self, locale: &runtime_portal::process_link::Locale) {
+        self.instances.locale_changed(locale);
+    }
+
     /// Keep the files people choose for hosted apps in the device's records from now on.
     #[cfg(target_os = "macos")]
     pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {

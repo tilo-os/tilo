@@ -769,6 +769,49 @@ impl Instance {
         &self.app
     }
 
+    /// A stored day or moment as the person reads it: the full date in their date style and the
+    /// time of day on their clock, in their zone — with the time of day `time` it is due at,
+    /// where a view pairs a day with one. `kind` is what the view says the prop holds (`date` or
+    /// `time`), and `stored` the ISO text it holds. `None` where the platform names no person,
+    /// the text is not a day or moment of that kind, or the kind is neither.
+    #[must_use]
+    pub fn person_time(&self, kind: &str, stored: &str, time: Option<&str>) -> Option<String> {
+        let locale = self.platform.locale()?;
+        let (formats, words) = (locale.formats(), locale.format_words());
+        match kind {
+            "date" => {
+                let day: jiff::civil::Date = tilo_failure::ignored!(
+                    "a date a view holds that is not one reads no fact",
+                    stored.trim().parse().ok()
+                )?;
+                let time = time
+                    .and_then(|time| {
+                        tilo_failure::ignored!(
+                            "a time of day a view holds that is not one reads no fact",
+                            time.trim().parse::<jiff::Timestamp>().ok()
+                        )
+                    })
+                    .map(|at| {
+                        at.to_zoned(self.platform.moment().time_zone().clone())
+                            .time()
+                    });
+                Some(match time {
+                    Some(time) => tilo_formats::timestamp(formats, day.to_datetime(time), words),
+                    None => tilo_formats::date(formats, day, words),
+                })
+            }
+            "time" => {
+                let at: jiff::Timestamp = tilo_failure::ignored!(
+                    "a moment a view holds that is not one reads no fact",
+                    stored.trim().parse().ok()
+                )?;
+                let zoned = at.to_zoned(self.platform.moment().time_zone().clone());
+                Some(tilo_formats::timestamp(formats, zoned.datetime(), words))
+            }
+            _ => None,
+        }
+    }
+
     /// Ask the window to come forward ("Show this window"), with the next frame it is sent.
     pub fn activate_window(&mut self) {
         self.out.push(ToUi::Activate);

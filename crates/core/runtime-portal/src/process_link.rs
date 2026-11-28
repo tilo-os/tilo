@@ -418,12 +418,16 @@ pub struct WindowRequest {
     pub open: Option<String>,
 }
 
-/// The person's region formats and language, as the session hands them to a process whose
-/// instances are already running ([`ToProcess::Locale`]).
+/// The person's region formats, language and time zone, as the session hands them to a process
+/// whose instances are already running ([`ToProcess::Locale`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Locale {
     pub formats: RegionFormats,
     pub language: String,
+    /// The zone the person reads their dates and clocks in, as the time-zone database names it
+    /// (`Europe/Vienna`): the one they chose in their region, else the one their browser is in.
+    /// `None` reads the device's own zone, as a host that names no zone does.
+    pub zone: Option<String>,
 }
 
 /// What the person may do in one app of the process's workspace, said again when it changes
@@ -514,6 +518,10 @@ pub struct InstanceRequest {
     /// the window's language rather than in its own process's. A session that names none (`""`)
     /// lets the process's own environment speak.
     pub language: String,
+    /// The zone the person reads their dates and clocks in, as the time-zone database names it
+    /// (`Europe/Vienna`): what `today`, a day and the time of day the window shows read by. `None`
+    /// for the device's own zone, as a session that names none does.
+    pub zone: Option<String>,
     /// The document the window was asked to open, by its id, when its launch named one: the
     /// instance opens only the document its route names (the workspace's, or the person's own), so
     /// a window asked for another is refused rather than shown that one.
@@ -1099,6 +1107,7 @@ mod tests {
                 ..RegionFormats::default()
             },
             language: "de-DE".into(),
+            zone: Some("Europe/Vienna".into()),
             document: Some("uuid:7a110d00-0000-4000-8000-000000000009".into()),
             reveal: Some("tl.so.tilo.notes.Note:7".into()),
             open: Some(OpenRequest::File(OpenedFile {
@@ -1269,6 +1278,7 @@ mod tests {
                     ..RegionFormats::default()
                 },
                 language: "de-DE".into(),
+                zone: Some("Europe/Vienna".into()),
             };
             ToProcess::Locale(locale.clone()).send(&session).unwrap();
             assert!(matches!(

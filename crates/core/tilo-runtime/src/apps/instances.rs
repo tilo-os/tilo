@@ -85,6 +85,10 @@ pub(crate) struct Instances {
     chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
     /// The member the device acts as: the one an instance that shows nothing is run for.
     person: OnceLock<String>,
+    /// The person's formats, language and zone, as this device resolved them from their region:
+    /// what an instance it starts writes its dates and clocks in, and the language its window
+    /// reads. Updated as their region changes, and said again to every process running.
+    locale: Mutex<runtime_portal::process_link::Locale>,
     /// The providers this device registered, whose packages every instance is handed.
     provided: OnceLock<tilo_workspace_service::workspaces::providers::Providers>,
     /// What makes each app's own tilolang process its daemon line, once the daemon serves them.
@@ -320,6 +324,7 @@ impl Instances {
             #[cfg(target_os = "macos")]
             chosen: Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
             person: OnceLock::new(),
+            locale: Mutex::default(),
             provided: OnceLock::new(),
             own_lines: OnceLock::new(),
             serving: OnceLock::new(),
@@ -368,6 +373,23 @@ impl Instances {
     /// The member the device acts as, from now on.
     pub(crate) fn keep_person(&self, person: String) {
         let _ = self.person.set(person);
+    }
+
+    /// The person's formats, language and zone, as this device resolved them, from now on: what
+    /// every instance started here is handed. The processes already running are told separately
+    /// ([`Self::locale_changed`]).
+    pub(crate) fn keep_locale(&self, locale: runtime_portal::process_link::Locale) {
+        *self.locale.lock_recover() = locale;
+    }
+
+    /// The person's formats, language or zone changed: every process this daemon runs is told, so
+    /// the instances it runs write their dates and clocks again and read their words in the
+    /// language, where they stand.
+    pub(crate) fn locale_changed(&self, locale: &runtime_portal::process_link::Locale) {
+        self.keep_locale(locale.clone());
+        if let Some(processes) = self.processes.get() {
+            processes.locale_changed(locale);
+        }
     }
 
     /// Keep the files people choose for hosted apps in the device's records from now on, the same
@@ -643,7 +665,7 @@ impl Instances {
                 reveal,
                 open: None,
                 access,
-                locale: runtime_portal::process_link::Locale::default(),
+                locale: self.locale.lock_recover().clone(),
                 link_home: self.link_home(workspace),
             })
             .map(|_| instance)

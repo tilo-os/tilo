@@ -722,6 +722,9 @@ impl Apps {
         runtime_portal::process_link::Locale {
             formats: tilo_ui_base::format::region::current(),
             language: tilo_ui_base::i18n::preferred_language().unwrap_or_default(),
+            // The zone this session reads its own dates and clocks in: what the windows it hands
+            // over write theirs in, so a hosted window reads like the one the session draws.
+            zone: tilo_local_time::Zone::here().name(),
         }
     }
 

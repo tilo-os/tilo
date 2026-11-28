@@ -111,6 +111,7 @@ fn a_language_chosen_while_hosted_windows_are_open_relabels_them() {
     let german = tilolang_process::Locale {
         formats: today.host.formats().get(),
         language: "de-DE".to_owned(),
+        zone: None,
     };
     assert!(
         today.host.set_locale(&german),

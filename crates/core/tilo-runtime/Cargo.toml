@@ -68,6 +68,8 @@ tilo-machine.workspace = true
 tilo-seal = { path = "../tilo-seal" }
 tilo-secrets.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The clock as a person reads it on this device: their zone and local time.
+tilo-local-time = { path = "../../platform/local-time" }
 # Where this device is, read here and answered as the device's own action (src/device/location.rs).
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }

@@ -22,11 +22,12 @@
 //!   resources;
 //! - its module, read from the installation verified as a launch verifies it, in a sealed memfd.
 //!
-//! The person's region formats ride with the instance, and are said again on every process's socket
-//! when they change them in Settings ([`Processes::locale_changed`]): their windows' dates, clocks
-//! and weeks follow where they stand, without waiting for a restart. So does what the person may
-//! do in the app, said again on the sockets of the workspace's processes when its policy changes
-//! ([`Processes::policy_changed`]): a viewer's window offers no change they cannot make.
+//! The person's region formats and zone ride with the instance, and are said again on every
+//! process's socket when they change them in Settings ([`Processes::locale_changed`]): their
+//! windows' dates, clocks and weeks follow where they stand, without waiting for a restart. So
+//! does what the person may do in the app, said again on the sockets of the workspace's processes
+//! when its policy changes ([`Processes::policy_changed`]): a viewer's window offers no change
+//! they cannot make.
 //!
 //! A process is started through the platform's launcher ([`spawn_host`]; on Linux the launch kind
 //! "tilolang process", `tilo-launcher tilolang-process`; on macOS the tilolang runtime's binary in a
@@ -935,6 +936,9 @@ impl Processes {
             // The person's language, as this session resolved it: their windows read every word in
             // it, so the process that draws them must not read its own process's language instead.
             language: instance.locale.language,
+            // The zone they read their dates and clocks in, as the session resolved it: what a day
+            // and the time of day their windows show read by, wherever the device is.
+            zone: instance.locale.zone,
             document: instance.document,
             reveal: instance.reveal,
             open: instance.open,
@@ -2330,6 +2334,7 @@ mod tests {
         let locale = runtime_portal::process_link::Locale {
             formats: ui::format::region::current(),
             language: ui::i18n::preferred_language().unwrap_or_default(),
+            zone: tilo_local_time::Zone::here().name(),
         };
         processes.locale_changed(&locale);
         let handed = ToProcess::receive(&theirs).unwrap();

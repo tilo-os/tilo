@@ -609,11 +609,27 @@ impl TilolangProcess {
         true
     }
 
-    /// The person's formats or language changed in Settings ([`Locale`]): the instances write
-    /// their times again in the formats, and their windows read their words in the language,
-    /// where they stand. Whether anything changed.
+    /// The person's zone changed (they chose another one in Region & Formats, or their browser
+    /// moved): the instances write their dates and clocks again in it. Whether it was a change.
+    pub fn set_zone(&mut self, name: Option<&str>) -> bool {
+        if !self.formats.set_zone(name) {
+            return false;
+        }
+        for running in &mut self.running {
+            running.hosted.person_changed();
+        }
+        for opening in &mut self.opening {
+            opening.person_changed = true;
+        }
+        true
+    }
+
+    /// The person's formats, zone or language changed in Settings ([`Locale`]): the instances
+    /// write their times again in the formats and on their clock, and their windows read their
+    /// words in the language, where they stand. Whether anything changed.
     pub fn set_locale(&mut self, locale: &Locale) -> bool {
-        let mut changed = self.set_formats(locale.formats);
+        let mut changed = self.set_zone(locale.zone.as_deref());
+        changed |= self.set_formats(locale.formats);
         if locale.language.is_empty() {
             return changed;
         }
@@ -779,6 +795,7 @@ impl TilolangProcess {
         // them, so the last one said holds for the host, and the instances already running
         // write their times again if they changed.
         self.set_formats(request.formats);
+        self.set_zone(request.zone.as_deref());
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
         let (app, instance) = (request.app.clone(), request.instance);

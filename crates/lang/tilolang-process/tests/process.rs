@@ -2428,6 +2428,7 @@ tilo_test_env::scenario! {
             &runtime_portal::process_link::ToProcess::Locale(runtime_portal::process_link::Locale {
                 formats: with_first_day(tilo_formats::FirstDayOfWeek::Sunday),
                 language: String::new(),
+                zone: None,
             }),
             &session,
         )

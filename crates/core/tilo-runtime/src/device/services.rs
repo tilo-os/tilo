@@ -2733,6 +2733,9 @@ impl Daemon {
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
         // The member an app's code that shows nothing runs as, here: the device's own.
         apps.keep_person(&actor);
+        // The person's formats and zone, as their region keeps them, reach every instance this
+        // device hosts for them: read now, and again whenever they change it.
+        follow_region(&apps, workspaces.copies(), identity.cert.user_public_key);
         // A workspace's role records decide what this device's person may do in its apps: every
         // process running one is told, as a session's push tells it, though a device that serves
         // pages runs no session.
@@ -4438,6 +4441,54 @@ fn follow_app_access(
                     apps.access_changed_everywhere();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+}
+
+/// Keep every hosted instance's locale — the formats its dates and clocks are written in, and
+/// the zone they are read in — as `person`'s region says it, for the person whose device this is:
+/// read now, and read again whenever their region is written. What a process already runs is
+/// told; an instance started after is handed it with its first instance.
+fn follow_region(
+    apps: &Arc<apps::Apps>,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+    person: [u8; 32],
+) {
+    let region = tilo_workspace_service::workspaces::region::REGION;
+    let mut writes = workspaces.document_writes();
+    let apps = Arc::downgrade(apps);
+    let workspaces = workspaces.downgrade();
+    tilo_rt::app().handle().spawn(async move {
+        loop {
+            let Some(workspaces) = workspaces.upgrade() else {
+                return;
+            };
+            // The formats and the zone their views read in: the one they chose, else their
+            // browser's. Nothing while their region is unreadable here, which keeps what the
+            // instances were last handed.
+            if let Some((formats, zone)) = workspaces.region(&person).await {
+                let locale = runtime_portal::process_link::Locale {
+                    formats,
+                    // The language is the session's: a device that hosts pages names none, and
+                    // the windows read their packages' own.
+                    language: String::new(),
+                    zone,
+                };
+                if let Some(apps) = apps.upgrade() {
+                    apps.locale_changed(&locale);
+                }
+            }
+            // The next write of their region, wherever it came from: a page on a device of
+            // theirs, another device's, or this one's own.
+            loop {
+                match writes.recv().await {
+                    Ok(write) if write.app == region.0 && write.record == region.1 => break,
+                    Ok(_) => {}
+                    // A write was missed: read the region again rather than stay behind it.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
             }
         }
     });

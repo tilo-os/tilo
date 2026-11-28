@@ -43,6 +43,7 @@ const ARRANGING: [&str; 12] = [
 pub fn read(instance: &Instance) -> tilo_actions::ActionOutput {
     let shown = instance.shown_now();
     let mut reading = Reading {
+        instance,
         app: instance.app(),
         bound: BTreeMap::new(),
         rows: BTreeMap::new(),
@@ -125,6 +126,8 @@ pub fn read(instance: &Instance) -> tilo_actions::ActionOutput {
 
 /// An outline being written: what the window holds besides its trees, and the lines so far.
 struct Reading<'a> {
+    /// The instance whose window is read: what a row's day or moment reads in.
+    instance: &'a Instance,
     app: &'a str,
     /// The values bound controls hold, by level and node key.
     bound: BTreeMap<(Level, &'a str), &'a Value>,
@@ -218,6 +221,28 @@ impl Reading<'_> {
                 .or_else(|| node.props.get("text"))
                 .and_then(said)
         };
+        // A row's trailing fact: a day or a moment it holds (`meta:as`) reads in the person's
+        // formats and on their clock, as their page shows it; any other text reads as it is.
+        let meta = if secret {
+            None
+        } else {
+            node.props.get("meta").and_then(|held| {
+                let kind = match node.props.get("meta:as") {
+                    Some(Value::Text(kind)) => kind.as_str(),
+                    _ => return said(held),
+                };
+                let Value::Text(stored) = held else {
+                    return None;
+                };
+                let time = match node.props.get("meta:time") {
+                    Some(Value::Text(time)) => Some(time.as_str()),
+                    _ => None,
+                };
+                self.instance
+                    .person_time(kind, stored, time)
+                    .map(|time| clip(&time))
+            })
+        };
         let mut actions = Vec::new();
         for event in node.events.values() {
             if let Some(invokes) = &event.invokes {
@@ -264,6 +289,7 @@ impl Reading<'_> {
             role: role(&node.kind),
             name,
             value,
+            meta,
             state,
             actions,
         })
@@ -275,12 +301,14 @@ struct Read {
     role: String,
     name: Option<String>,
     value: Option<String>,
+    /// A row's trailing fact, a day or moment in the person's formats and zone.
+    meta: Option<String>,
     state: Vec<&'static str>,
     actions: Vec<String>,
 }
 
 impl Read {
-    /// `<role> "<name>": "<value>" (<state>) → <action>`, each part where it has one.
+    /// `<role> "<name>": "<value>" · <meta> (<state>) → <action>`, each part where it has one.
     fn line(&self) -> String {
         let mut line = self.role.clone();
         match (&self.name, &self.value) {
@@ -291,6 +319,9 @@ impl Read {
                 let _ = write!(line, " {words:?}");
             }
             (None, None) => {}
+        }
+        if let Some(meta) = &self.meta {
+            let _ = write!(line, " · {meta}");
         }
         if !self.state.is_empty() {
             let _ = write!(line, " ({})", self.state.join(", "));
@@ -309,6 +340,9 @@ impl Read {
         }
         if let Some(value) = &self.value {
             node.insert("value".into(), value.clone().into());
+        }
+        if let Some(meta) = &self.meta {
+            node.insert("meta".into(), meta.clone().into());
         }
         if !self.state.is_empty() {
             node.insert("state".into(), self.state.clone().into());

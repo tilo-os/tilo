@@ -115,6 +115,8 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The person's zone and local time, read as their window reads them.
+tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilolang-engine = { version = "0.1.0", path = "../tilolang-engine" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
@@ -206,7 +208,6 @@ tilolang-music = { path = "../../integrations/tilolang-music", default-features 
 runtime-dylib = { path = "../../sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]
-tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilo-action-types.workspace = true
 tilo-action-line-serve = { path = "../../core/action-line-serve" }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }

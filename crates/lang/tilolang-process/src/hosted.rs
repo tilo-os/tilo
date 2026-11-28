@@ -601,9 +601,54 @@ type SurfaceSlot = Rc<RefCell<Option<Rc<Surface>>>>;
 
 type BuildsSlot = Rc<RefCell<Option<Arc<LaterBuilds>>>>;
 
-/// The person's formats, as the session handed them over the host's api: shared by every
-/// instance the host runs, so a change in Settings reaches them together.
-pub type Formats = Rc<Cell<tilo_formats::RegionFormats>>;
+/// The person's formats and time zone, as the session handed them over the host's api.
+#[derive(Default)]
+pub struct PersonFormats {
+    formats: Cell<tilo_formats::RegionFormats>,
+    /// The zone they read their dates and clocks in, by the name the time-zone database gives it:
+    /// none reads the device's own, as a host that names no zone does.
+    zone: RefCell<Option<(String, tilo_local_time::Zone)>>,
+}
+
+/// The person's formats and zone, shared by every instance the host runs, so a change in
+/// Settings reaches them together.
+pub type Formats = Rc<PersonFormats>;
+
+impl PersonFormats {
+    /// The person's formats.
+    #[must_use]
+    pub fn get(&self) -> tilo_formats::RegionFormats {
+        self.formats.get()
+    }
+
+    /// Keep `formats` as the person's.
+    pub fn set(&self, formats: tilo_formats::RegionFormats) {
+        self.formats.set(formats);
+    }
+
+    /// The zone the person reads their dates and clocks in: the one they chose, else the one
+    /// their browser is in; none where the session names none.
+    #[must_use]
+    pub fn zone(&self) -> Option<tilo_local_time::Zone> {
+        self.zone.borrow().as_ref().map(|(_, zone)| zone.clone())
+    }
+
+    /// Keep the zone `name` names as the person's, where this device knows it. Answers whether
+    /// the zone it held differs from it.
+    pub fn set_zone(&self, name: Option<&str>) -> bool {
+        let zone = name.and_then(|name| {
+            tilo_local_time::Zone::named(name).map(|zone| (name.to_owned(), zone))
+        });
+        let mut held = self.zone.borrow_mut();
+        if held.as_ref().map(|(held, _)| held.as_str())
+            == zone.as_ref().map(|(name, _)| name.as_str())
+        {
+            return false;
+        }
+        *held = zone;
+        true
+    }
+}
 
 /// What the instance asks of the host: its package, the platform's phrases and clock, waking the
 /// host, and publishing on its connection.
@@ -734,6 +779,17 @@ impl Locale for HostPlatform {
 
     fn format_words(&self) -> &dyn tilo_formats::Words {
         &*self.phrases
+    }
+}
+
+impl HostPlatform {
+    /// The moment now as the person reads it: their zone where the session named one, else this
+    /// device's.
+    fn person_moment(&self) -> tilolang_tilo::instance::Zoned {
+        match self.formats.zone() {
+            Some(zone) => zone.at(tilo_local_time::now_instant()),
+            None => tilolang_tilo::instance::wall_moment(),
+        }
     }
 }
 
@@ -996,7 +1052,18 @@ impl Platform for HostPlatform {
     }
 
     fn moment(&self) -> tilolang_tilo::instance::Zoned {
-        tilolang_tilo::instance::wall_moment()
+        // The person's zone, where the session named one: every instance on this thread reads
+        // their dates and clocks in it, whatever zone the device itself is in.
+        self.person_moment()
+    }
+
+    /// The person's zone as its IANA name: the one the session named, else this device's. What a
+    /// repeating item keeps its wall time of day in across a change of clocks.
+    fn zone_name(&self) -> Option<String> {
+        self.formats
+            .zone()
+            .and_then(|zone| zone.name())
+            .or_else(tilo_local_time::local_zone_name)
     }
 
     fn web(
