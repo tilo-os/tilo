@@ -42,11 +42,11 @@ d-hpkr5rmb-filter-seen = Gesehen
 
 d-5hwszxkf = Analyse
     .doc = Die Analyse: der jetzt oder zuletzt gemessene Ordner, was seine Ordner belegen, und die zuletzt gemessenen Ordner.
-    .untitled = Festplattenbelegung
     .noun = { $count ->
         [one] Analyse
        *[other] Analysen
     }
+    .untitled = Festplattenbelegung
 
 d-myw6qh3s = Ordner
     .doc = Der jetzt oder gerade gemessene Ordner; leer, während die Ortsseite zu sehen ist.
@@ -113,24 +113,6 @@ d-nzngtwys = Messauftrag
 
 d-fzzlfxy7 = Pfad
 
-d-qv3bkujz = Gemessen
-    .noun = { $count ->
-        [one] Messung
-       *[other] Messungen
-    }
-
-d-5asfkn6k = Name
-
-d-7xc3ifdt = Pfad
-
-d-elhtrr33 = Bytes
-
-d-ktl6erww = Dateien
-
-d-qv3bkujz-filter-bytes = Bytes
-
-d-qv3bkujz-filter-files = Dateien
-
 d-26wmp7vw = Messstand
     .doc = Was die Engine über eine laufende Messung sagt und wenn sie endet.
     .noun = { $count ->
@@ -169,8 +151,27 @@ d-hkc4egnr = Einträge-Abfrage
 
 d-hxfyfs5q = Auftrag
 
+d-qv3bkujz = Gemessen
+    .noun = { $count ->
+        [one] Messung
+       *[other] Messungen
+    }
+
+d-5asfkn6k = Name
+
+d-7xc3ifdt = Pfad
+
+d-elhtrr33 = Bytes
+
+d-ktl6erww = Dateien
+
+d-qv3bkujz-filter-bytes = Bytes
+
+d-qv3bkujz-filter-files = Dateien
+
 d-lipx2inw = Analysieren
     .doc = Der gewählte Ordner wird der jetzt gemessene Ordner und der Anfang seiner eigenen Reihe.
+    .w-a-folder-is-named-by-its = Ein Ordner wird durch seinen Pfad ab / oder ~ benannt
 
 d-lipx2inw-path = Pfad
 
@@ -181,7 +182,7 @@ d-2czhqmad = Hineinmessen
 
 d-2czhqmad-m = Ordner
 
-d-rir4gbmc = Ort messen
+d-rir4gbmc = Ordner analysieren
     .doc = Misst einen auf der Ortsseite angebotenen Ordner und beginnt damit eine eigene Reihe.
 
 d-rir4gbmc-path = Pfad
@@ -225,6 +226,13 @@ d-c7sluhhk = Messung beendet
 
 d-c7sluhhk-j = J
 
+d-qs4lolax = Merken
+    .doc = Bietet einen kürzlich gemessenen Ordner erneut an: einmal, und die fünf neuesten davon.
+
+d-qs4lolax-path = Pfad
+
+d-qs4lolax-label = Bezeichnung
+
 d-xh5o3eoc = Ortsbezeichnung
     .w-home = Home
     .w-file-system = Dateisystem
@@ -237,6 +245,8 @@ d-kmtdpgxq = Dateien als Text
 d-rst6skyt = Unlesbarkeitstext
     .w-1-item-couldn-t-be-read = 1 Element konnte nicht gelesen werden
     .w-items-couldn-t-be-read = { $n } Elemente konnten nicht gelesen werden
+
+d-aemnj3c7 = Analysieren~present
 
 d-bmoxtaea = Analyse
 

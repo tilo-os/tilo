@@ -141,7 +141,18 @@ mod cases {
                 .expect("the session's package loads");
             let app = App::compile(SOURCE, &[session]);
             app.load(&rt);
-            let root = rt.create_root("Analyzer").unwrap();
+            // What this device measured is the device's own: its root stands under the device.
+            let ty = app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "Analyzer")
+                .expect("the analyzer type")
+                .id
+                .clone();
+            let root = rt
+                .create_root_at(&rt.device_root_doc(&app.meta().app, &ty), &ty)
+                .expect("this device's analyzer");
             Self {
                 rt,
                 app,
@@ -406,6 +417,99 @@ mod cases {
             assert!(any_prop_text(view.tree(), "Measuring"), "the window says so");
             assert!(any_prop_text(view.tree(), "42 GB"), "how far it got is said");
             assert!(any_prop_text(view.tree(), "Stop"), "and the way to stop it");
+        }
+
+        phase a_relative_folder_is_refused;
+        {
+            let t = Usage::new();
+            let refused = t
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        t.app.action("analyze").as_str(),
+                        vec![
+                            Value::resource(&t.root),
+                            Value::text("photos"),
+                            Value::text("photos"),
+                        ],
+                    ),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("path from / or ~"), "{refused}");
+            assert_eq!(t.text("folder"), "", "nothing is measured");
+            assert!(t.engine.asked.borrow().is_empty(), "the device is asked nothing");
+        }
+
+        phase a_measured_folder_is_remembered_on_this_device;
+        {
+            let t = Usage::new();
+            assert!(
+                t.root.doc.starts_with(&format!("devices/local/{}/root-", t.app.meta().app)),
+                "the analyzer is this device's: {}",
+                t.root.doc
+            );
+            *t.engine.state.borrow_mut() = DONE.to_owned();
+            *t.engine.entries.borrow_mut() = "[]".to_owned();
+            for path in ["/home/you", "/home/you"] {
+                t.act("open_place", vec![Value::resource(&t.root), Value::text(path)]);
+                t.ended();
+            }
+            assert_eq!(
+                t.kept("recents", "path"),
+                ["/home/you"],
+                "a folder measured again is remembered once"
+            );
+            t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you/Videos")]);
+            t.ended();
+            assert_eq!(
+                t.kept("recents", "path"),
+                ["/home/you", "/home/you/Videos"],
+                "the newest is remembered first"
+            );
+
+            // A place is offered as a place, not again among the recent folders.
+            let t = Usage::new();
+            *t.engine.state.borrow_mut() = DONE.to_owned();
+            *t.engine.entries.borrow_mut() = "[]".to_owned();
+            t.act("open_place", vec![Value::resource(&t.root), Value::text("/")]);
+            t.ended();
+            t.act("home", vec![Value::resource(&t.root)]);
+            let view = t.view();
+            assert!(
+                !any_prop_text(view.tree(), "Recent"),
+                "the file system is listed as the place it is"
+            );
+        }
+
+        phase the_window_names_what_it_shows_and_holds_its_actions;
+        {
+            let t = Usage::new();
+            let actions = &t.app.meta().actions;
+            for (name, label) in [
+                ("choose", "Choose a folder"),
+                ("back", "Go back"),
+                ("home", "Show places"),
+                ("open_disks", "Open Disks"),
+                ("open_place", "Analyze folder"),
+            ] {
+                let action = actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .unwrap_or_else(|| panic!("no action {name}"));
+                assert_eq!(action.label, label, "{name}");
+            }
+            assert!(
+                t.app.meta().uses.iter().any(|used| used == "so.tilo.session"),
+                "Open Disks reaches the session, which opens it"
+            );
+            // A measured folder names the window; the places page is the app's own title.
+            *t.engine.state.borrow_mut() = DONE.to_owned();
+            *t.engine.entries.borrow_mut() = "[]".to_owned();
+            t.act("open_place", vec![Value::resource(&t.root), Value::text("/home/you")]);
+            t.ended();
+            assert_eq!(t.text("label"), "you", "the window is named for the folder measured");
         }
     }
 }

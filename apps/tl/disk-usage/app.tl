@@ -60,7 +60,7 @@ type Analyzer (title: label, untitled: "Disk Usage") {
     picks: Collection<Measure>
 }
 
-root analyzer: Analyzer
+device root analyzer: Analyzer
 
 default view analyzer for Analyzer
 
@@ -92,6 +92,7 @@ fn parent_of(path: Text) -> Text {
 
 /// The folder the person chose, made the folder measured now and its own chain's start.
 action analyze(a: Analyzer, path: Text, label: Text) uses files, time {
+    require path == "" or path.starts_with("/") or path.starts_with("~") "A folder is named by its path from / or ~"
     let rooted = if path == "" { "~" } else { path }
     if a.job != "" { engine.cancel(a.job) }
     a.folder = rooted
@@ -134,7 +135,10 @@ action drill(a: Analyzer, m: Measure) uses files, time (icon: .folder, label: "M
 }
 
 /// Measures a folder offered on the places page, starting a chain of its own.
-action open_place(a: Analyzer, path: Text) uses files, time (icon: .folder) {
+action open_place(a: Analyzer, path: Text) uses files, time (
+    icon: .folder,
+    label: "Analyze folder",
+) {
     analyze(a, path: path, label: place_label(path))
 }
 
@@ -286,14 +290,7 @@ action scan_ended(a: Analyzer, j: host.Job) uses time {
                             }
                             // The folder it measured is offered again: once, and the five
                             // newest of them.
-                            for r in a.recents {
-                                if r.path == a.folder { a.recents.remove(r) }
-                            }
-                            a.recents.insert(Recent(path: a.folder, label: a.label, seen: now))
-                            let kept = a.recents.sort_by(r -> r.seen, desc)
-                            if kept.len() > 5 {
-                                if let oldest = kept.last() { a.recents.remove(oldest) }
-                            }
+                            remember(a, path: a.folder, label: a.label)
                         }
                     },
                 }
@@ -309,6 +306,23 @@ action scan_ended(a: Analyzer, j: host.Job) uses time {
 /// The newest first of the folders of `a`, each with what it holds.
 fn largest(a: Analyzer) -> List<Measure> {
     a.entries.sort_by(m -> m.bytes, desc)
+}
+
+/// Offers a folder measured lately again: once, and the five newest of them.
+action remember(a: Analyzer, path: Text, label: Text) uses time {
+    for r in a.recents {
+        if r.path == path { a.recents.remove(r) }
+    }
+    a.recents.insert(Recent(path: path, label: label, seen: now))
+    let kept = a.recents.sort_by(r -> r.seen, desc)
+    if kept.len() > 5 {
+        if let oldest = kept.last() { a.recents.remove(oldest) }
+    }
+}
+
+/// Whether a folder is one of the places the places page offers, which it lists once.
+fn a_place(path: Text) -> Bool {
+    path == "~" or path == "/" or path == "/var/workspace"
 }
 
 /// What the chart shows: every folder measured, the rest of them as one part, so the donut is
@@ -355,7 +369,7 @@ view analyzer(a: Analyzer) {
 
 /// The places, and the folders measured lately on this device.
 view places_page(a: Analyzer) {
-    let recent = a.recents.sort_by(r -> r.seen, desc).take(5)
+    let recent = a.recents.sort_by(r -> r.seen, desc).filter(r -> not a_place(r.path)).take(5)
     std.page(a) {
         content: {
             ui.Section(title: "Places") {
