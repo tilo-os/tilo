@@ -68,11 +68,11 @@
 //!
 //! - A device whose clock is synchronised to a time source sends its epoch
 //!   and accepts probes within one epoch of it.
-//! - A device without one (a board with no battery-backed clock on a
-//!   network without a time source) does not send its clock, which may be
-//!   the image's build date and would single it out. It sends the newest
-//!   epoch it learned from an admitted device, advanced by the time since,
-//!   or 0.
+//! - A device that knows it has no time source does not send its clock,
+//!   which may be the image's build date and would single it out. It sends
+//!   the newest epoch it learned from an admitted device, advanced by the
+//!   time since, or 0. A sandboxed host cannot tell (see
+//!   [`clock_synchronised`]), so it sends its clock.
 //! - Every device remembers, per asking device and across restarts
 //!   ([`Nearby::remembering_in`]), the newest epoch it accepted from it, and
 //!   refuses older ones.
@@ -88,7 +88,7 @@ mod wire;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -413,27 +413,33 @@ fn bind(port: u16) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(socket.into())
 }
 
-/// The epoch of the wall clock, `None` while it is not synchronised to a
-/// time source.
+/// The epoch of the wall clock, `None` while the clock is known not to be
+/// synchronised to a time source.
 fn clock_epoch() -> Option<u32> {
-    clock_synchronised().then(|| epoch_at(tilo_clock::unix_now()))
+    // Unknown counts as synchronised: a probe with no epoch is refused by
+    // every peer whose clock is synchronised, so not knowing must not cost
+    // local discovery. See [`clock_synchronised`].
+    (clock_synchronised() != Some(false)).then(|| epoch_at(tilo_clock::unix_now()))
 }
 
-#[cfg(target_os = "linux")]
-fn clock_synchronised() -> bool {
-    // SAFETY: `timex` is plain old data; with `modes` zero `adjtimex` only
-    // reads the kernel's clock state into it. musl, which the released CLI
-    // links, has `adjtimex` but no `ntp_adjtime`; glibc has both.
-    let state = unsafe {
-        let mut timex: libc::timex = std::mem::zeroed();
-        libc::adjtimex(&raw mut timex)
-    };
-    state >= 0 && state != libc::TIME_ERROR
+/// Whether this device's clock is synchronised to a time source, from what
+/// the machine says; `None` where nothing says.
+///
+/// systemd-timesyncd writes `/run/systemd/timesync/synchronized` while it
+/// holds the clock, and removes it when it loses its source. Absence is not
+/// a "no": Tilo OS keeps time with chrony and masks timesyncd, a musl CLI
+/// build can run where nothing writes the file, and macOS has no marker at
+/// all. The kernel could tell, but reading its clock state is `adjtimex`,
+/// which `tilo-runtime.service` refuses through `ProtectClock=` and
+/// `SystemCallFilter=@system-service`, and the refusal killed the daemon
+/// with SIGSYS.
+fn clock_synchronised() -> Option<bool> {
+    clock_synchronised_at(Path::new("/run/systemd/timesync/synchronized"))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn clock_synchronised() -> bool {
-    true
+/// [`clock_synchronised`] reading the marker at `marker`.
+fn clock_synchronised_at(marker: &Path) -> Option<bool> {
+    marker.exists().then_some(true)
 }
 
 /// Pick at most [`SLOTS`] of `devices`, `wanted` first, the rest at random.
@@ -897,5 +903,20 @@ mod tests {
         );
         env.remove(NETWORKS_ENV);
         assert!(Nearby::from_env(std::sync::Arc::new(|| {})).is_none());
+    }
+
+    /// A missing timesyncd marker is an unknown clock, never a "not synchronised" one: the epoch
+    /// the probe carries is therefore still the clock's own.
+    #[test]
+    fn a_missing_timesync_marker_leaves_the_clock_unknown() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let marker = directory.path().join("synchronized");
+        assert_eq!(super::clock_synchronised_at(&marker), None);
+        assert!(
+            super::clock_epoch().is_some(),
+            "no marker on this host must not cost the probe its epoch"
+        );
+        std::fs::write(&marker, b"").expect("the marker");
+        assert_eq!(super::clock_synchronised_at(&marker), Some(true));
     }
 }

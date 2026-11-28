@@ -40,10 +40,6 @@ socket2 = "0.6"
 n0-future = "0.3.2"
 tracing.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Whether the clock is synchronised to a time source, before a probe sends its epoch.
-libc.workspace = true
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
