@@ -33,7 +33,7 @@ type Settings {
     identities_problem: Text = ""
 }
 
-/// One screen on the arrangement: whose it is, where it stands in the person's layout, and how
+/// One screen on the layout: whose it is, where it stands in the person's layout, and how
 /// this device knows it.
 type Screen {
     device: Text

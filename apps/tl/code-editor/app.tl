@@ -40,7 +40,7 @@ enum ItemKind {
 }
 
 /// One file or folder of the project: its name, where it stands, the language it is written
-/// in, and — a file's — its text.
+/// in, and, for a file, its text.
 ///
 /// The text is the entry's own field, so two people writing in one file splice each other's
 /// words rather than replacing the file; a value is the file's whole text, and the store keeps
@@ -647,7 +647,7 @@ action rename(p: Project, entry: Entry, name: Text) (icon: .pencil, label: "Rena
     }
 }
 
-/// Moves `entry` into `folder` (the top of the project when none), just before `before` — or
+/// Moves `entry` into `folder` (the top of the project when none), just before `before`, or
 /// after every entry there when none names one.
 action move_entry(
     p: Project,
@@ -947,8 +947,8 @@ fn count_from(hay: Text, needle: Text, word: Bool, from: Int, count: Int) -> Int
     } else { count }
 }
 
-/// The declarations a file's text writes — `fn`, `struct`, `enum`, `trait`, `class`, `def`,
-/// `interface`, `type`, `const` — each with the line and column it stands at: what the
+/// The declarations a file's text writes (`fn`, `struct`, `enum`, `trait`, `class`, `def`,
+/// `interface`, `type`, `const`), each with the line and column it stands at: what the
 /// project's symbols are and what go-to-symbol offers.
 action symbols(entry: Entry) -> List<Found> (icon: .code, label: "Go to symbol") {
     symbols_in(entry)
