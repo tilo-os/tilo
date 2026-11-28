@@ -32,13 +32,13 @@
       "said": "The places down the left: the workspace's folder, Recent and Applications",
       "ops": [
         {
-          "select_row": "Recent"
+          "click": "Recent"
         },
         {
-          "select_row": "Applications"
+          "click": "Applications"
         },
         {
-          "select_row": "Files"
+          "click": "Files"
         }
       ]
     },
@@ -57,7 +57,7 @@
       "dark": true,
       "ops": [
         {
-          "select_row": "Files"
+          "click": "Files"
         }
       ]
     }
