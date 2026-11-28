@@ -773,7 +773,14 @@ fn reading(language: Option<&str>) -> Box<dyn std::any::Any> {
             }
         }
     }
-    let windowed = manager_id().is_some();
+    // A window's thread is the one that keeps its own words: a thread that only loaded a crate's
+    // shared catalogue speaks for no window, and reads the person's language like any other.
+    let windowed = MANAGER.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|manager| {
+            !manager.spoken.is_empty()
+                || manager.current_locale.language.as_str() == PSEUDO_LANGUAGE
+        })
+    });
     let Some(language) = language
         .map(str::to_owned)
         .or_else(|| if windowed { None } else { preferred_language() })

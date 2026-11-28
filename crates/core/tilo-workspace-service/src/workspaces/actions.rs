@@ -1304,7 +1304,11 @@ impl Verb {
         action_row(
             publisher,
             (resource, label),
-            (self.id, self.label, self.kind),
+            (
+                self.id,
+                &crate::i18n::action_words(publisher.provider, self.id, self.label),
+                self.kind,
+            ),
             (self.params)(),
         )
     }
@@ -1997,6 +2001,23 @@ impl Workspaces {
     /// business in that workspace, and the serving device's operations when they are its
     /// person's.
     pub async fn catalogue(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        query: &CatalogueQuery,
+    ) -> CataloguePage {
+        // The providers here build their rows while they answer, after the query returns: every
+        // word they read reads in the language the caller declares, or the person's own.
+        tilo_resource::label::reading_while(
+            query.language.clone(),
+            self.offered_catalogue(workspace_id, caller, certificate, query),
+        )
+        .await
+    }
+
+    /// [`Self::catalogue`], its words read in whatever language the thread reading it holds.
+    async fn offered_catalogue(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
@@ -3366,13 +3387,14 @@ impl Workspaces {
                 let mut row = verb.row(GOVERNANCE, &resource, label);
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {
-                    let (name, said) = if verb.id == ADD_MEMBER {
+                    let (name, source) = if verb.id == ADD_MEMBER {
                         (WORKSPACE_MEMBER_PLACED, "Change role")
                     } else {
                         (WORKSPACE_MEMBER_REMOVED, verb.label)
                     };
                     action.address = ActionAddress::new(resource.as_str(), name);
-                    action.action_label = said.into();
+                    action.action_label =
+                        crate::i18n::action_words(GOVERNANCE.provider, name, source);
                     action.params.retain(|param| param.name != "person");
                 }
                 rows.push(row);

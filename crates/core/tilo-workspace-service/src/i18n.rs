@@ -4,6 +4,19 @@
 
 use tilo_history::{Catalogue, FluentArgs, Messages as _};
 
+tilo_resource::declared_catalogue!(pub(crate) CATALOGUE);
+
+/// What `app` calls its action `action`, in the language this thread reads now: the catalogue's
+/// entry `<app>-<action>` where it holds one, `source` — the code's English — otherwise.
+pub(crate) fn action_words(app: &str, action: &str, source: &str) -> String {
+    let key = format!(
+        "{}-{}",
+        tilo_actions::message_key(app),
+        tilo_actions::message_key(action)
+    );
+    tilo_resource::label::keyed(&CATALOGUE, &key, source)
+}
+
 /// The message a workspace its founder did not name is called by.
 const NAME: &str = "workspace-default-name";
 /// The language this host writes in, which every translation falls back to.

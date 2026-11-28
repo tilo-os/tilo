@@ -295,7 +295,6 @@ fn a_listing_names_its_actions_in_the_callers_language() {
         "tilo.device-files#copy-into",
         "tilo.device-files#undo",
         "tilo.offload#place",
-        "tilo.workspace#rename",
         "tilo.device#info",
         "tilo.device#logIn",
         "tilo.device#issue",

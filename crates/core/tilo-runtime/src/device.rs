@@ -41,6 +41,8 @@ mod boot_unlock;
 mod boot_unlock_tests;
 mod call_media;
 mod carry;
+#[cfg(test)]
+mod catalogue_language_tests;
 /// The dispatch the turns of the workspaces' agents run here call through.
 mod turn_dispatch;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.

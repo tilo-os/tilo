@@ -295,9 +295,8 @@ pub fn install_reading(reading: Reading) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reading);
 }
 
-/// `read`, every word it reads ([`Word::read`], [`localized`]) read in `language`, or in the
-/// person's own where it is `None`: what a registry answers one caller's listing in. Read as
-/// this thread reads them where no host installed a [`Reading`].
+/// `read`, every word it reads ([`Word::read`], [`localized`], [`keyed`]) read in `language`, or
+/// in the person's own where it is `None`: what a registry answers one caller's listing in.
 pub fn reading_in<T>(language: Option<&str>, read: impl FnOnce() -> T) -> T {
     let reading = *READING
         .read()
@@ -404,6 +403,15 @@ macro_rules! declared_names {
 #[must_use]
 pub fn localized(kind: &str, source: &str, catalogue: Option<&'static Catalogue>) -> String {
     resolve(catalogue, &message_key(kind), &[], Fill::Whole).unwrap_or_else(|| source.to_owned())
+}
+
+/// `source`, a word the catalogue `catalogue` keeps under `key`, as this thread reads it now: the
+/// catalogue's message where it holds one, `source` itself otherwise. What a row names a word
+/// of a catalogue without a declaration to read it from — a verb of a table of the host's — is
+/// read through.
+#[must_use]
+pub fn keyed(catalogue: &'static Catalogue, key: &str, source: &str) -> String {
+    resolve(Some(catalogue), key, &[], Fill::Whole).unwrap_or_else(|| source.to_owned())
 }
 
 /// [`localized`] of a resource that is being published under `label`: its
