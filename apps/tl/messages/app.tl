@@ -1979,6 +1979,8 @@ view conversation(m: Messages, s: Session, st: Status) {
                     if c == .none {
                     } else if reading(s) and lines.is_empty() {
                         ui.Text("Loading messages…", role: .caption, secondary: true)
+                    } else if reading(s) {
+                        ui.Text("Loading older messages…", role: .caption, secondary: true)
                     } else if more_before(s) {
                         ui.Button("Load older messages", icon: .history, role: .plain) {
                             on press: read_older_history(m)

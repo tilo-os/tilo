@@ -703,6 +703,11 @@ fn the_conversation_reads_page_by_page(window: &Window) {
         asked["before"], "m3",
         "the page before the oldest shown: {asked}"
     );
+    // While the page before is read, the window says so rather than calling the conversation
+    // read to its start.
+    let shown = window.window();
+    assert_shows(&shown, "Loading older messages…");
+    assert_hides(&shown, "This is the start of the conversation.");
     window.ends(
         &older,
         "done",

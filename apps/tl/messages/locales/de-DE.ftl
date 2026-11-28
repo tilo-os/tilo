@@ -999,6 +999,7 @@ d-unfnvjbl = Unterhaltung
     .w-write-a-message = Nachricht schreiben
     .w-loading-messages = Nachrichten werden geladen…
     .w-load-older-messages = Ältere Nachrichten laden
+    .w-loading-older-messages = Ältere Nachrichten werden geladen…
     .w-this-is-the-start-of-the = Dies ist der Anfang der Unterhaltung.
     .w-no-messages-on-this-service-yet = Noch keine Nachrichten über diesen Dienst
     .w-conversation-with = Unterhaltung mit { $label }
