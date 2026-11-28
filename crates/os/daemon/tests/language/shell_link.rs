@@ -10,10 +10,11 @@ use runtime_collab::ShellClient;
 use serde_json::{Map, json};
 use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{
-    ActionProvider as _, CataloguePage, CatalogueRow, Completer, Confirmation, InvocationReceipt,
-    InvokeArgument, InvokeRequest, RemoteActionTarget,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
+    Completer, Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest,
+    Pending, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_actions::{ActionAddress, ActionOutput, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 
 use crate::language::host;
 
@@ -73,6 +74,68 @@ fn echoing(page: CataloguePage) -> Arc<TestProvider> {
                 ..ActionOutput::default()
             }),
     )
+}
+
+/// A provider that takes each call and holds it: a receipt saying the call goes on, a state that
+/// says so, and a next change that never comes, as a provider still at work on it.
+struct Holding {
+    asked: Mutex<Vec<InvokeRequest>>,
+    /// The completers that hold each call's next change: kept alive, they are what keeps the call
+    /// from moving until the shell that served it goes.
+    held: Mutex<Vec<Completer<()>>>,
+}
+
+impl Holding {
+    fn new() -> Self {
+        Self {
+            asked: Mutex::new(Vec::new()),
+            held: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The requests asked so far, oldest first.
+    fn asked(&self) -> Vec<InvokeRequest> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl ActionProvider for Holding {
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        Pending::ready(Ok(CataloguePage::default()))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        self.asked.lock().unwrap().push(request.clone());
+        Pending::ready(Ok(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Accepted,
+        }))
+    }
+
+    fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        Some(InvocationState::new(
+            *id,
+            InvocationUpdate::Accepted { invocation: *id },
+        ))
+    }
+
+    fn next_change(&self, _caller: &Caller, _id: &InvocationId) -> Option<Pending<()>> {
+        let (held, wait) = tilo_actions::remote::pending::<()>();
+        self.held.lock().unwrap().push(held);
+        Some(wait)
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Ok(()))
+    }
 }
 
 /// `provider`'s `resource#action`, asked to echo `echo`.
@@ -249,23 +312,8 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
 fn a_closed_link_takes_the_shells_providers_and_fails_their_calls() {
     host::run(|host| async move {
         let shell = shell_of(&host);
-        // A provider that takes a call and never answers it while the link lasts.
-        let held: Arc<Mutex<Vec<Completer<_>>>> = Arc::default();
-        let waits = {
-            let held = Arc::clone(&held);
-            let page = offered(WAITS, "so.tilo.shell", "waits/one", "answer");
-            Arc::new(
-                TestProvider::new()
-                    .with_catalogue(move |_, _| Ok(page.clone()))
-                    .answering(move |_, _| {
-                        let (answer, answered) = tilo_actions::remote::pending::<
-                            Result<InvocationReceipt, tilo_actions::remote::ActionCallError>,
-                        >();
-                        held.lock().unwrap().push(answer);
-                        answered
-                    }),
-            )
-        };
+        // A provider that takes a call and holds it while the link lasts.
+        let waits = Arc::new(Holding::new());
         let served = shell
             .provide(
                 WAITS,
