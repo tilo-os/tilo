@@ -4,7 +4,8 @@
 //! each theme) and `menus.json` (for each menu, the button's name, what its rows are, its panel's
 //! size and the patches the page applies when it opens) into `OUT`; with `--native` it also
 //! writes the window as the app paints it, closed and with each menu open, in light, dark and
-//! high contrast, as `OUT/native/{theme}-closed.png` and `OUT/native/{theme}-{menu}.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set
+//! high contrast, as `OUT/native/{theme}-closed.png` and `OUT/native/{theme}-{menu}.png`, and at two device pixels to
+//! the logical one as `…@2x.png`. `tools/web/page-menus.mjs` opens each menu in Chromium, set
 //! in the faces the page serves, and fails where the page draws it otherwise than the app: the
 //! page lays a menu's rows out itself, and only a browser measures them in the face it draws.
 #![allow(
@@ -174,23 +175,35 @@ fn main() {
             ("dark", tilo_ui_base::Theme::dark()),
             ("contrast", tilo_ui_base::Theme::high_contrast()),
         ] {
-            let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
-            driver.set_theme(theme.clone());
-            driver.relayout();
-            driver.settle_for_capture(std::time::Duration::from_secs(2));
-            driver.render_png(&out.join("native").join(format!("{scheme}-closed.png")));
-            for (name, _) in menus() {
+            // At one and two device pixels to the logical one, as a page is seen at either.
+            for (suffix, scale) in [("", 1.0), ("@2x", 2.0)] {
                 let mut driver =
                     Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
+                driver.set_input_scale(scale).unwrap();
                 driver.set_theme(theme.clone());
                 driver.relayout();
-                let closed = driver.composition();
-                let [x, y, width, height] =
-                    named(&closed.root, name).expect("each menu's button").rect;
-                driver.click_at(x + width / 2.0, y + height / 2.0);
-                // The menu as it rests, every motion it arrived by at its end.
                 driver.settle_for_capture(std::time::Duration::from_secs(2));
-                driver.render_png(&out.join("native").join(format!("{scheme}-{name}.png")));
+                driver.render_png(
+                    &out.join("native")
+                        .join(format!("{scheme}-closed{suffix}.png")),
+                );
+                for (name, _) in menus() {
+                    let mut driver =
+                        Driver::new(tilo_ui_app::State::new(), Box::new(window()), (720, 480));
+                    driver.set_input_scale(scale).unwrap();
+                    driver.set_theme(theme.clone());
+                    driver.relayout();
+                    let closed = driver.composition();
+                    let [x, y, width, height] =
+                        named(&closed.root, name).expect("each menu's button").rect;
+                    driver.click_at(x + width / 2.0, y + height / 2.0);
+                    // The menu as it rests, every motion it arrived by at its end.
+                    driver.settle_for_capture(std::time::Duration::from_secs(2));
+                    driver.render_png(
+                        &out.join("native")
+                            .join(format!("{scheme}-{name}{suffix}.png")),
+                    );
+                }
             }
         }
     }

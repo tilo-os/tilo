@@ -74,6 +74,8 @@ const DRAWN = `(() => {
     faceEdge: token('--tilo-face-edge') === 'transparent' ? null : resolved('color', token('--tilo-face-edge')),
     restShadows: [...document.querySelectorAll('button[aria-expanded=false]:not([role^=menuitem])')].map(b => getComputedStyle(b).boxShadow),
     triggerChevron: !!trigger?.lastElementChild?.matches('svg.tilo-glyph'),
+    triggerChevronSize: (box => box && [box.width, box.height])(trigger?.lastElementChild?.getBoundingClientRect()),
+    iconSize: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tilo-menu-icon')),
     shadow: getComputedStyle(menu).boxShadow,
   };
 })()`;
@@ -144,6 +146,10 @@ try {
         fail(`a button at rest draws an edge the app does not: ${drawn.restShadows.join(' | ')}`);
       }
       if (!drawn.triggerChevron) fail('its button draws no down chevron, where the app draws one');
+      // The chevron is the app's small icon, as wide as it is tall, never stretched by the words beside it.
+      if (drawn.triggerChevron && drawn.triggerChevronSize.some(length => Math.abs(length - drawn.iconSize) > 0.01)) {
+        fail(`its button's chevron is ${drawn.triggerChevronSize.join('×')} px where the app's is ${drawn.iconSize} px`);
+      }
       if (drawn.trigger !== drawn.held) fail(`its button is not held while it is open (${drawn.trigger}, not ${drawn.held})`);
       if (drawn.panel.some((length, axis) => Math.abs(length - panel[axis]) > 0.5)) {
         fail(`the panel is ${drawn.panel.join('×')} px where the app's is ${panel.join('×')} px`);

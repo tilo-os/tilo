@@ -774,6 +774,9 @@ impl Page {
                 // A labelled button that opens a menu ends in its down chevron, as the app paints
                 // it: it reads as a choice, not an action.
                 if access.role == Role::Button && access.state.expanded.is_some() {
+                    // Marked on the button: its words are a text node, which no selector sees, so
+                    // the chevron cannot be told from an icon-only button's glyph by its place.
+                    element.flag("data-chevron");
                     element.own.push_str(&tilo_ui_base::icons::glyph_svg(
                         tilo_ui_base::icons::Icon::ChevronDown,
                     ));
