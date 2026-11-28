@@ -1446,13 +1446,15 @@ impl Device {
                         "A device action",
                     )
                     .await?;
-                // What waits for the person's yes (a ticket does) they approve on their session:
-                // this connection is a program of theirs, which never answers its own question.
+                // What waits for the person's yes (a ticket does) they approve on their session,
+                // its record named by the call: this connection is a program of theirs, which
+                // never answers its own question.
+                if started["status"] == "pending" || started["status"] == "asked" {
+                    let run = started["invocation"].as_str().unwrap_or_default();
+                    self.approve(run);
+                }
                 calls
-                    .follow_asked(None, started, async |record: &str| {
-                        self.approve(record);
-                        Ok(())
-                    })
+                    .follow_asked(None, started, async |_: &str| Ok(()))
                     .await
             });
             match answered {

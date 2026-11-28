@@ -2051,18 +2051,29 @@ impl Daemon {
         }
     }
 
-    /// [`Self::program_tree`] for `program`, which dialled this daemon's socket itself
-    /// ([`Caller::from_program`]): what its calls are recorded and asked as.
+    /// [`Self::connection_tree_in`] for `program`, which dialled this daemon's socket itself
+    /// ([`Caller::from_program`]): the same trees, its calls recorded and asked as the program,
+    /// never as the person's own act.
     pub(crate) fn program_tree_from(
         self: &Arc<Self>,
         workspace: Option<&str>,
         program: &str,
     ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let caller = Caller::local_person(&self.actor).from_program(program);
-        match workspace {
-            Some(workspace) => self.tree_in(workspace, caller.in_workspace(workspace)),
-            None => self.account_tree_for(caller),
+        if super::confined::workspace_of(&self.cert).is_some() {
+            return self.tenant_tree_in(workspace);
         }
+        let caller = Caller::local_person(&self.actor).from_program(program);
+        let Some(workspace) = workspace else {
+            let own = self.workspace.clone();
+            return self
+                .program_tree_from(Some(&own), program)
+                .or_else(|_| self.account_tree_for(caller));
+        };
+        if workspace == self.workspace {
+            crate::RuntimeServices::workspace(self.as_ref())
+                .map_err(|why| io::Error::other(why.to_string()))?;
+        }
+        self.tree_in(workspace, caller.in_workspace(workspace))
     }
 
     /// The tree `account` reaches alone: the person's own list, and nothing of a workspace. It is

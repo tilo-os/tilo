@@ -1594,6 +1594,9 @@ pub(crate) fn serve_for_test(
     native.serve_apps(app_take(session));
     native.serve_the_person(the_persons(session, Arc::new(OnceLock::new())));
     native.serve_keys(key_endpoint(session));
+    native
+        .seats
+        .serve(Arc::new(PersonShells(Arc::downgrade(session))));
     let listener = tilo_files::native::private::bind_socket(socket)?;
     std::thread::Builder::new()
         .name("tilo-native-test".into())
