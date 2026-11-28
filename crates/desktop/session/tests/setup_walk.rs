@@ -22,8 +22,10 @@ const USE_EXISTING: &str = "Use my existing Tilo identity";
 const UNDERSTOOD: &str =
     "I understand that losing this device without a backup means losing this identity.";
 const CREATE: &str = "Create local identity";
-const SKIP_UNDERSTOOD: &str = "I understand that without a recovery key or backup, losing this device means losing this identity.";
-const CONTINUE_WITHOUT: &str = "Continue without backup";
+/// The backup step's way on while no backup is saved: the offer is never forced.
+const LATER: &str = "Later";
+/// What the backup step says leaving it for later means.
+const BACKUP_OFFERED: &str = "Until you back it up, this identity lives only on this computer. Devices offers the backup whenever you are ready.";
 const BACKUP_STEP: &str = "Step 3 of 4";
 const WELCOME: &str = "Welcome to Tilo";
 const FINISH: &str = "Continue to desktop";
@@ -141,15 +143,14 @@ fn to_backup(session: &mut Session) {
 }
 
 /// From the first page to the desktop: create an identity, accept that it is the person's to
-/// protect, skip the backup once its consequence is acknowledged, and enter the desktop.
+/// protect, leave the backup for later, and enter the desktop.
 #[test]
 fn a_person_creates_an_identity_and_reaches_the_desktop_by_what_setup_shows() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (ceremony, _home) = ceremony();
     let mut session = session_with(ceremony);
     to_backup(&mut session);
-    press(&mut session, SKIP_UNDERSTOOD);
-    press(&mut session, CONTINUE_WITHOUT);
+    press(&mut session, LATER);
     shows(&mut session, WELCOME);
     press(&mut session, FINISH);
     until(&mut session, "setup gives the desktop back", |session| {
@@ -182,23 +183,34 @@ fn creating_waits_for_the_acknowledgement_its_words_tick() {
     shows(&mut session, BACKUP_STEP);
 }
 
-/// Continuing without a backup waits for its acknowledgement, then moves on.
+/// Leaving the backup for later is one press, and the page says what that means before the person
+/// makes it: the offer is never forced, and nothing but Later leads on from the step.
 #[test]
-fn continuing_without_a_backup_waits_for_its_acknowledgement() {
+fn leaving_the_backup_for_later_says_what_it_means_and_takes_one_press() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (ceremony, _home) = ceremony();
     let mut session = session_with(ceremony);
     to_backup(&mut session);
 
-    dimmed(&mut session, CONTINUE_WITHOUT);
     assert!(
-        says(&session, BACKUP_STEP) && !says(&session, WELCOME),
-        "the backup step holds until its consequence is acknowledged"
+        says(&session, BACKUP_OFFERED),
+        "the backup step says what leaving it for later means"
     );
+    assert!(
+        !offers(&session, "Continue without backup"),
+        "no second way passes the backup without saying what that means"
+    );
+    // Escape is no way past it either: the step stands.
+    key(&mut session, KEY_ESCAPE);
+    settle(&mut session);
+    shows(&mut session, BACKUP_STEP);
 
-    press(&mut session, SKIP_UNDERSTOOD);
-    press(&mut session, CONTINUE_WITHOUT);
+    press(&mut session, LATER);
     shows(&mut session, WELCOME);
+    assert!(
+        !says(&session, BACKUP_STEP),
+        "the backup step is behind the person"
+    );
 }
 
 /// Escape goes back where the step can still go back (the ways to bring an existing identity, and
@@ -253,7 +265,7 @@ fn escape_goes_back_only_where_setup_can_go_back() {
     key(&mut session, KEY_ESCAPE);
     settle(&mut session);
     assert!(
-        offers(&session, CONTINUE_WITHOUT),
+        offers(&session, LATER),
         "the identity exists: Escape does not take the backup step away"
     );
 }
@@ -405,10 +417,8 @@ fn every_way_on_stays_on_a_small_display_with_large_text() {
     on_small_display(&mut session, CREATE);
     press(&mut session, UNDERSTOOD);
     press(&mut session, CREATE);
-    on_small_display(&mut session, SKIP_UNDERSTOOD);
-    on_small_display(&mut session, CONTINUE_WITHOUT);
-    press(&mut session, SKIP_UNDERSTOOD);
-    press(&mut session, CONTINUE_WITHOUT);
+    on_small_display(&mut session, LATER);
+    press(&mut session, LATER);
     on_small_display(&mut session, FINISH);
     drop(session);
 
