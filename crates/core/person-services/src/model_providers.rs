@@ -44,8 +44,9 @@ use tilo_workspace_records::models::{
 
 use crate::model_answers::Models;
 use crate::person_settings::{
-    ProviderKeys, add_provider, answer, argument, provider_config, providers, remove_key,
-    remove_provider, save_provider_config, set_assignment, set_enabled, set_key, view_of,
+    ProviderKeys, add_provider, answer, argument, keep_local_models_shown, provider_config,
+    providers, remove_key, remove_provider, save_provider_config, set_assignment, set_enabled,
+    set_key, view_of,
 };
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 
@@ -146,6 +147,14 @@ impl crate::PersonServices {
             | ModelsAction::InstallHubModel { .. } => {
                 answer(&local_hub::ask((keys, &root), asked).await)
             }
+            // What this computer's model manager keeps, and the changes to it: the manager is
+            // the computer's, and a workspace kept elsewhere runs none.
+            local @ (ModelsAction::LocalModels
+            | ModelsAction::InstallLocalModel { .. }
+            | ModelsAction::StartLocalModel { .. }
+            | ModelsAction::StopLocalModel { .. }
+            | ModelsAction::RemoveLocalModel { .. }
+            | ModelsAction::StageAccelerator) => self.on_local_models(local, &root).await,
             // Listing the providers changes nothing, so the person's settings are not said to
             // have changed by it, and neither does a sign-in until it is granted.
             ModelsAction::List => answer(&Ok(providers(&root))),
@@ -176,6 +185,52 @@ impl crate::PersonServices {
                 changed
             }
         }
+    }
+
+    /// A [`model_providers::LOCAL_MODELS`] read or a change to this computer's models: the
+    /// reading is kept where the workspace's own is, so each member reads what the manager said,
+    /// and a change that removed a model takes the workspace's provider at its address too.
+    async fn on_local_models(
+        &self,
+        asked: ModelsAction,
+        root: &Path,
+    ) -> Result<Value, ActionCallError> {
+        if matches!(asked, ModelsAction::LocalModels) {
+            let shown = local_hub::models().await;
+            let at = root.to_owned();
+            let kept = shown.clone();
+            match tokio::task::spawn_blocking(move || keep_local_models_shown(&at, &kept)).await {
+                Ok(Ok(())) => self.person_settings_changed(),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "this computer's models are not in the reading");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "this computer's models are not in the reading");
+                }
+            }
+            return answer(&Ok(shown));
+        }
+        let removing = match &asked {
+            ModelsAction::RemoveLocalModel { model } => Some(model.clone()),
+            _ => None,
+        };
+        let served_at = match removing {
+            Some(model) => local_hub::models()
+                .await
+                .models
+                .into_iter()
+                .find(|shown| shown.id == model)
+                .map(|shown| shown.phase.endpoint),
+            None => None,
+        };
+        let done = local_hub::run(&asked).await;
+        if done.is_ok() {
+            if let Some(endpoint) = served_at.filter(|endpoint| !endpoint.is_empty()) {
+                forget_local_provider(root, &endpoint);
+            }
+            self.person_settings_changed();
+        }
+        answer(&done)
     }
 
     /// The [`model_providers::PROVIDER`] action `asked` that changes `workspace`'s providers
@@ -240,6 +295,14 @@ impl crate::PersonServices {
                 answer(&set_reasoning(root, &provider, effort.as_deref()))
             }
             ModelsAction::LinkThisComputer => answer(&self.link_from_this_computer(here)),
+            ModelsAction::UseLocalModel { model } => {
+                if !self.inner.models.on_a_computer() {
+                    return Err(ActionCallError::Refused {
+                        reason: "Only a computer of yours offers its own model: this workspace is kept elsewhere".to_owned(),
+                    });
+                }
+                answer(&use_local_model(root, &model).await)
+            }
             // A key named by its vault item is a use of the vault, answered there.
             _ => Err(ActionCallError::UnknownAction),
         }
@@ -406,6 +469,95 @@ fn add_preset(root: &Path, preset: &str) -> Result<ProviderView, String> {
     config.profiles.push(profile);
     save_provider_config(root, &config)?;
     Ok(view)
+}
+
+/// [`model_providers::USE_LOCAL_MODEL`]: the running local model `model`, as a provider of this
+/// workspace at the address this computer serves it at, and the model work runs on. A model
+/// that is installed but not running has no address to ask, so it is refused until it starts.
+async fn use_local_model(
+    root: &Path,
+    model: &str,
+) -> Result<model_providers::ModelProviders, String> {
+    let shown = local_hub::models().await;
+    if !shown.available {
+        return Err(shown.problem.unwrap_or_else(|| {
+            "This computer runs no model service, so it has no model to offer".to_owned()
+        }));
+    }
+    let found = shown
+        .models
+        .iter()
+        .find(|shown| shown.id == model)
+        .ok_or_else(|| "That model is not one this computer runs".to_owned())?;
+    if found.phase.state != "ready" || !found.phase.running || found.phase.endpoint.is_empty() {
+        return Err(
+            "Start the model first: the workspace asks it at the address it serves".to_owned(),
+        );
+    }
+    let endpoint = found.phase.endpoint.trim_end_matches('/').to_owned();
+    let mut config = provider_config(root);
+    let mut profile = config
+        .profiles
+        .iter()
+        .find(|profile| {
+            profile.sign_in.is_none() && profile.endpoint.trim_end_matches('/') == endpoint
+        })
+        .cloned()
+        .unwrap_or_else(ProviderProfile::local_vllm);
+    profile.label.clone_from(&found.name);
+    profile.protocol = agent_provider_config::ProviderProtocol::OpenAiCompatible;
+    profile.endpoint.clone_from(&found.phase.endpoint);
+    profile.location = EndpointLocation::ThisDevice;
+    profile.credential = None;
+    profile.sign_in = None;
+    profile.enabled = true;
+    profile.models = vec![ModelDescriptor {
+        label: found.name.clone(),
+        revision: Some(found.revision.clone()),
+        vision: found.vision,
+        tool_calling: true,
+        ..ModelDescriptor::new(found.id.clone())
+    }];
+    profile.default_model = Some(found.id.clone());
+    config.profiles.retain(|kept| kept.id != profile.id);
+    config.default_profile = Some(profile.id.clone());
+    config.profiles.push(profile);
+    save_provider_config(root, &config)?;
+    Ok(providers(root))
+}
+
+/// The workspace's provider at `endpoint`, gone: the model there was removed, so nothing is
+/// asked at an address that serves nothing. Work assigned to it follows the default again.
+fn forget_local_provider(root: &Path, endpoint: &str) {
+    let mut config = provider_config(root);
+    let gone: Vec<String> = config
+        .profiles
+        .iter()
+        .filter(|profile| {
+            profile.sign_in.is_none()
+                && profile.endpoint.trim_end_matches('/') == endpoint.trim_end_matches('/')
+        })
+        .map(|profile| profile.id.clone())
+        .collect();
+    if gone.is_empty() {
+        return;
+    }
+    config
+        .profiles
+        .retain(|profile| !gone.contains(&profile.id));
+    if config
+        .default_profile
+        .as_ref()
+        .is_some_and(|default| gone.contains(default))
+    {
+        config.default_profile = None;
+    }
+    config
+        .interaction_models
+        .retain(|_, chosen| !gone.contains(&chosen.profile));
+    if let Err(error) = save_provider_config(root, &config) {
+        tracing::warn!(%error, "a removed local model's provider stays in the workspace's models");
+    }
 }
 
 /// What a provider says of a key it is shown.

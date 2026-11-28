@@ -838,7 +838,33 @@ async fn account_with_secret(
 }
 
 pub(super) fn providers(root: &Path) -> ModelProviders {
-    providers_of(&provider_config(root))
+    let mut shown = providers_of(&provider_config(root));
+    shown.local = local_models_shown(root);
+    shown
+}
+
+/// The file under the workspace's own root where the host keeps what this computer's model
+/// manager last answered about its models, so the reading carries it: a cache, whose owner is
+/// the manager.
+const LOCAL_MODELS_CACHE: &str = "local-models.json";
+
+/// What this computer's model manager last answered about its models, as the reading holds it.
+pub(super) fn local_models_shown(root: &Path) -> Option<model_providers::LocalModels> {
+    let kept = std::fs::read_to_string(root.join(LOCAL_MODELS_CACHE)).ok()?;
+    tilo_failure::ignored!(
+        "a cache the manager's next answer replaces is not read",
+        serde_json::from_str(&kept)
+    )
+    .ok()
+}
+
+/// Keep `shown` as what this computer's model manager last answered, for the reading.
+pub(super) fn keep_local_models_shown(
+    root: &Path,
+    shown: &model_providers::LocalModels,
+) -> Result<(), String> {
+    let kept = serde_json::to_string(shown).map_err(|error| error.to_string())?;
+    std::fs::write(root.join(LOCAL_MODELS_CACHE), kept).map_err(|error| error.to_string())
 }
 
 /// `config`'s providers as the pane reads them, each saying whether it names a key.
@@ -873,6 +899,7 @@ fn providers_of(config: &agent_provider_config::ProviderConfig) -> ModelProvider
                 },
             })
             .collect(),
+        local: None,
     }
 }
 

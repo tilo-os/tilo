@@ -196,13 +196,13 @@ pub enum ModelsAction {
     /// on `OpenAI`'s page ([`SignInStarted`]). The server waits for `OpenAI` to grant it, keeps
     /// the grant in the person's vault and refreshes it there; no window ever holds a token.
     /// Only the person themselves may sign in.
-    #[effect(kind = "undoable")]
+    #[effect(kind = "undoable", returns = SignInStarted)]
     BeginSignIn {
         #[param("What the account is used for: `subscription` when left out, or `api-usage`.")]
         using: Option<AccountUse>,
     },
     /// Wait for a provider sign-in
-    #[effect(kind = "read")]
+    #[effect(kind = "read", returns = SignInState)]
     WaitSignIn {
         #[param("The sign-in, as beginning one named it.", name = "signIn")]
         sign_in: String,
@@ -256,6 +256,55 @@ pub enum ModelsAction {
     /// provider yet, no key) and the words the person reads.
     #[effect(kind = "read")]
     Ask,
+    /// List the models this computer runs
+    ///
+    /// Asks the computer's model manager what it has installed, what it offers for this
+    /// machine, and how far each setup has got. A computer without a manager answers
+    /// [`LocalModels::available`] false and why.
+    #[effect(kind = "read", returns = LocalModels)]
+    LocalModels,
+    /// Download a model the manager offers
+    #[effect(kind = "undoable")]
+    InstallLocalModel {
+        #[param("The model's id, as the manager names it.")]
+        model: String,
+        #[param("The signed revision to download.")]
+        revision: String,
+        #[param("Whether the model's licence is accepted.", name = "acceptLicense")]
+        accept_license: Option<bool>,
+    },
+    /// Start serving an installed model
+    #[effect(kind = "undoable")]
+    StartLocalModel {
+        #[param("The model's id, as the manager names it.")]
+        model: String,
+    },
+    /// Stop serving a model
+    #[effect(kind = "undoable")]
+    StopLocalModel {
+        #[param("The model's id, as the manager names it.")]
+        model: String,
+    },
+    /// Remove an installed model and its files
+    #[effect(kind = "undoable")]
+    RemoveLocalModel {
+        #[param("The model's id, as the manager names it.")]
+        model: String,
+    },
+    /// Stage the accelerator pack the recommended model needs
+    #[effect(kind = "undoable")]
+    StageAccelerator,
+    /// Offer this computer's running model to the workspace
+    ///
+    /// Makes the model a workspace provider at the loopback address this computer's manager
+    /// serves it at, and the model work runs on. The model must be installed and running, and
+    /// the workspace must run on this computer: a server elsewhere reaches no loopback of the
+    /// person's. Answers the providers as a [`ModelProviders`].
+    #[effect(kind = "undoable", returns = ModelProviders)]
+    UseLocalModel {
+        #[param("The model's id, as the manager names it.")]
+        model: String,
+    },
 }
 
 /// Each action's id, as its declaration in [`ModelsAction`] names it.
@@ -272,7 +321,9 @@ ids! {
     LIST, ADD_PROVIDER, SET_KEY, SET_KEY_FROM_ITEM, REMOVE_KEY, REMOVE_PROVIDER, ADD_PRESET,
     SET_ENABLED, REFRESH_MODELS, ADD_MODEL, SET_DEFAULT, SET_ASSIGNMENT, SET_ASSIGNMENTS,
     SET_REASONING, BEGIN_SIGN_IN, WAIT_SIGN_IN, CANCEL_SIGN_IN, SEARCH_HUB_MODELS,
-    SHOW_HUB_MODEL, INSTALL_HUB_MODEL, LINK_THIS_COMPUTER, ASK
+    SHOW_HUB_MODEL, INSTALL_HUB_MODEL, LINK_THIS_COMPUTER, ASK, LOCAL_MODELS,
+    INSTALL_LOCAL_MODEL, START_LOCAL_MODEL, STOP_LOCAL_MODEL, REMOVE_LOCAL_MODEL,
+    STAGE_ACCELERATOR, USE_LOCAL_MODEL
 }
 
 /// The declaration of the action `action`, when it is one of [`ModelsAction`].
@@ -389,6 +440,11 @@ pub struct ModelProviders {
     /// where a workspace has none of them yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presets: Vec<ProviderPreset>,
+    /// The models the computer hosting this workspace runs, as its model manager last answered
+    /// [`LOCAL_MODELS`]; absent until it was asked. Host state, so every member reads the same
+    /// computer's models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalModels>,
 }
 
 /// A provider the catalogue knows, which a person may add by its name
@@ -531,7 +587,9 @@ pub enum AccountUse {
 }
 
 /// A sign-in begun: what the person enters, and where.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SignInStarted {
     /// What [`WAIT_SIGN_IN`] and [`CANCEL_SIGN_IN`] name it by.
@@ -543,7 +601,7 @@ pub struct SignInStarted {
 }
 
 /// How a sign-in goes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(rename_all = "kebab-case", tag = "state")]
 pub enum SignInState {
     /// The person has not entered the code yet.
@@ -553,6 +611,88 @@ pub enum SignInState {
     Done { provider: ProviderView },
     /// It ended without a grant, for the reason a person reads.
     Failed { reason: String },
+}
+
+/// A model this computer's model manager runs, or offers to run.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalModel {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub revision: String,
+    /// The bytes to download, and the bytes it takes once installed.
+    pub download_bytes: i64,
+    pub installed_bytes: i64,
+    pub vision: bool,
+    /// It runs inside the apps that use it: it is installed, never started.
+    pub in_process: bool,
+    pub segmentation: bool,
+    pub license: String,
+    pub license_url: String,
+    /// How far setting it up has got.
+    pub phase: LocalPhase,
+}
+
+/// Where setting a local model up has got.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalPhase {
+    /// `downloading`, `installing`, `ready` or `error`.
+    pub state: String,
+    pub downloaded_bytes: i64,
+    pub total_bytes: i64,
+    /// How far it has got, 0 to 100; 0 when the phase says no.
+    pub percent: i64,
+    /// Whether it is serving now.
+    pub running: bool,
+    /// The loopback address agents ask it at, while it serves; empty otherwise.
+    pub endpoint: String,
+    /// Why setting it up failed, or what an install is doing.
+    pub message: String,
+}
+
+/// This computer's fit for a local model: its memory, accelerator and free storage.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalHardware {
+    /// `excellent`, `good`, `tight` or `unsupported`.
+    pub fit: String,
+    pub memory_gib: i64,
+    pub accelerator: String,
+    /// 0 when the accelerator has no memory of its own.
+    pub accelerator_memory_gib: i64,
+    /// 0 when the computer does not say.
+    pub free_storage_gib: i64,
+    pub reason: String,
+}
+
+/// The models this computer runs, and what it offers to run ([`LOCAL_MODELS`]).
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalModels {
+    /// Whether this computer's model manager answered.
+    pub available: bool,
+    /// Why it did not answer; absent when it did.
+    pub problem: Option<String>,
+    pub hardware: LocalHardware,
+    /// The model the manager picks for this computer, where it names one.
+    pub recommendation: Option<LocalModel>,
+    /// The models installed and served by a runtime here.
+    pub models: Vec<LocalModel>,
+    /// The models that run inside the apps that use them, installed or not.
+    pub in_process: Vec<LocalModel>,
+    /// The accelerator pack's state (`available`, `queued`, `staging`, `restart-required`,
+    /// `active` or `error`), empty when there is none.
+    pub accelerator: String,
 }
 
 #[cfg(test)]

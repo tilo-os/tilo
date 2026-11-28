@@ -75,6 +75,13 @@ tilo-models-show-hub-model = Describe a Hugging Face model this computer runs
 tilo-models-install-hub-model = Download a Hugging Face model to this computer
 tilo-models-link-this-computer = Run the workspace on this computer's model
 tilo-models-ask = Ask the workspace's model
+tilo-models-local-models = List the models this computer runs
+tilo-models-install-local-model = Download a model the manager offers
+tilo-models-start-local-model = Start serving an installed model
+tilo-models-stop-local-model = Stop serving a model
+tilo-models-remove-local-model = Remove an installed model and its files
+tilo-models-stage-accelerator = Stage the accelerator pack the recommended model needs
+tilo-models-use-local-model = Offer this computer's running model to the workspace
 
 # A workspace's connected services, kept by the host that keeps the workspace.
 tilo-connections-list = List connections

@@ -8,6 +8,11 @@ view agent_models_pane() {
     state key: Text = ""
     state adding_for: Text = ""
     state adding_model: Text = ""
+    state sign_in: Text = ""
+    state sign_in_code: Text = ""
+    state sign_in_page: Text = ""
+    state sign_in_note: Text = ""
+    state providers_before: Int = 0
     let m = settings.agent_models
     let p = models.models
     ui.Section("Agents answer with") {
@@ -27,6 +32,76 @@ view agent_models_pane() {
             ui.Button("Redo the choice", size: .small) {
                 on press: settings.redo_model(settings.agent_models)
             }
+        }
+    }
+    ui.Section("Sign in to your AI account") {
+        let signed_in = p.providers.filter(x -> x.signs_in)
+        ui.Text(
+            "Sign in to a plan you already pay for, and its models answer as one of this workspace's providers. Nothing is typed and no key is kept here: the sign-in is sealed in the workspace's vault.",
+            role: .caption,
+            secondary: true,
+        )
+        if sign_in != "" and p.providers.len() <= providers_before {
+            if sign_in_page != "" {
+                ui.Link(sign_in_page, label: "Open OpenAI's page")
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text("Enter the code there:", role: .caption)
+                ui.Text(sign_in_code, role: .code)
+            }
+            ui.Text(
+                if sign_in_note != "" {
+                    sign_in_note
+                } else {
+                    "Waiting for you to enter the code. This page finishes the sign-in on its own when you do."
+                },
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Check the sign-in", size: .small) {
+                    on press: {
+                        let state = models.wait_sign_in(models.models, signIn: sign_in)
+                        set(sign_in_note, sign_in_words(state))
+                    }
+                }
+                ui.Button("Cancel the sign-in", size: .small) {
+                    on press: models
+                        .cancel_sign_in(models.models, signIn: sign_in)
+                        .then(set(sign_in, ""))
+                        .then(set(sign_in_note, ""))
+                }
+            }
+        }
+        let known = signed_in.any(x -> x.configured) or sign_in != ""
+        if not known {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Sign in with ChatGPT", icon: .fingerprint) {
+                    on press: {
+                        let step = models.begin_sign_in(models.models, using: .subscription)
+                        set(providers_before, models.models.providers.len())
+                            .then(set(sign_in, step.sign_in))
+                            .then(set(sign_in_code, step.code))
+                            .then(set(sign_in_page, step.page))
+                            .then(set(sign_in_note, ""))
+                    }
+                }
+                ui.Button("Sign in with API usage instead", size: .small) {
+                    on press: {
+                        let step = models.begin_sign_in(models.models, using: .api-usage)
+                        set(providers_before, models.models.providers.len())
+                            .then(set(sign_in, step.sign_in))
+                            .then(set(sign_in_code, step.code))
+                            .then(set(sign_in_page, step.page))
+                            .then(set(sign_in_note, ""))
+                    }
+                }
+            }
+            ui.Text(
+                "A ChatGPT plan answers on the subscription you pay for. API usage bills your OpenAI organization per token.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
     ui.Section("The model each kind of work runs on") {
@@ -145,6 +220,10 @@ view agent_models_pane() {
                                     on choose: set(key_for, provider.id)
                                 }
                             }
+                        } else if provider.configured {
+                            ui.MenuItem("Sign out") {
+                                on choose: models.remove_key(models.models, provider: provider.id)
+                            }
                         }
                         ui.MenuItem("Remove this provider") {
                             on choose: models.remove_provider(models.models, provider: provider.id)
@@ -216,6 +295,170 @@ view agent_models_pane() {
             }
         }
     }
+    ui.Section("Models this computer runs") {
+        ui.Text(
+            "Installed here and served by this computer's own model service, so their answers come from this machine. A workspace kept elsewhere runs none.",
+            role: .caption,
+            secondary: true,
+        )
+        if let local = p.local {
+            if not local.available {
+                ui.Text(
+                    local.problem ?? "This computer's model service did not answer.",
+                    role: .caption,
+                    secondary: true,
+                )
+            } else {
+                let moving = local.models.any(
+                    x -> x.phase.state == "downloading" or x.phase.state == "installing",
+                )
+                    or local.in_process.any(
+                        x -> x.phase.state == "downloading" or x.phase.state == "installing",
+                    )
+                if moving {
+                    every 1s: models.local_models(models.models)
+                }
+                ui.Text(
+                    "{local_fit_words(local.hardware.fit)}: {local.hardware.reason}",
+                    role: .caption,
+                    secondary: true,
+                )
+                if local.accelerator == "available" {
+                    ui.Button("Set up the accelerator this computer needs", size: .small) {
+                        on press: models.stage_accelerator(models.models)
+                    }
+                } else if local.accelerator == "queued" or local.accelerator == "staging" {
+                    ui.Text(
+                        "Preparing the accelerator this computer needs.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                } else if local.accelerator == "restart-required" {
+                    ui.Text(
+                        "The accelerator is ready after this computer restarts.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                if let package = local.recommendation {
+                    ui.ListRow(
+                        package.name,
+                        secondary: "{local_fit_words(local.hardware.fit)} · {local_size_words(package.download_bytes)} to download · {local_size_words(package.installed_bytes)} on disk",
+                        icon: .download,
+                    ) {
+                        trailing: {
+                            ui.Button("Install", role: .primary, size: .small) {
+                                on press: models.install_local_model(
+                                    models.models,
+                                    model: package.id,
+                                    revision: package.revision,
+                                    acceptLicense: true,
+                                )
+                            }
+                        }
+                    }
+                    ui.Text(package.description, role: .caption, secondary: true)
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Text("{package.license}, at its licence page", role: .caption)
+                        if package.license_url != "" {
+                            ui.Link(package.license_url, label: "The model's licence")
+                        }
+                    }
+                }
+                if local.models.is_empty() {
+                    ui.Text(
+                        "No model is installed on this computer yet.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                for model in local.models {
+                    ui.ListRow(model.name, secondary: local_phase_words(model), icon: .hard_drive) {
+                        trailing: {
+                            row(gap: .tight, align: .center, wrap: true) {
+                                if model.phase.state == "ready" {
+                                    if model.phase.running {
+                                        ui.Button("Stop", size: .small) {
+                                            on press: models.stop_local_model(
+                                                models.models,
+                                                model: model.id,
+                                            )
+                                        }
+                                        if local_in_use(p, model) {
+                                            ui.Chip("In use")
+                                        } else {
+                                            ui.Button("Use it", size: .small) {
+                                                on press: models.use_local_model(
+                                                    models.models,
+                                                    model: model.id,
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        ui.Button("Start", size: .small) {
+                                            on press: models.start_local_model(
+                                                models.models,
+                                                model: model.id,
+                                            )
+                                        }
+                                    }
+                                }
+                                if model.phase.state == "error"
+                                    or model.phase.state == "ready"
+                                    or model.phase.state == "installing"
+                                    or model.phase.state == "downloading" {
+                                    ui.Button("Remove", size: .small) {
+                                        on press: models.remove_local_model(
+                                            models.models,
+                                            model: model.id,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if model.phase.state == "downloading" or model.phase.state == "installing" {
+                        ui.ProgressBar(
+                            value: model.phase.percent.to_float() / 100.0,
+                            label: local_phase_words(model),
+                        )
+                    }
+                }
+                for model in local.in_process {
+                    ui.ListRow(model.name, secondary: local_phase_words(model), icon: .sparkles) {
+                        trailing: {
+                            if model.phase.state == "" or model.phase.state == "error" {
+                                ui.Button("Install", size: .small) {
+                                    on press: models.install_local_model(
+                                        models.models,
+                                        model: model.id,
+                                        revision: model.revision,
+                                        acceptLicense: true,
+                                    )
+                                }
+                            } else {
+                                ui.Button("Remove", size: .small) {
+                                    on press: models.remove_local_model(
+                                        models.models,
+                                        model: model.id,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if model.phase.state == "downloading" or model.phase.state == "installing" {
+                        ui.ProgressBar(
+                            value: model.phase.percent.to_float() / 100.0,
+                            label: local_phase_words(model),
+                        )
+                    }
+                }
+            }
+        } else {
+            after 0s: models.local_models(models.models)
+            ui.Text("Looking for the models this computer runs…", role: .caption, secondary: true)
+        }
+    }
     ui.Section("Add a provider") {
         ui.Text(
             "A provider where models answer directly: a hosted API with a key, or a server on this device or your network. The key is kept in this workspace's vault, never in this window.",
@@ -236,12 +479,75 @@ view agent_models_pane() {
 /// its key stands.
 fn provider_words(provider: models.ProviderView) -> Text {
     let key = if provider.signs_in {
-        "signed in"
+        if provider.configured { "signed in" } else { "signed out" }
     } else if provider.configured { "key kept" } else { "no key" }
     let offered = if provider.enabled { "" } else { "not offered" }
     if offered == "" {
         "{provider.endpoint}, {key}"
     } else { "{provider.endpoint}, {key}, {offered}" }
+}
+
+/// What a sign-in's state means, in the words a person reads.
+fn sign_in_words(state: models.SignInState) -> Text {
+    match state {
+        .waiting => "Still waiting for you to finish signing in.",
+        .done(provider) => "Signed in: {provider.name} is ready to answer.",
+        .failed(reason) => "The sign-in did not finish: {reason}",
+    }
+}
+
+/// How well a local model fits this computer, in one word.
+fn local_fit_words(fit: Text) -> Text {
+    if fit == "excellent" {
+        "Runs well here"
+    } else if fit == "good" {
+        "Fits here"
+    } else if fit == "tight" {
+        "Fits, but close"
+    } else if fit == "unsupported" { "Too large for this computer" } else { fit }
+}
+
+/// Where a local model's setup stands, in the words a person reads.
+fn local_phase_words(model: models.LocalModel) -> Text {
+    let phase = model.phase
+    if phase.state == "downloading" {
+        "Downloading {local_size_words(phase.downloaded_bytes)} of {local_size_words(phase.total_bytes)}"
+    } else if phase.state == "installing" {
+        if phase.message != "" { phase.message } else { "Installing" }
+    } else if phase.state == "ready" {
+        if phase.running {
+            if phase.endpoint == "" { "Running" } else { "Running at {phase.endpoint}" }
+        } else { "Installed, not running" }
+    } else if phase.state == "error" {
+        if phase.message != "" { "Failed: {phase.message}" } else { "Failed" }
+    } else if phase.state == "" { "Not set up" } else { phase.state }
+}
+
+/// Whether the workspace already asks `model` at the address this computer serves it at, and
+/// work runs on it.
+fn local_in_use(p: models.Models, model: models.LocalModel) -> Bool {
+    model.phase.endpoint != ""
+        and p.providers.any(
+            x -> x.endpoint == model.phase.endpoint and p.default_provider == .some(x.id),
+        )
+}
+
+/// Bytes in the words a person reads: `18.2 GiB`, `740 MiB`.
+fn local_size_words(bytes: Int) -> Text {
+    if bytes < 1024 {
+        "{bytes} B"
+    } else if bytes < 1048576 {
+        "{local_tenths(bytes, 1024)} KiB"
+    } else if bytes < 1073741824 {
+        "{local_tenths(bytes, 1048576)} MiB"
+    } else { "{local_tenths(bytes, 1073741824)} GiB" }
+}
+
+/// `bytes` divided by `unit`, to one place, without a trailing zero.
+fn local_tenths(bytes: Int, unit: Int) -> Text {
+    let whole = bytes / unit
+    let part = bytes % unit * 10 / unit
+    if part == 0 { "{whole}" } else { "{whole}.{part}" }
 }
 
 /// The model `provider` runs when agents choose it and no model is named: its own default, else
