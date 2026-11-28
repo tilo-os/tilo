@@ -117,20 +117,24 @@ impl OtherDevice {
     }
 }
 
-/// The shell's end of a device-VPN link, as the desktop session opens it.
-async fn vpn_link(host: &Host) -> (tokio::net::UnixStream, ShellClient) {
+/// The shell's link, as the desktop session opens it: a seat has one shell, which hands over
+/// every device-VPN link of the session.
+fn shell_link(host: &Host) -> ShellClient {
     let link = host
         .daemon()
         .shell_link()
         .expect("the daemon hands its shell a link");
     link.set_nonblocking(true)
         .expect("the link is made nonblocking");
-    let shell = ShellClient::open(tokio::net::UnixStream::from_std(link).expect("a socket")).0;
-    let vpn = shell
+    ShellClient::open(tokio::net::UnixStream::from_std(link).expect("a socket")).0
+}
+
+/// The shell's end of a device-VPN link, as the desktop session opens it: one link of the shell's.
+async fn vpn_link(shell: &ShellClient) -> tokio::net::UnixStream {
+    shell
         .device_vpn()
         .await
-        .expect("the daemon serves the device VPN");
-    (vpn, shell)
+        .expect("the daemon serves the device VPN")
 }
 
 /// The person's route through another of their devices leaves this device's daemon, enters that
@@ -141,7 +145,8 @@ async fn vpn_link(host: &Host) -> (tokio::net::UnixStream, ShellClient) {
 fn the_daemon_carries_the_route_and_answers_this_devices_exit() {
     host::run(|host| async move {
         let mut other = OtherDevice::start().await;
-        let (stream, _shell) = vpn_link(&host).await;
+        let shell = shell_link(&host);
+        let stream = vpn_link(&shell).await;
         let (mut reader, mut writer) = tokio::io::split(stream);
 
         // What the person's other device offers, asked before routing through it.
@@ -162,7 +167,7 @@ fn the_daemon_carries_the_route_and_answers_this_devices_exit() {
 
         // The route: the daemon dials the other device on the tunnel and answers with its offer
         // and where the tunnel's own packets leave this device.
-        let (stream, _shell) = vpn_link(&host).await;
+        let stream = vpn_link(&shell).await;
         let (mut reader, mut writer) = tokio::io::split(stream);
         let ask = Control::Through {
             exit: hex::encode(other.addr.id.as_bytes()),
@@ -241,7 +246,7 @@ fn the_daemon_carries_the_route_and_answers_this_devices_exit() {
         // This device's exit: the shell lends its TUN, and the daemon answers the tunnel on this
         // device's endpoint. A device that is not the person's asks to route through it, and is
         // turned away before it reads a byte.
-        let (stream, _shell) = vpn_link(&host).await;
+        let stream = vpn_link(&shell).await;
         let (mut reader, mut writer) = tokio::io::split(stream);
         link::write_control(&mut writer, &Control::Exit)
             .await
