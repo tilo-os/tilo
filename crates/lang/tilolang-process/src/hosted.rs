@@ -3068,7 +3068,7 @@ impl Hosted {
         for (target, line) in self.instance.take_line_runs() {
             self.invocations.run_line(&target, &line);
         }
-        self.invocations.follow(&self.instance);
+        self.invocations.follow(&self.instance, &self.connection);
         self.invocations
             .say(|request| connection.manager().send(request));
         if let Some(shell) = &mut self.shell {

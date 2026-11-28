@@ -64,6 +64,7 @@ pub struct Invocations {
     jobs: BTreeMap<String, FollowedJob>,
     /// The job reads in flight, by their correlation: the path of the job each asks for.
     job_reads: BTreeMap<u64, String>,
+    link_ready: bool,
 }
 
 /// How long a read of a job that has not ended waits for its next move.
@@ -132,6 +133,7 @@ impl Invocations {
             queued: Vec::new(),
             jobs: BTreeMap::new(),
             job_reads: BTreeMap::new(),
+            link_ready: false,
         }
     }
 
@@ -268,6 +270,15 @@ impl Invocations {
             .map(|due| due.saturating_duration_since(now))
     }
 
+    pub(crate) fn rejoined(&mut self) {
+        for followed in self.followed.values_mut() {
+            (followed.asked_at, followed.waiting) = (None, false);
+        }
+        for job in self.jobs.values_mut() {
+            (job.asked_at, job.waiting) = (None, false);
+        }
+    }
+
     /// Run `line`, which the person typed in `target`, as their own step.
     pub fn run_line(&mut self, target: &ResourceRef, line: &str) {
         let place = call_place(target);
@@ -291,7 +302,12 @@ impl Invocations {
 
     /// Follow every invocation `instance`'s views read now, and ask for the records that are due:
     /// one never read, and one that runs or waits once [`READ_AGAIN`] passed.
-    pub fn follow(&mut self, instance: &Instance) {
+    pub fn follow(&mut self, instance: &Instance, connection: &crate::connection::Connection) {
+        let ready = connection.manager().state().is_ready();
+        if ready && !self.link_ready {
+            self.rejoined();
+        }
+        self.link_ready = ready;
         self.follow_jobs();
         for read in instance.invoked_read() {
             self.followed
@@ -616,5 +632,19 @@ mod tests {
         }
         assert_eq!(invocation_in("not an invocation"), None);
         assert_eq!(invocation_in(""), None);
+    }
+    #[test]
+    fn a_link_ready_again_asks_every_followed_read_at_once() {
+        let mut reads = Invocations::new("workspace");
+        let read = Followed {
+            id: Some(InvocationId::new()),
+            asked_at: Some(ui_core::time::now()),
+            waiting: true,
+            ..Followed::default()
+        };
+        reads.followed.insert("x".to_owned(), read);
+        assert!(reads.wakes_in().unwrap() > Duration::from_secs(1));
+        reads.rejoined();
+        assert!(reads.wakes_in().is_none(), "every read is due now");
     }
 }
