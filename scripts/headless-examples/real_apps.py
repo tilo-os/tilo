@@ -666,12 +666,21 @@ def tl_packages(state: Path, out: Path, names: list[str], *, build: bool = False
     tapps = []
     for name in names:
         print(f"==> tilolang build {name}", file=sys.stderr)
+        before = {path for path in out.glob("*.tapp")}
         run([str(tool), "build", "--locked", str(REPO / "apps/tl" / name),
              "--search", str(REPO / "apps/tl"),
              "--out", str(out), "--tilo-runtime", f"tilo-runtime/{runtime}"], cwd=REPO)
+        # The package is named by the app it declares, not by the directory it is written in:
+        # `apps/tl/pdf` makes `pdf-viewer.tapp` (the PDF Viewer). Take the one package the
+        # build just wrote, whichever name that app gives it.
         tapp = out / f"{name}.tapp"
         if not tapp.is_file():
-            raise Failed(f"tilolang build made no {tapp}")
+            made = sorted({path for path in out.glob("*.tapp")} - before)
+            if len(made) != 1:
+                raise Failed(
+                    f"tilolang build made no {tapp} and no one package to take its place: "
+                    f"{[path.name for path in made]}")
+            tapp = made[0]
         tapps.append(tapp)
     return tapps
 

@@ -16,17 +16,17 @@
           "theme": false
         },
         {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
           "pdf": {
             "name": "Report.pdf",
             "text": "The report's page",
             "pages": 2
           }
-        },
-        {
-          "launch": true
-        },
-        {
-          "wait_for": "actions"
         },
         {
           "wait_for": "Open PDF"
