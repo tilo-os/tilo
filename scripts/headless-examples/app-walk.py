@@ -3651,6 +3651,22 @@ class Walk:
         path = self.place(made_path, name)
         return {"file": str(path), "bytes": path.stat().st_size, "made_by": made}
 
+    def op_cards(self, value) -> dict:
+        """Write a vCard file of `count` contacts where a person's file chooser reaches it:
+        an import's progress is only worth seeing when there is work, so a walk says how many."""
+        name = value["name"]
+        count = int(value.get("count", 1000))
+        made = self.fixture(name)
+        cards = []
+        for n in range(1, count + 1):
+            cards.append(
+                "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Person %d\r\n"
+                "EMAIL;TYPE=work:person%d@example.org\r\nEND:VCARD\r\n" % (n, n)
+            )
+        made.write_text("".join(cards))
+        path = self.place(made, name)
+        return {"file": str(path), "cards": count, "bytes": path.stat().st_size}
+
     def op_tone(self, value) -> dict:
         """Write a song's fixture where a person's file chooser reaches it: a few seconds
         of a tone, made here rather than carried in the tree, which keeps no binary of its own.

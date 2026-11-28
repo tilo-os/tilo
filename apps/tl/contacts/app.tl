@@ -676,7 +676,7 @@ action step_import(book: Book) uses time, random (label: "Take the next cards of
             }
             return
         }
-        for card in rest_of(run.cards, run.done).take(200) {
+        for card in rest_of(run.cards, run.done).take(500) {
             let fate = file_card(book, card)
             run.done += 1
             if fate == .taken {
@@ -1602,7 +1602,12 @@ view book_window(book: Book) {
                                 icon: .file_plus,
                             )
                         }
-                        every 1s: step_import(book)
+                        // The import runs as fast as the window can paint: each tick takes the
+                        // next set of cards, so the row's counts are the work's own and an
+                        // import that needs one frame waits one frame, never a second.
+                        ui.Timer(every: 0.001) {
+                            on tick: step_import(book)
+                        }
                     }
                     // What the last import did, until the person answers it: the cards the book
                     // took, the ones it already held, and the ones waiting for review.
