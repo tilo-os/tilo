@@ -64,7 +64,9 @@
       "ops": [
         {
           "press_any": [
-            "Add step"
+            {
+              "menuitem": "Add step"
+            }
           ]
         },
         {
@@ -112,7 +114,9 @@
       "ops": [
         {
           "press_any": [
-            "Review and save…"
+            {
+              "menuitem": "Review and save…"
+            }
           ]
         },
         {
@@ -142,7 +146,9 @@
       "ops": [
         {
           "press_any": [
-            "Duplicate"
+            {
+              "menuitem": "Duplicate"
+            }
           ]
         },
         {
