@@ -2582,7 +2582,7 @@ view place_card(place: Place, chosen: State<Text>) {
         }
         row(gap: .tight) {
             ui.Button(
-                if place.saved { "Saved" } else { "Save" },
+                if place.saved { "Remove from saved places" } else { "Save place" },
                 icon: .star,
                 toggled: place.saved,
             ) {
