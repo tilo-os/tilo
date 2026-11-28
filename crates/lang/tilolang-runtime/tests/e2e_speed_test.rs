@@ -478,6 +478,23 @@ mod cases {
             assert!(said.contains(&"Server: Cloudflare at LHR".to_owned()), "{said:?}");
             assert!(said.contains(&"Data used: 12 MB".to_owned()), "{said:?}");
             assert!(texts(window.tree()).iter().any(|t| t == "Test complete"));
+            // The dial reads the download on its scale, bounded: a fast run fills it, never past.
+            let value = dial(window.tree())
+                .props
+                .get("value")
+                .cloned()
+                .expect("the dial has a value");
+            let download: f64 = values[1]
+                .split(' ')
+                .next()
+                .and_then(|number| number.parse().ok())
+                .expect("the download reads as a number");
+            let expected = (download / 800.0).clamp(0.08, 1.0);
+            assert!(
+                matches!(value, Value::Float(f) if (f - expected).abs() < 0.01),
+                "the arc is the download on its scale: {value:?} for {download} Mbps"
+            );
+            assert_eq!(text_prop(dial(window.tree()), "readout"), format!("{download:.1}"));
         }
 
         phase the_connection_quality_follows_the_numbers;
@@ -549,6 +566,13 @@ mod cases {
                 ["618.2 Mbps down", "584.6 Mbps down"],
                 "the runs before this one, newest first"
             );
+            // Each run says when it ran, as the person reads an age.
+            assert_eq!(
+                of_kind(window.tree(), "ui.Time").len(),
+                rows.len(),
+                "one time per run: {}",
+                dump(window.tree())
+            );
         }
 
         phase a_failed_run_says_why;
@@ -571,6 +595,11 @@ mod cases {
             assert!(texts(window.tree()).iter().any(|t| t == "Ready to try again"));
             assert!(of_kind(window.tree(), "ui.Stepper").is_empty(), "no stage after a failure");
             assert!(s.results().is_empty(), "and nothing was measured");
+            assert_eq!(
+                text_prop(dial(window.tree()), "readout"),
+                "",
+                "a run that failed leaves the dial empty rather than keeping a reading"
+            );
         }
 
         phase a_server_that_stops_answering_ends_the_run_without_a_measurement;
@@ -659,6 +688,27 @@ mod cases {
             };
             assert_eq!(did("record").as_deref(), Some("recorded a measurement"));
             assert_eq!(did("clear").as_deref(), Some("cleared the measurements"));
+        }
+
+        phase the_run_leads_the_window_and_measuring_never_changes_that;
+        {
+            let s = Speed::new();
+            let role = |name: &str| {
+                s.app
+                    .meta()
+                    .actions
+                    .iter()
+                    .find(|action| action.name == name)
+                    .and_then(|action| action.role.clone())
+            };
+            assert_eq!(role("start").as_deref(), Some("primary"), "the run leads the window");
+            assert_eq!(role("stop"), None, "stop is an ordinary action beside it");
+            assert_eq!(role("clear").as_deref(), Some("destructive"), "clearing forgets, and says so");
+            // A test measures: the run still leads, and the dial and its numbers are no actions.
+            s.start();
+            s.finish();
+            assert_eq!(role("start").as_deref(), Some("primary"), "measuring changes nothing");
+            assert_eq!(role("stop"), None, "nor does the end of the test");
         }
     }
 }
