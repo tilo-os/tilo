@@ -52,6 +52,14 @@ pub struct BatterySnapshot {
     /// Charge percentage, `0..=100`.
     pub percent: u8,
     pub state: BatteryState,
+    /// How much of its original capacity the pack still holds, `0..=100`; `None` when it does
+    /// not say.
+    pub health: Option<u8>,
+    /// How many charge cycles the pack went through; `None` when it does not say.
+    pub cycles: Option<u32>,
+    /// The pack's full capacity in whole watt-hours; `None` when the driver reports charge rather
+    /// than energy, so a voltage would be needed.
+    pub capacity_wh: Option<u32>,
 }
 
 impl BatterySnapshot {
@@ -71,6 +79,9 @@ impl BatterySnapshot {
             present: false,
             percent: 100,
             state: BatteryState::Unknown,
+            health: None,
+            cycles: None,
+            capacity_wh: None,
         }
     }
 }
@@ -166,6 +177,9 @@ mod tests {
             present: true,
             percent,
             state,
+            health: None,
+            cycles: None,
+            capacity_wh: None,
         }
     }
 

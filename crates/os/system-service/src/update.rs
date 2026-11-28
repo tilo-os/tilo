@@ -40,6 +40,85 @@ pub const BOOT_FALLBACK_DIR: &str = "/var/lib/tilo/boot-fallback";
 pub const UPDATE_UNIT: &str = "tilo-deployment-update.service";
 /// How long fetching, staging and applying an image may take.
 pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Where this machine keeps how it updates by itself: its schedule and whether it may download
+/// over a metered connection, written by `tilo-update-policy@<choice>.service`.
+pub const UPDATE_POLICY: &str = "/var/lib/tilo/update-policy";
+
+/// When this machine updates by itself, as the policy file names it: `system` (the image's own
+/// schedule), `daily` or `weekly`; `None` where the file says neither.
+#[must_use]
+pub fn policy_schedule() -> Option<String> {
+    let value = policy_value("schedule")?;
+    matches!(value.as_str(), "system" | "daily" | "weekly").then_some(value)
+}
+
+/// Whether an automatic update may download over a metered connection; `None` where the policy
+/// file does not say.
+#[must_use]
+pub fn policy_allow_metered() -> Option<bool> {
+    match policy_value("metered")?.as_str() {
+        "allow" => Some(true),
+        "avoid" => Some(false),
+        _ => None,
+    }
+}
+
+/// The value the policy file gives `key`.
+fn policy_value(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(UPDATE_POLICY).ok()?;
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .find(|(named, _)| named.trim() == key)
+        .map(|(_, value)| value.trim().to_owned())
+}
+
+/// Set how this machine updates by itself, through the unit that rewrites its policy: `schedule`
+/// is `system`, `daily` or `weekly`.
+///
+/// # Errors
+/// The unit did not run, or refused the choice.
+pub fn set_policy_schedule(schedule: &str) -> Result<(), String> {
+    let action = match schedule {
+        "system" => "schedule-system",
+        "daily" => "schedule-daily",
+        "weekly" => "schedule-weekly",
+        other => return Err(format!("`{other}` is not an update schedule")),
+    };
+    run_policy_unit(action)
+}
+
+/// Say whether an automatic update may download over a metered connection.
+///
+/// # Errors
+/// The unit did not run.
+pub fn set_policy_allow_metered(allow: bool) -> Result<(), String> {
+    run_policy_unit(if allow {
+        "metered-allow"
+    } else {
+        "metered-avoid"
+    })
+}
+
+/// Start the unit that applies one policy choice.
+fn run_policy_unit(action: &str) -> Result<(), String> {
+    let unit = format!("tilo-update-policy@{action}.service");
+    let output = bounded_command::run(
+        "systemctl",
+        &["start", "--no-ask-password", &unit],
+        None,
+        64 * 1024,
+        Duration::from_secs(30),
+    )
+    .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "setting the update policy ended with {}",
+            output.status
+        ))
+    }
+}
 /// The unit that boots the previous deployment from now on, which the person at the machine may
 /// start (os/etc/polkit-1/rules.d/49-tilo-updates.rules). It reorders the boot loader's entries
 /// and writes the next boot's default; the restart that follows is what makes it take effect.
@@ -189,6 +268,8 @@ pub fn reading(
         restart_needed,
         failed,
         staged,
+        schedule: policy_schedule(),
+        allow_metered: policy_allow_metered(),
         ..Update::default()
     }
 }

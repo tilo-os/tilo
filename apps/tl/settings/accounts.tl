@@ -400,6 +400,11 @@ view accounts_pane() {
                         role: .caption,
                         secondary: true,
                     )
+                    ui.Text(
+                        "Google asks on its own page. Connecting Mail lets Tilo read, send and delete Gmail messages; if Google denies access or the mailbox cannot be checked, nothing is saved.",
+                        role: .caption,
+                        secondary: true,
+                    )
                     ui.Button("Sign in with Google", size: .small) {
                         on press: {
                             let step = accounts.begin_sign_in(

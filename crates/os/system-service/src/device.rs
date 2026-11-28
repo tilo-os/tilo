@@ -205,6 +205,12 @@ pub enum Change {
     RestartDesktop,
     /// Boot the previous deployment from now on, and restart into it.
     Rollback,
+    /// Boot the previous deployment from now on, and leave the restart to the person.
+    RollbackLater,
+    /// Update by itself on this schedule: `system`, `daily` or `weekly`.
+    UpdateSchedule(String),
+    /// An automatic update may download over a metered connection, or waits for one that is not.
+    AllowMetered(bool),
     /// The zone the person picked: following the device stops.
     Zone(String),
     /// The zone where the device is, while it follows the device.
@@ -608,6 +614,9 @@ impl System for OsSystem {
                 crate::update::rollback()?;
                 perform_session_action(SessionAction::Restart)
             }
+            Change::RollbackLater => crate::update::rollback(),
+            Change::UpdateSchedule(schedule) => crate::update::set_policy_schedule(schedule),
+            Change::AllowMetered(allow) => crate::update::set_policy_allow_metered(*allow),
             Change::Zone(zone) => {
                 // A zone the person picks turns following the device off.
                 settings_store::clock::AUTOMATIC_ZONE

@@ -1805,6 +1805,9 @@ impl SystemService {
             UpdateAction::RestartDesktop => Change::RestartDesktop,
             UpdateAction::RestartToUpdate => Change::Restart,
             UpdateAction::Rollback => Change::Rollback,
+            UpdateAction::RollbackLater => Change::RollbackLater,
+            UpdateAction::SetSchedule { schedule } => Change::UpdateSchedule(schedule),
+            UpdateAction::SetAllowMetered { allow } => Change::AllowMetered(allow),
         };
         Ok(self.start(Part::Update, id, change))
     }

@@ -340,6 +340,9 @@ impl PowerLink {
             on_battery: snapshot.runs_on_battery(),
             minutes_left,
             charge_limit: self.inner.pack.limit(),
+            health: snapshot.health,
+            cycles: snapshot.cycles,
+            capacity_wh: snapshot.capacity_wh,
             notice: self.inner.notice.lock_recover().clone(),
         }
     }

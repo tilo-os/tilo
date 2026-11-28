@@ -44,6 +44,9 @@ mod tests {
             present: true,
             percent,
             state,
+            health: None,
+            cycles: None,
+            capacity_wh: None,
         }
     }
 

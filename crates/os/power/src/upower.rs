@@ -229,6 +229,9 @@ fn battery_reading(
         present: true,
         percent: percentage?.round().clamp(0.0, 100.0) as u8,
         state: BatteryState::from_upower(state?),
+        health: None,
+        cycles: None,
+        capacity_wh: None,
     })
 }
 

@@ -735,6 +735,9 @@ impl Connectivity {
             BluetoothAccessoryAction::Disconnect => Change::Disconnect { address },
             BluetoothAccessoryAction::Forget => Change::ForgetBluetooth { address },
             BluetoothAccessoryAction::Rename { name } => Change::RenameBluetooth { address, name },
+            BluetoothAccessoryAction::SetTrusted { trusted } => {
+                Change::TrustBluetooth { address, trusted }
+            }
         };
         self.start(Part::Bluetooth, id, change)
     }
@@ -760,10 +763,22 @@ impl Connectivity {
     }
 
     /// `action` on the VPN profile whose id is `profile`.
-    fn vpn_profile(&mut self, profile: &str, action: VpnProfileAction) -> Started {
+    fn vpn_profile(
+        &mut self,
+        profile: &str,
+        action: VpnProfileAction,
+    ) -> Result<Started, ApiError> {
         let id = action.id();
         let profile = profile.to_owned();
         let change = match action {
+            VpnProfileAction::Export => {
+                let text = os_actions::network_settings::export_vpn(&profile)
+                    .map_err(ApiError::InvalidArguments)?;
+                return Ok(Started::Done(ActionOutput {
+                    value: Some(Value::String(text.to_string())),
+                    resources: Vec::new(),
+                }));
+            }
             VpnProfileAction::Connect => Change::Vpn { profile, on: true },
             VpnProfileAction::Disconnect => Change::Vpn { profile, on: false },
             VpnProfileAction::Forget => Change::ForgetVpn { profile },
@@ -790,7 +805,7 @@ impl Connectivity {
                 },
             },
         };
-        self.start(Part::Vpn, id, change)
+        Ok(self.start(Part::Vpn, id, change))
     }
 
     fn tethering(&mut self, action: TetheringAction) -> Result<Started, ApiError> {
@@ -1292,7 +1307,8 @@ pub fn bluetooth_resource(bluetooth: &Bluetooth) -> ResourceSpec {
         let bindings = tilo_resource::RowBindings::new()
             .bind(action, NO_ARGUMENTS)
             .bind(BluetoothAccessoryAction::FORGET, NO_ARGUMENTS)
-            .bind(BluetoothAccessoryAction::RENAME, NO_ARGUMENTS);
+            .bind(BluetoothAccessoryAction::RENAME, NO_ARGUMENTS)
+            .bind(BluetoothAccessoryAction::SET_TRUSTED, NO_ARGUMENTS);
         Some(
             tilo_resource::LiveRow::typed_with::<BluetoothAccessoryRow>(
                 id,
@@ -1441,7 +1457,7 @@ impl Service for Connectivity {
             }
             VPN_PROFILE => {
                 let action = decode::<VpnProfileAction>(&published, resource, action, arguments)?;
-                Ok(self.vpn_profile(key, action))
+                self.vpn_profile(key, action)
             }
             TETHERING => {
                 let action = decode::<TetheringAction>(&published, resource, action, arguments)?;

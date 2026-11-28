@@ -9,6 +9,7 @@ so-tilo-connectivity-tethering = Tethering
 
 so-tilo-connectivity-bluetooth-accessory-connect = Das Zubehör verbinden
 so-tilo-connectivity-bluetooth-accessory-disconnect = Das Zubehör trennen
+so-tilo-connectivity-bluetooth-accessory-set-trusted = Das Gerät darf sich selbst verbinden, oder fragt zuerst
 so-tilo-connectivity-bluetooth-accessory-rename = Das Zubehör umbenennen: wie dieser Rechner es nennt, in BlueZ behalten
 so-tilo-connectivity-bluetooth-accessory-forget = Das Gerät vergessen
 so-tilo-connectivity-bluetooth-nearby-pair = Ein Gerät koppeln
@@ -60,5 +61,6 @@ so-tilo-connectivity-vpn-profile-connect = Das VPN verbinden
 so-tilo-connectivity-vpn-profile-disconnect = Das VPN trennen
 so-tilo-connectivity-vpn-profile-edit = Das VPN ändern
 so-tilo-connectivity-vpn-profile-forget = Das VPN entfernen
+so-tilo-connectivity-vpn-profile-export = Das VPN als Text einer Konfigurationsdatei, den ein Import anderswo liest: seine Schlüssel gehen mit
 so-tilo-connectivity-wifi-network-join = Dem Netz beitreten
 so-tilo-connectivity-wifi-network-leave = Das Netz verlassen

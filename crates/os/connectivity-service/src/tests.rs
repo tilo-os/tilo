@@ -386,6 +386,13 @@ fn apply_bluetooth(bluetooth: &mut Bluetooth, change: &Change) {
                 }
             }
         }
+        Change::TrustBluetooth { address, trusted } => {
+            for accessory in &mut bluetooth.accessories {
+                if accessory.address == *address {
+                    accessory.trusted = *trusted;
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -981,7 +988,7 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
     assert_eq!(child_actions(&service, "bluetooth-nearby:AA:CC"), ["pair"]);
     assert_eq!(
         child_actions(&service, "bluetooth-accessory:AA:BB"),
-        ["connect", "forget", "rename"]
+        ["connect", "forget", "rename", "set-trusted"]
     );
     assert_eq!(
         child_actions(&service, "vpn-profile:uuid-work"),
@@ -1788,7 +1795,7 @@ fn an_accessory_is_renamed_and_forgotten_by_its_own_actions() {
     );
     assert_eq!(
         child_actions(&service, "bluetooth-accessory:AA:BB"),
-        ["connect", "forget", "rename"],
+        ["connect", "forget", "rename", "set-trusted"],
         "the accessory offers its own verbs"
     );
 
@@ -1806,6 +1813,25 @@ fn an_accessory_is_renamed_and_forgotten_by_its_own_actions() {
         json!("Studio headphones")
     );
     assert_eq!(bluetooth["accessories"][0]["address"], json!("AA:BB"));
+    assert_eq!(
+        bluetooth["accessories"][0]["trusted"],
+        json!(false),
+        "a device that may not connect by itself says so"
+    );
+
+    service
+        .invoke(
+            "bluetooth-accessory:AA:BB",
+            "set-trusted",
+            &arguments(json!({"trusted": true})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, BLUETOOTH)["accessories"][0]["trusted"],
+        json!(true),
+        "a trusted device connects by itself"
+    );
 
     service
         .invoke("bluetooth-accessory:AA:BB", "forget", &Map::new())

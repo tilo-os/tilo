@@ -66,6 +66,36 @@ view updates_pane() {
                 on press: settings.record_automatic_updates(settings.updates, on: not prefs.auto)
             }
         }
+        if let schedule = u.schedule {
+            setting("Update schedule", "How often this machine looks for a new system by itself") {
+                ui.ToggleGroup(selected: schedule_index(schedule), label: "Update schedule") {
+                    ui.Segment("The image's own") {
+                        on press: device.set_schedule(device.update, schedule: "system")
+                    }
+                    ui.Segment("Daily") {
+                        on press: device.set_schedule(device.update, schedule: "daily")
+                    }
+                    ui.Segment("Weekly") {
+                        on press: device.set_schedule(device.update, schedule: "weekly")
+                    }
+                }
+            }
+        }
+        if let allow = u.allow_metered {
+            setting(
+                "Metered connections",
+                "Whether an automatic update may download over a metered connection",
+            ) {
+                ui.ToggleGroup(selected: if allow { 1 } else { 0 }, label: "Metered connections") {
+                    ui.Segment("Wait for one that is not") {
+                        on press: device.set_allow_metered(device.update, allow: false)
+                    }
+                    ui.Segment("Download anyway") {
+                        on press: device.set_allow_metered(device.update, allow: true)
+                    }
+                }
+            }
+        }
         if prefs.last_checked != "" {
             ui.Text("Last checked: {prefs.last_checked}", role: .caption, secondary: true)
         }
@@ -103,8 +133,13 @@ view updates_pane() {
             let called = rollback.version ?? rollback.image ?? "The system before"
             ui.ListRow(called, secondary: "What this machine can go back to", icon: .history) {
                 trailing: {
-                    ui.Button("Go back and restart", role: .destructive) {
-                        on press: device.rollback(device.update)
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.Button("Go back, restart later", size: .small) {
+                            on press: device.rollback_later(device.update)
+                        }
+                        ui.Button("Go back and restart", role: .destructive) {
+                            on press: device.rollback(device.update)
+                        }
                     }
                 }
             }
@@ -112,6 +147,11 @@ view updates_pane() {
             ui.Text("There is nothing to go back to.", role: .caption, secondary: true)
         }
     }
+}
+
+/// Which segment of the update schedule shows: the image's own, daily, or weekly.
+fn schedule_index(schedule: Text) -> Int {
+    if schedule == "daily" { 1 } else if schedule == "weekly" { 2 } else { 0 }
 }
 
 /// Everything that can act as the person — their computers, the agents they let in and the keys

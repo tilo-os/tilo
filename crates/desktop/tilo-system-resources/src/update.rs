@@ -101,4 +101,10 @@ pub struct Update {
     pub firmware: Option<usize>,
     /// The deployments this machine went back from, oldest first.
     pub fell_back: Vec<Fallback>,
+    /// When this machine updates by itself: `system` (the image's own schedule), `daily` or
+    /// `weekly`; `None` where the machine keeps no update policy it can read.
+    pub schedule: Option<String>,
+    /// Whether an automatic update may download over a metered connection; `None` where the
+    /// machine keeps no update policy it can read.
+    pub allow_metered: Option<bool>,
 }

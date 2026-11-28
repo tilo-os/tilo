@@ -4,8 +4,8 @@
 
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Modem,
-    ModemUnit, Nearby, Network, NetworkWake, SavedEnterprise, SavedIpv4, SavedNetwork, Tethering,
-    Vpn, VpnPluginKind, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
+    ModemUnit, Nearby, Network, NetworkWake, SavedEnterprise, SavedIpv4, SavedIpv6, SavedNetwork,
+    Tethering, Vpn, VpnPluginKind, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
 };
 
 /// A change to make on the device.
@@ -101,6 +101,11 @@ pub enum Change {
     RenameBluetooth {
         address: String,
         name: String,
+    },
+    /// Let the device at `address` connect by itself, or ask first.
+    TrustBluetooth {
+        address: String,
+        trusted: bool,
     },
     Vpn {
         profile: String,
@@ -317,6 +322,15 @@ fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     saved.hidden = settings.hidden.unwrap_or_default();
     saved.open = settings.open;
     saved.ipv4 = settings.ipv4.as_ref().map(SavedIpv4::from);
+    saved.ipv6 = settings.ipv6.as_ref().map(SavedIpv6::from);
+    saved.mac = settings.mac.map(|policy| {
+        match policy {
+            os_actions::MacPolicy::Permanent => "permanent",
+            os_actions::MacPolicy::Random => "random",
+            os_actions::MacPolicy::Stable => "stable",
+        }
+        .to_owned()
+    });
     saved.enterprise = settings.enterprise.as_ref().map(SavedEnterprise::from);
     saved.wake = read_or_log(
         "network wake",
@@ -551,6 +565,9 @@ impl Device for OsDevice {
             Change::ForgetBluetooth { address } => os_actions::bluez::forget_address(address),
             Change::RenameBluetooth { address, name } => {
                 os_actions::bluez::rename_address(address, name)
+            }
+            Change::TrustBluetooth { address, trusted } => {
+                os_actions::bluez::set_trusted_address(address, *trusted)
             }
             Change::Vpn { profile, on } => os_actions::set_vpn_connection_uuid(profile, *on),
             Change::ImportVpn { kind, name, text } => {

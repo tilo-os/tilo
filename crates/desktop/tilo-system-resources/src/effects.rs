@@ -113,6 +113,40 @@ pub enum UpdateAction {
         keywords = "roll back, previous system, go back, zurücksetzen"
     )]
     Rollback,
+    /// Go back to the system this machine ran before, and restart into it when the person is
+    /// ready.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "history",
+        keywords = "roll back later, previous system, restart later"
+    )]
+    RollbackLater,
+    /// Choose when this machine updates by itself: the image's own schedule, daily or weekly.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "clock",
+        keywords = "update schedule, daily, weekly, automatisch aktualisieren"
+    )]
+    SetSchedule {
+        #[param("system, daily or weekly")]
+        schedule: String,
+    },
+    /// Say whether an automatic update may download over a metered connection.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "bar-chart",
+        keywords = "metered, metered connection, data limit"
+    )]
+    SetAllowMetered {
+        #[param("Whether it may download over a metered connection")]
+        allow: bool,
+    },
 }
 
 /// The `time-zone` resource's actions.

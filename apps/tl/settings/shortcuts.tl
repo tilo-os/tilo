@@ -2,7 +2,7 @@
 /// verb, checked against every other chord, so the shell, the shortcut guide and an agent keep
 /// one table.
 view shortcuts_pane() {
-    state shortcut: Text = "search"
+    state shortcut: Text = "Search"
     state chord: Text = ""
     state command_app: Text = ""
     state command_action: Text = ""
@@ -27,14 +27,26 @@ view shortcuts_pane() {
         }
     }
     ui.Section("Change one") {
-        ui.Dropdown(bind: shortcut, options: table.bindings.map(b -> b.id), caption: "The shortcut")
+        // The menu names each shortcut in words; the table keeps it by its id.
+        ui.Dropdown(
+            bind: shortcut,
+            options: table.bindings.map(b -> shortcut_label(b.id)),
+            caption: "The shortcut",
+        )
         ui.ShortcutRecorder(bind: chord, label: "The keys it stands on")
         row(gap: .related, align: .center, wrap: true) {
             ui.Button("Put it on these keys", role: .primary) {
-                on press: settings.rebind(settings.shortcuts, shortcut: shortcut, chord: chord)
+                on press: settings.rebind(
+                    settings.shortcuts,
+                    shortcut: shortcut_id(table.bindings, shortcut),
+                    chord: chord,
+                )
             }
             ui.Button("Its usual keys", size: .small) {
-                on press: settings.reset(settings.shortcuts, shortcuts: [shortcut])
+                on press: settings.reset(
+                    settings.shortcuts,
+                    shortcuts: [shortcut_id(table.bindings, shortcut)],
+                )
             }
         }
         ui.Text(
@@ -213,5 +225,15 @@ fn shortcut_label(id: Text) -> Text {
         "Finish the dictation"
     } else if id == "dictation-cancel" {
         "Leave the dictation"
-    } else if id == "toggle-float" { "Float the window, or not" } else { id }
+    } else if id == "toggle-float" {
+        "Float the window, or not"
+    } else if id.starts_with("focus-group-") {
+        "Window {id.slice(12, id.len())}"
+    } else if id.starts_with("focus-strip-") { "Strip {id.slice(12, id.len())}" } else { id }
+}
+
+/// The shortcut whose words are `label`, or `label` itself where none is: the menu lists what a
+/// person reads, and the table keeps each shortcut by its id.
+fn shortcut_id(bindings: List<settings.ShortcutChord>, label: Text) -> Text {
+    if let named = bindings.find(b -> shortcut_label(b.id) == label) { named.id } else { label }
 }

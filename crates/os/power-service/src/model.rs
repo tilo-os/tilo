@@ -34,6 +34,17 @@ pub struct Battery {
     /// the values it takes; absent where the hardware offers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge_limit: Option<ChargeCapCapability>,
+    /// How much of its original capacity the pack still holds, `0..=100`; absent when it does
+    /// not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<u8>,
+    /// The charge cycles the pack went through; absent when it does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycles: Option<u32>,
+    /// The pack's full capacity in watt-hours; absent when the driver reports charge rather than
+    /// energy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity_wh: Option<u32>,
 
     /// The notice no surface has shown yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +64,9 @@ impl tilo_resource::JsonSchema for Battery {
                 "state": { "type": "string" },
                 "on_battery": { "type": "boolean" },
                 "minutes_left": { "type": ["integer", "null"], "minimum": 0 },
+                "health": { "type": ["integer", "null"], "minimum": 0, "maximum": 100 },
+                "cycles": { "type": ["integer", "null"], "minimum": 0 },
+                "capacity_wh": { "type": ["integer", "null"], "minimum": 0 },
                 "charge_limit": { "type": ["object", "null"], "properties": {
                     "current": { "type": "integer" },
                     "choices": { "type": "array", "items": { "type": "integer" } },
@@ -75,6 +89,9 @@ impl tilo_resource::JsonSchema for Battery {
                 ("state", <String as JsonSchema>::field_type),
                 ("on_battery", <bool as JsonSchema>::field_type),
                 ("minutes_left", <Option<u32> as JsonSchema>::field_type),
+                ("health", <Option<u8> as JsonSchema>::field_type),
+                ("cycles", <Option<u32> as JsonSchema>::field_type),
+                ("capacity_wh", <Option<u32> as JsonSchema>::field_type),
                 (
                     "charge_limit",
                     <Option<ChargeLimit> as JsonSchema>::field_type,

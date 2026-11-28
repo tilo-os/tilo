@@ -2,7 +2,7 @@ app so.tilo.settings "Settings" (
     icon: .settings,
     category: .system,
     tagline: "This device, your workspace and the accounts they keep",
-    keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options"],
+    keywords: ["settings", "preferences", "configuration", "einstellungen", "system", "options", "vpn", "wireguard", "openvpn", "tunnel", "proxy", "privacy", "secure connection", "ipsec", "exit node", "anonymous"],
     windows: .personal,
 )
 
@@ -27,6 +27,10 @@ type Settings {
     /// The pane in front, by its own name: a search row, an agent or the sidebar's own presses
     /// set it, and the window shows that pane.
     pane: Text = "appearance"
+    /// The identities this device keeps, as the daemon last listed them, and why it could not
+    /// say. The list is the daemon's answer, kept here so the pane shows what it answered.
+    identities: Text = ""
+    identities_problem: Text = ""
 }
 
 /// One screen on the arrangement: whose it is, where it stands in the person's layout, and how
@@ -197,7 +201,7 @@ view settings_window(s: Settings) {
                     let what = pane_title(s.pane)
                     if s.pane == "network" {
                         read_pane(of: device.network, what: what) {
-                            network_pane()
+                            network_pane(s)
                         }
                     } else if s.pane == "bluetooth" {
                         read_pane(of: device.bluetooth, what: what) {
@@ -398,6 +402,14 @@ fn pane_title(pane: Text) -> Text {
     } else if pane == "permissions" {
         "Permissions"
     } else if pane == "apps" { "Apps" } else if pane == "about" { "About" } else { "Appearance" }
+}
+
+/// What an ask with no parameters is called with: an object that holds none.
+fn empty_ask() -> Option<json.Value> {
+    match json.parse("\{\}") {
+        .ok(value) => .some(value),
+        .err(why) => .none,
+    }
 }
 
 /// One setting: what it is, a line about it, and the control that changes it at the row's
@@ -1183,6 +1195,11 @@ fn vrr_unavailable_words(display: device.Display) -> Text {
     } else {
         "The graphics driver does not offer it for this display"
     }
+}
+
+/// Whether `card` runs the profile at `index`.
+fn profile_chosen(card: device.Card, index: Int) -> Bool {
+    if let chosen = card.profile { chosen == index } else { false }
 }
 
 /// Which of a display's colour profiles it shows, counted from zero: the first choice is the
@@ -2004,6 +2021,32 @@ view sound_pane() {
             }
         }
     }
+    if not sound.hardware.is_empty() {
+        ui.Section("Sound cards") {
+            for card in sound.hardware {
+                setting(
+                    card.label,
+                    "The profile the card runs: its speakers, headphones or surround",
+                ) {
+                    ui.MenuButton("The profile", icon: .sliders_horizontal) {
+                        for card_profile in card.profiles {
+                            ui.MenuItem(
+                                card_profile.label,
+                                checked: profile_chosen(card, card_profile.index),
+                                disabled: not card_profile.available,
+                            ) {
+                                on choose: device.set_profile(
+                                    device.sound,
+                                    device: card.node,
+                                    profile: card_profile.index,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     ui.Section("Input") {
         if let level = sound.input_volume {
             row(gap: .related, align: .center) {
@@ -2161,6 +2204,19 @@ view power_pane() {
                 } else { battery_words(battery.state) },
                 icon: .battery,
             )
+            if let health = battery.health {
+                ui.ListRow("Battery health", secondary: health_words(health), icon: .heart)
+            }
+            if let cycles = battery.cycles {
+                ui.ListRow(
+                    "Charge cycles",
+                    secondary: "{cycles}; each is a full charge and discharge",
+                    icon: .rotate_ccw,
+                )
+            }
+            if let capacity = battery.capacity_wh {
+                ui.ListRow("Capacity", secondary: "{capacity} Wh when new", icon: .battery_charging)
+            }
         }
     }
     if battery.present {
@@ -2203,21 +2259,27 @@ view power_pane() {
         }
     }
     ui.Section("Power mode") {
-        ui.ToggleGroup(
-            selected: if let mode = power.mode {
-                if mode == .saver { 0 } else if mode == .performance { 2 } else { 1 }
-            } else { 1 },
-            label: "Power mode",
-        ) {
-            ui.Segment("Power saver") {
-                on press: device.set_power_mode(device.power, mode: "saver")
+        if let mode = power.mode {
+            ui.ToggleGroup(
+                selected: if mode == .saver { 0 } else if mode == .performance { 2 } else { 1 },
+                label: "Power mode",
+            ) {
+                ui.Segment("Power saver") {
+                    on press: device.set_power_mode(device.power, mode: "saver")
+                }
+                ui.Segment("Balanced") {
+                    on press: device.set_power_mode(device.power, mode: "balanced")
+                }
+                ui.Segment("Performance") {
+                    on press: device.set_power_mode(device.power, mode: "performance")
+                }
             }
-            ui.Segment("Balanced") {
-                on press: device.set_power_mode(device.power, mode: "balanced")
-            }
-            ui.Segment("Performance") {
-                on press: device.set_power_mode(device.power, mode: "performance")
-            }
+        } else {
+            ui.Text(
+                "This computer's power-profile service is not available, so its power mode cannot be read or changed here.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
     ui.Section("Sleep") {
@@ -2350,6 +2412,20 @@ fn battery_words(state: Text) -> Text {
     } else if state == "pending-charge" {
         "About to charge"
     } else if state == "pending-discharge" { "About to drain" } else { "Plugged in" }
+}
+
+/// What a pack's health means for the person: a fresh pack holds all of its original charge, and
+/// a worn one less of it per cycle.
+fn health_words(health: Int) -> Text {
+    if health >= 90 {
+        "{health}% of a new pack"
+    } else if health >= 80 {
+        "{health}% of a new pack; wearing as expected"
+    } else if health >= 60 {
+        "{health}% of a new pack; consider a new battery before long"
+    } else {
+        "{health}% of a new pack; a new battery will last much longer"
+    }
 }
 
 /// The last minute a reading was taken at, or zero without readings.

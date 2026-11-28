@@ -1,7 +1,7 @@
 /// The VPN profiles this device has, each switched on or off from the list and opened on a page
 /// of its own to change; and the ways to add one: a configuration pasted in, or a profile of an
 /// installed kind.
-view vpn_pane(page: State<Text>, chosen: State<Text>) {
+view vpn_pane(page: State<Text>, chosen: State<Text>, s: Settings) {
     let vpn = device.vpn
     ui.Section("VPN") {
         ui.ListRow("Back", icon: .chevron_left) {
@@ -53,7 +53,7 @@ view vpn_pane(page: State<Text>, chosen: State<Text>) {
 }
 
 /// The ways to add a VPN.
-view vpn_add_page(page: State<Text>, chosen: State<Text>) {
+view vpn_add_page(page: State<Text>, chosen: State<Text>, s: Settings) {
     let vpn = device.vpn
     ui.Section("Add a VPN") {
         ui.ListRow("Back", icon: .chevron_left) {
@@ -65,6 +65,16 @@ view vpn_add_page(page: State<Text>, chosen: State<Text>) {
             icon: .file_text,
         ) {
             on activate: set(page, "vpn-paste")
+        }
+        ui.ListRow(
+            "Import a configuration from a file",
+            secondary: "A configuration file on this device, such as .conf or .ovpn",
+            icon: .upload,
+        ) {
+            on activate: file.choose(
+                import_vpn_file(s),
+                accept: ["text/plain", "application/octet-stream"],
+            )
         }
         if not vpn.plugins.is_empty() {
             ui.Text("Installed kinds", role: .caption, secondary: true)
@@ -118,6 +128,53 @@ view vpn_paste_page(service: Text, page: State<Text>) {
 /// The kind an import names: an installed plugin's own service, or the chosen kind's key.
 fn vpn_kind_key(service: Text, kind: Text) -> Text {
     if service != "" { service } else if kind == "OpenVPN" { "openvpn" } else { "wireguard" }
+}
+
+/// Adds the VPN a file on this device holds, its kind read from what the file says.
+action import_vpn_file(s: Settings, file: File) (icon: .upload, label: "Import a VPN from a file") {
+    let text = match file.text() {
+        .ok(said) => said,
+        .err(why) => "",
+    }
+    if text == "" {
+        return
+    }
+    device.import_vpn(device.vpn, kind: vpn_kind_of_text(text), name: file.name, text: text)
+}
+
+/// The kind a configuration's own words name: WireGuard's interface section, or OpenVPN's.
+fn vpn_kind_of_text(text: Text) -> Text {
+    if text.contains("[Interface]") or text.contains("PrivateKey") {
+        "wireguard"
+    } else { "openvpn" }
+}
+
+/// Saves the VPN as a configuration file a person chooses: what setting it up elsewhere reads.
+action vpn_file(p: device.VpnProfile) -> File (icon: .download, label: "Save the VPN as a file") {
+    if let empty = empty_ask() {
+        let answer = actions.call(
+            address: "so.tilo.device/vpn-profile:{p.id}#export",
+            arguments: empty,
+        )
+        if answer.status == .ended {
+            if let out = answer.output {
+                return File.of_text("{p.name}.conf", text_of(out))
+            }
+        }
+    }
+    File.of_text("{p.name}.conf", "")
+}
+
+/// The words a JSON value holds, or nothing where it is not one.
+fn text_of(value: json.Value) -> Text {
+    match value {
+        .string(text) => text,
+        .object(fields) => "",
+        .array(items) => "",
+        .number(number) => "",
+        .bool(flag) => "",
+        .null => "",
+    }
 }
 
 /// One profile's page: how it stands, and the settings its own page changes. What is left out of
@@ -255,9 +312,19 @@ view vpn_profile_page(chosen: State<Text>, page: State<Text>) {
                 }
             }
         }
-        ui.Button("Delete this VPN", icon: .trash, role: .destructive) {
-            on press: set(confirm_delete, true)
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Save it as a file", icon: .download) {
+                on press: file.save(vpn_file(p), name: "{p.name}.conf")
+            }
+            ui.Button("Delete this VPN", icon: .trash, role: .destructive) {
+                on press: set(confirm_delete, true)
+            }
         }
+        ui.Text(
+            "The file holds the VPN's keys: keep it only as long as setting it up elsewhere takes.",
+            role: .caption,
+            secondary: true,
+        )
         ui.ModalDialog(
             title: "Delete {p.name}?",
             secondary: "Cancel",

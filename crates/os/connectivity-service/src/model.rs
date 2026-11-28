@@ -175,6 +175,10 @@ pub struct SavedNetwork {
     pub open: bool,
     /// How its addresses are set; `None` when the device could not read them.
     pub ipv4: Option<SavedIpv4>,
+    /// How its IPv6 addresses are set; `None` when it does not edit them.
+    pub ipv6: Option<SavedIpv6>,
+    /// The hardware address this device shows the network: `permanent`, `random` or `stable`.
+    pub mac: Option<String>,
     /// Whether a wake packet over it wakes this device; `None` when the device could not read it.
     pub wake: Option<NetworkWake>,
     /// Who a work or school network knows this device as; `None` when the network is not one.
@@ -248,7 +252,20 @@ pub struct SavedIpv4 {
     pub dns: Vec<String>,
 }
 
-/// What kind of connection a saved network is.
+/// How a saved network's IPv6 addresses are set.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SavedIpv6 {
+    /// `automatic`, `manual`, `link-local` or `disabled`.
+    pub method: String,
+    /// Addresses with their prefixes, for a manual method.
+    pub addresses: Vec<String>,
+    pub gateway: Option<String>,
+    /// The name servers it asks.
+    pub dns: Vec<String>,
+}
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
@@ -392,6 +409,8 @@ pub struct Accessory {
     /// but not currently in reach.
     pub signal: Option<i16>,
     pub connected: bool,
+    /// A paired device may connect without the person answering a prompt.
+    pub trusted: bool,
 }
 
 /// A Bluetooth device in reach that is not paired.
@@ -601,6 +620,7 @@ impl From<&os_actions::bluez::DeviceInfo> for Accessory {
             battery: device.battery.filter(|percentage| *percentage > 0),
             signal: device.rssi,
             connected: device.connected,
+            trusted: device.trusted,
             ..Self::default()
         }
     }
@@ -621,6 +641,24 @@ impl From<&os_actions::IpConfiguration> for SavedIpv4 {
     fn from(config: &os_actions::IpConfiguration) -> Self {
         Self {
             automatic: config.automatic,
+            addresses: config.addresses.clone(),
+            gateway: config.gateway.clone(),
+            dns: config.dns.clone(),
+        }
+    }
+}
+
+impl From<&os_actions::network_settings::Ipv6Configuration> for SavedIpv6 {
+    fn from(config: &os_actions::network_settings::Ipv6Configuration) -> Self {
+        use os_actions::network_settings::Ipv6Method;
+        Self {
+            method: match config.method {
+                Ipv6Method::Automatic => "automatic",
+                Ipv6Method::Manual => "manual",
+                Ipv6Method::LinkLocal => "link-local",
+                Ipv6Method::Disabled => "disabled",
+            }
+            .to_owned(),
             addresses: config.addresses.clone(),
             gateway: config.gateway.clone(),
             dns: config.dns.clone(),

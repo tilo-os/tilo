@@ -483,6 +483,9 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
     let mut full_total: u64 = 0;
     let mut percent_fallback: Vec<u8> = Vec::new();
     let mut states: Vec<BatteryState> = Vec::new();
+    let mut health: Option<u8> = None;
+    let mut cycles: Option<u32> = None;
+    let mut energy = false;
 
     for dir in supplies_of_type(root, "Battery") {
         // A battery that is present but not `present` (a removed pack in a dual-bay
@@ -492,6 +495,16 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
         }
         let info = BatteryInfo::from_battery_dir(&dir, false);
         states.push(state_of(&info.status));
+        energy = info.unit == CapacityUnit::Energy;
+        // The worst pack's wear is the number a person reads: a second, fresh pack does not
+        // make the worn one last longer.
+        if let Some(reported) = info.health_percent() {
+            let reported = u8::try_from(reported.min(100)).unwrap_or(100);
+            health = Some(health.map_or(reported, |known| known.min(reported)));
+        }
+        if let Some(count) = info.cycle_count {
+            cycles = Some(cycles.map_or(count, |known| known.max(count)));
+        }
         match (info.remaining, info.full_capacity) {
             (Some(n), Some(f)) if f > 0 => {
                 now_total = now_total.saturating_add(n);
@@ -530,6 +543,11 @@ fn snapshot_in(root: &Path) -> BatterySnapshot {
         present: true,
         percent,
         state: composite_state(&states),
+        health,
+        cycles,
+        capacity_wh: (energy && full_total > 0).then(|| {
+            u32::try_from((full_total as f64 / 1_000_000.0).round() as u64).unwrap_or(u32::MAX)
+        }),
     }
 }
 

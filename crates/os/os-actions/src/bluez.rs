@@ -252,6 +252,15 @@ pub fn connect_address(address: &str) -> Result<(), String> {
     connect(&known_address(address)?.path)
 }
 
+/// Lets the device at `address` connect by itself, or asks the person first: the
+/// trust `BlueZ` keeps beside the bond.
+pub fn set_trusted_address(address: &str, trusted: bool) -> Result<(), String> {
+    if !valid_address(address) {
+        return Err("invalid Bluetooth address".into());
+    }
+    set_trusted(&known_address(address)?.path, trusted)
+}
+
 pub fn disconnect_address(address: &str) -> Result<(), String> {
     disconnect(&known_address(address)?.path)
 }

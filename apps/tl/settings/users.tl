@@ -5,6 +5,7 @@ view users_pane(s: Settings) {
     state full_name: Text = ""
     state username: Text = ""
     state password: Text = ""
+    state removing: Text = ""
     let users = device.users
     ui.Section("Login accounts") {
         if let error = users.read_error {
@@ -53,14 +54,40 @@ view users_pane(s: Settings) {
                                 role: .destructive,
                                 size: .small,
                             ) {
-                                on press: device.remove(
-                                    device.users,
-                                    user: account.username,
-                                    keep_files: true,
-                                )
+                                on press: set(removing, account.username)
                             }
                         }
                     }
+                }
+            }
+            ui.ModalDialog(
+                title: "Remove {account.full_name}?",
+                secondary: "Cancel",
+                primary: "Remove, keeping the files",
+                destructive: true,
+                open: removing == account.username,
+            ) {
+                on act_primary: device
+                    .remove(
+                        device.users,
+                        user: account.username,
+                        keep_files: true,
+                    )
+                    .then(set(removing, ""))
+                on act_secondary: set(removing, "")
+                on dismiss: set(removing, "")
+                ui.Text(
+                    "The home folder stays. Sign this account out before removing it.",
+                    role: .caption,
+                )
+                ui.Button("Remove the account and its files", role: .destructive) {
+                    on press: device
+                        .remove(
+                            device.users,
+                            user: account.username,
+                            keep_files: false,
+                        )
+                        .then(set(removing, ""))
                 }
             }
         }
@@ -77,6 +104,53 @@ view users_pane(s: Settings) {
                     full_name: full_name,
                     password: password,
                 )
+            }
+        }
+    }
+    ui.Section("Your Tilo identities") {
+        if s.identities_problem != "" {
+            ui.StatusLine(s.identities_problem, status: .error)
+        }
+        let known = known_identities(s)
+        if known.is_empty() and s.identities_problem == "" {
+            ui.Text(
+                "No signing identity yet. You set one up in your own session.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for identity in known {
+            ui.ListRow(
+                identity.display_name,
+                secondary: identity_words(identity),
+                selected: identity.active,
+                icon: .key,
+            ) {
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if identity.active {
+                            ui.Chip("Active", tone: .success)
+                        } else {
+                            ui.Button("Use", size: .small) {
+                                on press: change_identity("useIdentity", identity.id)
+                            }
+                        }
+                        if identity.protection == "LegacyPlaintext" {
+                            ui.Button("Protect now", size: .small, role: .primary) {
+                                on press: change_identity("protectIdentity", identity.id)
+                            }
+                        }
+                        ui.Button(
+                            "Remove identity",
+                            icon: .trash,
+                            icon_only: true,
+                            role: .destructive,
+                            size: .small,
+                        ) {
+                            on press: change_identity("removeIdentity", identity.id)
+                        }
+                    }
+                }
             }
         }
     }
@@ -141,3 +215,94 @@ action set_own_picture(s: Settings, file: File) (
 ) {
     device.set_photo(device.people, picture: file.url)
 }
+
+/// One signing identity this device keeps, as the daemon lists it: never its key.
+type TiloIdentity {
+    id: Text
+    display_name: Text
+    threshold: Int
+    total_shares: Int
+    active: Bool
+    protection: Text
+}
+
+/// The identities the daemon last listed, read from the answer the pane keeps.
+fn known_identities(s: Settings) -> List<TiloIdentity> {
+    if s.identities == "" {
+        return []
+    }
+    match json.decode<List<TiloIdentity>>(s.identities) {
+        .ok(list) => list,
+        .err(why) => [],
+    }
+}
+
+/// Who an identity is and how its key is kept, in a line: the shares that sign, and what holds
+/// the key.
+fn identity_words(identity: TiloIdentity) -> Text {
+    let shares = if identity.threshold == identity.total_shares {
+        "{identity.threshold} of {identity.total_shares} shares"
+    } else {
+        "{identity.threshold} of {identity.total_shares} shares sign"
+    }
+    "{shares}; {identity_protection_words(identity.protection)}"
+}
+
+/// How an identity's key is protected, in words a person reads.
+fn identity_protection_words(protection: Text) -> Text {
+    if protection == "SecretService" {
+        "protected by your keyring"
+    } else if protection == "BrokerFile" {
+        "stored in a private file"
+    } else if protection == "HardwareBacked" {
+        "protected by hardware"
+    } else if protection == "LegacyPlaintext" {
+        "some keys sit in a private file that is not encrypted; unlock your keyring to protect them"
+    } else if protection == "DeviceCertificate" {
+        "signs with this device's certificate"
+    } else { "protection not available" }
+}
+
+/// Asks the device's identity store which identities it keeps, and keeps its answer for the pane.
+/// The daemon holds the store: no window reads a key or signs with one.
+action read_identities(s: Settings) (icon: .refresh, label: "Read your identities") {
+    if let empty = empty_ask() {
+        let answer = actions.call(address: "tilo.device/devices#identities", arguments: empty)
+        if answer.status == .ended {
+            let listed = if let out = answer.output { json.encode(out) } else { "" }
+            if s.identities != listed {
+                s.identities = listed
+            }
+            if s.identities_problem != "" {
+                s.identities_problem = ""
+            }
+        } else if let why = answer.failure {
+            if s.identities_problem != why {
+                s.identities_problem = why
+            }
+        } else if s.identities_problem != "Your identities can't be changed in this session." {
+            s.identities_problem = "Your identities can't be changed in this session."
+        }
+    }
+}
+
+/// Asks the device's identity store to take `step` for identity `id`: use it for new apps,
+/// protect its key, or remove it. The store confirms the change with the person.
+action change_identity(step: Text, id: Text) (icon: .key, label: "Change an identity") {
+    if let arguments = ask_identity(id) {
+        actions.call(address: "tilo.device/devices#{step}", arguments: arguments)
+    }
+}
+
+/// What an identity step is called with: the identity, and the person's confirmation.
+fn ask_identity(id: Text) -> Option<json.Value> {
+    let text = "\{\"id\":" + json.encode(id) + ",\"confirm\":true\}"
+    match json.parse(text) {
+        .ok(value) => .some(value),
+        .err(why) => .none,
+    }
+}
+
+/// The pane reads the identities while it is open, so a step taken here or on another device
+/// shows as it lands.
+trigger listing_identities(s: Settings) every 10s: read_identities(s)

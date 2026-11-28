@@ -81,10 +81,7 @@ view accessibility_pane() {
         setting("Slow keys", "A key has to be held before it counts") {
             ui.Toggle(bind: a.slow_keys)
         }
-        setting(
-            "One key at a time",
-            "The keyboard's keys pressed one after another stand for a chord",
-        ) {
+        setting("Mouse keys", "Move the pointer and click with the numeric keypad") {
             ui.Toggle(bind: a.mouse_keys)
         }
         setting(

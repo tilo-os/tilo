@@ -1,7 +1,7 @@
 /// The Network pane: Wi-Fi, the wired link, mobile data, the hotspot and the VPN profiles of
 /// this device, each read from the device's own resources and changed by their own actions, so
 /// a press here, a press in quick settings and an agent's call change the same thing.
-view network_pane() {
+view network_pane(s: Settings) {
     state page: Text = ""
     state chosen: Text = ""
     if page == "all" {
@@ -24,11 +24,11 @@ view network_pane() {
         }
     } else if page == "vpn" {
         read_pane(of: device.vpn, what: "VPN") {
-            vpn_pane(page, chosen)
+            vpn_pane(page, chosen, s)
         }
     } else if page == "vpn-add" {
         read_pane(of: device.vpn, what: "VPN") {
-            vpn_add_page(page, chosen)
+            vpn_add_page(page, chosen, s)
         }
     } else if page == "vpn-devices" {
         read_pane(of: device.vpn, what: "VPN") {
@@ -86,6 +86,26 @@ view network_first(page: State<Text>, chosen: State<Text>) {
                     role: .caption,
                     secondary: true,
                 )
+            } else if net.connectivity == .portal {
+                // The network answers with a page of its own: it opens in the app that opens web
+                // addresses, where the person signs in once.
+                if let uri = net.portal_uri {
+                    ui.ListRow(
+                        "Sign in to this network",
+                        secondary: if let problem = net.portal_problem {
+                            problem
+                        } else {
+                            "The network asks for a sign-in page before it lets traffic out"
+                        },
+                        icon: .external_link,
+                    ) {
+                        trailing: {
+                            ui.Button("Open sign-in page", role: .primary) {
+                                on press: device.open_link(device.invite, link: uri)
+                            }
+                        }
+                    }
+                }
             } else if wifi.networks.is_empty() {
                 ui.EmptyState("No networks in reach", icon: .wifi, inline: true)
             } else {
@@ -380,6 +400,10 @@ view network_page(name: Text, page: State<Text>) {
     state addresses: Text = ""
     state gateway: Text = ""
     state dns: Text = ""
+    state ipv6_method: Text = ""
+    state ipv6_addresses: Text = ""
+    state ipv6_gateway: Text = ""
+    state ipv6_dns: Text = ""
     state priority: Text = ""
     state proxy_address: Text = ""
     state password: Text = ""
@@ -506,6 +530,46 @@ view network_page(name: Text, page: State<Text>) {
                 }
             }
             if saved.kind == .wifi {
+                ui.ListRow("The address it shows", secondary: mac_words(saved.mac), icon: .wifi) {
+                    trailing: {
+                        row(gap: .tight, align: .center, wrap: true) {
+                            for choice in [
+                                ["Permanent", "permanent"],
+                                ["Random", "random"],
+                                ["Stable", "stable"],
+                            ] {
+                                ui.Button(choice.at(0) ?? "", size: .small) {
+                                    on press: device.set_network_policy(
+                                        device.network,
+                                        profile: saved.profile,
+                                        mac_address: choice.at(1) ?? "stable",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                ui.Text(
+                    "A random address keeps networks from following this device.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            if let wake = saved.wake {
+                ui.ListRow("Wake over this network", secondary: wake_words(wake), icon: .power) {
+                    trailing: {
+                        ui.Button(
+                            if wake.on { "On" } else { "Off" },
+                            toggled: wake.on,
+                            enabled: wake_supported(wake),
+                            description: "This network cannot wake this computer.",
+                        ) {
+                            on press: saved.set_wake(not wake.on)
+                        }
+                    }
+                }
+            }
+            if saved.kind == .wifi {
                 ui.ListRow(
                     "Says its name",
                     secondary: if saved.hidden {
@@ -591,6 +655,56 @@ view network_page(name: Text, page: State<Text>) {
                             addresses: comma_list(addresses),
                             gateway: gateway.trim(),
                             dns: comma_list(dns),
+                        )
+                    }
+                }
+            }
+            if let ipv6 = saved.ipv6 {
+                ui.ListRow(
+                    "IPv6",
+                    secondary: if ipv6.method == "manual" {
+                        ipv6.addresses.join(", ")
+                    } else { ipv6_method_words(ipv6.method) },
+                    icon: .globe,
+                )
+                ui.ToggleGroup(
+                    selected: ipv6_method_index(chosen_ipv6_method(ipv6_method, ipv6.method)),
+                    label: "IPv6",
+                ) {
+                    ui.Segment("Automatic") {
+                        on press: set(ipv6_method, "automatic")
+                    }
+                    ui.Segment("Manual") {
+                        on press: set(ipv6_method, "manual")
+                    }
+                    ui.Segment("Link-local") {
+                        on press: set(ipv6_method, "link-local")
+                    }
+                    ui.Segment("Off") {
+                        on press: set(ipv6_method, "disabled")
+                    }
+                }
+                ui.TextInput(
+                    bind: ipv6_addresses,
+                    placeholder: "IPv6 addresses with their prefixes, comma-separated",
+                )
+                ui.TextInput(bind: ipv6_gateway, placeholder: "IPv6 router")
+                ui.TextInput(bind: ipv6_dns, placeholder: "IPv6 name servers, comma-separated")
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Button("Apply IPv6 settings", size: .small) {
+                        on press: device.set_network_ipv6(
+                            device.network,
+                            profile: saved.profile,
+                            method: ipv6_method_key(chosen_ipv6_method(ipv6_method, ipv6.method)),
+                            addresses: if comma_list(ipv6_addresses).is_empty() {
+                                ipv6.addresses
+                            } else { comma_list(ipv6_addresses) },
+                            gateway: if ipv6_gateway.trim() == "" {
+                                ipv6.gateway ?? ""
+                            } else { ipv6_gateway.trim() },
+                            dns: if comma_list(ipv6_dns).is_empty() {
+                                ipv6.dns
+                            } else { comma_list(ipv6_dns) },
                         )
                     }
                 }
@@ -851,4 +965,69 @@ fn hotspot_words(on: Bool) -> Text {
 /// The entries `text` lists between commas, each trimmed, none empty.
 fn comma_list(text: Text) -> List<Text> {
     text.split(",").map(x -> x.trim()).filter(x -> x != "")
+}
+
+/// Which hardware address a saved network shows, in words.
+fn mac_words(mac: Option<Text>) -> Text {
+    if let shown = mac {
+        if shown == "permanent" {
+            "Permanent hardware address"
+        } else if shown == "random" { "Random each connection" } else { "Stable per network" }
+    } else { "The device's own address" }
+}
+
+/// Whether a network wakes this device, and what the device says about it.
+fn wake_words(wake: device.NetworkWake) -> Text {
+    if not wake_supported(wake) {
+        "This network cannot wake this computer"
+    } else if let problem = wake.problem {
+        problem
+    } else if wake.on and applied_now(wake) {
+        "Another device on this network can wake this computer from sleep"
+    } else if wake.on {
+        "Saved, and applied when the network connects"
+    } else {
+        "Another device on this network cannot wake this computer"
+    }
+}
+
+/// Whether the interface can wake this device: what the driver says, or that it can where the
+/// driver says nothing.
+fn wake_supported(wake: device.NetworkWake) -> Bool {
+    if let supported = wake.supported { supported } else { true }
+}
+
+/// Whether the setting is in force on the interface now.
+fn applied_now(wake: device.NetworkWake) -> Bool {
+    if let applied = wake.applied { applied } else { false }
+}
+
+/// The IPv6 method a person chose, or the one the network keeps where they chose none.
+fn chosen_ipv6_method(chosen: Text, kept: Text) -> Text {
+    if chosen == "" { kept } else { chosen }
+}
+
+/// The segment the IPv6 method picker shows.
+fn ipv6_method_index(method: Text) -> Int {
+    if method == "manual" {
+        1
+    } else if method == "link-local" { 2 } else if method == "disabled" { 3 } else { 0 }
+}
+
+/// An IPv6 method in words.
+fn ipv6_method_words(method: Text) -> Text {
+    if method == "manual" {
+        "Manual"
+    } else if method == "link-local" {
+        "Link-local only"
+    } else if method == "disabled" { "Off" } else { "Automatic" }
+}
+
+/// The IPv6 method as the action takes it.
+fn ipv6_method_key(method: Text) -> Text {
+    if method == "manual" {
+        "manual"
+    } else if method == "link-local" {
+        "link-local"
+    } else if method == "disabled" { "disabled" } else { "automatic" }
 }

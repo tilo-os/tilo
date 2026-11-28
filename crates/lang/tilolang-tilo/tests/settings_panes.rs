@@ -734,3 +734,347 @@ fn the_theme_previews_draw_the_modes_themes_and_follow_a_change() {
         "the one it showed before is gone: {themes:?}"
     );
 }
+
+/// The battery's health, its cycles and its capacity are the battery service's reading, shown as
+/// the person's words for them.
+#[test]
+fn the_battery_pane_shows_health_cycles_and_capacity() {
+    let (host, _) = settings();
+    crate::fixtures::set_reading(
+        &host,
+        "power:battery",
+        &serde_json::json!({
+            "present": true,
+            "percentage": 73,
+            "state": "discharging",
+            "on_battery": true,
+            "minutes_left": 214,
+            "health": 87,
+            "cycles": 142,
+            "capacity_wh": 57,
+        }),
+    );
+    let view = open_view(&host, "power_pane");
+    let shown = texts(&view);
+    for words in [
+        "Battery health",
+        "87% of a new pack; wearing as expected",
+        "Charge cycles",
+        "142; each is a full charge and discharge",
+        "Capacity",
+        "57 Wh when new",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the battery pane: {shown:?}"
+        );
+    }
+}
+
+/// The update page offers the download schedule and whether a metered connection may be used,
+/// read from the machine's update resource, and each choice is the resource's own verb.
+#[test]
+fn the_updates_pane_offers_the_schedule_and_metered_choice() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::set_reading(
+        &host,
+        "system-update",
+        &serde_json::json!({
+            "booted": null,
+            "staged": null,
+            "rollback": null,
+            "applied": false,
+            "desktop_pending": false,
+            "restart_needed": false,
+            "failed": null,
+            "updating": false,
+            "pending": [],
+            "problem": null,
+            "firmware": null,
+            "fell_back": [],
+            "schedule": "weekly",
+            "allow_metered": false,
+        }),
+    );
+    let view = open_view(&host, "updates_pane");
+    let shown = texts(&view);
+    for words in [
+        "Update schedule",
+        "The image's own",
+        "Daily",
+        "Weekly",
+        "Metered connections",
+        "Wait for one that is not",
+        "Download anyway",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the updates pane: {shown:?}"
+        );
+    }
+
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Segment", "Daily"))
+        .expect("the schedule is chosen");
+    let sent = sent.borrow();
+    let (app, name, schedule) = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action {
+                app, name, args, ..
+            } => args
+                .iter()
+                .find(|(named, _)| named == "schedule")
+                .map(|(_, value)| (app.to_string(), name.to_string(), value.clone())),
+            Invocation::Edit { .. } => None,
+        })
+        .expect("the choice is the update resource's verb");
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "set-schedule")
+    );
+    assert_eq!(schedule, Value::text("daily"));
+}
+
+/// A captive portal's page opens in the app that opens web addresses, from the network that asks
+/// for it.
+#[test]
+fn a_captive_portals_sign_in_page_opens() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::set_reading(
+        &host,
+        "network",
+        &serde_json::json!({
+            "airplane_mode": false,
+            "connectivity": "portal",
+            "portal_uri": "https://portal.example/sign-in",
+            "portal_problem": null,
+            "wifi": {
+                "available": true,
+                "on": true,
+                "hardware_blocked": false,
+                "networks": [],
+            },
+            "ask_before_open_networks": false,
+            "wired": null,
+            "saved": [],
+            "mobile": {"available": false, "on": false, "profile": null},
+            "problem": null,
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("network")]);
+    let view = open_window(&host);
+    let shown = texts(&view);
+    for words in [
+        "Sign in to this network",
+        "Open sign-in page",
+        "The network asks for a sign-in page before it lets traffic out",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows on the network page: {shown:?}"
+        );
+    }
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Open sign-in page"),
+    )
+    .expect("the page opens");
+    assert_eq!(
+        sent.borrow().last().map(|invocation| match invocation {
+            Invocation::Action { app, name, .. } => (app.to_string(), name.to_string()),
+            Invocation::Edit { .. } => (String::new(), String::new()),
+        }),
+        Some(("so.tilo.device".to_owned(), "open-link".to_owned()))
+    );
+}
+
+/// A saved network's hardware address, its wake-over-LAN and its IPv6 settings are shown on its
+/// own page, as the network's reading holds them.
+#[test]
+fn a_saved_network_shows_its_address_wake_and_ipv6() {
+    let (host, _) = settings();
+    crate::fixtures::set_reading(
+        &host,
+        "network",
+        &serde_json::json!({
+            "airplane_mode": false,
+            "connectivity": "full",
+            "portal_uri": null,
+            "portal_problem": null,
+            "wifi": {
+                "available": true,
+                "on": true,
+                "hardware_blocked": false,
+                "networks": [{
+                    "name": "Studio",
+                    "known": true,
+                    "connected": false,
+                    "secure": true,
+                    "signal": 4,
+                }],
+            },
+            "ask_before_open_networks": false,
+            "wired": null,
+            "saved": [{
+                "name": "Studio",
+                "profile": "uuid-studio",
+                "kind": "wifi",
+                "autoconnect": true,
+                "priority": 0,
+                "metered": "automatic",
+                "hidden": false,
+                "open": false,
+                "ipv4": null,
+                "ipv6": {
+                    "method": "manual",
+                    "addresses": ["2001:db8::10/64"],
+                    "gateway": "2001:db8::1",
+                    "dns": ["2001:db8::53"],
+                },
+                "mac": "random",
+                "wake": {
+                    "on": true,
+                    "interface": "wlan0",
+                    "supported": true,
+                    "applied": true,
+                    "problem": null,
+                },
+                "enterprise": null,
+            }],
+            "mobile": {"available": false, "on": false, "profile": null},
+            "problem": null,
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("network")]);
+    let mut view = open_window(&host);
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "This network"),
+    )
+    .expect("the network's page opens");
+    view.poll_patches().expect("the page redraws");
+    let shown = texts(&view);
+    for words in [
+        "The address it shows",
+        "Random each connection",
+        "Wake over this network",
+        "Another device on this network can wake this computer from sleep",
+        "IPv6",
+        "2001:db8::10/64",
+        "Apply IPv6 settings",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows on the saved network's page: {shown:?}"
+        );
+    }
+}
+
+/// A trusted accessory says it connects by itself, and the switch asks the accessory's own verb
+/// to stop trusting it.
+#[test]
+fn a_trusted_accessory_offers_to_ask_first() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::set_reading(
+        &host,
+        "bluetooth",
+        &serde_json::json!({
+            "available": true,
+            "on": true,
+            "accessories": [{
+                "name": "Headphones",
+                "address": "AA:BB",
+                "battery": 80,
+                "signal": -52,
+                "connected": false,
+                "trusted": true,
+            }],
+            "nearby": [],
+            "discovering": false,
+            "pending": [],
+            "problem": null,
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("bluetooth")]);
+    let view = open_window(&host);
+    assert!(
+        texts(&view).iter().any(|text| text == "Connects by itself"),
+        "a trusted accessory says so: {:?}",
+        texts(&view)
+    );
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Connects by itself"),
+    )
+    .expect("the trust is taken back");
+    let sent = sent.borrow();
+    let trusted = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "set-trusted" => args
+                .iter()
+                .find(|(named, _)| named == "trusted")
+                .map(|(_, value)| value.clone()),
+            _ => None,
+        })
+        .expect("the accessory's own verb is asked");
+    assert_eq!(trusted, Value::Bool(false));
+}
+
+/// The shortcuts list names every shortcut in words, including the numbered window and strip
+/// shortcuts, and the menu offers those words.
+#[test]
+fn the_shortcuts_list_names_every_shortcut_in_words() {
+    let (host, _) = settings();
+    crate::fixtures::set_reading(
+        &host,
+        "settings/shortcuts-table",
+        &serde_json::json!({
+            "bindings": [
+                {"id": "search", "chord": "Super+Space"},
+                {"id": "focus-group-1", "chord": "Ctrl+Super+1"},
+                {"id": "focus-strip-2", "chord": "Super+2"},
+            ],
+            "actions": [],
+            "commands": [],
+        }),
+    );
+    let view = open_view(&host, "shortcuts_pane");
+    let shown = texts(&view);
+    for words in ["Search", "Window 1", "Strip 2"] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the shortcuts list: {shown:?}"
+        );
+    }
+    let options = view
+        .tree()
+        .of_kind("ui.Dropdown")
+        .into_iter()
+        .find_map(|node| match node.props.get("options") {
+            Some(Value::List(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Value::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .expect("the shortcut menu lists its choices");
+    assert!(
+        options.contains(&"Window 1".to_owned()) && options.contains(&"Strip 2".to_owned()),
+        "the menu names the shortcuts in words: {options:?}"
+    );
+}

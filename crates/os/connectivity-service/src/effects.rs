@@ -419,6 +419,20 @@ pub enum BluetoothAccessoryAction {
         #[param("What the accessory is called")]
         name: String,
     },
+    /// Let the accessory connect by itself, or ask the person first.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        row,
+        idempotent,
+        icon = "shield-check",
+        keywords = "trust, connect by itself",
+        on = BluetoothAccessoryRow
+    )]
+    SetTrusted {
+        #[param("Whether the accessory may connect without asking")]
+        trusted: bool,
+    },
 }
 
 /// A Bluetooth device in reach, called on its address
@@ -512,6 +526,26 @@ pub enum VpnProfileAction {
     #[effect(kind = "outside")]
     #[effect(own_device, row, destructive, icon = "trash-2", on = VpnProfileRow)]
     Forget,
+    /// The VPN as a configuration file's text, which importing it elsewhere reads: its keys go
+    /// with it.
+    #[effect(
+        kind = "read",
+        returns = VpnConfiguration,
+        icon = "download",
+        keywords = "vpn export, save configuration",
+        on = VpnProfileRow
+    )]
+    Export,
+}
+
+/// The VPN's configuration file, as text: what exporting it answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VpnConfiguration;
+
+impl tilo_resource::JsonSchema for VpnConfiguration {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({ "type": "string" })
+    }
 }
 
 /// The `tethering` resource's actions.

@@ -2,6 +2,9 @@
 /// publishes them. A press connects, disconnects, pairs or forgets through the accessory's own
 /// action, so quick settings, this page and an agent change the same bond.
 view bluetooth_pane() {
+    state renaming: Text = ""
+    state draft: Text = ""
+    state forgetting: Text = ""
     let b = device.bluetooth
     ui.Section("Bluetooth") {
         if not b.available {
@@ -57,16 +60,63 @@ view bluetooth_pane() {
                                     } else { accessory.connect() }
                                 }
                                 ui.Button(
+                                    if accessory.trusted {
+                                        "Connects by itself"
+                                    } else { "Asks first" },
+                                    size: .small,
+                                    toggled: accessory.trusted,
+                                ) {
+                                    on press: accessory.set_trusted(not accessory.trusted)
+                                }
+                                ui.Button(
+                                    "Rename this device",
+                                    icon: .pencil,
+                                    icon_only: true,
+                                    role: .plain,
+                                    size: .small,
+                                ) {
+                                    on press: set(draft, accessory.name)
+                                        .then(
+                                            set(renaming, accessory.address),
+                                        )
+                                }
+                                ui.Button(
                                     "Forget this device",
                                     icon: .trash,
                                     icon_only: true,
                                     role: .plain,
                                     size: .small,
                                 ) {
-                                    on press: accessory.forget()
+                                    on press: set(forgetting, accessory.address)
                                 }
                             }
                         }
+                    }
+                    ui.ModalDialog(
+                        title: "Name this device",
+                        secondary: "Cancel",
+                        primary: "Rename",
+                        open: renaming == accessory.address,
+                    ) {
+                        on act_primary: accessory.rename(draft).then(set(renaming, ""))
+                        on act_secondary: set(renaming, "")
+                        on dismiss: set(renaming, "")
+                        ui.TextInput(bind: draft, placeholder: "What this device is called")
+                    }
+                    ui.ModalDialog(
+                        title: "Forget {accessory.name}?",
+                        secondary: "Cancel",
+                        primary: "Forget",
+                        destructive: true,
+                        open: forgetting == accessory.address,
+                    ) {
+                        on act_primary: accessory.forget().then(set(forgetting, ""))
+                        on act_secondary: set(forgetting, "")
+                        on dismiss: set(forgetting, "")
+                        ui.Text(
+                            "It must pair again to connect, and its bond and keys are removed.",
+                            role: .caption,
+                        )
                     }
                 }
                 if not b.nearby.is_empty() {
