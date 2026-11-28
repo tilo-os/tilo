@@ -731,18 +731,3 @@ pub(crate) fn admit_receipts(
         Ok(())
     })
 }
-
-/// Every readable effect receipt in `doc`, decoded, by its invocation id.
-pub fn receipt_values(doc: &AutoCommit) -> BTreeMap<String, serde_json::Value> {
-    let mut values = BTreeMap::new();
-    let _ = tilo_failure::ignored!(
-        "the visitor's error type is `Infallible`, so an unreadable receipt drops out",
-        visit_row_bytes(doc, EFFECT_RECEIPTS, |row, bytes| {
-            if let Some(value) = decode_receipt(bytes) {
-                values.insert(receipt_invocation(row).to_owned(), value);
-            }
-            Ok::<(), std::convert::Infallible>(())
-        })
-    );
-    values
-}

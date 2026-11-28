@@ -1658,19 +1658,6 @@ impl DirectSync {
             .any(|address| address.host.device_public_key == device)
     }
 
-    /// The same link onto the same replica and store, with room for `capacity`
-    /// frames heard and not read yet: what a test that makes a reader fall
-    /// behind the link builds, where the link otherwise keeps
-    /// [`OUTGOING`] frames.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_heard_capacity(&self, capacity: usize) -> Self {
-        Self(Arc::new(Inner {
-            heard: broadcast::channel(capacity).0,
-            ..self.copied()
-        }))
-    }
-
     /// Hear every device's hello this build's peer protocol does not work with, by `hook`: what
     /// the daemon tells the person, once for each device and version.
     #[must_use]
