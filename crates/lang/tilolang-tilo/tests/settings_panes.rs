@@ -1143,3 +1143,95 @@ fn the_displays_pane_hides_automatic_brightness_without_a_sensor() {
         );
     }
 }
+
+/// The time zones are a searchable list from the machine's own tzdata, each a press to use it,
+/// and the chosen zone is marked on a map.
+#[test]
+fn the_time_zones_are_searchable_and_the_chosen_one_is_mapped() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::reading_at(
+        &host,
+        "time-zone",
+        "so.tilo.device#TimeZone",
+        serde_json::json!({
+            "zone": "Europe/Amsterdam",
+            "automatic": false,
+            "network_time": true,
+            "synchronized": true,
+            "zones": [
+                {"name": "Europe/Amsterdam", "latitude": 52.3667, "longitude": 4.9},
+                {"name": "Asia/Tokyo", "latitude": 35.6544, "longitude": 139.7447},
+            ],
+            "pending": [],
+            "problem": null,
+        }),
+    );
+    crate::fixtures::reading_at(
+        &host,
+        "session:time",
+        "so.tilo.device#Time",
+        serde_json::json!({
+            "clock": "12:00",
+            "year": 2026,
+            "month": 11,
+            "day": 28,
+            "weekday": 6,
+            "week_start": 1,
+            "month_name": "November",
+            "days_in_month": 30,
+            "first_weekday": 7,
+            "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "weekday_names": [
+                "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+            ],
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("time")]);
+    let view = open_window(&host);
+    let shown = texts(&view);
+    for words in [
+        "Search the time zones",
+        "Europe/Amsterdam",
+        "Asia/Tokyo",
+        "The mark on the map is where the zone's clock is kept.",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the date and time pane: {shown:?}"
+        );
+    }
+    assert!(
+        view.tree()
+            .of_kind("ui.Drawing")
+            .iter()
+            .any(|node| node.props.get("label")
+                == Some(&Value::text("The time zone's place on the map"))),
+        "the map is drawn: {}",
+        crate::fixtures::drawn(view.tree())
+    );
+
+    let tokyo = view
+        .tree()
+        .of_kind("ui.ListRow")
+        .into_iter()
+        .find(|node| node.props.get("title") == Some(&Value::text("Asia/Tokyo")))
+        .expect("the zone is listed")
+        .key
+        .clone();
+    view.fire_answering(&host, &me(), &tokyo, "activate")
+        .expect("the zone is used");
+    let sent = sent.borrow();
+    let zone = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "set-zone" => args
+                .iter()
+                .find(|(named, _)| named == "zone")
+                .map(|(_, value)| value.clone()),
+            _ => None,
+        })
+        .expect("the zone is the time resource's own verb");
+    assert_eq!(zone, Value::text("Asia/Tokyo"));
+}

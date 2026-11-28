@@ -221,6 +221,22 @@ pub enum Change {
     KeyboardLight(u32),
 }
 
+/// Every zone the system names with where it stands, read once: tzdata does not move while this
+/// daemon runs.
+fn zone_positions() -> Vec<crate::model::ZonePlace> {
+    static ZONES: std::sync::OnceLock<Vec<os_actions::time::ZonePosition>> =
+        std::sync::OnceLock::new();
+    ZONES
+        .get_or_init(os_actions::time::list_zone_positions)
+        .iter()
+        .map(|zone| crate::model::ZonePlace {
+            name: zone.name.clone(),
+            latitude: zone.latitude,
+            longitude: zone.longitude,
+        })
+        .collect()
+}
+
 /// Live power-profile readings from the session's power service, which follows
 /// `power-profiles-daemon` over D-Bus.
 pub trait PowerProfiles: Send + Sync {
@@ -587,6 +603,7 @@ impl System for OsSystem {
             automatic: settings_store::clock::AUTOMATIC_ZONE.get(),
             network_time: status.ntp_enabled,
             synchronized: status.synchronized.unwrap_or(false),
+            zones: zone_positions(),
             ..Time::default()
         }
     }

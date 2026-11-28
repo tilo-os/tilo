@@ -44,9 +44,7 @@ pub struct Power {
 }
 
 /// The `time-zone` resource.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Time {
     /// The zone the clock shows, as tzdata names it.
@@ -56,8 +54,23 @@ pub struct Time {
     /// The clock is set from the network; `None` without a time daemon.
     pub network_time: Option<bool>,
     pub synchronized: bool,
+    /// Every zone the system names, with where its reference place stands: what a person picks
+    /// from and what a map places.
+    pub zones: Vec<ZonePlace>,
     pub pending: Vec<String>,
     pub problem: Option<String>,
+}
+
+/// One IANA zone and the place its clock is kept for: where a map puts it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct ZonePlace {
+    /// The zone, as tzdata names it (`Europe/Amsterdam`).
+    pub name: String,
+    /// Degrees north of the equator.
+    pub latitude: f64,
+    /// Degrees east of Greenwich.
+    pub longitude: f64,
 }
 
 /// The `device:keyboard-backlight` resource.
