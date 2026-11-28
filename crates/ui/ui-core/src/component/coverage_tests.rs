@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
     phase the_scan_finds_the_toolkits_declarations;
     {
         let scan = scan();
-        for name in ["Button", "Card", "NavShell", "Toggle", "Slider"] {
+        for name in ["Button", "Card", "WindowFrame", "Toggle", "Slider"] {
             assert!(
                 scan.widgets.iter().any(|w| w.name == name),
                 "{name} is found as a public widget"
