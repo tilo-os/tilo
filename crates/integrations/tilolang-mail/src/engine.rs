@@ -937,7 +937,6 @@ impl EngineConnector {
             // the message left, which its completion says, and why its Sent folder holds none
             // of it goes to whoever waits on the send.
             EngineEvent::Unfiled { request_id, reason } => {
-                eprintln!("DBG engine connector unfiled {request_id}: {reason}");
                 out.push(Event::Unfiled {
                     request: request_id,
                     reason,
