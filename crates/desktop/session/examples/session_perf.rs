@@ -783,7 +783,7 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
         step.2 = step.2.max(sample.pump_step_us);
     }
     let mut ranked: Vec<(&str, (usize, u64, u32))> = steps.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+    ranked.sort_by_key(|step| std::cmp::Reverse(step.1.1));
     for (name, (turns, sum, max)) in ranked.into_iter().take(8) {
         println!("  idle pump {name:?}: {turns} turns, {sum} µs together, {max} µs most");
     }
