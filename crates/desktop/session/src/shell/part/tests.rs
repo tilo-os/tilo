@@ -2338,16 +2338,33 @@ fn the_bar_and_dock_follow_the_sizes_the_settings_choose() {
             .reduce(f64::max);
         tallest.unwrap_or_else(|| panic!("the shell draws {name}"))
     };
+    // The room the chrome `name` takes as it is drawn: its own height and the inset between it
+    // and the display edge it rides, which the row it stands in spans. A bar or dock that hides
+    // itself leaves the windows that room, so that is the band they avoid.
+    let room = |part: &mut ShellPart, name: &str| {
+        let (_, y, _, height) = part
+            .control_bounds_all(name)
+            .into_iter()
+            .reduce(|tallest, next| if next.3 > tallest.3 { next } else { tallest })
+            .unwrap_or_else(|| panic!("the shell draws {name}"));
+        let (_, (_, _, _, display_height)) =
+            part.placement().expect("the part stands on a display");
+        let above = y;
+        let below = f64::from(display_height) - (y + height);
+        height + above.min(below).max(0.0)
+    };
     let bar = height(&mut part, "Top bar");
     let dock = height(&mut part, "Dock");
     let (bar_band, dock_band) = part.bands().expect("the part measured its chrome");
     assert!(
-        (f64::from(bar_band) - bar).abs() < 1.0,
-        "the band the session measures is the bar's height: {bar_band} against {bar}"
+        (f64::from(bar_band) - room(&mut part, "Top bar")).abs() < 1.0,
+        "the band the session measures is the bar's room: {bar_band} against {}",
+        room(&mut part, "Top bar")
     );
     assert!(
-        (f64::from(dock_band) - dock).abs() < 1.0,
-        "the band the session measures is the dock's height: {dock_band} against {dock}"
+        (f64::from(dock_band) - room(&mut part, "Dock")).abs() < 1.0,
+        "the band the session measures is the dock's room, its inset included: {dock_band} against {}",
+        room(&mut part, "Dock")
     );
 
     let choose = |part: &mut ShellPart, bar: &str, dock: &str| {
@@ -2386,11 +2403,11 @@ fn the_bar_and_dock_follow_the_sizes_the_settings_choose() {
 
     let (bar_band, dock_band) = part.bands().expect("the part measured its chrome again");
     assert!(
-        (f64::from(bar_band) - small_bar).abs() < 1.0,
+        (f64::from(bar_band) - room(&mut part, "Top bar")).abs() < 1.0,
         "the measured band follows the bar: {bar_band} against {small_bar}"
     );
     assert!(
-        (f64::from(dock_band) - large_dock).abs() < 1.0,
+        (f64::from(dock_band) - room(&mut part, "Dock")).abs() < 1.0,
         "the measured band follows the dock: {dock_band} against {large_dock}"
     );
 }

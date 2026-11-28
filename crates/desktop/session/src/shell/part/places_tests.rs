@@ -575,13 +575,14 @@ fn task_rows(
         found.extend(
             here.into_iter()
                 .filter(|list_row| {
+                    // The row's checkbox is bound to the task's `done` field as the tasks app
+                    // draws it (`checkbox: t.done`): the binding names that field.
                     list_row.props.get("title") == Some(&Value::text(SAID))
-                        && list_row.props.get("bind") == Some(&Value::text("checkbox"))
                         && list_row.binding.as_ref().is_some_and(|binding| {
                             matches!(
                                 &binding.target,
-                                tilolang_tilo::runtime::view::BindTarget::Field { target, .. }
-                                    if target.id_string() == of.id_string()
+                                tilolang_tilo::runtime::view::BindTarget::Field { target, field }
+                                    if target.id_string() == of.id_string() && field == "done"
                             )
                         })
                 })
