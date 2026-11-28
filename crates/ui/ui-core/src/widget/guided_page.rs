@@ -608,6 +608,23 @@ impl Widget for GuidedPage {
         });
         let style = self.page_style(theme, rows);
         let node = self.parts.build(style, taffy, theme, map);
+        if self.shows_bar {
+            // The page that scrolls keeps its bar's gutter on its trailing edge on every step, so
+            // the track above it and the ways forward below keep it too: they share its axis.
+            let gutter = length(theme.tokens.metrics.scrollbar_gutter);
+            for (at, &child) in self.parts.nodes.iter().enumerate() {
+                if at == self.scroll_at {
+                    continue;
+                }
+                if let Ok(current) = taffy.style(child) {
+                    let mut style = current.clone();
+                    // The part takes its row less the gutter, as a full width would not.
+                    style.size.width = auto();
+                    style.margin.right = gutter;
+                    let _ = taffy.set_style(child, style);
+                }
+            }
+        }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

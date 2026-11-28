@@ -650,10 +650,14 @@ fn password_form_labels_and_navigation_share_the_real_page_alignment() {
                     assert!(label.y1 <= input.y0, "label belongs above its control");
                 }
                 assert!(confirmation.y0 >= password.y1);
-                assert!((password.center().x - preview.rect.center().x).abs() < 1.0);
+                // The column is centred in the room the page's scroll bar leaves: its gutter is
+                // kept on the trailing edge on every step.
+                let (body, _) = body_scroll_geometry(preview).unwrap();
+                let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter * scale);
+                assert!((password.center().x - f64::midpoint(body.x0, body.x1 - gutter)).abs() < 1.0);
                 assert!(
                     (f64::midpoint(back.x0, next.x1) - password.center().x).abs() < 1.0,
-                    "navigation is centered on the same page axis"
+                    "navigation is centered on the same page axis: back={back:?} next={next:?} password={password:?} body={body:?}"
                 );
                 let (scroll, _) = body_scroll_geometry(preview).unwrap();
                 assert!(

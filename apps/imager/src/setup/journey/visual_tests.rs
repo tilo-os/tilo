@@ -68,7 +68,11 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                                 .abs()
                                 < 1.0
                         );
-                        assert!((name.center().x - preview.rect.center().x).abs() < 1.0);
+                        // The column is centred in the room the page's scroll bar leaves: its
+                        // gutter is kept on the trailing edge on every step.
+                        let (body, _) = body_scroll_geometry(preview).unwrap();
+                        let room = body.x1 - f64::from(metrics.scrollbar_gutter * host_scale);
+                        assert!((name.center().x - f64::midpoint(body.x0, room)).abs() < 1.0);
                         (heading_size, name.height(), next.height())
                     })
                     .unwrap();
