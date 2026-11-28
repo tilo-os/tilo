@@ -6339,8 +6339,9 @@ pub(crate) fn device_action(
     } else {
         caller
     };
-    // A program acts as the person and is never them: what they confirm waits for their yes.
-    let person = (!confirmed || !program)
+    // A program acts as the person and is never them: what only their root signs waits for
+    // their yes, whatever the action.
+    let person = (!program)
         .then(|| judged.acting().person_id())
         .flatten()
         .and_then(|person| hex::decode(person).ok())

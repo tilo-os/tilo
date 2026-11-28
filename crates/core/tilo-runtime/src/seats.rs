@@ -426,9 +426,9 @@ pub(crate) struct Seats {
     /// The one-use secrets a founding sign-in answers, each for the account that may redeem it,
     /// until a process redeems it as its link.
     founding: Arc<Mutex<HashMap<[u8; 32], u32>>>,
-    /// The seats whose links were admitted, by account and process, for as long as this daemon
-    /// runs.
-    links: Arc<Mutex<HashMap<(u32, u32), SeatLink>>>,
+    /// The seats whose links were admitted, by account and process ([`seat_key`]), for as long
+    /// as this daemon runs.
+    links: Arc<Mutex<HashMap<SeatKey, SeatLink>>>,
 }
 
 impl Seats {
@@ -529,7 +529,7 @@ impl Seats {
         // device's own actions through `seats#certified`).
         if let Some(pid) = seat.pid
             && matches!(
-                self.links.lock_recover().get(&(seat.uid, pid)),
+                self.links.lock_recover().get(&seat_key(seat.uid, pid)),
                 Some(SeatLink::Founding)
             )
         {
@@ -547,7 +547,7 @@ impl Seats {
             tracing::warn!(%error, "this computer did not keep whose person its account joined");
         }
         self.keys.lock_recover().remove(&uid);
-        for ((held, _), link) in self.links.lock_recover().iter_mut() {
+        for ((held, _, _), link) in self.links.lock_recover().iter_mut() {
             if *held == uid && matches!(link, SeatLink::Founding) {
                 *link = SeatLink::Person {
                     person,
@@ -582,7 +582,7 @@ impl Seats {
     fn record_founding(&self, uid: u32, pid: u32) {
         self.links
             .lock_recover()
-            .insert((uid, pid), SeatLink::Founding);
+            .insert(seat_key(uid, pid), SeatLink::Founding);
     }
 
     /// Keep that the seat `(uid, pid)` acts for `person` from now on: the session its founding
@@ -590,14 +590,14 @@ impl Seats {
     fn record_person(&self, uid: u32, pid: u32, person: [u8; 32], device: bool) {
         self.links
             .lock_recover()
-            .insert((uid, pid), SeatLink::Person { person, device });
+            .insert(seat_key(uid, pid), SeatLink::Person { person, device });
     }
 
     /// The person the seat `(uid, pid)` acts for, when a founding link or a person's link was
     /// admitted for it here: the person its account certified once it made one, or the one its
     /// shell link became.
     pub(crate) fn seated_person(&self, uid: u32, pid: u32) -> Option<[u8; 32]> {
-        match self.links.lock_recover().get(&(uid, pid)) {
+        match self.links.lock_recover().get(&seat_key(uid, pid)) {
             Some(SeatLink::Person { person, .. }) => Some(*person),
             // A founding session acts for the person it made once its certified key is theirs.
             Some(SeatLink::Founding) => self.admission.person_of(uid),
@@ -675,7 +675,11 @@ impl Seats {
         let mut founding = false;
         let mut linked = false;
         if let Some(pid) = peer.pid.filter(|_| app.is_none()) {
-            let link = self.links.lock_recover().get(&(peer.uid, pid)).copied();
+            let link = self
+                .links
+                .lock_recover()
+                .get(&seat_key(peer.uid, pid))
+                .copied();
             linked = link.is_some();
             match link {
                 Some(SeatLink::Founding) => {
@@ -1124,7 +1128,7 @@ impl Seats {
     fn forget_seats(&self, uid: u32) {
         self.links
             .lock_recover()
-            .retain(|(held, _), _| *held != uid);
+            .retain(|(held, _, _), _| *held != uid);
         let Some(dir) = self
             .seat_record(uid, 0)
             .and_then(|path| path.parent().map(std::path::Path::to_owned))
@@ -1481,6 +1485,14 @@ impl Seats {
         }
         Value::Object(who)
     }
+}
+
+/// A seat's account, process and that process's start: a pid is reused, its start is not, so a
+/// later process at the same pid is never the seat a link was admitted for.
+type SeatKey = (u32, u32, Option<u64>);
+
+fn seat_key(uid: u32, pid: u32) -> SeatKey {
+    (uid, pid, crate::apps::process_start_time(pid))
 }
 
 /// The number a seat is known by, to the daemon and to the socket that serves its link: the

@@ -127,6 +127,12 @@ unlock-detail = Es startet gerade und bittet dich um die H채lfte seines Datentr�
 unlock-code = Code auf seinem Bildschirm
 unlock-gone = Das fragende Ger채t wartet nicht mehr
 unlock-unanswered = Niemand hat rechtzeitig geantwortet, daher wurde das Ger채t nicht entsperrt
+
+# Ein Programm auf diesem Computer, das seinen Dienst selbst erreicht, fragt nach etwas, das nur
+# die Identit채t der Person signiert: $path ist die Datei des Programms, wie das System sie nennt.
+asked-by-program = ein Programm ({ $path })
+asked-by-a-program = ein Programm
+asked-program-unanswered = Keines deiner Ger채te hat geantwortet; antworte an der Konsole dieses Computers mit einer Entsperrung deiner Identit채t
 boot-unlock-no-root-device = Keines deiner Ger채te, die deine Identit채t bewahren, ist gerade erreichbar. Schalte eines ein, verbinde es mit dem Internet und melde dich an, dann versuche es noch einmal.
 
 # Ein anderes Ger채t der Person spricht eine Peer-Protokollversion, mit der dieses nicht

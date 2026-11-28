@@ -283,6 +283,7 @@ impl DeviceAsked {
             return Ok(receipt);
         }
         let workspace = run.workspace();
+        let program = matches!(facts.by, AskedBy::Program { .. });
         let at = self
             .at_root
             .write_asked(workspace, caller, request, &facts)
@@ -292,6 +293,15 @@ impl DeviceAsked {
                      kept for it: {why}"
                 ),
             })?;
+        // A program's question that no device of theirs answers in time is refused, never left
+        // waiting on a host nobody is at.
+        if program {
+            let (store, at) = (Arc::clone(&self.store), at.clone());
+            tilo_rt::app().handle().spawn(async move {
+                tokio::time::sleep(PROGRAM_ANSWERED_WITHIN).await;
+                store.withdraw(&at, &crate::i18n::t("asked-program-unanswered"));
+            });
+        }
         Ok(self.follow(caller, &self.store.kept_ask(&at).ok_or_else(not_waiting)?))
     }
 
@@ -949,6 +959,9 @@ impl RootKept for DeviceRoot {
 }
 
 /// What a call that waits for a device of the person's that keeps their root says meanwhile.
+/// How long a program's question waits for a device of the person's to answer it.
+const PROGRAM_ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_secs(300);
+
 const WAITS_FOR_ROOT: &str = "Waiting for a device of yours that keeps your identity";
 
 /// What a question whose program stopped waiting with the device says, once withdrawn.

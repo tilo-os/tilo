@@ -735,16 +735,27 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
     // The connection is a program of theirs, which never answers its own question: their
     // session's own connection answers it there, and their yes runs the call it answers, once it
     // is admitted again for its caller.
-    let own = tilo_rt::app()
-        .block_on(async {
-            let calls = tilo_api::calls::Calls::over(Arc::clone(&person)).await?;
-            let record = format!("{studio}/{}", question.record.record);
-            calls.answer_asked(&record, true).await
-        })
-        .expect("the app runtime")
-        .expect_err("a program answers no question of its own");
-    let confirmed = tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM;
-    assert!(own.to_string().contains(confirmed), "{own:#}");
+    let record = format!("{studio}/{}", question.record.record);
+    let refused = |program: Arc<tilo_action_line::LineClient>| {
+        let calls = tilo_api::calls::Calls::over(program);
+        let own = tilo_rt::app()
+            .block_on(async { calls.await?.answer_asked(&record, true).await })
+            .expect("the app runtime")
+            .expect_err("a program answers no question of its own");
+        let confirmed = tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM;
+        assert!(own.to_string().contains(confirmed), "{own:#}");
+    };
+    refused(Arc::clone(&person));
+    // A seat is its process, by its start: a later process at a linked pid is a program.
+    let mut ended = a_process();
+    drop(session_client(&daemon, &socket, ended.id()));
+    ended.kill().unwrap();
+    ended.wait().unwrap();
+    PEER_PID.store(ended.id(), Ordering::SeqCst);
+    let stream = UnixStream::connect(&socket).unwrap();
+    refused(Arc::new(
+        tilo_action_line::LineClient::of_stream(stream).unwrap(),
+    ));
     let session = session_client(&daemon, &socket, 4100);
     let resolve = || {
         let mut approve = serde_json::Map::new();

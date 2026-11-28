@@ -128,6 +128,12 @@ unlock-detail = It is starting up and asks you for the half of its disk key that
 unlock-code = Code on its screen
 unlock-gone = The device that asked stopped waiting
 unlock-unanswered = Nobody answered in time, so the device was not unlocked
+
+# A program on this computer that dialled its daemon itself asks for what only the person's root
+# signs: $path is the program's file, as the system names it.
+asked-by-program = a program ({ $path })
+asked-by-a-program = a program
+asked-program-unanswered = No device of yours answered; answer at this computer’s console with a root unlock
 boot-unlock-no-root-device = None of your devices that keep your identity can be reached right now. Turn one on, connect it to the internet and sign in, then try again.
 
 # Another of the person's devices speaks a peer protocol version this one does not work with:

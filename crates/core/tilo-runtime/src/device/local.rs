@@ -107,9 +107,19 @@ impl Frames {
     /// own act ([`Caller::from_program`]). `None` for frames that are not the person's own.
     pub(crate) fn for_a_program(&self, pid: Option<u32>) -> Option<Self> {
         let daemon = self.programs.clone()?;
+        // The program's path, the kernel's " (deleted)" kept, names it on a card: never an
+        // authority, only what the person reads.
         let program = pid
             .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
-            .map_or_else(|| "a program".to_owned(), |exe| exe.display().to_string());
+            .map_or_else(
+                || crate::i18n::t("asked-by-a-program"),
+                |exe| {
+                    crate::i18n::t_args(
+                        "asked-by-program",
+                        &[("path", exe.display().to_string().into())],
+                    )
+                },
+            );
         Some(Self::new(move |workspace| {
             let daemon = daemon
                 .upgrade()
