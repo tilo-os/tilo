@@ -239,6 +239,32 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase a_copy_bootstrapped_after_a_removal_records_its_cut;
+    {
+        let story = story(RevocationReason::Retired);
+        let mut joiner = newcomer(&story);
+        joiner
+            .receive_from(live(&story.a), story.owner_copy.workspace_message(), story.now)
+            .unwrap();
+        // Where the removed device's past ends is the governance's own, so it comes with the
+        // document a copy is bootstrapped from: no second copy of the cut is asked for beside it.
+        assert!(
+            joiner
+                .governance()
+                .carried_revocations()
+                .iter()
+                .any(|entry| entry.revoked_device_public_key == key_of(&story.b)),
+            "the governance the copy was bootstrapped from carries the removal"
+        );
+        let taken = joiner
+            .receive_from(retained(&story.b), story.phones.clone(), story.now)
+            .unwrap();
+        assert!(
+            taken.changed && says(&joiner, "phone"),
+            "the removed device's write before its cut lands"
+        );
+    }
+
     phase what_a_removed_device_signs_after_is_refused_whatever_it_claims;
     {
         let story = story(RevocationReason::Stolen);

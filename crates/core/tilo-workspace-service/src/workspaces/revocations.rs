@@ -244,7 +244,10 @@ impl Workspaces {
         let key = &self.inner.host.key;
         let authority = workspace.record.owner.clone();
         let certified = workspace.peer().certificates();
-        let carried = workspace.peer().revocations();
+        // What the governance carries, never what this copy's revocation list has heard: a device
+        // that announced a removal reaches the list before it reaches the workspace's rows, and
+        // asking the list would leave the removal, and the cut beside it, unwritten for good.
+        let carried = workspace.peer().governance().carried_revocations();
         let live = self.revocations();
         let carry = entries
             .iter()

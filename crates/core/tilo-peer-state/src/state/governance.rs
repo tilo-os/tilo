@@ -150,6 +150,20 @@ impl PeerGovernance<'_> {
             .flat_map(|identity| &identity.revocations)
             .any(|entry| !recorded.contains(&entry.revoked_device_public_key))
     }
+    /// Every removal the workspace's governance carries, from its device rows: what the
+    /// workspace says of its devices, never what a copy's revocation list has heard.
+    #[must_use]
+    pub fn carried_revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return Vec::new();
+        };
+        doc.identities()
+            .values()
+            .filter_map(|identity| identity.as_ref().ok())
+            .flat_map(|identity| identity.revocations.iter().cloned())
+            .collect()
+    }
+
     /// The sandbox capabilities the workspace's governance grants its apps.
     pub fn member_sandbox(self) -> Result<Vec<tilo_permissions::caps::CapOverride>, String> {
         let doc = self
