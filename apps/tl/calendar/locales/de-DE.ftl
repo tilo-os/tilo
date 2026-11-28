@@ -1051,6 +1051,20 @@ d-nd2mftjh = Window
     .w-cancel = Cancel
     .w-what-and-when = What and when
     .w-lunch-with-sam-friday-1pm = Lunch with Sam friday 1pm
+    .w-new-event = New event
+    .w-keyboard-shortcuts = Keyboard shortcuts
+    .w-jump = Jump
+    .w-close = Close
+    .w-n = N
+    .w-shift-n = Shift+N
+    .w-left-right = Left, Right
+    .w-previous-or-next-day = Previous or next day
+    .w-up-down = Up, Down
+    .w-previous-or-next-week = Previous or next week
+    .w-delete = Delete
+    .w-delete-the-event-on-its-page = Delete the event on its page
+    .w-esc = Esc
+    .w-show-or-close-this-reference = Show or close this reference
 
 d-li3ayrd7 = Woche
 

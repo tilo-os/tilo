@@ -5,12 +5,6 @@ d-so-tilo-photos = Fotos
 
 d-so-tilo-photos-keywords = photo, photos, picture, pictures, image, images, album, albums, favorites, gallery, camera roll, foto, fotos, bild, bilder, alben, favoriten
 
-d-jwejbqyn = Beschreiben
-    .doc = Was ein Bild zeigt, in einem Satz, wie das Bildmodell des Geräts es liest: der Satz, den die Details der Bibliothek zeigen und die Suche findet.
-
-d-3uzo3qzj = Tags
-    .doc = Die Objekte und Tiere, die das Bildmodell des Geräts in einem Bild findet, zu dem hinzugefügt, was das Foto schon aufführt.
-
 d-xo4knffj = Zuschneiden
     .doc = Behält den Teil des Fotos, den die Person gewählt hat: `x`, `y`, `width` und `height` sind Anteile des Bildes, wie das Fenster es zeigt, sodass jedes Mitglied und jedes Gerät den Zuschnitt liest.
 
@@ -834,9 +828,6 @@ d-7el4bbgt-rotation = Drehung
 
 d-7el4bbgt-crop = Zuschneiden
 
-d-vi46amt6 = Analysieren
-    .doc = Was das Foto zeigt, wie das Modell des Geräts es in einem Zug liest: der Satz, den die Suche findet, die Wörter darin und die Objekte und Tiere, die es enthält.
-
 d-3dldjjls = Album bearbeiten
     .doc = Öffnet einen Album-Entwurf: das Album, das `id` nennt, wie es jetzt steht, oder ein leeres zum Beginnen.
 
@@ -915,3 +906,18 @@ d-tftlav5x = Show the suggestion
 d-tftlav5x-s = S
 
 d-t4imbtyj = Set text language~present
+
+d-4fmzaevy = Describe
+    .doc = What a picture shows, in a sentence, as the device's image model reads it: the sentence the library's details show and search finds.
+
+d-4fmzaevy-p = P
+
+d-277mewxk = Tags
+    .doc = What the device's image model finds in a picture, added to what the photo already lists: the objects, and the pets apart from them.
+
+d-277mewxk-p = P
+
+d-oe5iiuks = Analyze
+    .doc = What the photograph shows, as the device's model reads it in one go: the sentence search finds it by, the words in it, and the objects and pets it holds.
+
+d-oe5iiuks-p = P

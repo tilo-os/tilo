@@ -2259,6 +2259,8 @@ view window(c: Calendars) {
     // The quick-add line being typed and whether its sheet is open.
     state quick: Text = ""
     state quick_open: Bool = false
+    // Whether the keyboard reference is open.
+    state help: Bool = false
     // A window asked to show an event shows the week it stands on and opens it.
     on show(e: Event): set(place, "week").then(open(e))
     // A window asked to show a project lists its tasks.
@@ -2307,6 +2309,18 @@ view window(c: Calendars) {
             }
         }
         actions: {
+            ui.Button("New event", icon: .calendar_plus, key: "N") {
+                on press: new_event(c)
+            }
+            ui.Button(
+                "",
+                icon: .circle_help,
+                icon_only: true,
+                accessible_name: std.say("Keyboard shortcuts"),
+                keys: ["?"],
+            ) {
+                on press: set(help, true)
+            }
             ui.Button("Quick add", icon: .plus, key: "Shift+N") {
                 on press: set(quick, "").then(set(quick_open, true))
             }
@@ -2396,6 +2410,32 @@ view window(c: Calendars) {
     }
     if quick_open {
         quick_add_sheet(c, quick, quick_open)
+    }
+    if help {
+        shortcuts_sheet(help)
+    }
+}
+
+/// The keyboard reference: what a press does in the calendar window.
+view shortcuts_sheet(open: State<Bool>) {
+    ui.ModalDialog(
+        title: "Keyboard shortcuts",
+        icon: .circle_help,
+        open: open,
+        secondary: "Close",
+    ) {
+        on act_secondary: set(open, false)
+        on dismiss: set(open, false)
+        stack(gap: .related, padding: .related) {
+            ui.KeyHints {
+                ui.KeyHint(["N"], "New event")
+                ui.KeyHint(["Shift+N"], "Quick add")
+                ui.KeyHint(["Left, Right"], "Previous or next day")
+                ui.KeyHint(["Up, Down"], "Previous or next week")
+                ui.KeyHint(["Delete"], "Delete the event on its page")
+                ui.KeyHint(["?", "Esc"], "Show or close this reference")
+            }
+        }
     }
 }
 
@@ -2520,6 +2560,7 @@ view timeline(
                     icon: .chevron_left,
                     icon_only: true,
                     accessible_name: std.say("Previous day"),
+                    keys: ["ArrowLeft"],
                 ) {
                     on press: previous_day(c)
                 }
@@ -2531,6 +2572,7 @@ view timeline(
                     icon: .chevron_right,
                     icon_only: true,
                     accessible_name: std.say("Next day"),
+                    keys: ["ArrowRight"],
                 ) {
                     on press: next_day(c)
                 }
@@ -2540,6 +2582,7 @@ view timeline(
                     icon: .chevron_left,
                     icon_only: true,
                     accessible_name: std.say("Previous month"),
+                    keys: ["ArrowLeft"],
                 ) {
                     on press: previous_month(c)
                 }
@@ -2551,6 +2594,7 @@ view timeline(
                     icon: .chevron_right,
                     icon_only: true,
                     accessible_name: std.say("Next month"),
+                    keys: ["ArrowRight"],
                 ) {
                     on press: next_month(c)
                 }
@@ -2560,6 +2604,7 @@ view timeline(
                     icon: .chevron_left,
                     icon_only: true,
                     accessible_name: std.say("Previous week"),
+                    keys: ["ArrowLeft"],
                 ) {
                     on press: previous_week(c)
                 }
@@ -2571,8 +2616,17 @@ view timeline(
                     icon: .chevron_right,
                     icon_only: true,
                     accessible_name: std.say("Next week"),
+                    keys: ["ArrowRight"],
                 ) {
                     on press: next_week(c)
+                }
+            }
+            ui.MenuButton("Jump", icon: .calendar, icon_only: true) {
+                ui.MenuItem(std.say("Previous week"), key: "ArrowUp") {
+                    on choose: previous_week(c)
+                }
+                ui.MenuItem(std.say("Next week"), key: "ArrowDown") {
+                    on choose: next_week(c)
                 }
             }
             ui.DatePicker(
@@ -2743,6 +2797,7 @@ view agenda(c: Calendars, chosen: Option<Calendar>, searched: Text, hidden: Text
                     icon: .chevron_left,
                     icon_only: true,
                     accessible_name: std.say("Previous week"),
+                    keys: ["ArrowLeft"],
                 ) {
                     on press: previous_week(c)
                 }
@@ -2754,6 +2809,7 @@ view agenda(c: Calendars, chosen: Option<Calendar>, searched: Text, hidden: Text
                     icon: .chevron_right,
                     icon_only: true,
                     accessible_name: std.say("Next week"),
+                    keys: ["ArrowRight"],
                 ) {
                     on press: next_week(c)
                 }

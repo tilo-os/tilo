@@ -41,6 +41,8 @@ mod cases {
         asked: Rc<RefCell<Vec<String>>>,
         /// The language each read-the-text call named.
         ocr_language: Rc<RefCell<Vec<String>>>,
+        /// Whether the model refuses every call, as a device without it does.
+        refuse: Rc<RefCell<bool>>,
         /// The type of the record `tags` answers with, and its fields' ids, as the vision package
         /// declares them.
         shown: Rc<RefCell<(String, std::collections::BTreeMap<String, String>)>>,
@@ -77,6 +79,9 @@ mod cases {
                 return Invoked::Pending(format!("asked to {name}"));
             }
             self.asked.borrow_mut().push(name.clone());
+            if *self.refuse.borrow() {
+                return Invoked::Failed("the model is not on this device".to_owned());
+            }
             match name.as_str() {
                 "ocr" => {
                     let Invocation::Action { args, .. } = invocation else {
@@ -890,6 +895,27 @@ mod cases {
             assert!(!g.rt.readers_admit(&other, &scan));
         }
 
+        phase a_photo_the_model_cannot_read_says_so;
+        {
+            let g = Gallery::new();
+            let photo = returned_ref(g.call(
+                "import_photo",
+                vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
+            ));
+            *g.vision.refuse.borrow_mut() = true;
+            for action in ["describe_photo", "tag_photo", "analyze_photo"] {
+                g.call_and_approve(
+                    action,
+                    vec![Value::resource(&g.lib), Value::resource(&photo)],
+                );
+                assert_eq!(
+                    g.rt.read(&g.lib, "notice").unwrap(),
+                    Value::text("the model is not on this device"),
+                    "{action}'s failure is said"
+                );
+            }
+        }
+
         phase text_is_read_in_the_language_the_library_names;
         {
             let g = Gallery::new();
@@ -1538,7 +1564,10 @@ mod cases {
                 "import_photo",
                 vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
             ));
-            g.approve("analyze_photo", vec![Value::resource(&photo)]);
+            g.approve(
+                "analyze_photo",
+                vec![Value::resource(&g.lib), Value::resource(&photo)],
+            );
             assert_eq!(g.vision.asked.borrow().as_slice(), ["shows"]);
             assert_eq!(
                 g.rt.read(&photo, "description").unwrap(),

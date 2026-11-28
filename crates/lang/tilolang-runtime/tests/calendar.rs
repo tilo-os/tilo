@@ -406,6 +406,52 @@ mod cases {
             );
         }
 
+        phase the_window_answers_its_keys_and_shows_them;
+        {
+            let s = sheet();
+            let mut window = s.root_window();
+            let button = |window: &ViewInstance, prop: &str, text: &str| {
+                of_kind(window.tree(), "ui.Button")
+                    .into_iter()
+                    .find(|node| text_prop_opt(node, prop).as_deref() == Some(text))
+                    .unwrap_or_else(|| panic!("no button whose {prop} is {text}"))
+                    .clone()
+            };
+            let new = button(&window, "label", "New event");
+            assert_eq!(new.props.get("key"), Some(&Value::text("N")), "N makes an event");
+            window.fire(&new.key, "press").unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(s.projected(&s.root, "events").len(), 1, "N made the event");
+            // The reference opens from ? and names the keys the window answers.
+            let help = button(&window, "accessible_name", "Keyboard shortcuts");
+            assert_eq!(
+                help.props.get("keys"),
+                Some(&Value::List(vec![Value::text("?")])),
+                "? shows the reference"
+            );
+            window.fire(&help.key, "press").unwrap();
+            window.poll_patches().unwrap();
+            let hints = of_kind(window.tree(), "ui.KeyHint").len();
+            assert!(hints >= 6, "the reference lists the keys: {hints}");
+            // Arrows walk the days and weeks, and a jump menu walks the weeks anywhere.
+            let arrows: Vec<String> = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .flat_map(|node| match node.props.get("keys") {
+                    Some(Value::List(items)) => items
+                        .iter()
+                        .filter_map(|v| v.as_text().map(str::to_owned))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            assert!(arrows.iter().any(|k| k == "ArrowLeft"), "{arrows:?}");
+            let jump: Vec<String> = of_kind(window.tree(), "ui.MenuItem")
+                .into_iter()
+                .filter_map(|node| node.props.get("key").and_then(Value::as_text).map(str::to_owned))
+                .collect();
+            assert!(jump.iter().any(|k| k == "ArrowUp"), "{jump:?}");
+        }
+
         phase an_event_moves_to_another_day_with_the_clock_and_reminder_it_kept;
         {
             let s = sheet();

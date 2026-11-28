@@ -523,12 +523,19 @@ action develop(p: Photo, rotation: Int, crop: List<Float>) uses image {
 /// What a picture shows, in a sentence, as the device's image model reads it: the sentence the
 /// library's details show and search finds. The work is the device's own, asked of this session
 /// on the app's behalf, so the app never runs a model itself.
-action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Details") {
+action describe_photo(lib: Library, p: Photo) (
+    icon: .sparkles,
+    label: "Describe",
+    group: "Details",
+) {
     match try vision.describe(vision.image_model, image: shown_picture(p)) {
         .ok(sentence) => {
             p.description = sentence
+            lib.notice = ""
         }
-        .err(_) => {}
+        .err(why) => {
+            lib.notice = why
+        }
     }
 }
 
@@ -586,7 +593,7 @@ action copy_photo(lib: Library, p: Photo) uses clipboard (icon: .copy, label: "C
 
 /// What the device's image model finds in a picture, added to what the photo already lists: the
 /// objects, and the pets apart from them.
-action tag_photo(p: Photo) (icon: .tag, label: "Tags", group: "Details") {
+action tag_photo(lib: Library, p: Photo) (icon: .tag, label: "Tags", group: "Details") {
     match try vision.shows(vision.image_model, image: shown_picture(p)) {
         .ok(found) => {
             if p.description == "" {
@@ -598,15 +605,18 @@ action tag_photo(p: Photo) (icon: .tag, label: "Tags", group: "Details") {
             for pet in found.pets {
                 p.pets.add(pet)
             }
+            lib.notice = ""
         }
-        .err(_) => {}
+        .err(why) => {
+            lib.notice = why
+        }
     }
 }
 
 /// What the photograph shows, as the device's model reads it in one go: the sentence search finds
 /// it by, the words in it, and the objects and pets it holds. It replaces what the photo said
 /// before, so analyzing again after the picture changed says what it shows now.
-action analyze_photo(p: Photo) (icon: .sparkles, label: "Analyze", group: "Details") {
+action analyze_photo(lib: Library, p: Photo) (icon: .sparkles, label: "Analyze", group: "Details") {
     match try vision.shows(vision.image_model, image: shown_picture(p)) {
         .ok(found) => {
             p.description = found.description
@@ -617,8 +627,11 @@ action analyze_photo(p: Photo) (icon: .sparkles, label: "Analyze", group: "Detai
             for pet in found.pets {
                 p.pets.add(pet)
             }
+            lib.notice = ""
         }
-        .err(_) => {}
+        .err(why) => {
+            lib.notice = why
+        }
     }
 }
 
@@ -2399,10 +2412,10 @@ view viewer(
                 }
             }
             ui.Button("Describe", icon: .sparkles) {
-                on press: describe_photo(p)
+                on press: describe_photo(lib, p)
             }
             ui.Button("Tags", icon: .tag) {
-                on press: tag_photo(p)
+                on press: tag_photo(lib, p)
             }
             ui.Button("Read the text", icon: .scan_line) {
                 on press: recognize_text(lib, p)
@@ -2788,7 +2801,7 @@ view details_fields(lib: Library, p: Photo) {
                 on press: file.save(export_photo(p), name: p.name)
             }
             ui.Button("Analyze", icon: .sparkles) {
-                on press: analyze_photo(p)
+                on press: analyze_photo(lib, p)
             }
             ui.Button("Read the text", icon: .scan_line) {
                 on press: recognize_text(lib, p)
