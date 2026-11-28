@@ -79,8 +79,7 @@ pub fn call(target: RemoteActionTarget, argument: Map<String, Value>) -> Result<
 /// `argument`: the daemon walks the address as an agent's call and the command line do, and
 /// calls the target that walk finds. A call made while this process serves the invocation
 /// `serving` continues it, decided as whoever asked for it; with none it is this process's app's
-/// own. The workspace's own folder (`files.folder#new-folder`) is no app's: the device serves its
-/// verbs itself, so a call on it names the device's target and is not walked.
+/// own.
 ///
 /// # Errors
 /// As [`call`], and an address the walk does not resolve.
@@ -89,11 +88,7 @@ pub fn call_at(
     argument: Map<String, Value>,
     serving: Option<tilo_actions::InvocationId>,
 ) -> Result<Value, String> {
-    use tilo_action_services::device_files;
-    let mut request = match address.split_once('#') {
-        Some((device_files::FOLDER, action)) => device_files::request(action, argument, serving),
-        _ => InvokeRequest::at_path(address, argument),
-    };
+    let mut request = InvokeRequest::at_path(address, argument);
     request.on_behalf_of = serving;
     ask(request)
 }

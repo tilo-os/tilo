@@ -1113,7 +1113,7 @@ action forget_recent(f: Files, path: Text) {
 action change_tree(f: Files, verb: Text, ask: TreeAsk) -> Text {
     match json.parse(json.encode(ask)) {
         .err(why) => why,
-        .ok(arguments) => match try_call("files.folder", verb, arguments) {
+        .ok(arguments) => match try_call("files", verb, arguments) {
             .ok(_) => "",
             .err(why) => why,
         },

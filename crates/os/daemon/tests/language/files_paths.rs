@@ -1163,3 +1163,22 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
         );
     });
 }
+
+/// With Files installed, an agent's `files#new-folder` by path makes the folder, starting no Files.
+#[test]
+fn an_agents_folder_by_path_starts_no_files_where_files_is_installed() {
+    host::run_with(&["files"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        host.install_app(fs_protocol::tree::FILES_APP).await;
+        let (agent, made) = (host.agent(), json!({"parent": "", "name": "Inbox"}));
+        files(&Session::Agent(&agent), &workspace, "new-folder", made).await;
+        kept_when(&host, &workspace, |tree| folder_at(tree, "", "Inbox")).await;
+        let page = host::listed(&host, fs_protocol::tree::FILES_APP).await;
+        let running =
+            host::running_record(&page.unwrap(), &workspace, fs_protocol::tree::FILES_APP);
+        assert_eq!(
+            running, None,
+            "no Files process runs for a verb on the workspace's folder"
+        );
+    });
+}

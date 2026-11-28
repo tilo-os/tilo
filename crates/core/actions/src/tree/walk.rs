@@ -1489,6 +1489,16 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         let action = parsed.action.clone().ok_or_else(|| {
             format!("`{path}` names no action: write `<app>/<resource>#<action>`")
         })?;
+        // Files' verbs on the workspace's own folder are the device's, and start no Files.
+        if below_app(&parsed).is_empty()
+            && names_files(&app_of(&parsed))
+            && crate::remote::DEVICE_FILES_VERBS.contains(&action.as_str())
+        {
+            return Ok(crate::remote::RemoteActionTarget {
+                provider: crate::remote::DEVICE_FILES_PROVIDER.to_owned(),
+                address: crate::api::ActionAddress::new(crate::remote::DEVICE_FILES_FOLDER, action),
+            });
+        }
         let (resolved, _) = self
             .resolve(&parsed, None)
             .await

@@ -27,6 +27,17 @@ pub const DEVICE_FILES_PROVIDER: &str = "tilo.device-files";
 /// Files app behind [`APPLICATION_RESOURCE_PREFIX`] is about, answered where its tree is kept.
 pub const DEVICE_FILES_FOLDER: &str = "files.folder";
 
+/// Files' verbs on a workspace's own folder by paths in it; naming a `device`, they change its disk.
+pub const DEVICE_FILES_VERBS: [&str; 7] = [
+    "new-folder",
+    "rename",
+    "move",
+    "copy-into",
+    "trash",
+    "restore",
+    "undo",
+];
+
 /// Action id that starts an application in a workspace without showing it:
 /// an instance with no window where the provider runs one, ready for the
 /// actions of the app that show nothing. It answers with that instance.

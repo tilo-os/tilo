@@ -114,24 +114,9 @@ pub fn document_id() -> String {
 /// host that keeps the tree reads it as that app's record.
 pub const FILES_APP: &str = <FilesTree as SharedResource>::OWNER;
 
-/// The verbs of Files that act on a workspace's own folder by a path in the workspace
-/// (`Tasks/12 Plan/notes.md`), whoever holds its tree: a workspace's server while every device
-/// of its people is off, or the device that keeps the workspace. The same verbs naming a
-/// `device` and absolute paths change that device's own disk, and only that device carries
-/// them out.
-pub const TREE_VERBS: [&str; 7] = [
-    "new-folder",
-    "rename",
-    "move",
-    "copy-into",
-    "trash",
-    "restore",
-    UNDO,
-];
+pub use tilo_actions::remote::DEVICE_FILES_VERBS as TREE_VERBS;
 
-/// The verb of Files that takes back a change of a workspace's own folder: a call's, by the
-/// invocation the call answered, in every document of the tree it wrote; or one change
-/// [`HISTORY`] lists, by its `step`. Either is History's undo of that step.
+/// The verb of Files that takes back a change of a workspace's own folder ([`HISTORY`]'s undo).
 pub const UNDO: &str = "undo";
 
 /// Whether `action` is one of [`TREE_VERBS`].
