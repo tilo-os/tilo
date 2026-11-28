@@ -97,19 +97,17 @@ fn a_publisher_the_workspace_refuses_opens_no_view_there() {
             .expect("the device's packages read")
             .expect("Notes is installed")
             .publisher_key_hex;
-        let laptop = host.member("Ada's laptop", &refusing).await;
-        let revoked = laptop
-            .call(
-                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
-                tilo_actions::remote::workspace_governance_address(&refusing, "trust.revoke"),
-                &serde_json::json!({"pubkey": publisher, "reason": "its signing key leaked"}),
-            )
-            .await
-            .expect("the device link answers");
-        assert!(
-            matches!(revoked, tilo_actions::InvocationUpdate::Succeeded { .. }),
-            "the owner refuses the publisher: {revoked:?}"
-        );
+        let daemon = host.daemon();
+        let workspaces = daemon.workspaces();
+        super::govern(
+            workspaces,
+            &refusing,
+            workspaces.device_cert(),
+            "trust.revoke",
+            serde_json::json!({"pubkey": publisher, "reason": "its signing key leaked"}),
+        )
+        .await
+        .expect("the owner refuses the publisher");
 
         let (daemon, person, open) = (
             host.daemon(),
