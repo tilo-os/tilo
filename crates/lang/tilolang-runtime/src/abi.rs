@@ -225,6 +225,8 @@ imports! {
     (ActRef, "act_ref", "ii", "i"),
     (Invoke, "invoke", "i", "i"),
     (TryInvoke, "try_invoke", "i", "i"),
+    (Call, "call", "iii", "i"),
+    (TryCall, "try_call", "iii", "i"),
     (Suggest, "suggest", "i", ""),
     (ProposalNote, "proposal_note", "i", "i"),
     (CallFn, "call_fn", "ii", "i"),

@@ -23,7 +23,7 @@ use Imp::{
     Abort, ActAnswer, ActBlur, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
     ActClose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo,
     Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPerson, ActorPrincipal,
-    ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, CallFn, CallInputs,
+    ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, Call, CallFn, CallInputs,
     CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport,
     CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
     CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand,
@@ -69,12 +69,12 @@ use Imp::{
     StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take, TextBytes,
     TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan,
     TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith,
-    ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-    TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt,
-    UiChild, UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI, UiPropPic, Unreadable,
-    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions,
-    WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
-    WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
+    ToolTerminal, TryCall, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState,
+    UiBindStateAt, UiChild, UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI, UiPropPic,
+    Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd,
+    Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes,
+    WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -847,10 +847,12 @@ impl Core {
             | MapNew | MapPutValue | MapRemoveValue | RecNew | RecOwn | RecordAt | RecSetI
             | RecSetF | RecSetH | RefLit | DeviceRefLit | RefEq | RefIs | RefId | RowKey
             | ResourceRef => self.resource_import(imp, a),
-            ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Notify | Notice | WindowState | Invoker
-            | MadeFrom | ActorEq | ActorName | QueueBlock | Now | TimeShift | PersonNamed
-            | AgentNamed | InvocationPush | InvocationPop => self.effect_import(imp, a),
+            ActRef | Invoke | TryInvoke | Call | TryCall | Suggest | ProposalNote | CallFn
+            | IsError | Outside | OutsideAt | Withdraw | ModelCall | Notify | Notice
+            | WindowState | Invoker | MadeFrom | ActorEq | ActorName | QueueBlock | Now
+            | TimeShift | PersonNamed | AgentNamed | InvocationPush | InvocationPop => {
+                self.effect_import(imp, a)
+            }
             WebGet | WebPost | WebPostBytes | WebOk | WebStatus | WebDurationMs | WebStatusText
             | WebHeaders | WebBody | WebText | BytesLength | Base64Decode | TextBytes => {
                 self.web_import(imp, a)

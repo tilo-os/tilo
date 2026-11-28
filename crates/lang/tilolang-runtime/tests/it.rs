@@ -20,6 +20,8 @@ mod boundaries;
 mod bytes;
 #[path = "calendar.rs"]
 mod calendar;
+#[path = "call_by_address.rs"]
+mod call_by_address;
 #[path = "clipboard.rs"]
 mod clipboard;
 #[path = "counter.rs"]

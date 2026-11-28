@@ -55,6 +55,13 @@ impl Checker<'_> {
         {
             return self.builtin_window_state(args, span);
         }
+        if let ExprKind::Ident(name) = &callee.kind
+            && (name == "call" || name == "try_call")
+            && self.lookup(name).is_none()
+            && self.own_callable(name).is_none()
+        {
+            return self.builtin_call_action(name == "try_call", args, span);
+        }
         if !types.is_empty() && !names_json(callee) {
             self.err(
                 "E022",
@@ -1701,6 +1708,39 @@ impl Checker<'_> {
             vec![name, Ex::str(&ty), Self::handle_of(value)],
             Ty::Unit,
         )
+    }
+
+    /// `call(resource, action, arguments)` and `try_call(...)`: one action at the address the
+    /// registry names it by, decided by the device's dispatch. `call` fails the action with a
+    /// refusal; `try_call` answers it as a `Result`.
+    fn builtin_call_action(&mut self, trying: bool, args: &[ast::Arg], span: Span) -> Ex {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program | Ctx::Block) {
+            let who = self.st.ctx.word();
+            let why = format!("`call` calls an action of another app; {who} runs outside one");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            self.err("E066", span, why);
+            return Ex::error();
+        }
+        let [resource, action, arguments] = args else {
+            self.err(
+                "E022",
+                span,
+                "`call` takes the resource, the action and its arguments",
+            );
+            return Ex::error();
+        };
+        let resource = self.expr_as(&resource.value, &Ty::Text);
+        let action = self.expr_as(&action.value, &Ty::Text);
+        let arguments = self.expr_as(&arguments.value, &Ty::Json);
+        let found = Ty::Result(Box::new(Ty::Json), Box::new(Ty::Text));
+        let (imp, ty) = if trying {
+            (Imp::TryCall, found)
+        } else {
+            (Imp::Call, Ty::Json)
+        };
+        Ex::host(imp, vec![resource, action, arguments], ty)
     }
 
     /// `set(name, value)`: an action reference that changes the view state `name`. Views only.

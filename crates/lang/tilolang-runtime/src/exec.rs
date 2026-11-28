@@ -3170,6 +3170,39 @@ impl Core {
         }))
     }
 
+    /// `call(resource, action, arguments)` and `try_call(...)`: one action at the address the
+    /// registry names, called on the device's dispatch, its answer kept for a replayed run.
+    fn call_at(
+        &self,
+        imp: Imp,
+        resource_h: i32,
+        action_h: i32,
+        arguments_h: i32,
+    ) -> HResult<Option<Wasm>> {
+        let (resource, action) = (self.text(resource_h)?, self.text(action_h)?);
+        let arguments =
+            crate::value::to_json(&self.val_whole(arguments_h)?).map_err(HostFail::Trap)?;
+        let answer = self.journaled_read(|| match self.invoker.borrow().as_ref() {
+            Some(invoker) => match invoker.call(&resource, &action, &arguments) {
+                Ok(value) => Ok(Value::Json(Box::new(value))),
+                Err(reason) => Ok(Value::Error(reason)),
+            },
+            None => Ok(Value::Error(
+                "This host calls no action by address".to_owned(),
+            )),
+        })?;
+        if imp == Imp::TryCall {
+            return match answer {
+                Value::Error(reason) => self.result(Err(reason)),
+                value => self.result(Ok(value)),
+            };
+        }
+        if let Value::Error(reason) = answer {
+            return trap(reason);
+        }
+        self.ret_h(answer)
+    }
+
     fn model_call(&self, kind_h: i32, input_h: i32) -> HResult<Option<Wasm>> {
         let (kind, input) = (self.text(kind_h)?, unboxed(self.val_whole(input_h)?));
         {
@@ -3878,6 +3911,7 @@ impl Core {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
             Imp::Invoke => self.invoke(a.h(0)?),
             Imp::TryInvoke => self.try_invoke(a.h(0)?),
+            Imp::Call | Imp::TryCall => self.call_at(imp, a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::Suggest => self.suggest_in_frame(a.h(0)?),
             Imp::ProposalNote => {
                 let note = self.proposal_note(a.h(0)?)?;

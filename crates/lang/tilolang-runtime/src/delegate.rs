@@ -7,6 +7,8 @@
 //! action's own app as a child of the task. The runtime neither decides nor runs it; the
 //! invocation's answer is what the program gets.
 
+use serde_json::Value as Json;
+
 use crate::ids::{ActionId, AppId, FieldId, ModuleHash};
 use crate::meta::EffectClass;
 use crate::value::{ResourceRef, Value};
@@ -143,6 +145,13 @@ pub enum Invoked {
 /// Where a runtime sends the changes a program makes.
 pub trait Invoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked;
+
+    /// Calls the action `action` of `resource` (`tl:<app>:<path>`) with `arguments` on the
+    /// device's dispatch: what it answered, or why it refused. A host with no such line refuses.
+    fn call(&self, resource: &str, action: &str, arguments: &Json) -> Result<Json, String> {
+        let _ = (resource, action, arguments);
+        Err("This host calls no action by address".to_owned())
+    }
 }
 
 /// One thing a person asked to allow a call reads about it: what it is, in their language, the

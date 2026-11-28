@@ -260,6 +260,9 @@ imports! {
     ActRef = "act_ref" ([H, H] -> [H]);
     Invoke = "invoke" ([H] -> [H]);
     TryInvoke = "try_invoke" ([H] -> [H]);
+    // One action at an address the registry names (`call("tl:so.tilo.notes:n1", "find", args)`).
+    Call = "call" ([H, H, H] -> [H]);
+    TryCall = "try_call" ([H, H, H] -> [H]);
     Suggest = "suggest" ([H] -> []);
     ProposalNote = "proposal_note" ([H] -> [H]);
     CallFn = "call_fn" ([H, H] -> [H]);
