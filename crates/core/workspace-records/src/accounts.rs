@@ -382,6 +382,11 @@ pub enum AccountsAction {
         #[param("A short summary a person reads.")]
         message: Option<String>,
         #[param(
+            "Of what kind its trouble is, so a window says what helps: `signed-out`, \
+             `no-password`, `withheld`, `offline`, or `unreachable`; empty while it stands well."
+        )]
+        kind: Option<String>,
+        #[param(
             "Whether the device still has the account set up; left out, it does.",
             name = "attached"
         )]
@@ -672,6 +677,10 @@ pub struct AccountDevice {
     /// What a person reads about it: what the device said, never a server's
     /// own words.
     pub words: String,
+    /// Of what kind its trouble is, so a window says what helps: `signed-out`,
+    /// `no-password`, `withheld`, `offline`, or `unreachable`; empty while it
+    /// stands well.
+    pub kind: String,
 }
 
 /// One of a calendar account's calendars, as its person chooses which show.

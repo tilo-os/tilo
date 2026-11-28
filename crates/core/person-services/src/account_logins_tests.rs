@@ -1297,7 +1297,7 @@ async fn every_device_attaching_an_account_keeps_its_own_row_and_writes_no_other
                 ADDRESS,
                 accounts::SyncHealth::Healthy,
                 false,
-                "",
+                ("", ""),
                 (true, false),
                 None,
             )
@@ -1350,7 +1350,7 @@ async fn every_device_attaching_an_account_keeps_its_own_row_and_writes_no_other
             ADDRESS,
             accounts::SyncHealth::Healthy,
             false,
-            "",
+            ("", ""),
             (false, false),
             None,
         )
@@ -1389,7 +1389,7 @@ async fn every_device_attaching_an_account_keeps_its_own_row_and_writes_no_other
             ADDRESS,
             accounts::SyncHealth::Error,
             false,
-            "written by another device",
+            ("written by another device", ""),
             (true, false),
             Some(&owner_device),
         )
@@ -1410,7 +1410,7 @@ async fn every_device_attaching_an_account_keeps_its_own_row_and_writes_no_other
             ADDRESS,
             accounts::SyncHealth::Healthy,
             false,
-            "",
+            ("", ""),
             (false, false),
             None,
         )

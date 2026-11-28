@@ -72,6 +72,10 @@ pub struct AccountSync {
     /// What a person reads about it: a short summary, never a server's own
     /// words, which can carry a credential.
     pub message: String,
+    /// Of what kind its trouble is, so a window says what helps: `signed-out`,
+    /// `no-password`, `withheld`, `offline`, or `unreachable` for anything else.
+    /// Empty while the account stands well.
+    pub kind: String,
 }
 
 pub use crate::SyncHealth;
@@ -285,6 +289,7 @@ impl AccountList {
         #[param("When, in milliseconds since the Unix epoch")] at_ms: u64,
         #[param("Whether its person just signed in to it")] signed_in: bool,
         #[param("A short summary a person reads, never a server's own words")] message: String,
+        #[param("Of what kind its trouble is, empty while it stands well")] kind: String,
     ) -> Result<(), Refusal> {
         let previous = self.existing_row(&account, &device)?;
         let message = sync_message(&message);
@@ -301,10 +306,12 @@ impl AccountList {
             // A sign-in stands until the next sync says how it went.
             signed_in_ms: signed_in.then_some(at_ms),
             message,
+            kind,
             ..previous
         };
         let unchanged = previous.health == next.health
             && previous.message == next.message
+            && previous.kind == next.kind
             && previous.signed_in_ms.is_some() == next.signed_in_ms.is_some()
             && !(succeeded
                 && at_ms
@@ -570,6 +577,7 @@ impl AccountList {
         at_ms: u64,
         signed_in: bool,
         message: &str,
+        kind: &str,
     ) -> Result<Option<Invoke<Self>>, Refusal> {
         let mut reported = self.clone();
         reported.report_sync(
@@ -579,6 +587,7 @@ impl AccountList {
             at_ms,
             signed_in,
             message.to_owned(),
+            kind.to_owned(),
         )?;
         Ok((reported != *self).then(|| {
             Self::REPORT_SYNC.with((
@@ -588,6 +597,7 @@ impl AccountList {
                 at_ms,
                 signed_in,
                 message.to_owned(),
+                kind.to_owned(),
             ))
         }))
     }
@@ -938,6 +948,7 @@ mod tests {
             at_ms,
             false,
             message.into(),
+            String::new(),
         ))
     }
 

@@ -1376,7 +1376,7 @@ async fn vault(
                 &account,
                 health,
                 signed_in,
-                &message,
+                (&message, ""),
                 (true, false),
                 None,
             ))

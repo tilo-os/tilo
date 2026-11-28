@@ -148,6 +148,39 @@
         }
       ],
       "budget_ms": 150000
+    },
+    {
+      "id": "accounts-checked",
+      "said": "Settings' Accounts row says the device that checked the account and when",
+      "ops": [
+        {
+          "do_app": {
+            "app": "so.tilo.settings",
+            "operation": "open_pane",
+            "args": {
+              "pane": "external_accounts"
+            }
+          }
+        },
+        {
+          "wait_window": {
+            "app": "so.tilo.settings",
+            "within": 60
+          }
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "prefix": "Checked by "
+              }
+            ],
+            "within": 60
+          }
+        }
+      ],
+      "dark": true,
+      "budget_ms": 90000
     }
   ],
   "tl": {

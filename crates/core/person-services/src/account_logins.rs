@@ -447,9 +447,10 @@ impl crate::PersonServices {
     /// Report how the sync of `workspace`'s account `id` goes on this device, for `by`, who
     /// asked, as every member reads it in the workspace's accounts ([`AccountList::report_sync`]).
     /// The row written is this device's own: `named`, the device a caller says the report is
-    /// about, is refused when it is another, so no device writes another's row. `state` is
-    /// whether the device still has the account and whether it is checking it now. A report
-    /// saying what the account's row already says writes nothing.
+    /// about, is refused when it is another, so no device writes another's row. `details` is
+    /// the summary a person reads and of what kind the trouble is, and `state` is whether the
+    /// device still has the account and whether it is checking it now. A report saying what
+    /// the account's row already says writes nothing.
     ///
     /// # Errors
     /// The workspace has no such account, the report is for another device, or the record does
@@ -460,7 +461,7 @@ impl crate::PersonServices {
         id: &str,
         health: accounts::SyncHealth,
         signed_in: bool,
-        message: &str,
+        details: (&str, &str),
         state: (bool, bool),
         named: Option<&str>,
     ) -> Result<(), String> {
@@ -473,6 +474,7 @@ impl crate::PersonServices {
                     .to_owned(),
             );
         }
+        let (message, kind) = details;
         let (attached, checking) = state;
         self.change_workspace_accounts((workspace, by, call), |held| {
             let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
@@ -484,6 +486,7 @@ impl crate::PersonServices {
                     tilo_clock::unix_now_ms(),
                     signed_in,
                     message,
+                    kind,
                 )
                 .map_err(|refusal| refusal.to_string())?
             {

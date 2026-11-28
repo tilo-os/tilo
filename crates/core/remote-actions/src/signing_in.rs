@@ -141,17 +141,17 @@ impl SigningIn {
         account: &str,
         health: &str,
         signed_in: bool,
-        message: &str,
-        attached: bool,
-        checking: bool,
+        details: (&str, &str),
+        state: (bool, bool),
     ) -> Result<(), String> {
         let mut arguments = Map::new();
         arguments.insert("account".into(), Value::String(account.to_owned()));
         arguments.insert("health".into(), Value::String(health.to_owned()));
         arguments.insert("signedIn".into(), Value::Bool(signed_in));
-        arguments.insert("message".into(), Value::String(message.to_owned()));
-        arguments.insert("attached".into(), Value::Bool(attached));
-        arguments.insert("checking".into(), Value::Bool(checking));
+        arguments.insert("message".into(), Value::String(details.0.to_owned()));
+        arguments.insert("kind".into(), Value::String(details.1.to_owned()));
+        arguments.insert("attached".into(), Value::Bool(state.0));
+        arguments.insert("checking".into(), Value::Bool(state.1));
         self.ask(report_sync, arguments).map(drop)
     }
 }

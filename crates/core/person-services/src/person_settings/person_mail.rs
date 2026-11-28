@@ -198,7 +198,14 @@ impl crate::PersonServices {
             account,
             health,
             signed_in,
-            &words,
+            (
+                &words,
+                if health == accounts::SyncHealth::NeedsSignIn {
+                    "signed-out"
+                } else {
+                    ""
+                },
+            ),
             (true, false),
             None,
         )

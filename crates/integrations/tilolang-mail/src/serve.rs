@@ -136,6 +136,8 @@ struct Reported {
     health: &'static str,
     /// What a person reads about it.
     message: String,
+    /// Of what kind its trouble is, as the window names it; empty while it stands well.
+    kind: String,
 }
 
 impl Default for Reported {
@@ -145,6 +147,7 @@ impl Default for Reported {
             checking: false,
             health: "never",
             message: String::new(),
+            kind: String::new(),
         }
     }
 }
@@ -236,9 +239,8 @@ impl Connector {
                     &account,
                     row.health,
                     false,
-                    &row.message,
-                    row.attached,
-                    row.checking,
+                    (&row.message, &row.kind),
+                    (row.attached, row.checking),
                 )
                 .is_err()
             {
@@ -305,6 +307,7 @@ impl Connector {
                     checking: false,
                     health: health_of(kind),
                     message: reason.clone(),
+                    kind: kind.clone(),
                 },
             ),
             _ => return,

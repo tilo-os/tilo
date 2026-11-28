@@ -139,6 +139,7 @@ fn view_of(
             attempted_ms: sync.attempted_ms,
             checked_ms: sync.succeeded_ms.unwrap_or_default(),
             words: words_of(sync.health, &sync.message),
+            kind: sync.kind.clone(),
         })
         .collect();
     // What the account's one row says, from every device's rows: the newest attempt is how it
