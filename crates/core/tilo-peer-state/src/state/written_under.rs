@@ -114,6 +114,42 @@ fn forked(doc: &CachedDocument, heads: &BTreeSet<ChangeHash>) -> Result<CachedDo
     Ok(fork)
 }
 
+/// How many changes back from the governance held [`only_coverage_since`] reads.
+const COVERAGE_STEPS: usize = 8;
+
+/// Whether the governance `doc` holds is the one at the heads `named` names with nothing written
+/// since but checkpoint coverage and durable receipts, which no judgement of who may write reads:
+/// then it judges a write as the one at those heads does, without forking the governance there.
+/// A device's own checkpoint names the governance before the coverage row written for it, so each
+/// of its checkpoints would otherwise fork the whole governance. Read back from the newest change
+/// along single parents, a few at most; any other history says no.
+fn only_coverage_since(doc: &CachedDocument, named: &BTreeSet<[u8; 4]>) -> bool {
+    use automerge::ReadDoc as _;
+    let held = doc.committed_document();
+    let mut at = held.get_heads();
+    let mut later = Vec::new();
+    for _ in 0..=COVERAGE_STEPS {
+        let reached: BTreeSet<[u8; 4]> = at
+            .iter()
+            .map(|hash| collab_types::governance_head(&hash.0))
+            .collect();
+        if reached == *named {
+            return !later.is_empty()
+                && workspace::rows::touched(doc, &later)
+                    .is_some_and(|touched| workspace::rows::only_coverage(&touched));
+        }
+        let [newest] = at.as_slice() else {
+            return false;
+        };
+        let Some(change) = held.get_change_by_hash(newest) else {
+            return false;
+        };
+        at = change.deps().to_vec();
+        later.push(change.clone());
+    }
+    false
+}
+
 /// How a write that names the governance heads `named` was written, as `doc` holds them, and
 /// the changes of `doc` the governance it was written under is the one at.
 fn written_at(
@@ -177,6 +213,9 @@ impl StatePeer {
             .map(|head| collab_types::governance_head(&head.0))
             .collect();
         if !named.is_empty() && named == current {
+            return Ok(Under::Now);
+        }
+        if !named.is_empty() && only_coverage_since(doc, &named) {
             return Ok(Under::Now);
         }
         let changes = doc.changes_named();

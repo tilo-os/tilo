@@ -567,6 +567,23 @@ impl StatePeer {
         rows.sort();
         rows
     }
+    /// Where this replica stands on `author`'s line of `app`'s record `record`: its row of
+    /// [`Self::replay_floors`], 0 where that names none.
+    #[must_use]
+    pub fn replay_floor(&self, app: &str, record: &str, author: &[u8; 32]) -> u64 {
+        self.core
+            .documents
+            .get(&Route::of(app, record))
+            .filter(|document| document.quarantine.is_none())
+            .and_then(|document| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .get(&collab_types::Ed25519PublicKey::from_bytes(*author))
+                    .copied()
+            })
+            .unwrap_or(0)
+    }
     /// The person who owns the workspace: their root key.
     #[must_use]
     pub fn owner(&self) -> [u8; 32] {

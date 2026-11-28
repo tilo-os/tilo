@@ -2510,11 +2510,7 @@ impl Workspaces {
         signer: &dyn collab_types::signer::DeviceSigner,
         envelopes: &mut [collab_types::SignedOp],
     ) -> Result<(), String> {
-        let floor = peer
-            .replay_floors()
-            .into_iter()
-            .find(|(a, r, k, _)| a == app && r == document && *k == author)
-            .map_or(0, |(_, _, _, seq)| seq);
+        let floor = peer.replay_floor(app, document, &author);
         let count = u64::try_from(envelopes.len()).unwrap_or(u64::MAX);
         let start = self.inner.store.reserve_sequence(
             workspace,

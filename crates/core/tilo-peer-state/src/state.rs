@@ -50,8 +50,8 @@ pub use governance_writes::ActionStamp;
 pub(crate) use governance_writes::{commit_governance, wall_secs};
 mod app_versions;
 mod calls;
+pub(crate) use app_versions::{APP_VERSIONS, apps_in_map, with_installed_apps};
 pub use app_versions::{InstalledApp, WorkspaceApps};
-pub(crate) use app_versions::{apps_in_map, with_installed_apps};
 pub use calls::CallGate;
 pub(crate) mod package_registries;
 pub(crate) mod package_trust;
@@ -101,9 +101,7 @@ pub use workspace_grants::workspace_grants_of;
 mod imported_history;
 pub use imported_history::{IMPORTED_HISTORY_PREFIX, Imported, ImportedHistory};
 mod keeping_devices;
-pub use keeping_devices::{
-    WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_device_keys_of, keeping_devices_of,
-};
+pub use keeping_devices::{WORKSPACE_KEEPING_DEVICES_KEY, holder_role, keeping_devices_of};
 pub(crate) mod change_hashes;
 pub(crate) mod seed;
 mod workspace_name;

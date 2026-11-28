@@ -4,8 +4,7 @@ use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
     BTreeMap, BTreeSet, DeviceCert, DeviceRow, Grant, GrantId, Member, MemberAccess, MemberId,
     MemberList, MemberListAccess, MembershipError, Person, ROOT, ReadDoc, RevocationList, Role,
-    SystemTime, Transactable, err, keeping_device_keys_of, now_ns, person_of, workspace,
-    workspace_map,
+    SystemTime, Transactable, err, now_ns, person_of, workspace, workspace_map,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -398,9 +397,9 @@ impl PeerGovernance<'_> {
         // A holder the member list names keeps the workspace: a key holder among them takes the
         // keys beside the members' devices, while it stays certified and unrevoked. Being named
         // a holder lets it keep and carry the workspace; it makes nobody a member.
-        for hint in self.keeping_devices() {
+        for (hint, role) in self.keeping_roles().iter() {
             let cert = &hint.host;
-            if super::holder_role(&hint) == super::CopyRole::Store {
+            if *role == super::CopyRole::Store {
                 stores.insert(cert.device_public_key);
             } else if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
                 && cert.capabilities.workspace.is_none()
@@ -662,7 +661,11 @@ impl PeerGovernance<'_> {
         // A device the workspace names among its servers holds it by that
         // name: it is no member's device, though it founded the workspace, so
         // no member list names it as one.
-        let serving: BTreeSet<[u8; 32]> = keeping_device_keys_of(doc);
+        let serving: BTreeSet<[u8; 32]> = doc
+            .keeping_devices()
+            .iter()
+            .map(|(hint, _)| hint.host.device_public_key)
+            .collect();
         let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let certificates = doc.identity_certificates();
         // Who the grants make administrators, and how many each gives a person beyond their

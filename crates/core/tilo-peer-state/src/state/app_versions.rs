@@ -31,7 +31,7 @@ use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 /// The governance map workspaces made before the apps resource kept their app versions in, by
 /// app id.
-pub(super) const APP_VERSIONS: &str = "app_versions_v1";
+pub(crate) const APP_VERSIONS: &str = "app_versions_v1";
 
 /// An app version the workspace runs.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

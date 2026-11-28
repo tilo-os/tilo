@@ -36,8 +36,13 @@ pub(crate) struct CachedDocument {
     /// changes, as which apps run is not this document's. `None` for a copy that read none yet,
     /// which reads them from the app versions map the document keeps ([`Self::apps`]).
     apps: Option<Arc<crate::state::WorkspaceApps>>,
-    /// The apps the document's app versions map names, once read.
-    map_apps: Arc<OnceLock<Arc<crate::state::WorkspaceApps>>>,
+    /// The apps the document's app versions map names, once read: reading it replays the
+    /// document's whole history.
+    map_apps: Carried<crate::state::WorkspaceApps>,
+    /// The hosts the document names ([`crate::state::keeping_devices_of`]), each with how it
+    /// holds the workspace ([`crate::state::holder_role`]), once read: each host's address is
+    /// checked against its signature.
+    keeping: Carried<Vec<(tilo_workspace_join::TransportHint, crate::state::CopyRole)>>,
     /// The views of the state this one was changed from, when they were
     /// read: a change to a workspace of hundreds touches a row or two, so the
     /// rows whose bytes are as they were keep what reading them took
@@ -57,6 +62,65 @@ pub(crate) struct CachedDocument {
     named: Arc<OnceLock<Named>>,
     /// [`Self::newest_change_secs`], once asked.
     newest_change: Arc<OnceLock<Option<i64>>>,
+}
+/// What a state read under one document key, handed on to the states changed from it: one of
+/// them reads it again only once a change since wrote under that key.
+struct Carried<T> {
+    /// What this state read, once read.
+    held: Arc<OnceLock<Arc<T>>>,
+    /// What an earlier state read, with that state's heads.
+    before: Option<(Vec<automerge::ChangeHash>, Arc<T>)>,
+}
+impl<T> Default for Carried<T> {
+    fn default() -> Self {
+        Self {
+            held: Arc::default(),
+            before: None,
+        }
+    }
+}
+impl<T> Clone for Carried<T> {
+    fn clone(&self) -> Self {
+        Self {
+            held: Arc::clone(&self.held),
+            before: self.before.clone(),
+        }
+    }
+}
+impl<T> Carried<T> {
+    /// What `doc` holds under `key`: what an earlier state read when no change since wrote
+    /// under it, else `read` of it.
+    fn read(&self, doc: &AutoCommit, key: &str, read: impl FnOnce() -> T) -> Arc<T> {
+        Arc::clone(
+            self.held
+                .get_or_init(|| self.unchanged(doc, key).unwrap_or_else(|| Arc::new(read()))),
+        )
+    }
+    /// What an earlier state read, when nothing `doc` holds since wrote under `key`: read back
+    /// along the few changes since ([`crate::workspace::rows::written_since`]).
+    fn unchanged(&self, doc: &AutoCommit, key: &str) -> Option<Arc<T>> {
+        let (heads, read) = self.before.as_ref()?;
+        if automerge::transaction::Transactable::pending_ops(doc) > 0 {
+            return None;
+        }
+        let touched = crate::workspace::rows::written_since(doc, heads)?;
+        (!touched.contains_key(key)).then(|| Arc::clone(read))
+    }
+    /// This, for a state changed from `doc`, the state it was read of: what was read goes with
+    /// the heads it was read at, or what an earlier state read when this one read nothing.
+    fn passed_on(&self, doc: &AutoCommit) -> Self {
+        let before = match self.held.get() {
+            Some(read) if automerge::transaction::Transactable::pending_ops(doc) == 0 => {
+                Some((doc.committed_document().get_heads(), Arc::clone(read)))
+            }
+            Some(_) => None,
+            None => self.before.clone(),
+        };
+        Self {
+            held: Arc::default(),
+            before,
+        }
+    }
 }
 /// A governance state's changes by the bytes a write names each by
 /// ([`collab_types::governance_head`]), and its changes that build on none.
@@ -200,7 +264,8 @@ impl From<AutoCommit> for CachedDocument {
             stored_policy: Arc::default(),
             workspace_policy: Arc::default(),
             apps: None,
-            map_apps: Arc::default(),
+            map_apps: Carried::default(),
+            keeping: Carried::default(),
             redemptions: Arc::default(),
             earlier: None,
             stored: Arc::default(),
@@ -238,7 +303,8 @@ impl DerefMut for CachedDocument {
         self.since_checked = None;
         self.stored_policy = Arc::default();
         self.workspace_policy = Arc::default();
-        self.map_apps = Arc::default();
+        self.map_apps = self.map_apps.passed_on(&self.doc);
+        self.keeping = self.keeping.passed_on(&self.doc);
         self.redemptions = Arc::default();
         self.security_basis = Arc::default();
         self.named = Arc::default();
@@ -285,11 +351,31 @@ impl CachedDocument {
     pub(crate) fn apps(&self) -> Arc<crate::state::WorkspaceApps> {
         match &self.apps {
             Some(apps) => Arc::clone(apps),
-            None => Arc::clone(
-                self.map_apps
-                    .get_or_init(|| Arc::new(crate::state::apps_in_map(&self.doc))),
-            ),
+            None => self
+                .map_apps
+                .read(&self.doc, crate::state::APP_VERSIONS, || {
+                    crate::state::apps_in_map(&self.doc)
+                }),
         }
+    }
+    /// The hosts this state names, each by the address it signed
+    /// ([`crate::state::keeping_devices_of`]) and with how it holds the workspace.
+    pub(crate) fn keeping_devices(
+        &self,
+    ) -> Arc<Vec<(tilo_workspace_join::TransportHint, crate::state::CopyRole)>> {
+        self.keeping.read(
+            &self.doc,
+            crate::state::WORKSPACE_KEEPING_DEVICES_KEY,
+            || {
+                crate::state::keeping_devices_of(&self.doc)
+                    .into_iter()
+                    .map(|hint| {
+                        let role = crate::state::holder_role(&hint);
+                        (hint, role)
+                    })
+                    .collect()
+            },
+        )
     }
     /// The apps the copy holding this state read, if it read any.
     pub(crate) fn apps_read(&self) -> Option<&Arc<crate::state::WorkspaceApps>> {
@@ -415,6 +501,8 @@ impl CachedDocument {
             before: self.stored_before(),
             since_checked,
             apps: self.apps.clone(),
+            map_apps: self.map_apps.passed_on(&self.doc),
+            keeping: self.keeping.passed_on(&self.doc),
             ..Self::from(doc)
         }
     }
@@ -1038,6 +1126,52 @@ mod tests {
                 digest,
                 "the reopened state stores as the bytes it was read from"
             );
+        }
+
+        phase apps_the_map_named_stand_until_a_change_writes_the_map;
+        {
+            let mut doc = AutoCommit::new();
+            let versions = doc
+                .put_object(ROOT, crate::state::APP_VERSIONS, automerge::ObjType::Map)
+                .unwrap();
+            let coverage = doc
+                .put_object(ROOT, crate::coverage::FIELD_V2, automerge::ObjType::Map)
+                .unwrap();
+            doc.commit();
+            let mut cached = CachedDocument::from(doc);
+            let read = cached.apps();
+            assert!(read.running().is_empty());
+            // Coverage changes no app the map names: what was read stands.
+            for n in 0..3 {
+                cached.put(&coverage, format!("route-{n}"), n).unwrap();
+                cached.commit();
+                assert!(Arc::ptr_eq(&cached.apps(), &read));
+            }
+            let row = crate::state::InstalledApp {
+                release: crate::workspace_membership::AppRelease {
+                    app: "so.tilo.notes".into(),
+                    version: "1.0.0".into(),
+                    surface: hex::encode([7; 32]),
+                    package: hex::encode([9; 32]),
+                    publisher: hex::encode([10; 32]),
+                    file: None,
+                    dev: true,
+                    pinned: false,
+                    payload: crate::workspace_membership::AppPayload::Tapp,
+                },
+                installed_by: hex::encode([1; 32]),
+                installed_at_ns: 0,
+            };
+            cached
+                .put(
+                    &versions,
+                    "so.tilo.notes",
+                    automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                )
+                .unwrap();
+            cached.commit();
+            assert!(cached.apps().running().contains_key("so.tilo.notes"));
+            assert_eq!(cached.apps().ran("so.tilo.notes"), [row.release]);
         }
 
         phase a_document_stored_with_a_superseded_waiting_change_opens_without_it;

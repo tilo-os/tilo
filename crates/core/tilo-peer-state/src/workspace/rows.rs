@@ -250,6 +250,43 @@ pub(crate) fn written_rows(
     )
 }
 
+/// How many changes back from its heads [`written_since`] reads a document.
+const WRITTEN_SINCE_STEPS: usize = 8;
+
+/// The document keys the changes `doc` holds beyond `heads` wrote under, as [`touched`] names
+/// them: read back from the newest change along single parents, a few at most, so a document
+/// a few changes of its own past `heads` costs those changes. `None` when the history since is
+/// any other shape, or the changes do not say where they wrote.
+pub(crate) fn written_since(
+    doc: &AutoCommit,
+    heads: &[automerge::ChangeHash],
+) -> Option<BTreeMap<String, Wrote>> {
+    use automerge::ReadDoc as _;
+    let held = doc.committed_document();
+    let mut at = held.get_heads();
+    let mut later = Vec::new();
+    for _ in 0..=WRITTEN_SINCE_STEPS {
+        if at.len() == heads.len() && at.iter().all(|hash| heads.contains(hash)) {
+            return touched(doc, &later);
+        }
+        let [newest] = at.as_slice() else {
+            return None;
+        };
+        let change = held.get_change_by_hash(newest)?;
+        at = change.deps().to_vec();
+        later.push(change.clone());
+    }
+    None
+}
+
+/// Whether `touched` names nothing but checkpoint coverage and durable receipts: rows no
+/// judgement of who may write reads.
+pub(crate) fn only_coverage(touched: &BTreeMap<String, Wrote>) -> bool {
+    touched
+        .keys()
+        .all(|key| key == crate::coverage::FIELD_V2 || key == crate::durability::FIELD_V2)
+}
+
 /// Where operations wrote under one document key.
 #[derive(Debug)]
 pub(crate) enum Wrote {

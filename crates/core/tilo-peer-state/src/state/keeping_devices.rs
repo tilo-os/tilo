@@ -45,16 +45,6 @@ pub fn keeping_devices_of(doc: &automerge::AutoCommit) -> Vec<TransportHint> {
         .collect()
 }
 
-/// The devices that keep `doc`'s workspace, by their keys: a workspace's
-/// servers are no member's devices, whichever of them founded it.
-#[must_use]
-pub fn keeping_device_keys_of(doc: &automerge::AutoCommit) -> std::collections::BTreeSet<[u8; 32]> {
-    keeping_devices_of(doc)
-        .into_iter()
-        .map(|hint| hint.host.device_public_key)
-        .collect()
-}
-
 /// How the holder whose signed address is `hint` holds the workspace, as the
 /// address says: with its keys, or as a store of its ciphertext. An address
 /// that does not say is read as a store's: nobody is given keys it did not
@@ -79,10 +69,10 @@ impl PeerGovernance<'_> {
     /// it among the workspace's holders.
     #[must_use]
     pub fn holder_role(self, device: &[u8; 32]) -> Option<CopyRole> {
-        self.keeping_devices()
+        self.keeping_roles()
             .iter()
-            .find(|hint| &hint.host.device_public_key == device)
-            .map(holder_role)
+            .find(|(hint, _)| &hint.host.device_public_key == device)
+            .map(|(_, role)| *role)
     }
 
     /// The holder whose copy makes the workspace's compacted base, the same
@@ -96,13 +86,13 @@ impl PeerGovernance<'_> {
     #[must_use]
     pub fn base_maker(self) -> Option<[u8; 32]> {
         let makers: Vec<[u8; 32]> = self
-            .keeping_devices()
+            .keeping_roles()
             .iter()
-            .filter(|hint| {
+            .filter(|(hint, role)| {
                 self.peer.administers_history(&hint.host.user_public_key)
-                    && holder_role(hint) == CopyRole::KeyHolder
+                    && *role == CopyRole::KeyHolder
             })
-            .map(|hint| hint.host.device_public_key)
+            .map(|(hint, _)| hint.host.device_public_key)
             .collect();
         self.founder()
             .filter(|founder| makers.contains(founder))
@@ -115,8 +105,21 @@ impl PeerGovernance<'_> {
         self.peer
             .core
             .workspace_doc
-            .as_deref()
-            .map_or_else(Vec::new, keeping_devices_of)
+            .as_ref()
+            .map_or_else(Vec::new, |doc| {
+                doc.keeping_devices()
+                    .iter()
+                    .map(|(hint, _)| hint.clone())
+                    .collect()
+            })
+    }
+
+    /// The holders of the workspace, each with how it holds it ([`holder_role`]).
+    pub(crate) fn keeping_roles(self) -> std::sync::Arc<Vec<(TransportHint, CopyRole)>> {
+        self.peer.core.workspace_doc.as_ref().map_or_else(
+            std::sync::Arc::default,
+            crate::cached_document::CachedDocument::keeping_devices,
+        )
     }
 }
 
