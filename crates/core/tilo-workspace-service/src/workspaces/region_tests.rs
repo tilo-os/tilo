@@ -51,12 +51,11 @@ async fn a_zone_chosen_on_one_device_is_the_zone_another_device_of_theirs_reads(
     servers::attach::attach_named(own)
         .await
         .expect("the laptop hands it over");
-    tilo_test_env::within("the desktop to hold her own workspace", async {
-        while !person_workspace::holds_person_workspace(reading).await {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
+    // The hand-over answers once the desktop's copy followed its frames.
+    assert!(
+        person_workspace::holds_person_workspace(reading).await,
+        "the desktop holds her own workspace the laptop handed it"
+    );
     let on_laptop = reach_device_at(reading, &laptop.node_addr(), &own_id);
     let answer = tilo_test_env::within(
         "the laptop answers the choice",

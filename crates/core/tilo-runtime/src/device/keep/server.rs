@@ -1614,16 +1614,12 @@ mod tests {
             .await
             .unwrap();
         let hosted = server.workspaces().expect("the server holds workspaces");
-        tilo_test_env::within("the server to hold the Servers workspace", async {
-            while !tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(
-                hosted,
-            )
-            .await
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await;
+        // The hand-over answers once the server's copy followed its frames.
+        assert!(
+            tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(hosted)
+                .await,
+            "the server holds the Servers workspace it was handed"
+        );
         // Started again, it keeps the workspace from its own state and writes its entry
         // from where it is reached: its address, and the relay beside it.
         server.shutdown().await;
@@ -1777,30 +1773,22 @@ mod tests {
         desk.shutdown().await;
     }
 
-    /// Wait until `kept`, a server's workspaces, keeps the person's workspace, reads its own
-    /// entry there, and holds `made` as the person's list names it.
+    /// Wait until `kept`, a server's workspaces, holds `made` as the person's list names it. The
+    /// workspace it was handed and its own entry there are in its copy once its hand-over
+    /// answers.
     async fn waits_until_listed(
         kept: &tilo_workspace_service::workspaces::Workspaces,
         made: &str,
         server_device: [u8; 32],
     ) {
-        tilo_test_env::within(
-            "the server keeps the person's workspace and reads its entry there",
-            async {
-                while
-                    !(tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(
-                        kept,
-                    )
+        assert!(
+            tilo_workspace_service::workspaces::person_workspace::holds_person_workspace(kept)
+                .await
+                && tilo_workspace_service::workspaces::servers::read(kept)
                     .await
-                        && tilo_workspace_service::workspaces::servers::read(kept)
-                            .await
-                            .is_ok_and(|servers| servers.active(&server_device).is_some()))
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                }
-            },
-        )
-        .await;
+                    .is_ok_and(|servers| servers.active(&server_device).is_some()),
+            "the server keeps the person's workspace it was handed, and reads its own entry there"
+        );
         tilo_test_env::within("the person's list reaches the server", async {
             while !tilo_workspace_service::workspaces::fixtures::lists(kept, made).await {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
