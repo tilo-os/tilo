@@ -14,10 +14,17 @@ type Row {
     process: device.Process
     depth: Int = 0
     has_children: Bool = false
+    expanded: Bool = true
     /// What it uses, with what stands under it added when the person asked for that.
     cpu: Float = 0.0
     memory_bytes: Int = 0
     threads: Int = 0
+}
+
+/// One of the machine's processor cores, numbered as a person counts them.
+type Core {
+    number: Int
+    share: Float
 }
 
 /// The app's root. The table's shape and where the person stands are the window's own, so
@@ -144,6 +151,7 @@ fn tree_rows(
     kernel: Bool,
     query: Text,
     with_children: Bool,
+    closed: List<Int>,
 ) -> List<Row> {
     if left == 0 {
         []
@@ -164,6 +172,7 @@ fn tree_rows(
                                     and (kernel or not child.kernel_thread)
                                     and matches(child, query),
                             ),
+                            expanded: not closed.contains(process.pid),
                             cpu: if with_children {
                                 process.cpu + subtree_cpu(all, process.pid, 0)
                             } else { process.cpu },
@@ -175,17 +184,20 @@ fn tree_rows(
                             } else { process.threads },
                         ),
                     ],
-                    tree_rows(
-                        all,
-                        process.pid,
-                        depth + 1,
-                        left - 1,
-                        key,
-                        descending,
-                        kernel,
-                        query,
-                        with_children,
-                    ),
+                    if not closed.contains(process.pid) {
+                        tree_rows(
+                            all,
+                            process.pid,
+                            depth + 1,
+                            left - 1,
+                            key,
+                            descending,
+                            kernel,
+                            query,
+                            with_children,
+                            closed,
+                        )
+                    } else { [] },
                 ]
                     .flat_map(one -> one)
             } else {
@@ -199,6 +211,7 @@ fn tree_rows(
                     kernel,
                     query,
                     with_children,
+                    closed,
                 )
             },
         )
@@ -268,6 +281,46 @@ action end_app(application: Text) {
     device.end_app(device.processes, application: application)
 }
 
+/// Asks the machine to read its processes and use again.
+action refresh_processes() (icon: .rotate_cw, label: "Refresh processes") {
+    device.refresh(device.processes)
+}
+
+/// Copies a process's number.
+action copy_pid(process: device.Process) uses clipboard (icon: .copy, label: "Copy PID") {
+    clipboard.copy("{process.pid}")
+}
+
+/// Ends one process.
+action end_process(process: device.Process) (icon: .square, label: "End process") {
+    device.end(device.processes, process: lifetime(process))
+}
+
+/// Kills one process, whatever it is doing.
+destructive action kill_process(process: device.Process) (icon: .x, label: "Kill process") {
+    device.kill(device.processes, process: lifetime(process))
+}
+
+/// The machine's cores, each with the number a person counts it by.
+fn numbered(cores: List<Float>, at: Int) -> List<Core> {
+    if at >= cores.len() {
+        []
+    } else if let share = cores.at(at) {
+        [[Core(number: at + 1, share: share)], numbered(cores, at + 1)].flat_map(one -> one)
+    } else { [] }
+}
+
+/// What a process is known by: its number and the instant it started, so a number a later
+/// process took over is not the selected one.
+fn lifetime(process: device.Process) -> Text {
+    "{process.pid}:{process.started_at}"
+}
+
+/// Whether `process` stands above any other in `all`.
+fn has_descendants(all: List<device.Process>, process: device.Process) -> Bool {
+    all.any(child -> (child.ppid ?? 0) == process.pid)
+}
+
 /// The threads every process of `items` runs, counted one at a time.
 fn thread_total(items: List<device.Process>, at: Int) -> Int {
     if at >= items.len() {
@@ -285,13 +338,18 @@ action apply_cadence(m: Monitor, ms: Int, paused: Bool) {
 /// The window: the process list with its inspector, or the machine's readings.
 view window(m: Monitor) {
     state tab: Text = "processes"
-    state chosen: Int = 0
+    // The process the person chose, by the lifetime its row names, so a number another process
+    // took over is not the same process.
+    state chosen: Text = ""
     state sort: Text = "cpu"
     state descending: Bool = true
     state tree: Bool = true
     state kernel: Bool = false
     state with_children: Bool = false
     state filter: Text = ""
+    // The processes whose children the person closed: each keeps its own row, its children
+    // folded under it.
+    state closed: List<Int> = []
     // How often this person watches the processes, and whether they watch at all: each
     // person's own, kept with their window, never a field of the app's document.
     state interval_ms: Int = 1500
@@ -306,24 +364,29 @@ view window(m: Monitor) {
         // The window's search narrows the processes to those whose name or command holds it.
         on search(words: Text): set(filter, words)
         actions: {
+            ui.Button("Refresh", icon: .rotate_cw, icon_only: true) {
+                on press: refresh_processes()
+            }
             ui.MenuButton("Sort by", icon: .arrow_up_down) {
+                // Numbers come largest first, so the busiest stands at the top; names and
+                // people read A to Z.
                 ui.MenuItem("Processor", checked: sort == "cpu") {
-                    on choose: set(sort, "cpu")
+                    on choose: set(sort, "cpu").then(set(descending, true))
                 }
                 ui.MenuItem("Memory", checked: sort == "memory") {
-                    on choose: set(sort, "memory")
+                    on choose: set(sort, "memory").then(set(descending, true))
                 }
                 ui.MenuItem("Name", checked: sort == "name") {
-                    on choose: set(sort, "name")
+                    on choose: set(sort, "name").then(set(descending, false))
                 }
                 ui.MenuItem("PID", checked: sort == "pid") {
-                    on choose: set(sort, "pid")
+                    on choose: set(sort, "pid").then(set(descending, true))
                 }
                 ui.MenuItem("User", checked: sort == "user") {
-                    on choose: set(sort, "user")
+                    on choose: set(sort, "user").then(set(descending, false))
                 }
                 ui.MenuItem("Threads", checked: sort == "threads") {
-                    on choose: set(sort, "threads")
+                    on choose: set(sort, "threads").then(set(descending, true))
                 }
                 ui.MenuSeparator
                 ui.MenuItem(
@@ -373,7 +436,17 @@ view window(m: Monitor) {
             if not now.serving {
                 engine_missing(now)
             } else if tab == "processes" {
-                processes_pane(now, chosen, sort, descending, tree, kernel, filter, with_children)
+                processes_pane(
+                    now,
+                    chosen,
+                    sort,
+                    descending,
+                    tree,
+                    kernel,
+                    filter,
+                    with_children,
+                    closed,
+                )
             } else {
                 resources_pane(now)
             }
@@ -401,13 +474,14 @@ view engine_missing(now: device.Processes) {
 /// inspector.
 view processes_pane(
     now: device.Processes,
-    chosen: State<Int>,
+    chosen: State<Text>,
     sort: State<Text>,
     descending: State<Bool>,
     tree: State<Bool>,
     kernel: State<Bool>,
     filter: State<Text>,
     with_children: State<Bool>,
+    closed: State<List<Int>>,
 ) {
     let machine = now.machine
     if let problem = now.problem {
@@ -420,7 +494,7 @@ view processes_pane(
             unit: "%",
             samples: machine.cpu.history,
         ) {
-            on activate: set(chosen, 0)
+            on activate: set(chosen, "")
         }
         ui.StatTile(
             "Memory in use",
@@ -452,6 +526,7 @@ view processes_pane(
                     kernel,
                     filter,
                     with_children,
+                    closed,
                 )
             } else {
                 flat_rows(now.processes, sort, descending, kernel, filter)
@@ -459,18 +534,18 @@ view processes_pane(
             if rows.is_empty() {
                 ui.EmptyState("No processes match the search", icon: .activity)
             } else {
-                scroll {
+                ui.Scroll(label: "Processes") {
                     stack(gap: .none) {
                         for line in rows {
-                            process_row(line, chosen)
+                            process_row(line, chosen, closed)
                         }
                     }
                 }
             }
         }
         secondary(min: 18rem) {
-            if let process = now.processes.find(item -> item.pid == chosen) {
-                process_detail(process, now)
+            if let process = now.processes.find(item -> lifetime(item) == chosen) {
+                process_detail(process, now, with_children)
             } else {
                 ui.EmptyState("No process selected", icon: .activity)
             }
@@ -478,16 +553,18 @@ view processes_pane(
     }
 }
 
-/// One process in the list: its name and user, and what it uses.
-view process_row(line: Row, chosen: State<Int>) {
+/// One process in the list: its name and user, and what it uses. Its menu ends it, copies its
+/// number and folds what stands under it.
+view process_row(line: Row, chosen: State<Text>, closed: State<List<Int>>) {
     let process = line.process
+    let branch = if not line.has_children { "" } else if line.expanded { "▾ " } else { "▸ " }
     ui.ListRow(
-        indent(line.depth) + if line.has_children { "▾ " } else { "" } + process.name,
+        indent(line.depth) + branch + process.name,
         secondary: process.user,
         value: percent_words(line.cpu),
         meta: bytes_words(line.memory_bytes),
         dense: true,
-        selected: chosen == process.pid,
+        selected: chosen == lifetime(process),
     ) {
         trailing: {
             row(gap: .related) {
@@ -495,18 +572,56 @@ view process_row(line: Row, chosen: State<Int>) {
                 ui.Text("{process.pid}", role: .caption, numeric: true, secondary: true)
             }
         }
-        on activate: set(chosen, process.pid)
+        on activate: set(chosen, lifetime(process))
+    }
+    ui.ContextMenu {
+        if line.has_children {
+            ui.MenuItem(
+                if line.expanded { "Collapse" } else { "Expand" },
+                icon: if line.expanded { .chevron_up } else { .chevron_down },
+            ) {
+                on choose: set(
+                    closed,
+                    if line.expanded {
+                        closed + [process.pid]
+                    } else { closed.filter(pid -> pid != process.pid) },
+                )
+            }
+            ui.MenuSeparator()
+        }
+        ui.MenuItem("Copy PID", icon: .copy) {
+            on choose: copy_pid(process)
+        }
+        if process.endable {
+            ui.MenuSeparator()
+            ui.MenuItem("End process", icon: .square) {
+                on choose: end_process(process)
+            }
+            ui.MenuItem("Kill process", icon: .x, destructive: true) {
+                on choose: kill_process(process)
+            }
+        }
     }
 }
 
 /// The chosen process: what it uses, what it is, and the verbs that end it.
-view process_detail(process: device.Process, now: device.Processes) {
+view process_detail(process: device.Process, now: device.Processes, with_children: Bool) {
     ui.ObjectHeader(process.name, caption: process.user, icon: .activity)
     ui.StatGroup {
         ui.StatTile("CPU", "{process.cpu.to_int()}", unit: "%", samples: process.cpu_history)
         ui.StatTile("Memory (RSS)", bytes_words(process.memory_bytes))
     }
     ui.PropertyList {
+        if with_children and has_descendants(now.processes, process) {
+            ui.Property(
+                "CPU with children",
+                percent_words(process.cpu + subtree_cpu(now.processes, process.pid, 0)),
+            )
+            ui.Property(
+                "Memory with children",
+                bytes_words(process.memory_bytes + subtree_memory(now.processes, process.pid, 0)),
+            )
+        }
         ui.Property("PID", "{process.pid}", copyable: true)
         ui.Property("User", process.user)
         ui.Property("Status", state_words(process.state))
@@ -529,16 +644,10 @@ view process_detail(process: device.Process, now: device.Processes) {
     row(gap: .tight, wrap: true) {
         if process.endable {
             ui.Button("End process", icon: .square) {
-                on press: device.end(
-                    device.processes,
-                    process: "{process.pid}:{process.started_at}",
-                )
+                on press: end_process(process)
             }
             ui.Button("Kill process", icon: .x, role: .destructive) {
-                on press: device.kill(
-                    device.processes,
-                    process: "{process.pid}:{process.started_at}",
-                )
+                on press: kill_process(process)
             }
         }
         if let app_id = process.app_id {
@@ -561,8 +670,12 @@ view resources_pane(now: device.Processes) {
             bottom_label: .some("0%"),
         )
         grid(min: 8rem) {
-            for core in machine.cpu.per_core {
-                ui.BarGauge(core / 100.0, label: "Core", readout: percent_words(core))
+            for core in numbered(machine.cpu.per_core, 0) {
+                ui.BarGauge(
+                    core.share / 100.0,
+                    label: "Core {core.number}",
+                    readout: percent_words(core.share),
+                )
             }
         }
     }

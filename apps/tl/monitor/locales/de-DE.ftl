@@ -92,6 +92,12 @@ d-byhoiade = Fenster
     .w-disk = Platte
     .w-processes-2 = { $len } Prozesse
     .w-no-processes-match-the-search = Kein Prozess passt zur Suche
+    .w-refresh = Aktualisieren
+    .w-collapse = Zuklappen
+    .w-expand = Aufklappen
+    .w-copy-pid = PID kopieren
+    .w-end-process = Prozess beenden
+    .w-kill-process = Prozess abbrechen
     .w-no-process-selected = Kein Prozess ausgewählt
 
 d-prvlvs67 = Engine fehlt
@@ -102,6 +108,8 @@ d-prvlvs67 = Engine fehlt
 d-rbjilrpa = Prozessdetails
     .w-command-line = Kommandozeile
     .w-open-files = Offene Dateien
+    .w-cpu-with-children = CPU mit Unterprozessen
+    .w-memory-with-children = Speicher mit Unterprozessen
     .w-cpu = CPU
     .w-memory-rss = Speicher (RSS)
     .w-pid = PID
@@ -119,7 +127,7 @@ d-rbjilrpa = Prozessdetails
 d-fvsvp5iz = Ressourcenbereich
     .w-processor = Prozessor
     .w-processor-use = Prozessorauslastung
-    .w-core = Kern
+    .w-core = Kern { $number }
     .w-memory = Speicher
     .w-ram = RAM
     .w-of = { $bytes_words } von { $bytes_words2 }
@@ -167,3 +175,42 @@ d-syvxuusz-filter-memory_bytes = Speicher
 d-syvxuusz-filter-threads = Threads
 
 d-u6hj324t = Speicher
+
+d-vbrn4vnl = Aufgeklappt
+
+d-syvxuusz-filter-expanded = Aufgeklappt
+
+d-r5jaixyo = Kern
+    .doc = Einer der Prozessorkerne der Maschine, so nummeriert, wie eine Person sie zählt.
+    .noun = { $count ->
+        [one] Kern
+       *[other] Kerne
+    }
+
+d-alldiehz = Nummer
+
+d-2lcbwwho = Anteil
+
+d-r5jaixyo-filter-number = Nummer
+
+d-r5jaixyo-filter-share = Anteil
+
+d-j6ju7ntz = Prozesse neu lesen
+    .doc = Bittet die Maschine, ihre Prozesse und Auslastung erneut zu lesen.
+
+d-5232uzdu = PID kopieren
+    .doc = Kopiert die Nummer eines Prozesses.
+
+d-5232uzdu-process = Prozess
+
+d-yfdtemas = Prozess beenden
+    .doc = Beendet einen Prozess.
+
+d-yfdtemas-process = Prozess
+
+d-atalz2zs = Prozess abbrechen
+    .doc = Bricht einen Prozess ab, was auch immer er tut.
+
+d-atalz2zs-process = Prozess
+
+

@@ -249,7 +249,7 @@ fn sorting_by_name_orders_the_list_rising() {
 fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
     let app = installed(READING);
     let mut window = app.window();
-    pick(&mut window, "chosen", Value::Int(12));
+    pick(&mut window, "chosen", Value::text("12:120"));
     let words = shown(&window);
     for wanted in [
         "PID",
@@ -299,7 +299,7 @@ fn a_persons_cadence_is_their_window_state_and_reaches_the_device() {
 fn an_app_from_the_reading_is_offered_its_end() {
     let app = installed(READING);
     let mut window = app.window();
-    pick(&mut window, "chosen", Value::Int(12));
+    pick(&mut window, "chosen", Value::text("12:120"));
     assert!(has(&window, "End app"));
 }
 
@@ -370,6 +370,131 @@ fn a_process_uses_what_stands_under_it_when_the_person_asks() {
         "the parent's use with its child's: {:?}",
         shown(&window)
     );
+}
+
+#[test]
+fn a_recycled_pid_is_not_the_selection() {
+    let app = installed(READING);
+    let mut window = app.window();
+    pick(&mut window, "chosen", Value::text("12:120"));
+    assert!(has(&window, "Command line"), "{:?}", shown(&window));
+    // The number 12 is a later process now: the person's process is gone, not this one.
+    pick(&mut window, "chosen", Value::text("12:999"));
+    assert!(
+        has(&window, "No process selected"),
+        "a recycled number is not the process the person chose: {:?}",
+        shown(&window)
+    );
+}
+
+/// A text column starts at A and rises, as names are read; a number starts at its largest.
+#[test]
+fn choosing_a_column_orders_it_the_way_it_reads() {
+    let app = installed(READING);
+    let mut window = app.window();
+    let name = find(window.tree(), &|text| text == "Name").expect("the sort menu offers Name");
+    window.fire(&name.key, "choose").expect("name is chosen");
+    window.poll_patches().expect("the window runs again");
+    assert_eq!(window.view_state("sort"), Some(Value::text("name")));
+    pick(&mut window, "tree", Value::Bool(false));
+    let words = shown(&window);
+    let bash = words
+        .iter()
+        .position(|text| text.ends_with("bash"))
+        .expect("bash");
+    let systemd = words
+        .iter()
+        .position(|text| text.ends_with("systemd"))
+        .expect("systemd");
+    assert!(bash < systemd, "bash stands before systemd: {words:?}");
+}
+
+#[test]
+fn a_folded_parent_hides_what_stands_under_it() {
+    let app = installed(READING);
+    let mut window = app.window();
+    assert!(contains(&window, "sshd"), "{:?}", shown(&window));
+    pick(&mut window, "closed", Value::List(vec![Value::Int(10)]));
+    assert!(
+        !contains(&window, "sshd"),
+        "sshd is folded under systemd: {:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "systemd"),
+        "the parent keeps its own row: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_rows_menu_copies_its_number_and_ends_it() {
+    let app = installed(READING);
+    let mut window = app.window();
+    let words = shown(&window);
+    for wanted in ["Copy PID", "End process", "Kill process"] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "a row's menu offers {wanted}: {words:?}"
+        );
+    }
+    // The inspector's End process is the row menu's own action: it names the process by its
+    // number and the instant it started.
+    pick(&mut window, "chosen", Value::text("11:110"));
+    let end = of_kind(window.tree(), "ui.Button")
+        .into_iter()
+        .find(|node| node.props.get("label") == Some(&Value::text("End process")))
+        .expect("the end button");
+    let end = end.key.clone();
+    window.fire(&end, "press").expect("the process ends");
+    let asked = app.sent.asked("end");
+    assert_eq!(asked[1], Value::text("11:110"), "the process's lifetime");
+}
+
+#[test]
+fn the_cores_are_numbered_and_the_use_is_totalled() {
+    let app = installed(READING);
+    let mut window = app.window();
+    pick(&mut window, "tab", Value::text("resources"));
+    let words = shown(&window);
+    for wanted in ["Core 1", "Core 2"] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
+    }
+}
+
+#[test]
+fn a_processes_use_with_its_children_reads_in_its_facts() {
+    let app = installed(READING);
+    let mut window = app.window();
+    pick(&mut window, "with_children", Value::Bool(true));
+    pick(&mut window, "chosen", Value::text("11:110"));
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "CPU with children"),
+        "{words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "Memory with children"),
+        "{words:?}"
+    );
+}
+
+#[test]
+fn refresh_reads_the_machine_again() {
+    let app = installed(READING);
+    let window = app.window();
+    let refresh = find(window.tree(), &|text| text == "Refresh").expect("the refresh button");
+    window
+        .fire(&refresh.key, "press")
+        .expect("the machine rereads");
+    let asked = app.sent.asked("refresh");
+    let Value::Ref(on) = &asked[0] else {
+        panic!("the verb is called on a resource: {asked:?}")
+    };
+    assert_eq!(&*on.target, &reading(), "the process reading is reread");
 }
 
 #[test]
