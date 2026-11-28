@@ -1451,5 +1451,92 @@ mod cases {
             assert_eq!(read(&second), "new words");
             assert_eq!(read(&first), "", "the slide left behind keeps its words");
         }
+
+        phase a_file_that_does_not_open_says_why_and_the_window_holds_it;
+        {
+            let s = Slides::new();
+            let device = Files::default();
+            s.rt.set_blobs(device.clone());
+            let slides_before = s.slides().len();
+            let broken = Value::file(device.keeping(
+                "notes.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                b"not a presentation at all",
+            ));
+            s.call("adopt", vec![Value::resource(&s.deck), broken]);
+            let notice = match s.rt.read(&s.deck, "notice").unwrap() {
+                Value::Text(notice) => notice,
+                other => panic!("the notice reads as {other:?}"),
+            };
+            assert!(
+                !notice.is_empty(),
+                "a file that did not open says why it did not"
+            );
+            assert_eq!(
+                s.slides().len(),
+                slides_before,
+                "a file that did not open leaves the deck as it was"
+            );
+            let view = s.window();
+            let mut banners = Vec::new();
+            of_kind(view.tree(), "ui.Banner", &mut banners);
+            assert_eq!(banners.len(), 1, "the window holds one message");
+            assert_eq!(
+                banners[0].props.get("title"),
+                Some(&Value::Text(notice.clone())),
+                "the message is the one the deck holds"
+            );
+            s.call("clear_notice", vec![Value::resource(&s.deck)]);
+            assert_eq!(
+                s.rt.read(&s.deck, "notice").unwrap(),
+                Value::text(""),
+                "closing the message puts it away"
+            );
+            let view = s.window();
+            let mut banners = Vec::new();
+            of_kind(view.tree(), "ui.Banner", &mut banners);
+            assert!(banners.is_empty(), "the window says nothing now");
+        }
+
+        phase a_rails_row_carries_its_commands;
+        {
+            let s = Slides::new();
+            s.call_with(
+                "add_slide",
+                &[
+                    ("d", Value::resource(&s.deck)),
+                    ("title", Value::text("One")),
+                ],
+            );
+            s.call_with(
+                "add_slide",
+                &[
+                    ("d", Value::resource(&s.deck)),
+                    ("title", Value::text("Two")),
+                ],
+            );
+            let view = s.window();
+            let mut items = Vec::new();
+            of_kind(view.tree(), "ui.MenuItem", &mut items);
+            let labels: Vec<String> = items
+                .iter()
+                .filter_map(|node| match node.props.get("label") {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                })
+                .collect();
+            for wanted in [
+                "Open",
+                "Duplicate",
+                "Move the slide up",
+                "Move the slide down",
+                "Delete",
+            ] {
+                assert!(
+                    labels.iter().any(|label| label == wanted),
+                    "a rail row offers `{wanted}`: {labels:?}"
+                );
+            }
+        }
     }
 }
