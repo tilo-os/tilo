@@ -2969,7 +2969,7 @@ impl DirectSync {
     /// that accepted the dial hands its replica's catch-up with the history the other one asks for
     /// ([`Self::answer_store`]), where it is judged as history: on the live stream, what it carries
     /// that was written more than the live window ago was refused as a late frame.
-    fn link_catch_up(&self, dialing: bool) -> Result<Vec<Authored>, String> {
+    fn link_catch_up(&self, dialing: bool, opens: bool) -> Result<Vec<Authored>, String> {
         #[cfg_attr(
             target_arch = "wasm32",
             allow(unused_mut, reason = "a page keeps no store to open the link with")
@@ -2979,9 +2979,14 @@ impl DirectSync {
         } else {
             Vec::new()
         };
+        // A device that takes the workspace's records only as it opens them keeps no history of
+        // them, so a catch-up of every channel's governance is bulk it cannot place, and it is
+        // written before the answers it asked for: it asks each record's channel when it opens
+        // the record.
         #[cfg(not(target_arch = "wasm32"))]
         if let (true, Some(store), Ok(workspace)) =
             (self.fans_out(), &self.0.store, self.workspace())
+            && !opens
         {
             let history: Vec<Authored> = store
                 .channels(workspace)
@@ -3094,7 +3099,7 @@ impl DirectSync {
                 reason = "a page keeps no store of its writes to send again"
             )
         )]
-        let mut catch_up = self.link_catch_up(dialing)?;
+        let mut catch_up = self.link_catch_up(dialing, opens)?;
         // What this device holds of the workspace's own history, said as the
         // link opens: the device it dialled answers only the changes it lacks
         // ([`Self::holds_tell`]).

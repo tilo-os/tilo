@@ -71,7 +71,7 @@ async fn a_change_the_workspace_refuses_is_dropped_when_the_host_opens_it() {
     );
 
     // What a device that links now is sent: the change the workspace took in.
-    let served = host.link_catch_up(true).unwrap();
+    let served = host.link_catch_up(true, false).unwrap();
     assert!(
         served.iter().any(|authored| authored.message == accepted),
         "the change the workspace took in is served"
