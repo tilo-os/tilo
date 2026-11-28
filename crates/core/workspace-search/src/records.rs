@@ -43,12 +43,12 @@ pub const INDEX_FLAG: &str = "--index";
 /// What an app answers search about one of its records: the app's own model types, read from the
 /// document, as its window reads them.
 pub trait RecordReader: Send + Sync + 'static {
-    /// What `app`'s record `doc` holds for search.
+    /// What `app`'s record `doc`, kept in `workspace`, holds for search.
     ///
     /// # Errors
     /// [`Unread::Stopped`] for a reader that was stopped before it answered, and
     /// [`Unread::Refused`] for a record the app cannot read.
-    fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread>;
+    fn entries(&self, workspace: &str, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread>;
 }
 
 /// What the workspaces' stores hold, as search reads them: a tilolang app's resources, read
@@ -235,7 +235,7 @@ impl RecordIndex {
                     continue;
                 }
             };
-            let entries = match self.reader.entries(&app, &doc) {
+            let entries = match self.reader.entries(&workspace, &app, &doc) {
                 Ok(entries) => entries,
                 // Stopped before it answered: nothing is known of what the record holds, so it is
                 // read again on its next change rather than kept as a record holding nothing.
@@ -342,7 +342,7 @@ mod tests {
     struct Records;
 
     impl RecordReader for Records {
-        fn entries(&self, app: &str, _: &[u8]) -> Result<Vec<IndexEntry>, Unread> {
+        fn entries(&self, _: &str, app: &str, _: &[u8]) -> Result<Vec<IndexEntry>, Unread> {
             Err(Unread::Refused(format!("{app} is read from its store")))
         }
     }

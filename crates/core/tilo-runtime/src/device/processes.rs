@@ -1328,7 +1328,8 @@ impl Processes {
         page: Option<(Descriptor, Descriptor)>,
     ) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
-        let (ours, started) = spawn_host(&self.launcher, key, &storage, page)?;
+        let revoked = self.revoked(&key.workspace);
+        let (ours, started) = spawn_host(&self.launcher, key, &storage, page, &revoked)?;
         let tag = format!("{} {}", key.workspace, key.app);
         let said = started.stderr.map(|stderr| {
             std::thread::Builder::new()
@@ -1574,13 +1575,17 @@ struct Started {
 /// Start the tilolang host `key`, keeping `storage`, on its process link: the one place a host is started, and the only one that names the platform. On Linux the launcher
 /// is `tilo-launcher tilolang-process`, which takes the link off its stdin and starts the host in
 /// its sandbox; a `page` window's patch connection and page link go to it as descriptors 3 and 4,
-/// and it keeps the link while the window runs.
+/// and it keeps the link while the window runs. The runtime it starts is a bundle the launcher
+/// proves against the runtime publishers it trusts, so the keys the workspace refuses
+/// (`revoked`, which the macOS and Windows hosts check their runtime package against) are its
+/// app's alone, checked before the host is asked for.
 #[cfg(target_os = "linux")]
 fn spawn_host(
     launcher: &Launcher,
     key: &HostKey,
     storage: &Path,
     page: Option<(Descriptor, Descriptor)>,
+    _revoked: &tilo_app_package::RevocationList,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     use std::os::fd::AsRawFd as _;
     let mut command = std::process::Command::new(launcher);
@@ -1629,6 +1634,7 @@ fn spawn_host(
     _key: &HostKey,
     _storage: &Path,
     _page: Option<(Descriptor, Descriptor)>,
+    _revoked: &tilo_app_package::RevocationList,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -1647,11 +1653,12 @@ fn spawn_host(
     key: &HostKey,
     storage: &Path,
     page: Option<(Descriptor, Descriptor)>,
+    revoked: &tilo_app_package::RevocationList,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     use runtime_portal::process_link::{FD_ENV, PAGE_ENV, STORAGE_ENV};
     use std::ffi::OsString;
     use std::os::fd::AsRawFd as _;
-    let runtime = crate::apps::installed_runtime(launcher, &key.runtime)
+    let runtime = crate::apps::installed_runtime(launcher, &key.runtime, revoked)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let (ours, theirs) = runtime_portal::process_link::pair()?;
     let (said, says) = std::io::pipe()?;
@@ -1712,6 +1719,7 @@ fn spawn_host(
     key: &HostKey,
     storage: &Path,
     page: Option<(Descriptor, Descriptor)>,
+    revoked: &tilo_app_package::RevocationList,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     if page.is_some() {
         return Err(std::io::Error::new(
@@ -1719,7 +1727,7 @@ fn spawn_host(
             "a page view's window is not started on a Windows device",
         ));
     }
-    let runtime = crate::apps::installed_runtime(launcher, &key.runtime)
+    let runtime = crate::apps::installed_runtime(launcher, &key.runtime, revoked)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let mut command = std::process::Command::new(
         runtime
@@ -2990,6 +2998,7 @@ bin = "{}"
             &key,
             &storage,
             None,
+            &tilo_app_package::RevocationList::default(),
         )
         .expect("the host starts from the installed runtime");
         let mut said = String::new();

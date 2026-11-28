@@ -2468,6 +2468,7 @@ mod tests {
         fn entries(
             &self,
             _: &str,
+            _: &str,
             doc: &[u8],
         ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, Unread> {
             use automerge::ReadDoc as _;

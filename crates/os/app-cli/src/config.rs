@@ -273,61 +273,6 @@ fn channel(channel: &str) -> tilo_app_package::version::ReleaseChannel {
     }
 }
 
-/// The trust a workspace keeps for packages: the attestors it accepts and the
-/// publisher keys it refuses.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TrustList {
-    #[serde(default)]
-    pub attestors: Vec<TrustAttestorRow>,
-    #[serde(default)]
-    pub revoked: Vec<RevokedRow>,
-}
-
-/// An attestor a workspace trusts, as its trust list reads it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TrustAttestorRow {
-    pub id: String,
-    pub pubkey_hex: String,
-    pub scope: String,
-}
-
-/// A publisher key a workspace refuses.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RevokedRow {
-    pub pubkey_hex: String,
-    #[serde(default)]
-    pub reason: String,
-}
-
-/// The workspace's trust list, as its `trust.list` reading answers it.
-///
-/// A reading that cannot be made — no desktop session, or no workspace — is
-/// an empty list: nothing trusted beyond what a package's own signature and
-/// the image's roots say, which is the safe reading of "nothing configured".
-/// `TILO_WORKSPACE_TRUST` names the list (its JSON) a test or a development
-/// build reads instead.
-#[must_use]
-pub fn trust() -> TrustList {
-    let (attestors, revoked) = tilo_control::packages::trust();
-    TrustList {
-        attestors: attestors
-            .into_iter()
-            .map(|attestor| TrustAttestorRow {
-                id: attestor.id,
-                pubkey_hex: attestor.pubkey_hex,
-                scope: attestor.scope,
-            })
-            .collect(),
-        revoked: revoked
-            .into_iter()
-            .map(|key| RevokedRow {
-                pubkey_hex: key.pubkey_hex,
-                reason: key.reason,
-            })
-            .collect(),
-    }
-}
-
 thread_local! {
     /// The list a caller hands [`load_registries`] for the duration of one call:
     /// a daemon reads one repository's catalogue with the row its caller named.

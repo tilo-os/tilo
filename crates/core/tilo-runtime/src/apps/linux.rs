@@ -423,7 +423,9 @@ fn command(
 }
 
 /// `trust` as the launcher reads a workspace's trust list ([`tilo_control::packages::trust`]).
-fn trust_reading((attestors, revoked): crate::device::package_runs::PackageTrust) -> String {
+pub(super) fn trust_reading(
+    (attestors, revoked): crate::device::package_runs::PackageTrust,
+) -> String {
     serde_json::json!({ "attestors": attestors, "revoked": revoked }).to_string()
 }
 

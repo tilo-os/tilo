@@ -17,7 +17,7 @@
 //! call its actions. The window takes its patch connection on its process link and holds none of
 //! the app's data (no collaboration connection), exactly as a Linux session's window.
 
-use super::verified::{installed_runtime, verify_installed, verify_package};
+use super::verified::{installed_runtime, verify_installed};
 use super::{Apps, Launch};
 use crate::daemon::Sockets;
 use crate::host::{ServiceConnections, ServiceSockets};
@@ -412,8 +412,8 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
 ///
 /// # Errors
 ///
-/// When no installed package provides it, or the one that does fails [`verify_package`]; the
-/// launch is refused.
+/// When no installed package provides it, or the one that does fails
+/// [`verify_package`](super::verified::verify_package); the launch is refused.
 fn runtime_payload(
     catalog: &package_store::Catalog,
     app: &InstalledApp,

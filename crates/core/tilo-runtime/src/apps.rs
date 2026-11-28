@@ -1608,6 +1608,7 @@ fn watch_end(app: &str, launch: Launch) {
 impl tilo_workspace_search::records::RecordReader for Apps {
     fn entries(
         &self,
+        workspace: &str,
         app: &str,
         doc: &[u8],
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_search::records::Unread>
@@ -1642,6 +1643,11 @@ impl tilo_workspace_search::records::RecordReader for Apps {
             .arg("--no-services")
             .arg("--")
             .arg(INDEX_FLAG)
+            // What the workspace trusts, as a launch is handed it ([`linux::trust_reading`]).
+            .env(
+                tilo_control::packages::WORKSPACE_TRUST_ENV,
+                linux::trust_reading(self.package_trust(workspace)),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1686,6 +1692,7 @@ impl tilo_workspace_search::records::RecordReader for Apps {
 impl tilo_workspace_search::records::RecordReader for Apps {
     fn entries(
         &self,
+        _workspace: &str,
         app: &str,
         _doc: &[u8],
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, tilo_workspace_search::records::Unread>

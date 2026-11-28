@@ -117,9 +117,10 @@ pub fn task_packages() -> Vec<TaskPackage> {
             return Vec::new();
         }
     };
+    let revoked = desktop_revocations();
     apps.iter()
         .filter(|app| runs_in_process(&app.app_id))
-        .filter_map(|app| match verified_package(&app.app_id, &desktop_revocations()) {
+        .filter_map(|app| match verified_package(&app.app_id, &revoked) {
             Ok(verified) => Some(TaskPackage {
                 app: app.app_id.to_string(),
                 module: verified.module,
