@@ -429,6 +429,10 @@ pub(super) struct ActionRuntime {
     /// (the shell's tiles): the palette centres on it, not on the screen.
     #[cfg(feature = "model")]
     pub(super) palette_window: Option<vello::kurbo::Rect>,
+    /// The name of the control that had the keyboard when the palette opened: it takes the
+    /// keyboard back when the palette closes.
+    #[cfg(feature = "model")]
+    pub(super) palette_return: Option<String>,
     /// Why invocations the person made this pass did not run, and the
     /// control each came from when one is on screen: said at that control,
     /// else in the window's bar, once the pass ends
@@ -626,6 +630,8 @@ impl ActionRuntime {
             action_palette: None,
             #[cfg(feature = "model")]
             palette_window: None,
+            #[cfg(feature = "model")]
+            palette_return: None,
             refusals: Vec::new(),
             refused: RefusedLog::default(),
             control_notice: None,

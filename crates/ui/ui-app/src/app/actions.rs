@@ -2678,6 +2678,7 @@ impl App {
         palette.set_providers(providers);
         palette.open();
         self.actions.palette_window = self.tree().invoking_window_rect();
+        self.actions.palette_return.clone_from(&self.focus_anchor);
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
@@ -2969,6 +2970,10 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
+        // The keyboard goes back to the control that had it, found by its name in the tree the
+        // close rebuilds; with none, to the app's keyboard entry, so its shortcuts answer again.
+        self.focus_anchor = self.actions.palette_return.take();
+        self.input.keyboard_entry_owed = true;
         self.layout.request_rebuild();
         self.actions.action_palette = None;
     }
