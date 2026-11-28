@@ -223,12 +223,30 @@ impl App {
             };
             known && described.supports_action(action.accesskit())
         };
-        let Some(node) = self
+        // Two controls can say one name: a window's button and a command of the
+        // action palette it lists but does not draw. The one a person sees is the
+        // one drawn largest, as a menu item is read; a control drawn nowhere is
+        // pressed only where it is the only one.
+        let nodes: Vec<(crate::accesskit::NodeId, crate::accesskit::Node)> = self
             .build_a11y_tree_update(1.0)
             .nodes
             .into_iter()
-            .find(|(_, described)| shows(described))
-            .map(|(node, _)| node)
+            .filter(|(_, described)| shows(described))
+            .collect();
+        let area = |described: &crate::accesskit::Node| {
+            described.bounds().map_or(0.0, |bounds| {
+                let drawn = bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0;
+                if drawn {
+                    (bounds.x1 - bounds.x0) * (bounds.y1 - bounds.y0)
+                } else {
+                    0.0
+                }
+            })
+        };
+        let Some(node) = nodes
+            .iter()
+            .max_by(|left, right| area(&left.1).total_cmp(&area(&right.1)))
+            .map(|(node, _)| *node)
         else {
             return false;
         };
