@@ -676,7 +676,35 @@ async fn create_issue(agent: &host::Agent, made: &mut usize) -> Duration {
             )
             .await,
     );
-    assert!(!failed, "a create answers: {answer}");
+    if failed {
+        // A create the machine takes longer than the tool's own wait to answer says it is
+        // pending, with the invocation to follow, as every call that outlives the wait does.
+        // What the create costs includes that wait: it is still one create, followed to its end,
+        // so a create that grows with the tracker is measured as what it cost.
+        let id = answer
+            .strip_prefix("pending ")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(!id.is_empty(), "create {made} answers: {answer}");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let (status, failed) = said(
+                &agent
+                    .tool("tilo_status", &json!({"invocation_id": &id}))
+                    .await,
+            );
+            if !status.starts_with("pending ") {
+                assert!(!failed, "create {made}: {status}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "create {made} never ends: {status}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
     *made += 1;
     began.elapsed()
 }
