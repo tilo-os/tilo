@@ -102,9 +102,13 @@ pub fn launcher_program(path: &Path, app: &[String]) -> io::Result<()> {
         path,
         &format!(
             "for a in \"$@\"; do printf '%s\\000' \"$a\"; done > {}\n\
+             for a in \"$@\"; do printf '%s\\t' \"$a\"; done >> {}\n\
+             printf '\\n' >> {}\n\
              while [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; --x11) x=--x11;; --x11-display) x=--x11; shift;; --) shift; break;; esac; shift; done\n\
              exec \"$k\" --dir \"$d\" --launch \"$l\" $x -- {} \"$@\"",
             quoted(&handed_at(path).to_string_lossy()),
+            quoted(&starts_at(path).to_string_lossy()),
+            quoted(&starts_at(path).to_string_lossy()),
             app.join(" ")
         ),
     )
@@ -121,9 +125,27 @@ pub fn launcher_handed(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Every command line the stand-in launcher at `path` was handed, oldest first, an argument
+/// each: what the session asked the real launcher to do across its starts, including the ones a
+/// later start replaced in [`launcher_handed`].
+#[must_use]
+pub fn launcher_starts(path: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(starts_at(path))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| line.split_terminator('\t').map(str::to_owned).collect())
+        .collect()
+}
+
 /// Where the stand-in launcher at `path` keeps what it was handed.
 fn handed_at(path: &Path) -> PathBuf {
     path.with_extension("handed")
+}
+
+/// Where the stand-in launcher at `path` keeps every command line it was handed, one a line.
+fn starts_at(path: &Path) -> PathBuf {
+    path.with_extension("starts")
 }
 
 /// What each keeper under `root` that answers says it keeps, with its directory.

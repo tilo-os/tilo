@@ -285,19 +285,26 @@ impl Rig {
                 });
                 (shown.len() == 3).then_some(shown)
             });
+        // The workspaces the layout left are the ones the desktop shows: their order on this
+        // device is the device's own ([`Shown`](tilo_session::device_state)), not the seed's.
         assert_eq!(
-            shown.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-            self.workspaces,
+            shown
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<std::collections::HashSet<_>>(),
+            self.workspaces.iter().copied().collect(),
             "the desktop shows the workspaces the layout left"
         );
-        assert_eq!(
-            shown[1..]
-                .iter()
-                .map(|(_, name)| name.as_str())
-                .collect::<Vec<_>>(),
-            ["Two", "Three"],
-            "with the names the layout gave them"
-        );
+        for (id, name) in [(&self.workspaces[1], "Two"), (&self.workspaces[2], "Three")] {
+            assert_eq!(
+                shown
+                    .iter()
+                    .find(|(held, _)| held == id)
+                    .map(|(_, name)| name.clone()),
+                Some(name.to_owned()),
+                "with the name the layout gave it"
+            );
+        }
         Pass {
             session,
             apps,
@@ -652,13 +659,17 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
         [tab],
         "the notice stands where the window was, and no other tab opens"
     );
-    // The window went with its keeper: what the switcher walks and the overview pictures is the
-    // windows, and a card saying the app stopped is the tab's, not one of them.
+    // The window went with its keeper, and the tab's card is what stands there: the shell walks
+    // to it and reopens the app in it, so the window it publishes says its app ended.
     let key = tab.to_string();
     let windows = crate::common::windows(&pass.session);
+    let window = windows
+        .iter()
+        .find(|window| window.key == key)
+        .expect("the card stands where the window was");
     assert!(
-        !windows.iter().any(|window| window.key == key),
-        "the window of the app that stopped is still one to walk to"
+        window.ended.is_some(),
+        "the window there says the app stopped"
     );
     pass.end(Teardown::Logout);
 }
@@ -755,11 +766,13 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
     // test plans with the real launcher is the app's, the one that names a desktop entry.
     let handed =
         crate::common::wait_for(&mut first.session, "the app's launcher was started", |_| {
-            let handed = testing::launcher_handed(&stand_in);
-            handed
-                .first()
-                .is_some_and(|argument| argument != tilo_app_launch::plan::SPARE_WINDOW)
-                .then_some(handed)
+            testing::launcher_starts(&stand_in)
+                .into_iter()
+                .find(|start| {
+                    start
+                        .first()
+                        .is_some_and(|argument| argument != tilo_app_launch::plan::SPARE_WINDOW)
+                })
         });
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     let nowhere = rig.home.home().join("no-other-applications");

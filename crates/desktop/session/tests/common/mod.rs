@@ -787,18 +787,13 @@ pub fn its_own_home(home: &mut tilo_test_env::TestHome) {
         home.cache().to_path_buf(),
         home.runtime().to_path_buf(),
     );
-    // The store the session's own packages are read from is the test's too: the device's holds
-    // the shell, whose runtimes a desktop would keep spare windows of, which a test that starts
-    // its apps through a launcher of its own has no use for.
-    let apps = data.join("tilo-apps");
     home.env()
         .set("HOME", home_dir)
         .set("XDG_DATA_HOME", data)
         .set("XDG_CONFIG_HOME", config)
         .set("XDG_STATE_HOME", state)
         .set("XDG_CACHE_HOME", cache)
-        .set("XDG_RUNTIME_DIR", runtime)
-        .set("TILO_APPS_DATA_DIR", apps);
+        .set("XDG_RUNTIME_DIR", runtime);
 }
 
 /// Name the run's launcher, and the runtimes and publishers the apps it starts run on, to the
