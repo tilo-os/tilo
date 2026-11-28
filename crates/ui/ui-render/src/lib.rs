@@ -106,5 +106,11 @@ pub mod strip_layers;
 mod presentation_feedback;
 
 // The host services the pipeline reads, under the toolkit's own names: the clock, the process
-// environment, background work and the paths a cache lives in.
-pub(crate) use tilo_process_services::{background, env, process, time};
+// environment, background work and the paths a cache lives in. The first two are read only where a
+// native window's own process drives the pipeline, so a host that draws frames without one carries
+// neither.
+#[cfg(feature = "native")]
+pub(crate) use tilo_process_services::background;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub(crate) use tilo_process_services::env;
+pub(crate) use tilo_process_services::{process, time};
