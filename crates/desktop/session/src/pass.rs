@@ -266,6 +266,7 @@ impl Session {
         // The staged system update, finished on its own clock: the desktop restarts onto it once
         // the person is away, which ends this process and comes back on the new interface.
         self.follow_update();
+        self.follow_backup_reminder();
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
         steps.step("status");
@@ -688,6 +689,7 @@ impl Session {
             self.shared.super_tap_deadline(),
             self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
+            Some(self.backup_reminder.next_deadline()),
         ];
         deadlines.into_iter().flatten().min()
     }

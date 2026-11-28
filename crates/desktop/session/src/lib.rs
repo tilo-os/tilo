@@ -403,6 +403,8 @@ mod session_settings;
 #[cfg(target_os = "linux")]
 pub use session_settings::SessionSettings;
 #[cfg(target_os = "linux")]
+mod backup_reminder;
+#[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
 mod shared;

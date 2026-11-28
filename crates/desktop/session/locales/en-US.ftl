@@ -45,6 +45,13 @@ crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of wh
 crash-notice-stopped-title = The computer restarted
 crash-notice-stopped-body = It stopped unexpectedly before this start. A record of what happened stays on this computer.
 
+identity-backup-app-name = Tilo identity
+identity-backup-reminder-title = Your identity isn’t backed up yet
+identity-backup-reminder-body = It lives only on this computer. A backup brings it back if this computer is lost; Devices offers it any time.
+identity-backup-reminder-now = Back up
+identity-backup-reminder-off = Don’t remind me
+identity-backup-failed-title = The backup didn’t open
+
 system-update-app-name = Updates
 system-update-restart-title = Restart to finish updating
 system-update-restart-body = Your windows come back after the restart.

@@ -285,6 +285,7 @@ impl Ceremony {
             self.recovery_key_copy_confirmed = false;
             self.recovery_key_written = true;
             self.backup_was_verified = true;
+            super::backup_left(true);
             self.backup_copy_form_open = false;
             self.backup_error = None;
             // Written down and checked is a verified backup, as a file that

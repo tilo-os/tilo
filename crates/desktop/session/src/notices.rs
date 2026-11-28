@@ -459,6 +459,39 @@ pub(crate) fn update_notice() -> Notice {
     .staying(Some(Duration::from_secs(30)))
 }
 
+/// The reminder that the person's identity is not backed up yet, offering the backup and a way to
+/// stop being reminded: raised by the reminder's own clock ([`crate::backup_reminder`]), every few
+/// days after they left the backup for later.
+pub(crate) fn backup_notice() -> Notice {
+    Notice::new(
+        t("identity-backup-app-name"),
+        1,
+        t("identity-backup-reminder-title"),
+        t("identity-backup-reminder-body"),
+    )
+    .choosing(vec![
+        (
+            crate::backup_reminder::BACK_UP_ACTION.to_owned(),
+            t("identity-backup-reminder-now"),
+        ),
+        (
+            crate::backup_reminder::STOP_ACTION.to_owned(),
+            t("identity-backup-reminder-off"),
+        ),
+    ])
+    .staying(Some(Duration::from_secs(30)))
+}
+
+/// The notice that the backup the reminder offered did not open, saying why.
+pub(crate) fn backup_failed_notice(why: &str) -> Notice {
+    Notice::new(
+        t("identity-backup-app-name"),
+        1,
+        t("identity-backup-failed-title"),
+        why.to_owned(),
+    )
+}
+
 /// The notice that the update state the services published does not read back: this machine acts
 /// on nothing it could not read, and says so once.
 pub(crate) fn update_state_notice() -> Notice {

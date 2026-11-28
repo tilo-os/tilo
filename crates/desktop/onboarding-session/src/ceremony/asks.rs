@@ -185,6 +185,7 @@ impl Ceremony {
                 // "Later": the backup is offered, never forced, and Devices keeps offering it, so
                 // leaving it for now asks for nothing more.
                 OnboardingEffect::Skip if step == Step::Backup => {
+                    super::backup_left(false);
                     self.backup_skip_acknowledged = true;
                     self.pressed.press(KEY_BACKUP_CONTINUE);
                 }

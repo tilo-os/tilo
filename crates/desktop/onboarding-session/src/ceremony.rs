@@ -1347,6 +1347,7 @@ impl Ceremony {
             Ok(destination) => {
                 self.backup_saved = Some(destination);
                 self.backup_was_verified = true;
+                backup_left(true);
                 self.backup_copy_form_open = false;
                 self.record(Some(Stage::IdentityReadyBackedUp));
                 self.backup_error = None;
@@ -1824,5 +1825,14 @@ impl Ceremony {
                 .identity_work
                 .as_ref()
                 .is_some_and(IdentityWork::reported)
+    }
+}
+
+/// Keep in the person's settings whether their identity is backed up: `false` when they left the
+/// backup for later, which the session's reminder offers again, and `true` once a backup is
+/// verified, which ends the reminders.
+fn backup_left(backed_up: bool) {
+    if let Err(error) = settings_store::identity::BACKED_UP.set(Some(backed_up)) {
+        tracing::warn!(%error, backed_up, "whether the identity is backed up is not kept");
     }
 }

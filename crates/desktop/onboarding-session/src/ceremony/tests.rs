@@ -1846,6 +1846,11 @@ fn the_hand_off_brings_things_over_connects_accounts_and_opens_the_store() {
         assert!(!ceremony.finished());
         continue_without_backup(&mut ceremony);
         assert_eq!(ceremony.page().step(), Step::Ready);
+        assert_eq!(
+            settings_store::identity::BACKED_UP.get(),
+            Some(false),
+            "left for later, which the session's reminder offers again"
+        );
         assert_eq!(ceremony.page().reading(false)["old_system"], "Windows");
         assert_eq!(ceremony.take_then_open(), None, "nothing chosen yet");
 

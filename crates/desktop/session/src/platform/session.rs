@@ -2260,6 +2260,9 @@ impl Session {
                 options.records.as_ref(),
                 options.desktop.as_deref(),
             ),
+            backup_reminder: crate::backup_reminder::Reminder::for_session(
+                options.desktop.as_deref(),
+            ),
             captures: options.captures,
             capture_io,
             capture_studio,

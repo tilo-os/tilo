@@ -43,6 +43,13 @@ crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Berich
 crash-notice-stopped-title = Der Computer wurde neu gestartet
 crash-notice-stopped-body = Er wurde vor diesem Start unerwartet angehalten. Ein Bericht darüber bleibt auf diesem Computer.
 
+identity-backup-app-name = Tilo-Identität
+identity-backup-reminder-title = Deine Identität ist noch nicht gesichert
+identity-backup-reminder-body = Es gibt sie nur auf diesem Computer. Eine Sicherung bringt sie zurück, wenn dieser Computer verloren geht; unter Geräte kannst du sie jederzeit sichern.
+identity-backup-reminder-now = Sichern
+identity-backup-reminder-off = Nicht mehr erinnern
+identity-backup-failed-title = Die Sicherung wurde nicht geöffnet
+
 system-update-app-name = Updates
 system-update-restart-title = Neu starten, um die Updates abzuschließen
 system-update-restart-body = Deine Fenster sind nach dem Neustart wieder da.

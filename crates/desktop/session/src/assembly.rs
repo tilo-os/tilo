@@ -620,6 +620,9 @@ pub struct Session {
     /// The clock on finishing the staged system update.
     #[cfg(target_os = "linux")]
     pub(crate) update_finish: crate::update_finish::Finish,
+    /// The clock on reminding the person of an identity backup they left for later.
+    #[cfg(target_os = "linux")]
+    pub(crate) backup_reminder: crate::backup_reminder::Reminder,
     /// The screenshots asked for.
     #[cfg(target_os = "linux")]
     pub(crate) captures: Option<crate::capture::Captures>,
