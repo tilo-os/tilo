@@ -115,6 +115,42 @@ def parse_samples(text: str, app: str) -> list[dict]:
             for match in KEY_LINE.finditer(text) if match["app"] == app]
 
 
+# The phases of one turn of the session's loop, as its frame profile records them
+# (`crates/desktop/frame-metrics/src/lib.rs` CSV_HEADER).
+LOOP_PHASES = ("input_us", "pump_us", "surfaces_us", "layout_us", "scene_us", "submit_us",
+               "clients_us", "testctl_us", "after_us", "cpu_us")
+
+
+def loop_turns(frames_csv: Path, keys: int) -> dict:
+    """What the session's loop spent its turns on while the keys were typed: each phase's
+    distribution over the turns that painted, its total per key over every turn, and why the
+    turns painted."""
+    import csv
+    with frames_csv.open(newline="") as rows:
+        turns = list(csv.DictReader(rows))
+    painted = [turn for turn in turns if turn.get("painted") in ("1", "true")]
+
+    def number(turn: dict, phase: str) -> int:
+        try:
+            return int(turn.get(phase) or 0)
+        except ValueError:
+            return 0
+
+    reasons: dict[str, int] = {}
+    for turn in painted:
+        for reason in (turn.get("paint_reasons") or "").split("+"):
+            if reason:
+                reasons[reason] = reasons.get(reason, 0) + 1
+    return {
+        "turns": len(turns), "painted": len(painted),
+        "painted_turn_ms": {phase: distribution([number(turn, phase) for turn in painted])
+                            for phase in LOOP_PHASES if painted},
+        "per_key_ms": {phase: round(sum(number(turn, phase) for turn in turns) / 1000
+                                    / max(keys, 1), 3) for phase in LOOP_PHASES},
+        "paint_reasons": dict(sorted(reasons.items(), key=lambda item: -item[1])),
+    }
+
+
 def summarize(rows: list[dict]) -> dict:
     out = {stage: distribution([row[stage] for row in rows]) for stage in STAGES}
     # The legs between the compositor's own marks, key by key.
@@ -280,6 +316,7 @@ def measure(args: argparse.Namespace) -> dict:
     session = walks.Session(args.state)
     client = None
     machine = daemon = None
+    profile_dir = None
     app = args.app or CLIENT_APP
     try:
         machine, daemon = walks.start_signed_in(
@@ -314,9 +351,17 @@ def measure(args: argparse.Namespace) -> dict:
             ready = wait_line(client, args.app_timeout)
             print(f"[key-latency] client window {ready.split(' ', 1)[1]}", flush=True)
         time.sleep(args.settle)
+        # The session profiles its own loop while the keys are typed: what each turn spent its
+        # time on, beside the latency each key saw.
+        profile = session.control({"op": "profile_start", "seconds": 600})
+        profile_dir = ((profile.get("answer") or {}).get("profile") or {}).get("path")
+        if profile_dir is None:
+            print(f"[key-latency] the session keeps no profile: {profile}", flush=True)
         type_keys(session, args, args.warmup, args.keys)
         # The last key's frame reaches its vblank a refresh after it was committed.
         time.sleep(1.0)
+        if profile_dir is not None:
+            session.control({"op": "profile_stop"})
     finally:
         client_output = stop_client(client) if client is not None else ""
         session_log = session.log()
@@ -343,6 +388,19 @@ def measure(args: argparse.Namespace) -> dict:
         result["client_key_to_commit_us"] = distribution(client_commit[args.warmup:])
     if client_frame:
         result["client_key_to_frame_us"] = distribution(client_frame[args.warmup:])
+    if profile_dir is not None:
+        try:
+            loop = loop_turns(Path(profile_dir) / "frames.csv", args.warmup + args.keys)
+            result["loop"] = loop
+            print(f"[key-latency] loop: {loop['turns']} turns, {loop['painted']} painted; "
+                  "painted turn p50 ms: " + ", ".join(
+                      f"{phase[:-3]} {spread['p50_ms']:.1f}"
+                      for phase, spread in loop["painted_turn_ms"].items())
+                  + "; per key ms: " + ", ".join(
+                      f"{phase[:-3]} {ms:.1f}" for phase, ms in loop["per_key_ms"].items())
+                  + f"; painted for: {loop['paint_reasons']}", flush=True)
+        except OSError as error:
+            print(f"[key-latency] the session's profile is not readable: {error}", flush=True)
     (out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
     return result
 
