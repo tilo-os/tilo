@@ -1539,6 +1539,20 @@ timeout_secs = 7200
 cache = false
 on = ["dispatch"]
 
+# Each builder crate from crates.io alone, in an empty project, with its default features
+# (tools/sdk/standalone_crates.sh): what a person who adds just that crate builds, where the
+# workspace's feature unification cannot hide a default build that names an optional crate.
+# Dispatched once a release is out; `--input RELEASE=vX.Y.Z` for another release.
+[[check]]
+name = "published-crates-standalone"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/sdk/standalone_crates.sh"
+requires = ["arch=x86_64"]
+timeout_secs = 7200
+cache = false
+on = ["dispatch"]
+dispatch_inputs = { RELEASE = "" }
+
 # tilolang as a person gets it, on a stock Fedora and a stock Debian with nothing of Tilo's or
 # Rust's: the curl installer, `tilolang new`, `check` without Rust (which says to install it),
 # rustup, then `check` and `build`, and the same from `cargo install tilolang-cli` into an empty
