@@ -225,6 +225,10 @@ runtime_package_sdk() {
             pkg=$libdir/site-packages/tilo
             mkdir -p "$pkg"
             cp -a "$repo/sdk/python/src/tilo/." "$pkg/"
+            # The SDK's generated types, which are built where they are used
+            # (`sdk gen`, never committed) and which the package imports: the
+            # sdk-gen check's output, placed as the SDK's `types` package.
+            cp -R "${TILO_SDK_GEN:-/target/sdk-gen}/python" "$pkg/types"
             # A checkout's own build output is not what this bundle signs.
             rm -f "$pkg"/_native*.so
             install -D -m 0755 "$bin_dir/lib_native.so" "$pkg/_native.abi3.so"
