@@ -775,6 +775,69 @@ fn an_app_that_claims_a_uri_scheme_declares_it_in_its_manifest() {
     );
 }
 
+/// The places a window declares are what its app offers while it is closed: search lists Print
+/// Centre's queue and history before the app ever ran, and choosing one opens the app there, on
+/// its root, by the same action its window publishes once it runs.
+#[test]
+fn an_apps_places_are_offered_in_its_manifest() {
+    let scratch = tempfile::tempdir().unwrap();
+    let source = scratch.path().join("tl");
+    for name in with_used(&["print-centre"]) {
+        copy_package(&packages().join(&name), &source.join(&name));
+    }
+    let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
+    let options = BuildOptions {
+        dir: source.join("print-centre"),
+        search: Vec::new(),
+        out: scratch.path().join("out"),
+        tilo_runtime: "tilo-runtime/2026.07".into(),
+        tilolang_runtime: package::default_tilolang_runtime(),
+        version: "0.1.0".into(),
+        locked: false,
+    };
+    let apps = package::build(&options, &identity).unwrap();
+    let built = apps
+        .iter()
+        .find(|app| app.app == "so.tilo.print-centre")
+        .expect("the package declares an app");
+    let manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&built.manifest).unwrap()).unwrap();
+    let places: Vec<(&str, &str)> = manifest
+        .offers
+        .iter()
+        .filter(|offer| offer.action.starts_with("show-"))
+        .map(|offer| (offer.action.as_str(), offer.label.as_str()))
+        .collect();
+    assert_eq!(
+        places,
+        [
+            ("show-dashboard", "Print overview"),
+            ("show-queue", "Print queue"),
+            ("show-history", "Print history"),
+            ("show-print", "Print a document"),
+            ("show-scan", "Scanner"),
+        ],
+        "every place the window declares, in its order and words"
+    );
+    let queue = manifest
+        .offers
+        .iter()
+        .find(|offer| offer.action == "show-queue")
+        .expect("the queue is offered");
+    assert!(
+        queue.resource.starts_with("tl:so.tilo.print-centre:root-"),
+        "on the app's root, which needs no resource named: {}",
+        queue.resource
+    );
+    assert_eq!(queue.resource_kind(), "tl.so.tilo.print-centre.PrintCentre");
+    assert_eq!(
+        queue.operation,
+        tilo_app_package::manifest::OfferOperation::View,
+        "it opens, and changes nothing"
+    );
+    assert!(queue.asked().is_empty(), "it asks for nothing");
+}
+
 /// A check builds what is committed: `--locked` refuses a package whose ids lock its sources have
 /// moved past, says how to write it, and leaves the lock and the output as they were. Without it,
 /// a build writes the lock, as a person changing the sources wants.

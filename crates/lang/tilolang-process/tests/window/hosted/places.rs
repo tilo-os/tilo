@@ -242,3 +242,32 @@ fn the_database_client_opens_at_any_of_its_views() {
     open_place(&mut app, Some(agent), &database, "show-query");
     assert_eq!(database_view(&app), "mj57ytfw", "at the query editor");
 }
+
+/// A place opens only on a resource the window publishes to its caller: an agent naming a
+/// calendar this workspace does not show it is refused, and the window it asked stays where its
+/// person left it.
+#[test]
+fn a_place_of_a_resource_not_published_to_the_caller_is_refused() {
+    let mut app = Session::new(CALENDAR, "ada");
+    settle(&mut app);
+    open_at(&mut app, None, "show-tasks");
+    let (agent, ambient) = agent_session();
+    let elsewhere = format!("tl:{CALENDAR}:root-someone-elses");
+    let refused = app.invoke(
+        Some(agent),
+        Some(&ambient),
+        &elsewhere,
+        "show-week",
+        &Map::new(),
+    );
+    assert!(
+        refused.is_err(),
+        "a calendar the agent is not shown opens nowhere: {refused:?}"
+    );
+    settle(&mut app);
+    assert_eq!(
+        standing(&app).0,
+        Value::text("tasks"),
+        "the window stays at the place its person chose"
+    );
+}

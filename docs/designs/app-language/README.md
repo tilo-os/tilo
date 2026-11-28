@@ -450,6 +450,34 @@ closed action close_private_page(p: Page) {
 }
 ```
 
+### Places
+
+A place of a window (its queue, its history, its diagnostics) is declared once, in the root's
+default view, as the action that takes the view there:
+
+```
+view window(p: PrintCentre) {
+    state place: Text = "dashboard"
+    on show queue "Print queue": set(place, "queue")
+    on show diagnostics "Printer diagnostics": set(place, "diagnostics")
+    ...
+}
+```
+
+That one line is the place's whole surface. The host publishes it as `show-<name>` on the root
+(and on each resource of a type whose window declares places), labelled in the reader's language.
+The manifest offers it while the app is closed, so search lists it and the launcher, a link, a
+shortcut and an agent open it by the same address: `so.tilo.print-centre#show-queue`, or
+`show-<name>` on a named resource. Opening a place moves a window of the app that shows the
+resource, the person's own and no one else's. With none open, the app opens on the resource and
+then goes there. Like any action, it is refused on a resource the caller is not shown.
+
+An app never declares an action of its own to open one of its places (`open_queue`,
+`view_supervision`). That is a second path beside this one, and a sweep deletes it. A place
+that has to make something first (the conversation with the assistant) runs that action in its
+`on show`, `on show main_chat: open(main_chat(all))`. An item shown at the place it lives in is
+`on show(x: T)` (components.md §3).
+
 ## Triggers
 
 An action that runs without anyone pressing anything is a `trigger`: the package says when it

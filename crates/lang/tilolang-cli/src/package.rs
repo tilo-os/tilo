@@ -998,28 +998,48 @@ pub(crate) fn link_offer(meta: &PackageMeta) -> Option<LinkOffer> {
     })
 }
 
-/// The `[[offers]]` a package's manifest carries: the app's `open-link`, when it declares one on
-/// its root that takes the link as its one text argument, so a shell hands the app a link of a
-/// scheme it claims while no window of it is open. An app that opens no links offers none.
+/// The `[[offers]]` a package's manifest carries, what the app offers while no window of it is
+/// open: the places each root's window declares (`on show queue "Print queue": ...`), so search
+/// lists them and choosing one opens the app there, and the app's `open-link`, when it declares
+/// one on its root that takes the link as its one text argument, so a shell hands the app a link
+/// of a scheme it claims.
 fn offers_of(meta: &PackageMeta) -> String {
-    let Some(offer) = link_offer(meta) else {
-        return String::new();
-    };
-    format!(
-        "\n# What the app offers while no window of it is open: the link it opens, on its root.\n\
-         [[offers]]\nresource = {resource}\nresource-kind = {kind}\naction = {action}\n\
-         label = \"Open link\"\nkind = \"read\"\noperation = \"view\"\nasks = {asks}\n",
-        resource = toml_string(&offer.resource),
-        kind = toml_string(&offer.kind),
-        action = toml_string(collab_types::app_actions::OPEN_LINK),
-        asks = toml_string(
-            collab_types::app_actions::AppLink::OPEN_LINK
-                .params()
-                .first()
-                .copied()
-                .unwrap_or_default()
-        ),
-    )
+    use tilolang_tilo::meta::MetaExt as _;
+    let mut offers = String::new();
+    for root in meta.types.iter().filter(|ty| meta.roots.contains(&ty.id)) {
+        for place in meta.places_of(&root.id) {
+            let _ = write!(
+                offers,
+                "\n[[offers]]\nresource = {resource}\nresource-kind = {kind}\naction = {action}\n\
+                 label = {label}\nkind = \"read\"\noperation = \"view\"\n",
+                resource = toml_string(&format!("tl:{}:root-{}", meta.app, root.id)),
+                kind = toml_string(&meta.kind_of(&root.name)),
+                action = toml_string(&tilolang_tilo::publish::show_place_id(&place.name)),
+                label = toml_string(&place.label),
+            );
+        }
+    }
+    if let Some(offer) = link_offer(meta) {
+        let _ = write!(
+            offers,
+            "\n[[offers]]\nresource = {resource}\nresource-kind = {kind}\naction = {action}\n\
+             label = \"Open link\"\nkind = \"read\"\noperation = \"view\"\nasks = {asks}\n",
+            resource = toml_string(&offer.resource),
+            kind = toml_string(&offer.kind),
+            action = toml_string(collab_types::app_actions::OPEN_LINK),
+            asks = toml_string(
+                collab_types::app_actions::AppLink::OPEN_LINK
+                    .params()
+                    .first()
+                    .copied()
+                    .unwrap_or_default()
+            ),
+        );
+    }
+    if offers.is_empty() {
+        return offers;
+    }
+    format!("\n# What the app offers while no window of it is open.{offers}")
 }
 
 /// The manifest's `[providers] schemes` list: the URI schemes the app opens (`schemes: ["tube"]`),
