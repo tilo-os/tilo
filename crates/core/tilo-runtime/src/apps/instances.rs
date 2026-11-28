@@ -701,9 +701,9 @@ impl Instances {
         let instance = self.next.fetch_add(1, Ordering::Relaxed);
         let collaboration = self.connect(app, workspace, instance, shows)?;
         let identity = self.identity(app, workspace)?;
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let chooser = self.chooser_for(app, workspace);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let chooser = None;
         processes
             .hand_over_now(Instance {

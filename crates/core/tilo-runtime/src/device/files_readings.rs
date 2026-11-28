@@ -98,10 +98,9 @@ fn with_changed_as_times(mut listing: Value) -> Value {
         if let Some(at) = jiff::Timestamp::from_millisecond(ms)
             .ok()
             .map(|at| Value::String(at.to_string()))
+            && let Some(map) = entry.as_object_mut()
         {
-            if let Some(map) = entry.as_object_mut() {
-                map.insert("changed".to_owned(), at);
-            }
+            map.insert("changed".to_owned(), at);
         }
     }
     listing
@@ -239,7 +238,8 @@ impl PublishedResources for Readings {
     }
 
     fn unwatch(&self, watch: ResourceWatch) {
-        if let Some(task) = self.watches.lock_recover().remove(&watch.id()) {
+        let task = self.watches.lock_recover().remove(&watch.id());
+        if let Some(task) = task {
             task.abort();
         }
     }
