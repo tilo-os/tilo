@@ -1892,12 +1892,8 @@ impl BlockEditor {
         self.local_author = author;
     }
 
-    pub fn bind_existing_blocks(
-        &mut self,
-        state: &AutoCommit,
-        list: ObjId,
-    ) -> Result<(), ui::view::ThawError> {
-        let invalid = |message: &str| ui::view::ThawError::State(message.into());
+    pub fn bind_existing_blocks(&mut self, state: &AutoCommit, list: ObjId) -> Result<(), String> {
+        let invalid = |message: &str| String::from(message);
         if state.object_type(&list).ok() != Some(ObjType::List) {
             return Err(invalid("canonical blocks must be a List"));
         }
@@ -1931,15 +1927,15 @@ impl BlockEditor {
         &mut self,
         state: &AutoCommit,
         objects: &[ObjId],
-    ) -> Result<(), ui::view::ThawError> {
-        let invalid = |message: &str| ui::view::ThawError::State(message.into());
+    ) -> Result<(), String> {
+        let invalid = |message: &str| String::from(message);
         let mut blocks = Vec::with_capacity(objects.len());
         let mut ids = std::collections::HashSet::new();
         for map in objects {
             if state.object_type(map).ok() != Some(ObjType::Map) {
                 return Err(invalid("canonical block must be a Map"));
             }
-            let read_string = |key: &str| -> Result<String, ui::view::ThawError> {
+            let read_string = |key: &str| -> Result<String, String> {
                 let values = state
                     .get_all(map, key)
                     .map_err(|e| invalid(&e.to_string()))?;
@@ -6767,8 +6763,8 @@ fn read_block_id(state: &AutoCommit, map: &ObjId) -> Option<String> {
     Uuid::parse_str(id).ok().map(|_| id.to_string())
 }
 
-fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, ui::view::ThawError> {
-    let invalid = || ui::view::ThawError::State("invalid or conflicted block nesting".into());
+fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, String> {
+    let invalid = || String::from("invalid or conflicted block nesting");
     match state
         .get_all(map, "nesting")
         .map_err(|_| invalid())?
@@ -6784,8 +6780,8 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, ui::view::ThawErr
     }
 }
 
-fn read_code_group(state: &AutoCommit, map: &ObjId) -> Result<Option<String>, ui::view::ThawError> {
-    let invalid = || ui::view::ThawError::State("invalid or conflicted code group".into());
+fn read_code_group(state: &AutoCommit, map: &ObjId) -> Result<Option<String>, String> {
+    let invalid = || String::from("invalid or conflicted code group");
     let values = state.get_all(map, "code_group").map_err(|_| invalid())?;
     match values.as_slice() {
         [] => Ok(None),

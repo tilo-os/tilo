@@ -880,6 +880,7 @@ CATALOGUE_INPUTS = (
     "crates/ui/ui-file-picker/src/",
     "crates/ui/ui-nav/src/",
     "crates/ui/ui-map/src/",
+    "crates/ui/ui-model/src/",
     "crates/sdk/tilo-app-window/",
     "crates/ui/ui-graph/",
 )

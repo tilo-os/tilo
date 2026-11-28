@@ -2704,7 +2704,7 @@ impl Hosted {
                     let app = &self.spec.app;
                     let remote = verdicts
                         .remote
-                        .get_or_insert_with(|| ui_core::remote_of_the_window(app));
+                        .get_or_insert_with(|| tilo_ui_model::remote_of_the_window(app));
                     verdicts.shown = Some(remote.shown(asked.clone()));
                 }
                 verdicts.asked = asked;
@@ -2726,7 +2726,7 @@ impl Hosted {
         let Some(call) = verdicts
             .shown
             .as_ref()
-            .map(ui_core::remote_actions::ShownCall::call)
+            .map(tilo_ui_model::remote_actions::ShownCall::call)
         else {
             return false;
         };
@@ -6020,10 +6020,10 @@ struct Verdicts {
     /// The connection the window asks its device on. `None` for an instance on no connection
     /// (one a window runs in its own process): it asks on the window's own, which the window
     /// drains and answers, once it first asks.
-    remote: Option<ui_core::remote_actions::RemoteActions>,
+    remote: Option<tilo_ui_model::remote_actions::RemoteActions>,
     /// What was asked last, and the ask the device keeps answering.
     asked: Vec<tilo_actions::shown::ShownAction>,
-    shown: Option<ui_core::remote_actions::ShownCall>,
+    shown: Option<tilo_ui_model::remote_actions::ShownCall>,
     /// The revision of the verdicts taken last.
     decided: Option<u64>,
     /// Whether the window ran a frame, which reads what it asks.
@@ -6034,7 +6034,7 @@ impl Default for Verdicts {
     fn default() -> Self {
         Self {
             permissions: tilo_permissions::SharedPermissions::default(),
-            remote: Some(ui_core::remote_actions::RemoteActions::current()),
+            remote: Some(tilo_ui_model::remote_actions::RemoteActions::current()),
             asked: Vec::new(),
             shown: None,
             decided: None,

@@ -62,7 +62,7 @@ pub struct SessionOwner {
 
 /// The Writer record as a record store reserves it, carrying its identity.
 fn writer_seed(workspace: &str) -> Result<Vec<u8>, String> {
-    use ui::resource::{DocumentCheckout, DocumentId, ResourceOwners};
+    use tilo_ui_model::resource::{DocumentCheckout, DocumentId, ResourceOwners};
     let definition = test_document_app::definition();
     let checkout = DocumentCheckout::new(DocumentId::for_tab(1), definition.resource_type.clone());
     let mut owners = ResourceOwners::in_memory();

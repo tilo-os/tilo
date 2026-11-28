@@ -46,7 +46,7 @@ pub trait DocumentLine {
     ///
     /// # Errors
     /// When the bound text cannot be read from `state`.
-    fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), crate::view::ThawError>;
+    fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), String>;
 
     /// The height of the wrapped paragraph and its padding at `width`, as painting lays it out.
     fn measure_wrapped_content(&mut self, width: f32, tr: &mut TextRenderer, theme: &Theme) -> f32;
@@ -137,7 +137,7 @@ impl DocumentLine for TextInput {
         self.chip_room = bounds;
     }
 
-    fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), crate::view::ThawError> {
+    fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), String> {
         TextInput::adopt_bound_text(self, state)
     }
 

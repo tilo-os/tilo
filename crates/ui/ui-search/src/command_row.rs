@@ -1,4 +1,4 @@
-//! A [`SearchRow::Command`](tilo_ui::search::SearchRow::Command) row: what
+//! A [`SearchRow::Command`](tilo_ui_model::search::SearchRow::Command) row: what
 //! leads it (artwork, an avatar or an icon), its title over a description
 //! with the query's words set off, and what trails it (an outcome button,
 //! faces, a status pill, keycaps or the selected row's alternative).
@@ -8,7 +8,6 @@ use vello::kurbo::{Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use tilo_ui::color_compat::ColorCompat;
-use tilo_ui::search::{ActivationModifier, CommandRow, SearchResult};
 use tilo_ui_base::icons;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
@@ -16,6 +15,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_model::search::{ActivationModifier, CommandRow, SearchResult};
 
 pub(super) struct RowState<'a> {
     pub selected: bool,
@@ -243,7 +243,7 @@ fn draw_trailing(
             .faces
             .iter()
             .take(shown)
-            .map(tilo_ui::search::RowFace::face)
+            .map(tilo_ui_model::search::RowFace::face)
             .collect();
         stack.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),

@@ -1,9 +1,9 @@
 //! Following an agent that writes in a long document: the view goes to the words it wrote.
 
 use tilo_rich_edit::BlockContent;
-use tilo_ui::State;
 use tilo_ui_app::app::driver::FollowedView;
 use tilo_ui_app::headless::Driver;
+use tilo_ui_model::State;
 use vello::kurbo::Rect;
 
 /// An agent's edit of `resource`, a second ago.

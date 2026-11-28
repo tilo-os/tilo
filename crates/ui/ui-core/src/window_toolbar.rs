@@ -1055,7 +1055,7 @@ impl Drop for WindowScope {
 }
 
 /// The window of the app being run, if its host shows it in one.
-pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
+pub fn window() -> Option<crate::hosted_window::HostedWindow> {
     WINDOWS
         .try_with(|windows| windows.borrow().last().cloned())
         .ok()

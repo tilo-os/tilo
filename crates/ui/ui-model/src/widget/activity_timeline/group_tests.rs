@@ -1,0 +1,787 @@
+use super::*;
+use crate::widget::history::HistoryAuthor;
+use crate::widget::history_group::NamedRange;
+use collab_types::ArtifactKind;
+use std::cell::RefCell;
+use std::rc::Rc;
+use tilo_ui::testing::{Dispatch, dispatch};
+use tilo_ui::time::Duration;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
+use winit::event::ElementState;
+use winit::event::Modifiers;
+
+const NOW: u64 = 2_000_000;
+
+fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
+    let mut id_bytes = [0u8; 16];
+    id_bytes[0] = id;
+    HistoryEntry {
+        id: HistoryEntryId(id_bytes),
+        author: HistoryAuthor::new(author, 120.0, "deadbeef"),
+        entry_kind: op,
+        artifact_kind: ArtifactKind::Note,
+        timestamp: SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(ts))
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+        summary: format!("+{} -0 chars", usize::from(id).saturating_add(1)),
+        text_delta: Some((usize::from(id).saturating_add(1), 0)),
+        diff_payload: None,
+        redaction: None,
+        context: None,
+        target: None,
+    }
+}
+
+fn timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
+    let mut t = ActivityTimeline::with_entries(entries);
+    t.set_rect(rect);
+    t.set_now_for_test(
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(NOW))
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+    );
+    t
+}
+
+// Capability-dependent layout fixtures must declare the operations they offer.
+fn editable_timeline_at(rect: Rect, entries: Vec<HistoryEntry>) -> ActivityTimeline {
+    timeline_at(rect, entries)
+        .on_revert(|_| {})
+        .on_name_group(|_| {})
+}
+
+/// Run a real frame so the rects the click handler reads (the strip's and
+/// the selection bar's controls) are placed and painted exactly as they are
+/// live: the layout places them, the paint draws them.
+fn paint(t: &mut ActivityTimeline) {
+    let theme = Theme::dark();
+    let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    tr.apply_typography(&theme.tokens.typography);
+    t.place_controls(&theme);
+    let presence = PresenceCtx::empty();
+    t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        presence.draw_env(),
+    ));
+}
+
+use tilo_ui_base::synthetic_input::cursor_moved;
+
+use tilo_ui_base::synthetic_input::mouse_press;
+
+fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
+    tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
+        logical_key,
+        None,
+        ElementState::Pressed,
+    ))
+}
+
+fn shift() -> Modifiers {
+    let state = winit::keyboard::ModifiersState::SHIFT;
+    Modifiers::from(state)
+}
+
+/// Click whatever is at `p`: move there first so `hover_row` latches, the
+/// way a real pointer does.
+fn click(t: &mut ActivityTimeline, p: Point) {
+    dispatch(t, &cursor_moved(p.x, p.y));
+    dispatch(t, &mouse_press());
+}
+
+fn type_str(t: &mut ActivityTimeline, s: &str) {
+    for ch in s.chars() {
+        if ch == ' ' {
+            dispatch(t, &key_press(Key::Named(NamedKey::Space)));
+        } else {
+            dispatch(t, &key_press(Key::Character(ch.to_string().into())));
+        }
+    }
+}
+
+fn typing_run(n: u8) -> Vec<HistoryEntry> {
+    (0..n)
+        .map(|i| {
+            entry(
+                EntryKind::Text,
+                "Alice",
+                1_000_000u64.saturating_add(u64::from(i)),
+                i,
+            )
+        })
+        .collect()
+}
+
+tilo_test_env::scenario! {
+    /// Bands of the activity timeline: collapsing, naming, undo, selection, layout and day headings.
+    /// Each phase was a test of its own and builds its own fixture.
+    fn history_bands_group_name_select_and_describe_changes;
+
+    phase band_affordances_need_their_callbacks_and_target_their_whole_range;
+    {
+        // A readonly timeline: no chip, no naming, but its rows stay selectable.
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), typing_run(20));
+        let (name, restore) = timeline.group_chip_rects(0).expect("group row");
+        assert_eq!(name, Rect::ZERO);
+        assert!(restore.is_none());
+        assert!(!timeline.begin_naming_group_at_row(0));
+        timeline.set_all_expanded(true);
+        let row = (0..timeline.row_count())
+            .find(|row| timeline.row_entry(*row).is_some())
+            .expect("entry row");
+        assert!(timeline.revert_chip_rect(row).is_none());
+        assert!(timeline.activate_row(row));
+        assert!(!timeline.begin_naming_selection());
+        paint(&mut timeline);
+        assert_eq!(timeline.name_selection_rect(), Rect::ZERO);
+        assert!(
+            timeline.clear_selection_rect().area() > 0.0,
+            "selection can still be cleared"
+        );
+        let semantics = timeline.accessibility().expect("history semantics");
+        assert!(
+            semantics.children.iter().any(
+                |node| node.role == tilo_ui_base::a11y::Role::ListItem && node.action_target.is_some()
+            )
+        );
+        assert!(semantics.children.iter().all(|node| matches!(
+            node.role,
+            tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
+        )));
+
+        // Each mutation affordance needs its own callback.
+        let rect = Rect::new(0.0, 0.0, 620.0, 620.0);
+        let mut naming = timeline_at(rect, typing_run(20)).on_name_group(|_| {});
+        let (name, restore) = naming.group_chip_rects(0).expect("group row");
+        assert!(name.area() > 0.0);
+        assert!(restore.is_none());
+        assert!(naming.begin_naming_group_at_row(0));
+        let mut restoring = timeline_at(rect, typing_run(20)).on_revert(|_| {});
+        let (name, restore) = restoring.group_chip_rects(0).expect("group row");
+        assert_eq!(name, Rect::ZERO);
+        assert!(restore.is_some());
+        assert!(!restoring.begin_naming_group_at_row(0));
+        restoring.set_all_expanded(true);
+        let row = (0..restoring.row_count())
+            .find(|row| restoring.row_entry(*row).is_some())
+            .expect("entry row");
+        assert!(restoring.revert_chip_rect(row).is_some());
+
+        // Governance is its own audit trail; an owner counters it rather than
+        // rewinding it. A band made only of those must not offer the chip.
+        let entries: Vec<HistoryEntry> = (0..6)
+            .map(|i| {
+                entry(
+                    EntryKind::Access,
+                    "Alice",
+                    1_000_000u64.saturating_add(u64::from(i)),
+                    i,
+                )
+            })
+            .collect();
+        let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
+        let (_, restore) = t.group_chip_rects(0).expect("still a band");
+        assert!(restore.is_none(), "no restore across governance");
+
+        // This is the whole point of grouping for restore: a boundary that means
+        // something, rather than keystroke 4,182.
+        let captured: Rc<RefCell<Option<HistoryEntryId>>> = Rc::new(RefCell::new(None));
+        let c = captured.clone();
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_revert(move |id| *c.borrow_mut() = Some(*id));
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+
+        let (_, restore) = t.group_chip_rects(0).expect("a band header");
+        let restore = restore.expect("a band of splices can be restored to");
+        click(&mut t, restore.center());
+        let mut want = [0u8; 16];
+        want[0] = 19;
+        assert_eq!(*captured.borrow(), Some(HistoryEntryId(want)));
+
+        // Undo targets the whole band, and only band headers offer it.
+        let entries = typing_run(20);
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
+        assert!(
+            t.group_undo_chip_rect(0).is_none(),
+            "no band-undo callback, no chip"
+        );
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries).on_undo_band(|_| {});
+        assert!(
+            t.group_undo_chip_rect(0).is_some(),
+            "with one installed, the band offers it"
+        );
+        assert!(
+            t.group_undo_chip_rect(1).is_none(),
+            "and only band headers get it, never a plain change row"
+        );
+
+        // Must carry a range, not a single id — that's what distinguishes
+        // undo from restore.
+        let entries = typing_run(20);
+        let captured: Rc<RefCell<Vec<BandUndoRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone())
+            .on_undo_band(move |r| c.borrow_mut().push(r.clone()));
+        t.set_named_ranges(vec![NamedRange {
+            id: "tilo:group:rec".into(),
+            label: "The agent's pass".into(),
+            start: entries[0].id,
+            end: Some(entries[19].id),
+            named_by: Some(HistoryAuthor::new("Alice", 120.0, "deadbeef")),
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+        let chip = t.group_undo_chip_rect(0).expect("a named band offers undo");
+        click(&mut t, chip.center());
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1, "the chip fired once");
+        assert_eq!(reqs[0].start, entries[0].id, "the band's first change");
+        assert_eq!(reqs[0].end, entries[19].id, "and its last");
+        assert_ne!(
+            reqs[0].start, reqs[0].end,
+            "a range, not the single id a restore would carry"
+        );
+        assert_eq!(reqs[0].label.as_deref(), Some("The agent's pass"));
+        assert_eq!(
+            reqs[0]
+                .authors
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Alice"],
+            "and who authored it, so the host can scope the revert"
+        );
+        drop(reqs);
+
+        // Undo takes the band out; restore discards everything after it. A
+        // click on one must not reach the other.
+        let entries = typing_run(20);
+        let undone: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let restored: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let (u, r) = (undone.clone(), restored.clone());
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries)
+            .on_undo_band(move |_| *u.borrow_mut() += 1)
+            .on_revert(move |_| *r.borrow_mut() += 1);
+        let undo_chip = t.group_undo_chip_rect(0).expect("undo chip");
+        let (_, restore) = t.group_chip_rects(0).expect("a band header");
+        let restore = restore.expect("restore chip");
+        assert!(
+            undo_chip.x1 <= restore.x0,
+            "undo sits left of restore and they do not overlap: {undo_chip:?} {restore:?}"
+        );
+        click(&mut t, undo_chip.center());
+        assert_eq!((*undone.borrow(), *restored.borrow()), (1, 0));
+        click(&mut t, restore.center());
+        assert_eq!((*undone.borrow(), *restored.borrow()), (1, 1));
+    }
+
+    phase typing_runs_collapse_into_expandable_bands;
+    {
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
+        assert_eq!(t.visible_len(), 20, "every change still passes the filter");
+        assert_eq!(t.row_count(), 1, "twenty changes read as one band");
+        let (_, expanded) = t.group_at_row(0).expect("line 0 is a band");
+        assert!(!expanded, "a twenty-change band is past the expand budget");
+        assert_eq!(t.group_title_at_row(0), Some("20 edits"));
+        let row = t.row_rect(0).expect("the header lays out");
+        click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
+        assert!(t.group_at_row(0).unwrap().1, "the click opened it");
+        assert_eq!(t.row_count(), 21, "header plus twenty changes");
+        assert!(t.row_entry(1).is_some(), "line 1 is a change");
+        assert_eq!(
+            t.row_depth_at(1),
+            Some(1),
+            "and it is indented under the band"
+        );
+        click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
+        assert_eq!(t.row_count(), 1, "clicking again closes it");
+
+        // The flat list is the degenerate case, not a second mode: four changes
+        // by four people are four groups of one, and a group of one is a row.
+        let entries = vec![
+            entry(EntryKind::Text, "Alice", 1_000_000, 0),
+            entry(EntryKind::Text, "Bob", 1_000_001, 1),
+            entry(EntryKind::Text, "Carol", 1_000_002, 2),
+            entry(EntryKind::Text, "Dave", 1_000_003, 3),
+        ];
+        let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries);
+        assert_eq!(t.row_count(), 4);
+        for i in 0..4 {
+            assert!(t.row_entry(i).is_some(), "line {i} is a plain change row");
+            assert_eq!(t.row_depth_at(i), Some(0), "and it is not indented");
+        }
+
+        // An open band says it is still open while it is being appended to.
+        let entries = typing_run(20);
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
+        t.set_named_ranges(vec![NamedRange {
+            id: "tilo:group:rec".into(),
+            label: "Working".into(),
+            start: entries[0].id,
+            end: None,
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+        let sub = t.group_subtitle_at_row(0).unwrap();
+        assert!(sub.starts_with("still open"), "got {sub:?}");
+        assert!(sub.contains("20 changes"), "got {sub:?}");
+        let mut grown = entries;
+        grown.push(entry(EntryKind::Text, "Alice", 1_000_400, 99));
+        t.set_entries(grown);
+        let sub = t.group_subtitle_at_row(0).unwrap();
+        assert!(sub.contains("21 changes"), "got {sub:?}");
+        assert!(
+            sub.starts_with("still open"),
+            "and it is still open: {sub:?}"
+        );
+
+        // The band key is derived from its first change, which does not move as
+        // the band grows — so an open band stays open when the document does.
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
+        let row = t.row_rect(0).unwrap();
+        click(&mut t, Point::new(row.x0 + 60.0, row.center().y));
+        assert!(t.group_at_row(0).unwrap().1);
+        let key = t.group_at_row(0).unwrap().0.to_string();
+        let mut grown = typing_run(20);
+        grown.push(entry(EntryKind::Text, "Alice", 1_000_020, 99));
+        t.set_entries(grown);
+        assert_eq!(t.group_at_row(0).unwrap().0, key, "same band, same key");
+        assert!(
+            t.group_at_row(0).unwrap().1,
+            "it did not slam shut under the reader"
+        );
+
+        // A child band renders inside its parent and no deeper.
+        let entries = typing_run(20);
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries.clone());
+        t.set_named_ranges(vec![
+            NamedRange {
+                id: "tilo:group:outer".into(),
+                label: "Q3 release".into(),
+                start: entries[0].id,
+                end: Some(entries[19].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+            NamedRange {
+                id: "tilo:group:inner".into(),
+                label: "Intro rewrite".into(),
+                start: entries[4].id,
+                end: Some(entries[8].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+        ]);
+        t.set_all_expanded(true);
+        let depths: Vec<usize> = (0..t.row_count())
+            .map(|i| t.row_depth_at(i).unwrap())
+            .collect();
+        assert_eq!(
+            *depths.iter().max().unwrap(),
+            2,
+            "rows inside a nested band"
+        );
+        assert_eq!(t.group_title_at_row(0), Some("Q3 release"));
+        let inner = (0..t.row_count())
+            .find(|i| t.group_title_at_row(*i) == Some("Intro rewrite"))
+            .expect("the child band renders");
+        assert_eq!(t.row_depth_at(inner), Some(1));
+        // Every line between the child header and the next depth<=1 line is a
+        // change of the child's.
+        let after = inner + 1;
+        assert_eq!(t.row_depth_at(after), Some(2));
+        assert!(t.row_entry(after).is_some());
+
+        // Days order bands, day headings bucket them.
+        let day = 86_400u64;
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+        for i in 0..4 {
+            entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
+        }
+        for i in 0..3 {
+            entries.push(entry(
+                EntryKind::Text,
+                "Ada",
+                NOW - 5 * day + u64::from(i),
+                10 + i,
+            ));
+        }
+        let mut tl = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries);
+        tl.set_all_expanded(true);
+        let authors: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
+            .collect();
+        assert_eq!(
+            authors,
+            vec!["Alice", "Alice", "Alice", "Alice", "Ada", "Ada", "Ada"],
+            "the recent band comes first and neither band is broken apart"
+        );
+        let titles: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.group_title_at_row(i))
+            .collect();
+        assert_eq!(titles.len(), 2, "two bands: {titles:?}");
+        let visible_authors: Vec<&str> = (0..tl.visible_len())
+            .map(|i| tl.visible_entry(i).unwrap().author.name.as_str())
+            .collect();
+        assert_eq!(visible_authors, authors);
+        tl.set_newest_first(false);
+        let authors: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
+            .collect();
+        assert_eq!(
+            authors,
+            vec!["Ada", "Ada", "Ada", "Alice", "Alice", "Alice", "Alice"],
+            "oldest-first flips the bands, and still does not break them"
+        );
+
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(8 * 86_400 + 12 * 3_600))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let secs = |day: u64, hour: u64| day * 86_400 + hour * 3_600;
+        let entries = vec![
+            entry(EntryKind::Text, "Ada", secs(8, 10), 1),
+            entry(EntryKind::Text, "Maren", secs(7, 16), 2),
+            entry(EntryKind::Text, "Ada", secs(5, 9), 3),
+            entry(EntryKind::Text, "Bob", secs(2, 11), 4),
+        ];
+        let mut t = ActivityTimeline::with_entries(entries);
+        t.set_now_for_test(now);
+        t.set_newest_first(true);
+        t.set_all_expanded(true);
+        t.set_show_day_headings(true);
+        let headings: Vec<String> = (0..t.row_count())
+            .filter_map(|i| t.group_title_at_row(i).map(str::to_string))
+            .filter(|title| {
+                matches!(
+                    title.as_str(),
+                    "Today" | "Yesterday" | "This week" | "Earlier"
+                )
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            vec!["Today", "Yesterday", "This week", "Earlier"],
+            "newest-first calendar headings, not work-band titles"
+        );
+        assert!(
+            (0..t.row_count()).any(|i| t.row_entry(i).is_some_and(|e| e.author.name == "Ada")),
+            "Today still lists today's change"
+        );
+    }
+
+    phase naming_a_band_writes_its_whole_range_or_nothing;
+    {
+        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_name_group(move |r| c.borrow_mut().push(r.clone()));
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+        t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+
+        let (name_chip, _) = t
+            .group_chip_rects(0)
+            .expect("a band header has a name chip");
+        click(&mut t, name_chip.center());
+        assert_eq!(t.naming_buffer(), Some(""), "the field is up and empty");
+        assert!(t.wants_keyboard(), "the field owns the keyboard");
+        type_str(&mut t, "Intro rewrite");
+        assert_eq!(t.naming_buffer(), Some("Intro rewrite"));
+        dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1, "one write, on commit");
+        let r = &reqs[0];
+        assert_eq!(r.label, "Intro rewrite");
+        assert_eq!(r.document_id, None, "nothing was named here before");
+        let mut last = [0u8; 16];
+        last[0] = 19;
+        assert_eq!(
+            r.start,
+            HistoryEntryId([0u8; 16]),
+            "the range starts at change 0"
+        );
+        assert_eq!(r.end, HistoryEntryId(last), "and ends at change 19");
+        assert!(!t.wants_keyboard(), "the field is gone");
+        drop(reqs);
+
+        // Escape abandons a name without writing anything.
+        let captured: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let c = captured.clone();
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_name_group(move |_| *c.borrow_mut() += 1);
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+        let (name_chip, _) = t.group_chip_rects(0).unwrap();
+        click(&mut t, name_chip.center());
+        type_str(&mut t, "oops");
+        dispatch(&mut t, &key_press(Key::Named(NamedKey::Escape)));
+        assert!(!t.wants_keyboard());
+        assert_eq!(*captured.borrow(), 0, "nothing was written");
+
+        // The pane's other keyboard consumer is the author typeahead. A version
+        // called "Bob's edits" must not silently filter the pane to Bob.
+        let mut t = editable_timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
+        let (name_chip, _) = t.group_chip_rects(0).unwrap();
+        click(&mut t, name_chip.center());
+        type_str(&mut t, "Bob");
+        assert_eq!(t.author_query(), "", "the typeahead was not touched");
+        assert_eq!(t.naming_buffer(), Some("Bob"));
+
+        // Renaming goes through the record the band already has.
+        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let entries = typing_run(20);
+        let mut t = ActivityTimeline::with_entries(entries.clone())
+            .on_name_group(move |r| c.borrow_mut().push(r.clone()));
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+        t.set_named_ranges(vec![NamedRange {
+            id: "tilo:group:rec".into(),
+            label: "Intro rewrite".into(),
+            start: entries[0].id,
+            end: Some(entries[19].id),
+            named_by: Some(HistoryAuthor::new("Alice", 120.0, "deadbeef")),
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+        assert_eq!(t.group_title_at_row(0), Some("Intro rewrite"));
+        let (name_chip, _) = t.group_chip_rects(0).unwrap();
+        click(&mut t, name_chip.center());
+        assert_eq!(
+            t.naming_buffer(),
+            Some("Intro rewrite"),
+            "renaming starts from the current name, not from blank"
+        );
+        for _ in 0.."Intro rewrite".len() {
+            dispatch(&mut t, &key_press(Key::Named(NamedKey::Backspace)));
+        }
+        dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].label, "", "an empty label is 'remove the name'");
+        assert_eq!(
+            reqs[0].document_id.as_deref(),
+            Some("tilo:group:rec"),
+            "and it addresses the record that already exists"
+        );
+        drop(reqs);
+
+        // A band someone else named says who named it.
+        let entries = typing_run(20);
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
+        t.set_named_ranges(vec![NamedRange {
+            id: "tilo:group:rec".into(),
+            label: "Ada's pass".into(),
+            start: entries[0].id,
+            end: Some(entries[19].id),
+            named_by: Some(HistoryAuthor::new("Ada Lovelace", 300.0, "cafebabe")),
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+        let sub = t
+            .group_subtitle_at_row(0)
+            .expect("a band has a second line");
+        assert!(
+            sub.contains("named by Ada Lovelace"),
+            "a name written by someone else must say so: {sub:?}"
+        );
+        assert!(
+            sub.contains("Alice"),
+            "and still attribute the changes to whoever made them: {sub:?}"
+        );
+    }
+
+
+    phase band_selection_tracks_ids_and_filters;
+    {
+        // Newest-first, so line 1 is change 19 and line 4 is change 16.
+        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_name_group(move |r| c.borrow_mut().push(r.clone()));
+        t.set_rect(Rect::new(0.0, 0.0, 620.0, 620.0));
+        t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+        t.set_all_expanded(true);
+        let a = t.row_entry_index(1).expect("line 1 is a change");
+        let b = t.row_entry_index(4).expect("line 4 is a change");
+        assert_eq!((a, b), (19, 16));
+        let r1 = t.row_rect(1).unwrap();
+        click(&mut t, Point::new(r1.x0 + 40.0, r1.center().y));
+        assert_eq!(t.selection(), Some((19, 19)), "a plain click anchors");
+        let r4 = t.row_rect(4).unwrap();
+        dispatch(&mut t, &cursor_moved(r4.x0 + 40.0, r4.center().y));
+        Dispatch::new()
+            .modifiers(shift())
+            .send(&mut t, &mouse_press());
+        assert_eq!(t.selection(), Some((16, 19)), "shift-click extends the run");
+        paint(&mut t);
+        let action = t.name_selection_rect();
+        assert!(
+            action.area() > 0.0,
+            "the selection bar offers a name action"
+        );
+        click(&mut t, action.center());
+        type_str(&mut t, "Second pass");
+        dispatch(&mut t, &key_press(Key::Named(NamedKey::Enter)));
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1);
+        let mut start = [0u8; 16];
+        start[0] = 16;
+        let mut end = [0u8; 16];
+        end[0] = 19;
+        assert_eq!(reqs[0].start, HistoryEntryId(start));
+        assert_eq!(reqs[0].end, HistoryEntryId(end));
+        assert_eq!(reqs[0].label, "Second pass");
+        assert_eq!(t.selection(), None, "committing clears the selection");
+        drop(reqs);
+
+        // Selection tracks stable ids across feed insertion.
+        let mut timeline = timeline_at(
+            Rect::new(0.0, 0.0, 620.0, 600.0),
+            vec![
+                entry(EntryKind::Text, "Ada", 1, 1),
+                entry(EntryKind::Text, "Ada", 3, 3),
+            ],
+        );
+        let selected_id = timeline.entries()[1].id;
+        timeline.set_selection(Some((1, 1)));
+        timeline.set_entries(vec![
+            entry(EntryKind::Text, "Ada", 1, 1),
+            entry(EntryKind::Text, "Ada", 2, 2),
+            entry(EntryKind::Text, "Ada", 3, 3),
+        ]);
+        assert_eq!(timeline.selection(), Some((2, 2)));
+        assert_eq!(timeline.entries()[2].id, selected_id);
+
+        // Filtering out a selection clears destructive targeting.
+        let mut timeline = timeline_at(
+            Rect::new(0.0, 0.0, 620.0, 600.0),
+            vec![
+                entry(EntryKind::Text, "Ada", 1, 1),
+                entry(EntryKind::Text, "Maren", 2, 2),
+            ],
+        );
+        timeline.set_selection(Some((0, 0)));
+        timeline.set_filter(HistoryFilter::default().with_author("Maren"));
+        assert_eq!(timeline.selection(), None);
+
+        // A band cut by a filter says how much of it it is showing.
+        let mut entries = typing_run(10);
+        entries[3].entry_kind = EntryKind::Comment;
+        entries[4].entry_kind = EntryKind::Comment;
+        // Comments split the band automatically, so name the whole run to force
+        // one band that a filter can then cut into.
+        let ids = (entries[0].id, entries[9].id);
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries);
+        t.set_named_ranges(vec![NamedRange {
+            id: "tilo:group:rec".into(),
+            label: "Morning".into(),
+            start: ids.0,
+            end: Some(ids.1),
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        }]);
+        assert!(
+            !t.group_subtitle_at_row(0).unwrap().contains(" of "),
+            "unfiltered, there is nothing to qualify: {:?}",
+            t.group_subtitle_at_row(0)
+        );
+        t.set_active_chip(ChipKind::Comments);
+        let sub = t.group_subtitle_at_row(0).expect("the band survives");
+        assert!(
+            sub.starts_with("2 of 10 shown"),
+            "a band cut by a filter must say so: {sub:?}"
+        );
+        assert_eq!(t.visible_len(), 2);
+    }
+
+    phase bands_order_virtualize_and_describe_themselves;
+    {
+        // A thousand distinct authors is a thousand bands. The paint window and
+        // the hit-test must both stay proportional to the viewport.
+        let entries: Vec<HistoryEntry> = (0u32..2000)
+            .map(|i| {
+                entry(
+                    EntryKind::Text,
+                    &format!("Person {}", i / 2),
+                    1_000_000u64.saturating_add(u64::from(i)),
+                    u8::try_from(i % 251).unwrap_or(u8::MAX),
+                )
+            })
+            .collect();
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), entries);
+        assert_eq!(t.visible_len(), 2000);
+        assert!(
+            t.row_count() >= 1000,
+            "two changes each by a thousand people is a thousand bands, got {}",
+            t.row_count()
+        );
+        let range = t.visible_row_range();
+        let max_lines_bounded = (620.0_f64 / ROW_HEIGHT).ceil().clamp(0.0, 1_000_000.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0..=1_000_000 above, so this cast cannot truncate or flip sign"
+        )]
+        let max_lines = (max_lines_bounded as usize).saturating_add(2);
+        assert!(
+            range.len() <= max_lines,
+            "laid out {} lines for a viewport that holds at most {}",
+            range.len(),
+            max_lines
+        );
+        assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
+        for i in range.clone() {
+            assert!(t.row_rect(i).is_some(), "line {i} is on screen");
+        }
+        assert!(
+            t.row_rect(range.end + 8).is_none(),
+            "a line well past the window must not lay out"
+        );
+
+        // The selection bar takes its space out of the scrollable list.
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 620.0), typing_run(20));
+        t.set_all_expanded(true);
+        let before = t.row_rect(1).unwrap();
+        let reachable_before = (0..t.row_count())
+            .filter(|i| t.row_rect(*i).is_some())
+            .count();
+        t.set_selection(Some((16, 19)));
+        let bar = t.selection_bar_rect();
+        assert!(bar.area() > 0.0, "a selection puts the bar on screen");
+        assert_eq!(t.row_rect(1).unwrap(), before);
+        let reachable_after = (0..t.row_count())
+            .filter(|i| t.row_rect(*i).is_some())
+            .count();
+        assert!(
+            reachable_after < reachable_before,
+            "{reachable_after} lines still fit where {reachable_before} did"
+        );
+        // Nothing inside the bar is a hit target for the list, so a click on
+        // [Name these] can never also select a row underneath it.
+        for x in [bar.x0 + 4.0, bar.center().x, bar.x1 - 4.0] {
+            for y in [bar.y0 + 2.0, bar.center().y, bar.y1 - 2.0] {
+                assert_eq!(
+                    t.row_at(Point::new(x, y)),
+                    None,
+                    "({x}, {y}) is inside the bar and must not hit a row"
+                );
+            }
+        }
+        let with_bar = t.max_scroll();
+        t.set_selection(None);
+        let without_bar = t.max_scroll();
+        assert!(
+            (with_bar - without_bar - SELECTION_BAR_H).abs() < 0.01,
+            "scroll extent moved by {} for a {SELECTION_BAR_H} px bar",
+            with_bar - without_bar
+        );
+
+        // A screen reader must not be told '20 items' over one collapsed band.
+        let t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), typing_run(20));
+        let node = Widget::accessibility(&t).unwrap();
+        assert_eq!(
+            node.description.as_deref(),
+            Some("20 entries in 1 groups"),
+        );
+    }
+}

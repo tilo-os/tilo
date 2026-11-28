@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
             let subset = tilo_presence::ViewSubset {
                 scroll: vec![10.0],
                 open_resource: None,
-                viewport: crate::view::ViewRect {
+                viewport: tilo_presence::ViewRect {
                     x: 0.0,
                     y: 0.0,
                     width: 10.0,

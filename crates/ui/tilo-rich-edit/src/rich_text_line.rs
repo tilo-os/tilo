@@ -576,10 +576,7 @@ impl RichTextLine {
         self.inner.bind_text(obj);
     }
 
-    pub(super) fn adopt_bound_text(
-        &mut self,
-        state: &AutoCommit,
-    ) -> Result<(), ui::view::ThawError> {
+    pub(super) fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), String> {
         self.paint_dirty = true;
         self.inner.adopt_bound_text(state)?;
         self.align_bound_projection(state);

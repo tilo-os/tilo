@@ -79,6 +79,7 @@ FRAMEWORK = (
     "crates/ui/ui-file-picker",
     "crates/ui/ui-nav",
     "crates/ui/ui-map",
+    "crates/ui/ui-model",
     "crates/ui/ui-math",
     # The app runner, which left ui-core with the toolkit framework it was part of.
     "crates/ui/ui-app",

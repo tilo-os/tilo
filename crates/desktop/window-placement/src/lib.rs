@@ -26,8 +26,8 @@ use tilo_session_core::desktop::navigation::{ChromeEffect, LayoutEffect, RouteId
 use tilo_session_core::desktop::outcome::{Closed, Outcome};
 use tilo_session_core::desktop::seed_tree;
 use tilo_session_core::desktop::state::{DesktopHandle, DesktopPass, TileSource};
+use tilo_ui_model::widget::TileHost;
 use ui::kurbo::Rect;
-use ui::widget::TileHost;
 
 /// The launch id a window's tab is opened under.
 const LAUNCH_PREFIX: &str = "window:";
@@ -350,19 +350,19 @@ impl TileSource for Windows {
         if let TileContent::LocalApp { note, .. } = &tab.tile
             && !note.is_empty()
         {
-            return TileHost::new(ui::widget::TileContent::Notice {
+            return TileHost::new(tilo_ui_model::widget::TileContent::Notice {
                 title: tab.title.clone(),
                 detail: note.clone(),
             });
         }
         let Some((app, answer)) = self.answer_in(tab.id) else {
-            return TileHost::new(ui::widget::TileContent::Arriving);
+            return TileHost::new(tilo_ui_model::widget::TileContent::Arriving);
         };
         let launches = Rc::clone(&self.launches);
         let held = Rc::clone(&self.held);
         let reopened = app;
         let answered_tab = tab.id;
-        TileHost::new(ui::widget::TileContent::App(Box::new(
+        TileHost::new(tilo_ui_model::widget::TileContent::App(Box::new(
             tilo_session_core::desktop::outcome::OutcomeCard::new(&answer, move || {
                 // The answer keeps its tab: the window that comes takes it
                 // when the app is back, so the launch names no other.

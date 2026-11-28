@@ -29,6 +29,7 @@ taffy = { workspace = true, features = ["content_size"] }
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["test-support"] }
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 tilo-ui = { path = "../../crates/ui/ui-core", default-features = false, features = ["model"] }
+tilo-ui-model = { path = "../../crates/ui/ui-model", default-features = false }
 # The shots and perf scenarios drive the toolkit through the app runner.
 tilo-ui-app = { path = "../../crates/ui/ui-app", default-features = false, features = ["model"] }
 vello.workspace = true

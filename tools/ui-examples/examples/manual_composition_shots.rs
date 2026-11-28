@@ -2,7 +2,6 @@
 //! `cargo run -p ui-examples --example manual-composition-shots -- /tmp/manual-composition`
 use std::path::PathBuf;
 use taffy::Size;
-use tilo_ui::State;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::{
     widget::Actions, widget::Button, widget::Checkbox, widget::Container, widget::Field,
@@ -15,6 +14,7 @@ use tilo_ui_base::{
     widget::Element, widget::Manual, widget::ManualContext, widget::MeasureConstraint as M,
     widget::WidgetLayoutError,
 };
+use tilo_ui_model::State;
 use vello::kurbo::Rect;
 const NAME: &str = "Full name";
 const EMAIL: &str = "Email address for account recovery";

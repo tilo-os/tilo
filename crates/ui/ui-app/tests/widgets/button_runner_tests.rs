@@ -87,7 +87,7 @@ fn own_device_effects_run_for_guests_and_refusals_are_said() {
         // The window stands in its workspace, whose grants ask about what reaches outside.
         harness.connect_peer();
         harness.decide_shown_actions(
-            tilo_ui::harness_device::HarnessDevice::member_of(
+            tilo_ui_model::harness_device::HarnessDevice::member_of(
                 LOCAL_WORKSPACE,
                 &tilo_member_types::MemberId::person("ada"),
                 role,

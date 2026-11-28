@@ -429,7 +429,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+    use automerge::ROOT;
 
     use super::*;
     use vello::kurbo::Point;
@@ -489,41 +489,8 @@ mod tests {
             );
         }
 
-        phase document_view_projects_keyed_subtrees_and_tracks_undo;
+        phase document_view_selects_subtrees_from_typed_state;
         {
-            fn document_view_tracks_undo_without_app_owned_notifications() {
-                let mut state = crate::State::new();
-                state.doc.put(&ROOT, "mode", "list").unwrap();
-                state.commit_action(None, None);
-                let mut view = ModelView::from_document(
-                    |doc, _| string(doc, "mode"),
-                    |mode| Box::new(Text::new(mode)),
-                )
-                .autofocus_on_change(true);
-
-                view.sync(&state.doc, &ROOT);
-                assert_eq!(
-                    view.children()[0].accessibility().unwrap().name.as_deref(),
-                    Some("list")
-                );
-                assert!(view.take_focus_reset());
-
-                state.doc.put(&ROOT, "mode", "detail").unwrap();
-                state.commit_action(None, None);
-                view.sync(&state.doc, &ROOT);
-                assert_eq!(
-                    view.children()[0].accessibility().unwrap().name.as_deref(),
-                    Some("detail")
-                );
-
-                state.undo(None, None).unwrap();
-                view.sync(&state.doc, &ROOT);
-                assert_eq!(
-                    view.children()[0].accessibility().unwrap().name.as_deref(),
-                    Some("list")
-                );
-            }
-
             fn typed_state_selects_arbitrary_subtrees() {
                 let state = tilo_ui_base::LocalState::new(String::from("loading"));
                 let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
@@ -542,18 +509,7 @@ mod tests {
                 );
             }
 
-            document_view_tracks_undo_without_app_owned_notifications();
             typed_state_selects_arbitrary_subtrees();
-        }
-    }
-
-    fn string(doc: &AutoCommit, key: &str) -> String {
-        match doc.get(&ROOT, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(value) => value.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
         }
     }
 

@@ -66,6 +66,7 @@ CRATES = (
     Path("crates/ui/ui-file-picker"),
     Path("crates/ui/ui-nav"),
     Path("crates/ui/ui-map"),
+    Path("crates/ui/ui-model"),
     Path("crates/ui/ui-math"),
     Path("crates/sdk/tilo-process-services"),
     Path("crates/core/collaboration"),

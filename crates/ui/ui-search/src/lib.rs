@@ -76,10 +76,6 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui::color_compat::ColorCompat as _;
-use tilo_ui::search::{
-    ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
-    SearchResult, SearchRow,
-};
 use tilo_ui::widget::data_table::{text_band, type_line_height};
 use tilo_ui::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 use tilo_ui_base::paint::PaintCtx;
@@ -88,6 +84,10 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_model::search::{
+    ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
+    SearchResult, SearchRow,
+};
 
 mod command_row;
 
@@ -1952,9 +1952,9 @@ impl Widget for SearchResultsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui::search::SearchRegistry;
     use tilo_ui::testing::dispatch;
     use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_model::search::SearchRegistry;
 
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
         let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(
@@ -2216,7 +2216,7 @@ mod tests {
                 view.set_results(vec![
                     SearchResult::new("Notes", "Design notes", "open").with_preview("An excerpt"),
                     SearchResult::new("Feeds", "Rust Blog", "feed").with_preview(
-                        tilo_ui::search::SearchPreview::titled("Rust Blog")
+                        tilo_ui_model::search::SearchPreview::titled("Rust Blog")
                             .fact("blog.rust-lang.org")
                             .fact("1 unread")
                             .line("Announcing Rust 1.96.1")

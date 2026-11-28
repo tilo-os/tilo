@@ -1,0 +1,585 @@
+//! Where a version's name lives: in the document, with the changes it names.
+//!
+//! A name that lived in the widget would vanish on close, and one beside the document would
+//! never reach a member. So a name is written into the same CRDT as the content it
+//! describes — one record at the document root per named range, keyed by the range it covers:
+//!
+//! ```text
+//! ROOT
+//!   "tilo:group:<hex of the range's first change>"   <- the key IS the range
+//!      label : "Intro rewrite"
+//!      end   : "<hex of the range's last change>"   (absent while open)
+//!      by    : "<actor hex of whoever wrote the name>"
+//!      at    : <unix millis>
+//! ```
+//!
+//! The key is the range's first change, not minted per writer, so two people naming the same
+//! run collide on one map key and automerge's conflict rule resolves it identically on every
+//! peer. Records sit at the root rather than under one container map for the same reason at a
+//! coarser grain: a container created independently by two peers naming *different* ranges
+//! would have one discarded whole, silently losing a name.
+//!
+//! Naming a version is a change like any other, but deliberately gets no row of its own in the
+//! history surfaces — see [`is_group_marker`].
+
+use tilo_automerge::ReadTyped as _;
+use tilo_sort::CompactSort as _;
+use tilo_ui::time::{Duration, UNIX_EPOCH};
+
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjType, ReadDoc, Value};
+
+use crate::history_source::authors::AuthorDirectory;
+use crate::widget::history::HistoryEntryId;
+use crate::widget::history_group::{GroupNameRequest, NamedRange};
+pub use collab_types::history::{GROUPS_KEY, is_group_marker};
+use tilo_automerge::read::int_at;
+
+/// A version name is a label, not a paragraph; past this it stops fitting
+/// anywhere it is rendered and starts being a way to make another user's
+/// timeline unreadable.
+pub const MAX_LABEL_LEN: usize = collab_types::history::MAX_RUN_NAME;
+
+/// The `by` of a name a model wrote, in place of a person's actor hex. A
+/// generated name is the document's guess at what a run of changes was: it is
+/// replaced by anyone who names the same range, and it is never shown as
+/// somebody's words ([`NamedRange::named_by`] stays empty for it).
+pub const GENERATED_BY: &str = "describer";
+
+/// Whether the name at `document_id` was written by a model rather than a
+/// person. A record this device cannot read counts as a person's: never
+/// overwrite what another writer may have said.
+pub fn name_is_generated(doc: &AutoCommit, document_id: &str) -> bool {
+    doc.get(automerge::ROOT, document_id)
+        .ok()
+        .flatten()
+        .and_then(|(_, rec)| doc.str_at(&rec, "by"))
+        .is_some_and(|by| by == GENERATED_BY)
+}
+
+/// Records that do not parse (a corrupted key, a missing label) are skipped
+/// rather than guessed at — a band in the wrong place is worse than no band.
+pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<NamedRange> {
+    let mut out = Vec::new();
+    for key in doc.keys(automerge::ROOT) {
+        let Some(hex) = key.strip_prefix(GROUPS_KEY) else {
+            continue;
+        };
+        let Some(start) = HistoryEntryId::from_hex(hex) else {
+            continue;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, &key) else {
+            continue;
+        };
+        let Some(label) = doc.str_at(&rec, "label") else {
+            continue;
+        };
+        let end = doc
+            .str_at(&rec, "end")
+            .and_then(|s| HistoryEntryId::from_hex(&s));
+        let by = doc.str_at(&rec, "by");
+        // `filter` above guarantees `ms > 0` by the time the cast below runs,
+        // so the conversion never loses a sign; `checked_add` only guards
+        // the (unreachable for an out-of-range timestamp) case of overflowing
+        // `SystemTime`'s own representation.
+        let created = int_at(doc, &rec, "at")
+            .filter(|ms| *ms > 0)
+            .and_then(|ms| u64::try_from(ms).ok())
+            .and_then(|ms| UNIX_EPOCH.checked_add(Duration::from_millis(ms)))
+            .unwrap_or(UNIX_EPOCH);
+        out.push(NamedRange {
+            id: key.clone(),
+            label,
+            start,
+            end,
+            // A generated name is nobody's: it is the document saying what a
+            // run of changes was, so no person is credited with it.
+            named_by: by
+                .filter(|by| by != GENERATED_BY)
+                .map(|a| authors.resolve(&a)),
+            created,
+        });
+    }
+    // Stable order so two peers with the same document build the same forest.
+    out.compact_sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Names the run of changes from `start` to `end`, or opens an unbounded run
+/// when `end` is `None`. Returns the record id (also the document key). The
+/// transaction is left open — the host commits, so the naming lands stamped
+/// and attributed like any other edit.
+pub fn name_range(
+    doc: &mut AutoCommit,
+    start: &HistoryEntryId,
+    end: Option<&HistoryEntryId>,
+    label: &str,
+) -> String {
+    let by = doc.get_actor().to_hex_string();
+    name_range_by(doc, start, end, label, &by)
+}
+
+/// [`name_range`], with the `by` written into the record: a person's actor
+/// hex, or [`GENERATED_BY`] for a name a model wrote.
+pub fn name_range_by(
+    doc: &mut AutoCommit,
+    start: &HistoryEntryId,
+    end: Option<&HistoryEntryId>,
+    label: &str,
+    by: &str,
+) -> String {
+    let end = end.map(HistoryEntryId::hex);
+    collab_types::history::name_run(
+        doc,
+        (&HistoryEntryId::hex(start), end.as_deref()),
+        label,
+        by,
+        None,
+    )
+    .unwrap_or_else(|| format!("{GROUPS_KEY}{}", HistoryEntryId::hex(start)))
+}
+
+/// Write what a [`GroupNameRequest`] asks for: name its range, or, with an
+/// empty label, remove the name it replaces. A range named again from
+/// another first change drops the record it replaces, so one run of changes
+/// carries one name. `false` when there was nothing to write. The
+/// transaction is left open for the host to commit.
+pub fn apply_name_request(doc: &mut AutoCommit, request: &GroupNameRequest) -> bool {
+    let replaced = request.document_id.as_deref();
+    if request.label.trim().is_empty() {
+        return replaced.is_some_and(|record| clear_name(doc, record));
+    }
+    let key = name_range(doc, &request.start, Some(&request.end), &request.label);
+    if let Some(record) = replaced.filter(|record| *record != key) {
+        clear_name(doc, record);
+    }
+    true
+}
+
+/// Close an open range at `end`. `false` when no such record exists.
+pub fn close_range(doc: &mut AutoCommit, document_id: &str, end: &HistoryEntryId) -> bool {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
+        return false;
+    };
+    doc.put(&rec, "end", HistoryEntryId::hex(end)).is_ok()
+}
+
+/// Remove a name. The changes it covered stay; only the band goes.
+pub fn clear_name(doc: &mut AutoCommit, document_id: &str) -> bool {
+    if !document_id.starts_with(GROUPS_KEY) {
+        return false;
+    }
+    if doc
+        .get(automerge::ROOT, document_id)
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return false;
+    }
+    doc.delete(automerge::ROOT, document_id).is_ok()
+}
+
+/// Split one named band into two adjacent named bands in the current
+/// transaction. The caller supplies both boundary ids because a CRDT history
+/// is not inherently linear at concurrent branches; guessing adjacency here
+/// would make the operation non-deterministic across peers.
+pub fn split_named_range(
+    doc: &mut AutoCommit,
+    document_id: &str,
+    left_end: &HistoryEntryId,
+    right_start: &HistoryEntryId,
+    left_label: &str,
+    right_label: &str,
+) -> Option<(String, String)> {
+    let original = named_range_resource(doc, document_id)?;
+    if !clear_name(doc, document_id) {
+        return None;
+    }
+    let left = name_range(doc, &original.0, Some(left_end), left_label);
+    let right = name_range(doc, right_start, original.1.as_ref(), right_label);
+    Some((left, right))
+}
+
+/// Merge named bands into one caller-resolved range. Every old record must
+/// exist before anything is changed, so a stale UI cannot partially merge a
+/// set that a member has already edited.
+pub fn merge_named_ranges(
+    doc: &mut AutoCommit,
+    document_ids: &[String],
+    start: &HistoryEntryId,
+    end: Option<&HistoryEntryId>,
+    label: &str,
+) -> Option<String> {
+    if document_ids.len() < 2
+        || document_ids
+            .iter()
+            .any(|record| named_range_resource(doc, record).is_none())
+    {
+        return None;
+    }
+    for record in document_ids {
+        if !clear_name(doc, record) {
+            return None;
+        }
+    }
+    Some(name_range(doc, start, end, label))
+}
+
+/// Move the boundary between two named bands while preserving both labels.
+/// As with split, the caller resolves the two sides from its displayed causal
+/// order and sends exact ids.
+pub fn move_named_boundary(
+    doc: &mut AutoCommit,
+    left_resource: &str,
+    right_resource: &str,
+    new_left_end: &HistoryEntryId,
+    new_right_start: &HistoryEntryId,
+) -> Option<(String, String)> {
+    let left = named_range_resource(doc, left_resource)?;
+    let right = named_range_resource(doc, right_resource)?;
+    let left_label = str_at_resource(doc, left_resource, "label")?;
+    let right_label = str_at_resource(doc, right_resource, "label")?;
+    if !clear_name(doc, left_resource) || !clear_name(doc, right_resource) {
+        return None;
+    }
+    let new_left = name_range(doc, &left.0, Some(new_left_end), &left_label);
+    let new_right = name_range(doc, new_right_start, right.1.as_ref(), &right_label);
+    Some((new_left, new_right))
+}
+
+/// One work session beside a boundary, as the person saw it: its named record,
+/// or `None` while it is still an automatic projection with these bounds and
+/// title.
+#[derive(Clone, Copy)]
+pub struct DisplayedSession<'a> {
+    pub record: Option<&'a str>,
+    pub start: &'a HistoryEntryId,
+    pub end: &'a HistoryEntryId,
+    pub label: &'a str,
+}
+
+impl DisplayedSession<'_> {
+    fn materialize(self, doc: &mut AutoCommit) -> String {
+        match self.record {
+            Some(record) => record.to_string(),
+            None => name_range(doc, self.start, Some(self.end), self.label),
+        }
+    }
+}
+
+/// Correct a boundary even when one or both work sessions are still automatic
+/// projections. Missing records are materialized with the titles and bounds
+/// the person saw, then the bordering action is moved in the same document
+/// transaction. The atomic history entries themselves are never rewritten.
+pub fn materialize_and_move_boundary(
+    doc: &mut AutoCommit,
+    left: DisplayedSession<'_>,
+    right: DisplayedSession<'_>,
+    new_left_end: &HistoryEntryId,
+    new_right_start: &HistoryEntryId,
+) -> Option<(String, String)> {
+    if left
+        .record
+        .is_some_and(|record| named_range_resource(doc, record).is_none())
+        || right
+            .record
+            .is_some_and(|record| named_range_resource(doc, record).is_none())
+        || matches!((left.record, right.record), (Some(left), Some(right)) if left == right)
+    {
+        return None;
+    }
+    let left_resource = left.materialize(doc);
+    let right_resource = right.materialize(doc);
+    move_named_boundary(
+        doc,
+        &left_resource,
+        &right_resource,
+        new_left_end,
+        new_right_start,
+    )
+}
+
+fn named_range_resource(
+    doc: &AutoCommit,
+    document_id: &str,
+) -> Option<(HistoryEntryId, Option<HistoryEntryId>)> {
+    let start = document_id
+        .strip_prefix(GROUPS_KEY)
+        .and_then(HistoryEntryId::from_hex)?;
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
+        return None;
+    };
+    let end = doc
+        .str_at(&rec, "end")
+        .and_then(|value| HistoryEntryId::from_hex(&value));
+    Some((start, end))
+}
+
+fn str_at_resource(doc: &AutoCommit, document_id: &str, field: &str) -> Option<String> {
+    let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, document_id) else {
+        return None;
+    };
+    doc.str_at(&rec, field)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(b: u8) -> HistoryEntryId {
+        HistoryEntryId([b; 16])
+    }
+
+    tilo_test_env::scenario! {
+        fn named_ranges_round_trip_as_bounded_marker_changes;
+
+        phase a_name_round_trips_through_the_document;
+        {
+            let mut doc = AutoCommit::new();
+            doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            let rec = name_range(&mut doc, &id(1), Some(&id(9)), "  Intro rewrite  ");
+            doc.commit();
+
+            let dir = AuthorDirectory::new();
+            let ranges = read_named_ranges(&doc, &dir);
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, rec);
+            assert_eq!(ranges[0].label, "Intro rewrite", "the label is trimmed");
+            assert_eq!(ranges[0].start, id(1));
+            assert_eq!(ranges[0].end, Some(id(9)));
+            assert!(ranges[0].named_by.is_some(), "the writer is recorded");
+        }
+
+        phase an_open_range_has_no_end_until_it_is_closed;
+        {
+            let mut doc = AutoCommit::new();
+            let rec = name_range(&mut doc, &id(1), None, "Working");
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].end, None, "an open range is open");
+
+            assert!(close_range(&mut doc, &rec, &id(4)));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].end, Some(id(4)));
+        }
+
+        phase clearing_a_name_removes_the_band_and_nothing_else;
+        {
+            let mut doc = AutoCommit::new();
+            let a = name_range(&mut doc, &id(1), Some(&id(2)), "One");
+            let b = name_range(&mut doc, &id(3), Some(&id(4)), "Two");
+            doc.commit();
+            assert!(clear_name(&mut doc, &a));
+            assert!(!clear_name(&mut doc, "not-a-record"));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, b);
+        }
+
+        phase naming_a_version_is_recognisable_as_a_marker_change;
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "content", "hello").unwrap();
+            doc.commit();
+            let before = doc.get_heads();
+            name_range(&mut doc, &id(1), Some(&id(2)), "A version");
+            doc.commit();
+            let after = doc.get_heads();
+            let patches = doc.diff(&before, &after);
+            assert!(!patches.is_empty());
+            assert!(is_group_marker(&patches), "got {patches:?}");
+
+            // An edit is not a marker, even a small one.
+            let before = doc.get_heads();
+            doc.put(automerge::ROOT, "content", "hello there").unwrap();
+            doc.commit();
+            let after = doc.get_heads();
+            let patches = doc.diff(&before, &after);
+            assert!(!is_group_marker(&patches));
+        }
+
+        phase a_very_long_name_is_capped_rather_than_stored_whole;
+        {
+            let mut doc = AutoCommit::new();
+            name_range(&mut doc, &id(1), None, &"x".repeat(1000));
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges[0].label.chars().count(), MAX_LABEL_LEN);
+        }
+
+        phase a_record_under_a_key_that_is_not_a_change_id_is_skipped;
+        {
+            let mut doc = AutoCommit::new();
+            let rec = doc
+                .put_object(automerge::ROOT, format!("{GROUPS_KEY}junk"), ObjType::Map)
+                .unwrap();
+            doc.put(&rec, "label", "nowhere").unwrap();
+            doc.commit();
+            assert!(read_named_ranges(&doc, &AuthorDirectory::new()).is_empty());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn group_edits_rewrite_bands_atomically_and_refuse_stale_input;
+
+        phase split_merge_and_boundary_move_rewrite_named_bands_atomically;
+        {
+            let mut doc = AutoCommit::new();
+            let original = name_range(&mut doc, &id(1), Some(&id(8)), "Whole task");
+            doc.commit();
+
+            let (left, right) =
+                split_named_range(&mut doc, &original, &id(4), &id(5), "Research", "Write")
+                    .expect("existing band splits");
+            doc.commit();
+            let split = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(split.len(), 2);
+            assert!(split.iter().any(|range| range.label == "Research"));
+            assert!(split.iter().any(|range| range.label == "Write"));
+
+            let (left, right) = move_named_boundary(&mut doc, &left, &right, &id(3), &id(4))
+                .expect("adjacent bands move");
+            doc.commit();
+            let moved = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert!(moved.iter().any(|range| {
+                range.id == left && range.start == id(1) && range.end == Some(id(3))
+            }));
+            assert!(moved.iter().any(|range| {
+                range.id == right && range.start == id(4) && range.end == Some(id(8))
+            }));
+
+            let merged = merge_named_ranges(
+                &mut doc,
+                &[left, right],
+                &id(1),
+                Some(&id(8)),
+                "Finished task",
+            )
+            .expect("two current bands merge");
+            doc.commit();
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 1);
+            assert_eq!(ranges[0].id, merged);
+            assert_eq!(ranges[0].label, "Finished task");
+        }
+
+        phase correcting_an_automatic_boundary_materializes_both_sessions_then_moves_it;
+        {
+            let mut doc = AutoCommit::new();
+            let (left, right) = materialize_and_move_boundary(
+                &mut doc,
+                DisplayedSession {
+                    record: None,
+                    start: &id(1),
+                    end: &id(2),
+                    label: "Write Q3 financial report",
+                },
+                DisplayedSession {
+                    record: None,
+                    start: &id(3),
+                    end: &id(4),
+                    label: "Onboard Sarah",
+                },
+                &id(1),
+                &id(2),
+            )
+            .expect("automatic sessions become correctable shared ranges");
+            doc.commit();
+
+            let ranges = read_named_ranges(&doc, &AuthorDirectory::new());
+            assert_eq!(ranges.len(), 2);
+            assert!(ranges.iter().any(|range| {
+                range.id == left
+                    && range.label == "Write Q3 financial report"
+                    && range.start == id(1)
+                    && range.end == Some(id(1))
+            }));
+            assert!(ranges.iter().any(|range| {
+                range.id == right
+                    && range.label == "Onboard Sarah"
+                    && range.start == id(2)
+                    && range.end == Some(id(4))
+            }));
+        }
+
+        phase stale_group_edits_write_nothing;
+        {
+            let mut doc = AutoCommit::new();
+            let before = doc.get_heads();
+            assert!(
+                split_named_range(&mut doc, "tilo:group:missing", &id(1), &id(2), "A", "B")
+                    .is_none()
+            );
+            assert!(
+                merge_named_ranges(
+                    &mut doc,
+                    &["missing-a".into(), "missing-b".into()],
+                    &id(1),
+                    Some(&id(2)),
+                    "Nope"
+                )
+                .is_none()
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn peers_naming_ranges_converge;
+
+        phase two_peers_naming_the_same_range_converge_on_one_name;
+        {
+            let mut alice = AutoCommit::new();
+            alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            alice.put(automerge::ROOT, "seed", "x").unwrap();
+            alice.commit();
+            let mut bob = alice.fork();
+            bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+
+            name_range(&mut alice, &id(1), Some(&id(5)), "Intro rewrite");
+            alice.commit();
+            name_range(&mut bob, &id(1), Some(&id(5)), "First draft");
+            bob.commit();
+
+            let mut alice_merged = alice.fork();
+            alice_merged.merge(&mut bob.clone()).unwrap();
+            let mut bob_merged = bob.fork();
+            bob_merged.merge(&mut alice.clone()).unwrap();
+
+            let a = read_named_ranges(&alice_merged, &AuthorDirectory::new());
+            let b = read_named_ranges(&bob_merged, &AuthorDirectory::new());
+            assert_eq!(a.len(), 1, "one range, one band");
+            assert_eq!(b.len(), 1);
+            assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
+            assert!(
+                a[0].label == "Intro rewrite" || a[0].label == "First draft",
+                "the winner is one of the two names actually written: {:?}",
+                a[0].label
+            );
+        }
+
+        phase two_peers_naming_different_ranges_both_survive;
+        {
+            let mut alice = AutoCommit::new();
+            alice.set_actor(automerge::ActorId::from("alice".as_bytes()));
+            alice.put(automerge::ROOT, "seed", "x").unwrap();
+            alice.commit();
+            let mut bob = alice.fork();
+            bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+
+            name_range(&mut alice, &id(1), Some(&id(3)), "Intro");
+            alice.commit();
+            name_range(&mut bob, &id(4), Some(&id(6)), "Body");
+            bob.commit();
+            alice.merge(&mut bob).unwrap();
+
+            let ranges = read_named_ranges(&alice, &AuthorDirectory::new());
+            let labels: Vec<&str> = ranges.iter().map(|r| r.label.as_str()).collect();
+            assert_eq!(labels.len(), 2, "got {labels:?}");
+            assert!(labels.contains(&"Intro") && labels.contains(&"Body"));
+        }
+    }
+}

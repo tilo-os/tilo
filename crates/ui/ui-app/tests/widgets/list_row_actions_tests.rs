@@ -409,7 +409,7 @@ fn a_refused_check_says_why_and_keeps_its_mark() {
         Driver::new_with_theme(tilo_ui_app::State::new(), root, (600, 400), Theme::dark());
     driver.connect_peer();
     driver.decide_shown_actions(
-        tilo_ui::harness_device::HarnessDevice::member_of(
+        tilo_ui_model::harness_device::HarnessDevice::member_of(
             tilo_permissions::LOCAL_WORKSPACE,
             &tilo_permissions::MemberId::person("ada"),
             tilo_permissions::Role::Viewer,

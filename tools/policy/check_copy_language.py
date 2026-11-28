@@ -738,6 +738,7 @@ LIBRARY_SKIP += (
     "crates/ui/ui-file-picker/",
     "crates/ui/ui-nav/",
     "crates/ui/ui-map/",
+    "crates/ui/ui-model/",
     "crates/ui/ui-core/",
     "crates/ui/ui-render/",
     "crates/ui/ui-math/",

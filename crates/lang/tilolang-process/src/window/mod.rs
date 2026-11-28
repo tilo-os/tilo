@@ -93,7 +93,7 @@ pub fn install_from_env() -> Result<(), InstallError> {
         }
     }
     if let Some(handed) = tilo_action_line::handed::connection() {
-        ui_core::install_window_line(handed.line, handed.workspace);
+        tilo_ui_model::install_window_line(handed.line, handed.workspace);
     }
     install(bundle)?;
     // A window without a session runs its instance in this process, and the platform's

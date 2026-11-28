@@ -37,7 +37,7 @@ fn before_a_viewer<I: 'static>(
     );
     driver.connect_peer();
     driver.decide_shown_actions(
-        tilo_ui::harness_device::HarnessDevice::member_of(
+        tilo_ui_model::harness_device::HarnessDevice::member_of(
             LOCAL_WORKSPACE,
             &MemberId::person("ada"),
             Role::Viewer,
@@ -494,7 +494,7 @@ fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
     );
     driver.connect_peer();
     driver.decide_shown_actions(
-        tilo_ui::harness_device::HarnessDevice::member_of(
+        tilo_ui_model::harness_device::HarnessDevice::member_of(
             LOCAL_WORKSPACE,
             &MemberId::person("ada"),
             Role::Editor,

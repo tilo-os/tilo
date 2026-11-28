@@ -85,83 +85,6 @@
       }
     },
     {
-      "name": "SearchButton",
-      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app, or — given the `item` it shows — over that one resource and what it holds (a book's passages, a notebook's notes). It never draws a field, and a window bar that searches for the window takes its place.",
-      "props": [
-        {
-          "name": "item",
-          "doc": "The resource the search is scoped to, when it is one: the app's search narrowed to it, as the scope pill beside the query reads. Without one, the search reaches everything the app publishes.",
-          "type": {
-            "option": "resource"
-          },
-          "data": true
-        },
-        {
-          "name": "label",
-          "doc": "What the scoped search calls the resource it is narrowed to, in the scope pill: the book's title. The item's own name is read when this is empty.",
-          "type": {
-            "option": "text"
-          },
-          "data": true
-        }
-      ],
-      "semantics": {
-        "role": "Button"
-      }
-    },
-    {
-      "name": "ActivityTimeline",
-      "doc": "The history of a document, grouped: runs of typing fold into one band that opens to its changes, each day's changes sit under the day's heading, and a change's menu offers reverting it.",
-      "props": [
-        {
-          "name": "fill",
-          "doc": "The pane takes the height its parent gives it and scrolls inside, rather than being as tall as its rows inside another scroll.",
-          "type": "bool"
-        },
-        {
-          "name": "newest_first",
-          "doc": "Whether it lists changes newest first.",
-          "type": "bool"
-        },
-        {
-          "name": "day_headings",
-          "doc": "Whether the pane shows the calendar's Today/Yesterday/This week headings.",
-          "type": "bool"
-        },
-        {
-          "name": "people_filters",
-          "doc": "Whether it offers every person and agent in the history as a filter.",
-          "type": "bool"
-        }
-      ],
-      "parts": [
-        {
-          "name": "entries",
-          "doc": "The changes, oldest first.",
-          "accepts": {
-            "component": "ActivityEntry"
-          },
-          "many": true,
-          "default": true
-        }
-      ],
-      "events": [
-        {
-          "name": "revert",
-          "doc": "A change was reverted: carries the change it is.",
-          "value": "resource"
-        },
-        {
-          "name": "open",
-          "doc": "A change was opened in the app: carries the change it is.",
-          "value": "resource"
-        }
-      ],
-      "semantics": {
-        "role": "List"
-      }
-    },
-    {
       "name": "Autocomplete",
       "doc": "A field that suggests completions under it as it is typed into: a search over a site's catalogue, a mention, a command.",
       "props": [
@@ -8735,59 +8658,6 @@
       }
     },
     {
-      "name": "WebView",
-      "doc": "A page, live: a browser's content, a help document, a web app embedded in a view. Its address bar, navigation and permission prompts belong to its host: this is the page alone, and the app reports what the page navigated to as its events.",
-      "props": [
-        {
-          "name": "title",
-          "doc": "What the page is, for assistive technology.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "uri",
-          "doc": "The page's address, which it opens at first.",
-          "type": {
-            "option": "text"
-          },
-          "data": true
-        },
-        {
-          "name": "pip",
-          "doc": "Whether the page's video floats above the app's window as picture-in-picture: the host shows the picture where the page draws it, and the view puts it back in the page when the app stops asking.",
-          "type": "bool"
-        },
-        {
-          "name": "surface",
-          "doc": "Which of the window's pages it shows: the one the person browsed, or the window's second one beside or over it (`panel`: an extension's side panel, a sign-in page). The window holds both engines and hands in the one this names; without it the view shows the page.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "navigate",
-          "doc": "The page navigated (the person followed a link): carries the address.",
-          "value": "text"
-        },
-        {
-          "name": "fail",
-          "doc": "The page could not load: carries what the engine said.",
-          "value": "text"
-        },
-        {
-          "name": "picture_in_picture_closed",
-          "doc": "The shell returned the picture to the page: the person closed the floated window, or the shell handed it back. The view stops floating when the app stops asking; this is how the app learns the person is done."
-        }
-      ],
-      "semantics": {
-        "role": "Document",
-        "label": "title"
-      }
-    },
-    {
       "name": "WindowFrame",
       "doc": "A window on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
       "props": [
@@ -8946,6 +8816,136 @@
         "role": "Group",
         "label": "place",
         "not_in_gallery": "a well draws nothing: the place's own window is composited there, so a gallery window has no well to show"
+      }
+    },
+    {
+      "name": "SearchButton",
+      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app, or — given the `item` it shows — over that one resource and what it holds (a book's passages, a notebook's notes). It never draws a field, and a window bar that searches for the window takes its place.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the search is scoped to, when it is one: the app's search narrowed to it, as the scope pill beside the query reads. Without one, the search reaches everything the app publishes.",
+          "type": {
+            "option": "resource"
+          },
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What the scoped search calls the resource it is narrowed to, in the scope pill: the book's title. The item's own name is read when this is empty.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        }
+      ],
+      "semantics": {
+        "role": "Button"
+      }
+    },
+    {
+      "name": "ActivityTimeline",
+      "doc": "The history of a document, grouped: runs of typing fold into one band that opens to its changes, each day's changes sit under the day's heading, and a change's menu offers reverting it.",
+      "props": [
+        {
+          "name": "fill",
+          "doc": "The pane takes the height its parent gives it and scrolls inside, rather than being as tall as its rows inside another scroll.",
+          "type": "bool"
+        },
+        {
+          "name": "newest_first",
+          "doc": "Whether it lists changes newest first.",
+          "type": "bool"
+        },
+        {
+          "name": "day_headings",
+          "doc": "Whether the pane shows the calendar's Today/Yesterday/This week headings.",
+          "type": "bool"
+        },
+        {
+          "name": "people_filters",
+          "doc": "Whether it offers every person and agent in the history as a filter.",
+          "type": "bool"
+        }
+      ],
+      "parts": [
+        {
+          "name": "entries",
+          "doc": "The changes, oldest first.",
+          "accepts": {
+            "component": "ActivityEntry"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "revert",
+          "doc": "A change was reverted: carries the change it is.",
+          "value": "resource"
+        },
+        {
+          "name": "open",
+          "doc": "A change was opened in the app: carries the change it is.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "List"
+      }
+    },
+    {
+      "name": "WebView",
+      "doc": "A page, live: a browser's content, a help document, a web app embedded in a view. Its address bar, navigation and permission prompts belong to its host: this is the page alone, and the app reports what the page navigated to as its events.",
+      "props": [
+        {
+          "name": "title",
+          "doc": "What the page is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "uri",
+          "doc": "The page's address, which it opens at first.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "pip",
+          "doc": "Whether the page's video floats above the app's window as picture-in-picture: the host shows the picture where the page draws it, and the view puts it back in the page when the app stops asking.",
+          "type": "bool"
+        },
+        {
+          "name": "surface",
+          "doc": "Which of the window's pages it shows: the one the person browsed, or the window's second one beside or over it (`panel`: an extension's side panel, a sign-in page). The window holds both engines and hands in the one this names; without it the view shows the page.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "navigate",
+          "doc": "The page navigated (the person followed a link): carries the address.",
+          "value": "text"
+        },
+        {
+          "name": "fail",
+          "doc": "The page could not load: carries what the engine said.",
+          "value": "text"
+        },
+        {
+          "name": "picture_in_picture_closed",
+          "doc": "The shell returned the picture to the page: the person closed the floated window, or the shell handed it back. The view stops floating when the app stops asking; this is how the app learns the person is done."
+        }
+      ],
+      "semantics": {
+        "role": "Document",
+        "label": "title"
       }
     },
     {
@@ -10902,85 +10902,6 @@
       "semantics": {
         "role": "Group",
         "label": "name"
-      }
-    },
-    {
-      "name": "ActivityEntry",
-      "doc": "One change of a document: what it did, who did it and when.",
-      "props": [
-        {
-          "name": "item",
-          "doc": "The change it is: its stable key, what reverting or opening it reports, and where its band and selection stand across changes.",
-          "type": "resource",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "author",
-          "doc": "Who made the change.",
-          "type": {
-            "option": "actor"
-          }
-        },
-        {
-          "name": "time",
-          "doc": "When it was made.",
-          "type": {
-            "option": "time"
-          }
-        },
-        {
-          "name": "summary",
-          "doc": "What the change did, in a sentence: \"Renamed the card\", \"Moved to Done\".",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "kind",
-          "doc": "What kind of change it is: it draws the row's glyph and says whether it can be reverted.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "EntryKind",
-                "cases": [
-                  "text",
-                  "move",
-                  "details",
-                  "comment",
-                  "delete",
-                  "restore",
-                  "access",
-                  "compaction",
-                  "redaction"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "name": "artifact",
-          "doc": "What kind of resource it changed.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "ActivityArtifact",
-                "cases": [
-                  "note",
-                  "file",
-                  "cluster",
-                  "kanban",
-                  "chat-log"
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "ListItem",
-        "label": "summary",
-        "presents": "item"
       }
     },
     {
@@ -13444,6 +13365,85 @@
       ],
       "semantics": {
         "role": "ListItem",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "ActivityEntry",
+      "doc": "One change of a document: what it did, who did it and when.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The change it is: its stable key, what reverting or opening it reports, and where its band and selection stand across changes.",
+          "type": "resource",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who made the change.",
+          "type": {
+            "option": "actor"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was made.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "summary",
+          "doc": "What the change did, in a sentence: \"Renamed the card\", \"Moved to Done\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "kind",
+          "doc": "What kind of change it is: it draws the row's glyph and says whether it can be reverted.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "EntryKind",
+                "cases": [
+                  "text",
+                  "move",
+                  "details",
+                  "comment",
+                  "delete",
+                  "restore",
+                  "access",
+                  "compaction",
+                  "redaction"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "artifact",
+          "doc": "What kind of resource it changed.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ActivityArtifact",
+                "cases": [
+                  "note",
+                  "file",
+                  "cluster",
+                  "kanban",
+                  "chat-log"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "summary",
         "presents": "item"
       }
     },

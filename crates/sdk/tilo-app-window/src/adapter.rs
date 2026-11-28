@@ -41,6 +41,7 @@ pub fn components() -> &'static tilo_ui_base::component::Registry {
     COMPONENTS.get_or_init(|| {
         tilo_ui_base::component::Registry::of(&[
             &ui::component_catalogue::TOOLKIT,
+            &tilo_ui_model::COMPONENTS,
             &tilo_rich_edit::COMPONENTS,
             &tilo_ui_charts::COMPONENTS,
             &tilo_ui_secret::COMPONENTS,

@@ -84,6 +84,23 @@
 
 extern crate self as tilo_ui_app;
 pub use tilo_ui::*;
+#[cfg(feature = "model")]
+pub use tilo_ui_model::*;
+
+/// The toolkit's widgets, and with the model layer the widgets that host an app.
+pub mod widget {
+    pub use tilo_ui::widget::*;
+    #[cfg(feature = "model")]
+    pub use tilo_ui_model::widget::*;
+}
+
+/// The toolkit's test fixtures, and with the model layer those of an app's widgets.
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
+    pub use tilo_ui::testing::*;
+    #[cfg(feature = "model")]
+    pub use tilo_ui_model::testing::*;
+}
 
 #[cfg(feature = "model")]
 pub mod action_palette;

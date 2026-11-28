@@ -103,30 +103,13 @@
     )
 )]
 
-/// The app's own client for the session's action API, and what it answers.
-#[cfg(feature = "model")]
-pub mod remote_actions;
-#[cfg(feature = "model")]
-pub use {
-    remote_actions::CancellationCall, remote_actions::CatalogueCall, remote_actions::ChangedCall,
-    remote_actions::Followed, remote_actions::FollowedRead, remote_actions::InvocationCall,
-    remote_actions::InvocationProgress, remote_actions::RemoteActions,
-    remote_actions::RemoteActionsGuard, remote_actions::ResourceReadCall,
-};
 pub mod settings_device;
+pub mod shot_frame;
 pub mod surface_services;
 
-pub mod a11y_tree;
 mod bind;
 pub use bind::Bind;
-pub mod action_locus;
-/// The document action host behind the framework's dispatcher. Apps submit edits through the framework,
-/// never through this host.
-#[doc(hidden)]
-pub mod local_dispatch;
-#[cfg(feature = "model")]
-pub mod local_document_action;
-pub use {action_locus::ActionUiRoute, floating_surface::PaintedActionMarker};
+pub use floating_surface::PaintedActionMarker;
 pub mod author;
 pub mod content_zoom;
 pub mod control_hints;
@@ -147,13 +130,6 @@ extern crate self as tilo_ui;
 /// `tilo-ui` alone writes `tilo_ui::Widget`, `tilo_ui::LocalState` and `tilo_ui::TextRole`. What
 /// this crate names itself takes precedence over the base's.
 pub use tilo_ui_base::*;
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "shared support is compiled by library and integration tests whose consumers intentionally use different subsets"
-)]
-#[path = "../../ui-app/tests/support/application.rs"]
-pub(crate) mod application_test_support;
 
 /// The app surface an app's changes are decided against, kept with the collab client that names it on
 /// every signed op.
@@ -165,54 +141,14 @@ pub mod call_pictures;
 #[cfg(feature = "model")]
 pub use tilo_actions::shown as shown_actions;
 
-/// The client a window asks the device's own read over: the action line this process's launcher
-/// handed it ([`install_window_line`]), as the app `app`, else the client this thread has (a
-/// provider entered for it, or the session's collaboration).
-#[cfg(feature = "model")]
-#[must_use]
-pub fn remote_of_the_window(app: &str) -> remote_actions::RemoteActions {
-    use remote_actions::RemoteActions;
-    if let Some((line, workspace)) = WINDOW_LINE.get() {
-        return RemoteActions::with_provider(
-            std::sync::Arc::clone(line),
-            tilo_actions::remote::Caller::local_app(app).in_workspace(workspace),
-        );
-    }
-    RemoteActions::current()
-}
-
-/// The action line an app's launcher handed this process, and the workspace it was started in.
-#[cfg(feature = "model")]
-type WindowLine = (
-    std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
-    String,
-);
-
-#[cfg(feature = "model")]
-static WINDOW_LINE: std::sync::OnceLock<WindowLine> = std::sync::OnceLock::new();
-
-/// Install the action line the app's launcher handed this process, in `workspace`: the runner
-/// that starts the app does, before the first frame, so the toolkit links nothing of the daemon's
-/// transport. The first install stands, since a process has one connection to its device; a host
-/// process (the shell, a test) installs none.
-#[cfg(feature = "model")]
-pub fn install_window_line(
-    line: std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>,
-    workspace: String,
-) {
-    let _ = WINDOW_LINE.set((line, workspace));
-}
-
 #[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
 #[cfg(feature = "model")]
 pub mod activity_wire;
 pub mod component_catalogue;
-pub mod component_lifecycle;
 pub mod composition;
 pub mod content;
-pub mod device_local_api;
 pub mod edge_slots;
 pub mod element_pictures;
 pub mod files;
@@ -220,13 +156,7 @@ pub mod floating_layer;
 pub mod floating_surface;
 #[cfg(any(test, feature = "test-support"))]
 pub mod frame_probe;
-#[cfg(feature = "model")]
-pub mod harness_device;
 pub mod history_api;
-pub mod history_mode;
-#[cfg(feature = "model")]
-pub mod history_source;
-pub mod host_chrome;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
@@ -238,7 +168,6 @@ pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
-pub mod launch_error;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
@@ -246,8 +175,6 @@ pub mod live_pictures;
 pub mod operation_target;
 #[cfg(all(feature = "local-daemons", feature = "model"))]
 pub mod own_photo;
-#[cfg(feature = "model")]
-pub mod owner_wake;
 pub mod passcode_keyboard;
 pub mod personal_dictionary;
 pub mod pick;
@@ -256,7 +183,6 @@ pub mod pictures;
 pub mod pointer_replay;
 pub mod published;
 pub mod served_content;
-pub mod shot_frame;
 pub use tilo_ui_paint::raster;
 pub mod storage;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
@@ -286,23 +212,16 @@ pub mod widgets {
     };
 }
 pub use tilo_lock::deferred;
-pub mod close_admission;
 pub mod reader_hud;
-#[cfg(feature = "model")]
-pub mod resource;
 pub mod retained_present;
 pub mod text_assistance;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
 pub mod part_row;
-pub mod save_status;
-pub mod search;
-pub mod session_api;
 pub mod shared_selection;
 pub mod shell_cards;
 pub mod shell_tabs;
-pub mod state;
 /// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
 /// is no surface, and no session places its window.
 #[cfg(all(feature = "native", feature = "model", feature = "local-daemons"))]
@@ -310,8 +229,6 @@ pub mod surface_peer;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod ui_graph;
-pub mod undo;
-pub mod view;
 pub mod window_link;
 pub mod window_name;
 pub mod window_share;
@@ -358,9 +275,6 @@ pub use winit;
 pub use {vello::kurbo, vello::peniko};
 
 pub use color_compat::ColorCompat;
-// Paragraph composition is the document engine's, so the reader, the word processor and PDF
-// export lay text out by one policy.
-pub use state::State;
 /// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
 /// the web.
 pub use tilo_image_codec as image_codec;
@@ -371,18 +285,6 @@ pub use {
     reader_hud::HudAction, reader_hud::HudControls, reader_hud::HudPlacement, reader_hud::HudSide,
     reader_hud::HudSwatch, reader_hud::MarkerDrag, reader_hud::SelectionHud,
 };
-#[cfg(feature = "model")]
-pub use {
-    resource::DocumentCheckout, resource::DocumentId, resource::DocumentRef,
-    resource::ResourceRefusal, resource::ResourceSet, resource::ResourceStore,
-    resource::ResourceType,
-};
-pub use {
-    search::FnProvider, search::SearchGroup, search::SearchProvider, search::SearchRegistry,
-    search::SearchResult,
-};
-#[cfg(feature = "model")]
-pub use {state::DocumentFrontier, state::UndoEntry, state::UndoLog};
 pub use {
     tilo_text_layout::paragraph::ComposedLine, tilo_text_layout::paragraph::ParagraphBox,
     tilo_text_layout::paragraph::ParagraphOptions, tilo_text_layout::paragraph::compose_paragraph,
@@ -395,16 +297,6 @@ pub use {
     ui_graph::UiGraphHandle, ui_graph::UiNavigation, ui_graph::UiNode, ui_graph::UiTextRole,
     ui_graph::UiTextSource, ui_graph::UiValues, ui_graph::parse_ui_graph_edits,
 };
-pub use {undo::UndoAccess, undo::UndoRequest, undo::UndoStatus};
-pub use {
-    view::FROZEN_VERSION, view::FocusView, view::FreezeThaw, view::FrozenApp, view::ThawError,
-    view::View, view::ViewContribution, view::ViewRect,
-};
-
-pub use {
-    a11y_tree::SemanticAction, a11y_tree::SemanticActionKind, a11y_tree::SemanticNode,
-    a11y_tree::SemanticTree, a11y_tree::TreeDelta,
-};
 
 pub use tilo_actions;
 
@@ -413,13 +305,8 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
+pub use widget::AppKind;
 pub use widget::ModelView;
-#[cfg(feature = "model")]
-pub use {
-    search::ArgumentKind, search::ArgumentSpec, search::CommandEntry, search::CommandOutcome,
-    search::RowFace,
-};
-pub use {widget::AppCommand, widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 pub use {
     widget::Card, widget::CardGrid, widget::Section, widget::card_column_width,
     widget::card_columns,
@@ -427,81 +314,11 @@ pub use {
 pub use {widget::EditOutcome, widget::EditableLabel};
 pub use {widget::NavItem, widget::NavList, widget::NavSection};
 
-// Audit-timeline widgets + their shared types. The `ArtifactKind`
-// re-export flows through these widgets, so callers can build
-// a `HistoryEntry` without a direct dependency on the collab-types crate.
-#[cfg(feature = "model")]
-pub use {
-    history_mode::HistoryController, history_mode::HistoryError, history_mode::HistoryResource,
-    history_mode::HistorySnapshot, history_mode::PreviewSide, history_mode::RestoreReview,
-};
-#[cfg(feature = "model")]
-pub use {widget::activity_timeline::ActivityTimeline, widget::activity_timeline::BandUndoRequest};
-#[cfg(feature = "model")]
-pub use {
-    widget::history::AuthorRelation, widget::history::EntryKind,
-    widget::history::HistoryAttribution, widget::history::HistoryAuthor,
-    widget::history::HistoryClassification, widget::history::HistoryEntry,
-    widget::history::HistoryFilter, widget::history::RedactionDisplay,
-    widget::history::format_relative_time, widget::history::hue_to_rgb,
-};
-#[cfg(feature = "model")]
-pub use {
-    widget::history_group::FOLD_ACTION_FACET, widget::history_group::FOLD_ITEM_FACET,
-    widget::history_group::GroupNameRequest, widget::history_group::GroupingConfig,
-    widget::history_group::HistoryGroup, widget::history_group::MAX_GROUP_DEPTH,
-    widget::history_group::NamedRange, widget::history_group::OpFamily,
-    widget::history_group::group_entries,
-};
 pub use {widget::name_field::NameField, widget::name_field::NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 #[cfg(feature = "model")]
 pub use collab_types::presence::CallPresence;
-#[cfg(feature = "model")]
-pub use history_source::groups as history_groups;
-#[cfg(feature = "model")]
-pub use widget::history::author_face;
-#[cfg(feature = "model")]
-pub use {
-    history_source::ActivityBrief, history_source::ActivityBriefAction,
-    history_source::ActivityDigest, history_source::ActivityNarrator,
-    history_source::AuthorDirectory, history_source::CompareError,
-    history_source::GroundedNarrative, history_source::HistoryComparison,
-    history_source::HistoryFacetIndex, history_source::HistoryResourceTarget,
-    history_source::HistorySelectionDetail, history_source::HistorySource,
-    history_source::NarrativeRequest, history_source::NarrativeSource,
-    history_source::compare_entries, history_source::deterministic_narrative,
-    history_source::heads_for_entry, history_source::validate_narrative,
-    history_source::version_index_for_entry,
-};
-#[cfg(feature = "model")]
-pub use {
-    history_source::invocations::AgentSession, history_source::invocations::InvocationStep,
-    history_source::invocations::forget_invocation,
-    history_source::invocations::invocation_starting_at,
-    history_source::invocations::read_invocations, history_source::invocations::record_invocation,
-    history_source::invocations::record_invocation_with_details,
-};
-#[cfg(feature = "model")]
-pub use {
-    history_source::revert::ChangeRange, history_source::revert::KeptSlot,
-    history_source::revert::RevertError, history_source::revert::RevertOutcome,
-    history_source::revert::Slot, history_source::revert::latest_invocation_by,
-    history_source::revert::plan_revert, history_source::revert::revert_invocation,
-};
-#[cfg(feature = "model")]
-pub use {
-    history_source::sentence::AuthorParts, history_source::sentence::attribution_hover,
-    history_source::sentence::author_line, history_source::sentence::author_parts,
-    history_source::sentence::author_spoken, history_source::sentence::learn_item_names,
-    history_source::sentence::wire_author_line, history_source::sentence::writer_badge,
-};
-pub use {
-    save_status::SAVE_GIVE_UP, save_status::SAVE_RETRY_ACTION, save_status::SAVE_STALL,
-    save_status::SaveAction, save_status::SaveNotice, save_status::SaveState,
-    save_status::SaveStatusSurface,
-};
 pub use {
     tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL,
     tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility,
@@ -512,22 +329,13 @@ pub use {
     wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard,
 };
 
-#[cfg(feature = "model")]
-pub mod application;
-#[cfg(feature = "model")]
-pub mod application_view;
-#[cfg(feature = "model")]
-pub mod invocation_scope;
 #[cfg(feature = "native")]
 pub mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
-#[cfg(feature = "model")]
-pub mod semantic_document_read;
 pub mod semantic_outline;
 
-pub mod bound_dispatch;
 pub mod retained_widgets;
 
 pub mod focus_navigation;
@@ -575,28 +383,6 @@ pub use objc2_app_kit;
 #[doc(hidden)]
 pub use objc2_foundation;
 
-/// The host chrome's window bars, menus and jump tasks, for the tests above the toolkit that
-/// drive them through an app.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub mod host_chrome_testing {
-    pub use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
-    pub use crate::host_chrome::menus::{Entry, MenuKind, entries};
-    pub use crate::host_chrome::model::{CommandGroup, HostCommand};
-    pub use crate::host_chrome::windows_items::{decode, encode, jump_tasks, menu_text, quote};
-}
-
-/// The macOS title bar chrome, for the tests above the toolkit that drive it through an app.
-#[cfg(all(
-    target_os = "macos",
-    feature = "native",
-    any(test, feature = "test-support")
-))]
-#[doc(hidden)]
-pub mod host_chrome_macos_testing {
-    pub use crate::host_chrome::macos::{ChromeRequest, MacChrome};
-}
-
 // Tests of the base that drive the widgets above it.
 #[cfg(test)]
 #[path = "accesskit_bridge/tests.rs"]
@@ -604,12 +390,6 @@ mod accesskit_bridge_tests;
 #[cfg(test)]
 #[path = "component/coverage_tests.rs"]
 mod component_coverage_tests;
-#[cfg(test)]
-#[path = "control_domain/lifecycle_tests.rs"]
-mod control_domain_lifecycle_tests;
-#[cfg(test)]
-#[path = "control_domain/tests.rs"]
-mod control_domain_tests;
 #[cfg(test)]
 #[path = "i18n/tests.rs"]
 mod i18n_tests;
@@ -667,9 +447,6 @@ mod widget_layout_scrollable_placement_tests;
 #[cfg(test)]
 #[path = "widget/layout/tests.rs"]
 mod widget_layout_tests;
-#[cfg(test)]
-#[path = "widget/manual/ownership_tests.rs"]
-mod widget_manual_ownership_tests;
 #[cfg(test)]
 #[path = "widget/native_view/tests.rs"]
 mod widget_native_view_tests;

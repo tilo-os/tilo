@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase toolkit_legends_and_palette_hints_follow_the_active_layout;
+    phase toolkit_legends_follow_the_active_layout;
     {
         use tilo_ui_base::{input::KeyLegend, input::KeyboardBinding};
         use tilo_ui_base::{platform::Platform, platform::PlatformConventions, platform::Shortcut};
@@ -80,17 +80,14 @@ tilo_test_env::scenario! {
             [KeyboardModifier::Control, KeyboardModifier::Shift],
             KeyLegend::Delete,
         );
-        let entry = crate::CommandEntry::new("x", "X").keybinding("Super+PageUp");
         set_active(Keycaps::from_xkb("de", ""));
         let german = (
             binding.keycap_labels(linux),
             Shortcut::command("S").shift().label(linux),
-            entry.keybinding_label(linux),
         );
         set_active(Keycaps::US);
         assert_eq!(german.0, ["Strg", "Umschalt", "Entf"]);
         assert_eq!(german.1, "Strg+Umschalt+S");
-        assert_eq!(german.2.as_deref(), Some("Super+Bild↑"));
         assert_eq!(binding.keycap_labels(linux), ["Ctrl", "Shift", "Delete"]);
     }
 

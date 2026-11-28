@@ -240,7 +240,7 @@ fn tab_reaches_a_components_text_input() {
 
 /// What the device said of the locus's edit: the author is an Editor of the workspace.
 fn as_editor(
-    definition: &tilo_ui::application::ApplicationDefinition,
+    definition: &tilo_ui_model::application::ApplicationDefinition,
 ) -> tilo_ui_base::permissions::SharedPermissions {
     crate::support::application::decided(
         &definition.app_id,

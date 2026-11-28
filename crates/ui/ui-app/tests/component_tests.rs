@@ -42,6 +42,7 @@ fn toolkit() -> Registry {
         &tilo_ui_file_picker::COMPONENTS,
         &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
+        &tilo_ui_model::COMPONENTS,
     ])
 }
 

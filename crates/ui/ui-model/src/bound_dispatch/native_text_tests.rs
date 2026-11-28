@@ -1,0 +1,328 @@
+use super::*;
+use automerge::ReadDoc;
+use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionError, ActionTransport};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TextEdit {
+    field: String,
+    value: String,
+}
+impl Action for TextEdit {
+    fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
+        doc.put(ROOT, &self.field, &self.value)?;
+        Ok(())
+    }
+    fn inverse_encoded(&self, doc: &AutoCommit) -> Option<tilo_actions::EncodedAction> {
+        let value = doc
+            .get(ROOT, &self.field)
+            .ok()?
+            .and_then(|(v, _)| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        tilo_actions::EncodedAction::encode(
+            "burst.text",
+            &Self {
+                field: self.field.clone(),
+                value,
+            },
+        )
+        .ok()
+    }
+}
+
+#[derive(Default)]
+struct TextOwner {
+    emitter: Option<tilo_ui_base::widget::ActionEmitter<String>>,
+}
+impl Widget for TextOwner {
+    tilo_ui_base::provides!(
+        dyn crate::history_mode::capability::DocumentHistory,
+        dyn tilo_ui_base::widget::controls::ActionControls
+    );
+    tilo_ui::testing::inert_widget_methods!(unregistered_leaf_layout, name = "Text owner");
+}
+impl tilo_ui_base::widget::controls::ActionControls for TextOwner {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.emitter
+            .as_mut()
+            .and_then(tilo_ui_base::widget::ActionEmitter::take)
+    }
+}
+impl crate::history_mode::capability::DocumentHistory for TextOwner {
+    fn physical_text_policy(
+        &self,
+        previous: Option<&tilo_actions::EncodedAction>,
+        next: &tilo_actions::EncodedAction,
+    ) -> (bool, bool) {
+        let next: TextEdit = serde_json::from_slice(&next.payload).unwrap();
+        let previous =
+            previous.and_then(|encoded| serde_json::from_slice::<TextEdit>(&encoded.payload).ok());
+        (
+            previous.is_some_and(|previous| previous.field == next.field),
+            true,
+        )
+    }
+}
+#[derive(Default)]
+struct Wire(Vec<tilo_actions::ActionEnvelope>);
+impl ActionTransport for Wire {
+    fn replicate(&mut self, envelope: &tilo_actions::ActionEnvelope) {
+        self.0.push(envelope.clone());
+    }
+    fn submit_to_host(&mut self, _: &tilo_actions::ActionEnvelope) -> tilo_actions::HostDecision {
+        panic!("client-local text must apply locally")
+    }
+}
+fn registry() -> tilo_actions::ActionRegistry {
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<TextEdit>("burst.text");
+    registry
+}
+fn edit(
+    binding: &CallbackBinding,
+    outer: &mut AutoCommit,
+    field: &str,
+    value: &str,
+    physical: bool,
+    wire: &mut Wire,
+) {
+    let action = TextEdit {
+        field: field.into(),
+        value: value.into(),
+    };
+    let spec =
+        tilo_actions::ActionSpec::immediate("text", "Edit text", "burst.text", &action).unwrap();
+    let resource = tilo_actions::ResourceSpec::new("burst", "burst", "Text");
+    binding
+        .with_resource_frame(outer, false, |doc, path| {
+            let mut operation =
+                BoundOperation::enter(binding, doc, tilo_actions::OperationKind::Document).unwrap();
+            let input = if physical {
+                Input::Continuing
+            } else {
+                Input::Discrete
+            };
+            with_native_text(input, || {
+                execute_resource_operation(
+                    &mut TextOwner::default(),
+                    operation.doc,
+                    path,
+                    &registry(),
+                    wire,
+                    ResourceOperation {
+                        target_route: None,
+                        address: &tilo_actions::ActionAddress::new("burst", "text"),
+                        resource: &resource,
+                        spec: &spec,
+                        encoded: tilo_actions::EncodedAction::encode("burst.text", &action)
+                            .unwrap(),
+                        actor: &tilo_actions::Actor::Member(binding.author.clone()),
+                        local_author: &binding.author,
+                        broker_admitted: false,
+                        invocation: tilo_actions::InvocationId::new(),
+                        source_invocation: None,
+                        ambient: None,
+                        api: None,
+                    },
+                )
+            })
+            .unwrap();
+            assert!(
+                !operation.finish(),
+                "canonical text execution violates no effect frontier"
+            );
+        })
+        .unwrap();
+}
+fn value(records: &ResourceStore, checkout: &DocumentCheckout, field: &str) -> String {
+    records
+        .read(&checkout.id, |doc| {
+            doc.get(ROOT, field)
+                .unwrap()
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        })
+        .unwrap()
+}
+fn restore(
+    binding: &CallbackBinding,
+    outer: &mut AutoCommit,
+    request: tilo_ui_base::widget::undo_access::UndoRequest,
+) -> crate::state::UndoEntry {
+    binding
+        .history_request(outer, request)
+        .unwrap()
+        .expect("the actual owned history entry")
+}
+
+tilo_test_env::scenario! {
+    fn native_text_keeps_undo_boundaries_and_physical_provenance;
+
+    phase native_text_keeps_first_compensation_latest_redo_and_different_field_boundaries;
+    {
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
+        .unwrap();
+        let checkout = DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
+        );
+        records.create_resource(&checkout).unwrap();
+        let (binding, _scope, _owner) =
+            super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+        let mut outer = AutoCommit::new();
+        let mut wire = Wire::default();
+        for typed in ["a", "ab", "abc"] {
+            edit(&binding, &mut outer, "first", typed, true, &mut wire);
+        }
+        for typed in ["x", "xy"] {
+            edit(&binding, &mut outer, "second", typed, true, &mut wire);
+        }
+        assert_eq!(
+            wire.0.len(),
+            5,
+            "coalescing history does not combine canonical envelopes"
+        );
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+        assert_eq!(value(&records, &checkout, "second"), "");
+        assert_eq!(value(&records, &checkout, "first"), "abc");
+        let entry = restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+        let step = entry.step.unwrap();
+        let inverse: TextEdit = serde_json::from_slice(&step.compensation.unwrap().payload).unwrap();
+        let redo: TextEdit = serde_json::from_slice(&step.action.unwrap().payload).unwrap();
+        assert_eq!(inverse.value, "ab");
+        assert_eq!(redo.value, "abc");
+        assert_eq!(value(&records, &checkout, "first"), "");
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Redo);
+        assert_eq!(value(&records, &checkout, "first"), "abc");
+        restore(&binding, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Redo);
+        assert_eq!(value(&records, &checkout, "second"), "xy");
+    }
+
+    phase native_text_does_not_cross_member_instance_or_programmatic_edits;
+    {
+        for author in ["You", "Member"] {
+            let records = crate::resource::ResourceOwners::in_memory()
+                .open("so.tilo.test", "workspace")
+            .unwrap();
+            let checkout = DocumentCheckout::new(
+                crate::resource::DocumentId::minted(),
+                crate::resource::ResourceType::new("text"),
+            );
+            records.create_resource(&checkout).unwrap();
+            let (one, _one_scope, _one_owner) =
+                super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+            let (two, _two_scope, _two_owner) =
+                super::author_writer_tests::mount(&records, &checkout, author, 2, true);
+            let mut outer = AutoCommit::new();
+            let mut wire = Wire::default();
+            for text in ["a", "ab"] {
+                edit(&one, &mut outer, "first", text, true, &mut wire);
+            }
+            edit(&two, &mut outer, "other", "foreign", true, &mut wire);
+            edit(&one, &mut outer, "first", "abc", true, &mut wire);
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "ab");
+            assert_eq!(value(&records, &checkout, "other"), "foreign");
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "");
+            assert_eq!(value(&records, &checkout, "other"), "foreign");
+            for text in ["1", "12", "123"] {
+                edit(&one, &mut outer, "first", text, false, &mut wire);
+            }
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+            assert_eq!(
+                value(&records, &checkout, "first"),
+                "12",
+                "an agent/programmatic call is one step"
+            );
+            restore(&one, &mut outer, tilo_ui_base::widget::undo_access::UndoRequest::Undo);
+            assert_eq!(value(&records, &checkout, "first"), "1");
+        }
+    }
+
+    phase physical_text_provenance_is_captured_in_the_exact_owned_queue_entry;
+    {
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
+        .unwrap();
+        let checkout = DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
+        );
+        records.create_resource(&checkout).unwrap();
+        let (binding, _scope, _owner) =
+            super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+        let domain = tilo_ui_base::ControlDomain::new();
+        domain.set_owner(tilo_ui_base::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
+        let mut emitter =
+            tilo_ui_base::widget::ActionEmitter::new_in(tilo_ui::Bind::bound(tilo_ui::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)), &domain);
+        with_physical_text(true, || emitter.emit("same".into())).unwrap();
+        emitter.emit("same".into()).unwrap();
+        let queued = domain.drain_partitioned().components;
+        let mut queued = queued.into_iter();
+        let (physical, first) = queued.next().unwrap();
+        let (programmatic, second) = queued.next().unwrap();
+        assert_eq!(physical.input, Input::Continuing);
+        assert_eq!(programmatic.input, Input::Discrete);
+        assert_eq!(
+            first, second,
+            "equal descriptor values retain distinct provenance"
+        );
+        assert!(queued.next().is_none());
+        assert!(!physical_text(), "the scoped producer flag cannot leak");
+    }
+
+    phase physical_text_provenance_survives_initial_ownership_transfer_and_legacy_draining;
+    {
+        let mut initial =
+            tilo_ui_base::widget::ActionEmitter::new(tilo_ui::Bind::bound(tilo_ui::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)));
+        with_physical_text(true, || initial.emit("same".into())).unwrap();
+        initial.emit("same".into()).unwrap();
+        let records = crate::resource::ResourceOwners::in_memory()
+            .open("so.tilo.test", "workspace")
+        .unwrap();
+        let checkout = DocumentCheckout::new(
+            crate::resource::DocumentId::minted(),
+            crate::resource::ResourceType::new("text"),
+        );
+        records.create_resource(&checkout).unwrap();
+        let (binding, _scope, _owner) =
+            super::author_writer_tests::mount(&records, &checkout, "You", 1, true);
+        let domain = tilo_ui_base::ControlDomain::new();
+        domain.set_owner(tilo_ui_base::control_domain::ControlOwner::Component(std::rc::Rc::new(binding)));
+        initial
+            .attach(&domain, tilo_ui_base::control_domain::DomainAttachment::Initial)
+            .unwrap();
+        let mut queued = domain.drain_partitioned().components.into_iter();
+        let (physical, first) = queued.next().unwrap();
+        let (programmatic, second) = queued.next().unwrap();
+        assert!(
+            physical.input == Input::Continuing,
+            "initial installation retains the producer's exact queued provenance"
+        );
+        assert_eq!(programmatic.input, Input::Discrete);
+        assert_eq!(first, second);
+        assert!(queued.next().is_none());
+        assert!(
+            initial.take().is_none(),
+            "registered holders cannot leak descriptors through legacy taking"
+        );
+        let mut legacy = tilo_ui_base::widget::ActionEmitter::new(tilo_ui::Bind::bound(tilo_ui::widget::test_value_action_binding::<String>(tilo_actions::ParamType::Text)));
+        with_physical_text(true, || legacy.emit("same".into())).unwrap();
+        legacy.emit("same".into()).unwrap();
+        let mut parent = tilo_ui::widget::Column::new().push(Box::new(TextOwner {
+            emitter: Some(legacy),
+        }));
+        let (physical, marked, _) = capture_physical_drain(|| {
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(&mut parent)
+        });
+        let (programmatic, unmarked, _) = capture_physical_drain(|| {
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(&mut parent)
+        });
+        assert_eq!(marked, Input::Continuing);
+        assert_eq!(unmarked, Input::Discrete);
+        assert_eq!(physical, programmatic);
+        assert_eq!(tilo_ui_base::widget::input_provenance::drained_input(), Input::Discrete);
+    }
+}

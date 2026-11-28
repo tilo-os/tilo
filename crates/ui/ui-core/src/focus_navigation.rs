@@ -254,6 +254,12 @@ pub struct FocusRestrictions {
 }
 
 impl FocusRestrictions {
+    /// The restrictions that deny focus to `denied`: what the surfaces over a window's app keep.
+    #[must_use]
+    pub fn denying(denied: std::collections::HashSet<NodeId>) -> Self {
+        Self { denied }
+    }
+
     pub fn allows(&self, node: NodeId) -> bool {
         !self.denied.contains(&node)
     }

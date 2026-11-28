@@ -71,7 +71,7 @@ pub type ServedReads = Box<dyn Fn(&ResourceReadRequest) -> Result<serde_json::Va
 /// asked for, for its caller ([`ProvidedInvocation::admit`]).
 pub type ShownHost = Box<dyn Fn(&Acting, &[ShownAction]) -> Vec<ActionDecision>>;
 
-pub use tilo_ui::application::ShownDevice;
+pub use tilo_ui_model::application::ShownDevice;
 
 /// An ask of the window's shown actions the driver keeps until they change.
 struct WaitingAsk {

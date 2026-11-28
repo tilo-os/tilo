@@ -11,7 +11,7 @@ const MOST: usize = 4096;
 
 /// Every place `root`'s content shows text or a control, in its layout coordinates; `None` when
 /// it shows more than can be read for a hint.
-pub(crate) fn of(root: &dyn Widget) -> Option<Vec<Rect>> {
+pub fn of(root: &dyn Widget) -> Option<Vec<Rect>> {
     let mut out = Vec::new();
     walk(root, &mut out).then_some(out)
 }

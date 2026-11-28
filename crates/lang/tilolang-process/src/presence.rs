@@ -24,9 +24,9 @@ use collab_types::presence::{Heard, Payload, PresencePayload, Said};
 use tilo_render_protocol::patch::ToUi;
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::{presence::DraftSaid, presence::PresenceCtx, presence::PresenceKey};
+use tilo_ui_model::component_lifecycle::Heard as Shown;
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
-use ui_core::component_lifecycle::Heard as Shown;
 
 /// The lane an instance says its person's presence words on and hears the workspace's: the
 /// daemon's line a session hands its app process, or, in a test that plays the device's live

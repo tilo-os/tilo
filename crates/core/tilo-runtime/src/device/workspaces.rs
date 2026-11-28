@@ -804,7 +804,7 @@ impl ServiceWorkspaces {
     ) {
         let feed = Arc::clone(self.changes.get_or_init(|| {
             Arc::new(tilo_workspace_service::change_feed::DocumentsFeed::new(
-                Arc::new(ui::history_source::ThreadWords),
+                Arc::new(tilo_ui_model::history_source::ThreadWords),
             ))
         }));
         (

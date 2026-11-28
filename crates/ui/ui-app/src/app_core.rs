@@ -115,7 +115,7 @@ impl AppTree<'_> {
     /// What embedded History surfaces allow of the focus order.
     #[cfg(feature = "model")]
     pub(crate) fn focus_restrictions(&self) -> crate::focus_navigation::FocusRestrictions {
-        crate::focus_navigation::FocusRestrictions::collect(self.root, self.taffy)
+        crate::history_mode::embedded::focus_restrictions(self.root, self.taffy)
     }
 
     /// Without the model no History surface is embedded: focus is restricted nowhere.

@@ -134,6 +134,7 @@ members = [
     "crates/ui/ui-file-picker",
     "crates/ui/ui-nav",
     "crates/ui/ui-map",
+    "crates/ui/ui-model",
     "crates/ui/ui-math",
     "crates/core/tilo-resource-macros",
     "crates/sdk/tilo-model-guest",

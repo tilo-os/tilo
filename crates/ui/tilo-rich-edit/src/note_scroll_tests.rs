@@ -57,7 +57,7 @@ fn sentence(index: usize) -> String {
 /// An app showing `root` in the window, laid out and drawn until it rests,
 /// the pointer over its middle.
 fn shown(root: Box<dyn Widget>) -> (App, Scene, SurfaceDamage) {
-    let mut app = App::new_with_controlled_inputs(ui::State::new(), root);
+    let mut app = App::new_with_controlled_inputs(tilo_ui_model::State::new(), root);
     app.set_theme(Theme::dark());
     let mut damage = SurfaceDamage::copying().drawing_only_damage();
     let mut scene = Scene::new();

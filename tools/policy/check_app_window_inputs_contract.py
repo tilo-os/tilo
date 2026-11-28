@@ -48,6 +48,7 @@ SRCS = (
     Path("crates/ui/ui-file-picker/src"),
     Path("crates/ui/ui-nav/src"),
     Path("crates/ui/ui-map/src"),
+    Path("crates/ui/ui-model/src"),
     Path("crates/ui/ui-math/src"),
 )
 BELOW_TOOLKIT = (

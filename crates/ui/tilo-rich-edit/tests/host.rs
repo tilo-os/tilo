@@ -1,11 +1,11 @@
 //! The editor in the toolkit's headless host: what typing re-measures, and how an agent's writes
 //! show in a document.
 
-use tilo_ui::State;
 use tilo_ui::widget::Container;
 use tilo_ui_app::headless::Driver;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_model::State;
 use winit::event::ElementState;
 
 fn frame(root: Box<dyn Widget>) -> Driver {

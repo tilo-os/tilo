@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
 /// A managed root over a component whose record has two versions, its history open on the older.
 fn bound_review_driver() -> (
     ProbeHarness,
-    tilo_ui::bound_dispatch::CallbackBinding,
+    tilo_ui_model::bound_dispatch::CallbackBinding,
     Driver,
 ) {
     let host = ProbeHarness::new();
@@ -329,17 +329,17 @@ fn bound_review_driver() -> (
             );
             format!(
                 "timeline-entry:{}",
-                tilo_ui_base::HistoryEntryId::hex(&tilo_ui::history_source::entry_id_from_hash(
-                    &hash.to_string()
-                ))
+                tilo_ui_base::HistoryEntryId::hex(
+                    &tilo_ui_model::history_source::entry_id_from_hash(&hash.to_string())
+                )
             )
         })
         .unwrap();
-    let root = Box::new(tilo_ui::widget::BoundAppWidget::new(component));
+    let root = Box::new(tilo_ui_model::widget::BoundAppWidget::new(component));
     let source = HistorySourceRegistration::owned(
         "document",
         APP,
-        tilo_ui::bound_dispatch::history_owner(&*root).unwrap(),
+        tilo_ui_model::bound_dispatch::history_owner(&*root).unwrap(),
     )
     .unwrap();
     let registration = HistoryRegistration::new(&BOUND, vec![source]).unwrap();
@@ -361,7 +361,7 @@ fn bound_review_driver() -> (
 }
 
 /// What the component's record keeps at `body`.
-fn bound_body(binding: &tilo_ui::bound_dispatch::CallbackBinding) -> String {
+fn bound_body(binding: &tilo_ui_model::bound_dispatch::CallbackBinding) -> String {
     binding
         .records_for_test()
         .read(&binding.checkout_for_test().id, |doc| {

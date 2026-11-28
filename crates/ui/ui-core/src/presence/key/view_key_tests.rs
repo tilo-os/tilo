@@ -1,5 +1,5 @@
-use crate::view::{ViewRect, ViewSubset};
 use tilo_presence::PresenceKey;
+use tilo_presence::{ViewRect, ViewSubset};
 use tilo_ui_base::presence::PathSegment;
 use tilo_ui_base::presence::local_workspace_key;
 

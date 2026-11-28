@@ -15,13 +15,13 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use tilo_ui::state::State;
 use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
 use tilo_ui_app::headless::Driver;
 use tilo_ui_app::profiling::{
     FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on,
 };
 use tilo_ui_base::widget::Widget;
+use tilo_ui_model::state::State;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
 

@@ -6,8 +6,8 @@
 use std::cell::Cell;
 
 use tilo_rich_edit::BlockEditor;
-use tilo_ui::State;
 use tilo_ui_app::app::{App, AppSurface};
+use tilo_ui_model::State;
 use vello::Scene;
 use winit::event::ElementState;
 
@@ -56,7 +56,7 @@ fn long_document_app() -> (App, Region) {
 
 /// One host frame, as `EmbeddedApp::draw` runs it: app frames until the app
 /// is at rest, then the accessibility walk the host reads.
-fn host_frame(app: &mut App, region: &Region) -> tilo_ui::a11y_tree::TreeDelta {
+fn host_frame(app: &mut App, region: &Region) -> tilo_ui_model::a11y_tree::TreeDelta {
     let mut scene = Scene::new();
     for _ in 0..3 {
         scene.reset();
@@ -69,9 +69,9 @@ fn host_frame(app: &mut App, region: &Region) -> tilo_ui::a11y_tree::TreeDelta {
 
 /// The text field of the block that reads `prefix`, as the tree has it.
 fn block_text<'a>(
-    tree: &'a tilo_ui::a11y_tree::SemanticTree,
+    tree: &'a tilo_ui_model::a11y_tree::SemanticTree,
     prefix: &str,
-) -> &'a tilo_ui::a11y_tree::SemanticNode {
+) -> &'a tilo_ui_model::a11y_tree::SemanticNode {
     tree.iter()
         .find(|node| {
             node.name.as_deref() == Some("Block text")

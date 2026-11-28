@@ -70,7 +70,7 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
         .find(|&node| root.history.owns_node(node, &tree))
         .unwrap();
     let allows = |root: &FocusHistoryRoot, node| {
-        let restrictions = FocusRestrictions::collect(root, &tree);
+        let restrictions = focus_restrictions(root, &tree);
         assert!(has_surfaces(root));
         let allowed = restrictions.allows(node);
         assert_eq!(allowed, allows_focus(root, node, &tree));
@@ -139,7 +139,7 @@ fn nested_history_ownership_does_not_escape_outer_focus_denial() {
         }
         index += 1;
     });
-    let restrictions = FocusRestrictions::collect(&root, &tree);
+    let restrictions = focus_restrictions(&root, &tree);
     for node in nodes.keys().copied().chain([outside]) {
         assert_eq!(
             restrictions.allows(node),

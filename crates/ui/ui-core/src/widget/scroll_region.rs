@@ -19,7 +19,7 @@ use tilo_ui_base::{widget::PAGE_FRACTION, widget::ScrollMetrics};
 /// The offset along one axis that moves the least from `offset` to show `band` (content
 /// coordinates) in a viewport `view` long, kept in `0..=max`.
 #[must_use]
-pub(crate) fn reveal_offset(offset: f64, view: f64, band: std::ops::Range<f64>, max: f64) -> f64 {
+pub fn reveal_offset(offset: f64, view: f64, band: std::ops::Range<f64>, max: f64) -> f64 {
     let target = if band.start < offset {
         band.start
     } else if band.end > offset + view {

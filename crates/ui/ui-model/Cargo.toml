@@ -1,0 +1,121 @@
+[package]
+name = "tilo-ui-model"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+autotests = false
+autoexamples = false
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo UI model layer over the tilo-ui toolkit: applications and their components, the resources they keep and the actions bound to them, search, history and undo, views and the accessibility tree read from them."
+
+[features]
+default = ["native"]
+# Each feature is the toolkit's of the same name (see tilo-ui), plus what this layer takes for it.
+native = ["tilo-ui/native", "dep:windows"]
+broker-transport = ["tilo-ui/broker-transport"]
+# The toolkit's `WebView` widget, which this layer hosts as an app's view.
+webview = ["tilo-ui/webview", "dep:tilo-webview"]
+# The fixtures the tests above this layer drive it with.
+test-support = ["tilo-ui/test-support", "dep:tilo-test-env", "collaboration/test-support"]
+
+# `tilo-component-scan` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["tilo-component-scan"]
+
+[dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false, features = ["model"] }
+tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false, features = ["model"] }
+tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
+tilo-permissions.workspace = true
+tilo-member-types.workspace = true
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+fnv.workspace = true
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
+settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false, features = ["model"] }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
+percent-encoding.workspace = true
+runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = "../../core/runtime-collab", default-features = false }
+collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration" }
+tilo-app-id.workspace = true
+automerge.workspace = true
+tilo-automerge.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+rustc-hash.workspace = true
+taffy = { workspace = true, features = ["content_size"] }
+vello.workspace = true
+winit.workspace = true
+fluent.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
+fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", default-features = false, features = ["model"] }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+tilo-search = { version = "0.1.0", path = "../../platform/search" }
+tilo-actions = { version = "0.1.0", path = "../../core/actions", features = ["document-read"] }
+tilo-action-types = { version = "0.1.0", path = "../../platform/action-types" }
+tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
+tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
+tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
+sha2.workspace = true
+blake3.workspace = true
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+hex.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
+windows = { version = "0.62.2", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
+
+[dev-dependencies]
+tilo-ui-model = { path = ".", default-features = false, features = ["test-support", "webview"] }
+tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support", "model", "webview", "content"] }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
+tilo-actions = { path = "../../core/actions", features = ["test-support"] }
+collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
+tempfile.workspace = true
+# The retained frames the tile host copy test replays.
+tilo-ui-render = { path = "../ui-render", default-features = false }
+cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
+
+[[example]]
+name = "page-share-probe"
+path = "examples/page_share_probe.rs"
+required-features = ["native", "webview"]
+
+# Its own binary: it installs a counting global allocator.
+[[test]]
+name = "held-memory"
+path = "tests/held_memory.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

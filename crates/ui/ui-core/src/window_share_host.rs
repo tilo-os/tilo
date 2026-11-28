@@ -9,13 +9,6 @@ use super::{Embed, EmbedState, OpenWindow, ResourceView, SharedWindow};
 use crate::time::{Duration, Instant};
 use crate::window_toolbar::ToolbarAction;
 
-// The stage hosts each shared window's app in a tile, which only Tilo's model runs.
-#[cfg(feature = "model")]
-#[path = "window_share_stage.rs"]
-mod stage;
-#[cfg(feature = "model")]
-pub use stage::{Asking, Shown, Stage};
-
 /// The size an embedded view is laid out at before it is scaled into its place: about a
 /// window's, so the app lays it out as its sharer sees it.
 pub const VIEW: (f64, f64) = (1000.0, 625.0);
@@ -87,16 +80,13 @@ pub trait LiveView {
     }
 }
 
-#[cfg(feature = "model")]
-impl LiveView for crate::widget::TileHost {
+impl<V: LiveView + ?Sized> LiveView for Box<V> {
     fn state(&self) -> EmbedState {
-        match self.content() {
-            crate::widget::TileContent::App(_) => EmbedState::Showing,
-            crate::widget::TileContent::Notice { detail, .. } => {
-                EmbedState::Unavailable(detail.clone())
-            }
-            _ => EmbedState::Loading,
-        }
+        (**self).state()
+    }
+
+    fn retries(&self) -> bool {
+        (**self).retries()
     }
 }
 

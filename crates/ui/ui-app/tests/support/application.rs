@@ -2,25 +2,26 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use tilo_ui::application::{
-    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
-    RestoreInput,
-};
-use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
-use tilo_ui::harness_device::HarnessDevice;
-use tilo_ui::launch_error::LaunchError;
-use tilo_ui::resource::{
-    DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
-    ResourceStore, ResourceType, Written,
-};
-use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
-use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui::widget::AppKind;
 use tilo_ui_base::TextRole;
 use tilo_ui_base::local_state::LocalState;
 use tilo_ui_base::{permissions::MemberId, permissions::Role, permissions::SharedPermissions};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
+use tilo_ui_model::application::{
+    AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
+    RestoreInput,
+};
+use tilo_ui_model::application_view::{InstanceViewStore, SavedInstanceView};
+use tilo_ui_model::harness_device::HarnessDevice;
+use tilo_ui_model::launch_error::LaunchError;
+use tilo_ui_model::resource::{
+    DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
+    ResourceStore, ResourceType, Written,
+};
+use tilo_ui_model::view::ViewContribution;
+use tilo_ui_model::{widget::AppWidget, widget::IconDescriptor};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -59,13 +60,13 @@ pub fn observe_presentation() -> Rc<RefCell<PresentationObservations>> {
     observations
 }
 /// An effective snapshot with intentionally distinct type and runner factors.
-pub fn presentation_inputs(theme_scale: f32) -> tilo_ui::application::ComponentRunnerInputs {
+pub fn presentation_inputs(theme_scale: f32) -> tilo_ui_model::application::ComponentRunnerInputs {
     configure_presentation(runner_inputs(), theme_scale)
 }
 pub fn configure_presentation(
-    mut inputs: tilo_ui::application::ComponentRunnerInputs,
+    mut inputs: tilo_ui_model::application::ComponentRunnerInputs,
     theme_scale: f32,
-) -> tilo_ui::application::ComponentRunnerInputs {
+) -> tilo_ui_model::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
     inputs.theme.tokens.typography = inputs.theme.tokens.typography.clone().with_base_size(19.0);
     inputs.theme.tokens.colors.intent.accent = inputs.theme.status_success;
@@ -144,15 +145,15 @@ impl ProbeProvider {
             .push((method, WakeHandle::new().is_active()));
         self.local.writer().try_set(true);
     }
-    fn hit() -> tilo_ui::search::SearchResult {
-        tilo_ui::search::SearchResult::for_action(
+    fn hit() -> tilo_ui_model::search::SearchResult {
+        tilo_ui_model::search::SearchResult::for_action(
             "Probe",
             "Probe",
             tilo_actions::ActionAddress::new("probe:shared", "edit"),
         )
     }
 }
-impl tilo_ui::search::SearchProvider for ProbeProvider {
+impl tilo_ui_model::search::SearchProvider for ProbeProvider {
     fn name(&self) -> &'static str {
         self.observe("name");
         "Probe"
@@ -161,33 +162,33 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
         self.observe("generation");
         Some(4)
     }
-    fn action_directory_cursor_is_current(&self, _: &tilo_ui::search::SearchCursor) -> bool {
+    fn action_directory_cursor_is_current(&self, _: &tilo_ui_model::search::SearchCursor) -> bool {
         self.observe("cursor");
         true
     }
-    fn search(&self, _: &str) -> Vec<tilo_ui::search::SearchResult> {
+    fn search(&self, _: &str) -> Vec<tilo_ui_model::search::SearchResult> {
         self.observe("search");
         vec![Self::hit()]
     }
-    fn search_limited(&self, _: &str, limit: usize) -> Vec<tilo_ui::search::SearchResult> {
+    fn search_limited(&self, _: &str, limit: usize) -> Vec<tilo_ui_model::search::SearchResult> {
         self.observe("limited");
         if limit > 0 { vec![Self::hit()] } else { vec![] }
     }
     fn search_page(
         &self,
-        _: &tilo_ui::search::SearchQuery,
-        _: Option<&tilo_ui::search::SearchCursor>,
+        _: &tilo_ui_model::search::SearchQuery,
+        _: Option<&tilo_ui_model::search::SearchCursor>,
         work: usize,
         limit: usize,
-    ) -> tilo_ui::search::SearchPage {
+    ) -> tilo_ui_model::search::SearchPage {
         self.observe("page");
-        tilo_ui::search::SearchPage {
+        tilo_ui_model::search::SearchPage {
             results: if work > 0 && limit > 0 {
                 vec![Self::hit()]
             } else {
                 vec![]
             },
-            next: Some(tilo_ui::search::SearchCursor::default()),
+            next: Some(tilo_ui_model::search::SearchCursor::default()),
             pending: None,
             inspected: work.min(limit).min(1),
         }
@@ -265,7 +266,7 @@ pub fn author() -> MemberId {
 pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")
 }
-pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
+pub fn definition(create: tilo_ui_model::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: APP.into(),
         title: "Probe".into(),
@@ -286,7 +287,7 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
     DEFINITION.get_or_init(|| definition(action_probe_factory))
 }
-pub use tilo_ui::application::fixture_runner_inputs as runner_inputs;
+pub use tilo_ui_model::application::fixture_runner_inputs as runner_inputs;
 /// What a runner's probe window keeps: the device answered every action the probe publishes as
 /// the author, the workspace's owner, decides it.
 pub fn runner_permissions() -> SharedPermissions {
@@ -535,7 +536,7 @@ fn build_probe(
     LOCAL.with_borrow_mut(|v| *v = Some(local.clone()));
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<ProbeAction>("probe.edit");
-    tilo_ui::history_source::DocumentHistoryEdit::register(&mut registry);
+    tilo_ui_model::history_source::DocumentHistoryEdit::register(&mut registry);
     let operations = Rc::new(RefCell::new(Vec::new()));
     if operational {
         OPERATIONS.with_borrow_mut(|all| all.push(operations.clone()));
@@ -617,10 +618,10 @@ impl Widget for ProbeRoot {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::NativeViewLifecycle,
         dyn tilo_ui::widget::resources::PublishesResources,
-        dyn tilo_ui::search::capability::SearchSource,
-        dyn tilo_ui::view::capability::ViewState,
+        dyn tilo_ui_model::search::capability::SearchSource,
+        dyn tilo_ui_model::view::capability::ViewState,
         dyn tilo_ui_base::widget::undo_points::UndoPoints,
-        dyn tilo_ui::undo::CommittedActions,
+        dyn tilo_ui_model::undo::CommittedActions,
         dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
@@ -734,7 +735,7 @@ impl tilo_ui_base::host_operation::ResourceOperations for ProbeRoot {
     }
 }
 
-impl tilo_ui::undo::CommittedActions for ProbeRoot {
+impl tilo_ui_model::undo::CommittedActions for ProbeRoot {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         let before = COMMITTED_ACTION.take()?;
         COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
@@ -751,7 +752,7 @@ impl tilo_ui_base::widget::undo_points::UndoPoints for ProbeRoot {
     }
 }
 
-impl tilo_ui::view::capability::ViewState for ProbeRoot {
+impl tilo_ui_model::view::capability::ViewState for ProbeRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
@@ -766,15 +767,15 @@ impl tilo_ui::view::capability::ViewState for ProbeRoot {
     }
 }
 
-impl tilo_ui::search::capability::SearchSource for ProbeRoot {
-    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
+impl tilo_ui_model::search::capability::SearchSource for ProbeRoot {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui_model::search::SearchProvider>> {
         PROVIDERS.with_borrow(|providers| {
             providers.as_ref().map_or_else(Vec::new, |observations| {
                 vec![Box::new(ProbeProvider {
                     observations: observations.clone(),
                     local: LocalState::new(false),
                 })
-                    as Box<dyn tilo_ui::search::SearchProvider>]
+                    as Box<dyn tilo_ui_model::search::SearchProvider>]
             })
         })
     }
@@ -957,7 +958,7 @@ pub fn write_fixture_string(edits: &mut tilo_ui_base::widget::Edits<'_>, key: &s
             Ok(())
         }
     }
-    tilo_ui::local_dispatch::LocalDispatch::new()
+    tilo_ui_model::local_dispatch::LocalDispatch::new()
         .apply(
             edits,
             "test.fixture.write",
@@ -982,7 +983,7 @@ pub fn write_fixture_flag(edits: &mut tilo_ui_base::widget::Edits<'_>, key: &str
             Ok(())
         }
     }
-    tilo_ui::local_dispatch::LocalDispatch::new()
+    tilo_ui_model::local_dispatch::LocalDispatch::new()
         .apply(
             edits,
             "test.fixture.flag",
@@ -1270,7 +1271,7 @@ pub fn probe_shared_resource(description: String) -> tilo_actions::ResourceSpec 
 
 /// Verdicts the device gave of every action `resources` (and the resources inside them) publish
 /// as `app`, as `device` decides them: the window's questions answered before it shows them.
-pub use tilo_ui::harness_device::decided;
+pub use tilo_ui_model::harness_device::decided;
 
 /// [`decided`] of the one resource the probe publishes.
 pub fn decided_probe(app: &str, device: &HarnessDevice) -> SharedPermissions {

@@ -232,7 +232,7 @@ NOT_ACTION_BUTTONS = {
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
     "tertiary_action": "a dialog's footer button, published as the dialog's own control",
 }
-CONTROL_CALLBACK_SOURCES = ("crates/ui/ui-base/src", "crates/ui/ui-core/src", "crates/ui/ui-charts/src", "crates/ui/ui-secret/src", "crates/ui/ui-search/src", "crates/ui/ui-file-picker/src", "crates/ui/ui-nav/src", "crates/ui/ui-map/src", "crates/sdk/tilo-app/src/framework")
+CONTROL_CALLBACK_SOURCES = ("crates/ui/ui-base/src", "crates/ui/ui-core/src", "crates/ui/ui-charts/src", "crates/ui/ui-secret/src", "crates/ui/ui-search/src", "crates/ui/ui-file-picker/src", "crates/ui/ui-nav/src", "crates/ui/ui-map/src", "crates/ui/ui-model/src", "crates/sdk/tilo-app/src/framework")
 CLOSURE_CALLBACK_DEFINITION = re.compile(
     r"\bpub\s+fn\s+(on_[a-z_]+|[a-z_]*action[a-z_]*)\s*(<[^{;]*?>)?\s*\(([^{;]*?)\)\s*(?:->[^{;]*?)?(where[^{;]*)?\{",
     re.DOTALL,

@@ -420,7 +420,7 @@ pub(crate) fn window_bar_part(root: &dyn Widget) -> Option<WindowBarPart> {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {
+pub fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowStatus>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         return header.set_sync_status(status);
     }
@@ -539,10 +539,7 @@ impl Widget for HeaderStatus {
 }
 
 #[cfg(feature = "model")]
-pub(crate) fn offer_history_control(
-    root: &mut dyn Widget,
-    control: Option<HistoryControl>,
-) -> bool {
+pub fn offer_history_control(root: &mut dyn Widget, control: Option<HistoryControl>) -> bool {
     if let Some(header) = capability_mut::<dyn WindowHeader>(root) {
         header.set_history_control(control);
         return true;

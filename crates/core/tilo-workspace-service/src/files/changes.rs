@@ -18,8 +18,8 @@ use serde_json::{Map, Value, json};
 use tilo_actions::{ActionContext, InvocationId};
 use tilo_fs::namespace::{Changed, Namespace, Written};
 use tilo_server_protocol::WorkspaceId;
-use ui::history_source::DocumentHistoryEdit;
-use ui::history_source::verbs::HistoryEdit;
+use tilo_ui_model::history_source::DocumentHistoryEdit;
+use tilo_ui_model::history_source::verbs::HistoryEdit;
 
 use super::{OpenedFiles, Putting, put_scope};
 use tilo_broker_core::services::FilesPutCall;

@@ -205,6 +205,7 @@ test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
+tilo-ui-model = { path = "../../ui/ui-model" }
 
 # The apps the device serves, tested against.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }

@@ -342,7 +342,7 @@ pub struct Bus {
     /// other connections' people said, each with the connection it waits for.
     presence: RefCell<Vec<(Inbox, collab_types::presence::Heard)>>,
     /// Each person's device, by person: what it says of what their windows show.
-    devices: RefCell<BTreeMap<String, ui_core::harness_device::HarnessDevice>>,
+    devices: RefCell<BTreeMap<String, tilo_ui_model::harness_device::HarnessDevice>>,
     /// The asks of what a window shows, waiting until its device says something else: the person,
     /// where it is answered, its correlation and what it asked.
     waiting_shown: RefCell<Vec<WaitingShown>>,
@@ -560,12 +560,16 @@ impl Bus {
     }
 
     /// `person`'s device in the workspace of `route`: its owner until the test says otherwise.
-    fn device(&self, route: &RouteSpec, person: &str) -> ui_core::harness_device::HarnessDevice {
+    fn device(
+        &self,
+        route: &RouteSpec,
+        person: &str,
+    ) -> tilo_ui_model::harness_device::HarnessDevice {
         self.devices
             .borrow_mut()
             .entry(person.to_owned())
             .or_insert_with(|| {
-                ui_core::harness_device::HarnessDevice::member_of(
+                tilo_ui_model::harness_device::HarnessDevice::member_of(
                     &route.cluster_id.to_string(),
                     &collaboration::MemberId::person(person),
                     tilo_action_policy::Role::Owner,

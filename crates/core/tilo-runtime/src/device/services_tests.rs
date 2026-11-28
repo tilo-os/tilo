@@ -616,7 +616,7 @@ fn written(session: &Daemon) -> Result<Option<String>, String> {
     use automerge::ReadDoc as _;
     let workspace = WorkspaceId::parse(&session.workspace().map_err(|error| error.to_string())?)
         .ok_or_else(|| "the session names no workspace".to_owned())?;
-    let record = ui::resource::DocumentId::for_file_document(
+    let record = tilo_ui_model::resource::DocumentId::for_file_document(
         uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
     );
     let store = session.workspaces.service().workspaces();
@@ -704,11 +704,11 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
         use automerge::transaction::Transactable as _;
         // The app runs with its package's surface, which its writes name.
         collab_types::app_surface::register_package(WRITER_APP, WRITER_SURFACE.as_bytes());
-        let checkout = ui::resource::DocumentCheckout::new(
-            ui::resource::DocumentId::for_file_document(
+        let checkout = tilo_ui_model::resource::DocumentCheckout::new(
+            tilo_ui_model::resource::DocumentId::for_file_document(
                 uuid::Uuid::parse_str(WRITER_RECORD).unwrap(),
             ),
-            ui::resource::ResourceType::new(WRITER_KIND),
+            tilo_ui_model::resource::ResourceType::new(WRITER_KIND),
         );
         let mut manager = ::collaboration::CollaborationManager::for_resource(&checkout);
         wait_until_joined(&mut manager);

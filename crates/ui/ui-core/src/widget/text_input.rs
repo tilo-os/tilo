@@ -863,21 +863,21 @@ impl TextInput {
         self.bound_text.as_ref()
     }
 
-    pub(super) fn adopt_bound_text(
-        &mut self,
-        state: &AutoCommit,
-    ) -> Result<(), crate::view::ThawError> {
+    /// Show the bound text as `state` holds it, keeping the caret where it was in the text.
+    ///
+    /// # Errors
+    /// Why the bound text cannot be read from `state`: none is bound, or the document has no text
+    /// there.
+    pub fn adopt_bound_text(&mut self, state: &AutoCommit) -> Result<(), String> {
         let obj = self
             .bound_text
             .clone()
-            .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
+            .ok_or_else(|| "text is not bound".to_string())?;
         let seen = preparation::Adopted::of(state, &obj, &self.text);
         if self.adopted.as_ref() == Some(&seen) {
             return Ok(());
         }
-        let text = state
-            .text(&obj)
-            .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        let text = state.text(&obj).map_err(|e| e.to_string())?;
         let (anchor, caret) = (self.core.anchor(), self.core.caret());
         let (anchor, caret) = (
             written::through_change(&self.text, &text, anchor),

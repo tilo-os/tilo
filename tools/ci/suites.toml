@@ -707,21 +707,31 @@ inputs = [
   # The base's catalogue and finish fixtures, which the widgets' tests read.
   "crates/ui/ui-base/locales/",
   "crates/ui/ui-base/tests/fixtures/finishes/",
-  # The shared test support the library's tests compile as a module.
-  "crates/ui/ui-app/tests/support/application.rs",
 ]
 readers = [
-  "crates/ui/ui-core/src/lib.rs",
   "crates/ui/ui-core/src/activity_wire.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
-  "crates/ui/ui-core/src/history_source/digest.rs",
   "crates/ui/ui-core/src/i18n/tests.rs",
-  "crates/ui/ui-core/src/search/system/tests.rs",
   "crates/ui/ui-core/src/widget/color_picker.rs",
   "crates/ui/ui-core/src/widget/floating_window.rs",
   "crates/ui/ui-core/src/widget/tabs_new_tab_tests.rs",
   "crates/ui/ui-core/src/widget/video_player/tests.rs",
+]
+
+
+[[cargo]]
+package = "tilo-ui-model"
+# History's digest and system search are worded from the base's catalogue, and the library's
+# tests compile the app framework's shared test support as a module.
+inputs = [
+  "crates/ui/ui-base/locales/",
+  "crates/ui/ui-app/tests/support/application.rs",
+]
+readers = [
+  "crates/ui/ui-model/src/lib.rs",
+  "crates/ui/ui-model/src/history_source/digest.rs",
+  "crates/ui/ui-model/src/search/system/tests.rs",
 ]
 
 
@@ -815,7 +825,7 @@ readers = [
 package = "tilolang"
 # The multi-package tests resolve and compile the built-in packages, and the coverage check
 # reads the sources of the toolkit, the editor and the charts for the components they describe.
-inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-charts/", "crates/ui/ui-secret/", "crates/ui/ui-search/", "crates/ui/ui-file-picker/", "crates/ui/ui-nav/", "crates/ui/ui-map/", "crates/ui/ui-core/"]
+inputs = ["apps/tl/", "crates/ui/tilo-rich-edit/", "crates/ui/ui-charts/", "crates/ui/ui-secret/", "crates/ui/ui-search/", "crates/ui/ui-file-picker/", "crates/ui/ui-nav/", "crates/ui/ui-map/", "crates/ui/ui-core/", "crates/ui/ui-model/"]
 readers = [
   "crates/lang/tilolang/tests/it/coverage.rs",
   "crates/lang/tilolang/tests/it/multifile.rs",

@@ -213,6 +213,7 @@ uuid.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 # The toolkit the Unix launch edge and its surface files are read with.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model", "host"] }
+tilo-ui-model = { version = "0.1.0", path = "../../ui/ui-model" }
 # What a device whose machine is a server keeps beyond its own copies (`device::keep`): the
 # packet relay it is reached through and runs, and the web listener its pages, certification
 # and entry are served on.

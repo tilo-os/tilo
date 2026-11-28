@@ -965,7 +965,10 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
     }
 }
 
-fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &tilo_ui_base::a11y::SemanticId) -> usize {
+fn subtree_len(
+    tree: &tilo_ui_model::a11y_tree::SemanticTree,
+    id: &tilo_ui_base::a11y::SemanticId,
+) -> usize {
     tree.node(id).map_or(0, |node| {
         node.children
             .iter()
@@ -977,8 +980,8 @@ fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &tilo_ui_base::a11y::Sema
 
 /// What a tree that keeps nothing between frames publishes for the editor
 /// now: every node, in reading order.
-fn published_afresh(fixture: &RetainedEditor) -> Vec<ui::a11y_tree::SemanticNode> {
-    let mut tree = ui::a11y_tree::SemanticTree::new();
+fn published_afresh(fixture: &RetainedEditor) -> Vec<tilo_ui_model::a11y_tree::SemanticNode> {
+    let mut tree = tilo_ui_model::a11y_tree::SemanticTree::new();
     tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
     tree.iter().cloned().collect()
 }
@@ -996,7 +999,7 @@ tilo_test_env::scenario! {
                 .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary line.")))
                 .collect();
             let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
-            let mut tree = ui::a11y_tree::SemanticTree::new();
+            let mut tree = tilo_ui_model::a11y_tree::SemanticTree::new();
             tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
             assert!(
                 tree.nodes_built_for_test() > count * 6,
@@ -1054,7 +1057,7 @@ tilo_test_env::scenario! {
             Block::paragraph("Fourth"),
         ];
         let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
-        let mut tree = ui::a11y_tree::SemanticTree::new();
+        let mut tree = tilo_ui_model::a11y_tree::SemanticTree::new();
         tree.refresh(&*fixture.editor, &fixture.nodes, None, &[]);
         for key in [
             Key::Named(NamedKey::ArrowRight),

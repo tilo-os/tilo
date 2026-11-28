@@ -20,6 +20,8 @@ ignored = ["tilo-component-scan"]
 [dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+# The rows, previews and commands search answers with, which it shows.
+tilo-ui-model = { version = "0.1.0", path = "../ui-model", default-features = false }
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 taffy = { workspace = true, features = ["content_size"] }
 vello.workspace = true

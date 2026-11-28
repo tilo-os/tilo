@@ -85,6 +85,7 @@ fn every_described_component_settles_its_layout() {
         &tilo_ui_file_picker::COMPONENTS,
         &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
+        &tilo_ui_model::COMPONENTS,
     ]);
     let mut problems = Vec::new();
     for entry in registry.entries() {
@@ -183,6 +184,7 @@ fn the_gallery_shows_every_described_component() {
         &tilo_ui_file_picker::COMPONENTS,
         &tilo_ui_nav::COMPONENTS,
         &tilo_ui_map::COMPONENTS,
+        &tilo_ui_model::COMPONENTS,
     ])
     .catalogue();
     let coverage = tilo_ui_base::component::gallery::coverage(&catalogue, &sources);

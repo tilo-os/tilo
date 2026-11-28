@@ -8,7 +8,7 @@
 
 use serde_json::json;
 use tilo_actions::{ActionAddress, InvocationUpdate};
-use ui::resource::DocumentId;
+use tilo_ui_model::resource::DocumentId;
 
 use crate::language::host;
 

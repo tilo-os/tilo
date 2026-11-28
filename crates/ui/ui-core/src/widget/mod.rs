@@ -33,14 +33,14 @@ pub use composed::Composed;
 pub mod decorator;
 pub mod document_offers;
 pub use {document_offers::DocumentOffer, document_offers::PaintedOffers};
-mod button;
+pub mod button;
 #[cfg(any(test, feature = "test-support"))]
 pub mod replaced_tripwire;
 pub use {
     button::Button, button::ButtonFace, button::ButtonProps, button::ButtonRole,
     button::REST_BORDER_WIDTH, button::face_colors, button::focus_ring_reach,
 };
-mod control_size;
+pub mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
 pub(crate) use bool_control::BoolAction;
@@ -137,7 +137,7 @@ pub use {
     floating_window::FloatingWindow, floating_window::MIN_HEIGHT, floating_window::MIN_WIDTH,
     floating_window::TITLE_BAR_HEIGHT,
 };
-mod text;
+pub mod text;
 pub use {text::Text, text::TextProps};
 mod relative_time;
 pub use {
@@ -264,39 +264,12 @@ pub use {
 };
 mod scrollable;
 pub use {scrollable::ScrollProps, scrollable::Scrollable};
-mod scroll_region;
+pub mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
 mod overlay_scrollbar;
 pub use overlay_scrollbar::OverlayScrollbar;
-#[cfg(feature = "model")]
-mod tile_host;
-#[cfg(feature = "model")]
-pub use {
-    tile_host::TileContent, tile_host::TileHost, tile_host::hold_windows,
-    tile_host::release_windows, tile_host::resource_unavailable_title,
-};
-mod app_widget;
-#[cfg(feature = "model")]
-#[cfg(feature = "test-support")]
-pub use app_widget::BoundAppWidget;
-#[cfg(feature = "model")]
-#[cfg(not(feature = "test-support"))]
-pub use app_widget::BoundAppWidget;
 
-/// A component's widget as a window's managed root holds it, for the tests above the toolkit.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn bound_app_widget(
-    component: crate::application::AppComponent,
-) -> Box<dyn tilo_ui_base::widget::Widget> {
-    Box::new(app_widget::BoundAppWidget::new(component))
-}
-pub use {
-    app_widget::AppCommand, app_widget::AppProcessIntent, app_widget::AppWidget,
-    app_widget::DevRoot, app_widget::HostShellAllow, app_widget::IconDescriptor,
-    app_widget::WindowPublication,
-};
 pub mod input_hint;
 pub mod shortcut_recorder;
 pub use {
@@ -557,10 +530,6 @@ pub use {
 };
 pub mod terminal;
 pub use {terminal::GridEvents, terminal::Terminal, terminal::TerminalProps};
-#[cfg(feature = "webview")]
-pub mod webview;
-#[cfg(feature = "webview")]
-pub use {webview::WebView, webview::WebViewProps};
 pub mod image_viewer;
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
@@ -751,7 +720,7 @@ pub use {
     card::CardGridProps, card::CardProps, card::CardWidth, card::DescribedCardGrid,
     card::card_column_width, card::card_columns,
 };
-mod section;
+pub mod section;
 pub use {
     section::ObjectHeader, section::ObjectHeaderProps, section::Section, section::SectionHeader,
     section::SectionHeaderFace, section::SectionProps, section::StatusLine,
@@ -778,35 +747,7 @@ pub use {
     selection_handles::Handle as SelectionHandle, selection_handles::SelectionHandles,
     selection_handles::TextGrip, selection_handles::TextGrips,
 };
-// History's views: the timeline of a resource's changes, read from its history.
-#[cfg(feature = "model")]
-pub mod activity_timeline;
-#[cfg(feature = "model")]
-mod activity_timeline_component;
-#[cfg(feature = "model")]
-pub mod history;
-#[cfg(feature = "model")]
-pub mod history_face;
-#[cfg(feature = "model")]
-pub mod history_group;
 pub mod name_field;
-#[cfg(feature = "model")]
-pub use {activity_timeline::ActivityTimeline, activity_timeline::RowParts};
-#[cfg(feature = "model")]
-pub use {
-    activity_timeline_component::ActivityArtifact, activity_timeline_component::ActivityEntryProps,
-    activity_timeline_component::ActivityTimelineProps,
-    activity_timeline_component::DescribedActivityTimeline,
-};
-#[cfg(feature = "model")]
-pub use {
-    history::AuthorRelation, history::EntryKind, history::EntryTarget, history::HistoryAttribution,
-    history::HistoryAuthor, history::HistoryClassification, history::HistoryEntry,
-    history::HistoryFilter, history::RedactionDisplay, history::format_relative_time,
-    history::hue_to_rgb,
-};
-#[cfg(feature = "model")]
-pub use {history_face::EntryBody, history_face::EntryFace, history_face::HistoryEntryPresenter};
 pub mod qr;
 mod qr_component;
 pub mod resource_actions;
@@ -814,8 +755,6 @@ pub use qr::QrWidget;
 pub use qr_component::QrProps;
 #[cfg(test)]
 mod a11y_tree_tests;
-#[cfg(any(test, feature = "test-support"))]
-pub mod effect_fixture;
 pub mod keyboard_map;
 pub use {
     keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,

@@ -10,8 +10,8 @@ use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use crate::State;
 use crate::floating_surface::FloatingSurfaceWidgetExt;
+use automerge::AutoCommit;
 use tilo_ui_base::Theme;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_ui_base::offscreen::OffscreenRenderer;
@@ -21,8 +21,8 @@ use tilo_ui_base::{widget::Widget, widget::WidgetLayoutError};
 
 /// The document, theme, text renderer and layout tree of one offscreen frame.
 pub struct ShotFrame {
-    /// Document the widget syncs from.
-    pub state: State,
+    /// Document the widget syncs from, at its root.
+    pub doc: AutoCommit,
     /// Theme passed to layout and every draw pass.
     pub theme: Theme,
     /// Text renderer shared by measurement and drawing.
@@ -47,7 +47,7 @@ impl ShotFrame {
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
         Self {
-            state: State::new(),
+            doc: AutoCommit::new(),
             theme,
             text,
             presence: PresenceCtx::empty(),
@@ -61,8 +61,8 @@ impl ShotFrame {
 
     /// Replace the document the widget syncs from.
     #[must_use]
-    pub fn with_state(mut self, state: State) -> Self {
-        self.state = state;
+    pub fn with_doc(mut self, doc: AutoCommit) -> Self {
+        self.doc = doc;
         self
     }
 
@@ -72,14 +72,14 @@ impl ShotFrame {
         self.viewport
     }
 
-    /// Pull the widget's visual state from [`ShotFrame::state`].
+    /// Pull the widget's visual state from [`ShotFrame::doc`].
     pub fn sync(&mut self, widget: &mut dyn Widget) {
-        widget.sync(&self.state.doc, &self.state.root);
+        widget.sync(&self.doc, &automerge::ROOT);
         widget.settle(
-            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
-            &self.state.root,
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.doc),
+            &automerge::ROOT,
         );
-        widget.sync(&self.state.doc, &self.state.root);
+        widget.sync(&self.doc, &automerge::ROOT);
     }
 
     /// Build a fresh layout tree for the widget inside a viewport-sized root, resolve it, and apply the
@@ -134,9 +134,9 @@ impl ShotFrame {
 
     /// The document, the layout tree of the last [`ShotFrame::layout`] and the widget's node in it, for
     /// scenarios that stage input against laid-out geometry.
-    pub fn layout_parts(&mut self) -> Option<(&mut State, &TaffyTree<()>, NodeId)> {
+    pub fn layout_parts(&mut self) -> Option<(&mut AutoCommit, &TaffyTree<()>, NodeId)> {
         let child = self.child?;
-        Some((&mut self.state, &self.taffy, child))
+        Some((&mut self.doc, &self.taffy, child))
     }
 
     fn window(&self) -> vello::kurbo::Rect {

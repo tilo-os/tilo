@@ -1,0 +1,413 @@
+use super::*;
+use automerge::{ReadDoc, transaction::Transactable};
+use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Write {
+    value: String,
+    server: bool,
+    refuse: bool,
+    commit_before_refusal: bool,
+}
+impl Action for Write {
+    fn apply(&self, d: &mut AutoCommit) -> Result<(), ActionError> {
+        if self.refuse {
+            if self.commit_before_refusal {
+                d.put(ROOT, "body", self.value.as_str())?;
+                d.commit();
+            }
+            return Err(ActionError::Refused("fixture refusal".into()));
+        }
+        if d.get(ROOT, "body")?
+            .and_then(|(v, _)| v.as_str().map(str::to_owned))
+            .as_deref()
+            != Some(&self.value)
+        {
+            d.put(ROOT, "body", self.value.as_str())?;
+        }
+        Ok(())
+    }
+    fn locus(&self) -> ExecutionLocus {
+        if self.server {
+            ExecutionLocus::ServerPreferred
+        } else {
+            ExecutionLocus::ClientLocal
+        }
+    }
+}
+#[derive(Default)]
+struct Owner {
+    receipts: Vec<(tilo_actions::EncodedAction, Vec<ChangeHash>, String)>,
+    effect_receipts: Vec<(tilo_actions::InvocationId, Vec<ChangeHash>, String)>,
+    effect_replies: Vec<tilo_actions::InvocationId>,
+    retained_source: Option<tilo_actions::InvocationId>,
+    sibling: Option<Box<Owner>>,
+}
+impl Widget for Owner {
+    tilo_ui_base::provides!(
+        dyn crate::history_mode::capability::DocumentHistory,
+        dyn tilo_ui_base::widget::document_effects::DocumentEffects,
+        dyn tilo_ui_base::widget::ResourceOperations
+    );
+
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
+    tilo_ui::testing::inert_widget_methods!(
+        unregistered_leaf_layout,
+        name = "Acknowledgment owner"
+    );
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        self.sibling
+            .as_mut()
+            .map_or_else(Vec::new, |s| vec![s.as_mut() as &mut dyn Widget])
+    }
+}
+
+impl tilo_ui_base::widget::ResourceOperations for Owner {
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        if let Some(started) = tilo_ui_base::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
+    }
+}
+
+impl tilo_ui_base::widget::document_effects::DocumentEffects for Owner {
+    fn start_document_effects(
+        &mut self,
+        operation: &tilo_ui_base::widget::ResourceOperation<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        assert_eq!(operation.kind(), tilo_actions::OperationKind::Document);
+        self.effect_replies.push(applied.invocation());
+        self.effect_receipts.push((
+            operation.invocation(),
+            applied.before().to_vec(),
+            applied
+                .document()
+                .get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .into(),
+        ));
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
+    }
+}
+
+impl crate::history_mode::capability::DocumentHistory for Owner {
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ChangeHash],
+        doc: &AutoCommit,
+        _: &ObjId,
+    ) {
+        self.receipts.push((
+            action.clone(),
+            before.to_vec(),
+            doc.get(ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_str()
+                .unwrap()
+                .into(),
+        ));
+    }
+}
+struct Host;
+impl ActionTransport for Host {
+    fn replicate(&mut self, _: &tilo_actions::ActionEnvelope) {}
+    fn submit_to_host(&mut self, _: &tilo_actions::ActionEnvelope) -> tilo_actions::HostDecision {
+        tilo_actions::HostDecision::AcceptedByHost
+    }
+}
+fn execute(
+    owner: &mut Owner,
+    doc: &mut AutoCommit,
+    action: &Write,
+    broker: bool,
+) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    execute_mode(owner, doc, action, broker, false)
+}
+
+fn execute_mode(
+    owner: &mut Owner,
+    doc: &mut AutoCommit,
+    action: &Write,
+    broker: bool,
+    background: bool,
+) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    let mut registry = tilo_actions::ActionRegistry::new();
+    registry.register::<Write>("ack.write");
+    let resource = tilo_actions::ResourceSpec::new("ack.owner", "ack.owner", "Owner");
+    let mut spec =
+        tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
+    if background {
+        spec.type_mut().contract.execution =
+            tilo_actions::ExecutionMode::Background { cancellable: true };
+        spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
+    }
+    let invocation = tilo_actions::InvocationId::new();
+    let source_invocation = owner
+        .retained_source
+        .or_else(|| broker.then_some(invocation));
+    execute_resource_operation(
+        owner,
+        doc,
+        &ROOT,
+        &registry,
+        &mut Host,
+        ResourceOperation {
+            target_route: None,
+            address: &tilo_actions::ActionAddress::new("ack.owner", "write"),
+            resource: &resource,
+            spec: &spec,
+            encoded: tilo_actions::EncodedAction::encode("ack.write", action).unwrap(),
+            actor: &tilo_actions::Actor::Member(tilo_actions::MemberId::person("local")),
+            local_author: &tilo_actions::MemberId::person("local"),
+            broker_admitted: broker,
+            invocation,
+            source_invocation,
+            ambient: None,
+            api: None,
+        },
+    )
+}
+
+tilo_test_env::scenario! {
+    fn document_actions_sign_acknowledge_and_defer_exactly;
+
+    phase a_refused_bound_action_that_committed_an_edit_is_unsigned_history;
+    {
+        let mut owner = Owner::default();
+        let mut doc = AutoCommit::new();
+        let edits = crate::local_document_action::UnsignedEdits::default();
+        let scope = crate::local_document_action::enter_unsigned_input(edits.clone());
+        let action = Write {
+            value: "survives".into(),
+            server: false,
+            refuse: true,
+            commit_before_refusal: true,
+        };
+        assert!(execute(&mut owner, &mut doc, &action, false).is_err());
+        drop(scope);
+        assert_eq!(
+            doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+            Some("survives"),
+            "the action's committed edit survives its refusal"
+        );
+        assert!(
+            edits.take(),
+            "a surviving unmanaged edit is unsigned history"
+        );
+    }
+
+    phase a_refused_bound_action_without_a_commit_leaves_history_silent;
+    {
+        let mut owner = Owner::default();
+        let mut doc = AutoCommit::new();
+        let edits = crate::local_document_action::UnsignedEdits::default();
+        let scope = crate::local_document_action::enter_unsigned_input(edits.clone());
+        let action = Write {
+            value: "discarded".into(),
+            server: false,
+            refuse: true,
+            commit_before_refusal: false,
+        };
+        assert!(execute(&mut owner, &mut doc, &action, false).is_err());
+        drop(scope);
+        assert!(
+            doc.get(ROOT, "body").unwrap().is_none(),
+            "the executor rolled back the uncommitted write"
+        );
+        assert!(
+            !edits.take(),
+            "a refusal that left no edit records no unsigned history"
+        );
+    }
+
+    phase document_effects_distinguish_retained_source_ownership_from_local_reply_identity;
+    {
+        let source = tilo_actions::InvocationId::new();
+        let mut owner = Owner {
+            retained_source: Some(source),
+            ..Owner::default()
+        };
+        let mut doc = AutoCommit::new();
+        let action = Write {
+            value: "source-owned".into(),
+            server: false,
+            refuse: false,
+            commit_before_refusal: false,
+        };
+        assert_eq!(
+            execute_mode(&mut owner, &mut doc, &action, true, true).unwrap(),
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        );
+        assert_eq!(owner.effect_receipts[0].0, source);
+        assert_ne!(owner.effect_replies[0], source);
+        assert_eq!(owner.effect_receipts[0].2, "source-owned");
+    }
+
+    phase document_effects_defer_only_the_actual_locally_applied_background_action;
+    {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "body", "before").unwrap();
+        let before = doc.get_heads();
+        let mut owner = Owner {
+            sibling: Some(Box::default()),
+            ..Owner::default()
+        };
+        let local = Write {
+            value: "after".into(),
+            server: false,
+            refuse: false,
+            commit_before_refusal: false,
+        };
+        assert_eq!(
+            execute_mode(&mut owner, &mut doc, &local, false, true).unwrap(),
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        );
+        assert_eq!(owner.effect_receipts.len(), 1);
+        assert_eq!(owner.effect_receipts[0].1, before);
+        assert_eq!(owner.effect_receipts[0].2, "after");
+        assert!(owner.sibling.as_ref().unwrap().effect_receipts.is_empty());
+        assert!(matches!(
+            execute(&mut owner, &mut doc, &local, false).unwrap(),
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
+        ));
+        assert_eq!(owner.effect_receipts.len(), 1);
+        let submitted = Write {
+            value: "host".into(),
+            server: true,
+            refuse: false,
+            commit_before_refusal: false,
+        };
+        assert!(matches!(
+            execute_mode(&mut owner, &mut doc, &submitted, false, true).unwrap(),
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
+        ));
+        assert_eq!(owner.effect_receipts.len(), 1);
+        let refused = Write {
+            value: "refused".into(),
+            server: false,
+            refuse: true,
+            commit_before_refusal: false,
+        };
+        assert!(execute_mode(&mut owner, &mut doc, &refused, false, true).is_err());
+        assert_eq!(owner.effect_receipts.len(), 1);
+    }
+
+    phase document_actions_acknowledge_only_locally_applied_exact_owner_frontiers;
+    {
+        {
+            let mut doc = AutoCommit::new();
+            doc.put(ROOT, "body", "before").unwrap();
+            let before = doc.get_heads();
+            let mut owner = Owner {
+                sibling: Some(Box::default()),
+                ..Default::default()
+            };
+            let local = Write {
+                value: "after".into(),
+                server: false,
+                refuse: false,
+                commit_before_refusal: false,
+            };
+            execute(&mut owner, &mut doc, &local, false).unwrap();
+            assert_eq!(owner.receipts.len(), 1);
+            assert_eq!(owner.receipts[0].1, before);
+            assert_eq!(owner.receipts[0].2, "after");
+            assert_eq!(
+                owner.receipts[0].0,
+                tilo_actions::EncodedAction::encode("ack.write", &local).unwrap()
+            );
+            let unchanged = doc.base_heads();
+            execute(&mut owner, &mut doc, &local, false).unwrap();
+            assert_eq!(owner.receipts.len(), 2);
+            assert_eq!(doc.base_heads(), unchanged);
+            let remote = Write {
+                value: "host".into(),
+                server: true,
+                refuse: false,
+                commit_before_refusal: false,
+            };
+            execute(&mut owner, &mut doc, &remote, false).unwrap();
+            assert_eq!(owner.receipts.len(), 2);
+            assert_eq!(doc.base_heads(), unchanged);
+            let failure = Write {
+                value: "refused".into(),
+                server: false,
+                refuse: true,
+                commit_before_refusal: false,
+            };
+            assert!(execute(&mut owner, &mut doc, &failure, false).is_err());
+            assert_eq!(owner.receipts.len(), 2);
+            execute(&mut owner, &mut doc, &remote, true).unwrap();
+            assert_eq!(owner.receipts.len(), 3);
+            assert_eq!(owner.receipts[2].2, "host");
+            assert!(owner.sibling.as_ref().unwrap().receipts.is_empty());
+        }
+
+        {
+            let mut owner = Owner::default();
+            let mut doc = AutoCommit::new();
+            let action = Write {
+                value: "must not write".into(),
+                server: false,
+                refuse: false,
+                commit_before_refusal: false,
+            };
+            let registry = tilo_actions::ActionRegistry::new();
+            let resource = tilo_actions::ResourceSpec::new("owner", "owner", "Owner");
+            for kind in [
+                tilo_actions::OperationKind::View,
+                tilo_actions::OperationKind::Effect,
+            ] {
+                let spec =
+                    tilo_actions::ActionSpec::operation("run", "Run", kind, "operation", &action)
+                        .unwrap();
+                execute_resource_operation(
+                    &mut owner,
+                    &mut doc,
+                    &ROOT,
+                    &registry,
+                    &mut Host,
+                    ResourceOperation {
+                        target_route: None,
+                        address: &tilo_actions::ActionAddress::new("owner", "run"),
+                        resource: &resource,
+                        spec: &spec,
+                        encoded: tilo_actions::EncodedAction::encode_operation("operation", &action)
+                            .unwrap(),
+                        actor: &tilo_actions::Actor::Member(tilo_actions::MemberId::person("local")),
+                        local_author: &tilo_actions::MemberId::person("local"),
+                        broker_admitted: false,
+                        invocation: tilo_actions::InvocationId::new(),
+                        source_invocation: None,
+                        ambient: None,
+                        api: None,
+                    },
+                )
+                .unwrap();
+            }
+            assert!(owner.receipts.is_empty());
+            assert!(doc.get(ROOT, "body").unwrap().is_none());
+            assert_eq!(doc.pending_ops(), 0);
+        }
+    }
+}

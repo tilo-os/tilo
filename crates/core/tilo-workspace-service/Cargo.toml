@@ -28,7 +28,7 @@ device-keys = ["dep:tilo-workspace-keys", "dep:tilo-identity"]
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core", "dep:tilo-workspace-search"]
 # A workspace's file tree held in the device's own service, its bytes on the records' route.
-files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:rustix", "dep:ui"]
+files = ["content", "dep:tilo-fs", "dep:fs-protocol", "dep:iroh-blobs", "dep:bytes", "dep:rustix", "dep:ui", "dep:tilo-ui-model"]
 # A session client's pages, read through the document core over the replica its engine admits
 # into: what a session's tests read their workspace through.
 session-pages = ["device-keys", "dep:tilo-session-client"]
@@ -109,6 +109,7 @@ tilo-agent-session = { path = "../agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true, features = ["model", "host"] }
+tilo-ui-model = { path = "../../ui/ui-model", optional = true }
 # Shortcuts and the events they fire on: what a saved shortcut holds, as its triggers and steps.
 tilo-automation = { path = "../automation" }
 # Resource identity, permissions and invocation leases: the model below the toolkit.

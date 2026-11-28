@@ -18,10 +18,10 @@ ignored = ["serde_bytes"]
 [features]
 default = ["native"]
 # Each feature is the toolkit's of the same name (see tilo-ui), plus what the runner takes for it.
-model = ["tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
+model = ["dep:tilo-ui-model", "dep:tilo-ui-search", "tilo-ui/model", "tilo-ui-base/model", "dep:runtime-collab", "dep:collaboration", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference"]
 # The native runner: the winit event loop with its AccessKit adapter, the platform chrome and
 # the OS search hand-off.
-native = ["tilo-ui/native", "tilo-ui-nav/native", "tilo-ui-base/native", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
+native = ["tilo-ui/native", "tilo-ui-model?/native", "tilo-ui-nav/native", "tilo-ui-base/native", "dep:accesskit_winit", "dep:tilo-host-search", "dep:objc2", "dep:objc2-app-kit", "dep:windows", "dep:jni", "dep:ndk-context", "tokio/full"]
 x11 = ["tilo-ui/x11"]
 syntax-definitions = ["tilo-ui/syntax-definitions"]
 lazy-highlight = ["tilo-ui/lazy-highlight"]
@@ -29,7 +29,7 @@ lazy-painter = ["tilo-ui/lazy-painter"]
 # The toolkit's clients of the session daemons.
 local-daemons = ["tilo-ui/local-daemons"]
 # The toolkit's `WebView` widget and the device's content store (see tilo-ui).
-webview = ["tilo-ui/webview"]
+webview = ["tilo-ui/webview", "tilo-ui-model?/webview"]
 content = ["tilo-ui/content"]
 # The Tilo host a Rust app's process runs under: the launcher (`launch::run`) that attaches it
 # to the session's daemons and hands it its content store, the settings file it follows, and
@@ -37,9 +37,9 @@ content = ["tilo-ui/content"]
 # shell turn it on; the published default links none of it. It belongs to the Rust-app
 # framework and goes with it.
 host = ["native", "model", "local-daemons", "broker-transport", "webview", "content", "tilo-ui/host", "dep:runtime-portal", "dep:settings-store", "dep:tilo-content-device", "dep:tilo-webview"]
-broker-transport = ["tilo-ui/broker-transport", "local-daemons", "tokio/full"]
+broker-transport = ["tilo-ui/broker-transport", "tilo-ui-model?/broker-transport", "local-daemons", "tokio/full"]
 # The headless driver's fixtures, for the tests above the runner.
-test-support = ["tilo-ui/test-support", "tilo-ui-base/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
+test-support = ["tilo-ui/test-support", "tilo-ui-model?/test-support", "tilo-ui-base/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
 realtime-video = ["tilo-ui/realtime-video"]
 decode = ["tilo-ui/decode"]
 presentation-feedback = ["tilo-ui/presentation-feedback"]
@@ -53,13 +53,15 @@ portal = ["native", "tilo-ui/portal"]
 host-portals = ["tilo-ui/host-portals"]
 
 [dependencies]
-tilo-ui-search = { version = "0.1.0", path = "../ui-search" }
+# The action palette shows its answers as search results.
+tilo-ui-search = { version = "0.1.0", path = "../ui-search", optional = true }
 tilo-ui-nav = { version = "0.1.0", path = "../ui-nav" }
 tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
 # The frame pipeline the runner drives: the render worker, retained targets, strips and pipeline caches.
 tilo-ui-render = { version = "0.1.0", path = "../ui-render", default-features = false }
+tilo-ui-model = { version = "0.1.0", path = "../ui-model", default-features = false, optional = true }
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
@@ -153,6 +155,7 @@ tilo-ui-app = { path = ".", default-features = false, features = ["test-support"
 serial_test.workspace = true
 # The headless driver and its fixtures are behind `test-support`.
 tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support"] }
+tilo-ui-model = { path = "../ui-model", default-features = false, features = ["test-support"] }
 tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }

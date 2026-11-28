@@ -53,6 +53,7 @@ ENGINE_OWNERS = (
     "crates/ui/ui-file-picker/",
     "crates/ui/ui-nav/",
     "crates/ui/ui-map/",
+    "crates/ui/ui-model/",
     "crates/ui/ui-math/",
     # Toolkit lab/shots scenarios: lived under ui-core (an owner) until moved
     # into this non-default member; they still exercise the same surfaces.

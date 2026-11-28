@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
     {
         use ui::widget::marks::{Mark, MarkSpan};
         let _settled = tilo_ui_base::motion::testing::settled();
-        let mut state = ui::State::new();
+        let mut state = tilo_ui_model::State::new();
         let text = state
             .doc
             .put_object(&state.root, "body", ObjType::Text)

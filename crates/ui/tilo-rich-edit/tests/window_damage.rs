@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 
 use tilo_rich_edit::BlockEditor;
-use tilo_ui::{
-    widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::Scrollable,
-    widget::TileContent, widget::TileHost,
-};
+use tilo_ui::{widget::AppKind, widget::Scrollable};
 use tilo_ui_app::headless::Driver;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{
     widget::AppModel, widget::EventCtx, widget::ModelPath, widget::ScrollAxis, widget::Widget,
+};
+use tilo_ui_model::{
+    widget::AppWidget, widget::IconDescriptor, widget::TileContent, widget::TileHost,
 };
 use tilo_ui_render::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::{Affine, Point, Rect};
@@ -118,7 +118,7 @@ fn note_window() -> (Driver, RetainedFrames, TargetKey, Rect) {
             .with_child(Box::new(BlockEditor::from_markdown(&markdown))),
     };
     let mut harness = Driver::for_root(
-        tilo_ui::State::new(),
+        tilo_ui_model::State::new(),
         TileHost::new(TileContent::App(Box::new(note))),
         SIZE,
         Theme::dark(),

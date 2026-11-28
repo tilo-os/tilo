@@ -288,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => automatic(),
             };
             let mut harness = Driver::new_with_theme(
-                tilo_ui::State::new(),
+                tilo_ui_model::State::new(),
                 root,
                 viewport,
                 shot_theme().with_text_scale(scale),
@@ -311,7 +311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut resized = Driver::new_with_theme(
-        tilo_ui::State::new(),
+        tilo_ui_model::State::new(),
         automatic(),
         (1080, 800),
         shot_theme(),

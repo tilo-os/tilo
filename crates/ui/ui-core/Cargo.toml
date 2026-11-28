@@ -442,11 +442,6 @@ name = "theme-looks"
 path = "examples/theme_looks.rs"
 
 [[example]]
-name = "page-share-probe"
-path = "examples/page_share_probe.rs"
-required-features = ["native", "webview"]
-
-[[example]]
 name = "startup-blit-phase-probe"
 path = "examples/startup_blit_phase_probe.rs"
 required-features = ["native"]
@@ -455,11 +450,6 @@ required-features = ["native"]
 name = "startup-surface-probe"
 path = "examples/startup_surface_probe.rs"
 required-features = ["native"]
-
-# Its own binary: it installs a counting global allocator.
-[[test]]
-name = "held-memory"
-path = "tests/held_memory.rs"
 
 [lints]
 workspace = true

@@ -197,13 +197,13 @@ fn component(
         .unwrap();
     // Restoring a component's record is bounded by the component's device: it owns the workspace
     // here, so a whole-document restore is admitted rather than left waiting on a question.
-    tilo_ui::harness_device::answer_actions(
+    tilo_ui_model::harness_device::answer_actions(
         component.callback_binding_for_test().permissions_for_test(),
         [tilo_ui::shown_actions::ShownAction::app(
             APP,
             tilo_ui_base::permissions::ActionKind::Undoable,
         )],
-        &tilo_ui::harness_device::HarnessDevice::member_of(
+        &tilo_ui_model::harness_device::HarnessDevice::member_of(
             tilo_ui_base::permissions::LOCAL_WORKSPACE,
             &crate::support::application::author(),
             tilo_ui_base::permissions::Role::Owner,

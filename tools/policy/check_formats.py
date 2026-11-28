@@ -85,6 +85,7 @@ SCOPES += (
     Path("crates/ui/ui-file-picker"),
     Path("crates/ui/ui-nav"),
     Path("crates/ui/ui-map"),
+    Path("crates/ui/ui-model"),
     Path("crates/ui/ui-core"),
     Path("crates/ui/ui-render"),
     Path("crates/ui/ui-math"),

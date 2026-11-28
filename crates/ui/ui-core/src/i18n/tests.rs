@@ -834,10 +834,7 @@ tilo_test_env::scenario! {
     phase relative_times_follow_the_host_locale_and_its_plural_rules;
     {
         use tilo_ui_base::format::relative;
-        use crate::time::{Duration, SystemTime};
-        use crate::widget::format_relative_time;
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let ago = |secs| format_relative_time(base, base + Duration::from_secs(secs));
+        let ago = |secs: i64| relative(secs);
 
         {
             let _restore = RestoreLookupState::capture();

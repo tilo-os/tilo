@@ -7,7 +7,7 @@ pub mod anchors;
 mod card;
 pub mod coach;
 mod component;
-pub(crate) mod ink;
+pub mod ink;
 mod layer;
 pub mod performed;
 pub mod shell;
