@@ -17312,6 +17312,7 @@ dependencies = [
  "tokio",
  "tracing",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]

@@ -11,6 +11,9 @@
 #     kernel's audit type=1326), and the device's daemon has not restarted this
 #     boot: a unit with Restart=on-failure is active again seconds later, so a
 #     service that loses that call on every restart never shows as failed.
+#   * the device's daemon learned the clock's synchronisation from timedated
+#     over the system bus, since the kernel call its own filter refuses cannot
+#     answer it: a boot that falls back to an unknown clock says nothing here.
 #
 # Run as root inside the guest, once the first session has come up:
 #   sudo /usr/libexec/tilo/boot-units-check.sh
@@ -100,6 +103,19 @@ case "$runtime_restarts" in
   ''|*[!0-9]*) bad 'tilo-runtime.service restart count is unavailable' ;;
   *) bad "tilo-runtime.service restarted $runtime_restarts times this boot" ;;
 esac
+
+# The daemon asks systemd's timedated for the clock's state over the system bus, because the
+# kernel call its own filter refuses cannot answer it; on Tilo OS chrony holds the clock, so it
+# must report synchronised. A boot that says nothing fell back to an unknown clock.
+clock_said="$(journalctl -b -q --no-pager -o cat -u tilo-runtime.service 2>/dev/null \
+  | grep -F 'the clock is synchronised (timedated)' | tail -1)"
+if [ -n "$clock_said" ]; then
+  ok 'the device daemon learned the clock is synchronised (timedated)'
+else
+  bad 'tilo-runtime.service never reported the clock synchronised by timedated'
+  journalctl -b --no-pager -o cat -u tilo-runtime.service 2>/dev/null \
+    | grep -F 'the clock is ' | tail -3 | sed 's/^/      /' >&2 || true
+fi
 
 failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
 unexpected=()

@@ -425,16 +425,78 @@ fn clock_epoch() -> Option<u32> {
 /// Whether this device's clock is synchronised to a time source, from what
 /// the machine says; `None` where nothing says.
 ///
-/// systemd-timesyncd writes `/run/systemd/timesync/synchronized` while it
-/// holds the clock, and removes it when it loses its source. Absence is not
-/// a "no": Tilo OS keeps time with chrony and masks timesyncd, a musl CLI
-/// build can run where nothing writes the file, and macOS has no marker at
-/// all. The kernel could tell, but reading its clock state is `adjtimex`,
-/// which `tilo-runtime.service` refuses through `ProtectClock=` and
-/// `SystemCallFilter=@system-service`, and the refusal killed the daemon
-/// with SIGSYS.
+/// The kernel could tell, but reading its clock state is `adjtimex`, which
+/// `tilo-runtime.service` refuses through `ProtectClock=` and
+/// `SystemCallFilter=@system-service`: the refusal killed the daemon with
+/// SIGSYS. So the answer comes from systemd's timedated over the system bus
+/// ([`timedated_synchronised`]), which reads the kernel in its own process
+/// and so hears chrony's answer as well as timesyncd's. Where no timedated
+/// answers (no system bus, a musl CLI outside systemd, macOS), the read falls
+/// back to systemd-timesyncd's `/run/systemd/timesync/synchronized` marker;
+/// its absence is not a "no", since Tilo OS masks timesyncd.
 fn clock_synchronised() -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    if let Some(synchronised) = timedated_synchronised() {
+        return Some(synchronised);
+    }
     clock_synchronised_at(Path::new("/run/systemd/timesync/synchronized"))
+}
+
+/// timedated's `NTPSynchronized`, asked off the caller's thread: the LAN probe
+/// asks per datagram, so one answer serves them all until it is refreshed.
+#[cfg(target_os = "linux")]
+fn timedated_synchronised() -> Option<bool> {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    /// What the bus has answered so far.
+    const UNKNOWN: u8 = 0;
+    const SYNCHRONISED: u8 = 1;
+    const NOT_SYNCHRONISED: u8 = 2;
+    static STATE: AtomicU8 = AtomicU8::new(UNKNOWN);
+    static STARTS: std::sync::Once = std::sync::Once::new();
+    STARTS.call_once(|| {
+        std::thread::spawn(|| {
+            loop {
+                let answer = match timedated_ntp_synchronized() {
+                    Some(true) => SYNCHRONISED,
+                    Some(false) => NOT_SYNCHRONISED,
+                    None => UNKNOWN,
+                };
+                if STATE.swap(answer, Ordering::Relaxed) != answer && answer != UNKNOWN {
+                    if answer == SYNCHRONISED {
+                        tracing::info!("the clock is synchronised (timedated)");
+                    } else {
+                        tracing::warn!("the clock is not synchronised (timedated)");
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+    });
+    match STATE.load(Ordering::Relaxed) {
+        SYNCHRONISED => Some(true),
+        NOT_SYNCHRONISED => Some(false),
+        _ => None,
+    }
+}
+
+/// timedated's answer, bounded so a system bus that does not answer cannot hold
+/// the probe's thread.
+#[cfg(target_os = "linux")]
+fn timedated_ntp_synchronized() -> Option<bool> {
+    let connection = zbus::blocking::connection::Builder::system()
+        .ok()?
+        .method_timeout(Duration::from_secs(1))
+        .build()
+        .ok()?;
+    zbus::blocking::Proxy::new(
+        &connection,
+        "org.freedesktop.timedate1",
+        "/org/freedesktop/timedate1",
+        "org.freedesktop.timedate1",
+    )
+    .ok()?
+    .get_property::<bool>("NTPSynchronized")
+    .ok()
 }
 
 /// [`clock_synchronised`] reading the marker at `marker`.
@@ -905,17 +967,13 @@ mod tests {
         assert!(Nearby::from_env(std::sync::Arc::new(|| {})).is_none());
     }
 
-    /// A missing timesyncd marker is an unknown clock, never a "not synchronised" one: the epoch
-    /// the probe carries is therefore still the clock's own.
+    /// A missing timesyncd marker is an unknown clock, never a "not synchronised" one. timedated
+    /// is asked first where it exists; this reads the fallback alone.
     #[test]
     fn a_missing_timesync_marker_leaves_the_clock_unknown() {
         let directory = tempfile::tempdir().expect("a directory");
         let marker = directory.path().join("synchronized");
         assert_eq!(super::clock_synchronised_at(&marker), None);
-        assert!(
-            super::clock_epoch().is_some(),
-            "no marker on this host must not cost the probe its epoch"
-        );
         std::fs::write(&marker, b"").expect("the marker");
         assert_eq!(super::clock_synchronised_at(&marker), Some(true));
     }

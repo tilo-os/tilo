@@ -28,6 +28,8 @@ cat >"$work/bin/journalctl" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   '-b -o cat --no-pager') printf '%s\n' "${STUB_BOOT_LOG:-}" ;;
+  '-b -q --no-pager -o cat -u tilo-runtime.service')
+    printf '%s\n' "${STUB_RUNTIME_LOG-the clock is synchronised (timedated)}" ;;
   *) printf '%s\n' "${STUB_CONFIRM_LOG:-}" ;;
 esac
 EOF
@@ -82,6 +84,8 @@ expect_fail 'a failed syscall the kernel audited' 'type=1326' \
 expect_pass 'a refused syscall outside every tilo service' \
   STUB_BOOT_LOG='audit: type=1326 audit(1.2:3): pid=9 comm="chromium" exe="/usr/lib64/chromium-browser/chromium-browser" syscall=305'
 expect_fail 'the device daemon restarted' 'tilo-runtime.service restarted 3 times' STUB_RUNTIME_RESTARTS=3
+expect_fail 'a daemon that never learned the clock' 'never reported the clock synchronised' \
+  STUB_RUNTIME_LOG=
 
 expect_fail 'a missing confirmation unit' 'tilo-rollback-confirm.service is not installed' \
   STUB_CONFIRM_INSTALLED=no
