@@ -501,12 +501,18 @@ fn stands_as_window(node: &InspectionNode) -> bool {
 
 /// Whether `node` is a surface floating over what it covers on its own opaque ground: a panel or a
 /// popover over the shell is read on its own, as a window on a desktop is, so what stands behind it
-/// is behind it by design.
+/// is behind it by design. A wrapper that draws nothing of its own and holds only such surfaces (a
+/// column of banners, a stack of questions waiting) floats as they do, and covers nothing behind
+/// them.
 fn floats_opaque(node: &InspectionNode) -> bool {
     matches!(
         node.widget.as_str(),
         "FloatingPanel" | "Popover" | "ContextMenu" | "Tooltip"
-    ) || matches!(&node.children[..], [only] if floats_opaque(only))
+    ) || (!node.children.is_empty()
+        && node
+            .children
+            .iter()
+            .all(|child| floats_opaque(child) || !has_area(rect(child.rect))))
 }
 
 fn layers(widget: &str) -> bool {

@@ -676,12 +676,53 @@ tilo_test_env::scenario! {
         ]);
         assert!(found.is_empty(), "{found:?}");
     }
+
+    phase a_column_of_surfaces_floating_over_the_band_is_no_finding;
+    // What floats over the band covers what stands behind it by design, as one panel does: a
+    // stack that draws nothing of its own and holds a column of panels (the banners a person was
+    // sent) covers the band no more than the panels do. A stack that draws words of its own over
+    // the band is still caught.
+    {
+        let band = || {
+            holding(
+                node("Stack", "band", [0.0, 44.0, 400.0, 256.0], None),
+                vec![node("Text", "work", [16.0, 100.0, 200.0, 20.0], None)],
+            )
+        };
+        let banners = holding(
+            node("Stack", "banners", [0.0, 44.0, 400.0, 200.0], None),
+            vec![
+                node("FloatingPanel", "question", [8.0, 52.0, 384.0, 120.0], None),
+                node("FloatingPanel", "more", [8.0, 180.0, 384.0, 48.0], None),
+            ],
+        );
+        let found = overlaps_layers(vec![band(), banners]);
+        assert!(found.is_empty(), "{found:?}");
+
+        let writing = holding(
+            node("Stack", "words", [0.0, 44.0, 400.0, 200.0], None),
+            vec![node("Text", "plain", [16.0, 100.0, 200.0, 20.0], None)],
+        );
+        let found = overlaps_layers(vec![band(), writing]);
+        assert_eq!(found.len(), 1, "{found:?}");
+    }
 }
 
 fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {
     let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
     shell.children = children;
     inspect(&shell, (400, 300), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::Overlap)
+        .collect()
+}
+
+/// The overlap findings of a plain `Layers` over `children`: layers that each draw their own words
+/// cover nothing until the words themselves meet.
+fn overlaps_layers(children: Vec<InspectionNode>) -> Vec<Problem> {
+    let mut layers = node("Layers", "shell", [0.0, 0.0, 400.0, 300.0], None);
+    layers.children = children;
+    inspect(&layers, (400, 300), None, 1.0)
         .into_iter()
         .filter(|p| p.kind == Kind::Overlap)
         .collect()
