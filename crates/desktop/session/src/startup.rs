@@ -498,11 +498,11 @@ pub(crate) fn found_here(identity_dir: &Path) -> Result<bool, String> {
 
 /// [`found_here`], answering whether an identity was made and its key certified, and why not.
 pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
-    let founds = tilo_api::daemon::who::founding()?;
+    let who = tilo_api::daemon::who::who()?;
+    let founds = who.founding;
     if founds {
         tilo_api::daemon::this_computer()?.found(&tilo_api::daemon::Founding::default())?;
     }
-    let who = tilo_api::daemon::who::who()?;
     let Some(person) = who.certify_person.or(who.person) else {
         return if founds {
             Err("this computer's daemon made this account no person".to_owned())

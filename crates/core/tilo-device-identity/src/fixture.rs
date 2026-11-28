@@ -49,6 +49,13 @@ pub enum Login {
     Refuse(&'static str),
     /// Wait before certifying it, as a device a person has to approve by hand does.
     Wait,
+    /// Answer the login as pending, as a daemon does while the person decides on another of
+    /// their devices, and certify the computer once the call is asked again.
+    Pending,
+    /// [`Self::Pending`], refused with the message once the call is asked again.
+    PendingRefused(&'static str),
+    /// Answer the login as pending however often it is asked: a person who never answers it.
+    PendingForever,
 }
 
 /// What the daemon answers besides its key.
@@ -62,6 +69,8 @@ struct Answers {
     holds_root: bool,
     /// The device this computer is as it enters its person's workspaces, once a login made it.
     home: Mutex<Option<Device>>,
+    /// How the login the person has not answered yet was asked, kept to settle the call.
+    asking: Mutex<Option<Value>>,
 }
 
 /// The device's daemon of a test's machine, for as long as it lives: it holds the machine's
@@ -139,6 +148,7 @@ impl DeviceDaemon {
             login,
             holds_root,
             home: Mutex::new(None),
+            asking: Mutex::new(None),
         });
         let stopping = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stopping);
@@ -179,8 +189,14 @@ impl Drop for DeviceDaemon {
 }
 
 /// Answer this daemon's questions with `key` until `stopping` says the test is done. Each
-/// connection is answered on a thread of its own, as a daemon serves its programs.
-fn serve(listener: &Listener, answers: &Arc<Answers>, key: &SigningKey, stopping: &AtomicBool) {
+/// connection is answered on a thread of its own, as a daemon serves its programs, and it too
+/// stops answering once the daemon has.
+fn serve(
+    listener: &Listener,
+    answers: &Arc<Answers>,
+    key: &SigningKey,
+    stopping: &Arc<AtomicBool>,
+) {
     for stream in listener.incoming() {
         if stopping.load(Ordering::Relaxed) {
             return;
@@ -195,13 +211,16 @@ fn serve(listener: &Listener, answers: &Arc<Answers>, key: &SigningKey, stopping
         };
         let answers = Arc::clone(answers);
         let key = key.clone();
+        let stopping = Arc::clone(stopping);
         let _spawned = std::thread::Builder::new()
             .name("fixture-device-daemon".into())
             .spawn(move || {
                 // A call is followed on its connection, so a followed call is asked again.
                 let mut lines = std::io::BufReader::new(&stream);
                 let mut request = String::new();
-                while lines.read_line(&mut request).is_ok_and(|read| read > 0) {
+                while !stopping.load(Ordering::Relaxed)
+                    && lines.read_line(&mut request).is_ok_and(|read| read > 0)
+                {
                     let _ = writeln!(&stream, "{}", answer(&answers, &request, &key));
                     request.clear();
                 }
@@ -216,6 +235,37 @@ fn answer(answers: &Answers, request: &str, key: &SigningKey) -> Value {
     let id = asked.get("id").cloned().unwrap_or(Value::Null);
     if asked.get("native").and_then(Value::as_str) == Some(WHO) {
         return who(answers, key);
+    }
+    // A login the person has not answered yet: the call is answered as pending, and settles once
+    // it is asked again, as the daemon's is while the person decides on another of their devices.
+    if let Some(login @ (Login::Pending | Login::PendingRefused(_) | Login::PendingForever)) =
+        answers.login
+    {
+        let arguments = asked
+            .pointer("/params/arguments")
+            .cloned()
+            .unwrap_or_default();
+        let asking = arguments.get("invocation_id").is_none()
+            && arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.ends_with(crate::login::LOG_IN));
+        if asking {
+            *lock(&answers.asking) = Some(arguments);
+        }
+        if matches!(login, Login::PendingForever) || asking {
+            let said = "pending 1: your person has not answered yet";
+            return serde_json::json!({"jsonrpc": "2.0", "id": &id, "result": {
+                "content": [{"type": "text", "text": said}],
+                "structuredContent": {"status": "pending", "invocation_id": "1",
+                    "waiting_for": "your person to answer"}}});
+        }
+        let asked = lock(&answers.asking).take().unwrap_or_default();
+        let args = asked.get("args").cloned().unwrap_or_default();
+        return match log_in(answers, &args, key) {
+            Ok(result) => succeeded(&id, &result),
+            Err(message) => failed(&id, &message),
+        };
     }
     let path = asked
         .pointer("/params/arguments/path")
@@ -232,29 +282,25 @@ fn answer(answers: &Answers, request: &str, key: &SigningKey) -> Value {
         &args,
         key,
     ) {
-        Ok(result) => serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{"type": "text", "text": ""}],
-                "structuredContent": {"status": "ok", "result": result},
-            },
-        }),
-        Err(message) => {
-            serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "content": [{"type": "text", "text": message}],
-                    "isError": true,
-                    "structuredContent": {
-                        "status": "error",
-                        "error": {"code": crate::login::daemon::REFUSED, "message": message},
-                    },
-                },
-            })
-        }
+        Ok(result) => succeeded(&id, &result),
+        Err(message) => failed(&id, &message),
     }
+}
+
+/// The daemon's answer that a call succeeded with `result`.
+fn succeeded(id: &Value, result: &Value) -> Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+        "content": [{"type": "text", "text": ""}],
+        "structuredContent": {"status": "ok", "result": result}}})
+}
+
+/// The daemon's answer that a call was refused with `message`, as a failed action's is written.
+fn failed(id: &Value, message: &str) -> Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+        "content": [{"type": "text", "text": format!("failed: device-action: {message}")}],
+        "isError": true,
+        "structuredContent": {"status": "failed",
+            "error": {"code": "device-action", "message": message}}}})
 }
 
 /// Who the asking account is to this daemon, as its native endpoint answers without a call.
@@ -330,20 +376,19 @@ fn found(answers: &Answers, key: &SigningKey) -> Result<Value, String> {
 fn log_in(answers: &Answers, args: &Value, key: &SigningKey) -> Result<Value, String> {
     let ticket = args.get("ticket").and_then(Value::as_str);
     if ticket.is_none_or(|ticket| !ticket.starts_with("tilo1")) {
-        return Err("failed: device-action: the login carries no code".into());
+        return Err("the login carries no code".into());
     }
     let agent = args.get("agent").and_then(Value::as_str);
     if agent.is_none_or(str::is_empty) {
-        return Err("failed: device-action: the login names no agent".into());
+        return Err("the login names no agent".into());
     }
     let Some(answer) = answers.login else {
         return Err("this machine's daemon answers no such device action".into());
     };
-    if let Login::Refuse(message) = answer {
-        return Err(format!("failed: device-action: {message}"));
-    }
-    if matches!(answer, Login::Wait) {
-        std::thread::sleep(std::time::Duration::from_millis(750));
+    match answer {
+        Login::Refuse(message) | Login::PendingRefused(message) => return Err(message.to_owned()),
+        Login::Wait => std::thread::sleep(std::time::Duration::from_millis(750)),
+        Login::Certify | Login::Pending | Login::PendingForever => {}
     }
     let root = SigningKey::from_bytes(&PRINTED);
     let label = args
@@ -391,10 +436,9 @@ fn cert_for(root: &SigningKey, key: &SigningKey, label: &str) -> Result<DeviceCe
     Ok(cert)
 }
 
-/// The device this computer is as it enters its person's workspaces, kept even after a panic
-/// elsewhere poisoned the lock.
-fn lock(home: &Mutex<Option<Device>>) -> std::sync::MutexGuard<'_, Option<Device>> {
-    home.lock()
+/// What the daemon keeps, taken even after a panic elsewhere poisoned the lock.
+fn lock<T>(kept: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    kept.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

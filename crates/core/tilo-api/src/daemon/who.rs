@@ -7,21 +7,18 @@
 //! is kept in a file a program reads beside the daemon: every program of the computer asks it here.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_device_identity::login::{Device, ServerAddress};
+use tilo_device_identity::login::daemon::{DeviceActions, canonical_hex};
+use tilo_device_identity::login::{Device, LOG_IN, ServerAddress};
 
 /// What the native endpoint is asked for who the asking account is.
 pub const WHO: &str = "account#who";
 
 /// The longest answer read.
 const ANSWER_MAX: u64 = 1 << 20;
-/// How long a login with a ticket is waited for, the person approving it on another device
-/// among it.
-const LOGGING_IN: Duration = Duration::from_secs(15 * 60);
-/// How long one call of the login waits at the daemon before it is asked about again.
-const WAIT_MS: u64 = 55_000;
 /// How long the daemon's person's part is waited for to start again as the device a login made.
 const RESTARTING: Duration = Duration::from_secs(60);
 
@@ -46,9 +43,10 @@ pub struct Who {
     /// The person this account acts as here once it certifies the key the daemon made it, while
     /// it waits to: the device's own person has none.
     pub certify_person: Option<[u8; 32]>,
+    /// Whether this account may make this computer's person ([`super::DevicePlace::found`]).
+    pub founding: bool,
 }
 
-use tilo_device_identity::login::daemon::canonical_hex;
 /// The `home` of an `account#who` answer: where this device enters, as `device` the daemon serves.
 pub use tilo_device_identity::login::daemon::home_answer;
 
@@ -80,16 +78,10 @@ fn home_of(home: &Value) -> Option<Device> {
 /// # Errors
 /// No daemon answers there, or its answer is no `account#who`.
 pub fn who() -> Result<Who, String> {
-    let answer = ask(&json!({"native": WHO}))?;
-    let key = |name: &str| -> Option<[u8; 32]> {
-        hex::decode(answer.get(name)?.as_str()?)
-            .ok()?
-            .try_into()
-            .ok()
-    };
+    let answer = ask_at(&super::this_computer()?.native(), &json!({"native": WHO}))?;
     Ok(Who {
-        person: key("person"),
-        device: key("device").ok_or("the daemon named no device key")?,
+        person: key_of(&answer, "person"),
+        device: key_of(&answer, "device").ok_or("the daemon named no device key")?,
         label: answer
             .get("label")
             .and_then(Value::as_str)
@@ -99,11 +91,17 @@ pub fn who() -> Result<Who, String> {
         home: answer.get("home").and_then(home_of),
         certify_person: answer
             .get("certify")
-            .and_then(|certify| certify.get("person"))
-            .and_then(Value::as_str)
-            .and_then(|person| hex::decode(person).ok())
-            .and_then(|person| <[u8; 32]>::try_from(person).ok()),
+            .and_then(|certify| key_of(certify, "person")),
+        founding: answer.get("founding").and_then(Value::as_bool) == Some(true),
     })
+}
+
+/// The 32 bytes the hex field `name` of `answer` names.
+fn key_of(answer: &Value, name: &str) -> Option<[u8; 32]> {
+    hex::decode(answer.get(name)?.as_str()?)
+        .ok()?
+        .try_into()
+        .ok()
 }
 
 /// The device this computer is as it enters its person's workspaces, as its daemon knows it:
@@ -123,7 +121,7 @@ pub fn home() -> Result<Option<Device>, String> {
 /// # Errors
 /// No daemon answers, or the login did not work, saying why.
 pub fn log_in(ticket: &str, agent: &str, label: &str) -> Result<Who, String> {
-    logging_in(&json!({"ticket": ticket, "agent": agent, "label": label}))
+    logging_in(json!({"ticket": ticket, "agent": agent, "label": label}))
 }
 
 /// Log this computer, which holds its person's root, in at the server whose line (what it keeps
@@ -134,62 +132,15 @@ pub fn log_in(ticket: &str, agent: &str, label: &str) -> Result<Who, String> {
 /// # Errors
 /// No daemon answers, or the login did not work, saying why.
 pub fn log_in_at(line: &str) -> Result<Who, String> {
-    logging_in(&json!({"server": line}))
+    logging_in(json!({"server": line}))
 }
 
 /// `devices#logIn` with `args`, followed until the daemon's person's part serves what it made.
-fn logging_in(args: &Value) -> Result<Who, String> {
-    let place = super::this_computer()?;
-    let started = std::time::Instant::now();
+fn logging_in(args: Value) -> Result<Who, String> {
     let before = who()?.home;
-    let mut stream = connect(&place, Some(LOGGING_IN))?;
-    let mut lines = BufReader::new(
-        stream
-            .try_clone()
-            .map_err(|error| error.to_string())?
-            .take(ANSWER_MAX),
-    );
-    let mut id: u64 = 0;
-    let mut arguments = json!({"path": "devices#logIn", "wait_ms": WAIT_MS, "args": args});
-    let mut tool = "tilo_do";
-    loop {
-        id = id.saturating_add(1);
-        let request = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments}});
-        writeln!(stream, "{request}").map_err(|error| error.to_string())?;
-        let mut line = String::new();
-        lines
-            .read_line(&mut line)
-            .map_err(|error| error.to_string())?;
-        let answer: Value = serde_json::from_str(&line)
-            .map_err(|_| "this computer's daemon ended while it logged in".to_owned())?;
-        if let Some(error) = answer.pointer("/error/message").and_then(Value::as_str) {
-            return Err(error.to_owned());
-        }
-        let text = answer
-            .pointer("/result/content/0/text")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if answer.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
-            // `failed: <code>: <why>`, of which the person reads why.
-            let said = text.strip_prefix("failed: ").map_or(text, |rest| {
-                rest.split_once(": ").map_or(rest, |(_, why)| why)
-            });
-            return Err(said.to_owned());
-        }
-        let Some(pending) = text.strip_prefix("pending ") else {
-            break;
-        };
-        if started.elapsed() > LOGGING_IN {
-            return Err("your device did not answer in time: ask for a new ticket".to_owned());
-        }
-        let invocation = pending.split_once(':').map_or(pending, |(id, _)| id).trim();
-        arguments = json!({"invocation_id": invocation, "wait_ms": WAIT_MS});
-        tool = "tilo_status";
-    }
-    // The connection ends here, its reading half too, so the daemon hears that it ended.
-    drop(lines);
-    drop(stream);
+    // The call is the person's to answer on another of their devices: the daemon reports the
+    // stage it is in, and answers what it made once they have.
+    super::this_computer()?.act_followed(LOG_IN, args)?;
     // The person's part starts again as the device the login made: answered once it serves it,
     // which is another than before, or the same once it was seen to start again.
     let restarted = std::time::Instant::now();
@@ -217,17 +168,6 @@ fn logging_in(args: &Value) -> Result<Who, String> {
     }
 }
 
-/// Whether this account signed in on this computer with no person yet, and may make one here
-/// ([`crate::daemon::DevicePlace::found`]): the key the daemon made it waits to be certified
-/// once it does.
-///
-/// # Errors
-/// No daemon answers.
-pub fn founding() -> Result<bool, String> {
-    let answer = ask(&json!({"native": WHO}))?;
-    Ok(answer.get("founding").and_then(Value::as_bool) == Some(true))
-}
-
 /// Certify the key this computer's daemon made for this account, when the account signed in as
 /// another person than the device's: their identity `signer` certifies it as a member's device,
 /// and the account acts as that key from then on. Answers whether there was a key to certify;
@@ -249,35 +189,30 @@ pub fn certify_my_key(signer: &dyn tilo_user_identity::StatementSigner) -> Resul
 /// # Errors
 /// No daemon answers, it keeps no root of this person's, or it refused the certificate.
 pub fn certify_here() -> Result<bool, String> {
-    if ask(&json!({"native": WHO}))?.get("certify").is_none() {
-        return Ok(false);
-    }
-    let answer = ask(
-        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "tilo_do",
-            "arguments": {"path": "seats#certified", "args": {}},
-        }}),
-    )?;
-    Ok(refused(&answer)?.is_some())
+    let socket = super::this_computer()?.native();
+    let asked = ask_at(&socket, &json!({"native": WHO}))?;
+    certified_at(&socket, &asked, &json!({}))
 }
 
-/// Whether `answer` to a `seats#certified` call certified a key, refusing with its own words
-/// when it did not.
-fn refused(answer: &Value) -> Result<Option<String>, String> {
-    if let Some(error) = answer.pointer("/error/message").and_then(Value::as_str) {
-        return Err(error.to_owned());
+/// Certify the key the daemon at `socket` made this account by calling `seats#certified` with
+/// `args`, unless `asked` (its `account#who`) names none: the daemon names none for the account it
+/// runs as, or for a key already certified. Answers whether there was a key to certify, or the
+/// daemon's words when it refused.
+fn certified_at(socket: &Path, asked: &Value, args: &Value) -> Result<bool, String> {
+    if asked.get("certify").is_none() {
+        return Ok(false);
     }
-    if answer.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
-        let said = answer
-            .pointer("/result/content/0/text")
+    let (typed, text, failed) = DeviceActions::at(socket)
+        .tool("tilo_do", &json!({"path": "seats#certified", "args": args}))
+        .map_err(|refused| refused.message)?;
+    if failed {
+        return Err(typed
+            .pointer("/error/message")
             .and_then(Value::as_str)
-            .unwrap_or("the daemon refused the certificate");
-        return Err(said.to_owned());
+            .unwrap_or(&text)
+            .to_owned());
     }
-    Ok(answer
-        .pointer("/result/content/0/text")
-        .and_then(Value::as_str)
-        .map(str::to_owned))
+    Ok(true)
 }
 
 /// [`certify_my_key`], at the daemon whose native endpoint is `socket`.
@@ -285,20 +220,14 @@ fn refused(answer: &Value) -> Result<Option<String>, String> {
 /// # Errors
 /// As [`certify_my_key`].
 pub fn certify_key_at(
-    socket: &std::path::Path,
+    socket: &Path,
     signer: &dyn tilo_user_identity::StatementSigner,
 ) -> Result<bool, String> {
     let asked = ask_at(socket, &json!({"native": WHO}))?;
     let Some(certify) = asked.get("certify") else {
         return Ok(false);
     };
-    let key = |name: &str| -> Option<[u8; 32]> {
-        hex::decode(certify.get(name)?.as_str()?)
-            .ok()?
-            .try_into()
-            .ok()
-    };
-    let (Some(person), Some(device)) = (key("person"), key("key")) else {
+    let (Some(person), Some(device)) = (key_of(certify, "person"), key_of(certify, "key")) else {
         return Err("the daemon named no key to certify".to_owned());
     };
     if person != signer.public_key() {
@@ -318,29 +247,7 @@ pub fn certify_key_at(
     };
     tilo_user_identity::sign_device_cert(&mut cert, signer).map_err(|error| error.to_string())?;
     let cert = canonical_hex(&cert).ok_or("the certificate could not be encoded")?;
-    let answer = ask_at(
-        socket,
-        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-            "name": "tilo_do",
-            "arguments": {"path": "seats#certified", "args": {"cert": cert}},
-        }}),
-    )?;
-    if let Some(error) = answer.pointer("/error/message").and_then(Value::as_str) {
-        return Err(error.to_owned());
-    }
-    if answer.pointer("/result/isError").and_then(Value::as_bool) == Some(true) {
-        let said = answer
-            .pointer("/result/content/0/text")
-            .and_then(Value::as_str)
-            .unwrap_or("the daemon refused the certificate");
-        return Err(said.to_owned());
-    }
-    Ok(true)
-}
-
-/// Ask `request` at this computer's native endpoint, one line each way.
-fn ask(request: &Value) -> Result<Value, String> {
-    ask_at(&super::this_computer()?.native(), request)
+    certified_at(socket, &asked, &json!({"cert": cert}))
 }
 
 /// Ask `request` at the native endpoint `socket`, one line each way.
@@ -350,41 +257,17 @@ fn ask(request: &Value) -> Result<Value, String> {
 /// a fixed wait read the socket's timeout as the device's answer — "this account's identity was
 /// not made on this computer" when the daemon was merely starting — and left the person with no
 /// session. The wait is the daemon's to give, as it is for the shell's link.
-fn ask_at(socket: &std::path::Path, request: &Value) -> Result<Value, String> {
-    let mut stream = connect_to(socket, None)?;
+fn ask_at(socket: &Path, request: &Value) -> Result<Value, String> {
+    let mut stream = tilo_files::native::socket::connect(socket).map_err(|error| {
+        format!(
+            "Tilo isn't running on this computer ({}: {error})",
+            socket.display(),
+        )
+    })?;
     writeln!(stream, "{request}").map_err(|error| error.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.take(ANSWER_MAX))
         .read_line(&mut line)
         .map_err(|error| error.to_string())?;
     serde_json::from_str(&line).map_err(|error| format!("this computer's daemon answered: {error}"))
-}
-
-/// A connection to the native endpoint of the daemon at `place`, answering within `within` when
-/// the caller bounds the wait.
-fn connect(
-    place: &super::DaemonPlace,
-    within: Option<Duration>,
-) -> Result<tilo_files::native::socket::Stream, String> {
-    connect_to(&place.native(), within)
-}
-
-/// A connection to the native endpoint `socket`, answering within `within` when the caller bounds
-/// the wait, and with no read bound otherwise.
-fn connect_to(
-    socket: &std::path::Path,
-    within: Option<Duration>,
-) -> Result<tilo_files::native::socket::Stream, String> {
-    let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
-        format!(
-            "Tilo isn't running on this computer ({}: {error})",
-            socket.display(),
-        )
-    })?;
-    if let Some(within) = within {
-        stream
-            .set_read_timeout(Some(within))
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(stream)
 }
