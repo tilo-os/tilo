@@ -10,8 +10,8 @@ use linux_vm::apps::{self, Registry};
 use linux_vm::config::{Paths, VmConfig};
 use linux_vm::control::{self, ControlReply, ControlRequest};
 use linux_vm::grants::Grants;
+use linux_vm::image;
 use linux_vm::supervisor::Supervisor;
-use linux_vm::{confine, image, virtiofs};
 use linux_vm_protocol::client::{self, LaunchIo};
 use linux_vm_protocol::link::AgentLink;
 use linux_vm_protocol::waypipe::PORT_ENV;
@@ -86,11 +86,12 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let rest = args.split_off(1);
+    #[cfg(target_os = "linux")]
     if command == "confine-fs" {
-        let Some(confinement) = virtiofs::parse_confined(&rest) else {
+        let Some(confinement) = linux_vm::virtiofs::parse_confined(&rest) else {
             return fail("confine-fs: --ro DIR… --rw DIR… [--isolate [--hide DIR…]] -- PROGRAM…");
         };
-        return fail(&confine::exec_confined(&confinement));
+        return fail(&linux_vm::confine::exec_confined(&confinement));
     }
     #[cfg(target_os = "linux")]
     if command == "hosted" {

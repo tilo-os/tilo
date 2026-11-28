@@ -12,6 +12,7 @@ pub use linux_vm_protocol::GuestOs;
 
 pub mod apps;
 pub mod config;
+#[cfg(target_os = "linux")]
 pub mod confine;
 pub mod control;
 pub mod domain;
@@ -21,6 +22,7 @@ pub mod hosted;
 pub mod image;
 pub mod lifecycle;
 pub mod memory;
+#[cfg(target_os = "linux")]
 mod peer;
 #[cfg(feature = "supervisor")]
 pub mod supervisor;
