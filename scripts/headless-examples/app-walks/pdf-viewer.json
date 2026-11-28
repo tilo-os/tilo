@@ -1,0 +1,143 @@
+{
+  "app": "pdf-viewer",
+  "said": "PDF Viewer",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.pdf-viewer",
+    "package": "pdf"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open the PDF Viewer on an empty library, with a PDF in the person's files",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "pdf": {
+            "name": "Report.pdf",
+            "text": "The report's page",
+            "pages": 2
+          }
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Open PDF"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "document",
+      "said": "Open the PDF from the person's files and meet its first page",
+      "ops": [
+        {
+          "press_any": [
+            "Open PDF"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Report.pdf"
+          }
+        },
+        {
+          "wait_for": "Report.pdf"
+        },
+        {
+          "press_any": [
+            "Report.pdf"
+          ]
+        },
+        {
+          "wait_for": "Page 1 of 2"
+        }
+      ]
+    },
+    {
+      "id": "pages",
+      "said": "Turn to the second page and back",
+      "ops": [
+        {
+          "press_any": [
+            "Next"
+          ]
+        },
+        {
+          "wait_for": "Page 2 of 2"
+        },
+        {
+          "press_any": [
+            "Previous"
+          ]
+        },
+        {
+          "wait_for": "Page 1 of 2"
+        }
+      ]
+    },
+    {
+      "id": "picture",
+      "said": "Copy a part of the page as a picture with the Picture tool",
+      "ops": [
+        {
+          "press_any": [
+            "Tools"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "menuitem": "Picture"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "menuitem": "Picture"
+            }
+          ]
+        },
+        {
+          "drag": {
+            "window": [
+              [
+                0.45,
+                0.3
+              ],
+              [
+                0.62,
+                0.46
+              ]
+            ]
+          }
+        },
+        {
+          "wait_for": "Copied part of the page"
+        }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same page in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        },
+        {
+          "wait_for": "Page 1 of 2"
+        }
+      ]
+    }
+  ]
+}

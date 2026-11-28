@@ -3503,13 +3503,15 @@ class Walk:
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def op_pdf(self, value) -> dict:
-        """Write a one-page PDF drawing `text` in Helvetica where a person's files
-        are, so a walk opens a document a reader can actually read."""
+        """Write a PDF drawing `text` on each of its `pages` (one unless said) in
+        Helvetica where a person's files are, so a walk opens a document a reader
+        can actually read and page through."""
         name, text = value["name"], value.get("text", "A page")
+        pages = int(value.get("pages", 1))
         made = self.fixture(name)
-        made.write_bytes(one_page_pdf(text))
+        made.write_bytes(pdf_with_pages(text, pages))
         path = self.place(made, name)
-        return {"file": str(path), "bytes": path.stat().st_size}
+        return {"file": str(path), "bytes": path.stat().st_size, "pages": pages}
 
     def op_epub(self, value) -> dict:
         """Write a one-chapter EPUB where a person's files are: its title, author
@@ -3917,22 +3919,28 @@ def build_tapp(name: str, out: Path, state: Path) -> Path:
     return tapp
 
 
-def one_page_pdf(text: str) -> bytes:
-    """A one-page PDF drawing `text` in non-embedded Helvetica, behind a plain xref table:
-    the document a reader opens and shows, made here rather than carried in the tree."""
-    stream = (
-        "BT /F1 12 Tf 72 720 Td 14 TL\n"
-        f"({text}) Tj T*\n"
-        "ET"
-    )
+def pdf_with_pages(text: str, pages: int = 1) -> bytes:
+    """A PDF drawing `text` on each of its `pages` in non-embedded Helvetica, behind a plain
+    xref table: the document a reader opens, shows and pages through, made here rather than
+    carried in the tree. Object 1 is the catalogue, 2 the page tree, 3 the font, and each
+    page then its content stream and its page object, `(4 + 2i, 5 + 2i)` for the `i`th."""
+    kids = " ".join(f"{5 + 2 * index} 0 R" for index in range(pages))
     objects = [
         "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-        "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>",
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
     ]
+    for index in range(pages):
+        stream = (
+            "BT /F1 12 Tf 72 720 Td 14 TL\n"
+            f"({text} {index + 1}) Tj T*\n"
+            "ET"
+        )
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+        objects.append(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {4 + 2 * index} 0 R >>"
+        )
     pdf = bytearray(b"%PDF-1.4\n")
     offsets = []
     for number, body in enumerate(objects, 1):
