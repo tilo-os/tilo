@@ -218,9 +218,8 @@ struct Open {
     spawn_ms: f64,
     /// The window asked for to the app's toplevel being mapped.
     map_ms: f64,
-    /// The steps of the app's own start, from the launcher starting to its first frame, as its
-    /// startup timeline has them ([`steps`]).
-    steps: String,
+    /// When the first frame was presented, in microseconds since the Unix epoch.
+    presented_epoch_us: u128,
     /// What the open's own processes (the launcher, the sandbox, the app) ran and waited.
     app: Cpu,
     /// What the session ran and waited over the same span.
@@ -247,7 +246,7 @@ impl Open {
             spawn_ms: spawned.map_or(0.0, |line| number(line, "request_to_spawn_us") / 1000.0),
             map_ms: line("application toplevel mapped")
                 .map_or(0.0, |line| number(line, "request_to_map_us") / 1000.0),
-            steps: String::new(),
+            presented_epoch_us: field(first, "presented_epoch_us")?.parse().ok()?,
             app: Cpu::default(),
             session: Cpu::default(),
         })
@@ -276,8 +275,8 @@ impl Open {
     /// the first frame.
     fn phases(&self) -> String {
         format!(
-            "{},spawned:{:.0}ms,mapped:{:.0}ms,first-frame:{:.0}ms\n           {}",
-            self.dispatch, self.spawn_ms, self.map_ms, self.total_ms, self.steps
+            "{},spawned:{:.0}ms,mapped:{:.0}ms,first-frame:{:.0}ms",
+            self.dispatch, self.spawn_ms, self.map_ms, self.total_ms
         )
     }
 }
@@ -296,98 +295,6 @@ fn number(line: &str, name: &str) -> f64 {
     field(line, name)
         .and_then(|value| value.parse().ok())
         .unwrap_or(0.0)
-}
-
-/// The startup timeline `app` wrote on `device` up to its first frame: its state directory sits in
-/// the directory each workspace gives the app, beside the device's store.
-fn timeline(device: &Device, app: &str) -> Option<serde_json::Value> {
-    let workspaces = device.store().parent()?.join("tilo-workspaces");
-    std::fs::read_dir(workspaces).ok()?.find_map(|workspace| {
-        let path = workspace
-            .ok()?
-            .path()
-            .join(app)
-            .join(".local/state/startup-timeline.json");
-        let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        written["events"]
-            .as_array()?
-            .iter()
-            .any(|event| event["name"] == "first-frame-presented")
-            .then_some(written)
-    })
-}
-
-/// A timeline's steps, each the milliseconds since the one before it: the launcher's marks (Unix
-/// epoch), the app's process starting (`exec-to-main`: from the sandbox executing it to the app's
-/// own first mark), then the app's own marks up to its first frame. An app's step is
-/// `name:wall/ran`, the CPU its process ran in that step beside the wall time, where its timeline
-/// says. Steps under a millisecond of either are left out. The steps that ran the most follow,
-/// heaviest first, so a failure says where an app's own work went.
-fn steps(timeline: &serde_json::Value) -> String {
-    let mut marks: Vec<(String, f64, Option<f64>)> = timeline["launcher"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|mark| {
-            Some((
-                mark["name"].as_str()?.to_owned(),
-                mark["epoch_us"].as_f64()?,
-                None,
-            ))
-        })
-        .collect();
-    let origin = timeline["origin_epoch_us"].as_f64().unwrap_or(0.0);
-    marks.push(("exec-to-main".to_owned(), origin, None));
-    marks.extend(
-        timeline["events"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|event| {
-                Some((
-                    event["name"].as_str()?.to_owned(),
-                    origin + event["ns"].as_f64()? / 1000.0,
-                    event["cpu_ns"].as_f64(),
-                ))
-            }),
-    );
-    let mut previous = marks.first().map_or(0.0, |(_, at, _)| *at);
-    let mut previous_cpu = 0.0;
-    let mut out = Vec::new();
-    let mut ran = Vec::new();
-    for (name, at, cpu) in marks {
-        let elapsed = (at - previous) / 1000.0;
-        previous = previous.max(at);
-        let step_ran = cpu.map(|cpu| {
-            let step = (cpu - previous_cpu).max(0.0) / 1e6;
-            previous_cpu = previous_cpu.max(cpu);
-            step
-        });
-        match step_ran {
-            Some(step) if elapsed >= 1.0 || step >= 1.0 => {
-                out.push(format!("{name}:{elapsed:.0}/{step:.0}"));
-                ran.push((step, name));
-            }
-            None if elapsed >= 1.0 => out.push(format!("{name}:{elapsed:.0}")),
-            _ => {}
-        }
-    }
-    ran.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let heaviest = ran
-        .iter()
-        .take(6)
-        .map(|(step, name)| format!("{name} {step:.0}"))
-        .collect::<Vec<_>>();
-    if heaviest.is_empty() {
-        out.join(",")
-    } else {
-        format!(
-            "{}\n               ran most: {}",
-            out.join(","),
-            heaviest.join(", ")
-        )
-    }
 }
 
 /// Open `app` on `device` and return the open the session logged for it: the window asked for to
@@ -410,30 +317,8 @@ fn open_and_time(device: &Device, app: &str) -> Open {
     );
     let mut open = Open::logged(&segment, app)
         .unwrap_or_else(|| panic!("{app}'s open is in the log it was waited for: {segment}"));
-    let written = tilo_test_env::wait_for(
-        format!(
-            "{app}'s startup timeline up to its first frame on {}",
-            device.label
-        ),
-        || timeline(device, app),
-    );
-    open.steps = steps(&written);
-    let first_frame = first_frame_epoch_us(&written)
-        .unwrap_or_else(|| panic!("{app}'s timeline names its first frame: {written}"));
-    (open.app, open.session) = watch.until(first_frame);
+    (open.app, open.session) = watch.until(open.presented_epoch_us);
     open
-}
-
-/// When the app presented its first frame, in microseconds since the Unix epoch, as its timeline
-/// says.
-fn first_frame_epoch_us(timeline: &serde_json::Value) -> Option<u128> {
-    let origin = timeline["origin_epoch_us"].as_u64()?;
-    let ns = timeline["events"]
-        .as_array()?
-        .iter()
-        .find(|event| event["name"] == "first-frame-presented")?["ns"]
-        .as_u64()?;
-    Some(u128::from(origin) + u128::from(ns / 1000))
 }
 
 /// `ns` nanoseconds in milliseconds.
@@ -760,11 +645,9 @@ fn every_installed_app_opens_within_the_budget_its_manifest_declares() {
     );
 }
 
-/// An app's window opens on the frame the app first drew for it: a client waits for its initial
-/// configure before it draws, so the first frame it presents is the one the compositor maps and
-/// shows. Between that frame leaving the app and the compositor mapping its toplevel there is one
-/// dispatch of the session's loop, not a wait on anything else the session does: 910 ms there was a
-/// whole open's budget on its own, spent before the window could show.
+/// An app's window shows the frame it was mapped with at once: between the compositor mapping its
+/// toplevel and presenting its first frame there is one dispatch of the session's loop, not a
+/// wait on anything else the session does. 910 ms there was a whole open's budget on its own.
 #[test]
 fn an_apps_first_frame_is_mapped_without_waiting_a_second_one() {
     const APP: &str = "so.tilo.notes";
@@ -784,37 +667,27 @@ fn an_apps_first_frame_is_mapped_without_waiting_a_second_one() {
     let after = device.log().lines().count();
     device.open(APP);
     device.wait_for_window(APP);
-    let mapped = |line: &&str| {
-        line.contains("application toplevel mapped") && field(line, "package_id") == Some(APP)
-    };
-    let segment = tilo_test_env::wait_for(format!("{APP}'s map in {}'s log", device.label), || {
-        let log = device.log();
-        let segment = log.lines().skip(after).collect::<Vec<_>>().join("\n");
-        segment.lines().any(|line| mapped(&line)).then_some(segment)
-    });
-    let map = segment
-        .lines()
-        .find(mapped)
-        .unwrap_or_else(|| panic!("{APP}'s toplevel mapped in the open's log: {segment}"));
-    let mapped_epoch_us: u128 = field(map, "mapped_epoch_us")
-        .and_then(|value| value.parse().ok())
-        .unwrap_or_else(|| {
-            panic!("{APP}'s map is timed on the wall clock against the app's own frames: {map}")
-        });
-    let written = tilo_test_env::wait_for(
-        format!(
-            "{APP}'s startup timeline up to its first frame on {}",
-            device.label
-        ),
-        || timeline(&device, APP),
+    let segment = tilo_test_env::wait_for(
+        format!("{APP}'s first frame in {}'s log", device.label),
+        || {
+            let log = device.log();
+            let segment = log.lines().skip(after).collect::<Vec<_>>().join("\n");
+            Open::logged(&segment, APP).map(|_| segment)
+        },
     );
-    let first_frame_us = first_frame_epoch_us(&written)
-        .unwrap_or_else(|| panic!("{APP}'s timeline names its first frame: {written}"));
-    let wait_us = mapped_epoch_us.saturating_sub(first_frame_us);
+    let presented = segment
+        .lines()
+        .find(|line| {
+            line.contains("application first frame presented")
+                && field(line, "package_id") == Some(APP)
+        })
+        .unwrap_or_else(|| panic!("{APP}'s first frame in the open's log: {segment}"));
+    let wait_us = number(presented, "map_to_first_present_us");
     assert!(
-        wait_us <= 100_000,
-        "{APP}'s toplevel was mapped {wait_us} us after the app's first frame; it must be within \
-         100 ms of it, one dispatch of the session's loop:\n  map {map}\n  the open's phases:\n{}",
+        wait_us <= 100_000.0,
+        "{APP}'s first frame was presented {wait_us} us after its toplevel was mapped; it must be \
+         within 100 ms of it, one dispatch of the session's loop:\n  {presented}\n  the open's \
+         phases:\n{}",
         open_phase_lines(&segment),
     );
     device.stop();
