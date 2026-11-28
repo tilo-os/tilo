@@ -19,12 +19,7 @@ use clap::{Arg, Command};
 /// A visible command or argument with no help text is an error: the page is a
 /// reference, so nothing on it may stand as a bare name a reader cannot place.
 pub fn markdown() -> Result<String, String> {
-    let everything = crate::Here {
-        desktop: true,
-        apps: true,
-        system: true,
-        has: |_| true,
-    };
+    let everything = crate::Here::everything();
     let root = crate::command_here(everything).bin_name("tilo");
     let mut page = String::new();
     page.push_str("## Global options\n\n");

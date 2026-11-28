@@ -106,6 +106,23 @@ fn answer_alone(line: &str, problem: &str) -> Option<String> {
     Some(unreachable_answer(&request, problem)?.to_string())
 }
 
+/// Every line standard input holds until it ends, each answered by `answer` where it answers.
+pub(crate) fn answering(mut answer: impl FnMut(&str) -> Option<String>) -> Result<ExitCode> {
+    use std::io::{BufRead as _, Write as _};
+    let mut stdout = std::io::stdout().lock();
+    for line in std::io::stdin().lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(answer) = answer(&line) {
+            writeln!(stdout, "{answer}")?;
+            stdout.flush()?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// How long a status read waits for the daemon, when a command reads one rather than checking
 /// it: an answer comes in milliseconds, and a command that only reads waits no longer.
 const PEER_ANSWERING: Duration = Duration::from_secs(5);

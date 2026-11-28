@@ -59,15 +59,11 @@ pub fn add(
     }
     // A login that ended names a workspace no daemon here holds: the daemon serves this
     // computer as the person's own device instead, in the workspace it founded.
-    let here = login::home().filter(Device::reaches_a_server);
     let daemon = login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let cert = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
-        let workspace = match &here {
-            Some(device) => device.workspace.clone(),
-            None => client.founded_workspace().await?,
-        };
+        let workspace = workspace_of(client.founded_workspace()).await?;
         // A role the person did not ask for goes as null, which the daemon reads as none.
         let args = json!({ "plan": plan, "server": server.then_some(true) });
         let what = match (server, plan) {
@@ -183,7 +179,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     let runtime = login::runtime()?;
     let text = parsed.encode();
     let (device, label, capability, key_for) = runtime.block_on(async {
-        let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
+        let client = login::calls().await?;
         let workspace = here.workspace.clone();
         let answer = client
             .act(
@@ -239,7 +235,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         key_for: key_for.clone(),
     };
     let answer = runtime.block_on(async {
-        let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
+        let client = login::calls().await?;
         // The daemon signs the tab with the root it keeps, or hands the signing on.
         let argument = json!({"ticket": text, "tab": tab, "label": here.cert.device_label});
         client
@@ -284,11 +280,14 @@ fn shown(text: &str) -> String {
 }
 
 /// The workspace this computer's daemon serves, where its `devices` actions are asked: the one
-/// its login names, when that login reaches a server.
-fn named_workspace() -> Option<String> {
-    login::home()
-        .filter(Device::reaches_a_server)
-        .map(|device| device.workspace)
+/// its login names, when that login reaches a server, else `founded`'s.
+pub(crate) async fn workspace_of(
+    founded: impl std::future::Future<Output = Result<String>>,
+) -> Result<String> {
+    match login::home().filter(Device::reaches_a_server) {
+        Some(device) => Ok(device.workspace),
+        None => founded.await,
+    }
 }
 
 /// This computer's certificate: its login's, else the one its person's root here signed for it.
@@ -394,10 +393,6 @@ async fn confirmed(
     }
 }
 
-async fn daemon() -> Result<Calls> {
-    Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await
-}
-
 /// The start of a device's key, as lists show it.
 fn short(cert: &DeviceCert) -> String {
     hex::encode(cert.device_public_key.get(..6).unwrap_or_default())
@@ -418,12 +413,8 @@ pub fn key() -> Result<ExitCode> {
         )
         .map_err(anyhow::Error::msg)?
         .device_key()?;
-        let workspace = login::runtime()?.block_on(async {
-            Calls::open_with(Reach::default(), crate::mcp::reach_daemon)
-                .await?
-                .founded_workspace()
-                .await
-        })?;
+        let workspace = login::runtime()?
+            .block_on(async { login::calls().await?.founded_workspace().await })?;
         println!(
             "{}",
             json!({ "device": hex::encode(device), "workspace": workspace })
@@ -448,7 +439,7 @@ pub fn key() -> Result<ExitCode> {
 /// This computer's daemon does not run, or answered no list.
 pub fn list(json: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
-    let devices = login::runtime()?.block_on(async { devices(&daemon().await?).await })?;
+    let devices = login::runtime()?.block_on(async { devices(&login::calls().await?).await })?;
     if json {
         let listed: Vec<_> = devices
             .iter()
@@ -501,13 +492,10 @@ pub fn list(json: bool) -> Result<ExitCode> {
 pub fn rename(which: &str, name: &str) -> Result<ExitCode> {
     login::ensure_daemon()?;
     login::runtime()?.block_on(async {
-        let client = daemon().await?;
+        let client = login::calls().await?;
         let devices = devices(&client).await?;
         let target = pick(&devices, which)?;
-        let workspace = match named_workspace() {
-            Some(workspace) => workspace,
-            None => client.founded_workspace().await?,
-        };
+        let workspace = workspace_of(client.founded_workspace()).await?;
         client
             .act(
                 Some(&workspace),
@@ -582,7 +570,7 @@ fn pick<'a>(devices: &'a [FleetDevice], which: &str) -> Result<&'a FleetDevice> 
 pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
     login::runtime()?.block_on(async {
-        let client = daemon().await?;
+        let client = login::calls().await?;
         let devices = devices(&client).await?;
         let target = pick(&devices, which)?;
         if target.current {
@@ -594,10 +582,7 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
                 target.label
             );
         }
-        let workspace = match named_workspace() {
-            Some(workspace) => workspace,
-            None => client.founded_workspace().await?,
-        };
+        let workspace = workspace_of(client.founded_workspace()).await?;
         eprintln!(
             "tilo: revoking {}: confirm on the asking card on any of your devices. Nothing is \
              revoked until you do.",
@@ -743,7 +728,6 @@ pub enum RolloutCmd {
 /// # Errors
 /// The daemon is not running here, or refused the turn.
 pub fn rollout(cmd: RolloutCmd) -> Result<ExitCode> {
-    let here = login::home().filter(Device::reaches_a_server);
     let daemon = login::ensure_daemon()?;
     let (action, args) = match cmd {
         RolloutCmd::Prepare { target } => ("prepare", json!({ "target": target })),
@@ -774,10 +758,7 @@ pub fn rollout(cmd: RolloutCmd) -> Result<ExitCode> {
     let runtime = login::runtime()?;
     let answer = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
-        let workspace = match &here {
-            Some(device) => device.workspace.clone(),
-            None => client.founded_workspace().await?,
-        };
+        let workspace = workspace_of(client.founded_workspace()).await?;
         client
             .act(Some(&workspace), "updates", action, &args, "Update")
             .await

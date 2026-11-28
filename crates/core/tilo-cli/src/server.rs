@@ -20,7 +20,7 @@ use tilo_server_protocol::transport::{
 };
 
 use crate::api::{Calls, Reach};
-use crate::login::{self, Device};
+use crate::login;
 
 #[derive(Subcommand)]
 pub enum ServerCmd {
@@ -389,15 +389,11 @@ fn ask(server: &str, action: &str, mut args: Map<String, Value>) -> Result<Serve
     if let Some(endpoint) = &found.endpoint {
         args.insert("at".to_owned(), serde_json::to_string(endpoint)?.into());
     }
-    let here = login::home().filter(Device::reaches_a_server);
     let daemon = login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let answer = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), || Ok(daemon)).await?;
-        let workspace = match &here {
-            Some(device) => device.workspace.clone(),
-            None => client.founded_workspace().await?,
-        };
+        let workspace = crate::device::workspace_of(client.founded_workspace()).await?;
         client
             .act(
                 Some(&workspace),

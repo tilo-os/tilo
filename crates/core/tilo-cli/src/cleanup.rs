@@ -281,11 +281,16 @@ fn try_hold(lock: &Path) -> Result<Option<FileLock>> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    match FileLock::try_open(lock, LockMode::Exclusive) {
+    held(FileLock::try_open(lock, LockMode::Exclusive), lock)
+}
+
+/// `taken` as a lock this run holds, `Ok(None)` when another process holds it.
+fn held(taken: Result<FileLock, TryLockError>, path: &Path) -> Result<Option<FileLock>> {
+    match taken {
         Ok(held) => Ok(Some(held)),
         Err(TryLockError::WouldBlock) => Ok(None),
         Err(TryLockError::Error(error)) => {
-            Err(error).with_context(|| format!("locking {}", lock.display()))
+            Err(error).with_context(|| format!("locking {}", path.display()))
         }
     }
 }
@@ -584,26 +589,14 @@ fn try_hold_update_lock(path: &Path) -> Result<Option<FileLock>> {
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
         .open(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    match FileLock::try_exclusive(file) {
-        Ok(held) => Ok(Some(held)),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => {
-            Err(error).with_context(|| format!("locking {}", path.display()))
-        }
-    }
+    held(FileLock::try_exclusive(file), path)
 }
 
 /// The lock on a directory itself, as `flock DIR` takes it. `Ok(None)` while held.
 fn try_hold_directory(path: &Path) -> Result<Option<FileLock>> {
     let directory =
         std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    match FileLock::try_exclusive(directory) {
-        Ok(held) => Ok(Some(held)),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => {
-            Err(error).with_context(|| format!("locking {}", path.display()))
-        }
-    }
+    held(FileLock::try_exclusive(directory), path)
 }
 
 /// The OS image data no deployment uses, as bootc decides: see the module's account of

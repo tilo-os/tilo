@@ -65,20 +65,15 @@ pub fn home() -> Option<Device> {
 }
 
 pub(crate) fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .map(|name| name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "this computer".to_owned())
-}
-
-/// `"Reviewer on build-box"`, the name this computer asks the server for,
-/// which it keeps unless another device of the person reads by it, within
-/// what a certificate's label carries.
-#[must_use]
-pub fn label(agent: &str, host: &str) -> String {
-    tilo_device_identity::login::device_label(agent, host)
+    let name = rustix::system::uname()
+        .nodename()
+        .to_string_lossy()
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return "this computer".to_owned();
+    }
+    name
 }
 
 /// What a login that worked says: the device this computer now is, and which of the person's
@@ -134,6 +129,11 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?)
+}
+
+/// The calls of the person's own device: this computer's daemon, started when none answers.
+pub(crate) async fn calls() -> Result<Calls> {
+    Calls::open_with(crate::api::Reach::default(), crate::mcp::reach_daemon).await
 }
 
 /// The signed invitation a link carries in its fragment (`#/w/<workspace>?invite=<text>`), as the
@@ -200,10 +200,7 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     let agent = agent::given(agent);
     ensure_daemon()?;
     let runtime = runtime()?;
-    let client = runtime.block_on(Calls::open_with(
-        crate::api::Reach::default(),
-        crate::mcp::reach_daemon,
-    ))?;
+    let client = runtime.block_on(calls())?;
     let invite = tilo_workspace_join::encode_invitation_text(&invitation);
     let joined = runtime
         .block_on(client.account("account/workspaces", "join", &json!({"invite": invite})))
@@ -374,7 +371,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     }
     let runtime = runtime()?;
     // The label names the agent first, which is how the person's devices tell which runs here.
-    let said = label(
+    let said = tilo_device_identity::login::device_label(
         &agent.name,
         named.map_or_else(hostname, str::to_owned).as_str(),
     );
@@ -395,10 +392,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         .unwrap_or("this computer");
     let days = became.get("days").and_then(Value::as_u64).unwrap_or(0);
     println!("{}", logged_in_said(label, days, &agent.name));
-    let client = runtime.block_on(Calls::open_with(
-        crate::api::Reach::default(),
-        crate::mcp::reach_daemon,
-    ))?;
+    let client = runtime.block_on(calls())?;
     let text = parsed.encode();
     report(&runtime, &client, &text, Step::LoggedIn, &agent, None);
     let added = add_and_report(&runtime, &client, &text, &agent);

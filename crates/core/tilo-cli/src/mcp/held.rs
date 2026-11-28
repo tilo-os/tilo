@@ -31,18 +31,21 @@ pub(crate) fn ensure(place: &DaemonPlace) -> Result<(), String> {
 
 /// A connection to this computer's daemon, its service started when none listens.
 pub(crate) fn reach(place: &DaemonPlace) -> Result<UnixStream, String> {
-    place.reach(REACHING).map_err(|why| {
-        tracing::debug!(socket = %place.native().display(), %why, "Tilo's daemon did not answer");
-        "Tilo's background sync isn't answering on this computer. Run `tilo status` to see how \
-         it stands, then try again."
-            .to_owned()
-    })
+    explained(place.reach(REACHING), place)
 }
 
 /// A connection to this computer's daemon's native endpoint, its service started when none
 /// answers.
 pub(crate) fn reach_native(place: &DaemonPlace) -> Result<UnixStream, String> {
-    place.reach_native(REACHING).map_err(|why| {
+    explained(place.reach_native(REACHING), place)
+}
+
+/// `reached`, or why nothing did in words a person reads.
+fn explained(
+    reached: Result<UnixStream, String>,
+    place: &DaemonPlace,
+) -> Result<UnixStream, String> {
+    reached.map_err(|why| {
         tracing::debug!(socket = %place.native().display(), %why, "Tilo's daemon did not answer");
         "Tilo's background sync isn't answering on this computer. Run `tilo status` to see how \
          it stands, then try again."
@@ -53,19 +56,7 @@ pub(crate) fn reach_native(place: &DaemonPlace) -> Result<UnixStream, String> {
 /// Serve this connection's stdio alone, every call answered with `problem`: with no login to
 /// reach a daemon for, or while none could be reached.
 pub(crate) fn alone(problem: &str) -> Result<ExitCode> {
-    use std::io::{BufRead as _, Write as _};
-    let mut stdout = std::io::stdout().lock();
-    for line in std::io::stdin().lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(answer) = super::answer_alone(&line, problem) {
-            writeln!(stdout, "{answer}")?;
-            stdout.flush()?;
-        }
-    }
-    Ok(ExitCode::SUCCESS)
+    super::answering(|line| super::answer_alone(line, problem))
 }
 
 /// Relay this agent's stdio to the daemon over `stream`. A daemon that ends

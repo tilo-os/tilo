@@ -840,25 +840,35 @@ fn described(apps: &[App]) -> Result<serde_json::Value> {
 /// The Python types of `apps`: a module per app, their package, and the client of the API's
 /// operations.
 pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
+    let (mut files, _) = app_files(apps, "py", python_module)?;
+    files.push((PathBuf::from("__init__.py"), python_package()));
+    let client = python_client(&described(apps)?);
+    files.push((PathBuf::from(PYTHON_CLIENT), client));
+    Ok(files)
+}
+
+/// Types written for one language: each file's path and what it holds, and the modules' names.
+type Written = (Vec<(PathBuf, String)>, Vec<String>);
+
+/// One file per app, named for its module and written by `render`, and the modules' names in
+/// the order the apps were given.
+fn app_files(apps: &[App], extension: &str, render: fn(&App, &Types) -> String) -> Result<Written> {
     let mut files = Vec::new();
-    let modules = module_names(apps);
+    let mut modules = Vec::new();
+    let names = module_names(apps);
     for app in apps {
         let types = types_of(app)?;
-        let module = modules
+        let module = names
             .get(&app.id)
             .cloned()
             .unwrap_or_else(|| module_name(&app.id));
         files.push((
-            PathBuf::from(format!("{module}.py")),
-            python_module(app, &types),
+            PathBuf::from(format!("{module}.{extension}")),
+            render(app, &types),
         ));
+        modules.push(module);
     }
-    files.push((PathBuf::from("__init__.py"), python_package()));
-    files.push((
-        PathBuf::from(PYTHON_CLIENT),
-        python_client(&described(apps)?),
-    ));
-    Ok(files)
+    Ok((files, modules))
 }
 
 /// The package that holds the apps' modules: one module per app, each naming its own types
@@ -1243,7 +1253,7 @@ fn python_action(out: &mut String, action: &Action) {
             out.push_str("    )");
         }
     }
-    let result = python_result(action);
+    let result = result_of(action, "None", python_type);
     let _ = writeln!(out, " -> {result}:");
     if action.doc.is_empty() {
         doc(out, "Runs the app's action.", 2);
@@ -1336,16 +1346,12 @@ fn python_many(out: &mut String, action: &Action, many: &Many) {
     let _ = writeln!(out, "        return self.many(\"{}\", items)", action.id);
 }
 
-/// What an action answers: what the app declares, and the `Invocation` that
-/// follows one still running.
-fn python_result(action: &Action) -> String {
-    // An action call waits for its invocation and answers its result: a caller
-    // never gets an `Invocation` back from a typed method, only what the action
-    // produced.
-    action
-        .result
-        .as_ref()
-        .map_or_else(|| "None".to_owned(), python_type)
+/// What an action answers: what the app declares, and the `Invocation` that follows one still
+/// running. A call waits for its invocation and answers its result, so a caller never gets an
+/// `Invocation` back from a typed method, only what the action produced; `none` is what an action
+/// answering nothing says.
+fn result_of(action: &Action, none: &str, of: fn(&Ty) -> String) -> String {
+    action.result.as_ref().map_or_else(|| none.to_owned(), of)
 }
 
 // -- The Python client of `/v1` --------------------------------------------
@@ -1645,20 +1651,21 @@ fn py_of(schema: &serde_json::Value) -> String {
         if literals.len() == values.len() {
             return format!("Literal[{}]", literals.join(", "));
         }
-        return union_py(values.iter().map(py_of).collect());
+        return union(values.iter().map(py_of).collect(), "Any");
     }
     for cases in ["anyOf", "oneOf"] {
         if let Some(cases) = map.get(cases).and_then(Value::as_array) {
-            return union_py(cases.iter().map(py_of).collect());
+            return union(cases.iter().map(py_of).collect(), "Any");
         }
     }
     match map.get("type") {
-        Some(Value::Array(types)) => union_py(
+        Some(Value::Array(types)) => union(
             types
                 .iter()
                 .filter_map(Value::as_str)
                 .map(|ty| py_of_type(ty, schema))
                 .collect(),
+            "Any",
         ),
         Some(Value::String(ty)) => py_of_type(ty, schema),
         _ if map.contains_key("properties") => py_of_type("object", schema),
@@ -1690,8 +1697,8 @@ fn py_of_type(ty: &str, schema: &serde_json::Value) -> String {
     }
 }
 
-/// `types` as one: each once, `Any` for none.
-fn union_py(types: Vec<String>) -> String {
+/// `types` as one: each once, `none` when there are none of them.
+fn union(types: Vec<String>, none: &str) -> String {
     let mut once: Vec<String> = Vec::new();
     for ty in types {
         if !once.contains(&ty) {
@@ -1699,7 +1706,7 @@ fn union_py(types: Vec<String>) -> String {
         }
     }
     if once.is_empty() {
-        return "Any".to_owned();
+        return none.to_owned();
     }
     once.join(" | ")
 }
@@ -1727,26 +1734,10 @@ const TS_GLOBALS: [&str; 14] = [
 
 /// The TypeScript types of `apps`: a module per app, and the one that names them all.
 pub fn typescript_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
-    let mut files = Vec::new();
-    let mut modules = Vec::new();
-    let names = module_names(apps);
-    for app in apps {
-        let types = types_of(app)?;
-        let module = names
-            .get(&app.id)
-            .cloned()
-            .unwrap_or_else(|| module_name(&app.id));
-        files.push((
-            PathBuf::from(format!("{module}.ts")),
-            typescript_module(app, &types),
-        ));
-        modules.push(module);
-    }
+    let (mut files, modules) = app_files(apps, "ts", typescript_module)?;
     files.push((PathBuf::from("index.ts"), typescript_package(&modules)));
-    files.push((
-        PathBuf::from(TS_CLIENT),
-        typescript_client(&described(apps)?),
-    ));
+    let client = typescript_client(&described(apps)?);
+    files.push((PathBuf::from(TS_CLIENT), client));
     Ok(files)
 }
 
@@ -2149,7 +2140,11 @@ fn typescript_action(out: &mut String, action: &Action) {
     } else if !optional.is_empty() {
         let _ = write!(out, "args?: {}", typescript_args(&required, &optional));
     }
-    let _ = writeln!(out, "): Promise<{}>;", typescript_result(action));
+    let _ = writeln!(
+        out,
+        "): Promise<{}>;",
+        result_of(action, "void", typescript_type)
+    );
 }
 
 /// What an action's arguments object is: each parameter under the name the wire takes it by.
@@ -2216,17 +2211,6 @@ fn typescript_many(out: &mut String, action: &Action, many: &Many) {
     );
 }
 
-/// What an action answers: what the app declares, and the `Invocation` that
-/// follows one still running.
-fn typescript_result(action: &Action) -> String {
-    // An action call waits for its invocation and answers its result: a caller
-    // never gets an `Invocation` back from a typed method, only what the action
-    // produced.
-    action
-        .result
-        .as_ref()
-        .map_or_else(|| "void".to_owned(), typescript_type)
-}
 // -- The TypeScript client of `/v1` ----------------------------------------
 
 /// The module the TypeScript client is written to. No app's module can be named so: an app's
@@ -2565,8 +2549,8 @@ fn operations_of(described: &serde_json::Value) -> Vec<Operation<'_>> {
                 query: named("query").into_iter().map(|(name, _)| name).collect(),
                 body,
                 py_body,
-                answer: answer.unwrap_or_else(|| Answer::Json(union_of(answers))),
-                py_answer: union_py(py_answers),
+                answer: answer.unwrap_or_else(|| Answer::Json(union(answers, "unknown"))),
+                py_answer: union(py_answers, "Any"),
                 mutating: parameters.iter().any(|parameter| {
                     at(parameter, "/$ref")
                         .as_str()
@@ -2593,20 +2577,21 @@ fn ts_of(schema: &serde_json::Value) -> String {
         return value.to_string();
     }
     if let Some(values) = map.get("enum").and_then(Value::as_array) {
-        return union_of(values.iter().map(Value::to_string).collect());
+        return union(values.iter().map(Value::to_string).collect(), "unknown");
     }
     for cases in ["anyOf", "oneOf"] {
         if let Some(cases) = map.get(cases).and_then(Value::as_array) {
-            return union_of(cases.iter().map(ts_of).collect());
+            return union(cases.iter().map(ts_of).collect(), "unknown");
         }
     }
     match map.get("type") {
-        Some(Value::Array(types)) => union_of(
+        Some(Value::Array(types)) => union(
             types
                 .iter()
                 .filter_map(Value::as_str)
                 .map(|ty| ts_of_type(ty, schema))
                 .collect(),
+            "unknown",
         ),
         Some(Value::String(ty)) => ts_of_type(ty, schema),
         _ if map.contains_key("properties") => ts_of_type("object", schema),
@@ -2645,20 +2630,6 @@ fn ts_of_type(ty: &str, schema: &serde_json::Value) -> String {
         "object" => "Record<string, unknown>".to_owned(),
         _ => "unknown".to_owned(),
     }
-}
-
-/// `types` as one: each once, `unknown` for none.
-fn union_of(types: Vec<String>) -> String {
-    let mut once: Vec<String> = Vec::new();
-    for ty in types {
-        if !once.contains(&ty) {
-            once.push(ty);
-        }
-    }
-    if once.is_empty() {
-        return "unknown".to_owned();
-    }
-    once.join(" | ")
 }
 
 /// An object schema's properties as an interface's fields, each with what it is.

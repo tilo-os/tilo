@@ -46,27 +46,14 @@ enum Opened {
 /// # Errors
 /// Standard input or output failed.
 pub fn serve(key_file: Option<&Path>, workspace: Option<&str>) -> Result<ExitCode> {
-    use std::io::{BufRead as _, Write as _};
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
+    let runtime = crate::login::runtime()?;
     let opened = runtime.block_on(open(key_file, workspace));
-    let mut stdout = std::io::stdout().lock();
-    for line in std::io::stdin().lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let answer = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => runtime.block_on(answer(&opened, &request)),
-            Err(error) => Some(failure(&Value::Null, -32700, &error.to_string(), None)),
-        };
-        if let Some(answer) = answer {
-            writeln!(stdout, "{answer}")?;
-            stdout.flush()?;
-        }
-    }
-    Ok(ExitCode::SUCCESS)
+    super::answering(|line| match serde_json::from_str::<Value>(line) {
+        Ok(request) => runtime
+            .block_on(answer(&opened, &request))
+            .map(|answer| answer.to_string()),
+        Err(error) => Some(failure(&Value::Null, -32700, &error.to_string(), None).to_string()),
+    })
 }
 
 /// The calls `key_file` (or this computer's login) reaches, and the workspace they act in.

@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow};
 use tilo_device_identity::IdentityPaths;
+use tilo_device_identity::login::device_label;
 use tilo_device_identity::persist::read_device_cert;
 use tilo_identity::provisioning::IdentityStorage;
 use tilo_user_identity::DeviceCert;
@@ -195,20 +196,18 @@ fn first_tickets(
     if asked.is_empty() {
         return FirstTickets::default();
     }
-    let answer = match answer {
-        Ok(answer) => answer,
-        Err(why) => {
-            return FirstTickets {
-                tickets: Vec::new(),
-                error: Some(why),
-            };
-        }
+    let missed = |why: String| FirstTickets {
+        tickets: Vec::new(),
+        error: Some(why),
     };
-    let Some(answer) = answer else {
-        return FirstTickets {
-            tickets: Vec::new(),
-            error: Some("this computer's person was made without the call that issues them".into()),
-        };
+    let answer = match answer {
+        Ok(Some(answer)) => answer,
+        Ok(None) => {
+            return missed(
+                "this computer's person was made without the call that issues them".into(),
+            );
+        }
+        Err(why) => return missed(why),
     };
     let error = answer
         .get("tickets_error")
@@ -246,7 +245,7 @@ pub fn restore(words: &str) -> Result<Person> {
         &dir,
         &paths(),
         words,
-        Some(&login::label("tilo", &login::hostname())),
+        Some(&device_label("tilo", &login::hostname())),
         IdentityStorage::for_session(),
     )
     .map_err(
@@ -311,9 +310,7 @@ pub fn new_identity(
             })
         );
         if let Some(why) = missed {
-            return Err(anyhow!(
-                "This computer's person is made, but the tickets asked for were not issued: {why}"
-            ));
+            return not_issued(&why);
         }
         return Ok(std::process::ExitCode::SUCCESS);
     }
@@ -342,11 +339,16 @@ pub fn new_identity(
         println!("{}", ticket.ticket);
     }
     if let Some(why) = missed {
-        return Err(anyhow!(
-            "This computer's person is made, but the tickets asked for were not issued: {why}"
-        ));
+        return not_issued(&why);
     }
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// Why the tickets the founding was asked for were not issued.
+fn not_issued(why: &str) -> Result<std::process::ExitCode> {
+    Err(anyhow!(
+        "This computer's person is made, but the tickets asked for were not issued: {why}"
+    ))
 }
 
 #[cfg(test)]

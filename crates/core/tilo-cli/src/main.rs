@@ -342,12 +342,6 @@ enum Cmd {
         /// invitation link on a computer that holds no identity yet).
         #[arg(long)]
         name: Option<String>,
-        /// Print the identity as one line of JSON, `{"user_public_key": …,
-        /// "name": …, "tickets": [{"kind": …, "ticket": …}]}`, for a script that
-        /// declares the key, wants the name the person goes by with it, and adds
-        /// the first computers with the tickets.
-        #[arg(long, requires = "new_identity")]
-        json: bool,
         /// With `--new-identity`: a ticket this computer's new person issues as part
         /// of being made, so a script can add the first computers of a fresh
         /// installation without anyone there to approve them. `server` for a
@@ -387,9 +381,6 @@ enum Cmd {
         after_help = "Examples:\n  tilo folders\n  cp -r ~/Documents/contracts ~/Acme/\n  tilo folders add \"Book club\"\n  tilo folders free ~/Acme/videos\n  tilo folders pause Acme"
     )]
     Folders {
-        /// The answer as JSON.
-        #[arg(long, global = true)]
-        json: bool,
         #[command(subcommand)]
         cmd: Option<folders::FoldersCmd>,
     },
@@ -409,9 +400,6 @@ enum Cmd {
                       not in is refused, naming `tilo login`."
     )]
     Migrate {
-        /// The answer as JSON.
-        #[arg(long, global = true)]
-        json: bool,
         #[command(subcommand)]
         cmd: migrate::MigrateCmd,
     },
@@ -650,6 +638,16 @@ impl Here {
             apps: app_available(),
             system: system_available(),
             has: nouns::present,
+        }
+    }
+
+    /// A computer with everything installed: the tree completions and the reference page show.
+    fn everything() -> Self {
+        Self {
+            desktop: true,
+            apps: true,
+            system: true,
+            has: |_| true,
         }
     }
 }
@@ -1097,12 +1095,7 @@ fn run_do(
 /// `tilo completions <shell>`: every name this program goes by.
 fn completions(shell: Shell) -> Result<ExitCode> {
     let mut output = Vec::new();
-    let everything = Here {
-        desktop: true,
-        apps: true,
-        system: true,
-        has: |_| true,
-    };
+    let everything = Here::everything();
     clap_complete::generate(shell, &mut completing(everything), "tilo", &mut output);
     for name in ["device", "system"] {
         let mut device = device_here(DeviceCli::command(), everything);
@@ -1185,8 +1178,8 @@ fn run_hosted(
         // A migration runs on the device that holds the data and lands in the workspace that
         // device is in: `-w` names that workspace, and a workspace it is not in is refused there,
         // naming `tilo login`.
-        Cmd::Migrate { json, cmd } if workspace.is_some() => {
-            migrate::run(cmd, json, workspace.as_deref())
+        Cmd::Migrate { cmd } if workspace.is_some() => {
+            migrate::run(cmd, reach.json, workspace.as_deref())
         }
         other => return Err(Box::new(other)),
     })
@@ -1411,14 +1404,13 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Device { cmd } => run_system_command(cmd),
         Cmd::HelpMarkdown => help_markdown(),
         Cmd::Agent { cmd } => agent::run(cmd),
-        Cmd::Migrate { json, cmd } => migrate::run(cmd, json, None),
+        Cmd::Migrate { cmd } => migrate::run(cmd, cli.json, None),
         Cmd::Login {
             new_identity: true,
             name,
-            json,
             tickets,
             ..
-        } => new_identity(name.as_deref(), json, &tickets),
+        } => new_identity(name.as_deref(), cli.json, &tickets),
         Cmd::Login {
             ticket,
             agent,
@@ -1433,7 +1425,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Mcp { as_me: true } => {
             mcp::person::serve(cli.key_file.as_deref(), cli.workspace.as_deref())
         }
-        Cmd::Folders { json, cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), json),
+        Cmd::Folders { cmd } => folders::run(cmd.unwrap_or(folders::FoldersCmd::List), cli.json),
         Cmd::Package => bail!("package needs a verb; `tilo package --help` lists them"),
         Cmd::App { args } if args.first().is_some_and(|verb| verb == "open") => {
             app_open(args.get(1..).unwrap_or_default(), &spelling)
@@ -2004,16 +1996,7 @@ fn provider_finished(name: &str, started: Instant, succeeded: bool) {
 }
 
 fn is_root() -> bool {
-    // No libc dependency for one number: /proc/self/status is where it is anyway, and this
-    // only runs on Linux.
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find_map(|l| l.strip_prefix("Uid:"))
-                .and_then(|v| v.split_whitespace().next().map(str::to_string))
-        })
-        .is_some_and(|uid| uid == "0")
+    rustix::process::getuid().is_root()
 }
 
 /// Root reads the disk itself; anyone else asks the status socket, where there is one.
@@ -2312,6 +2295,9 @@ mod tests {
                 &["tilo", "read", "notes/Todo", "-w", "jane-doe", "--json"][..],
                 &["tilo", "run", "visa.tl", "-w", "jane-doe", "--json"][..],
                 &["tilo", "invocations", "-w", "jane-doe", "--limit", "5", "--json"][..],
+                &["tilo", "folders", "--json"][..],
+                &["tilo", "folders", "add", "Acme", "--json"][..],
+                &["tilo", "migrate", "status", "--json"][..],
             ] {
                 let cli = Cli::try_parse_from(args)
                     .unwrap_or_else(|error| panic!("tilo {args:?}: {error}"));
@@ -2330,8 +2316,8 @@ mod tests {
                 cli.json
             );
 
-            // A command with a meaning of its own for --json keeps it: the
-            // system's record, the health check, a new identity.
+            // A command whose --json means something of its own keeps it: the system's
+            // record. A new identity answers in JSON through the one global flag.
             let cli = Cli::try_parse_from(["tilo", "status", "--json"]).expect("status --json");
             assert!(
                 matches!(cli.cmd, Cmd::Status { json: true, .. }),
@@ -2340,7 +2326,7 @@ mod tests {
             let cli = Cli::try_parse_from(["tilo", "login", "--new-identity", "--json"])
                 .expect("login --json");
             assert!(
-                matches!(cli.cmd, Cmd::Login { json: true, .. }),
+                cli.json && matches!(cli.cmd, Cmd::Login { new_identity: true, .. }),
                 "login --json still asks for the identity as one line"
             );
         }

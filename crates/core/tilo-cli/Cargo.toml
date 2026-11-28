@@ -42,7 +42,7 @@ tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # The cleanup record, replaced atomically and durably.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-formats = { path = "../../ui/tilo-formats" }
-rustix = { workspace = true, features = ["fs", "net", "std", "process", "termios"] }
+rustix = { workspace = true, features = ["fs", "net", "std", "process", "system", "termios"] }
 tilo-paths.workspace = true
 # The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
 # control protocol's one client, shared with tilo-control.
