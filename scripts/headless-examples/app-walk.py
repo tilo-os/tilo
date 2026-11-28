@@ -3705,6 +3705,15 @@ class Walk:
             self.daemon = daemon
             started = round((time.monotonic() - began) * 1000)
             print(f"==> {self.variant}: session up in {started} ms", file=sys.stderr)
+        # The walk's own shots are of the light theme and the ones a step asks of the dark theme
+        # are named so: the person's appearance starts light, whatever this device starts in (its
+        # own default is dark), so every shot shows the theme its name says and every switch to
+        # dark is one the window draws. A walk of the shell waits for the shell to wear it before
+        # its first shot; an app's window opens in it.
+        if self.v.get("id") is None:
+            self.switch_shell_theme(False)
+        else:
+            self.set_dark(False)
         began = time.monotonic()
         self.began_epoch = time.time()
         try:
