@@ -1641,6 +1641,11 @@ impl Asked {
     pub fn answer(&self, session: &mut Session) -> Result<Value, String> {
         wait_for(session, "the API's answer", |_| self.0.get().cloned())
     }
+
+    /// The API's answer if it is in already, without running the session.
+    pub fn answered(&self) -> Option<Result<Value, String>> {
+        self.0.get().cloned()
+    }
 }
 
 impl Api {

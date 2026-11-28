@@ -216,6 +216,22 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
         session
             .step(std::time::Duration::from_millis(16))
             .expect("step");
+        assert_eq!(
+            session
+                .read(&power)
+                .and_then(|read| read.get("lock_minutes").cloned()),
+            Some(before.clone()),
+            "the lock changed before the person was asked"
+        );
+        // The call is taken and waits for the person: anything else before they are asked is
+        // the call refused or carried out without them.
+        if let Some(answered) = never.answered()
+            && answered.as_ref().map_or(true, |answer| {
+                answer.get("status") != Some(&json!("pending"))
+            })
+        {
+            panic!("the call was answered before the person was asked: {answered:?}");
+        }
         crate::common::on_screen_at(
             session,
             "Don't allow",
