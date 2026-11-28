@@ -130,6 +130,11 @@ pub trait KeySink: collab_types::signer::MaybeSendSync + 'static {
     /// it moved: the service decides under which group a record seals from
     /// what it reads here, so a workspace that settled must be readable there
     /// at once, not on a later pass.
+    ///
+    /// It is called while the workspace's lock is held, on a thread of the runtime serving the
+    /// workspaces, so it only queues and wakes. Taking the service's own lock here would wait on
+    /// a pass that is waiting for this workspace's lock, and would block that thread so that no
+    /// timeout around the caller fires: a create that settles the workspace never answers.
     fn settled(&self, workspace: &str, state: tilo_peer_state::StatePeer);
 
     /// Read the governance of `workspaces`, the service the sink was handed to, from the
