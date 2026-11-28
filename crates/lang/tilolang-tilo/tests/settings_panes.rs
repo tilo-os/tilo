@@ -472,46 +472,6 @@ fn the_region_pane_offers_the_languages_the_desktop_speaks() {
     );
 }
 
-/// About carries this computer's identity to another one: the backup is the devices resource's own
-/// verb, the same one the setup screens and an agent ask for, so a person writes one backup and
-/// every caller reaches it the same way.
-#[test]
-fn the_about_pane_offers_to_back_up_this_identity() {
-    let (host, _) = settings();
-    invoke(&host, "open_pane", vec![Value::text("about")]);
-    let view = open_view(&host, "about_pane");
-    let shown = texts(&view);
-    assert!(
-        shown.contains(&"Back up your identity".to_owned()),
-        "{shown:?}"
-    );
-
-    let sent = Rc::new(RefCell::new(Vec::new()));
-    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
-    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Back up"))
-        .expect("the backup is asked for");
-
-    let sent = sent.borrow();
-    let [
-        Invocation::Action {
-            app, name, target, ..
-        },
-    ] = sent.as_slice()
-    else {
-        panic!("one verb of the devices: {sent:?}");
-    };
-    assert_eq!(
-        (app.as_str(), name.as_str()),
-        ("so.tilo.device", "back-up-identity"),
-        "the devices resource's own verb, as its surface publishes it"
-    );
-    assert_eq!(
-        target.as_ref().map(ResourceRef::id_string).as_deref(),
-        Some("session:devices"),
-        "asked of this computer's devices, where the identity's backup is published"
-    );
-}
-
 /// The session's reading of the pictures the image ships, as a host hands it in.
 fn wallpapers(host: &Host, reading: serde_json::Value) {
     let resource =

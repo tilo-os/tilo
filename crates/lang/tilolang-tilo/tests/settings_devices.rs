@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use crate::fixtures::labelled;
 use crate::fixtures::texts;
+use crate::fixtures::{control_under, labelled};
 use tilolang_runtime::delegate::Invocation;
 use tilolang_runtime::{Actor, ResourceRef, Value, ViewInstance};
 use tilolang_tilo::host::Host;
@@ -146,6 +146,12 @@ fn pane() -> Pane {
 /// The pane on a device whose invite reading carries `ticket`: the code a new computer joins
 /// with, as the daemon printed it (empty until one is asked for).
 fn pane_with_ticket(ticket: &str) -> Pane {
+    pane_with(ticket, &serde_json::json!({ "colour": null }))
+}
+
+/// The pane on a device whose invite reading carries `ticket`, the person's identity settings
+/// reading `identity`.
+fn pane_with(ticket: &str, identity_reading: &serde_json::Value) -> Pane {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
     let ids = tilolang::IdsLock::parse(
@@ -169,10 +175,7 @@ fn pane_with_ticket(ticket: &str) -> Pane {
         .set_reading(&server(), &server_reading())
         .expect("the server reading is set");
     host.runtime()
-        .set_reading(
-            &identity(),
-            &serde_json::json!({ "colour": null }).to_string(),
-        )
+        .set_reading(&identity(), &identity_reading.to_string())
         .expect("the identity reading is set");
     host.runtime()
         .set_reading(
@@ -504,5 +507,68 @@ fn a_device_that_is_nobodys_lists_nothing_as_acting_as_you() {
     assert!(
         !shown.iter().any(|line| line == "Claude Code"),
         "nothing acts as anyone yet: {shown:?}"
+    );
+}
+
+/// A person who left the backup of their identity for later finds it on Devices, beside who they
+/// are: the backup is the devices resource's own verb, the one setup and an agent ask for, and the
+/// reminder they turned off turns on again there, as an edit of their identity settings, which
+/// the session's reminder reads. Once the identity is backed up, there is nothing to remind of.
+#[test]
+fn devices_offers_the_backup_and_turns_its_reminder_back_on() {
+    let pane = pane_with(
+        "",
+        &serde_json::json!({ "colour": null, "backup_reminders": false, "backed_up": false }),
+    );
+    let seen = watching(&pane);
+    pane.view
+        .press_answering(
+            &pane.host,
+            &me(),
+            &labelled(pane.view.tree(), "ui.Button", "Back up"),
+        )
+        .expect("the backup is asked for");
+    asked(&seen, "so.tilo.device", "back-up-identity");
+
+    seen.borrow_mut().clear();
+    let switch = control_under(pane.view.tree(), "Remind me to back up", "ui.Toggle");
+    assert_eq!(
+        pane.view.bound_value(&switch),
+        Some(Value::Bool(false)),
+        "the switch shows the reminders as the person left them"
+    );
+    pane.view
+        .edit(&switch, &Value::Bool(true))
+        .expect("the reminders turn on");
+    let edits = seen.borrow().clone();
+    let [
+        Invocation::Edit {
+            app,
+            target,
+            field,
+            value,
+            ..
+        },
+    ] = edits.as_slice()
+    else {
+        panic!("one field edit: {edits:?}");
+    };
+    assert_eq!(app.as_str(), "so.tilo.settings.sections");
+    assert_eq!(target.id_string(), "settings/identity");
+    assert_eq!(field.as_str(), "backup_reminders");
+    assert_eq!(*value, Value::Bool(true));
+
+    let backed_up = pane_with(
+        "",
+        &serde_json::json!({ "colour": null, "backup_reminders": true, "backed_up": true }),
+    );
+    let shown = texts(&backed_up.view);
+    assert!(
+        shown.iter().any(|line| line.starts_with("Backed up.")),
+        "{shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|line| line == "Remind me to back up"),
+        "a backed-up identity is reminded of nothing: {shown:?}"
     );
 }

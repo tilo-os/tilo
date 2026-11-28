@@ -343,6 +343,31 @@ view devices_pane() {
         ) {
             ui.TextInput(bind: me.colour, placeholder: "From your name")
         }
+        if listed.signed_in {
+            ui.ListRow(
+                "Back up your identity",
+                secondary: if me.backed_up == .some(true) {
+                    "Backed up. Make another to carry it to a new computer"
+                } else {
+                    "Carry it to another computer, sealed with a passphrase you choose"
+                },
+                icon: .key,
+            ) {
+                trailing: {
+                    ui.Button("Back up", size: .small) {
+                        on press: device.back_up_identity(listed)
+                    }
+                }
+            }
+            if me.backed_up != .some(true) {
+                setting(
+                    "Remind me to back up",
+                    "A notice every few days, until your identity is backed up",
+                ) {
+                    ui.Toggle(bind: me.backup_reminders)
+                }
+            }
+        }
     }
 }
 
@@ -602,20 +627,6 @@ view about_pane() {
         let u = device.update
         let apps = device.apps
         let host = device.host_info
-        let mine = device.devices
-        ui.Section("Your identity") {
-            ui.ListRow(
-                "Back up your identity",
-                secondary: "Carry it to another computer, sealed with a passphrase you choose",
-                icon: .key,
-            ) {
-                trailing: {
-                    ui.Button("Back up", size: .small) {
-                        on press: device.back_up_identity(mine)
-                    }
-                }
-            }
-        }
         ui.Section("Tilo") {
             ui.Text(
                 "Tilo is your workspace: one set of things, shared by the people and agents you work with, on the devices you signed in on.",

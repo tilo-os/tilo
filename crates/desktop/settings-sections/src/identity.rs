@@ -1,12 +1,13 @@
 //! The colour this person wears everywhere, as a setting: their focus ring,
 //! text caret and text selection, the mark their members see on their
-//! cursor, and their part of every presence list.
+//! cursor, and their part of every presence list. Beside it, whether their
+//! identity is backed up, and whether the system reminds them while it is not.
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 
 /// The colour the person wears, or following the one their identity derives.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
 #[model(check = IdentityPrefs::valid, check_reads = "colour", defaults)]
 pub struct IdentityPrefs {
     /// A presence hue's id (`teal`, `violet`, …); `None` derives it from the
@@ -15,6 +16,30 @@ pub struct IdentityPrefs {
     #[serde(default)]
     #[model(choices = colours::ids())]
     pub colour: Option<String>,
+    /// Whether a notice reminds them, every few days, of a backup of their
+    /// identity they left for later. On until they turn it off.
+    #[serde(default = "reminding")]
+    pub backup_reminders: bool,
+    /// Whether their identity is backed up: `Some(false)` once they left the
+    /// backup for later, `Some(true)` once one was verified. Setup and the
+    /// backup itself write it.
+    #[serde(default)]
+    #[model(readonly)]
+    pub backed_up: Option<bool>,
+}
+
+const fn reminding() -> bool {
+    true
+}
+
+impl Default for IdentityPrefs {
+    fn default() -> Self {
+        Self {
+            colour: None,
+            backup_reminders: reminding(),
+            backed_up: None,
+        }
+    }
 }
 
 impl IdentityPrefs {

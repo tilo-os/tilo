@@ -1869,6 +1869,8 @@ version = 1
 setters = true
 fields = [
   { path = "colour", type = { option = "text" } },
+  { path = "backup_reminders", type = "bool" },
+  { path = "backed_up", type = { option = "bool" }, readonly = true },
 ]
 
 [[resources.verbs]]
