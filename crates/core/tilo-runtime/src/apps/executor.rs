@@ -8,12 +8,14 @@
 //! OS it runs as the device's own account, which cannot start a process as the person, reach
 //! their display or see their processes: there a launch that shows a window is ordered of the
 //! seat's shell ([`SeatOrders`]), which starts it as the person, held, and reports the process
-//! back before letting it go on. A launch that shows nothing needs no display and still runs
-//! here. A daemon of the person's own account orders a window of the seat's shell too while one
-//! follows its orders: the shell holds the display and what the person gave the app (the files
-//! they chose for it, the devices they allowed it), so a window gets the same grants whoever
-//! asked for it. Either way a connection is admitted from the daemon's record, by its ticket,
-//! never from what the process or the shell says it is.
+//! back before letting it go on. An app's held connection needs no display and outlives any
+//! person's session: the device's app host starts it ([`runtime_portal::app_host`]), as an
+//! unprivileged account of its own, never as the device's. A daemon of the person's own account
+//! orders a window of the seat's shell too while one follows its orders: the shell holds the
+//! display and what the person gave the app (the files they chose for it, the devices they
+//! allowed it), so a window gets the same grants whoever asked for it. Either way a connection
+//! is admitted from the daemon's record, by its ticket, never from what the process or the shell
+//! says it is.
 //!
 //! The shell reports what became of each launch it started ([`LaunchEvent`]): the phases of its
 //! start, the processes its windows came from, its memory tier and how it ended. The daemon keeps

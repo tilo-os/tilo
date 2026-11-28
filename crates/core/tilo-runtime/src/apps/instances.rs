@@ -488,6 +488,22 @@ impl Instances {
         }
     }
 
+    /// A line to this daemon answered as the launch `pid` of `app` in `workspace`, as each app's
+    /// own tilolang process is handed one.
+    #[cfg(unix)]
+    pub(crate) fn own_line(
+        &self,
+        pid: u32,
+        app: &str,
+        workspace: &str,
+    ) -> std::io::Result<runtime_portal::packet::Descriptor> {
+        let lines = self
+            .own_lines
+            .get()
+            .ok_or_else(|| std::io::Error::other("this daemon hands its apps no line yet"))?;
+        lines(pid, app, workspace)
+    }
+
     /// Whether this device ever started a tilolang process, for a test that must see that
     /// nothing of an app ran: asking for the processes here never starts one.
     #[cfg(test)]

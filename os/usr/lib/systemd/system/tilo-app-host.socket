@@ -1,0 +1,17 @@
+# The device's app host: where the device's daemon, which runs as the device's
+# own account, has an app's held connection started as the unprivileged
+# account tilo-app instead (runtime_portal::app_host). Only the daemon
+# connects: each connection is one app's launch, served by its own
+# tilo-app-host@.service.
+[Unit]
+Description=Tilo app host socket
+
+[Socket]
+ListenSequentialPacket=/run/tilo-app-host.sock
+Accept=yes
+SocketUser=tilo
+SocketGroup=tilo
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

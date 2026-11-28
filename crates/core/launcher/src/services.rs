@@ -207,12 +207,146 @@ pub enum ServiceError {
     /// Only Settings adds accounts, so only Settings is handed the connections to their servers.
     #[error("service `accounts` is restricted to Settings, where accounts are added")]
     AccountsServiceUnauthorized,
+    /// The launch names a connection the device's daemon made for it, and its release did not
+    /// hand that connection.
+    #[error("the launch names a `{name}` connection its release did not hand")]
+    HandedMissing { name: String },
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct ServiceLaunchContext<'a> {
     pub app_id: &'a str,
     pub workspace_id: Option<&'a str>,
+    /// The connections the device's daemon made for this launch: a service among them is never
+    /// connected by path.
+    pub handed: Option<&'a Handed>,
+}
+
+/// The connections the device's daemon made for a launch and released it with, by the service
+/// each is ([`crate::run::LaunchOptions::handed_services`]). The daemon made each as the launch it
+/// recorded, so the launcher writes nothing on them: the service already knows whose they are. A
+/// launch handed any connects none of the daemon's services by path: what the daemon did not hand
+/// it, it goes without.
+#[derive(Debug, Default)]
+pub struct Handed {
+    services: std::sync::Mutex<BTreeMap<String, Descriptor>>,
+    by_the_daemon: bool,
+}
+
+impl Handed {
+    /// The connections the release handed for `names`, in that order, ahead of any other link.
+    ///
+    /// # Errors
+    /// The release handed fewer connections than the launch names.
+    pub fn take(names: &[String]) -> Result<Self, ServiceError> {
+        let mut handed = BTreeMap::new();
+        for name in names {
+            #[cfg(target_os = "linux")]
+            let link = runtime_portal::launch_hold::take_window_link();
+            #[cfg(not(target_os = "linux"))]
+            let link: Option<Descriptor> = None;
+            let Some(link) = link else {
+                return Err(ServiceError::HandedMissing { name: name.clone() });
+            };
+            handed.insert(name.clone(), link);
+        }
+        Ok(Self {
+            services: std::sync::Mutex::new(handed),
+            by_the_daemon: !names.is_empty(),
+        })
+    }
+
+    /// The connection handed for `name`, taken once.
+    fn service(&self, name: &str) -> Option<Descriptor> {
+        self.services
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name)
+    }
+}
+
+/// [`resolve_identity_bind_for_contract`], or the identity connection the daemon handed.
+///
+/// # Errors
+/// As [`resolve_identity_bind_for_contract`].
+pub fn resolve_identity_for_launch(
+    handed: &Handed,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+    requirement: Option<&ServiceReq>,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    if let Some(host) = handed.service(IDENTITY_SERVICE) {
+        return Ok(Some(ResolvedService {
+            name: IDENTITY_SERVICE.to_string(),
+            host,
+            child_fd: IDENTITY_CHILD_FD,
+        }));
+    }
+    if handed.by_the_daemon {
+        return Ok(None);
+    }
+    resolve_identity_bind_for_contract(app_id, workspace_id, no_services, requirement)
+}
+
+/// [`resolve_blob_bind`], or the document-media connection the daemon handed.
+///
+/// # Errors
+/// As [`resolve_blob_bind`].
+pub fn resolve_blobs_for_launch(
+    handed: &Handed,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    if let Some(host) = handed.service(BLOB_SERVICE) {
+        return Ok(Some(ResolvedService {
+            name: BLOB_SERVICE.to_string(),
+            host,
+            child_fd: BLOB_CHILD_FD,
+        }));
+    }
+    if handed.by_the_daemon {
+        return Ok(None);
+    }
+    resolve_blob_bind(app_id, workspace_id, no_services)
+}
+
+/// The identity connection a launch of `app_id` in `workspace_id` makes, made at `path` by
+/// whoever makes it for the launch: the launcher, or the device's daemon for a launch it hands
+/// its connections. `requirement` is what the app's manifest asks of the service.
+///
+/// # Errors
+/// The service does not answer at `path`, or the handshake could not be written.
+pub fn connect_identity(
+    path: &Path,
+    app_id: &str,
+    workspace_id: &str,
+    requirement: Option<&ServiceReq>,
+) -> std::io::Result<Descriptor> {
+    let presentation = requirement.is_some_and(|requirement| {
+        requirement.version >= tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
+    });
+    let mut stream = tilo_files::native::socket::connect(path)?;
+    write_identity_handshake_negotiated(&mut stream, app_id, workspace_id, presentation)?;
+    Ok(descriptor_of(stream))
+}
+
+/// The document-media connection a launch of `app_id` in `workspace_id` makes to the service at
+/// `path`, as [`resolve_blob_bind`] makes it, for the device's daemon to hand a launch: `None`
+/// where the service does not run or the launch has no scope there.
+///
+/// # Errors
+/// As [`resolve_blob_bind`].
+pub fn connect_blobs(
+    path: &Path,
+    app_id: &str,
+    workspace_id: &str,
+) -> Result<Option<Descriptor>, ServiceError> {
+    Ok(
+        resolve_blob_bind_at(path, app_id, Some(workspace_id), false)?
+            .map(|resolved| resolved.host),
+    )
 }
 
 /// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
@@ -795,6 +929,21 @@ fn resolve_service_binds_inner(
 
     for (name, req) in services {
         if name == SYSTEM_SERVICE || name == IDENTITY_SERVICE || name == SHELL_UI_SERVICE {
+            continue;
+        }
+        if let Some(host) = context
+            .and_then(|launch| launch.handed)
+            .and_then(|handed| handed.service(name))
+        {
+            while child_fd_reserved(next_child_fd) {
+                next_child_fd = next_child_fd.saturating_add(1);
+            }
+            out.push(ResolvedService {
+                name: name.clone(),
+                host,
+                child_fd: next_child_fd,
+            });
+            next_child_fd = next_child_fd.saturating_add(1);
             continue;
         }
         let path = socket_for(name);
@@ -1532,6 +1681,7 @@ mod tests {
                     ServiceLaunchContext {
                         app_id: "so.tilo.notes",
                         workspace_id: Some("workspace-7"),
+                        handed: None,
                     },
                 )
                 .expect("resolve");
@@ -1581,6 +1731,7 @@ mod tests {
                     ServiceLaunchContext {
                         app_id: "org.example.untrusted",
                         workspace_id: None,
+                        handed: None,
                     },
                 )
                 .expect_err("an app that declares the accounts service is not handed its network");

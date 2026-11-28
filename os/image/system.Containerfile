@@ -263,6 +263,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
     os/usr/lib/systemd/system/tilo-runtime-resident.service \
     os/usr/lib/systemd/system/tilo-runtime.service \
+    os/usr/lib/systemd/system/tilo-app-host.socket \
+    os/usr/lib/systemd/system/tilo-app-host@.service \
     os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service \
     os/usr/lib/systemd/system/tilo-session-recovery.service \
     os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
@@ -437,9 +439,11 @@ COPY \
     os/usr/lib/sysusers.d/tilo-identity.conf \
     os/usr/lib/sysusers.d/tilo-ntfs.conf \
     os/usr/lib/sysusers.d/tilo-runtime.conf \
+    os/usr/lib/sysusers.d/tilo-app.conf \
     /usr/lib/sysusers.d/
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-runtime.conf \
+ && systemd-sysusers /usr/lib/sysusers.d/tilo-app.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-ntfs.conf
 
@@ -798,6 +802,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl enable tilo-sandbox-view.service tilo-sandbox-view.path && \
     systemctl enable tilo-runtime-resident.service && \
     systemctl enable tilo-runtime.service && \
+    systemctl enable tilo-app-host.socket && \
     systemctl enable tilo-runtime-state-migrate.service && \
     systemctl enable NetworkManager-dispatcher.service
 

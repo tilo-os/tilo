@@ -76,6 +76,7 @@ fn gateway() -> Option<std::os::fd::OwnedFd> {
     let context = launcher::services::ServiceLaunchContext {
         app_id: PACKAGE,
         workspace_id: None,
+        handed: None,
     };
     match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
         Ok(resolved) => resolved.into_iter().next().map(|service| service.host),

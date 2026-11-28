@@ -78,6 +78,7 @@ fn connect(workspace: &str) -> SessionClient {
         launcher::services::ServiceLaunchContext {
             app_id: MANAGER,
             workspace_id: Some(workspace),
+            handed: None,
         },
     )
     .expect("the launcher hands the service off");

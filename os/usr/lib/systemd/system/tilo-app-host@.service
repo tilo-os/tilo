@@ -1,0 +1,44 @@
+# One app the device's daemon asked the app host to start
+# (tilo-app-host.socket): `tilo-launcher host` reads the daemon's order on its
+# standard input and runs the app's own `tilo-launcher run`, in the sandbox
+# every app runs in, as tilo-app. The account owns nothing but its own state,
+# so the app reaches nothing of the daemon's (its state, its key, its
+# descriptors) and nothing of a person's.
+[Unit]
+Description=Tilo app host: one app's launch
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+User=tilo-app
+Group=tilo-app
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/libexec/tilo/tilo-launcher host
+# Where each launch's grants are written. The daemon hands the launch its
+# connections; nothing here leads to the daemon's sockets.
+RuntimeDirectory=tilo-app-host/%i
+RuntimeDirectoryMode=0700
+StateDirectory=tilo-app
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/tilo-app
+# Every process of the launch goes with it.
+KillMode=control-group
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native

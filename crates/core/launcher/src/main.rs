@@ -154,6 +154,11 @@ enum Cmd {
         /// connections, handed to this process with the release (`LaunchOptions::tilolang_joined`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_connector"])]
         tilolang_joined: Option<String>,
+        /// A service whose connection the device's daemon made for this launch and hands it with
+        /// the release, in the order named (`LaunchOptions::handed_services`): the launch connects
+        /// none of these by path.
+        #[arg(long = "handed-service", hide = true)]
+        handed_services: Vec<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -323,6 +328,11 @@ enum Cmd {
         #[arg(long)]
         page: bool,
     },
+    /// Serve the device daemon's order on standard input, as the device's app host
+    /// (`tilo-app-host@.service`): start the app's own `run` as this unprivileged account, held
+    /// until the daemon recorded it, and follow it until it ends.
+    #[command(hide = true)]
+    Host,
 }
 
 fn default_system_registry() -> String {
@@ -632,6 +642,20 @@ fn dispatch_command(command: Cmd) -> ExitCode {
             storage,
             page,
         } => tilolang_process(runtime, app_runtime, storage, page),
+        Cmd::Host => app_host(),
+    }
+}
+
+/// Serve the daemon's order systemd handed this process (`tilo-app-host@.service`).
+fn app_host() -> ExitCode {
+    match runtime_portal::app_host::link_on_stdin()
+        .and_then(|link| runtime_portal::app_host::serve(&link))
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-launcher host: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -738,6 +762,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         tilolang_connector,
         tilolang_origin_reader,
         tilolang_joined,
+        handed_services,
         rest,
     } = command
     else {
@@ -767,6 +792,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         tilolang_connector,
         tilolang_origin_reader,
         tilolang_joined,
+        handed_services,
         rest,
     })
 }
@@ -978,6 +1004,7 @@ struct RunCliArgs {
     tilolang_connector: Option<String>,
     tilolang_origin_reader: bool,
     tilolang_joined: Option<String>,
+    handed_services: Vec<String>,
     rest: Vec<String>,
 }
 
@@ -1041,6 +1068,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         tilolang_connector: args.tilolang_connector,
         tilolang_origin_reader: args.tilolang_origin_reader,
         tilolang_joined: args.tilolang_joined,
+        handed_services: args.handed_services,
         granted: granted_from(args.grants),
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
@@ -1508,6 +1536,7 @@ fn run_installed(
         tilolang_connector: None,
         tilolang_origin_reader: false,
         tilolang_joined: None,
+        handed_services: Vec::new(),
         granted: Vec::new(),
     };
     match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {

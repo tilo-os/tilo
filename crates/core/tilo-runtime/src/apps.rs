@@ -157,13 +157,19 @@ pub struct Apps {
     /// Where `tilo-launcher` is looked for, in order.
     #[cfg(target_os = "linux")]
     launcher_candidates: Vec<PathBuf>,
+    /// The device's app host ([`runtime_portal::app_host`]), which starts an app's held
+    /// connection as an unprivileged account of its own where this daemon runs as the device's
+    /// account: `None` where the daemon runs as its person, and starts it itself.
+    #[cfg(target_os = "linux")]
+    app_host: Option<PathBuf>,
     launched: Arc<Launched>,
     /// The apps this runtime's own process is the windowless endpoint of,
     /// by app and workspace.
     own: Mutex<std::collections::BTreeSet<(String, String)>>,
-    /// The launches whose collaboration connection this process is opening itself, by app and
-    /// workspace: each attests the one connection from this process that names it, once.
-    launching: Mutex<Vec<(String, String)>>,
+    /// The launches whose collaboration connection this process is opening itself, by the launch
+    /// it opens it for where the launch is a recorded process, and by app and workspace: each
+    /// attests the one connection from this process that names it, once.
+    launching: Mutex<Vec<(Option<u32>, String, String)>>,
     /// The person's answers about this device's camera and microphone, kept in their own store
     /// once the runtime opened it.
     device_grants: tilo_peer_state::DeviceGrants,
@@ -255,6 +261,12 @@ impl Apps {
         );
         apps.connection_wait = true;
         apps.executor = executor::Executor::of_daemon(profile);
+        // A daemon of the device's own account never runs an app as that account: the app host
+        // starts what no person's session starts for it.
+        #[cfg(target_os = "linux")]
+        if apps.executor == executor::Executor::Seat {
+            apps.app_host = Some(PathBuf::from(runtime_portal::app_host::SOCKET));
+        }
         #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
             carried::install_carried_runtimes(catalog);
@@ -314,6 +326,8 @@ impl Apps {
             retry: Retry::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
+            #[cfg(target_os = "linux")]
+            app_host: None,
             launched,
             own: Mutex::default(),
             launching: Mutex::default(),
@@ -344,6 +358,14 @@ impl Apps {
         self
     }
 
+    /// Have the app host listening at `socket` start every held connection, as the computer's own
+    /// daemon on Tilo OS does.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn hosting_connections_at(mut self, socket: PathBuf) -> Self {
+        self.app_host = Some(socket);
+        self
+    }
+
     /// Wait for a start's first connection, as a daemon does.
     #[cfg(test)]
     pub(crate) fn expecting_connection(mut self) -> Self {
@@ -370,26 +392,42 @@ impl Apps {
     /// the one it opens for a process it is about to start, before the process runs.
     #[cfg(unix)]
     pub(crate) fn launching(&self, app: &str, workspace: &str) {
+        self.launching_as(None, app, workspace);
+    }
+
+    /// [`Self::launching`], for the recorded launch `launch`: the connection is admitted as that
+    /// launch's, and as nothing once it ended.
+    #[cfg(unix)]
+    fn launching_as(&self, launch: Option<u32>, app: &str, workspace: &str) {
         self.launching
             .lock_recover()
-            .push((app.to_owned(), workspace.to_owned()));
+            .push((launch, app.to_owned(), workspace.to_owned()));
+    }
+
+    /// The launch `launch` opens no connection after all.
+    #[cfg(target_os = "linux")]
+    fn not_launching(&self, launch: u32) {
+        self.launching
+            .lock_recover()
+            .retain(|(of, ..)| *of != Some(launch));
     }
 
     /// The launch of `app` in `workspace` this process opened a connection for, taken once by the
     /// connection that names it.
-    fn take_launching(&self, pid: u32, app: &str, workspace: &str) -> bool {
+    fn take_launching(&self, pid: u32, app: &str, workspace: &str) -> Option<OpenedFor> {
         if pid != std::process::id() {
-            return false;
+            return None;
         }
         let mut launching = self.launching.lock_recover();
-        let Some(at) = launching
+        let at = launching
             .iter()
-            .position(|(launched, into)| launched == app && into == workspace)
-        else {
-            return false;
-        };
-        launching.remove(at);
-        true
+            .position(|(_, launched, into)| launched == app && into == workspace)?;
+        Some(
+            launching
+                .remove(at)
+                .0
+                .map_or(OpenedFor::Starting, OpenedFor::Recorded),
+        )
     }
 
     /// Whether `pid` is this runtime's own process serving `app` in
@@ -1332,12 +1370,22 @@ impl Apps {
         // settings) unread, and a capture that joins its workspace unreachable.
         if !self
             .launched
-            .record_showing(launch.pid, &app.app_id, workspace, shows, open, ticket)
+            .record_launch(&launch, (&app.app_id, workspace, shows, open), ticket)
         {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
             ));
+        }
+        // A launch the app host started connects nothing itself: its connections are made now,
+        // each bound to the record just made.
+        #[cfg(target_os = "linux")]
+        if let Running::Hosted { handing, .. } = &mut launch.child
+            && let Err(error) = handing.bind(self, launch.pid, (app.app_id.as_str(), workspace))
+        {
+            self.launched.forget(launch.pid);
+            launch.kill();
+            return Err(format!("refusing to launch {app_id}: {error}"));
         }
         // Only now may the launcher go on and connect: the broker attests it
         // once, against the record just made.
@@ -1827,11 +1875,26 @@ impl LauncherServices for Apps {
             return Ok(Some(launch));
         }
         // A connection this process opened for a process it is starting: that launch, once.
-        if window_instance.is_none() && self.take_launching(pid, app, workspace) {
+        if window_instance.is_none()
+            && let Some(launch) = self.take_launching(pid, app, workspace)
+        {
+            let OpenedFor::Recorded(launch) = launch else {
+                return Ok(Some(AuthenticatedApplicationLaunch {
+                    continuation_instance: None,
+                    launch_ticket: None,
+                    windowless: false,
+                    opened_for: None,
+                    opened_with: None,
+                }));
+            };
+            // Made for a launch this daemon recorded: that launch's, while it runs.
+            if !self.launched.attest(launch, app, workspace) {
+                return Ok(None);
+            }
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,
-                launch_ticket: None,
-                windowless: false,
+                launch_ticket: self.launched.ticket(launch),
+                windowless: self.launched.no_window(launch, app, workspace),
                 opened_for: None,
                 opened_with: None,
             }));
@@ -1950,9 +2013,10 @@ fn hosts_window(manifest: &launcher::manifest::ManifestView, shows: Shows) -> bo
 pub struct Launch {
     pid: u32,
     #[cfg(target_os = "linux")]
-    child: std::process::Child,
+    child: Running,
     /// Holds the launcher before it connects anywhere until the launch is
-    /// recorded; `None` once released.
+    /// recorded; `None` once released. The app host holds a launch it started itself, and
+    /// releases it when asked ([`Running::Hosted`]).
     #[cfg(target_os = "linux")]
     registration: Option<launcher::launch_hold::LaunchHold>,
     /// The connection to the app's origin connector, released with the launcher's hold so the
@@ -1983,6 +2047,29 @@ pub struct Launch {
     stderr: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
+/// The launch a connection this process opened is for ([`Apps::launching`]).
+enum OpenedFor {
+    /// One it is about to start, which it records once it runs.
+    Starting,
+    /// The launch it recorded as this pid.
+    Recorded(u32),
+}
+
+/// Who runs a launch's process on Linux.
+#[cfg(target_os = "linux")]
+enum Running {
+    /// This daemon's own child: the daemon runs as its person.
+    Here(std::process::Child),
+    /// The device's app host's, as an unprivileged account of its own: the daemon runs as the
+    /// device's account, which no app runs as. `released` once it was let go on.
+    Hosted {
+        hosted: runtime_portal::app_host::Hosted,
+        released: bool,
+        /// The connections the daemon hands it with its release.
+        handing: linux::Handing,
+    },
+}
+
 impl Launch {
     /// Let a launcher held at its launch hold go on. Call once the
     /// launch is recorded for attestation.
@@ -2011,6 +2098,27 @@ impl Launch {
             let links: Vec<_> = links.iter().map(std::os::fd::AsFd::as_fd).collect();
             return hold.release_with_links(&links);
         }
+        #[cfg(target_os = "linux")]
+        if let Running::Hosted {
+            hosted,
+            released,
+            handing,
+        } = &mut self.child
+            && !*released
+        {
+            // A held connection is handed no connection of a window's or a capture's.
+            if !self.joined.is_empty() {
+                return Err(std::io::Error::other(
+                    "the app host hands a launch no joined instance's connections",
+                ));
+            }
+            *released = true;
+            let origin = self.origin_reader.take();
+            return hosted.release(
+                handing.take(),
+                origin.as_ref().map(std::os::fd::AsFd::as_fd),
+            );
+        }
         Ok(())
     }
 
@@ -2028,7 +2136,18 @@ impl Launch {
     fn ended(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         #[cfg(target_os = "linux")]
         {
-            self.child.try_wait()
+            match &mut self.child {
+                Running::Here(child) => child.try_wait(),
+                Running::Hosted { hosted, .. } => match hosted.try_wait() {
+                    None => Ok(None),
+                    Some(runtime_portal::app_host::Ended(Some(status))) => {
+                        Ok(Some(exit_status(status)))
+                    }
+                    Some(runtime_portal::app_host::Ended(None)) => Err(std::io::Error::other(
+                        "the app host went without saying how the app ended",
+                    )),
+                },
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2054,9 +2173,9 @@ impl Launch {
     )]
     pub fn wait(self) -> Option<std::process::ExitStatus> {
         #[cfg(target_os = "linux")]
-        let status = {
-            let mut child = self.child;
-            child.wait().ok()
+        let status = match self.child {
+            Running::Here(mut child) => child.wait().ok(),
+            Running::Hosted { hosted, .. } => hosted.wait().map(exit_status),
         };
         #[cfg(target_os = "macos")]
         let status = {
@@ -2082,10 +2201,15 @@ impl Launch {
     )]
     fn kill(self) {
         #[cfg(target_os = "linux")]
-        {
-            let mut child = self.child;
-            let _ = child.kill();
-            let _ = child.wait();
+        match self.child {
+            Running::Here(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Running::Hosted { hosted, .. } => {
+                hosted.stop();
+                let _ = hosted.wait();
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -2096,6 +2220,12 @@ impl Launch {
         #[cfg(windows)]
         self.app.kill();
     }
+}
+
+/// The exit status of the raw wait `status` the app host said.
+#[cfg(target_os = "linux")]
+fn exit_status(status: i32) -> std::process::ExitStatus {
+    std::os::unix::process::ExitStatusExt::from_raw(status)
 }
 
 /// The processes this runtime launched, by pid, with the start time that
@@ -2132,7 +2262,8 @@ struct StartedRecord {
 }
 
 struct LaunchRecord {
-    start_time: u64,
+    /// Which process the record is, while it runs.
+    process: Pinned,
     app: String,
     workspace: String,
     /// The app has connected: its launch is up, and the start may answer.
@@ -2148,6 +2279,41 @@ struct LaunchRecord {
     no_window: bool,
     /// The launch is the app's held connection.
     connection: bool,
+}
+
+/// How a launch's record knows its process is still the one it started, and not a later process
+/// the kernel gave the same pid.
+enum Pinned {
+    /// The process's start time, as the kernel says it: one this daemon can read.
+    Started(u64),
+    /// A pidfd of the process, which the app host started as an account of its own: its start
+    /// time is not this daemon's to read, and the pidfd says whether it still runs. Stopped through
+    /// its host.
+    #[cfg(target_os = "linux")]
+    Hosted {
+        process: Arc<std::os::fd::OwnedFd>,
+        stop: runtime_portal::app_host::Stop,
+    },
+}
+
+impl Pinned {
+    /// Whether `pid` is still the process this pins.
+    fn is(&self, pid: u32) -> bool {
+        match self {
+            Self::Started(start) => process_start_time(pid) == Some(*start),
+            #[cfg(target_os = "linux")]
+            Self::Hosted { process, .. } => runtime_portal::app_host::runs(process),
+        }
+    }
+
+    /// The process's start time, where this daemon read it.
+    const fn start_time(&self) -> Option<u64> {
+        match self {
+            Self::Started(start) => Some(*start),
+            #[cfg(target_os = "linux")]
+            Self::Hosted { .. } => None,
+        }
+    }
 }
 
 /// What process of an app this daemon started a pid is, while it is still that process.
@@ -2183,10 +2349,51 @@ impl Launched {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
+        self.insert_launch(
+            pid,
+            Pinned::Started(start_time),
+            (app, workspace, shows, record),
+            ticket,
+        );
+        true
+    }
+
+    /// Record the launch `launch` made as `app` in `workspace` showing `shows` on `record`: by its
+    /// pidfd where the app host started it, by its start time otherwise; `false` when neither
+    /// pins it.
+    fn record_launch(
+        &self,
+        launch: &Launch,
+        (app, workspace, shows, record): (&str, &str, Shows, Option<&str>),
+        ticket: u64,
+    ) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Running::Hosted { hosted, .. } = &launch.child {
+            self.insert_launch(
+                launch.pid,
+                Pinned::Hosted {
+                    process: hosted.process(),
+                    stop: hosted.stopper(),
+                },
+                (app, workspace, shows, record),
+                ticket,
+            );
+            return true;
+        }
+        self.record_showing(launch.pid, app, workspace, shows, record, ticket)
+    }
+
+    fn insert_launch(
+        &self,
+        pid: u32,
+        process: Pinned,
+        (app, workspace, shows, record): (&str, &str, Shows, Option<&str>),
+        ticket: u64,
+    ) {
         self.0.lock_recover().insert(
             pid,
             LaunchRecord {
-                start_time,
+                process,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
                 connected: false,
@@ -2196,7 +2403,6 @@ impl Launched {
                 connection: shows == Shows::Connection,
             },
         );
-        true
     }
 
     /// Whether a process this device started with no window runs `app` in `workspace` on
@@ -2208,7 +2414,7 @@ impl Launched {
                 && record.app == app
                 && record.workspace == workspace
                 && record.record.as_deref() == on
-                && process_start_time(*pid) == Some(record.start_time)
+                && record.process.is(*pid)
         })
     }
 
@@ -2224,7 +2430,7 @@ impl Launched {
                     && record.app == app
                     && record.workspace == workspace
                     && record.record.as_deref() == on
-                    && process_start_time(**pid) == Some(record.start_time)
+                    && record.process.is(**pid)
             })
             .count()
     }
@@ -2334,7 +2540,7 @@ impl Launched {
         self.0
             .lock_recover()
             .get(&pid)
-            .map(|record| record.start_time)
+            .and_then(|record| record.process.start_time())
     }
 
     /// Forget the record of `pid`, once the process started at `started` has ended: a record a
@@ -2344,7 +2550,7 @@ impl Launched {
         let mut launches = self.0.lock_recover();
         if launches
             .get(&pid)
-            .is_some_and(|record| record.start_time == started)
+            .is_some_and(|record| record.process.start_time() == Some(started))
         {
             launches.remove(&pid);
         }
@@ -2478,20 +2684,16 @@ impl Launched {
                 },
             )
         });
-        let recorded = started.or_else(|| {
-            self.0.lock_recover().get(&pid).map(|record| {
-                (
-                    record.start_time,
-                    ProcessOf::Launched {
-                        app: record.app.clone(),
-                        workspace: record.workspace.clone(),
-                        connection: record.connection,
-                    },
-                )
+        if let Some((start_time, process)) = started {
+            return (process_start_time(pid) == Some(start_time)).then_some(process);
+        }
+        self.0.lock_recover().get(&pid).and_then(|record| {
+            record.process.is(pid).then(|| ProcessOf::Launched {
+                app: record.app.clone(),
+                workspace: record.workspace.clone(),
+                connection: record.connection,
             })
-        });
-        let (start_time, process) = recorded?;
-        (process_start_time(pid) == Some(start_time)).then_some(process)
+        })
     }
 }
 

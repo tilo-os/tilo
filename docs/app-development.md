@@ -275,6 +275,15 @@ app's tilolang host, where its records, actions and views answer as any
 tilolang app's. The SDK's native addon is not something a package vendors: the
 bun runtime package carries it at `node_modules/tilo-sdk-native`.
 
+A held connection runs with no person signed in. Where the device's daemon is
+the system's own (Tilo OS, whose daemon runs as the device's account), the
+daemon decides the launch and the device's app host (`tilo-app-host.socket`)
+starts it, in the same sandbox, as the unprivileged account `tilo-app`: the
+program never runs as the daemon's account and never reaches its state. The
+daemon makes the program's connections to its services itself, each bound to
+that launch, and hands them over as it starts: the program has no path to the
+daemon's sockets.
+
 An app that calls adds `calls = true` to `[sandbox.net]`: UDP audio and video to
 any public internet address, through the same proxy and only while a call of the
 app is live. Its TCP stays what `hosts` names.

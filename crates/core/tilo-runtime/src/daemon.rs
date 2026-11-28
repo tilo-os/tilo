@@ -1839,9 +1839,9 @@ impl Native {
         // A process the daemon started is the app it runs, and reaches that app's own actions
         // alone: never the person's MCP projection or their device's actions. The launch record
         // is what decides it, and it decides it whatever account the process runs as: an app's
-        // held connection is started by the daemon's own app host, so it runs as the daemon's
-        // account, and the device's rule below would otherwise answer it with the device's
-        // actions, which reach no workspace of the app's.
+        // held connection runs as the device's app host's account (`runtime_portal::app_host`),
+        // which no person signed in as, and the device's rule below would otherwise answer it
+        // with the device's actions, which reach no workspace of the app's.
         if let Some(app) = seated.seat.app.clone() {
             let Some(take) = self.app() else {
                 // The app's services are not up: it reaches nothing until they are, never the

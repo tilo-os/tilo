@@ -65,7 +65,7 @@ fn spawn(
     (shows, open): (super::Shows, Option<&str>),
     runs: &super::Runs,
 ) -> Result<Launch, String> {
-    let (mut command, launcher) = command(
+    let (mut command, launcher, grants) = command(
         apps,
         app,
         workspace,
@@ -73,6 +73,17 @@ fn spawn(
         original,
         runs.writes.as_ref(),
     )?;
+    // A held connection runs with no person's session to start it, so where this daemon runs as
+    // the device's own account the app host starts it, as an account of its own: never this one.
+    let host = apps
+        .app_host
+        .as_deref()
+        .filter(|_| shows == super::Shows::Connection);
+    if host.is_none()
+        && let Some(grants) = &grants
+    {
+        command.arg("--capabilities").arg(grants);
+    }
     if let Some(window) = runs.window {
         // The tab the shell holds for this launch: the app's window takes it.
         command.env("TILO_CONTINUITY_INSTANCE", window.to_string());
@@ -118,10 +129,25 @@ fn spawn(
         command.arg("--tilolang-origin-reader");
     }
     let joined = joined_links(&mut command, workspace, runs)?;
+    // A launch the app host starts reaches none of this daemon's sockets: the daemon hands it
+    // each connection, and the launch names them to take them.
+    let handing = host.map(|_| Handing::for_launch(app, workspace, sockets));
+    for name in handing.iter().flat_map(Handing::names) {
+        command.arg("--handed-service").arg(name);
+    }
     // A capture names what it captures, exactly as a person's own run of the app does; the `--`
     // tail is the app's own and comes after every flag the launcher reads.
     if !runs.args.is_empty() {
         command.arg("--").args(&runs.args);
+    }
+    if let (Some(host), Some(handing)) = (host, handing) {
+        return hosted(
+            host,
+            app,
+            (&command, grants.as_deref()),
+            handing,
+            (origin_reader, joined),
+        );
     }
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
@@ -136,7 +162,7 @@ fn spawn(
     Ok(Launch {
         stderr: said_by(&mut child),
         pid: child.id(),
-        child,
+        child: super::Running::Here(child),
         registration: Some(registration),
         origin_reader,
         joined,
@@ -225,7 +251,7 @@ pub(super) fn window(
     Ok(Launch {
         stderr: said_by(&mut child),
         pid: child.id(),
-        child,
+        child: super::Running::Here(child),
         registration: Some(registration),
         origin_reader: None,
         joined: Vec::new(),
@@ -296,6 +322,178 @@ fn said_by(child: &mut std::process::Child) -> std::sync::Arc<std::sync::Mutex<S
     stderr
 }
 
+/// The connections this daemon hands a launch the app host starts ([`runtime_portal::app_host::Handed`]),
+/// in place of the sockets it would connect: the identity and document-media services' made at
+/// once, their scope named; its native line and its collaboration connection made once the launch
+/// is recorded ([`Self::bind`]), as that launch.
+pub(super) struct Handing {
+    handed: runtime_portal::app_host::Handed,
+    native: bool,
+    collab: Option<std::path::PathBuf>,
+}
+
+impl Handing {
+    /// What `app`'s launch in `workspace` is handed of the profile's `sockets`: what its launcher
+    /// would connect there, as the manifest declares it.
+    fn for_launch(app: &InstalledApp, workspace: &str, sockets: &Sockets) -> Self {
+        use launcher::services::{COLLAB_SERVICE, IDENTITY_SERVICE, NATIVE_SERVICE};
+        let services = &app.manifest.sandbox.services;
+        let app_id = app.app_id.as_str();
+        // Where a service does not answer, the launch goes without it, as a launcher that
+        // connects the service itself does.
+        let identity = launcher::services::connect_identity(
+            &sockets.identity,
+            app_id,
+            workspace,
+            services.get(IDENTITY_SERVICE),
+        )
+        .inspect_err(|error| tracing::warn!(app_id, %error, "the identity service is unavailable"))
+        .ok();
+        let blobs = launcher::services::connect_blobs(&sockets.blobs, app_id, workspace)
+            .inspect_err(|error| tracing::warn!(app_id, %error, "document media is unavailable"))
+            .ok()
+            .flatten();
+        Self {
+            handed: runtime_portal::app_host::Handed {
+                native: None,
+                collab: None,
+                identity,
+                blobs,
+            },
+            native: services.contains_key(NATIVE_SERVICE),
+            collab: services
+                .contains_key(COLLAB_SERVICE)
+                .then(|| sockets.collab.clone()),
+        }
+    }
+
+    /// The services the launch takes from its release, in the order it hands them.
+    fn names(&self) -> impl Iterator<Item = &'static str> {
+        let handing = [
+            self.native,
+            self.collab.is_some(),
+            self.handed.identity.is_some(),
+            self.handed.blobs.is_some(),
+        ];
+        runtime_portal::app_host::Handed::ORDER
+            .into_iter()
+            .zip(handing)
+            .filter_map(|(name, handing)| handing.then_some(name))
+    }
+
+    /// Make the connections bound to the launch `pid` that `apps` recorded as `app` in
+    /// `workspace`: its native line, answered as that launch, and its collaboration connection,
+    /// which the service admits as that launch's once.
+    pub(super) fn bind(
+        &mut self,
+        apps: &Apps,
+        pid: u32,
+        (app, workspace): (&str, &str),
+    ) -> Result<(), String> {
+        if self.native {
+            self.handed.native = Some(
+                apps.instances
+                    .own_line(pid, app, workspace)
+                    .map_err(|error| format!("its native line: {error}"))?,
+            );
+        }
+        if let Some(socket) = &self.collab {
+            apps.launching_as(Some(pid), app, workspace);
+            let made = tilo_files::native::socket::connect(socket).and_then(|mut stream| {
+                launcher::services::write_collab_handoff(&mut stream, app, workspace)?;
+                Ok(stream)
+            });
+            match made {
+                Ok(stream) => {
+                    self.handed.collab = Some(runtime_portal::packet::descriptor_of(stream));
+                }
+                Err(error) => {
+                    apps.not_launching(pid);
+                    return Err(format!("its collaboration connection: {error}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The connections, once [`Self::bind`] made them.
+    pub(super) fn take(&mut self) -> runtime_portal::app_host::Handed {
+        std::mem::take(&mut self.handed)
+    }
+}
+
+/// Have the app host at `host` start `command`, the launcher's command for `app`, as it would run
+/// here: the daemon's own settings the launcher reads, the command's own, and the grants file
+/// `grants` as its content. The launcher waits at its launch hold until the launch is recorded
+/// and released with what `handing` makes for it.
+fn hosted(
+    host: &Path,
+    app: &InstalledApp,
+    (command, grants): (&Command, Option<&Path>),
+    handing: Handing,
+    (origin_reader, joined): (Option<std::os::fd::OwnedFd>, Vec<std::os::fd::OwnedFd>),
+) -> Result<Launch, String> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = |value: &std::ffi::OsStr| value.as_bytes().to_vec();
+    let mut order =
+        runtime_portal::app_host::Order::new(Path::new(command.get_program()), command.get_args());
+    // What the launcher reads of the daemon's own environment, as it inherited it when the daemon
+    // started it, then the command's own. Its runtime directory is the host's.
+    order.env = std::env::vars_os()
+        .filter(|(name, _)| {
+            name.to_str()
+                .is_some_and(|name| name.starts_with("TILO_") || name == "RUST_LOG")
+        })
+        .map(|(name, value)| (bytes(&name), Some(bytes(&value))))
+        .chain(
+            command
+                .get_envs()
+                .filter(|(name, _)| {
+                    *name != "XDG_RUNTIME_DIR" && *name != launcher::services::BLOB_SOCKET_ENV
+                })
+                .map(|(name, value)| (bytes(name), value.map(bytes))),
+        )
+        .collect();
+    order.grants = grants
+        .map(std::fs::read)
+        .transpose()
+        .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured = std::sync::Arc::clone(&stderr);
+    let hosted = runtime_portal::app_host::order(host, order, move |bytes| {
+        use std::io::Write as _;
+        // The app's words still go where the daemon's own go, as a launch it starts itself.
+        let _ = std::io::stderr().write_all(bytes);
+        let mut said = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if said.len() < 8192 {
+            said.push_str(&String::from_utf8_lossy(bytes));
+        }
+    })
+    .map_err(|error| {
+        format!(
+            "could not start {} through this device's app host at {}: {error}",
+            app.app_id,
+            host.display()
+        )
+    })?;
+    Ok(Launch {
+        stderr,
+        pid: hosted.pid(),
+        child: super::Running::Hosted {
+            hosted,
+            released: false,
+            handing,
+        },
+        registration: None,
+        origin_reader,
+        joined,
+        _link: None,
+        window_link: None,
+    })
+}
+
 /// A capture's instance joins its workspace over the connections made for it: the launch names the
 /// instance and its person, and the connections are released after the origin connection.
 fn joined_links(
@@ -330,7 +528,10 @@ pub(super) fn connector(
     original: &super::original::OriginalLaunch,
     (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
 ) -> Result<std::process::Child, String> {
-    let (mut command, launcher) = command(apps, app, workspace, sockets, original, None)?;
+    let (mut command, launcher, grants) = command(apps, app, workspace, sockets, original, None)?;
+    if let Some(grants) = grants {
+        command.arg("--capabilities").arg(grants);
+    }
     // What a launch that fails says is read here, to answer why it did not come up.
     command.stderr(std::process::Stdio::piped());
     // A connector draws nothing, opens nothing and reads no record: no display goes with it.
@@ -353,8 +554,9 @@ pub(super) fn connector(
     Ok(child)
 }
 
-/// The launcher's command for `app` in `workspace`, as installed, with the person's grants and
-/// the profile's services, and the launcher it runs: a window or a connector adds its own.
+/// The launcher's command for `app` in `workspace`, as installed, with the profile's services,
+/// the launcher it runs, and the file of the person's grants for it, which the caller hands on
+/// (`--capabilities`): a window or a connector adds its own.
 fn command(
     apps: &Apps,
     app: &InstalledApp,
@@ -362,7 +564,7 @@ fn command(
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
     writes: Option<&super::capture::Writes>,
-) -> Result<(Command, PathBuf), String> {
+) -> Result<(Command, PathBuf, Option<PathBuf>), String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let runtime_dir = service_directory(sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
@@ -391,9 +593,6 @@ fn command(
         &apps.launch_app_grants(app, workspace, writes),
     )
     .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
-    if let Some(path) = capabilities {
-        command.arg("--capabilities").arg(path);
-    }
     command
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env(launcher::services::BLOB_SOCKET_ENV, &sockets.blobs)
@@ -419,7 +618,7 @@ fn command(
             command.env_remove(name);
         }
     }
-    Ok((command, launcher))
+    Ok((command, launcher, capabilities))
 }
 
 /// `trust` as the launcher reads a workspace's trust list ([`tilo_control::packages::trust`]).

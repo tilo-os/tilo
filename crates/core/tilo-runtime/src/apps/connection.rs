@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::work::{HostConnections, StartRefusal};
 
-use super::{Apps, Launched, Shows, process_start_time};
+use super::{Apps, Launched, Shows};
 
 impl HostConnections for Apps {
     fn connections(&self) -> Vec<(String, Vec<String>)> {
@@ -223,21 +223,34 @@ impl Apps {
 
 impl Launched {
     /// End every process this device started with no window for `app` in `workspace` on no
-    /// record, each recognised by its launch record: the reaper that waits for it forgets it.
+    /// record, each recognised by its launch record: the reaper that waits for it forgets it. One
+    /// the app host started is ended through its host, which runs it as an account this daemon
+    /// cannot signal.
     pub(super) fn stop_no_window(&self, app: &str, workspace: &str) {
-        let pids: Vec<u32> = self
-            .0
-            .lock_recover()
-            .iter()
-            .filter(|(pid, record)| {
-                record.no_window
-                    && record.app == app
-                    && record.workspace == workspace
-                    && record.record.is_none()
-                    && process_start_time(**pid) == Some(record.start_time)
-            })
-            .map(|(pid, _)| *pid)
-            .collect();
+        let mut pids: Vec<u32> = Vec::new();
+        for (pid, record) in self.0.lock_recover().iter() {
+            if !(record.no_window
+                && record.app == app
+                && record.workspace == workspace
+                && record.record.is_none()
+                && record.process.is(*pid))
+            {
+                continue;
+            }
+            match &record.process {
+                #[cfg(target_os = "linux")]
+                super::Pinned::Hosted { stop, .. } => {
+                    tracing::info!(
+                        app,
+                        workspace,
+                        pid,
+                        "stopping an app's connection at its host"
+                    );
+                    stop.stop();
+                }
+                super::Pinned::Started(_) => pids.push(*pid),
+            }
+        }
         // No app process runs with no window on Windows: only tilolang apps run there, in
         // their processes, whose connections are their connectors.
         #[cfg(windows)]

@@ -18,7 +18,7 @@ use crate::sandbox::{DBusBindPlan, build_bwrap_argv};
 use crate::seccomp::compile_app_baseline;
 use crate::services::{
     ACCOUNT_CHILD_FD, EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext,
-    resolve_blob_bind, resolve_chooser_bind, resolve_clipboard_bind, resolve_notify_bind,
+    resolve_chooser_bind, resolve_clipboard_bind, resolve_notify_bind,
     resolve_service_binds_for_launch, resolve_shell_ui_bind, to_service_binds,
 };
 use entrypoint_runtime::preflight_entrypoint_runtime;
@@ -273,6 +273,11 @@ pub struct LaunchOptions {
     /// identity connections, which the device's daemon made, come with the release after the
     /// origin connection.
     pub tilolang_joined: Option<String>,
+    /// The services whose connections the device's daemon made for this launch, in the order its
+    /// release hands them ahead of every other link ([`crate::services::Handed`]): an app the
+    /// device's app host starts runs as an account of its own, with no route to the daemon's
+    /// sockets, so the launch connects none of these by path.
+    pub handed_services: Vec<String>,
     /// What the person gave this app a choice on, bound into its sandbox at the reference each was
     /// answered with: exactly these, read and written as each choice allows, and nothing else.
     pub granted: Vec<GrantedPath>,
@@ -321,6 +326,7 @@ impl Default for LaunchOptions {
             tilolang_connector: None,
             tilolang_origin_reader: false,
             tilolang_joined: None,
+            handed_services: Vec::new(),
             granted: Vec::new(),
         }
     }
@@ -3037,6 +3043,7 @@ pub(crate) fn launch_with_context(
     let resolved = {
         // A connector holds none of the app's data: it gets no collaboration connection (the
         // instances in the app's tilolang process have the app's own).
+        let handed = crate::services::Handed::take(&opts.handed_services)?;
         let mut services = manifest.sandbox.services.clone();
         if opts.tilolang_connector.is_some() {
             services.remove(crate::services::COLLAB_SERVICE);
@@ -3047,6 +3054,7 @@ pub(crate) fn launch_with_context(
             ServiceLaunchContext {
                 app_id: package_id,
                 workspace_id: opts.workspace_id.as_deref(),
+                handed: Some(&handed),
             },
         )?;
         if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
@@ -3055,7 +3063,8 @@ pub(crate) fn launch_with_context(
         {
             resolved.push(shell_ui);
         }
-        if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
+        if let Some(identity) = crate::services::resolve_identity_for_launch(
+            &handed,
             package_id,
             opts.workspace_id.as_deref(),
             opts.no_services,
@@ -3066,9 +3075,12 @@ pub(crate) fn launch_with_context(
         )? {
             resolved.push(identity);
         }
-        if let Some(blobs) =
-            resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-        {
+        if let Some(blobs) = crate::services::resolve_blobs_for_launch(
+            &handed,
+            package_id,
+            opts.workspace_id.as_deref(),
+            opts.no_services,
+        )? {
             resolved.push(blobs);
         }
         if let Some(chooser) =
@@ -3207,6 +3219,10 @@ pub(crate) fn launch_with_context(
     if binds
         .iter()
         .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+        && !opts
+            .handed_services
+            .iter()
+            .any(|handed| handed == crate::services::COLLAB_SERVICE)
     {
         splice_cli_setenv(
             &mut argv,
@@ -3767,12 +3783,14 @@ fn launch_with_capture_spawn<T>(
     // As in `launch_with_context`, cold runtime checks precede service handoff.
     let egress = crate::egress_proxy::egress_access(manifest, &capabilities, payload_root);
     let package_id = manifest.package_id.as_str();
+    let handed = crate::services::Handed::take(&opts.handed_services)?;
     let mut resolved = resolve_service_binds_for_launch(
         &manifest.sandbox.services,
         opts.no_services,
         ServiceLaunchContext {
             app_id: package_id,
             workspace_id: opts.workspace_id.as_deref(),
+            handed: Some(&handed),
         },
     )?;
     if opens_window(&opts.mode, opts.tilolang_connector.as_deref())
@@ -3781,7 +3799,8 @@ fn launch_with_capture_spawn<T>(
     {
         resolved.push(shell_ui);
     }
-    if let Some(identity) = crate::services::resolve_identity_bind_for_contract(
+    if let Some(identity) = crate::services::resolve_identity_for_launch(
+        &handed,
         package_id,
         opts.workspace_id.as_deref(),
         opts.no_services,
@@ -3792,9 +3811,12 @@ fn launch_with_capture_spawn<T>(
     )? {
         resolved.push(identity);
     }
-    if let Some(blobs) =
-        resolve_blob_bind(package_id, opts.workspace_id.as_deref(), opts.no_services)?
-    {
+    if let Some(blobs) = crate::services::resolve_blobs_for_launch(
+        &handed,
+        package_id,
+        opts.workspace_id.as_deref(),
+        opts.no_services,
+    )? {
         resolved.push(blobs);
     }
     if let Some(chooser) =
@@ -3854,6 +3876,10 @@ fn launch_with_capture_spawn<T>(
     if binds
         .iter()
         .any(|bind| bind.name == crate::services::COLLAB_SERVICE)
+        && !opts
+            .handed_services
+            .iter()
+            .any(|handed| handed == crate::services::COLLAB_SERVICE)
     {
         splice_cli_setenv(
             &mut argv,

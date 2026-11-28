@@ -1346,6 +1346,255 @@ tilo_test_env::scenario! {
     }
 }
 
+// The computer's own daemon runs as the device's account (root, in an image whose daemon is the
+// system's own), and an app is an untrusted package: its held connection, which runs with no person
+// signed in, is started by the device's app host (`tilo-launcher host`, which systemd runs as an
+// account of its own; `runtime_portal::app_host`'s tests hold that account apart), through the same
+// launcher command, and recognised by the pidfd the host pinned it with. The daemon starts no
+// process of the app itself, and still stops it. It hands the launch every connection it makes,
+// each bound to the launch it recorded: the app reaches no socket of the daemon's by path.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_held_connection_runs_at_the_app_host() {
+    use tilo_workspace_service::work::HostConnections;
+    const BRIDGE: &str = "so.tilo.bridge";
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        BRIDGE,
+        &manifest(
+            BRIDGE,
+            "cli",
+            "connection = true\n\n[sandbox.services]\nnative = \"required@58\"\n\
+             collab = \"required@1\"\n",
+        ),
+        &[("probe", b"binary")],
+    );
+    // The daemon's own services, which only it reaches.
+    let sockets = crate::daemon::Sockets::in_dir(&root);
+    let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
+    let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
+    // The launcher the host runs.
+    let said = root.join("said");
+    std::fs::create_dir(&said).unwrap();
+    let launcher = saying_launcher(&root, &said);
+    let socket = root.join("app-host.sock");
+    let hosts = app_host_at(&socket);
+    let apps = apps(&store, &root, vec![launcher])
+        .ordering_of_the_seat()
+        .hosting_connections_at(socket);
+    let lines = own_lines_made(&apps);
+
+    connection_started(&apps, WORKSPACE, BRIDGE).expect("its connection starts at the app host");
+    assert!(
+        apps.runs(WORKSPACE, BRIDGE),
+        "it runs, recognised by its pidfd"
+    );
+    let pid = *apps.launched.0.lock().unwrap().keys().next().unwrap();
+    assert_eq!(
+        apps.process_of(pid),
+        Some(super::ProcessOf::Launched {
+            app: BRIDGE.to_owned(),
+            workspace: WORKSPACE.to_owned(),
+            connection: true,
+        }),
+        "a connection from it is admitted as the app's held connection"
+    );
+    assert_eq!(
+        *lines.lock().unwrap(),
+        [(pid, BRIDGE.to_owned(), WORKSPACE.to_owned())],
+        "its native line is answered as the launch the daemon recorded"
+    );
+    let launch = wait_for(&said.join("launch").display().to_string());
+    let mut lines = launch.lines();
+    let parent: u32 = lines.next().unwrap().parse().unwrap();
+    let host_pids: Vec<u32> = hosts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(std::process::Child::id)
+        .collect();
+    assert_eq!(
+        host_pids,
+        [parent],
+        "the app host started it, never the daemon itself: {launch}"
+    );
+    let rest: Vec<&str> = lines.collect();
+    assert_eq!(
+        rest.first().copied(),
+        Some("run"),
+        "it is the launcher's own run of the app, in the sandbox every app runs in: {launch}"
+    );
+    assert!(
+        rest.windows(2).any(|pair| pair == ["--app-id", BRIDGE]),
+        "{launch}"
+    );
+    assert!(
+        rest.contains(&"TILO_NO_WINDOW=1"),
+        "it draws nothing: {launch}"
+    );
+    handed_its_connections(&apps, (&rest, &root), (host_pids[0], pid), BRIDGE);
+    let runtime = rest
+        .iter()
+        .find_map(|line| line.strip_prefix("XDG_RUNTIME_DIR="))
+        .expect("its runtime directory");
+    assert!(
+        !Path::new(runtime).starts_with(&root),
+        "its runtime directory is the host's, not the daemon's: {runtime}"
+    );
+
+    apps.stop(WORKSPACE, BRIDGE);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while apps.runs(WORKSPACE, BRIDGE) {
+        assert!(
+            std::time::Instant::now() < until,
+            "the stopped connection ends"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for mut host in hosts.lock().unwrap().drain(..) {
+        let status = host.wait().unwrap();
+        assert!(
+            status.success(),
+            "the host ends with the app it ran: {status}"
+        );
+    }
+}
+
+/// A launcher stand-in that waits at its launch hold as the real one does, says into `said` who
+/// started it and what it was handed, then keeps running until it is stopped.
+#[cfg(target_os = "linux")]
+fn saying_launcher(root: &Path, said: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let launcher = root.join("tilo-launcher");
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\n\
+             head -c 1 >/dev/null\n\
+             {{ echo \"$PPID\"\n\
+             printf '%s\\n' \"$@\"\n\
+             env\n\
+             }} > '{said}/launch.tmp' && mv '{said}/launch.tmp' '{said}/launch'\n\
+             exec sleep 600\n",
+            said = said.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+    launcher
+}
+
+/// The daemon's lines `apps` hands each launch, each answered as the launch it names: the
+/// launches named, in order.
+#[cfg(target_os = "linux")]
+fn own_lines_made(apps: &Apps) -> Arc<std::sync::Mutex<Vec<(u32, String, String)>>> {
+    let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let made = Arc::clone(&lines);
+    apps.serve_own_lines(Arc::new(move |pid, app: &str, workspace: &str| {
+        made.lock()
+            .unwrap()
+            .push((pid, app.to_owned(), workspace.to_owned()));
+        let (_ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        Ok(theirs.into())
+    }));
+    lines
+}
+
+/// The hosted launch `pid` of `app`, started by the host `host` with the command lines `rest`,
+/// takes every connection the daemon made from its release and is told the path of none of the
+/// daemon's sockets in `root`, in its command or its environment. The collaboration connection the daemon made names the launch, and is admitted
+/// once, as that launch, from the daemon alone: a request from any other process naming the app
+/// is no launch of the daemon's.
+#[cfg(target_os = "linux")]
+fn handed_its_connections(
+    apps: &Apps,
+    (rest, root): (&[&str], &Path),
+    (host, pid): (u32, u32),
+    app: &str,
+) {
+    let launch = rest.join("\n");
+    let handed: Vec<&str> = rest
+        .windows(2)
+        .filter(|pair| pair[0] == "--handed-service")
+        .map(|pair| pair[1])
+        .collect();
+    assert_eq!(
+        handed,
+        ["native", "collab", "identity"],
+        "it takes each connection the daemon made from its release, in order: {launch}"
+    );
+    let sockets = crate::daemon::Sockets::in_dir(root);
+    for socket in [
+        &sockets.native,
+        &sockets.collab,
+        &sockets.identity,
+        &sockets.blobs,
+    ] {
+        let socket = socket.to_str().unwrap();
+        assert!(
+            !rest.iter().any(|line| line.contains(socket)),
+            "it is told no path to {socket}: {launch}"
+        );
+    }
+    assert!(
+        apps.authenticated_launch(host, app, WORKSPACE, None)
+            .unwrap()
+            .is_none(),
+        "a process that is not the daemon gets no launch's connection"
+    );
+    let admitted = apps
+        .authenticated_launch(std::process::id(), app, WORKSPACE, None)
+        .unwrap()
+        .expect("the connection the daemon made is the launch's");
+    assert_eq!(admitted.launch_ticket, apps.launched.ticket(pid));
+    assert!(
+        admitted.launch_ticket.is_some(),
+        "it carries the launch's ticket"
+    );
+    assert!(admitted.windowless, "a held connection has no window");
+    assert!(
+        apps.authenticated_launch(std::process::id(), app, WORKSPACE, None)
+            .unwrap()
+            .is_none(),
+        "it is admitted once"
+    );
+}
+
+/// The app host, as systemd runs it for each connection to `socket`: `tilo-launcher host`, the
+/// connection its standard input. The hosts it started so far.
+#[cfg(target_os = "linux")]
+fn app_host_at(socket: &Path) -> Arc<std::sync::Mutex<Vec<std::process::Child>>> {
+    let listener = rustix::net::socket_with(
+        rustix::net::AddressFamily::UNIX,
+        rustix::net::SocketType::SEQPACKET,
+        rustix::net::SocketFlags::CLOEXEC,
+        None,
+    )
+    .unwrap();
+    rustix::net::bind(
+        &listener,
+        &rustix::net::SocketAddrUnix::new(socket).unwrap(),
+    )
+    .unwrap();
+    rustix::net::listen(&listener, 4).unwrap();
+    let host = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
+    let hosts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let started = Arc::clone(&hosts);
+    std::thread::spawn(move || {
+        while let Ok(link) = rustix::net::accept_with(&listener, rustix::net::SocketFlags::CLOEXEC)
+        {
+            let child = std::process::Command::new(&host)
+                .arg("host")
+                .stdin(std::process::Stdio::from(link))
+                .spawn_locked()
+                .expect("the app host starts");
+            started.lock().unwrap().push(child);
+        }
+    });
+    hosts
+}
+
 /// What a stand-in wrote to `path`, once it wrote it: a launch's own arguments and environment
 /// are the launcher's to record, and the process runs on until the test ends.
 #[cfg(target_os = "linux")]
@@ -1458,7 +1707,7 @@ tilo_test_env::scenario! {
 
         // A record of an earlier process that held this pid does not attest the
         // one holding it now.
-        launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
+        launched.0.lock().unwrap().get_mut(&pid).unwrap().process = super::Pinned::Started(u64::MAX);
         assert!(!launched.attest(pid, VIEWER, WORKSPACE));
         launched.forget(pid);
         assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None, 1));

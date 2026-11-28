@@ -34,6 +34,10 @@ pub mod launch_hold {
         ))
     }
 }
+/// Where a daemon of the device's own account has an app's process started, as an unprivileged
+/// account of its own.
+#[cfg(target_os = "linux")]
+pub mod app_host;
 /// The device's tilolang processes, as a desktop session hands them its windows' instances.
 pub mod device_processes;
 /// The workspace a capture's instance joins, over the connections the device's daemon made for it.
