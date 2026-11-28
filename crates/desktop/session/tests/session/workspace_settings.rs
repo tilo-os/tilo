@@ -11,10 +11,17 @@ const PERSON: &str = "person";
 fn own_workspace(session: &Session, members: &[&str]) {
     let mut tree = session.handle().read(Clone::clone);
     let workspace = tree.active_workspace_mut().expect("a workspace in front");
+    // The person at this session, as the workspace's own policy names them: a computer's
+    // session is its identity's person, not the id a session with none runs as.
+    let person = workspace
+        .policy
+        .owner
+        .clone()
+        .expect("the workspace has its person as owner");
     for member in members {
         tilo_session_core::desktop::workspace_settings::set_member_role(
             workspace,
-            PERSON,
+            &person,
             member,
             tilo_action_policy::Role::Viewer,
         )
@@ -673,57 +680,33 @@ fn settings_offer_a_model() {
         .expect("save the providers this device offers");
 }
 
-/// A session of a computer with an identity, which keeps its workspaces in `home`'s state: what
-/// the Agents tab reads a workspace's models from. The device key this process took as the daemon's
-/// is answered with it, since the session signs with it from here.
-fn session_keeping_workspaces(
-    home: &mut tilo_test_env::TestHome,
-) -> (Session, tilo_device_identity::persist::DeviceKeyLock) {
-    let identity = home.config().join("tilo/identity");
-    std::fs::create_dir_all(&identity).expect("the identity's directory");
-    let secrets = home.root().join("secrets");
-    // The session is Tilo OS's, whose devices are native.
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &identity)
-        .set("TILO_SECRETS_DIR", &secrets)
-        .set(
-            tilo_identity::provisioning::TEST_PLATFORM_ENV,
-            tilo_identity::provisioning::TILO_OS_PLATFORM,
-        );
-    let paths = tilo_device_identity::IdentityPaths::under(&identity);
-    // This process stands in for the machine's daemon: it takes the device key first, so the
-    // person's root is sealed with it, and keeps it while the session signs with it.
-    let taken_key = tilo_identity::provisioning::device_key_taken_as_daemon(&paths)
-        .expect("this computer's device key");
-    tilo_identity::provisioning::create_person(
-        &identity,
-        &paths,
-        "Agents tab owner",
-        "Agents tab owner",
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this computer's identity");
-    let session = crate::common::headless(Options {
+/// The device the sheet's records are kept on, and a session of its person's there: this
+/// computer's own identity, its daemon serving the person, and the models it offers linked into
+/// the workspace the session shows as the daemon follows this computer's choice.
+fn session_keeping_workspaces() -> (crate::common::Device, Session) {
+    let device = crate::common::device_daemon(crate::common::device_home(), None);
+    let session = device.session_with(Options {
         collab: false,
-        state: Some(home.state().to_path_buf()),
+        state: Some(device.home.state().to_path_buf()),
         ..Options::default()
     });
-    (session, taken_key)
+    (device, session)
 }
 
-/// The model this device's Settings offer, linked into the workspace in front of `session` as
-/// this computer links its Agent models choice into each workspace it keeps: the workspace's own
-/// models, which the Agents tab offers.
-fn link_the_offered_model(state: &std::path::Path, session: &Session) {
-    let workspace = front_workspace(session);
-    let linked = tilo_person_services::this_computer::link_this_computer_at(
-        &state.join("tilo").join("workspace-service"),
-        &workspace,
-        &agent_provider_config::ProviderConfig::load(),
-        tilo_person_services::this_computer::Linking::Chosen,
+/// A session of a device's daemon of the test's own, whose person's workspaces the daemon keeps:
+/// the records the Settings sheet writes are read and written through it.
+fn session_on_its_daemon() -> Session {
+    crate::common::on_its_daemon(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        Options {
+            collab: false,
+            ..Options::default()
+        },
     )
-    .expect("the workspace's models are written");
-    assert!(linked, "the offered model becomes the workspace's");
 }
 
 /// The Agents tab shows an agent's answers, changes one, returns them to what its admission says,
@@ -731,8 +714,7 @@ fn link_the_offered_model(state: &std::path::Path, session: &Session) {
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
+    let (_device, mut session) = session_keeping_workspaces();
     // The settings are the running session's, installed for everything in its process.
     settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
@@ -754,7 +736,14 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         model: String::new(),
     })
     .expect("the person makes an agent");
-    settle(&mut session, &mut app);
+    // The tab's write is the device daemon's to make: the row shows once the record is written.
+    pump(&mut session, &mut [], |session, _| {
+        app.settle();
+        agents_shown(session)
+            .agents
+            .iter()
+            .any(|agent| agent.key == "helper")
+    });
     let row = listed_agent(&session, "helper");
     assert_eq!(
         row.name, "helper",
@@ -765,10 +754,16 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the row says who added it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    // This computer's choice reaches the workspace's models, which the review offers.
-    link_the_offered_model(home.state(), &session);
+    // This computer's choice reaches the workspace's models, which the review offers: the
+    // device's daemon follows the settings it saved and links the choice into its workspace.
     press(&mut app, "ws-agents-review-helper");
     settle(&mut session, &mut app);
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness()
+            .a11y_node_named("ws-agent-use-local/sonnet")
+            .is_some()
+    });
     let review = shown_review(&session);
     assert!(
         review
@@ -1343,8 +1338,7 @@ fn make_agent(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>, na
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
+    let (_device, mut session) = session_keeping_workspaces();
     // The settings are the running session's, installed for everything in its process.
     settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1362,9 +1356,14 @@ fn workspace_settings_makes_the_workspaces_agents() {
     assert_eq!(row.model, "Model: No model chosen in Settings");
     // A member chooses the model it plans with, of the ones the workspace keeps once this
     // computer's choice reached it, and the row says which.
-    link_the_offered_model(home.state(), &session);
     press(&mut app, "ws-agents-review-analyst");
     settle(&mut session, &mut app);
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness()
+            .a11y_node_named("ws-agent-use-local/sonnet")
+            .is_some()
+    });
     press(&mut app, "ws-agent-use-local/sonnet");
     settle(&mut session, &mut app);
     press(&mut app, "ws-agent-back");
@@ -1403,8 +1402,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
 #[test]
 fn workspace_settings_retires_the_workspaces_agents() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let mut session = session();
+    let mut session = session_on_its_daemon();
     // The settings are the running session's, installed for everything in its process.
     settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1446,8 +1444,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
 #[test]
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let mut session = session();
+    let mut session = session_on_its_daemon();
     // The settings are the running session's, installed for everything in its process.
     settings_offer_a_model();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1524,8 +1521,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let mut session = session();
+    let mut session = session_on_its_daemon();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
     let workspace = front_workspace(&session);
@@ -1534,7 +1530,13 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     // here, one ada's.
     let mut tree = session.handle().read(Clone::clone);
     let front = tree.active_workspace_mut().expect("a workspace in front");
-    for (agent, admitted_by) in [("helper", PERSON), ("analyst", "ada")] {
+    // The person at this session, as the workspace's own policy names them.
+    let person = front
+        .policy
+        .owner
+        .clone()
+        .expect("the workspace has its person as owner");
+    for (agent, admitted_by) in [("helper", person.as_str()), ("analyst", "ada")] {
         front.policy.grants.push(tilo_action_policy::Grant::new(
             format!("agent-member:{agent}:observer"),
             tilo_action_policy::Grantee::agent(agent, admitted_by.to_owned()),

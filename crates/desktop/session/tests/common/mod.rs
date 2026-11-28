@@ -853,6 +853,10 @@ pub fn start_daemon(profile: &Path) -> tilo_runtime::daemon::Running {
             tilolang: Some(Box::new(tilolang_workspace::host)),
             ..Default::default()
         });
+        // A daemon's own program reads this computer's settings where the person's session leaves
+        // them for the processes beside it, first thing in its `main`: a daemon that likewise
+        // offers the workspaces it holds the models this computer chose.
+        settings_store::register_outside();
     });
     tilo_runtime::daemon::Running::start(profile).expect("the device's daemon starts")
 }
