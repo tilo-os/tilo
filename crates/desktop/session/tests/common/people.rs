@@ -1455,10 +1455,16 @@ impl Device {
     /// The person's device action `action` with `args`, asked on their own connection to this
     /// device's daemon as `tilo device` asks it, in the workspace it holds of theirs: its answer,
     /// asked again until the person's services, which start after the daemon answers, take it.
-    fn call_until_answered(&self, action: &str, args: &Value) -> Value {
+    ///
+    /// What waits for the person's yes they approve on their session: a device running only its
+    /// daemon starts one for it, asks again there, and is left running only its daemon again.
+    fn call_until_answered(&mut self, action: &str, args: &Value) -> Value {
         let socket = self.native_socket();
         let until = tilo_test_env::hang_deadline();
+        let mut seated = false;
         loop {
+            let seatless = UnixStream::connect(&self.control).is_err();
+            let device = &*self;
             let answered = tilo_rt::app().handle().block_on(async {
                 let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
                 calls.founded_workspace().await?;
@@ -1471,19 +1477,34 @@ impl Device {
                         "A device action",
                     )
                     .await?;
-                // What waits for the person's yes (a ticket does) they approve on their session,
-                // its record named by the call: this connection is a program of theirs, which
+                // Its record is named by the call: this connection is a program of theirs, which
                 // never answers its own question.
                 if started["status"] == "pending" || started["status"] == "asked" {
+                    if seatless {
+                        return Ok(None);
+                    }
                     let run = started["invocation"].as_str().unwrap_or_default();
-                    self.approve(run);
+                    device.approve(run);
                 }
                 calls
                     .follow_asked(None, started, async |_: &str| Ok(()))
                     .await
+                    .map(Some)
             });
             match answered {
-                Ok(answered) => return answered,
+                Ok(Some(answered)) => {
+                    if seated {
+                        self.stop();
+                        self.restart_daemon();
+                    }
+                    return answered;
+                }
+                Ok(None) => {
+                    self.stop();
+                    self.start();
+                    seated = true;
+                    continue;
+                }
                 // Given up on: the daemon took every attempt and answered none, so what it shows
                 // and where its threads are is what says why.
                 Err(error) => assert!(
