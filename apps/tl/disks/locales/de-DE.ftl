@@ -120,6 +120,7 @@ d-zns5ikhm = Laufwerk benennen~present
 d-iq7enjwf = Fenster
     .w-disks = Laufwerke
     .w-drives = Drives
+    .w-loading = Wird gelesen
     .w-no-drives-on-this-device = Keine Laufwerke auf diesem Gerät
     .w-attach-a-drive-then-rescan = Schließe ein Laufwerk an und lies dann neu.
     .w-read-the-drives-again = Die Laufwerke neu lesen

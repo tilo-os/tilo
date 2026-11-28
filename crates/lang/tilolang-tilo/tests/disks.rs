@@ -57,6 +57,16 @@ const READING: &str = r#"{
   "problem": null
 }"#;
 
+/// A machine whose drives have not been read yet.
+const UNREAD: &str = r#"{
+  "serving": false,
+  "read_error": null,
+  "drives": [],
+  "benchmark": null,
+  "pending": [],
+  "problem": null
+}"#;
+
 /// The window with its view state staged, its rows drawn and its patches answered.
 fn window_showing(app: &Pane, states: &[(&str, &str)]) -> ViewInstance {
     for (state, value) in states {
@@ -114,6 +124,21 @@ fn contains(view: &ViewInstance, wanted: &str) -> bool {
 
 fn has(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text == wanted)
+}
+
+#[test]
+fn a_reading_that_has_not_arrived_says_it_is_loading() {
+    let app = Pane::install(&me(), SOURCE)
+        .delegating()
+        .reading(&reading(), UNREAD)
+        .rooted_of(APP);
+    let window = app.window();
+    assert!(has(&window, "Loading"), "{:?}", shown(&window));
+    assert!(
+        !has(&window, "No drives on this device"),
+        "an unread machine is not called empty: {:?}",
+        shown(&window)
+    );
 }
 
 #[test]

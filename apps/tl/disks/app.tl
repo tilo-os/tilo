@@ -249,8 +249,10 @@ view window(d: Disks) {
             stack {
                 if let error = disks.read_error {
                     ui.StatusLine(error, status: .error)
+                } else if not disks.serving {
+                    ui.Text("Loading", role: .caption, secondary: true)
                 }
-                if disks.drives.is_empty() {
+                if disks.drives.is_empty() and disks.serving {
                     ui.EmptyState(
                         "No drives on this device",
                         message: "Attach a drive, then rescan.",
