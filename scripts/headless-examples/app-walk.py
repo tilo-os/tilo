@@ -1857,16 +1857,17 @@ class Walk:
         path = self.shots / f"{name}.png"
         self.session.snapshot(path)
         # What stood where the app's window is when the shot was taken: the window as the shell
-        # and the compositor hold it, and the appearance the session wears. A shot that shows
-        # something other than the app says from this why.
+        # and the compositor hold it, the appearance the shell wears and the one the app says it
+        # draws with. A shot that shows something other than the app says from this why.
         if self.v.get("id") is not None:
-            mode, draws_dark = self.dark_now()
+            mode, shell_draws_dark = self.dark_now()
             window = self.window_of()
             shown = None
             if window is not None and window.get("active") is True and window.get("rect"):
                 shown = window_pixels(path, window["rect"])
             self.shots_held.append({"shot": name, "window": window, "pixels": shown,
-                                    "mode": mode, "draws_dark": draws_dark})
+                                    "mode": mode, "shell_draws_dark": shell_draws_dark,
+                                    "app_draws_dark": (window or {}).get("app_draws_dark")})
         return str(path)
 
     def require_shown(self, targets: list[dict] | None = None) -> None:
@@ -3857,13 +3858,17 @@ class Walk:
                         f"shot {held['shot']}: the window of {self.v.get('id')} shows one flat "
                         f"colour ({shown['drawn_percent']:.2f}% drawn on it): its surface is not "
                         f"on the display; the compositor holds {json.dumps(surface)}")
-                said = held.get("draws_dark")
+                # Checked by the theme the app says it draws with; a window whose app says none
+                # (one the shell draws) by the shell's.
+                said = held.get("app_draws_dark")
+                said = held.get("shell_draws_dark") if said is None else said
                 if said is not None and said != shown["ground_dark"]:
                     raise Failed(
-                        f"shot {held['shot']}: the window of {self.v.get('id')} says it draws "
-                        f"{'dark' if said else 'light'}, and the display shows it on "
-                        f"#{shown['ground']}: a frame from the appearance before; the "
-                        f"compositor holds {json.dumps(surface)}")
+                        f"shot {held['shot']}: the window of {self.v.get('id')} draws "
+                        f"{'dark' if said else 'light'} (its app says "
+                        f"{held.get('app_draws_dark')}, the shell {held.get('shell_draws_dark')}), "
+                        f"and the display shows it on #{shown['ground']}: a frame from the "
+                        f"appearance before; the compositor holds {json.dumps(surface)}")
             record["shots_spent"] = shots_spent
             record["theme_wait_ms"] = self.theme_waited_ms - theme_waited_before
             budget = step.get("budget_ms")

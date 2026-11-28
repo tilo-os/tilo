@@ -115,6 +115,8 @@ pub(super) struct FloatingRuntime {
     pub selection_capable_sent: bool,
     /// The window resource last told the shell on this connection.
     pub window_resource_sent: Told<Option<tilo_actions::ActionResource>>,
+    /// Whether the window draws dark, as last told the shell on this connection.
+    pub draws_dark_sent: Told<bool>,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
     /// The [`crate::window_toolbar::revision`] of the parts last sent to
@@ -273,6 +275,7 @@ impl FloatingRuntime {
             share_backlog: None,
             selection_capable_sent: false,
             window_resource_sent: Told::Nothing,
+            draws_dark_sent: Told::Nothing,
             close_window_requested: false,
             toolbar_sent: None,
             window_targets_sent: Told::Nothing,
@@ -991,6 +994,16 @@ impl App {
             )?;
             self.floating.window_resource_sent = Told::Was(window);
         }
+        let dark = self.theme.document.is_dark();
+        if !self.floating.draws_dark_sent.was(&dark) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::DrawsDark {
+                    dark,
+                    instance,
+                },
+            )?;
+            self.floating.draws_dark_sent = Told::Was(dark);
+        }
         self.send_window_targets(client, instance)?;
         self.send_accessibility_tree(client, instance)?;
         self.send_window_share(client, instance)?;
@@ -1534,6 +1547,7 @@ impl App {
         self.floating.window_targets_told = None;
         self.floating.accessibility_told = None;
         self.floating.window_resource_sent = Told::Nothing;
+        self.floating.draws_dark_sent = Told::Nothing;
         // What a wheel left for the strip went with the shell that would
         // have panned it: a new connection never hears a stale gesture.
         self.floating.sideways = 0.0;

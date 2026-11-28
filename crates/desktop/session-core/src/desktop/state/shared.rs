@@ -87,6 +87,7 @@ impl Shared {
             opened_for: std::collections::BTreeMap::new(),
             resources: std::collections::BTreeMap::new(),
             items: std::collections::BTreeMap::new(),
+            draws_dark: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),

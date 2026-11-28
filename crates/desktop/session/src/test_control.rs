@@ -1142,6 +1142,10 @@ fn windows_answer(
             if let Some(id) = row["window"].as_u64() {
                 row["surface"] = compositor.window_shown(id);
             }
+            // The theme the window's app says it draws with, which a picture of it is checked by.
+            if let Some(tab) = row["tab"].as_u64() {
+                row["app_draws_dark"] = json!(session.handle.draws_dark(tab));
+            }
         }
         rows
     };

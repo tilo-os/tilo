@@ -232,6 +232,9 @@ pub struct Shared {
     /// ([`DesktopHandle::set_window_items`]): the conversation a send landed in, the record a
     /// search hit opened. Not the tab's view, which is what a place shows.
     pub items: std::collections::BTreeMap<TabId, String>,
+    /// Whether each window draws dark, by tab, as its app says when it takes a theme up
+    /// ([`DesktopHandle::set_draws_dark`]): what it draws, which may not yet be what it was told.
+    pub draws_dark: std::collections::BTreeMap<TabId, bool>,
     /// The windows the sharing app lists for its picker, as last published
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
@@ -795,6 +798,17 @@ impl DesktopHandle {
         }
         shared.items = items;
         true
+    }
+
+    /// `tab` 's app draws dark from its next frame, or light.
+    pub fn set_draws_dark(&self, tab: TabId, dark: bool) {
+        self.shared.borrow_mut().draws_dark.insert(tab, dark);
+    }
+
+    /// Whether `tab` 's app draws dark, once it said.
+    #[must_use]
+    pub fn draws_dark(&self, tab: TabId) -> Option<bool> {
+        self.shared.borrow().draws_dark.get(&tab).copied()
     }
 
     /// The item each window was opened on, by tab, as the workspace's layout keeps it

@@ -249,6 +249,12 @@ pub enum FloatingSurfaceClientMessage {
         direction: FocusDirection,
         instance: Option<u64>,
     },
+    /// Whether the window draws dark from its next frame: sent whenever the theme it takes up
+    /// turns, so the session reads the theme the app draws with, not the one it told it.
+    DrawsDark {
+        dark: bool,
+        instance: Option<u64>,
+    },
     /// The next window this app maps opens as a tab right after this one.
     PlaceNextWindowBeside {
         background: bool,

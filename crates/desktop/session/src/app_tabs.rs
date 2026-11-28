@@ -1330,6 +1330,12 @@ impl Answers<'_> {
                     });
                 }
             }
+            FloatingSurfaceClientMessage::DrawsDark { dark, .. } => {
+                if let Some(tab) = own {
+                    self.desktop
+                        .with_policy(|policy| policy.handle().set_draws_dark(tab, dark));
+                }
+            }
             FloatingSurfaceClientMessage::PlaceNextWindowBeside { background, .. } => {
                 self.desktop
                     .with_policy(|policy| policy.place_next_beside(&app, own, background));
@@ -1805,6 +1811,7 @@ fn instance_of(message: &FloatingSurfaceClientMessage) -> Option<u64> {
         | FloatingSurfaceClientMessage::OpenAppSearch { instance, .. }
         | FloatingSurfaceClientMessage::OpenFloated { instance, .. }
         | FloatingSurfaceClientMessage::FocusLeft { instance, .. }
+        | FloatingSurfaceClientMessage::DrawsDark { instance, .. }
         | FloatingSurfaceClientMessage::WindowRecord { instance, .. }
         | FloatingSurfaceClientMessage::PaintStream { instance, .. }
         | FloatingSurfaceClientMessage::Embeds { instance, .. } => *instance,
