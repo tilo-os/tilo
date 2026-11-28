@@ -11882,6 +11882,13 @@
           "type": {
             "option": "action"
           }
+        },
+        {
+          "name": "caption",
+          "doc": "What the group says while it holds no place, under its heading (\"No projects yet\"): nothing while it holds one.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "parts": [

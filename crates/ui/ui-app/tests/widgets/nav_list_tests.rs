@@ -1032,6 +1032,56 @@ fn expansion_is_set_reported_and_ensured() {
 }
 
 #[test]
+fn a_group_with_no_places_says_its_caption() {
+    use tilo_ui_app::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
+    use tilo_ui_base::component::Described;
+    let placed = |caption: Option<String>, projects: Vec<NavItemProps>| {
+        let list = NavList::from_props(
+            "places",
+            NavListProps {
+                items: vec![
+                    NavEntry::Item(NavItemProps {
+                        key: "inbox".into(),
+                        label: "Inbox".into(),
+                        ..NavItemProps::default()
+                    }),
+                    NavEntry::Section(NavSectionProps {
+                        title: "Projects".into(),
+                        caption,
+                        items: projects,
+                        ..NavSectionProps::default()
+                    }),
+                ],
+                ..NavListProps::default()
+            },
+        );
+        let h = harness(list, Theme::dark());
+        let names: Vec<String> = rows_of(h.root::<NavList>())
+            .iter()
+            .filter_map(|row| row.name.clone())
+            .collect();
+        names
+    };
+    let empty = placed(Some("No projects or areas yet.".into()), Vec::new());
+    assert!(
+        empty.iter().any(|name| name == "No projects or areas yet."),
+        "a group that holds no place says so under its heading: {empty:?}"
+    );
+    let held = placed(
+        Some("No projects or areas yet.".into()),
+        vec![NavItemProps {
+            key: "project".into(),
+            label: "Launch".into(),
+            ..NavItemProps::default()
+        }],
+    );
+    assert!(
+        !held.iter().any(|name| name == "No projects or areas yet."),
+        "a group holding a place says nothing more: {held:?}"
+    );
+}
+
+#[test]
 fn a_row_menu_is_asked_for_with_its_lift() {
     let asked = Rc::new(Cell2::new(Vec::<(String, Rect, vello::kurbo::Point)>::new()));
     let seen = Rc::clone(&asked);

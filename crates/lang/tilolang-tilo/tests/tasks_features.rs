@@ -383,6 +383,123 @@ fn a_batch_of_tasks_is_one_change_and_a_blank_one_makes_none() {
     assert_eq!(items(&ada).len(), 2, "and adds nothing");
 }
 
+/// A task of a `new_tasks` tree: its title and the tasks under it.
+fn new_task_node(ada: &Replica, title: &str, children: Vec<Value>) -> Value {
+    let meta = &ada.host.package(APP).unwrap().meta;
+    let ty = |name: &str| {
+        meta.types
+            .iter()
+            .find(|ty| ty.name == name)
+            .unwrap_or_else(|| panic!("the type {name}"))
+            .id
+            .clone()
+    };
+    let field_id = |ty_name: &str, field: &str| {
+        let ty = meta.types.iter().find(|ty| ty.name == ty_name).unwrap();
+        ty.fields
+            .iter()
+            .find(|f| f.name == field)
+            .unwrap_or_else(|| panic!("{ty_name}.{field}"))
+            .id
+            .clone()
+    };
+    Value::Rec(tilolang_runtime::value::RecordInit {
+        ty: ty("NewTask"),
+        fields: [
+            (field_id("NewTask", "title"), Value::text(title)),
+            (field_id("NewTask", "children"), Value::List(children)),
+        ]
+        .into_iter()
+        .collect(),
+    })
+}
+
+#[test]
+fn a_tree_of_tasks_is_one_change_with_each_step_under_its_task() {
+    let (ada, _root) = workspace();
+    let tree = Value::List(vec![new_task_node(
+        &ada,
+        "Pack the flat",
+        vec![
+            new_task_node(
+                &ada,
+                "Books",
+                vec![new_task_node(&ada, "Paperbacks", Vec::new())],
+            ),
+            new_task_node(&ada, "Kitchen", Vec::new()),
+        ],
+    )]);
+    let args = |titles: Vec<Value>, items: Value| {
+        vec![Value::List(titles), none(), Value::Bool(false), items]
+    };
+    let made = call(&ada, "new_tasks", args(vec![Value::text("Solo")], tree));
+    assert_eq!(ada.commit(), 1, "a tree is one change, so one undo");
+    let Value::List(made) = made else {
+        panic!("the made tasks")
+    };
+    let titles: Vec<Value> = made.iter().map(|task| read(&ada, task, "title")).collect();
+    assert_eq!(
+        titles,
+        [
+            Value::text("Solo"),
+            Value::text("Pack the flat"),
+            Value::text("Books"),
+            Value::text("Paperbacks"),
+            Value::text("Kitchen"),
+        ],
+        "the tree is made in reading order, each step under its task"
+    );
+    let parent_title = |task: &Value| {
+        let Value::Ref(_) = task else {
+            panic!("a task")
+        };
+        match read(&ada, task, "parent") {
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Ref(found) => made
+                    .iter()
+                    .find(|other| {
+                        target(other).as_deref() == Some(found.target.id_string().as_str())
+                    })
+                    .map(|other| read(&ada, other, "title")),
+                other => panic!("a parent: {other:?}"),
+            },
+            Value::Opt(None) => None,
+            other => panic!("a parent: {other:?}"),
+        }
+    };
+    assert_eq!(
+        parent_title(&made[1]),
+        None,
+        "the tree's top stands on its own"
+    );
+    assert_eq!(
+        parent_title(&made[2]),
+        Some(Value::text("Pack the flat")),
+        "Books under the flat"
+    );
+    assert_eq!(
+        parent_title(&made[3]),
+        Some(Value::text("Books")),
+        "Paperbacks under Books"
+    );
+    assert_eq!(
+        parent_title(&made[4]),
+        Some(Value::text("Pack the flat")),
+        "Kitchen under the flat"
+    );
+    // A blank title anywhere refuses the whole call, so no half tree is made.
+    let blank = Value::List(vec![new_task_node(
+        &ada,
+        "Pack the flat",
+        vec![new_task_node(&ada, "  ", Vec::new())],
+    )]);
+    assert!(
+        refused(&ada, "new_tasks", args(vec![Value::text("Solo")], blank)),
+        "a blank step refuses the tree whole"
+    );
+    assert_eq!(items(&ada).len(), 5, "and adds nothing");
+}
+
 #[test]
 fn moving_a_group_of_tasks_is_one_change() {
     let (ada, root) = workspace();

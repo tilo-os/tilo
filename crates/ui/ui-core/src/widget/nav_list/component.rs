@@ -52,6 +52,9 @@ pub struct NavSectionProps {
     /// The action that makes another place in the group ("New project"), drawn at the end of
     /// the heading.
     pub add: Option<OfferedAction>,
+    /// What the group says while it holds no place, under its heading ("No projects yet"):
+    /// nothing while it holds one.
+    pub caption: Option<String>,
     /// The group's own menu (a right click on its heading, the Menu key, a long press): what
     /// is done to the group itself (renaming it, moving it, removing it), as the places under
     /// it carry theirs. A group whose view places none offers none.
@@ -336,6 +339,9 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
                 let mut built = NavSection::new(id.clone(), section.title, places);
                 if section.collapsible {
                     built = built.collapsible();
+                }
+                if let Some(caption) = section.caption {
+                    built = built.empty_caption(caption);
                 }
                 if let Some(add) = section.add {
                     let icon = add.icon.unwrap_or(tilo_ui_base::icons::Icon::Plus);

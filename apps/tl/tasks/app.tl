@@ -371,15 +371,26 @@ primary action new_task(
     )
 }
 
-/// Adds every task of `titles` at once, as one change: none of them is made when one cannot be
-/// (a blank title), so a person's batch is whole or nothing. With `done`, they are work already
-/// finished, written down to keep: done, as checking each off would leave it.
-action new_tasks(titles: List<Text>, p: Option<Project> = .none, done: Bool = false) -> List<Task> (
-    icon: .plus,
-    label: "New tasks",
-    did: "added tasks",
-) {
+/// A task to make with the tasks under it, to any depth, in one call: a piece of work written
+/// with its steps, as `new_tasks` takes them beside the titles it adds on their own.
+type NewTask {
+    title: Text
+    children: List<NewTask>
+}
+
+/// Adds every task of `titles` at once, and every tree of `items` with the tasks under it, as
+/// one change: none of them is made when one cannot be (a blank title), so a caller's batch is
+/// whole or nothing. Each step stands under its task as `add_subtask` puts one. With `done`,
+/// they are work already finished, written down to keep: done, as checking each off would leave
+/// it.
+action new_tasks(
+    titles: List<Text>,
+    p: Option<Project> = .none,
+    done: Bool = false,
+    items: List<NewTask> = [],
+) -> List<Task> (icon: .plus, label: "New tasks", did: "added tasks") {
     require not titles.any(title -> title.trim().is_empty()) "A task needs a title"
+    require items.all(item -> named_tree(item)) "A task needs a title"
     let made: List<Task> = []
     for title in titles {
         tasks.numbers += 1
@@ -395,7 +406,60 @@ action new_tasks(titles: List<Text>, p: Option<Project> = .none, done: Bool = fa
         )
         made = [made, [one]].flat_map(x -> x)
     }
+    // The trees in the order each task is made, each naming the task over it by its place
+    // among the trees' tasks: -1 at the top, else the place of the task it goes under. The
+    // titles stand first in `made`, so the trees' places count on from theirs.
+    let base = made.len()
+    for step in flatten_trees(items) {
+        tasks.numbers += 1
+        let status: Status = if done { .done } else { .backlog }
+        let parent: Option<Task> = if step.under >= 0 { made.at(base + step.under) } else { .none }
+        let one = tasks.items.insert(
+            Task(
+                number: tasks.numbers,
+                title: step.title.trim(),
+                project: p,
+                parent: parent,
+                status: status,
+                done: done,
+            ),
+        )
+        // A step stands after the last task under its task, as `add_subtask` puts it.
+        if let at = parent {
+            let last = tasks.items.filter(x -> x.parent == at and x != one).last() ?? at
+            tasks.items.move(one, after: last)
+        }
+        made = [made, [one]].flat_map(x -> x)
+    }
     made
+}
+
+/// One task of a tree `new_tasks` makes, and the place of the task it stands under among the
+/// tree's tasks: -1 at the top.
+type NewStep {
+    title: Text
+    under: Int
+}
+
+/// Whether `item` and every task under it has a title.
+fn named_tree(item: NewTask) -> Bool {
+    item.title.trim() != "" and item.children.all(child -> named_tree(child))
+}
+
+/// The trees `items` as the tasks `new_tasks` makes them, each followed by the tasks under it.
+fn flatten_trees(items: List<NewTask>) -> List<NewStep> {
+    flatten_under(items, -1, [])
+}
+
+/// The trees `items`, whose tasks go under the task at `under` (-1 at the top), appended to
+/// `out` in the order they are made.
+fn flatten_under(items: List<NewTask>, under: Int, out: List<NewStep>) -> List<NewStep> {
+    for item in items {
+        let at = out.len()
+        out = [out, [NewStep(title: item.title, under: under)]].flat_map(x -> x)
+        out = flatten_under(item.children, at, out)
+    }
+    out
 }
 
 /// Starts a project, with what it is for when the caller says.
@@ -1502,7 +1566,15 @@ template view places_side(t: Tasks, chosen: State<Text>, pick: (Text) -> Action)
                 on select: pick(f.key)
             }
         }
-        ui.NavSection("Projects", add: new_project(t)) {
+        // A group that holds no project says so under its heading, where the add beside it
+        // makes the first.
+        ui.NavSection(
+            "Projects",
+            add: new_project(t),
+            caption: if t.projects.is_empty() {
+                .some("No projects or areas yet.")
+            } else { .none },
+        ) {
             for p in t.projects {
                 ui.NavItem(
                     "project:{p.name}",

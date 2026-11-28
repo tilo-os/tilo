@@ -416,7 +416,7 @@ d-rs3ubifz-title = Titel
 d-rs3ubifz-remind = Erinnern
 
 d-2rpw5inw = Neue Aufgaben
-    .doc = Fügt alle Aufgaben aus `titles` auf einmal hinzu, als eine Änderung: keine entsteht, wenn eine nicht entstehen kann (ein leerer Titel), also ist die Sammlung einer Person ganz oder gar nicht. Mit `done` sind sie schon erledigte Arbeit, festgehalten zum Aufbewahren: erledigt, wie Abhaken jede hinterlässt.
+    .doc = Fügt alle Aufgaben aus `titles` auf einmal hinzu, und jeden Baum aus `items` mit den Aufgaben unter ihm, als eine Änderung: keine entsteht, wenn eine nicht entstehen kann (ein leerer Titel), also ist die Sammlung eines Aufrufers ganz oder gar nicht. Jeder Teilschritt steht unter seiner Aufgabe, wie `add_subtask` einen hinstellt. Mit `done` sind sie schon erledigte Arbeit, festgehalten zum Aufbewahren: erledigt, wie Abhaken jede hinterlässt.
     .did = Aufgaben hinzugefügt
     .w-a-task-needs-a-title = Eine Aufgabe braucht einen Titel
 
@@ -425,6 +425,32 @@ d-2rpw5inw-titles = Titel
 d-2rpw5inw-p = P
 
 d-2rpw5inw-done = Erledigt
+
+d-2rpw5inw-items = Aufgaben
+
+d-7aqtgidv = Neue Aufgabe
+    .doc = Eine Aufgabe, die mit den Aufgaben unter ihr in einem Aufruf entsteht: ein Stück Arbeit, aufgeschrieben mit ihren Teilschritten, wie `new_tasks` sie neben den Titeln nimmt, die es einzeln anlegt.
+    .noun = { $count ->
+        [one] neue Aufgabe
+       *[other] neue Aufgaben
+    }
+
+d-purbhndj = Titel
+
+d-2uqkhyar = Teilschritte
+
+d-pw26boaw = Neuer Schritt
+    .doc = Eine Aufgabe eines Baums, den `new_tasks` anlegt, und der Platz der Aufgabe, unter der sie steht, unter den Aufgaben des Baums: -1 ganz oben.
+    .noun = { $count ->
+        [one] neuer Schritt
+       *[other] neue Schritte
+    }
+
+d-w7gbqadf = Titel
+
+d-r7i6mvy6 = Unter
+
+d-pw26boaw-filter-under = Unter
 
 d-zjuy7y7f = Neues Projekt
     .doc = Beginnt ein Projekt.
@@ -844,6 +870,7 @@ d-m4774i4j = Statuswort
     .w-cancelled = Verworfen
 
 d-i2mhsb3h = Startseite
+    .w-no-projects-or-areas-yet = Noch keine Projekte oder Bereiche.
     .w-new-task-labelled = Neue Aufgabe mit Etikett { $label }
     .w-new-task-in = Neue Aufgabe in { $name }
     .w-new-task-for-today = Neue Aufgabe für heute
@@ -882,12 +909,14 @@ d-i2mhsb3h = Startseite
     .w-add-a-subtask = Teilschritt hinzufügen
 
 d-mikudv5u = Board
+    .w-no-projects-or-areas-yet = Noch keine Projekte oder Bereiche.
     .w-tasks = Aufgaben
     .w-projects = Projekte
     .w-labels = Etiketten
     .w-new-task = Neue Aufgabe
 
 d-oepagzoi = Gespräche
+    .w-no-projects-or-areas-yet = Noch keine Projekte oder Bereiche.
     .w-tasks = Aufgaben
     .w-projects = Projekte
     .w-labels = Etiketten
