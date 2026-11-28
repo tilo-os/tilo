@@ -45,6 +45,7 @@ pub mod presence;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
 pub mod session;
+pub mod session_shown;
 pub mod speakers;
 pub mod states;
 pub mod surfaces;

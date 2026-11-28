@@ -33,19 +33,7 @@ use crate::daemon_documents::DaemonShell;
 /// The action that writes one of the device's records.
 const SET: &str = "set";
 
-/// The device record what this device's session shows: its workspaces in its own order and the
-/// one in front, under `active`. It is the device's alone, and what any program the person runs
-/// reads to know the workspace their session runs in.
-pub const SHOWN: &str = "so.tilo.session-shown";
-
-/// The workspace [`SHOWN`]'s value has in front; `None` when it names none.
-#[must_use]
-pub fn shown_workspace(shown: &Value) -> Option<&str> {
-    shown
-        .get("active")
-        .and_then(Value::as_str)
-        .filter(|workspace| !workspace.is_empty())
-}
+pub use crate::session_shown::{SHOWN, shown_workspace};
 
 /// How long a follower's read waits for the record to move before it asks again.
 const FOLLOW_WAIT: Duration = tilo_actions::remote::MAX_REMOTE_WAIT;

@@ -72,9 +72,9 @@ pub(crate) fn serve(
             loop {
                 let now = workspaces
                     .device_records()
-                    .and_then(|records| records.get(tilo_session_client::device_records::SHOWN))
+                    .and_then(|records| records.get(tilo_session_client::session_shown::SHOWN))
                     .and_then(|value| {
-                        tilo_session_client::device_records::shown_workspace(&value)
+                        tilo_session_client::session_shown::shown_workspace(&value)
                             .map(str::to_owned)
                     })
                     .filter(|workspace| own.as_deref() != Some(workspace.as_str()))
