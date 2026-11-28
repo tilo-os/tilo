@@ -13,6 +13,14 @@ use super::{
 };
 use collab_types::signer::DeviceSigner;
 
+/// How a write is read: `retained` for one a holder hands on from what it kept, and `applied`
+/// for one this device already applied or admitted, whose surface was decided then.
+#[derive(Clone, Copy)]
+pub(super) struct Reading {
+    pub retained: bool,
+    pub applied: bool,
+}
+
 /// What a refused change made by a key adds: the workspace holds no grant
 /// its person approved for the key (or its grant was revoked), and the one
 /// command that approves one.
@@ -1538,7 +1546,10 @@ impl StatePeer {
             envelope,
             (envelope, None),
             authorization_time,
-            retained,
+            Reading {
+                retained,
+                applied: false,
+            },
         )
     }
 
@@ -1548,7 +1559,8 @@ impl StatePeer {
     /// and what its changes say of who made them, the invocation a caller
     /// signed included, is `changes`'. A write too large for one op is
     /// decided by the changes it opened to (`opened`), which `changes` then
-    /// does not carry.
+    /// does not carry. `applied` for a write this device already applied or
+    /// admitted, whose surface was decided then.
     pub(super) fn authorize_document_as(
         &self,
         source: &[u8; 32],
@@ -1557,7 +1569,7 @@ impl StatePeer {
         envelope: &SignedOp,
         changes: (&SignedOp, Option<&[automerge::Change]>),
         authorization_time: SystemTime,
-        retained: bool,
+        reading: Reading,
     ) -> Result<Authorized, AuthorizeRefusal> {
         if envelope.author.as_bytes() != source {
             return Err(AuthorizeRefusal::Denied(crate::AdmissionError::forbidden(
@@ -1565,7 +1577,7 @@ impl StatePeer {
             )));
         }
         let decided = match self
-            .judged_under(app_id, record, envelope, retained)
+            .judged_under(app_id, record, envelope, reading.retained)
             .map_err(|error| AuthorizeRefusal::Denied(crate::AdmissionError::malformed(error)))?
         {
             Under::Missing => return Ok(Authorized::Hold(crate::MissingPrerequisite::Rules)),
@@ -1576,7 +1588,7 @@ impl StatePeer {
                 envelope,
                 changes,
                 authorization_time,
-                retained,
+                reading,
             )?,
             Under::Past(judged) => judged.decide_written(
                 source,
@@ -1585,7 +1597,7 @@ impl StatePeer {
                 envelope,
                 changes,
                 authorization_time,
-                retained,
+                reading,
             )?,
             // The governance it names may be on its way: what this copy holds
             // refusing it, it waits for that.
@@ -1597,7 +1609,7 @@ impl StatePeer {
                     envelope,
                     changes,
                     authorization_time,
-                    retained,
+                    reading,
                 ) {
                     Ok(decided) => decided,
                     Err(_) => {
@@ -1640,37 +1652,76 @@ impl StatePeer {
     /// [`Self::surface_gate`] for a change; anything else is decided as it stands.
     fn change_gate(&self, app_id: &str, envelope: &SignedOp) -> SurfaceGate {
         if envelope.kind == collab_types::OpKind::Change {
-            // A write made before the workspace ran any version of the app was decided then,
-            // when there was no version to name: reading it after a first install never sets it
-            // aside for the surface that install brought.
-            if self.written_before_any_version(app_id, envelope.timestamp) {
-                return SurfaceGate::Decide;
-            }
             self.surface_gate(app_id, envelope.surface)
         } else {
             SurfaceGate::Decide
         }
     }
 
-    /// Whether a write of `app` made at `written` predates the only version the workspace runs,
-    /// so that it was written when the app ran no version at all. A workspace that ran another
-    /// version before is decided by [`Self::surface_gate`], which knows the ones it ran.
-    fn written_before_any_version(&self, app: &str, written: SystemTime) -> bool {
-        if self.apps().ran(app).len() > 1 {
+    /// Whether this device already applied or admitted `envelope`: its changes are in the record
+    /// it holds, or its admission index names it. Such a write was decided when it was taken in;
+    /// reading it again keeps the surface it was read under and decides the rest as now.
+    pub(super) fn applied_or_admitted(
+        &self,
+        (app_id, record): (&str, &str),
+        envelope: &SignedOp,
+        mutation: &collab_types::DocumentMutation,
+    ) -> bool {
+        let hashes: Vec<_> = match mutation {
+            collab_types::DocumentMutation::Incremental(bytes) => {
+                tilo_automerge_isolate::change_hashes(bytes).unwrap_or_default()
+            }
+            // A whole record stands for every change it holds: a checkpoint this device took in
+            // first among them.
+            collab_types::DocumentMutation::Snapshot(bytes) => tilo_failure::ignored!(
+                "a snapshot that does not load stands for no change of the record",
+                AutoCommit::load(bytes)
+            )
+            .map(|mut document| {
+                document
+                    .get_changes(&[])
+                    .iter()
+                    .map(automerge::Change::hash)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        };
+        if hashes.is_empty() {
             return false;
         }
-        let Some(running) = self.governance().app_version(app) else {
-            return false;
+        let admitted = crate::admission::AdmissionKey {
+            workspace: self.core.workspace.clone(),
+            app: app_id.to_owned(),
+            record: record.to_owned(),
+            author: *envelope.author.as_bytes(),
+            sequence: envelope.seq,
         };
-        let written = written
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()
-            .and_then(|since| u64::try_from(since.as_nanos()).ok())
-            .unwrap_or(u64::MAX);
-        written < running.installed_at_ns
+        let document = self.core.documents.get(&Route {
+            app: app_id.into(),
+            record: record.into(),
+        });
+        // A write a checkpoint this device took in stands in for is covered by that checkpoint's
+        // mark on its author.
+        let covered = document.is_some_and(|document| {
+            document
+                .covered
+                .get(&hex::encode(envelope.author.as_bytes()))
+                .is_some_and(|floor| *floor >= envelope.seq)
+        });
+        covered
+            || self.core.exact_admissions.get(&admitted).is_some()
+            || document.is_some_and(|document| {
+                hashes
+                    .iter()
+                    .all(|hash| automerge::ReadDoc::has_change(&*document.doc, hash))
+            })
     }
 
     /// [`Self::authorize_document`] by the governance this peer holds.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decision, from the writer's standing to the surface it names"
+    )]
     fn decide_written(
         &self,
         source: &[u8; 32],
@@ -1679,7 +1730,7 @@ impl StatePeer {
         envelope: &SignedOp,
         (changes, opened): (&SignedOp, Option<&[automerge::Change]>),
         authorization_time: SystemTime,
-        retained: bool,
+        reading: Reading,
     ) -> Result<Authorized, AuthorizeRefusal> {
         let written = self
             .written_as(app_id, record, envelope, authorization_time)
@@ -1687,12 +1738,13 @@ impl StatePeer {
         let Some((member, history)) = written else {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
         };
-        // A change is decided under the surface it names ([`Self::surface_gate`]). One naming a
-        // surface the workspace never ran the app with waits: its author's desktop switches to
-        // the workspace's version, and the same changes then name that version's surface. What
-        // the workspace ran is read as the write was written, and only grows: a version going
-        // back, or the app being uninstalled, lets in no change naming a surface it never ran.
-        let gate = self.change_gate(app_id, envelope);
+        // A change is decided under the surface it names ([`Self::surface_gate`]); a write this
+        // device already applied was decided then, and keeps the surface it was taken under.
+        let gate = if reading.applied {
+            SurfaceGate::Decide
+        } else {
+            self.change_gate(app_id, envelope)
+        };
         if gate == SurfaceGate::SetAside {
             return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
         }
@@ -1742,7 +1794,7 @@ impl StatePeer {
             .imported_invoker(source, app_id, record, envelope.seq);
         // A change a holder hands on from its store was admitted when it was made: one that
         // names no kind of the records it writes keeps the verdict it got then.
-        let decide = if retained {
+        let decide = if reading.retained {
             collab_admission::decide_op_replayed
         } else {
             collab_admission::decide_opened

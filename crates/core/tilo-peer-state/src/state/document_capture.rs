@@ -396,6 +396,7 @@ impl StatePeer {
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), OpenedRefusal> {
         self.check_carried((app, record), write, mutation)?;
+        let applied = self.applied_or_admitted((app, record), write, mutation);
         // A resource store's change reads the kinds of the records it writes from the changes it
         // builds on. Where this device holds the record without them (it holds it sealed), it
         // decides the write by the kinds its claims name, checked above against the changes it
@@ -407,9 +408,9 @@ impl StatePeer {
                     "the record is held here without the changes the write builds on".into(),
                 ));
             }
-            return self.decide_opened(app, record, write, (write, None));
+            return self.decide_opened(app, record, write, (write, None), applied);
         }
-        self.check_opened_write_whole((app, record), write, mutation)
+        self.check_opened_write_whole((app, record), write, mutation, applied)
     }
 
     /// That `write` is a write, and carries what its claims say: what every decision of an
@@ -448,7 +449,12 @@ impl StatePeer {
         mutation: &collab_types::DocumentMutation,
     ) -> Result<(), OpenedRefusal> {
         self.check_carried((app, record), write, mutation)?;
-        self.check_opened_write_whole((app, record), write, mutation)
+        self.check_opened_write_whole(
+            (app, record),
+            write,
+            mutation,
+            self.applied_or_admitted((app, record), write, mutation),
+        )
     }
 
     /// Decide `write` by the changes it carries, as admission decides the same write in the
@@ -458,6 +464,7 @@ impl StatePeer {
         (app, record): (&str, &str),
         write: &SignedOp,
         mutation: &collab_types::DocumentMutation,
+        applied: bool,
     ) -> Result<(), OpenedRefusal> {
         let mut opened = write.clone();
         // A cleartext op names each change's action in the change itself; the
@@ -468,7 +475,7 @@ impl StatePeer {
         // admission decides the same write in the clear.
         if let Ok(payload) = mutation.encode() {
             opened.payload = payload;
-            return self.decide_opened(app, record, write, (&opened, None));
+            return self.decide_opened(app, record, write, (&opened, None), applied);
         }
         // A write past what one op carries was written as segments, none of
         // which carries its changes whole: it is decided by the changes it was
@@ -480,7 +487,7 @@ impl StatePeer {
                 opened.payload = collab_types::DocumentMutation::Snapshot(Vec::new())
                     .encode()
                     .map_err(|error| OpenedRefusal::CannotDecide(error.to_string()))?;
-                self.decide_opened(app, record, write, (&opened, None))
+                self.decide_opened(app, record, write, (&opened, None), applied)
             }
             collab_types::DocumentMutation::Incremental(bytes) => {
                 let changes = tilo_automerge_isolate::parse_changes(bytes).map_err(|_| {
@@ -492,7 +499,7 @@ impl StatePeer {
                     )
                 })?;
                 opened.payload = Vec::new();
-                self.decide_opened(app, record, write, (&opened, Some(&changes)))
+                self.decide_opened(app, record, write, (&opened, Some(&changes)), applied)
             }
         }
     }
@@ -599,6 +606,7 @@ impl StatePeer {
         record: &str,
         write: &SignedOp,
         (opened, changes): (&SignedOp, Option<&[automerge::Change]>),
+        applied: bool,
     ) -> Result<(), OpenedRefusal> {
         match self.authorize_document_as(
             write.author.as_bytes(),
@@ -607,7 +615,10 @@ impl StatePeer {
             write,
             (opened, changes),
             write.timestamp,
-            true,
+            super::authority::Reading {
+                retained: true,
+                applied,
+            },
         ) {
             Ok(super::authority::Authorized::Admit { .. }) => Ok(()),
             Ok(super::authority::Authorized::Hold(waiting)) => Err(OpenedRefusal::CannotDecide(

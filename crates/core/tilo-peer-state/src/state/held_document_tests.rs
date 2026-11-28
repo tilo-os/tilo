@@ -1,6 +1,8 @@
 //! A sealed document read again over what its last read merged reads as one read of its whole
 //! history does, whatever came between: more writes, none, or a compaction of them.
-use super::sealed_compaction_tests::{APP, RECORD as RESOURCE, fixture, open, person, sealer};
+use super::sealed_compaction_tests::{
+    APP, RECORD as RESOURCE, fixture, open, person, sealer, write,
+};
 use super::*;
 use collab_types::CommitNamed as _;
 
@@ -131,6 +133,59 @@ fn a_document_read_over_its_last_read_reads_as_its_whole_history_does() {
             "{key}"
         );
     }
+
+    // The workspace runs a version installed after these writes: reading them again keeps what
+    // was applied, whatever surface that version names.
+    peer.write_versions_map_as_before(
+        &crate::InstalledApp {
+            release: crate::workspace_membership::AppRelease {
+                app: APP.into(),
+                version: "2.0.0".into(),
+                surface: hex::encode([9u8; 32]),
+                package: hex::encode([1u8; 32]),
+                publisher: hex::encode([2u8; 32]),
+                file: None,
+                dev: false,
+                pinned: false,
+                payload: crate::workspace_membership::AppPayload::Tapp,
+            },
+            installed_by: hex::encode(f.owner.verifying_key().to_bytes()),
+            installed_at_ns: 1,
+        },
+        &f.owner,
+        f.now,
+    )
+    .unwrap();
+    let (whole, again, _) = read(&peer, &keys, None);
+    assert_eq!(
+        heads(&again),
+        heads(&whole),
+        "a write this device applied is not decided again when read"
+    );
+
+    // A change this device never took in names an earlier time: the running version still decides
+    // it, whatever time it names.
+    let mut late = AutoCommit::load(&peer.document(APP, RESOURCE).unwrap()).unwrap();
+    let before = late.get_heads();
+    late.put(automerge::ROOT, "late", "backdated").unwrap();
+    late.commit_edit("fixture", "late", &person(&peer, &f.owner));
+    let plaintext = DocumentMutation::Incremental(late.save_after(&before))
+        .encode()
+        .unwrap();
+    let earlier = f.now.checked_sub(Duration::from_secs(120)).unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } =
+        &write(&peer, &f.owner, &keys, &plaintext, earlier)
+    else {
+        panic!("a change is an app document write")
+    };
+    let mutation = DocumentMutation::decode(&open(&keys, envelope).unwrap()).unwrap();
+    assert!(
+        matches!(
+            peer.check_write_in_log((APP, RESOURCE), envelope, &mutation),
+            Err(OpenedRefusal::CannotDecide(_))
+        ),
+        "a new change is still checked against the version the workspace runs"
+    );
 }
 
 #[test]
