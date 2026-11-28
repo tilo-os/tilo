@@ -223,6 +223,9 @@ type Step (untitled: "Step") {
     /// The step whose block holds this one; nothing at the top level.
     parent: Option<Step>
     branch: Branch = .top
+    /// Where it stands in its block: the steps of one block are read in this order, and a move
+    /// is a change of it.
+    order: Float = 0.0
     /// Its own id, which a binding to its output names.
     step_id: Text = ""
     head: Head = .invoke
@@ -712,7 +715,12 @@ type Place {
 
 /// The steps of one block, in the order the draft keeps them.
 fn siblings(p: Program, parent: Option<Step>, branch: Branch) -> List<Step> {
-    p.steps.filter(s -> s.parent == parent and s.branch == branch)
+    p.steps.filter(s -> s.parent == parent and s.branch == branch).sort_by(s -> s.order)
+}
+
+/// The place a step lands in at the end of a block: after every step there.
+fn next_order(p: Program, parent: Option<Step>, branch: Branch) -> Float {
+    if let last = siblings(p, parent, branch).last() { last.order + 1.0 } else { 0.0 }
 }
 
 /// The steps of the block an editor path names (`""`, `2.then`, `2.else` or `3.each`).
@@ -1407,7 +1415,10 @@ action load_saved(saved: Saved, value: json.Value) {
     load_program(saved.program, value)
 }
 
-action load_program(p: Program, item: json.Value) {
+/// Load `item`'s steps, inputs and output into `p`, and its triggers when `armed` says: a
+/// shortcut read from outside is loaded with its triggers left out, so nothing starts before a
+/// person saves it.
+action load_program(p: Program, item: json.Value, armed: Bool = true) {
     for value in at_list(item, "inputs") {
         p.inputs.insert(input_from(value))
     }
@@ -1415,11 +1426,13 @@ action load_program(p: Program, item: json.Value) {
     if let out = at(item, "output") { load_value(p.output, out) }
     p.step_timeout_secs = at_int(item, "step_timeout_secs")
     p.grant = piece_text(at(item, "grant"), "[]")
-    load_triggers(p, at_list(item, "triggers"))
+    if armed {
+        load_triggers(p, at_list(item, "triggers"))
+    }
 }
 
 /// A shortcut written as JSON, loaded into `d` as its steps, inputs and triggers.
-action load_shortcut(d: Draft, program: json.Value) {
+action load_shortcut(d: Draft, program: json.Value, armed: Bool = true) {
     let name = at_text(program, "name")
     if name != "" {
         d.name = name
@@ -1428,7 +1441,7 @@ action load_shortcut(d: Draft, program: json.Value) {
     if id != "" {
         d.shortcut_id = id
     }
-    load_program(d.program, program)
+    load_program(d.program, program, armed: armed)
 }
 
 action load_block(p: Program, steps: Option<json.Value>, parent: Option<Step>, branch: Branch) {
@@ -1440,7 +1453,14 @@ action load_block(p: Program, steps: Option<json.Value>, parent: Option<Step>, b
 }
 
 action load_step(p: Program, item: json.Value, parent: Option<Step>, branch: Branch) {
-    let s = p.steps.insert(Step(parent: parent, branch: branch, step_id: at_text(item, "id")))
+    let s = p.steps.insert(
+        Step(
+            parent: parent,
+            branch: branch,
+            order: next_order(p, parent, branch),
+            step_id: at_text(item, "id"),
+        ),
+    )
     let head = head_of(at_text(item, "step")) ?? .invoke
     s.head = head
     if head == .invoke {
@@ -1863,6 +1883,11 @@ fn values_before(p: Program, s: Step) -> List<Choice> {
 // ---------------------------------------------------------------------------
 // A draft's name, and the drafts on the workbench
 // ---------------------------------------------------------------------------
+/// A key a draft has of its own: every draft's differs, so saving one never replaces another.
+fn fresh_shortcut_id(d: Draft) -> Text {
+    "s" + d.id()
+}
+
 fn unused_name(w: Workbench, name: Text) -> Text {
     let base = name.trim()
     let numbered = w.drafts
@@ -1891,7 +1916,7 @@ primary action new_draft(w: Workbench, name: Text = "New shortcut") (
     label: "New shortcut",
 ) {
     let draft = w.drafts.insert(Draft(name: unused_name(w, name)))
-    draft.shortcut_id = "s" + draft.id().slice(0, 16)
+    draft.shortcut_id = fresh_shortcut_id(draft)
     w.opened = draft.shortcut_id
     w.notice = ""
     w.failure = ""
@@ -1908,7 +1933,7 @@ action rename_draft(w: Workbench, d: Draft, name: Text) (icon: .pencil, label: "
 
 action duplicate_draft(w: Workbench, d: Draft) (icon: .copy, label: "Duplicate draft") {
     let copy = w.drafts.insert(Draft(name: unused_name(w, d.name + " copy")))
-    copy.shortcut_id = "s" + copy.id().slice(0, 16)
+    copy.shortcut_id = fresh_shortcut_id(copy)
     for input in d.program.inputs {
         copy.program.inputs.insert(
             Input(
@@ -1937,6 +1962,7 @@ action copy_block(from: Draft, to: Draft, parent: Option<Step>, branch: Branch) 
             Step(
                 parent: parent,
                 branch: branch,
+                order: next_order(to.program, parent, branch),
                 step_id: s.step_id,
                 head: s.head,
                 app_id: s.app_id,
@@ -2017,9 +2043,8 @@ action draft_shortcut(w: Workbench, shortcut: Text) (icon: .download, label: "Im
         let draft = w.drafts.insert(
             Draft(name: unused_name(w, if name == "" { "Imported shortcut" } else { name })),
         )
-        draft.shortcut_id = "s" + draft.id().slice(0, 16)
-        load_shortcut(draft, value)
-        disarm(draft)
+        draft.shortcut_id = fresh_shortcut_id(draft)
+        load_shortcut(draft, value, armed: false)
         match_catalogue(draft)
         review(draft)
         w.notice = "Imported “{draft.name}”"
@@ -2032,8 +2057,8 @@ action draft_shortcut(w: Workbench, shortcut: Text) (icon: .download, label: "Im
 action open_shortcut(w: Workbench, shortcut: Text) (icon: .pencil, label: "Edit a saved shortcut") {
     if let value = parsed(shortcut) {
         let draft = w.drafts.insert(Draft(name: at_text(value, "name")))
+        draft.shortcut_id = fresh_shortcut_id(draft)
         load_shortcut(draft, value)
-        disarm(draft)
         match_catalogue(draft)
         review(draft)
         draft.replaces_saved = true
@@ -2049,13 +2074,13 @@ action duplicate_shortcut(w: Workbench, shortcut: Text) (
     label: "Duplicate saved shortcut",
 ) {
     if let value = parsed(shortcut) {
-        let name = at_text(value, "name")
-        let draft = w.drafts.insert(
-            Draft(name: unused_name(w, if name == "" { "Copy" } else { name })),
-        )
-        draft.shortcut_id = "s" + draft.id().slice(0, 16)
+        let saved_name = at_text(value, "name")
+        let draft = w.drafts.insert(Draft())
         load_shortcut(draft, value)
-        disarm(draft)
+        // The copy is a shortcut of its own: a key of its own, and a name that tells it apart
+        // from the one it copied, whatever the saved one carried.
+        draft.shortcut_id = "s" + draft.id().slice(0, 16)
+        draft.name = unused_name(w, if saved_name == "" { "Copy" } else { saved_name + " copy" })
         match_catalogue(draft)
         review(draft)
         w.notice = "Copied “{draft.name}”"
@@ -2065,9 +2090,10 @@ action duplicate_shortcut(w: Workbench, shortcut: Text) (
     }
 }
 
-/// A shortcut loaded as a draft arms nothing: a person saves it first, after the review.
+/// Take every trigger off a draft, so nothing starts it until a person gives it one again.
 action disarm(d: Draft) {
-    for trigger in d.program.triggers {
+    let armed = d.program.triggers
+    for trigger in armed {
         d.program.triggers.remove(trigger)
     }
 }
@@ -2154,7 +2180,13 @@ fn place_of_block(d: Draft, address: Text) -> Place {
 
 action add_offer(w: Workbench, d: Draft, o: Offer) {
     let place = place_of_block(d, w.picker_block)
-    let step = d.program.steps.insert(Step(parent: place.parent, branch: place.branch))
+    let step = d.program.steps.insert(
+        Step(
+            parent: place.parent,
+            branch: place.branch,
+            order: next_order(d.program, place.parent, place.branch),
+        ),
+    )
     let named = o.address.split("#").last() ?? ""
     step.head = Head.invoke
     step.step_id = fresh_step_id(d.program, if named == "" { "step" } else { named })
@@ -2183,7 +2215,13 @@ action add_offer(w: Workbench, d: Draft, o: Offer) {
 /// Add a step that is not an app's action: `if`, `for_each`, `set_var`, `ask`, `ai` or `task`.
 action add_block(w: Workbench, d: Draft, head: Head) {
     let place = place_of_block(d, w.picker_block)
-    let step = d.program.steps.insert(Step(parent: place.parent, branch: place.branch))
+    let step = d.program.steps.insert(
+        Step(
+            parent: place.parent,
+            branch: place.branch,
+            order: next_order(d.program, place.parent, place.branch),
+        ),
+    )
     step.head = head
     step.step_id = fresh_step_id(d.program, head_word(head))
     if head == Head.branch {
@@ -2231,10 +2269,16 @@ action remove_below(d: Draft, s: Step) {
 action move_step(w: Workbench, d: Draft, s: Step, earlier: Bool) (label: "Move") {
     let beside = siblings(d.program, s.parent, s.branch)
     let at = beside.index_of(s) ?? 0
+    // The order is a step's own field, so a move stands with the draft it changed and reaches
+    // every device as one change.
     if earlier {
-        if let other = beside.at(at - 1) { d.program.steps.move(s, before: other) }
+        if let other = beside.at(at - 1) {
+            s.order = other.order - 0.5
+        }
     } else {
-        if let other = beside.at(at + 1) { d.program.steps.move(s, after: other) }
+        if let other = beside.at(at + 1) {
+            s.order = other.order + 0.5
+        }
     }
     review(d)
 }
@@ -2244,8 +2288,9 @@ action nest_step(w: Workbench, d: Draft, s: Step) (
     label: "Move into the step above",
 ) {
     if let place = nest_place(d.program, s) {
-        let beside = siblings(d.program, place.parent, place.branch).filter(one -> one != s)
-        d.program.steps.move(s, to: beside.len(), among: beside)
+        s.order = next_order(d.program, place.parent, place.branch)
+        s.parent = place.parent
+        s.branch = place.branch
     }
     review(d)
 }
@@ -2254,9 +2299,12 @@ action lift_step(w: Workbench, d: Draft, s: Step) (
     icon: .arrow_left,
     label: "Move out of its step",
 ) {
-    if let place = lift_place(d.program, s) {
-        let beside = siblings(d.program, place.parent, place.branch).filter(one -> one != s)
-        d.program.steps.move(s, to: place.index, among: beside)
+    if let holder = s.parent {
+        if let place = lift_place(d.program, s) {
+            s.order = holder.order + 0.5
+            s.parent = place.parent
+            s.branch = place.branch
+        }
     }
     review(d)
 }
@@ -3657,6 +3705,9 @@ view editor(w: Workbench, d: Draft) {
         ui.Button("Review and save…", icon: .check, role: .primary) {
             on press: review(d).then(show_sheet(w, "save"))
         }
+        ui.Button("Duplicate", icon: .copy, role: .plain) {
+            on press: duplicate_draft(w, d)
+        }
         ui.Button("Discard", role: .plain) {
             on press: discard(w, d)
         }
@@ -3780,7 +3831,11 @@ view output_section(w: Workbench, d: Draft) {
 view triggers_section(w: Workbench, d: Draft) {
     ui.Section(title: "Triggers") {
         if d.program.triggers.is_empty() {
-            text("Nothing starts it on its own yet.", role: .caption, secondary: true)
+            text(
+                "Nothing starts it on its own yet. For now it runs when you press Run.",
+                role: .caption,
+                secondary: true,
+            )
         }
         for t in d.program.triggers {
             ui.ListRow(title: trigger_words(t), secondary: trigger_detail(t), icon: .play) {
@@ -4145,6 +4200,11 @@ view picker(w: Workbench, d: Draft) {
             ) {
                 on activate: add_block(w, d, head)
             }
+        }
+        if w.picker.is_empty() {
+            text("No app offers actions here yet.", role: .caption, secondary: true)
+        } else if w.picker.filter(offer -> offer_matches(w.picker_query, offer)).is_empty() {
+            text("No actions match this filter", role: .caption, secondary: true)
         }
         for offer in w.picker {
             if offer_matches(w.picker_query, offer) {
