@@ -128,6 +128,7 @@ fn a_follower_reads_a_workspace_founded_after_it_subscribed() {
     let caller = tilo_app_host::services::Caller {
         app_id: "tilo.test".to_owned(),
         workspace: String::new(),
+        opened_for: None,
     };
     let _watch = standing
         .watch(&caller, &named, sink)

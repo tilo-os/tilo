@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 
 use tilo_action_policy::Grantee;
 use tilo_action_policy::WorkspacePolicy;
-use tilo_permissions::caps::Access;
 use tilo_permissions::caps::CapOverride;
 use tilo_permissions::caps::DeviceCap;
 use tilo_permissions::caps::Effect;
@@ -193,7 +192,6 @@ mod tests {
     use tilo_app_package::manifest::{NetMode, SandboxNet};
 
     use super::*;
-    use tilo_permissions::caps::Access;
     use tilo_permissions::caps::CapOverride;
     use tilo_permissions::caps::Scope;
 
