@@ -1165,6 +1165,61 @@ pub(super) fn add_provider(
     Ok(view)
 }
 
+/// Change the provider `changing` names: its name, the way it is spoken to, the address it is
+/// asked at, and the headers beside its key, at an address this host calls (`destinations`).
+pub(super) fn update_provider(
+    root: &Path,
+    changing: &model_providers::UpdateProvider,
+    destinations: Destinations,
+) -> Result<ProviderView, String> {
+    let name = changing.name.trim();
+    if name.is_empty() {
+        return Err("A provider needs a name".into());
+    }
+    let endpoint = changing.endpoint.trim();
+    let location = kept_location(endpoint, destinations)?;
+    let protocol = match changing.protocol {
+        model_providers::Protocol::OpenAiCompatible => {
+            agent_provider_config::ProviderProtocol::OpenAiCompatible
+        }
+        model_providers::Protocol::Anthropic => agent_provider_config::ProviderProtocol::Anthropic,
+    };
+    let headers = if let Some(headers) = changing.headers.as_ref() {
+        Some(
+            headers
+                .iter()
+                .map(|header| {
+                    let checked = agent_provider_config::ProviderHeader {
+                        name: header.name.trim().to_owned(),
+                        value: header.value.clone(),
+                    };
+                    checked.check().map(|()| checked)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
+    let mut config = provider_config(root);
+    let profile = config
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == changing.provider)
+        .ok_or_else(|| "That provider is not kept here".to_owned())?;
+    profile.label.clear();
+    profile.label.push_str(name);
+    profile.protocol = protocol;
+    profile.endpoint.clear();
+    profile.endpoint.push_str(endpoint);
+    profile.location = location;
+    if let Some(headers) = headers {
+        profile.headers = headers;
+    }
+    let view = view_of(profile);
+    save_provider_config(root, &config)?;
+    Ok(view)
+}
+
 /// Offer `setting`'s provider to the workspace's agents, or stop offering it, and answer the
 /// provider as kept. A provider stopped keeps its key and its models; the kinds of work assigned
 /// to it follow the default again, so no work runs on a provider the person stopped.

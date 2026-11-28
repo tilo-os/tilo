@@ -408,6 +408,13 @@ d-epn7dy5e = Agent models pane
     .w-the-model-s-id-as-names = Die Kennung des Modells, wie { $name } sie nennt
     .w-add-the-model = Das Modell hinzufügen
     .w-agents-use-this-one = Agenten verwenden diesen
+    .w-edit-this-provider = Diesen Anbieter bearbeiten
+    .w-the-provider-s-name = Der Name des Anbieters
+    .w-the-base-url-every-request-goes = Die Basis-URL, an die jede Anfrage geht
+    .w-openai-compatible-api = OpenAI-kompatible API
+    .w-anthropic-s-api = Anthropics API
+    .w-save = Speichern
+    .w-a-key-is-kept-for-the = Ein Schlüssel gehört zu der Adresse, für die er eingegeben wurde; eine neue Adresse verhindert, dass er gesendet wird, bis sein Schlüssel erneut gespeichert ist.
     .w-models-this-computer-runs = Modelle auf diesem Rechner
     .w-installed-here-and-served-by-this = Hier installiert und vom eigenen Modelldienst dieses Rechners bereitgestellt, sodass ihre Antworten von dieser Maschine kommen. Ein anderswo gehaltener Arbeitsbereich betreibt keine.
     .w-this-computer-s-model-service-did = Der Modelldienst dieses Rechners hat nicht geantwortet.
@@ -427,6 +434,32 @@ d-epn7dy5e = Agent models pane
     .w-looking-for-the-models-this-computer = Die Modelle dieses Rechners werden gesucht …
     .w-add-a-provider = Anbieter hinzufügen
     .w-a-provider-where-models-answer-directly = Ein Anbieter, bei dem Modelle direkt antworten: eine gehostete API mit Schlüssel oder ein Server auf diesem Gerät oder in deinem Netz. Der Schlüssel wird im Tresor dieses Arbeitsbereichs gehalten, nie in diesem Fenster.
+
+d-oorslcxx = Worte zum Protokoll
+    .w-anthropic-s-api = Anthropics API
+    .w-openai-compatible-api = OpenAI-kompatible API
+
+d-jzowamau = Worte zur lokalen Eignung
+    .w-runs-well-here = Läuft hier gut
+    .w-fits-here = Passt hierher
+    .w-fits-but-close = Passt, aber knapp
+    .w-too-large-for-this-computer = Zu groß für diesen Rechner
+
+d-ytalmtyb = Worte zum lokalen Fortschritt
+    .w-downloading-of = { $local_size_words } von { $local_size_words2 } werden heruntergeladen
+    .w-installing = Wird installiert
+    .w-running = Läuft
+    .w-running-at = Läuft unter { $endpoint }
+    .w-installed-not-running = Installiert, läuft nicht
+    .w-failed = Fehlgeschlagen: { $message }
+    .w-failed-2 = Fehlgeschlagen
+    .w-not-set-up = Nicht eingerichtet
+
+d-6cw24ejb = Lokale Größen
+    .w-b = { $bytes } B
+    .w-kib = { $local_tenths } KiB
+    .w-mib = { $local_tenths } MiB
+    .w-gib = { $local_tenths } GiB
 
 d-i67tvpqg = Settings window
     .w-settings = Einstellungen
@@ -2729,28 +2762,6 @@ d-jailefgw = Das VPN als Datei speichern
     .doc = Speichert das VPN als Konfigurationsdatei an einem Ort, den die Person wählt: was das Einrichten anderswo liest.
 
 d-jailefgw-p = P
-
-d-jzowamau = Local fit words
-    .w-runs-well-here = Runs well here
-    .w-fits-here = Fits here
-    .w-fits-but-close = Fits, but close
-    .w-too-large-for-this-computer = Too large for this computer
-
-d-ytalmtyb = Local phase words
-    .w-downloading-of = Downloading { $local_size_words } of { $local_size_words2 }
-    .w-installing = Installing
-    .w-running = Running
-    .w-running-at = Running at { $endpoint }
-    .w-installed-not-running = Installed, not running
-    .w-failed = Failed: { $message }
-    .w-failed-2 = Failed
-    .w-not-set-up = Not set up
-
-d-6cw24ejb = Local size words
-    .w-b = { $bytes } B
-    .w-kib = { $local_tenths } KiB
-    .w-mib = { $local_tenths } MiB
-    .w-gib = { $local_tenths } GiB
 
 d-zra63q7t = Worte zum Akkuzustand
     .w-of-a-new-pack = { $health } % eines neuen Akkus

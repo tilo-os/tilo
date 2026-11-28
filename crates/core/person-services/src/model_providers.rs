@@ -46,7 +46,7 @@ use crate::model_answers::Models;
 use crate::person_settings::{
     ProviderKeys, add_provider, answer, argument, keep_local_models_shown, provider_config,
     providers, remove_key, remove_provider, save_provider_config, set_assignment, set_enabled,
-    set_key, view_of,
+    set_key, update_provider, view_of,
 };
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 
@@ -257,6 +257,22 @@ impl crate::PersonServices {
                     headers: headers.unwrap_or_default(),
                 };
                 answer(&add_provider(root, &adding, reach.destinations))
+            }
+            ModelsAction::UpdateProvider {
+                provider,
+                name,
+                protocol,
+                endpoint,
+                headers,
+            } => {
+                let changing = model_providers::UpdateProvider {
+                    provider,
+                    name,
+                    protocol,
+                    endpoint,
+                    headers,
+                };
+                answer(&update_provider(root, &changing, reach.destinations))
             }
             ModelsAction::AddPreset { preset } => answer(&add_preset(root, &preset)),
             ModelsAction::SetEnabled { provider, enabled } => {
@@ -1148,6 +1164,59 @@ mod tests {
             assert!(refused.is_err(), "{slug} is not added by name on a host");
         }
         assert_eq!(providers(root.path()).providers.len(), 4);
+    }
+
+    /// A provider a person added is changed afterwards: its name, the API it is spoken to and
+    /// the address it is asked at. An address this host does not call is refused and the
+    /// provider stays as it was, and one this workspace does not keep cannot be changed.
+    #[test]
+    fn a_provider_is_changed_after_it_is_added() {
+        let root = temp_root();
+        let added = add_provider(
+            root.path(),
+            &AddProvider {
+                name: "My server".into(),
+                protocol: Protocol::OpenAiCompatible,
+                endpoint: "https://models.example.org/v1".into(),
+                headers: Vec::new(),
+            },
+            Destinations::Public,
+        )
+        .expect("a provider is added");
+        let changing = model_providers::UpdateProvider {
+            provider: added.id.clone(),
+            name: "Our server".into(),
+            protocol: Protocol::Anthropic,
+            endpoint: "https://models.example.net".into(),
+            headers: None,
+        };
+        let changed =
+            update_provider(root.path(), &changing, Destinations::Public).expect("it is changed");
+        assert_eq!(changed.id, added.id);
+        assert_eq!(changed.name, "Our server");
+        assert_eq!(changed.protocol, Protocol::Anthropic);
+        assert_eq!(changed.endpoint, "https://models.example.net");
+        let read = providers(root.path());
+        assert_eq!(read.providers.len(), 1);
+        assert_eq!(read.providers[0].name, "Our server");
+
+        let refused = model_providers::UpdateProvider {
+            endpoint: "http://127.0.0.1:8080/v1".into(),
+            ..changing.clone()
+        };
+        assert!(
+            update_provider(root.path(), &refused, Destinations::Public).is_err(),
+            "an address off the internet is not a provider's here"
+        );
+        assert_eq!(
+            providers(root.path()).providers[0].endpoint,
+            "https://models.example.net"
+        );
+        let missing = model_providers::UpdateProvider {
+            provider: "gone".into(),
+            ..changing
+        };
+        assert!(update_provider(root.path(), &missing, Destinations::Public).is_err());
     }
 
     /// The host asks an OpenAI-compatible provider for its models with the

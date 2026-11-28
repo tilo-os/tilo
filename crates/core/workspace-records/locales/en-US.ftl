@@ -84,6 +84,7 @@ tilo-models-stop-local-model = Stop serving a model
 tilo-models-remove-local-model = Remove an installed model and its files
 tilo-models-stage-accelerator = Stage the accelerator pack the recommended model needs
 tilo-models-use-local-model = Offer this computer's running model to the workspace
+tilo-models-update-provider = Change a provider it keeps
 
 # A workspace's connected services, kept by the host that keeps the workspace.
 tilo-connections-list = List connections

@@ -76,6 +76,25 @@ pub enum ModelsAction {
         #[param("Headers sent with every request beside the key, each with `name` and `value`.")]
         headers: Option<Vec<RequestHeader>>,
     },
+    /// Change a provider it keeps
+    ///
+    /// Its name, the way it is spoken to, the address requests go to, and the headers sent
+    /// beside its key. A key it keeps is bound to its endpoint's origin, so a key kept for an
+    /// address that is no longer this provider's is not sent there. Answers it as a
+    /// [`ProviderView`].
+    #[effect(kind = "undoable", returns = ProviderView)]
+    UpdateProvider {
+        #[param("The provider's id, as the providers list names it.")]
+        provider: String,
+        #[param("The name the person gives it.")]
+        name: String,
+        #[param("How it is spoken to: `open-ai-compatible` or `anthropic`.")]
+        protocol: Protocol,
+        #[param("The base URL every request goes to.")]
+        endpoint: String,
+        #[param("Headers sent with every request beside the key, each with `name` and `value`.")]
+        headers: Option<Vec<RequestHeader>>,
+    },
     /// Keep a provider's key
     #[effect(kind = "undoable")]
     SetKey {
@@ -323,7 +342,7 @@ ids! {
     SET_REASONING, BEGIN_SIGN_IN, WAIT_SIGN_IN, CANCEL_SIGN_IN, SEARCH_HUB_MODELS,
     SHOW_HUB_MODEL, INSTALL_HUB_MODEL, LINK_THIS_COMPUTER, ASK, LOCAL_MODELS,
     INSTALL_LOCAL_MODEL, START_LOCAL_MODEL, STOP_LOCAL_MODEL, REMOVE_LOCAL_MODEL,
-    STAGE_ACCELERATOR, USE_LOCAL_MODEL
+    STAGE_ACCELERATOR, USE_LOCAL_MODEL, UPDATE_PROVIDER
 }
 
 /// The declaration of the action `action`, when it is one of [`ModelsAction`].
@@ -489,6 +508,23 @@ pub struct AddProvider {
     /// headers the key and the protocol travel in are refused.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<RequestHeader>,
+}
+
+/// A provider to change, as [`UPDATE_PROVIDER`] names it: the fields it replaces, and the
+/// headers beside its key when they change too.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateProvider {
+    pub provider: String,
+    /// The name the person gives it, shown in the list.
+    pub name: String,
+    pub protocol: Protocol,
+    /// The base URL every request goes to.
+    pub endpoint: String,
+    /// Headers sent with every request beside the key; absent, the ones it has are kept, and an
+    /// empty list removes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<Vec<RequestHeader>>,
 }
 
 /// A provider's API key to keep. The key travels in and is never read back.

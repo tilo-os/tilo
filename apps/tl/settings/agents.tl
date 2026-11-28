@@ -8,6 +8,10 @@ view agent_models_pane() {
     state key: Text = ""
     state adding_for: Text = ""
     state adding_model: Text = ""
+    state editing_provider: Text = ""
+    state edit_name: Text = ""
+    state edit_endpoint: Text = ""
+    state edit_protocol: Text = "open-ai-compatible"
     state sign_in: Text = ""
     state sign_in_code: Text = ""
     state sign_in_page: Text = ""
@@ -207,6 +211,21 @@ view agent_models_pane() {
                         ui.MenuItem("Add a model by hand") {
                             on choose: set(adding_for, provider.id)
                         }
+                        ui.MenuItem("Edit this provider") {
+                            on choose: set(editing_provider, provider.id)
+                                .then(set(edit_name, provider.name))
+                                .then(
+                                    set(edit_endpoint, provider.endpoint),
+                                )
+                                .then(
+                                    set(
+                                        edit_protocol,
+                                        if provider.protocol == .anthropic {
+                                            "anthropic"
+                                        } else { "open-ai-compatible" },
+                                    ),
+                                )
+                        }
                         if not provider.signs_in {
                             if provider.configured {
                                 ui.MenuItem("Remove its key") {
@@ -275,6 +294,47 @@ view agent_models_pane() {
                         on press: set(adding_for, "").then(set(adding_model, ""))
                     }
                 }
+            }
+            if editing_provider == provider.id {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(bind: edit_name, placeholder: "The provider's name", fill)
+                    ui.TextInput(
+                        bind: edit_endpoint,
+                        placeholder: "The base URL every request goes to",
+                        fill,
+                    )
+                }
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.MenuButton(protocol_words(edit_protocol), icon: .sliders_horizontal) {
+                        ui.MenuItem("OpenAI-compatible API") {
+                            on choose: set(edit_protocol, "open-ai-compatible")
+                        }
+                        ui.MenuItem("Anthropic's API") {
+                            on choose: set(edit_protocol, "anthropic")
+                        }
+                    }
+                    ui.Button("Save", role: .primary, size: .small) {
+                        on press: models
+                            .update_provider(
+                                models.models,
+                                provider: provider.id,
+                                name: edit_name,
+                                endpoint: edit_endpoint,
+                                protocol: if edit_protocol == "anthropic" {
+                                    .anthropic
+                                } else { .open-ai-compatible },
+                            )
+                            .then(set(editing_provider, ""))
+                    }
+                    ui.Button("Cancel", size: .small) {
+                        on press: set(editing_provider, "")
+                    }
+                }
+                ui.Text(
+                    "A key is kept for the address it was entered for, so a new address stops it being sent until its key is kept again.",
+                    role: .caption,
+                    secondary: true,
+                )
             }
             for model in provider.models {
                 ui.ListRow(
@@ -494,6 +554,11 @@ fn sign_in_words(state: models.SignInState) -> Text {
         .done(provider) => "Signed in: {provider.name} is ready to answer.",
         .failed(reason) => "The sign-in did not finish: {reason}",
     }
+}
+
+/// What a provider speaks, in the words a person reads.
+fn protocol_words(protocol: Text) -> Text {
+    if protocol == "anthropic" { "Anthropic's API" } else { "OpenAI-compatible API" }
 }
 
 /// How well a local model fits this computer, in one word.
