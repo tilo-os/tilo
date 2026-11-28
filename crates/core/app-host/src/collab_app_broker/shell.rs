@@ -362,7 +362,13 @@ async fn launching(
 ) -> Result<ShellReply, String> {
     let launcher = launcher(services)?;
     Ok(match call {
-        ShellCall::Launch(ask) => ShellReply::Launching(launcher.launch(ask)),
+        // Deciding reads the device's packages and grants: it runs off the dispatch, which goes
+        // on answering every other call meanwhile.
+        ShellCall::Launch(ask) => ShellReply::Launching(
+            tokio::task::spawn_blocking(move || launcher.launch(ask))
+                .await
+                .map_err(|error| format!("the launch was not decided: {error}"))?,
+        ),
         ShellCall::Orders => ShellReply::Orders(launcher.orders().await),
         ShellCall::Started {
             ticket,

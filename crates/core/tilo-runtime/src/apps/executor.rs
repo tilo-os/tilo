@@ -635,6 +635,9 @@ pub(crate) struct DeviceLauncher(pub(crate) Arc<super::Apps>);
 
 impl tilo_app_host::shell::ShellLauncher for DeviceLauncher {
     fn launch(&self, ask: LaunchAsk) -> Result<LaunchOrder, String> {
+        // A test holding the decisions holds this, as a daemon too busy to decide would.
+        #[cfg(feature = "test-support")]
+        drop(self.0.held_decisions.blocking_read());
         self.0.order_for_shell(&ask)
     }
 

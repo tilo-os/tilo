@@ -23,6 +23,7 @@ use runtime_portal::process_link::{Packet as _, ToProcess};
 use tilo_app_launch::{HeldLink, Links, Opens, Planned, Reservation, Routed, StartAlone};
 
 use super::{ApiError, Apps, Got, Launching};
+use crate::launches::Decision;
 use tilo_app_launch::Workspace;
 
 /// The tilolang runtime and the Tilo runtime a window process runs on, `tilolang/<version>` and
@@ -354,8 +355,25 @@ impl Apps {
                 }
             };
         tilo_startup_metrics::launch_phase(app, "routed");
-        self.bind_spare(asked, workspace, instance, opens, reservation, timed)
-            .map_err(failed)
+        match self
+            .bind_spare(asked, workspace, instance, opens, reservation, timed)
+            .map_err(failed)?
+        {
+            None => Ok(true),
+            // The window opens once the daemon decided its launch: the open is made again then.
+            Some(id) => {
+                tilo_startup_metrics::launch_handed_on(timed);
+                self.window_once_decided(
+                    id,
+                    asked,
+                    workspace,
+                    false,
+                    Some(instance),
+                    opens.reveal.as_deref(),
+                );
+                Ok(true)
+            }
+        }
     }
 
     /// What `app`'s windows are bound with: read once for the package installed now.
@@ -382,18 +400,23 @@ impl Apps {
     /// for with. `None` for a session no daemon decides, whose apps reach no socket of one.
     ///
     /// # Errors
-    /// The daemon refused the launch, or did not answer.
+    /// The daemon refused the launch, or the session could not ask it.
     fn window_launch(
         &self,
         asked: &tilo_app_launch::Launch,
         workspace: &Workspace,
         instance: u64,
-    ) -> Result<Option<u64>, String> {
+    ) -> Result<Option<Decision>, String> {
         let Some(launches) = self.state.borrow().launches.clone() else {
             return Ok(None);
         };
         if !launches.decided_by_the_daemon() {
             return Ok(None);
+        }
+        // The open made again once the daemon decided it is that decision's.
+        let decided = self.state.borrow_mut().decided_order.take();
+        if let Some(order) = decided {
+            return Ok(Some(Decision::Ordered(order)));
         }
         // Content a hosted window opens was kept in the app's own scope in the workspace before
         // the window exists: what the daemon decides is the app and the workspace the window is
@@ -415,7 +438,7 @@ impl Apps {
             })?,
         };
         ask.window = Some(instance);
-        launches.order(ask).map(|order| Some(order.ticket))
+        launches.order(ask).map(Some)
     }
 
     /// Tell the daemon the launch `ticket` it answered starts no process, and why.
@@ -440,9 +463,16 @@ impl Apps {
         opens: &Opens,
         reservation: Reservation,
         timed: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         let app = asked.app();
         let package = self.window_package(app)?;
+        // The daemon decides this launch before the window process is the app's: its ticket is
+        // what the process's connections are vouched for with. While it decides, no spare is taken.
+        let ticket = match self.window_launch(asked, workspace, instance)? {
+            Some(Decision::Deciding(id)) => return Ok(Some(id)),
+            Some(Decision::Ordered(order)) => Some(order.ticket),
+            None => None,
+        };
         let ready = {
             let mut state = self.state.borrow_mut();
             state.spares.ended.remove(&workspace.id);
@@ -455,12 +485,14 @@ impl Apps {
         };
         let spare = match ready {
             Some(spare) => spare,
-            None => self.start_spare(&workspace.id, package.runtimes.clone())?,
+            None => match self.start_spare(&workspace.id, package.runtimes.clone()) {
+                Ok(spare) => spare,
+                Err(error) => {
+                    self.launch_never_started(ticket, &error);
+                    return Err(error);
+                }
+            },
         };
-        // The daemon decides this launch before the window process is the app's: its ticket is
-        // what the process's connections are vouched for with, and what makes the process the
-        // app's on the device's own endpoint.
-        let ticket = self.window_launch(asked, workspace, instance)?;
         // The compositor names the spare's windows by what its connection is bound to: it is
         // bound before the spare is told, so no window of it is ever shown as anything else.
         if !spare.connection.bind(app, &workspace.id) {
@@ -536,6 +568,6 @@ impl Apps {
             instance,
             "a spare window was bound to the app"
         );
-        Ok(true)
+        Ok(None)
     }
 }

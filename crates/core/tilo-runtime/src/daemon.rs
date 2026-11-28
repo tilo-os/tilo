@@ -696,6 +696,20 @@ impl Running {
             .map_err(io::Error::other)
     }
 
+    /// Hold every launch decision the person's shell asks for, once the person's services run
+    /// (within `within`), until what this answers is dropped.
+    ///
+    /// # Errors
+    /// The person's services did not start in time.
+    #[cfg(feature = "test-support")]
+    pub fn hold_launch_decisions(&self, within: Duration) -> io::Result<impl Drop + use<>> {
+        self.person
+            .within(within)?
+            .apps()
+            .hold_launch_decisions()
+            .ok_or_else(|| io::Error::other("the launch decisions are held already"))
+    }
+
     /// Where the daemon's native endpoint listens.
     #[must_use]
     pub fn native_socket(&self) -> &Path {

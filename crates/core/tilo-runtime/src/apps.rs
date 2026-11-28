@@ -185,7 +185,11 @@ pub struct Apps {
     orders: Arc<executor::SeatOrders>,
     /// Every launch this daemon decided, by ticket: what a connection is admitted as.
     tickets: Arc<executor::Tickets>,
+    /// Held by a test that holds the shell's launch decisions ([`Self::hold_launch_decisions`]).
+    #[cfg(feature = "test-support")]
+    held_decisions: Arc<tokio::sync::RwLock<()>>,
 }
+
 impl Apps {
     /// Hand each origin connector this device starts the connection to its dispatch through
     /// `actions` from now on.
@@ -314,7 +318,16 @@ impl Apps {
             executor: executor::Executor::Local,
             orders: Arc::default(),
             tickets: Arc::default(),
+            #[cfg(feature = "test-support")]
+            held_decisions: Arc::default(),
         }
+    }
+
+    /// Hold every launch decision a shell asks for from now on, until what this answers is
+    /// dropped. `None` while another holds them.
+    #[cfg(feature = "test-support")]
+    pub fn hold_launch_decisions(&self) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        Arc::clone(&self.held_decisions).try_write_owned().ok()
     }
 
     /// Order every launch that shows a window of the seat's shell, as the computer's own daemon

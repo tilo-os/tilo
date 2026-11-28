@@ -290,6 +290,7 @@ mod landing;
 // the same steps the command and the installer's window name, answered from this session.
 #[cfg(target_os = "linux")]
 mod launches;
+mod off_loop;
 // The workspaces' layouts as a device's workspace service holds them. A page never had this
 // path: it keeps the layout of the workspace it shows in its own layout document.
 #[cfg(target_os = "linux")]

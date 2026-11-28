@@ -30,6 +30,8 @@ use tilo_lock::MutexRecover as _;
 /// How long a service, an app or an agent waits for the session's loop to answer a launch it asked
 /// for.
 const LAUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
+/// How long a launch waits for the device's daemon to decide it before it is said not to open.
+const DECISION_WAIT: Duration = Duration::from_secs(120);
 /// How long the session waits before it follows the daemon's launch orders again, once its link
 /// failed: the link is made again meanwhile.
 const ORDERS_AGAIN: Duration = Duration::from_secs(1);
@@ -135,21 +137,19 @@ pub struct Launches {
     /// The launches the device's daemon ordered of this session for a caller of its own (an
     /// app's, an agent's), waiting for the pass that starts them.
     ordered: Mutex<Vec<runtime_collab::wire::shell::LaunchOrder>>,
+    /// The id of the last decision this session asked the daemon for.
+    deciding: std::sync::atomic::AtomicU64,
+    /// The daemon's answers to the decisions it was asked for, by id, for the loop to take.
+    pub(crate) decided:
+        crate::off_loop::Pending<u64, Result<runtime_collab::wire::shell::LaunchOrder, String>>,
 }
 
-/// Run `asked` on the session's runtime and wait for its answer: what the session's loop, which
-/// is no task of that runtime, asks its daemon with.
-fn on_link<T: Send + 'static>(
-    asked: impl std::future::Future<Output = T> + Send + 'static,
-) -> Result<T, String> {
-    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
-    let (answer, answered) = std::sync::mpsc::sync_channel(1);
-    runtime.spawn(async move {
-        let _ = answer.send(asked.await);
-    });
-    answered
-        .recv_timeout(LAUNCH_ANSWER_WAIT)
-        .map_err(|_| "the device's daemon did not answer the launch in time".to_owned())
+/// What the device's daemon made of a launch this session asked it to decide.
+pub(crate) enum Decision {
+    /// The order the session starts the launch by, decided already.
+    Ordered(runtime_collab::wire::shell::LaunchOrder),
+    /// The daemon is deciding: its answer comes under this id ([`Launches::decided`]).
+    Deciding(u64),
 }
 
 impl Launches {
@@ -171,22 +171,23 @@ impl Launches {
         self.shell.get().is_some()
     }
 
-    /// Ask the device's daemon to decide `ask`: the order this session starts it by. A launch the
-    /// daemon already ordered of this session for the same app and workspace is that order.
+    /// Ask the device's daemon to decide `ask`, without waiting for its answer
+    /// ([`Self::decided`]). A launch the daemon already ordered of this session for the same app
+    /// and workspace is that order.
     ///
     /// # Errors
-    /// The daemon refused the launch, or did not answer.
+    /// The session has no link to the daemon, or no runtime to ask it on.
     pub(crate) fn order(
-        &self,
+        self: &std::sync::Arc<Self>,
         ask: runtime_collab::wire::shell::LaunchAsk,
-    ) -> Result<runtime_collab::wire::shell::LaunchOrder, String> {
+    ) -> Result<Decision, String> {
         {
             let mut ordered = self.ordered.lock_recover();
             if let Some(at) = ordered
                 .iter()
                 .position(|order| order.app == ask.app && order.workspace == ask.workspace)
             {
-                return Ok(ordered.remove(at));
+                return Ok(Decision::Ordered(ordered.remove(at)));
             }
         }
         let shell = self
@@ -194,7 +195,26 @@ impl Launches {
             .get()
             .cloned()
             .ok_or("this session has no link to the device's daemon")?;
-        on_link(async move { shell.launch(ask).await })?.map_err(|error| error.to_string())
+        let id = self
+            .deciding
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        let launches = std::sync::Arc::downgrade(self);
+        self.decided.ask(
+            id,
+            async move {
+                match tokio::time::timeout(DECISION_WAIT, shell.launch(ask)).await {
+                    Ok(answer) => answer.map_err(|error| error.to_string()),
+                    Err(_) => Err("the device's daemon did not decide the launch".to_owned()),
+                }
+            },
+            std::sync::Arc::new(move || {
+                if let Some(launches) = launches.upgrade() {
+                    launches.wake_loop();
+                }
+            }),
+        )?;
+        Ok(Decision::Deciding(id))
     }
 
     /// The launch `ticket` the device's daemon ordered runs as `pid`, started now: a connection
@@ -567,11 +587,16 @@ impl Launches {
             }
             waiting.push(request);
         }
+        self.wake_loop();
+        Ok(())
+    }
+
+    /// Wake the session's loop: something waits for its next pass.
+    fn wake_loop(&self) {
         let wake = self.wake.lock_recover().clone();
         if let Some(wake) = wake {
             wake();
         }
-        Ok(())
     }
 
     /// The launches waiting for this pass, oldest first: taken once, by the loop that starts them.
@@ -582,7 +607,7 @@ impl Launches {
     /// Whether a launch waits for the loop: what a pass that starts nothing else still has to
     /// settle.
     pub(crate) fn waiting(&self) -> bool {
-        !self.waiting.lock_recover().is_empty()
+        !self.waiting.lock_recover().is_empty() || self.decided.waiting()
     }
 
     /// The apps this device has, as `lists` last read them: what a service

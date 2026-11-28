@@ -771,10 +771,9 @@ fn an_apps_first_frame_is_mapped_without_waiting_a_second_one() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let ada = Person::new("Ada");
     let mut device = ada.device("Ada's laptop");
-    device.run_session(
-        tilo_test_env::started_variant("tilo-session", "fast", "dev-overrides")
-            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session")),
-    );
+    // The session finds the launcher beside its own program, as an installed one does.
+    let (_programs, session) = session_beside_launcher();
+    device.run_session(session);
     install_tl(&device);
     let trusted = install_runtimes(&device);
     device.env("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", trusted);

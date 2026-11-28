@@ -40,6 +40,7 @@ use ui::floating_surface::{
 };
 
 use crate::common::linked::{Builder, DEFAULT_APP};
+use crate::common::{LAUNCHER_SEARCH, press, type_text};
 
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// the entry declaring `lines` besides its name and command, and the path
@@ -1503,6 +1504,128 @@ fn an_app_runs_in_the_workspace_the_shell_made_its_tab_in() {
         their_own,
         "the app runs in the workspace whose tab the session made for its window"
     );
+}
+
+/// A daemon slow to decide a launch never holds the shell up: while it decides, the shell keeps
+/// drawing and takes what the person types, and the app starts once the daemon decided.
+#[test]
+fn the_shell_keeps_drawing_and_taking_input_while_the_daemon_decides_a_launch() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let device = crate::common::device_daemon(crate::common::device_home(), None);
+    let started = device.home.home().join("started");
+    signed_probe(&device.home);
+    let probe = tilo_test_env::stand_in(
+        device.home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{started}'\nhold\n",
+            started = started.display(),
+        ),
+    )
+    .unwrap();
+    // The launcher starts the workspace's spare windows too: only a start of the probe counts.
+    let probe_starts = || {
+        fs::read_to_string(&started).map_or(0, |lines| {
+            lines.lines().filter(|line| line.contains(PROBE)).count()
+        })
+    };
+    let mut environment = tilo_app_launch::SessionEnvironment::from_process();
+    environment.wayland_socket = Some(device.home.runtime().join("wayland-7"));
+    let apps = Rc::new(Apps::with_launcher(
+        environment,
+        None,
+        Some(probe.path().to_owned()),
+    ));
+    let mut session = device.session_with(Options {
+        collab: true,
+        state: Some(device.home.state().join("session")),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        app_socket: tilo_session::AppSocket::At(device.home.runtime().join("app_wire.sock")),
+        ..Options::default()
+    });
+    crate::common::kept_in_workspace(&mut session);
+    let held = device
+        .daemon
+        .hold_launch_decisions(tilo_test_env::hang_bound())
+        .expect("the daemon's launch decisions are held");
+
+    open_from_the_shell(&session, PROBE);
+    // Each frame comes as it would with nothing waiting: the daemon's answer is no frame's.
+    for _ in 0..20 {
+        let frame = std::time::Instant::now();
+        session.step(Duration::from_millis(1)).unwrap();
+        assert!(
+            frame.elapsed() < Duration::from_secs(5),
+            "a frame waited {:?} for the daemon's decision",
+            frame.elapsed()
+        );
+    }
+    // The person goes on typing into the shell's search.
+    invoke(
+        &mut session,
+        "desktop:overlays",
+        "show-surface",
+        serde_json::json!({"surface": "launcher"}),
+    );
+    until(&mut session, "the launcher opens", |session| {
+        session.shell_control(LAUNCHER_SEARCH).is_some()
+    });
+    press(&mut session, LAUNCHER_SEARCH);
+    type_text(&mut session, "quarterly");
+    until(&mut session, "the search takes what was typed", |session| {
+        session.resources().iter().any(|resource| {
+            resource.id.as_str() == SHELL_RESOURCE
+                && resource
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == SEARCH_RESOURCE && child.label == "quarterly")
+        })
+    });
+    assert_eq!(
+        probe_starts(),
+        0,
+        "nothing starts before the daemon decided the launch"
+    );
+
+    drop(held);
+    until(
+        &mut session,
+        "the app starts once the daemon decided",
+        |_| probe_starts() > 0,
+    );
+}
+
+/// Install [`PROBE`] under `home` as a signed package, which the device's daemon launches.
+fn signed_probe(home: &tilo_test_env::TestHome) {
+    let payload = tempfile::tempdir().unwrap();
+    fs::create_dir_all(payload.path().join("bin")).unwrap();
+    fs::write(payload.path().join("bin").join("app"), "#!/bin/sh\n").unwrap();
+    let publisher = tilo_app_package::pack::SigningIdentity::generate();
+    let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&format!(
+        "package = {{ id = \"{PROBE}\", version = \"1.0.0\", kind = \"app\", name = \"{PROBE_NAME}\" }}\n\
+         publisher = {{ identity = \"ed25519:{key}\", signature = \"\" }}\n\
+         entrypoint = {{ bin = \"bin/app\", type = \"gui\" }}\n\
+         [sandbox]\nnamespaces = [\"user\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         net = {{ mode = \"off\" }}\n",
+        key = hex::encode(publisher.public_key_bytes()),
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack::pack(payload.path(), &manifest, &publisher).unwrap();
+    let tapp = tilo_app_package::tapp::write(Vec::new(), &packed.meta, Some(&packed)).unwrap();
+    package_store::PackageStore::at(home.data().join("tilo-apps"))
+        .install(
+            std::io::Cursor::new(tapp),
+            |_| {
+                Ok(package_store::Admission {
+                    pinned: false,
+                    attested_by: String::new(),
+                    source: "a test's own package".to_owned(),
+                    held: false,
+                })
+            },
+            None,
+        )
+        .unwrap();
 }
 
 /// Go to the workspace `workspace` , by its id, as a person switching to it does.

@@ -208,6 +208,12 @@ struct State {
     /// (`TILO_TOOL_CONTEXT`): set only while a launch a service asked for is being started, and
     /// read where it is planned.
     tool_context: Option<String>,
+    /// The launches the device's daemon is deciding, by the id of its decision.
+    deciding: BTreeMap<u64, Deciding>,
+    /// The decision the launch planned last waits on, for its asker to take.
+    left_deciding: Option<u64>,
+    /// The order the daemon decided for the launch made again now, for its plan to take.
+    decided_order: Option<runtime_collab::wire::shell::LaunchOrder>,
     /// The device's dispatch, as the person, once the session reaches its daemon: what an action
     /// an app publishes is delivered through, so a row or a card that names one reaches the app
     /// whether it runs or has to start for it.
@@ -278,6 +284,24 @@ struct WindowAsk {
     /// The sign-in page this window shows, when the session opened it for one
     /// ([`Apps::show_sign_in`]).
     sign_in: Option<u64>,
+}
+
+/// A launch the device's daemon is deciding: what makes it again once it answers, and the tab
+/// held for it or the service that asked for it, which hears how it went.
+struct Deciding {
+    again: Again,
+    app: String,
+    tab: Option<u64>,
+    asker: Option<crate::launches::LaunchRequest>,
+}
+
+type Again = Box<dyn FnOnce(&Apps) -> Result<bool, ApiError>>;
+
+/// How a launch is planned: now, or once the device's daemon decided it.
+enum Planning {
+    Planned(Planned),
+    /// The daemon is deciding the launch: its answer comes under this id.
+    Deciding(u64),
 }
 
 /// How far a launch this session started has got, as everything that waits for its window reads
@@ -416,6 +440,9 @@ impl Apps {
                 sign_ins_over: std::collections::BTreeSet::new(),
                 session_ending: crate::termination::asked,
                 tool_context: None,
+                deciding: BTreeMap::new(),
+                left_deciding: None,
+                decided_order: None,
                 dispatch: None,
                 wake,
                 processes: None,
@@ -1141,52 +1168,137 @@ impl Apps {
         let Some(launches) = self.state.borrow().launches.clone() else {
             return;
         };
+        self.start_decided(&launches);
         for request in launches.take_waiting() {
+            self.state.borrow_mut().left_deciding = None;
             let workspace = if request.workspace.is_empty() {
                 self.active_workspace()
             } else {
                 self.workspace_named(&request.workspace)
             };
-            if request.windowless {
-                let started = self.start_windowless(&request.launch, &workspace);
-                if let Err(error) = &started {
-                    tracing::warn!(
-                        app = %request.launch.id(),
-                        workspace = %workspace.id,
-                        %error,
-                        "an app asked for without a window did not start"
-                    );
-                }
-                request.answer(started.map_err(|error| error.to_string()));
-                continue;
-            }
-            let context = request.context.clone();
-            let started = self.starting_tool(context.as_deref(), || {
-                // The place the asker named is where the window it asks for stands, and never that
-                // there is a second one: an app the shell already shows comes forward, as it does for
-                // the person's own launches.
-                self.start_at_place(&request.launch, &workspace, None, Some(&request.place))
-                    .map(|_| ())
-            });
+            let started = if request.windowless {
+                self.start_windowless(&request.launch, &workspace)
+            } else {
+                let context = request.context.clone();
+                self.starting_tool(context.as_deref(), || {
+                    // The place the asker named is where the window it asks for stands, and never
+                    // that there is a second one: an app the shell already shows comes forward, as
+                    // it does for the person's own launches.
+                    self.start_at_place(&request.launch, &workspace, None, Some(&request.place))
+                        .map(|_| ())
+                })
+            };
             if let Err(error) = &started {
                 tracing::warn!(
                     app = %request.launch.id(),
                     workspace = %workspace.id,
+                    windowless = request.windowless,
                     %error,
                     "an app a service asked for did not start"
                 );
             }
-            request.answer(started.map_err(|error| error.to_string()));
+            let mut state = self.state.borrow_mut();
+            let left = state.left_deciding.take().filter(|_| started.is_ok());
+            match left.and_then(|id| state.deciding.get_mut(&id)) {
+                Some(deciding) => deciding.asker = Some(request),
+                None => request.answer(started.map_err(|error| error.to_string())),
+            }
         }
+    }
+
+    /// Make again each launch the device's daemon decided since the last pass, by the order it
+    /// decided. An order no launch took is forgotten by the daemon.
+    fn start_decided(&self, launches: &crate::Launches) {
+        for (id, answer) in launches.decided.take() {
+            let deciding = self.state.borrow_mut().deciding.remove(&id);
+            let Some(deciding) = deciding else {
+                if let Ok(order) = answer {
+                    launches.never_started(order.ticket, String::new());
+                }
+                continue;
+            };
+            let made = match answer {
+                Ok(order) => {
+                    self.state.borrow_mut().decided_order = Some(order);
+                    let made = (deciding.again)(self);
+                    let left = self.state.borrow_mut().decided_order.take();
+                    if let Some(left) = left {
+                        launches.never_started(left.ticket, String::new());
+                    }
+                    made
+                }
+                Err(why) => Err(ApiError::Failed(refusal_said(
+                    &tilo_app_launch::PlanError::Refused(why),
+                ))),
+            };
+            let (app, tab) = (deciding.app, deciding.tab);
+            if let Err(error) = &made {
+                tracing::warn!(%app, %error, "a launch the daemon decided did not start");
+            }
+            match (deciding.asker, made) {
+                (Some(asker), made) => asker.answer(made.map(|_| ()).map_err(|e| e.to_string())),
+                (None, Ok(true)) => {}
+                (None, Ok(false)) => self.release_tab(tab),
+                (None, Err(error)) => self.could_not_open(tab, &app, None, &error.to_string()),
+            }
+        }
+    }
+
+    /// Open the window `launch` asked for once the daemon answers its decision `id`.
+    fn window_once_decided(
+        &self,
+        id: u64,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        instance: Option<u64>,
+        reveal: Option<&str>,
+    ) {
+        let (launch, workspace) = (launch.clone(), workspace.clone());
+        let reveal = reveal.map(str::to_owned);
+        let context = self.state.borrow().tool_context.clone();
+        self.when_decided(
+            id,
+            launch.app().to_owned(),
+            instance,
+            Box::new(move |apps| {
+                apps.starting_tool(context.as_deref(), || {
+                    apps.start_launched_window(
+                        &launch,
+                        &workspace,
+                        new_window,
+                        instance,
+                        reveal.as_deref(),
+                    )
+                })
+            }),
+        );
+    }
+
+    /// Make `again` once the daemon answers its decision `id`, never waiting for it: what it
+    /// makes is settled in the tab `tab` held for it, or with the service that asked for it.
+    fn when_decided(&self, id: u64, app: String, tab: Option<u64>, again: Again) {
+        let mut state = self.state.borrow_mut();
+        let asker = None;
+        state.deciding.insert(
+            id,
+            Deciding {
+                again,
+                app,
+                tab,
+                asker,
+            },
+        );
+        state.left_deciding = Some(id);
     }
 
     /// Start what `start` launches with the tool `context` it opens: what the service that asked
     /// for the launch told the tool to show.
-    fn starting_tool(
+    fn starting_tool<T>(
         &self,
         context: Option<&str>,
-        start: impl FnOnce() -> Result<(), ApiError>,
-    ) -> Result<(), ApiError> {
+        start: impl FnOnce() -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
         let previous = std::mem::replace(
             &mut self.state.borrow_mut().tool_context,
             context.map(str::to_owned),
@@ -1998,6 +2110,7 @@ impl Apps {
     ) -> Result<bool, ApiError> {
         // The open is timed from here to the app's first presented frame: everything this session
         // does for it is in the launch's share, and the phases below say where that share went.
+        let asked_launch = launch;
         let app = launch.app();
         // A tilolang app's window holds none of its data: its instance runs in the tilolang
         // process of its workspace and app, and every window of it opens in a window process
@@ -2041,7 +2154,17 @@ impl Apps {
             let instance = instance.unwrap_or_else(|| links.next_instance());
             return self.open_tilolang_window(launch, workspace, instance, &opens, timed, links);
         }
-        let mut planned = self.planned_or_failed(launch, workspace, new_window, instance, timed)?;
+        let mut planned = match self
+            .planned_or_failed(launch, workspace, new_window, instance, timed)?
+        {
+            Planning::Planned(planned) => planned,
+            Planning::Deciding(id) => {
+                // The open is made again once the daemon decided its launch.
+                tilo_startup_metrics::launch_handed_on(timed);
+                self.window_once_decided(id, asked_launch, workspace, new_window, instance, reveal);
+                return Ok(true);
+            }
+        };
         tilo_startup_metrics::launch_phase(app, "planned");
         self.told_what_to_show(&mut planned, first.as_deref());
         let asked = launch.id();
@@ -2206,11 +2329,24 @@ impl Apps {
         workspace: &Workspace,
         new_window: bool,
         instance: Option<u64>,
-    ) -> Result<Planned, tilo_app_launch::PlanError> {
+    ) -> Result<Planning, tilo_app_launch::PlanError> {
         // Nothing the daemon decides: a window already arriving, a notice, content no plan opens
         // here, a record id that names no record.
         if let Some(refused) = tilo_app_launch::plan::starts_nothing(launch) {
             return Err(refused);
+        }
+        // The launch made again once the daemon decided it starts by the order it decided.
+        let order = self.state.borrow_mut().decided_order.take();
+        if let Some(order) = order {
+            return self
+                .with_plan_context(
+                    Some(&launch.id()),
+                    workspace,
+                    new_window,
+                    instance,
+                    |context| ordered(&order, context),
+                )
+                .map(Planning::Planned);
         }
         let decided = self
             .state
@@ -2225,11 +2361,13 @@ impl Apps {
                 let ask = asked_of(launch, workspace, new_window, instance).ok_or_else(|| {
                     tilo_app_launch::PlanError::NothingToStart(format!("{launch:?}"))
                 })?;
-                Some(
-                    launches
-                        .order(ask)
-                        .map_err(tilo_app_launch::PlanError::Refused)?,
-                )
+                match launches
+                    .order(ask)
+                    .map_err(tilo_app_launch::PlanError::Refused)?
+                {
+                    crate::launches::Decision::Ordered(order) => Some(order),
+                    crate::launches::Decision::Deciding(id) => return Ok(Planning::Deciding(id)),
+                }
             }
             None => None,
         };
@@ -2243,6 +2381,7 @@ impl Apps {
                 None => Planned::of(launch, context),
             },
         )
+        .map(Planning::Planned)
     }
 
     /// `plan` with what a launch in `workspace` is planned against: the files the person granted
@@ -2292,7 +2431,7 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
         timed: u64,
-    ) -> Result<Planned, ApiError> {
+    ) -> Result<Planning, ApiError> {
         self.plan(launch, workspace, new_window, instance)
             .map_err(|error| {
                 tilo_startup_metrics::launch_failed(timed);
@@ -2406,9 +2545,26 @@ impl Apps {
                 "this session starts no app without a window".into(),
             ));
         };
-        let mut planned = self
+        let mut planned = match self
             .plan(launch, workspace, false, None)
-            .map_err(|error| ApiError::Failed(refusal_said(&error)))?;
+            .map_err(|error| ApiError::Failed(refusal_said(&error)))?
+        {
+            Planning::Planned(planned) => planned,
+            Planning::Deciding(id) => {
+                // The app starts once the daemon decided its launch.
+                let (again, workspace) = (launch.clone(), workspace.clone());
+                self.when_decided(
+                    id,
+                    launch.app().to_owned(),
+                    None,
+                    Box::new(move |apps| {
+                        apps.start_launched_windowless(&again, &workspace)
+                            .map(|()| true)
+                    }),
+                );
+                return Ok(());
+            }
+        };
         planned
             .env
             .insert(ui::window_link::NO_WINDOW_ENV.to_owned(), "1".to_owned());
