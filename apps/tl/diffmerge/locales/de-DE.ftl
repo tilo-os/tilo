@@ -159,7 +159,7 @@ d-toc5vveo = Gespeicherter Pfad
 
 d-avjlapbd = Gespeicherter Name
 
-d-nkku72cz = Gespeichert
+d-nkku72cz = Gespeichertes Ergebnis
 
 d-ttqrgoca = Hinweis
     .doc = Was das Fenster zuletzt sagte: ein Ergebnis oder was schiefging.

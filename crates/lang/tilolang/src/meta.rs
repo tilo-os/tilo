@@ -642,6 +642,9 @@ pub struct FieldMeta {
     /// change of it says only that it changed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// `saved: Bool (label: "Kept in your places")`: what a person reads it as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl FieldMeta {

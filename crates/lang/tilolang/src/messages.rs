@@ -370,7 +370,8 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             attribute(&mut out, "untitled", &pattern(untitled));
         }
         for field in &ty.fields {
-            message(&mut out, &field.id, &label(&field.name), &field.doc);
+            let words = field.label.clone().unwrap_or_else(|| label(&field.name));
+            message(&mut out, &field.id, &words, &field.doc);
         }
         for filter in &ty.search.filters {
             named(
@@ -656,6 +657,24 @@ mod tests {
             ] {
                 assert!(catalogue.contains(noun), "{noun} of\n{catalogue}");
             }
+        }
+
+        phase a_fields_label_is_its_words_and_its_name_is_not;
+        {
+            let mut meta = PackageMeta::default();
+            meta.types.push(
+                serde_json::from_value(serde_json::json!({
+                    "id": "t1", "name": "Place", "doc": "", "fields": [{
+                        "id": "f1", "name": "saved", "type": "Bool",
+                        "merge": "register", "doc": "",
+                        "label": "Kept in your places",
+                    }],
+                }))
+                .expect("a type"),
+            );
+            let catalogue = source_catalogue(&meta);
+            assert!(catalogue.contains("d-f1 = Kept in your places"), "{catalogue}");
+            assert!(!catalogue.contains("d-f1 = Saved"), "{catalogue}");
         }
 
         phase a_part_a_view_composes_has_no_words_of_its_own;

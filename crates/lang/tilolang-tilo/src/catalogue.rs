@@ -1103,6 +1103,7 @@ impl Reader<'_> {
             ty,
             merge,
             secret: false,
+            label: None,
             doc: field.title.clone(),
             default: None,
         })

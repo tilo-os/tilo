@@ -41,6 +41,7 @@ fn field(id: &str, name: &str, ty: &str, doc: &str) -> FieldMeta {
         ty: ty.to_string(),
         merge: MergeKind::Register,
         secret: false,
+        label: None,
         doc: doc.to_string(),
         default: None,
     }

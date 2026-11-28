@@ -456,6 +456,8 @@ pub struct FieldDecl {
     pub merge: Option<MergeSpec>,
     /// `password: Text (secret)`: a value history never shows.
     pub secret: bool,
+    /// `saved: Bool (label: "Kept in your places")`: what a person reads it as.
+    pub label: Option<String>,
     pub default: Option<Expr>,
     pub span: Span,
 }

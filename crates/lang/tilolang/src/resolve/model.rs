@@ -17,6 +17,8 @@ pub struct FieldInfo {
     pub default: Option<serde_json::Value>,
     /// Declared `(secret)`: history never shows its value.
     pub secret: bool,
+    /// Declared `(label: "..."): what a person reads it as.
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug)]

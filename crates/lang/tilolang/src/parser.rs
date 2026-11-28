@@ -1830,23 +1830,29 @@ impl<'a> Parser<'a> {
         };
         let marker_at = self.span();
         let mut secret = false;
-        if self.eat(&Tok::LParen) {
-            // `password: Text (secret)`: the one thing a field says of itself.
-            if matches!(self.peek(), Tok::Ident(name) if name == "secret")
-                && matches!(self.peek_at(1), Tok::RParen)
+        let mut label = None;
+        if self.is(&Tok::LParen) {
+            // `password: Text (secret)` or `saved: Bool (label: "..."): the two things a field
+            // says of itself, the second the same form a parameter's label takes.
+            if matches!(self.peek_at(1), Tok::Ident(name) if name == "secret")
+                && matches!(self.peek_at(2), Tok::RParen)
             {
                 self.bump();
+                self.bump();
+                self.bump();
                 secret = true;
+            } else if matches!(self.peek_at(1), Tok::Ident(name) if name == "label") {
+                label = Some(self.param_label()?);
             } else {
                 let _: PResult<()> = self.fail(
                     marker_at,
-                    "a field is its name, its type, `(secret)` when history must never show its value, and its default; what the platform shows comes from the type's `row view` and the app's own views",
+                    "a field is its name, its type, `(label: \"...\")` for the words a person reads, `(secret)` when history must never show its value, and its default",
                 );
                 while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
                     self.bump();
                 }
+                self.eat(&Tok::RParen);
             }
-            self.eat(&Tok::RParen);
         }
         let default = if self.eat(&Tok::Assign) {
             Some(self.expr()?)
@@ -1860,6 +1866,7 @@ impl<'a> Parser<'a> {
             ty,
             merge,
             secret,
+            label,
             default,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
@@ -2037,7 +2044,7 @@ impl<'a> Parser<'a> {
             return self.fail(
                 option.span,
                 format!(
-                    "a parameter takes the option `label`: what it is called where a person gives it, as `saved: Bool (label: \"On the Watch later list\")`; `{}:` is not one",
+                    "a declaration takes the option `label`: what it is called where a person reads it, as `saved: Bool (label: \"On the Watch later list\")`; `{}:` is not one",
                     option.name
                 ),
             );
@@ -2048,7 +2055,7 @@ impl<'a> Parser<'a> {
             let at = self.span();
             return self.fail(
                 at,
-                "a parameter takes one option, `label:`; what it holds in other words says itself where it shows",
+                "a declaration takes one option, `label:`; what it holds in other words says itself where it shows",
             );
         }
         self.expect(&Tok::RParen)?;

@@ -35,7 +35,7 @@ d-lkyxb2f7 = Stamp
 d-wxaqrw5b = Stamp len
     .doc = The length of the bytes the project last read or wrote.
 
-d-bvn4nnf5 = Speichernd
+d-bvn4nnf5 = Text auf dem Gerät
     .doc = Der Text, wie er auf dem Gerät steht, damit eine Leserin sieht, was sich hier geändert hat und was schon geschrieben ist.
 
 d-uhopusbk = Stale

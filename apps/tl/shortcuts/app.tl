@@ -393,7 +393,7 @@ type Draft (title: name, untitled: "New shortcut") {
 /// and what the agent offered.
 type Workbench (untitled: "Shortcuts") {
     drafts: Collection<Draft>
-    saved: Collection<Saved>
+    saved: Collection<Saved> (label: "Saved shortcuts")
     suggested: Collection<Suggested>
     /// What the last save, run or delete came to, and what went wrong, until the next one.
     notice: Text = ""

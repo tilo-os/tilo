@@ -985,6 +985,7 @@ mod tests {
                     ty: "Text".into(),
                     merge: tilolang::types::MergeKind::Register,
                     secret: false,
+                    label: None,
                     doc: String::new(),
                     default: None,
                 }],

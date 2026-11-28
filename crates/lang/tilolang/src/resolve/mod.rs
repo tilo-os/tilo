@@ -503,6 +503,7 @@ impl Env {
             ty: Ty::parse_meta(&f.ty, &app).unwrap_or(Ty::Error),
             merge: f.merge,
             secret: f.secret,
+            label: f.label.clone(),
             doc: f.doc.clone(),
             default: f.default.clone(),
         };
@@ -1245,6 +1246,7 @@ impl Resolver<'_> {
                     ty,
                     merge: MergeKind::Register,
                     secret: false,
+                    label: p.label.clone(),
                     doc: String::new(),
                     default: None,
                 });
@@ -1352,6 +1354,7 @@ impl Resolver<'_> {
             ty,
             merge,
             secret: f.secret,
+            label: f.label.clone(),
             doc: f.doc.join("\n"),
             default,
         }

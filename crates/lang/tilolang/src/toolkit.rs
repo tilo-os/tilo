@@ -47,6 +47,7 @@ pub fn enums() -> Vec<crate::resolve::EnumInfo> {
                     FieldInfo {
                         name: field.name.clone(),
                         id: field.name.clone(),
+                        label: None,
                         ty: lang_type(&field.ty),
                         merge: crate::types::MergeKind::Register,
                         secret: false,

@@ -68,7 +68,7 @@ type Entry (untitled: "untitled") {
     stamp_len: Int = 0
     /// The text as it stands on the device, so a reader sees what changed here and what is
     /// written already.
-    saved: Text
+    saved: Text (label: "Text on the device")
     /// The file changed on the device since it was read here: saving over it asks first.
     stale: Bool = false
     /// What the last check of this file found.

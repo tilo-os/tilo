@@ -94,7 +94,7 @@ type Place (title: name, untitled: "Place") {
     /// Its website, where the map service knows it.
     website: Text = ""
     /// Whether the person kept it in their places.
-    saved: Bool = false
+    saved: Bool (label: "Kept in your places") = false
     /// Whether the last search found it, rather than the person having kept it.
     found: Bool = false
 

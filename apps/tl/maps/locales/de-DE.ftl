@@ -28,7 +28,7 @@ d-fiavc35r = Breitengrad
 
 d-w552wzze = Längengrad
 
-d-qoo35pg5 = Gespeichert
+d-qoo35pg5 = In deinen Orten
     .doc = Ob die Person ihn in ihren Orten behalten hat.
 
 d-sewsxq7v = Gefunden

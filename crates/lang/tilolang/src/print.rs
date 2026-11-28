@@ -1322,6 +1322,9 @@ impl Printer<'_> {
         if let Some(m) = &f.merge {
             text.push_str(&format!(" merge {}", m.kind.name()));
         }
+        if let Some(label) = &f.label {
+            text.push_str(&format!(" (label: {})", quote(label)));
+        }
         if let Some(d) = &f.default {
             let col = self.level * 4 + text.len() + 3;
             let value = self.ex_at(d, col);

@@ -455,6 +455,7 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         ty: f.ty.meta_text(app),
         merge: f.merge,
         secret: f.secret,
+        label: f.label.clone(),
         doc: f.doc.clone(),
         default: f.default.clone(),
     }

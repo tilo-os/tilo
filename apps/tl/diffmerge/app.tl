@@ -98,7 +98,7 @@ type Session (title: name, untitled: "Untitled comparison") {
     /// Where the merged result was last written, and what it was then.
     saved_path: Text = ""
     saved_name: Text = ""
-    saved: Text = ""
+    saved: Text (label: "Saved result") = ""
     /// What the window last said: a result, or what went wrong.
     notice: Text = ""
     notice_kind: Text = "info"
