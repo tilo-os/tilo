@@ -510,9 +510,9 @@ pub(crate) fn found_and_certify(identity_dir: &Path) -> Result<bool, String> {
     let mut who = tilo_api::daemon::who::who()?;
     let founds = who.founding;
     if founds {
-        tilo_api::daemon::this_computer()?.found(&tilo_api::daemon::Founding::default())?;
-        // The founding made this account's person: who it is now is the daemon's answer after it.
-        who = tilo_api::daemon::who::who()?;
+        // The answer read before the founding names no person: the daemon names the one it made
+        // once its part serves them.
+        who = tilo_api::daemon::who::found(&tilo_api::daemon::Founding::default())?;
     }
     let Some(person) = who.certify_person.or(who.person) else {
         return if founds {

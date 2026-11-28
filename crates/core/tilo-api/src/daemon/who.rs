@@ -113,6 +113,30 @@ pub fn home() -> Result<Option<Device>, String> {
     who().map(|who| who.home)
 }
 
+/// Found this computer's person through its daemon, with `founding` as it is asked, and answered
+/// who this account is to the daemon once it names the person it made: the founding starts the
+/// person's part, and an answer read before that part serves them names none.
+///
+/// # Errors
+/// No daemon answers, it could not found the person, or its part did not serve them in time.
+pub fn found(founding: &super::Founding) -> Result<Who, String> {
+    super::this_computer()?.found(founding)?;
+    let started = std::time::Instant::now();
+    while started.elapsed() <= RESTARTING {
+        // The endpoint may not answer while the part starts: that is the start under way.
+        if let Ok(now) = who()
+            && (now.certify_person.is_some() || now.person.is_some())
+        {
+            return Ok(now);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!(
+        "this computer's person was made, but its daemon named no person for this account in time: {}",
+        super::service::LOOK
+    ))
+}
+
 /// Log this computer in with `ticket` through its daemon (`devices#logIn`), for `agent`, listed
 /// as `label`: the daemon spends the ticket, files the certificate the person's root signs, and
 /// its person's part starts again as the device it became. Who this account is to the daemon
