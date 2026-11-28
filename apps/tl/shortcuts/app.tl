@@ -223,9 +223,6 @@ type Step (untitled: "Step") {
     /// The step whose block holds this one; nothing at the top level.
     parent: Option<Step>
     branch: Branch = .top
-    /// Where it stands in its block: the steps of one block are read in this order, and a move
-    /// is a change of it.
-    order: Float = 0.0
     /// Its own id, which a binding to its output names.
     step_id: Text = ""
     head: Head = .invoke
@@ -715,12 +712,7 @@ type Place {
 
 /// The steps of one block, in the order the draft keeps them.
 fn siblings(p: Program, parent: Option<Step>, branch: Branch) -> List<Step> {
-    p.steps.filter(s -> s.parent == parent and s.branch == branch).sort_by(s -> s.order)
-}
-
-/// The place a step lands in at the end of a block: after every step there.
-fn next_order(p: Program, parent: Option<Step>, branch: Branch) -> Float {
-    if let last = siblings(p, parent, branch).last() { last.order + 1.0 } else { 0.0 }
+    p.steps.filter(s -> s.parent == parent and s.branch == branch)
 }
 
 /// The steps of the block an editor path names (`""`, `2.then`, `2.else` or `3.each`).
@@ -1453,14 +1445,7 @@ action load_block(p: Program, steps: Option<json.Value>, parent: Option<Step>, b
 }
 
 action load_step(p: Program, item: json.Value, parent: Option<Step>, branch: Branch) {
-    let s = p.steps.insert(
-        Step(
-            parent: parent,
-            branch: branch,
-            order: next_order(p, parent, branch),
-            step_id: at_text(item, "id"),
-        ),
-    )
+    let s = p.steps.insert(Step(parent: parent, branch: branch, step_id: at_text(item, "id")))
     let head = head_of(at_text(item, "step")) ?? .invoke
     s.head = head
     if head == .invoke {
@@ -1962,7 +1947,6 @@ action copy_block(from: Draft, to: Draft, parent: Option<Step>, branch: Branch) 
             Step(
                 parent: parent,
                 branch: branch,
-                order: next_order(to.program, parent, branch),
                 step_id: s.step_id,
                 head: s.head,
                 app_id: s.app_id,
@@ -2180,13 +2164,7 @@ fn place_of_block(d: Draft, address: Text) -> Place {
 
 action add_offer(w: Workbench, d: Draft, o: Offer) {
     let place = place_of_block(d, w.picker_block)
-    let step = d.program.steps.insert(
-        Step(
-            parent: place.parent,
-            branch: place.branch,
-            order: next_order(d.program, place.parent, place.branch),
-        ),
-    )
+    let step = d.program.steps.insert(Step(parent: place.parent, branch: place.branch))
     let named = o.address.split("#").last() ?? ""
     step.head = Head.invoke
     step.step_id = fresh_step_id(d.program, if named == "" { "step" } else { named })
@@ -2215,13 +2193,7 @@ action add_offer(w: Workbench, d: Draft, o: Offer) {
 /// Add a step that is not an app's action: `if`, `for_each`, `set_var`, `ask`, `ai` or `task`.
 action add_block(w: Workbench, d: Draft, head: Head) {
     let place = place_of_block(d, w.picker_block)
-    let step = d.program.steps.insert(
-        Step(
-            parent: place.parent,
-            branch: place.branch,
-            order: next_order(d.program, place.parent, place.branch),
-        ),
-    )
+    let step = d.program.steps.insert(Step(parent: place.parent, branch: place.branch))
     step.head = head
     step.step_id = fresh_step_id(d.program, head_word(head))
     if head == Head.branch {
@@ -2269,16 +2241,10 @@ action remove_below(d: Draft, s: Step) {
 action move_step(w: Workbench, d: Draft, s: Step, earlier: Bool) (label: "Move") {
     let beside = siblings(d.program, s.parent, s.branch)
     let at = beside.index_of(s) ?? 0
-    // The order is a step's own field, so a move stands with the draft it changed and reaches
-    // every device as one change.
     if earlier {
-        if let other = beside.at(at - 1) {
-            s.order = other.order - 0.5
-        }
+        if let other = beside.at(at - 1) { d.program.steps.move(s, before: other) }
     } else {
-        if let other = beside.at(at + 1) {
-            s.order = other.order + 0.5
-        }
+        if let other = beside.at(at + 1) { d.program.steps.move(s, after: other) }
     }
     review(d)
 }
@@ -2288,8 +2254,9 @@ action nest_step(w: Workbench, d: Draft, s: Step) (
     label: "Move into the step above",
 ) {
     if let place = nest_place(d.program, s) {
-        s.order = next_order(d.program, place.parent, place.branch)
-        s.parent = place.parent
+        // Under the block's own step, in the branch it opens: it stands with that block's steps,
+        // and its place among them is the collection's.
+        d.program.steps.place(s, .parent, inside: place.parent)
         s.branch = place.branch
     }
     review(d)
@@ -2301,8 +2268,8 @@ action lift_step(w: Workbench, d: Draft, s: Step) (
 ) {
     if let holder = s.parent {
         if let place = lift_place(d.program, s) {
-            s.order = holder.order + 0.5
-            s.parent = place.parent
+            // Beside the block's step, just after it and all it holds: out of its block.
+            d.program.steps.place(s, .parent, after: holder)
             s.branch = place.branch
         }
     }

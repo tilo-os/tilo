@@ -98,23 +98,13 @@ fn program(ada: &Replica, draft: &ResourceRef) -> ResourceRef {
     }
 }
 
-/// The order a step stands in its block.
-fn step_order(ada: &Replica, step: &ResourceRef) -> f64 {
-    match ada.host.runtime().read(step, "order") {
-        Ok(Value::Float(order)) => order,
-        other => panic!("a step's order: {other:?}"),
-    }
-}
-
 /// The ids of a program's top-level steps, as the editor reads them: in their block's order.
 fn step_ids(ada: &Replica, draft: &ResourceRef) -> Vec<String> {
     let program = program(ada, draft);
-    let mut steps: Vec<(f64, String)> = items(ada, &program, "steps")
+    items(ada, &program, "steps")
         .iter()
-        .map(|step| (step_order(ada, step), text(ada, step, "step_id")))
-        .collect();
-    steps.sort_by(|left, right| left.0.total_cmp(&right.0));
-    steps.into_iter().map(|(_, id)| id).collect()
+        .map(|step| text(ada, step, "step_id"))
+        .collect()
 }
 
 /// The case of the enum type `ty` whose name is `name`, as a value an action takes.
