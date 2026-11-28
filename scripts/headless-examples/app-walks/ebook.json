@@ -103,7 +103,16 @@
             "name": "The Tide Glass.epub",
             "title": "The Tide Glass",
             "author": "Ada Ferrer",
-            "chapter": "The tide came in over the glass."
+            "chapters": [
+              {
+                "title": "The Tide",
+                "body": "The tide came in over the glass, and the glass held its light."
+              },
+              {
+                "title": "The Glass",
+                "body": "The glass stood in the window and gathered the morning."
+              }
+            ]
           }
         },
         {

@@ -3521,7 +3521,10 @@ class Walk:
         name = value["name"]
         title = value.get("title", "A book")
         author = value.get("author", "Ada Ferrer")
-        chapter = value.get("chapter", "The first chapter.")
+        chapters = value.get("chapters") or [
+            {"title": value.get("chapter_title", title),
+             "body": value.get("chapter", "The first chapter.")}
+        ]
         made = self.fixture(name)
         container = (
             '<?xml version="1.0"?>\n'
@@ -3531,6 +3534,13 @@ class Walk:
             'media-type="application/oebps-package+xml"/></rootfiles>\n'
             "</container>"
         )
+        manifest = "".join(
+            f'    <item id="c{index}" href="c{index}.xhtml" '
+            'media-type="application/xhtml+xml"/>\n'
+            for index in range(1, len(chapters) + 1)
+        )
+        spine = "".join(f'<itemref idref="c{index}"/>'
+                        for index in range(1, len(chapters) + 1))
         package = (
             '<?xml version="1.0"?>\n'
             '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">\n'
@@ -3540,23 +3550,25 @@ class Walk:
             "    <dc:language>en</dc:language>\n"
             "  </metadata>\n"
             "  <manifest>\n"
-            '    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>\n'
+            f"{manifest}"
             "  </manifest>\n"
-            '  <spine><itemref idref="c1"/></spine>\n'
+            f"  <spine>{spine}</spine>\n"
             "</package>"
-        )
-        page = (
-            '<?xml version="1.0"?>\n'
-            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
-            f"<h1>{title}</h1><p>{chapter}</p></body></html>"
         )
         with zipfile.ZipFile(made, "w") as book:
             book.writestr("mimetype", "application/epub+zip")
             book.writestr("META-INF/container.xml", container)
             book.writestr("OEBPS/content.opf", package)
-            book.writestr("OEBPS/c1.xhtml", page)
+            for index, chapter in enumerate(chapters, 1):
+                page = (
+                    '<?xml version="1.0"?>\n'
+                    '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+                    f"<h1>{chapter['title']}</h1><p>{chapter['body']}</p></body></html>"
+                )
+                book.writestr(f"OEBPS/c{index}.xhtml", page)
         path = self.place(made, name)
-        return {"file": str(path), "bytes": path.stat().st_size}
+        return {"file": str(path), "bytes": path.stat().st_size,
+                "chapters": len(chapters)}
 
     def op_package(self, value) -> dict:
         """Sign the package `apps/tl/<name>` as a `.tapp` where a person's files are:
