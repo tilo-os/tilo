@@ -142,7 +142,7 @@ d-7rwt45qt = Nachweiszeile kopieren
 d-cp6smsn5 = Schlüssel kopieren
     .doc = Kopiert die Schlüsseldatei für die CI der Person: ein Secret, `TILO_PUBLISHER_KEY`, das sie hält.
     .w-copied-the-key = Den Schlüssel kopiert
-    .w-paste-it-into-your-ci-s = Füge ihn als Secret TILO_PUBLISHER_KEY in deine CI ein. Die Zwischenablage behält ihn, bis etwas anderes kopiert wird.
+    .w-paste-it-into-your-ci-s = Füge ihn als Secret TILO_PUBLISHER_KEY in deine CI ein. Die Zwischenablage löscht ihn nach 45 Sekunden.
 
 d-mje63lgo = Schlüssel exportieren…
     .doc = Die Schlüsseldatei, damit die Person sie sicher aufbewahrt: daraus stellt sie den Schlüssel wieder her.

@@ -135,12 +135,20 @@ fn registry_ok(address: Text) -> Bool {
         return false
     }
     if said.starts_with("https://") {
-        return authority(said.slice(8, said.len())) != ""
+        return host_of(authority(said.slice(8, said.len()))) != ""
     }
     if said.starts_with("http://") {
         return loopback(authority(said.slice(7, said.len())))
     }
     false
+}
+
+/// The host part of an authority: what stands before its port, if any.
+fn host_of(authority: Text) -> Text {
+    if authority.starts_with("[") {
+        return authority.split("]").first() ?? ""
+    }
+    authority.split(":").first() ?? ""
 }
 
 /// The host and port part of an address: what stands before its first slash.
@@ -160,7 +168,34 @@ fn loopback(host: Text) -> Bool {
         return true
     }
     let trimmed = if name.ends_with(".") { name.slice(0, name.len() - 1) } else { name }
-    trimmed == "localhost" or trimmed.ends_with(".localhost") or name.starts_with("127.")
+    if trimmed == "localhost" or trimmed.ends_with(".localhost") {
+        return true
+    }
+    ipv4_loopback(trimmed)
+}
+
+/// Whether `text` is a dotted IPv4 address in 127.0.0.0/8: `127.0.0.1`, `127.1.2.3`, but not a
+/// name that merely starts with the same characters.
+fn ipv4_loopback(text: Text) -> Bool {
+    let parts = text.split(".")
+    if parts.len() != 4 or (parts.first() ?? "") != "127" {
+        return false
+    }
+    parts.all(part -> octet_ok(part))
+}
+
+/// Whether `part` is one dotted octet of an IPv4 address: digits from 0 to 255.
+fn octet_ok(part: Text) -> Bool {
+    if part == "" or part.len() > 3 {
+        return false
+    }
+    if not part.split("").all(ch -> "0123456789".contains(ch)) {
+        return false
+    }
+    if part.len() > 1 and part.starts_with("0") {
+        return false
+    }
+    (part.to_int() ?? 300) <= 255
 }
 
 /// Reads this computer's publisher key: whether it has one, and its public half. Opening the app
@@ -237,6 +272,8 @@ action copy_proof(p: Publisher) uses clipboard {
 }
 
 /// Copies the key file, for the person's CI: one secret, `TILO_PUBLISHER_KEY`, holding it.
+///
+/// The key is copied as a secret, so histories and other devices do not keep it.
 action copy_secret(p: Publisher) uses clipboard {
     match export_key_text(p) {
         .err(why) => {
@@ -244,11 +281,11 @@ action copy_secret(p: Publisher) uses clipboard {
             p.notice_detail = why
         }
         .ok(key) => {
-            clipboard.copy(key.text)
+            clipboard.copy_secret(key.text)
             p.notice_kind = "success"
             p.notice_title = std.say("Copied the key")
             p.notice_detail = std.say(
-                "Paste it into your CI’s TILO_PUBLISHER_KEY secret. The clipboard keeps it until something else is copied.",
+                "Paste it into your CI’s TILO_PUBLISHER_KEY secret. The clipboard clears it in 45 seconds.",
             )
         }
     }
@@ -607,6 +644,16 @@ scenario "a key on this computer" {
 scenario "an unreadable key" {
     let p = root Publisher
     p.key = "unreadable"
+}
+
+/// The proof line copied, as the window says once it is.
+scenario "a copied proof line" {
+    let p = root Publisher
+    p.key = "present"
+    p.public_key = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    p.notice_kind = "info"
+    p.notice_title = "Copied the proof line."
+    p.notice_detail = proof_of(p.public_key)
 }
 
 /// An application the registry approved.

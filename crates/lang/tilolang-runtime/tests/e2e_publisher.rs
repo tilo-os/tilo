@@ -44,6 +44,8 @@ mod cases {
         handlers: Rc<RefCell<Vec<JobHandlers>>>,
         /// Every key-file ask, and the signature asks.
         next: Rc<RefCell<u32>>,
+        /// What the device refuses to do, by op, as its own key store answers when it will not.
+        refusals: Rc<RefCell<std::collections::BTreeMap<String, String>>>,
     }
 
     impl Engine {
@@ -70,6 +72,13 @@ mod cases {
         fn set_status(&self, answer: &str) {
             *self.status.borrow_mut() = answer.to_owned();
         }
+
+        /// Refuses `op` with `why`, as this device's key store or registry does when it cannot.
+        fn refuse(&self, op: &str, why: &str) {
+            self.refusals
+                .borrow_mut()
+                .insert(op.to_owned(), why.to_owned());
+        }
     }
 
     impl EngineHost for Engine {
@@ -77,6 +86,9 @@ mod cases {
             self.calls
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
+            if let Some(why) = self.refusals.borrow().get(op) {
+                return Err(why.clone());
+            }
             match op {
                 "key-state" | "create" => Ok(self.key.borrow().clone()),
                 "key-file" => Ok(self.key_file.borrow().clone()),
@@ -94,6 +106,9 @@ mod cases {
             self.started
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
+            if let Some(why) = self.refusals.borrow().get(op) {
+                return Err(why.clone());
+            }
             let mut next = self.next.borrow_mut();
             *next = next.saturating_add(1);
             let id = format!("{op}-{next}");
@@ -359,6 +374,23 @@ mod cases {
             p.engine.set_key(UNREADABLE);
             p.act("create_key");
             assert_eq!(p.text("key"), "unreadable");
+
+            // A machine that already has a key never makes a second: the device refuses, and
+            // its words are what the window says.
+            let p = Publisher::new();
+            p.engine.set_key(A_KEY);
+            p.act("open_key");
+            p.engine
+                .refuse("create", "this machine already has a publisher key");
+            p.act("create_key");
+            assert_eq!(p.text("notice_kind"), "error");
+            assert!(
+                p.text("notice_detail").contains("already has a publisher key"),
+                "the window says why the key was not made: {}",
+                p.text("notice_detail")
+            );
+            assert_eq!(p.text("key"), "present");
+            assert_eq!(p.text("public_key"), PUBLIC, "the key stays the one it was");
         }
 
         phase the_proof_line_is_the_public_keys_and_it_copies;
@@ -395,8 +427,18 @@ mod cases {
                 p.selection.text(),
                 r#"{"secret_key_hex":"9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"}"#
             );
+            assert_eq!(
+                p.selection.clears_after(),
+                Some(std::time::Duration::from_secs(45)),
+                "a signing key is copied as a secret: histories and other devices do not keep it"
+            );
             assert_eq!(p.text("notice_kind"), "success");
             assert_eq!(p.text("notice_title"), "Copied the key");
+            assert!(
+                p.text("notice_detail").contains("45 seconds"),
+                "the words say when the clipboard clears it: {}",
+                p.text("notice_detail")
+            );
 
             let Value::File(file) = p.done("export_key", vec![Value::resource(&p.root)]) else {
                 panic!("an export answers a file");
@@ -493,6 +535,23 @@ mod cases {
             );
         }
 
+        phase an_application_that_claims_nothing_is_refused_before_anything_is_sent;
+        {
+            let p = Publisher::new();
+            p.engine.set_key(A_KEY);
+            p.engine
+                .refuse("apply", "name a domain or a forge account to claim");
+            p.act("apply_for_namespaces");
+            assert_eq!(p.text("job"), "", "nothing runs for an empty application");
+            assert_eq!(p.text("notice_kind"), "error");
+            assert!(
+                p.text("notice_detail")
+                    .contains("name a domain or a forge account"),
+                "the window says what to claim first: {}",
+                p.text("notice_detail")
+            );
+        }
+
         phase a_registry_must_be_https_or_this_machine;
         {
             let p = Publisher::new();
@@ -502,6 +561,16 @@ mod cases {
             for address in [
                 "http://apps.tilo.so",
                 "http://localhost.example.com",
+                "http://127.0.0.1.example.com",
+                "http://0.0.0.0/",
+                "http://[::]/",
+                "http://[::ffff:127.0.0.1]/",
+                "http://localhost@apps.example.com",
+                "https://placeholder:placeholder@apps.example.com",
+                "https://placeholder@apps.example.com",
+                "https://:placeholder@apps.example.com",
+                "http://placeholder:placeholder@[::1]:8080",
+                "ws://localhost:8080",
                 "not a URL",
                 "file:///tmp/registry",
                 "https://",
@@ -515,10 +584,15 @@ mod cases {
                 assert_eq!(p.text("job"), "", "nothing is sent to a refused address");
             }
             for address in [
+                "https://apps.example.com",
+                "https://eu1.apps.example.com:8443/base",
                 "http://127.0.0.1:8080",
+                "http://127.1.2.3:8080",
                 "http://localhost:8080",
                 "http://localhost.:8080",
-                "https://apps.example.com",
+                "http://tilo.localhost:8080",
+                "http://a.b.localhost.:8080",
+                "http://[::1]:8080",
             ] {
                 Publisher::type_into(&window, "https://apps.tilo.so", address);
                 p.act("apply_for_namespaces");
@@ -527,6 +601,22 @@ mod cases {
                     .set_status(r#"{"state":"cancelled","summary":"","error":""}"#);
                 p.end();
             }
+
+            // An address saved with credentials still reads as it was saved; the call is
+            // what refuses it, so a window never fights a person's typing.
+            Publisher::type_into(
+                &window,
+                "https://apps.tilo.so",
+                "https://placeholder:placeholder@apps.example.com",
+            );
+            assert_eq!(
+                p.text("registry"),
+                "https://placeholder:placeholder@apps.example.com"
+            );
+            assert!(
+                p.refused("apply_for_namespaces").contains("credential-free https"),
+                "a registry with credentials is never called"
+            );
         }
 
         phase the_proof_places_follow_the_claims;
