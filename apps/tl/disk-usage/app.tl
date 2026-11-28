@@ -112,6 +112,7 @@ action analyze(a: Analyzer, path: Text, label: Text) uses files, time {
     ) {
         .err(why) => {
             a.trouble = why
+            tell_needs_you(a)
         }
         .ok(job) => {
             a.job = job
@@ -192,7 +193,7 @@ action scan_moved(a: Analyzer, j: host.Job) {
 
 /// The measuring ended: the folders it found, why it could not read them, or that it was
 /// stopped.
-action scan_ended(a: Analyzer, j: host.Job) uses time {
+action scan_ended(a: Analyzer, j: host.Job) uses time, notify {
     if a.job != j.id {
         return
     }
@@ -249,8 +250,22 @@ action scan_ended(a: Analyzer, j: host.Job) uses time {
         }
     } else if j.state == .failed {
         a.trouble = if j.error == "" { "The folder could not be read." } else { j.error }
+        tell_needs_you(a)
     } else if j.state == .cancelled {
         a.notice = "Stopped measuring {a.label}."
+    }
+}
+
+/// Tells the person who made the analyzer that a folder needs them: the shell's own
+/// notification, which every device of theirs shows and which opens the analyzer.
+action tell_needs_you(a: Analyzer) uses notify {
+    if let made = created(a) {
+        notify(
+            to: made.who,
+            title: "Disk Usage Analyzer",
+            body: if a.trouble != "" { a.trouble } else { "A folder needs you." },
+            opens: a,
+        )
     }
 }
 

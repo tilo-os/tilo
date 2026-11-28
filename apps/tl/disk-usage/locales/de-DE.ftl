@@ -199,6 +199,11 @@ d-c7sluhhk = Messung beendet
 
 d-c7sluhhk-j = J
 
+d-xbb4fsc6 = Braucht dich melden
+    .doc = Sagt der Person, die die Analyse angelegt hat, dass ein Ordner sie braucht: die Benachrichtigung der Shell, die jedes ihrer Geräte zeigt und die die Analyse öffnet.
+    .w-disk-usage-analyzer = Festplattenbelegung
+    .w-a-folder-needs-you = Ein Ordner braucht dich.
+
 d-qs4lolax = Merken
     .doc = Bietet einen kürzlich gemessenen Ordner erneut an: einmal, und die fünf neuesten davon.
 

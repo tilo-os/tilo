@@ -126,6 +126,7 @@ mod cases {
         app: App,
         root: ResourceRef,
         engine: Engine,
+        raised: Raised,
     }
 
     impl Usage {
@@ -134,6 +135,8 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_engine(engine.clone());
             rt.set_device_files(Disk);
+            let raised = Raised::default();
+            rt.set_notices(raised.clone());
             // The session's own package, which Open Disks calls; nothing of it is read here.
             let session =
                 tilolang_tilo::platform::session_package().expect("the session's package");
@@ -158,6 +161,7 @@ mod cases {
                 app,
                 root,
                 engine,
+                raised,
             }
         }
 
@@ -379,6 +383,18 @@ mod cases {
             t.ended();
             assert_eq!(t.text("trouble"), "it is not granted");
             assert_eq!(t.text("job"), "");
+            // The shell tells the person who made the analyzer, once, and it opens it.
+            let raised = t.raised.notices();
+            assert_eq!(raised.len(), 1, "one notice: {raised:?}");
+            assert_eq!(
+                raised[0].title, "Disk Usage Analyzer",
+                "the notice names the app"
+            );
+            assert_eq!(raised[0].body, "it is not granted", "in the device's words");
+            assert_eq!(
+                raised[0].opens.doc, t.root.doc,
+                "and it opens the analyzer"
+            );
         }
 
         phase asking_for_a_folder_is_the_systems_chooser;
