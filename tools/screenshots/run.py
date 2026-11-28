@@ -737,6 +737,24 @@ def run_device(plan: Plan, situations: list, args, first: str) -> tuple[list, di
             return [future.result() for future in futures], phases
 
 
+def pin_bundles(args) -> None:
+    """Keep the runtimes this build mounts for the whole run: a collection runs after every
+    install, and the engine bundle no package installs yet would be collected by one app's
+    device before the app that needs it opens."""
+    root = args.bin_dir.parent / "runtime"
+    if not root.is_dir():
+        return
+    env = {**os.environ, "TILO_RUNTIME_BUNDLE_DIR": str(root)}
+    with tempfile.TemporaryDirectory(prefix="t-pin-") as store:
+        for bundle in sorted(path for path in root.iterdir() if (path / "bundle.toml").is_file()):
+            pinned = subprocess.run(
+                [str(args.bin_dir / "tilo-install"), "--offline-store", store,
+                 "runtime", "pin", bundle.name],
+                env=env, capture_output=True, text=True)
+            if pinned.returncode != 0:
+                print(f"     {bundle.name}: not pinned ({pinned.stderr.strip()})", flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -771,6 +789,7 @@ def main() -> int:
     for plan in plans:
         shutil.rmtree(args.out / plan.app, ignore_errors=True)
     args.out.mkdir(parents=True, exist_ok=True)
+    pin_bundles(args)
 
     started = time.monotonic()
     # One device per app for every situation that can share it, and one each for the rest.
