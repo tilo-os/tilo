@@ -42,12 +42,14 @@ pub fn identity_paths() -> IdentityPaths {
 /// The device's Ed25519 public key, as this computer's daemon answers it ([`DeviceActions`]).
 ///
 /// The daemon is the device key's one writer, so this is how the mount learns which key its
-/// certificate must name. A daemon that is not running is refused in its own words.
+/// certificate must name. A daemon that is not running is refused in its own words. The ask
+/// needs only the daemon's socket: this mount runs as root under a sandbox that keeps it from
+/// making a login of its own, and none is made here.
 ///
 /// # Errors
 /// The daemon is not running or refused, or its answer names no 32-byte device key.
-pub fn device_public_key(paths: &IdentityPaths) -> Result<[u8; 32], CertifiedIdentityError> {
-    let actions = DeviceActions::here(paths.clone())
+pub fn device_public_key() -> Result<[u8; 32], CertifiedIdentityError> {
+    let actions = DeviceActions::of_this_computer()
         .map_err(|message| CertifiedIdentityError::DeviceService(DeviceRefusal::said(message)))?;
     device_public_key_of(&actions)
 }
@@ -230,16 +232,16 @@ mod tests {
         }
     }
 
-    /// A daemon stand-in at `dir/native.sock` that answers every `info` call with `device`.
+    /// A daemon at `dir/native.sock` that answers every `info` call with `device`.
     #[cfg(unix)]
-    struct StandInDaemon {
+    struct AnsweringDaemon {
         socket: PathBuf,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     #[cfg(unix)]
-    impl StandInDaemon {
+    impl AnsweringDaemon {
         fn start(dir: &std::path::Path, device: [u8; 32]) -> Self {
             use std::io::{BufRead as _, Write as _};
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -280,7 +282,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    impl Drop for StandInDaemon {
+    impl Drop for AnsweringDaemon {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering;
             self.stop.store(true, Ordering::Relaxed);
@@ -295,7 +297,7 @@ mod tests {
     #[test]
     fn the_device_public_key_is_what_the_daemon_answers() {
         let tmp = tempfile::tempdir().unwrap();
-        let daemon = StandInDaemon::start(tmp.path(), device_public());
+        let daemon = AnsweringDaemon::start(tmp.path(), device_public());
         let key = device_public_key_of(&DeviceActions::at(daemon.socket.clone())).unwrap();
         assert_eq!(key, device_public());
     }
@@ -316,6 +318,45 @@ mod tests {
                 .starts_with("the device service isn't running on this computer"),
             "{refusal}"
         );
+    }
+
+    /// The mount runs under a sandbox that keeps it from making a login of its own: asking the
+    /// daemon for the device's key is answered over the daemon's socket anyway, and leaves the
+    /// login the caller's home would hold unmade.
+    #[cfg(unix)]
+    #[test]
+    fn an_ask_needs_the_daemons_socket_and_never_makes_the_callers_login() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let runtime = root.path().join("run");
+        std::fs::create_dir(&runtime).unwrap();
+        let profile = root.path().join("daemon-profile");
+        std::fs::create_dir(&profile).unwrap();
+        // A home this program may read and not write, as the mount's is.
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &home)
+            .set("XDG_RUNTIME_DIR", &runtime)
+            .set(tilo_machine::DAEMON_PROFILE_VAR, &profile)
+            .remove("XDG_STATE_HOME")
+            .remove(tilo_machine::DAEMON_NATIVE_VAR);
+        // The daemon a profile named apart serves listens where this account's clients reach it.
+        let login = tilo_paths::state_dir().unwrap().join("tilo/device");
+        let (sockets, _) = tilo_device_identity::login::daemon::sockets(&login).unwrap();
+        let daemon = AnsweringDaemon::start(&sockets, device_public());
+
+        let key = device_public_key().expect("the daemon answers without the login being made");
+        assert_eq!(key, device_public());
+        assert!(
+            std::fs::symlink_metadata(&login).is_err(),
+            "an ask made the caller's own login at {}",
+            login.display()
+        );
+        drop(daemon);
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[tokio::test]

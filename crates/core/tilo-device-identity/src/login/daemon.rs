@@ -237,13 +237,18 @@ fn profile_socket_name(profile: &Path) -> String {
     format!("profile-{hash:016x}")
 }
 
-/// The account that owns the login's directory `login`.
+/// The account that owns the login's directory `login`: this account's, where no directory is
+/// there yet, since a login kept there would be this account's.
 #[cfg(unix)]
 fn owner(login: &Path) -> Result<u32, String> {
     use std::os::unix::fs::MetadataExt as _;
-    Ok(std::fs::metadata(login)
-        .map_err(|error| format!("{} is not readable: {error}", login.display()))?
-        .uid())
+    match std::fs::metadata(login) {
+        Ok(metadata) => Ok(metadata.uid()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(rustix::process::geteuid().as_raw())
+        }
+        Err(error) => Err(format!("{} is not readable: {error}", login.display())),
+    }
 }
 
 /// The directory a person's own service keeps its sockets in, made private to this account.
@@ -314,16 +319,30 @@ impl DeviceActions {
 
     /// The device actions of this computer's daemon, for the login whose identity `paths` keeps.
     ///
+    /// The login is not read or made: asking the daemon something is answered over its socket,
+    /// and a program whose sandbox keeps it from making the account's login directory (the
+    /// filesystem daemon runs as root with a read-only home) asks it all the same.
+    ///
     /// # Errors
-    /// The login's directory or the sockets' directory cannot be made ([`sockets`]).
-    pub fn here(paths: crate::IdentityPaths) -> Result<Self, String> {
+    /// This account has no state directory, or a socket's path is too long for a socket's
+    /// address.
+    pub fn here(_paths: crate::IdentityPaths) -> Result<Self, String> {
+        Self::of_this_computer()
+    }
+
+    /// The device actions of this computer's daemon.
+    ///
+    /// # Errors
+    /// This account has no state directory, or a socket's path is too long for a socket's
+    /// address.
+    pub fn of_this_computer() -> Result<Self, String> {
         // A program in a shell reaches the daemon at the endpoint its shell was given, as the
         // app the shell is for.
         if let Some(shells) = tilo_machine::named_daemon_native() {
             return Ok(Self::at(shells));
         }
-        let login = super::Place::here(paths).map_err(|error| format!("{error:#}"))?;
-        let (sockets, _) = sockets(login.dir())?;
+        let login = super::kept::this_account_dir().map_err(|error| format!("{error:#}"))?;
+        let (sockets, _) = sockets(&login)?;
         Ok(Self::at(native_in(&sockets)))
     }
 

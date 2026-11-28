@@ -629,7 +629,7 @@ async fn serve(
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let device = device_public_key(&paths)?;
+    let device = device_public_key()?;
     let credentials = load_certified_mount_identity_once_valid(&paths, device).await?;
     let actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),

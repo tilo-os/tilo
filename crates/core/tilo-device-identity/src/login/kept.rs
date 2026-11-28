@@ -16,6 +16,15 @@ pub const LOGIN_DAMAGED: &str = "This computer's Tilo certificate is damaged: lo
 /// Where a login is kept below a state directory.
 pub(crate) const KEPT_IN: &str = "tilo/device";
 
+/// This account's login directory, as [`Place::here`] keeps it, without making it: a program
+/// that only asks this computer's daemon something needs the daemon's socket, not a login of its
+/// own, which its sandbox may not even allow it to make.
+pub(crate) fn this_account_dir() -> Result<PathBuf> {
+    Ok(tilo_paths::state_dir()
+        .context("this account has no state directory (no HOME)")?
+        .join(KEPT_IN))
+}
+
 /// Where this account keeps its login and what the login keeps on this computer (its folders,
 /// its background process's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
 /// this computer's, kept where its session keeps them.
@@ -37,9 +46,7 @@ impl Place {
     /// # Errors
     /// This account has no state directory, or the directory cannot be made.
     pub fn here(keys: IdentityPaths) -> Result<Self> {
-        let dir = tilo_paths::state_dir()
-            .context("this account has no state directory (no HOME)")?
-            .join(KEPT_IN);
+        let dir = this_account_dir()?;
         let mut making = std::fs::DirBuilder::new();
         making.recursive(true);
         #[cfg(unix)]

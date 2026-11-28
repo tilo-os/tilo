@@ -26,7 +26,7 @@ pub(super) struct PrimaryArgs {
 /// agree, the certificate is current and its root has not revoked the device. Nothing is
 /// created here: a machine that is not a certified device starts no mount.
 fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
-    let device = tilo_fs::device_public_key(paths)?;
+    let device = tilo_fs::device_public_key()?;
     let person = persist::read_public_key(&paths.user_pubkey)?;
     let certified =
         tilo_fs::load_certified_mount_identity(paths, device, tilo_clock::unix_now_ns())?;
