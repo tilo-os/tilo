@@ -884,16 +884,18 @@ readers = ["crates/desktop/app-fleet/build.rs"]
 package = "tilo-runtime"
 # The app listing test builds Notes from its sources, and the founding test reads the shipped
 # unit it runs under. The environment directory test compares every catalogue's English with its
-# German.
+# German. The machine file test reads the image's root units and the daemon's control programs.
 inputs = [
   "apps/",
-  "os/usr/lib/systemd/system/tilo-runtime.service",
+  "os/usr/lib/systemd/system/",
+  "os/usr/libexec/",
   "*/locales/en-US.ftl",
   "*/locales/de-DE.ftl",
 ]
 readers = [
   "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
   "crates/core/tilo-runtime/src/device/environment_directory_tests.rs",
+  "crates/core/tilo-runtime/src/device/keep/operations/tests.rs",
   "crates/core/tilo-runtime/src/device/services_tests.rs",
 ]
 
