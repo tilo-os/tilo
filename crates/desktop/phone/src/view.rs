@@ -257,26 +257,22 @@ impl ui::widget::Decorator for PhoneView {
         exchanged || opened || child || self.shell.owes()
     }
 
+    /// Android's Back, which nothing in the app shown over the shell took, closes that app.
+    fn on_nav_gesture(
+        &mut self,
+        dir: ui::gesture::NavDirection,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        self.inner_mut().on_nav_gesture(dir, state, path)
+            || (dir == ui::gesture::NavDirection::Back && self.back())
+    }
+
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Android's Back closes the app shown over the shell: winit names Android's Back key
-        // `BrowserBack`.
-        if let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state.is_pressed()
-            && matches!(
-                key.logical_key,
-                ui::winit::keyboard::Key::Named(
-                    ui::winit::keyboard::NamedKey::BrowserBack
-                        | ui::winit::keyboard::NamedKey::GoBack
-                )
-            )
-            && self.back()
-        {
-            return;
-        }
         self.inner_mut().handle_event(event, ctx);
         if self.opened.is_none() {
             self.shell.flush();
