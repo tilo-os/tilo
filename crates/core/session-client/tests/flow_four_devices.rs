@@ -218,7 +218,7 @@ async fn kept_laptop_and_pi(f: &Four) {
 
 /// All four devices use the person's identity and have all their workspaces, apps and
 /// files: each lists both workspaces and all four devices, and reads the file the desktop
-/// wrote and the shared desktop under which the apps' windows live.
+/// wrote and the apps the workspace runs, as its published tree lists them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_all_four_devices_see_every_workspace_app_and_file() {
     let f = Box::pin(four_devices()).await;
@@ -298,27 +298,21 @@ async fn flow_all_four_devices_see_every_workspace_app_and_file() {
         );
     }
 
-    // The workspace's installed apps are one list every device of the person reads.
+    // The workspace's installed apps are one list every device of the person reads: each app it
+    // runs is an application row of its published tree.
+    let mut lists = Vec::new();
     for (label, session, device) in [
+        ("the desktop", &f.desktop_session, &f.desktop),
         ("the Orange Pi", &f.pi_session, &f.pi),
         ("the laptop", &f.laptop_session, &f.laptop),
     ] {
-        let list = flow::ask_permissions_child(
-            &f.client(session, device, label),
-            f.work_id(),
-            &f.work,
-            "apps",
-            "list",
-            json!({}),
-        )
-        .await;
-        assert!(
-            list.is_ok(),
-            "{label} reads the workspace's installed app list at workspace/{}/apps#list: \
-             {list:?}",
-            f.work
-        );
+        lists.push(flow::apps(&f.client(session, device, label), f.work_id(), &f.work).await);
     }
+    assert!(
+        lists.iter().all(|apps| !apps.is_empty())
+            && lists.windows(2).all(|pair| pair[0] == pair[1]),
+        "the desktop, the Orange Pi and the laptop read one list of the workspace's apps: {lists:?}"
+    );
 }
 
 /// The always-on server is one of the person's devices in the one device list: their other

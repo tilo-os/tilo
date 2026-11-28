@@ -185,6 +185,38 @@ pub async fn ask(
         .await
 }
 
+/// The apps `workspace` (its UUID) runs, as `device` reads its published tree, in its order.
+pub async fn apps(device: &Device, in_workspace: WorkspaceId, workspace: &str) -> Vec<String> {
+    let tree = tilo_actions::tree::Tree::new(
+        device.actions(in_workspace),
+        device.caller(),
+        workspace.to_owned(),
+        std::sync::Arc::new(TokioPause(std::time::Instant::now())),
+    );
+    tree.installed()
+        .await
+        .unwrap_or_else(|why| panic!("{workspace}'s apps list: {why}"))
+        .into_iter()
+        .map(|app| app.app_id)
+        .collect()
+}
+
+/// The tree's pauses, on tokio's clock.
+struct TokioPause(std::time::Instant);
+
+impl tilo_actions::tree::Pause for TokioPause {
+    fn pause(
+        &self,
+        how_long: Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep(how_long))
+    }
+
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
 /// Ask `action` of a child of `workspace`'s governance tree (`workspace/<child>#<action>`) as
 /// `device`, from the workspace `in_workspace` its session is in.
 pub async fn ask_permissions_child(
