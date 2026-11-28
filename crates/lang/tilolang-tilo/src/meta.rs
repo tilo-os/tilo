@@ -299,9 +299,9 @@ impl MetaExt for Meta {
     }
 
     fn action_published_as(&self, action: &str) -> Option<&ActionMeta> {
-        self.actions
-            .iter()
-            .find(|declared| !declared.scenario && published_name(declared) == action)
+        self.actions.iter().find(|declared| {
+            !declared.scenario && (published_name(declared) == action || declared.id == action)
+        })
     }
 
     fn kind_of(&self, type_name: &str) -> String {

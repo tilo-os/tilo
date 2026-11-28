@@ -145,6 +145,21 @@ fn first_field(node: &patch::Node) -> Option<&patch::Node> {
 }
 
 #[test]
+fn the_window_finds_an_action_by_the_id_it_addresses_it_with() {
+    let (instance, _far) = window();
+    let host = instance.host().expect("the window opened");
+    let meta: Meta = host.package(APP).unwrap().meta;
+    // A window's bar and palette address an action by the id they hold: the role it declares is
+    // found there too, so what a primary action makes opens.
+    let root = host.root_of(APP).unwrap();
+    let resource = tilolang_tilo::naming::resource_id(APP, &root.id_string());
+    let role = host
+        .published_action(&resource, &action_id(&meta, "new_note"))
+        .and_then(|action| action.role);
+    assert_eq!(role.as_deref(), Some("primary"));
+}
+
+#[test]
 fn what_a_primary_action_made_opens_its_page_with_its_first_field_focused() {
     let (mut instance, mut far) = window();
     let host = instance.host().expect("the window opened");

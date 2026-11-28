@@ -1650,7 +1650,9 @@ impl Host {
                 .actions
                 .iter()
                 .filter(|declared| {
-                    !declared.scenario && crate::meta::published_name(declared) == action
+                    !declared.scenario
+                        && (crate::meta::published_name(declared) == action
+                            || declared.id == action)
                 })
                 .collect();
             if named.len() < 2 {
