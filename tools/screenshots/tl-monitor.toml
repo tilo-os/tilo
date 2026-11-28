@@ -1,0 +1,54 @@
+# System monitor: the machine of the app's own scenarios, never the machine the shots run on.
+# Each situation is one of the pictures the app's screenshots keep: the process tree with a
+# process's facts, the same list flat, the use with what stands under each process, kernel
+# threads, and the machine's own readings. A row's menu (Copy PID, End process, Kill process)
+# opens from the pointer on its row and is not among the situations: a capture is reached
+# through the window's actions and controls, never by a point on a picture.
+
+[[situation]]
+name = "processes"
+title = "The process list"
+scenario = "a busy machine"
+
+[[situation.steps]]
+press = "▾ systemd"
+
+[[situation]]
+name = "flat"
+title = "Processes as one flat list"
+scenario = "a busy machine"
+
+[[situation.steps]]
+press = "Flat list"
+
+[[situation]]
+name = "children"
+title = "Each process's use with what stands under it"
+scenario = "a busy machine"
+
+[[situation.steps]]
+press = "▾ systemd"
+
+[[situation.steps]]
+press = "Include children"
+
+[[situation]]
+name = "kernel"
+title = "Kernel threads beside the rest"
+scenario = "a busy machine"
+
+[[situation.steps]]
+press = "Kernel threads"
+
+[[situation]]
+name = "resources"
+title = "The machine's own readings"
+scenario = "a busy machine"
+
+[[situation.steps]]
+press = "Resources"
+
+[[situation]]
+name = "quiet"
+title = "A computer with nothing asked of it"
+scenario = "a quiet machine"
