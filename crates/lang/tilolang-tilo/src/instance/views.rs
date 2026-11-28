@@ -103,7 +103,7 @@ impl Instance {
         }
         match host.open_layer_at(&self.app, &self.root_view) {
             Ok((target, view)) => {
-                self.root = Some(Shown::new(target.clone(), self.spaced(Level::Root, view)));
+                self.root = Some(Shown::new(target, self.spaced(Level::Root, view)));
                 self.leave_history();
                 let closed = self.detail.take().is_some() | self.facts.take().is_some();
                 if closed {

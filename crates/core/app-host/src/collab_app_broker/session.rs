@@ -413,16 +413,6 @@ impl JoinedChannel {
             .and_then(|local| local.opened_for.clone())
     }
 
-    /// Whether this connection's instance runs with no window: it takes the calls the dispatch
-    /// delivers and answers a caller's read of the app's view, and nobody acts at it
-    /// ([`app_process::LocalAppConnection::windowless`]).
-    pub(super) fn windowless(&self) -> bool {
-        self.lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.as_ref())
-            .is_some_and(|local| local.windowless)
-    }
-
     /// The certificate the link that opened this connection's view verified, when a page of a
     /// person's browser opened it ([`app_process::LocalAppConnection::opened_with`]).
     pub(super) fn opened_with(&self) -> Option<tilo_user_identity::DeviceCert> {
