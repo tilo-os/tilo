@@ -330,59 +330,33 @@ fn place_header(
     // The title is cut short only once every action has given what it can: where the row leaves it
     // nothing at all, its buttons show their icons rather than their words.
     let title_starved = title.is_some_and(|(_, width, words, _)| words > 0.5 && width <= 0.5);
-    // The form the row stands in: every action's words where they fit, else the secondary ones
-    // as their icons with the primary keeping its words, else the primary alone with the rest in
-    // the row's menu, else all of them as icons. What fits last gives way first.
-    let sum_of = |widths: &[f64], shown: usize| -> f64 {
-        let mut width = run(widths.get(..shown).unwrap_or(&[]));
-        if shown < items.len() {
-            width += if shown > 0 { gap + more_w } else { more_w };
-        }
-        width
-    };
-    // The row's wordless form: its secondary actions narrowed, the app's primary as it says.
+    // The form the row stands in: every action's words where they fit, else the secondary ones as
+    // icons with the primary saying its words, else the primary alone, else all as icons.
     let words = fit.words.filter(|words| *words < kept);
-    let secondary_icons: Option<Vec<f64>> = words.map(|words| {
-        (0..items.len())
-            .map(|i| {
-                if Some(i) == Some(words) {
-                    full[i]
-                } else {
-                    compact[i]
-                }
-            })
-            .collect()
-    });
-    let (use_compact, words_labelled, shown) = if let Some((control, _)) = alone {
+    let (use_compact, words_labelled, shown) = if alone.is_some() {
         // The control stands alone: it is the only action the row keeps.
-        let _ = control;
         (false, false, 0)
     } else if !title_starved && trailing(&full, kept) <= band {
         (false, false, kept)
     } else if !title_starved
-        && let Some(icons) = &secondary_icons
-        && sum_of(icons, kept) <= band
+        && let Some(words) = words
+        && trailing(&compact, kept) + full[words] - compact[words] <= band
     {
         (true, true, kept)
     } else if !title_starved
         && let Some(words) = words
-        && sum_of(&full, words + 1) <= band
+        && trailing(&full, words + 1) <= band
     {
         (false, true, words + 1)
     } else if trailing(&compact, kept) <= band {
         (true, false, kept)
     } else {
-        // The toolkit's one overflow rule: how many of the row's controls fit
-        // beside the API's own button. What does not fit is named in the
-        // menu, never dropped from the row.
+        // The toolkit's one overflow rule: how many of the row's controls fit beside the API's own
+        // button. What does not fit is named in the menu, never dropped from the row.
         let fits = crate::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
         (true, false, fits.min(kept).max(must))
     };
-    fit.compact = use_compact;
-    fit.shown = Some(shown);
-    fit.control_only = alone.map(|(control, _)| control);
-    let primary = fit.primary;
-    fit.words_labelled = words_labelled;
+    // What each action takes: the row's narrower width, but for the primary where it says its words.
     let widths: Vec<f64> = (0..items.len())
         .map(|i| {
             if use_compact && !(words_labelled && Some(i) == words) {
@@ -392,14 +366,15 @@ fn place_header(
             }
         })
         .collect();
-    // The actions the row stands, in their order: the control it hosts alone, or those it keeps.
+    fit.compact = use_compact;
+    fit.words_labelled = words_labelled;
+    fit.shown = Some(shown);
+    fit.control_only = alone.map(|(control, _)| control);
+    let primary = fit.primary;
     let standing: Vec<usize> = match alone {
         Some((control, _)) => vec![control],
         None => (0..shown).collect(),
     };
-    let keeps = standing
-        .iter()
-        .any(|index| fit.capable.get(*index).copied().unwrap_or(false));
     let overflow = standing.len() < items.len();
     let more_size = match (overflow, more_control) {
         (true, Some(index)) => Some((index, measure(ctx, index, None)?)),
@@ -517,7 +492,7 @@ fn place_header(
                 title_needs: needs,
                 title_has: has,
                 free_beside_title: free,
-                labelled_action: !use_compact && keeps,
+                labelled_action: !use_compact || words_labelled,
                 primary_shown: alone.is_some()
                     || must == 0
                     || words

@@ -1542,28 +1542,13 @@ impl NavShell {
         for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let fitted = fit_of(header);
             let count = fitted.capable.len();
-            if part.full.len() == count {
-                part.capable = fitted.capable;
-                part.compact_now = fitted.compact_now;
-                part.menu_from = fitted.menu_from;
-                part.primary = fitted.primary;
-                part.controls = fitted.controls;
-            } else {
+            if part.full.len() != count {
                 *part = ColumnFit {
                     full: vec![None; count],
-                    capable: fitted.capable,
-                    compact_now: fitted.compact_now,
-                    compact: false,
-                    menu_from: fitted.menu_from,
-                    primary: fitted.primary,
-                    controls: fitted.controls,
-                    shown: None,
-                    control_only: None,
-                    words: None,
-                    words_labelled: false,
-                    header: None,
+                    ..ColumnFit::default()
                 };
             }
+            keep_fitted(part, fitted);
         }
     }
 
@@ -2625,30 +2610,17 @@ impl NavShell {
         let mut gave = false;
         for (part, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let fitted = fit_of(header);
-            let HeaderFit {
-                capable,
-                compact_now,
-                menu_from,
-                words,
-                primary,
-                controls,
-            } = fitted;
-            gave |= part.capable != capable
-                || part.compact_now != compact_now
-                || part.primary != primary;
-            if part.full.len() != capable.len() {
-                part.full = vec![None; capable.len()];
+            gave |= part.capable != fitted.capable
+                || part.compact_now != fitted.compact_now
+                || part.primary != fitted.primary;
+            if part.full.len() != fitted.capable.len() {
+                part.full = vec![None; fitted.capable.len()];
                 part.compact = false;
                 part.shown = None;
                 part.control_only = None;
                 part.words_labelled = false;
             }
-            part.capable = capable;
-            part.compact_now = compact_now;
-            part.menu_from = menu_from;
-            part.words = words;
-            part.primary = primary;
-            part.controls = controls;
+            keep_fitted(part, fitted);
             let count = header.actions.len();
             let shown = part.shown.unwrap_or(count);
             let standing = match part.control_only {
@@ -3733,6 +3705,17 @@ fn action_in_menu(shown: usize, control_only: Option<usize>, count: usize, index
 }
 
 /// [`HeaderFit`] of `header`'s actions as they stand now.
+/// Keep `part`'s reading of `fitted`: what the header's actions are, and which of them the row
+/// never gives up.
+fn keep_fitted(part: &mut ColumnFit, fitted: HeaderFit) {
+    part.capable = fitted.capable;
+    part.compact_now = fitted.compact_now;
+    part.menu_from = fitted.menu_from;
+    part.words = fitted.words;
+    part.primary = fitted.primary;
+    part.controls = fitted.controls;
+}
+
 fn fit_of(header: &Header) -> HeaderFit {
     let capable: Vec<bool> = header
         .actions
@@ -3776,13 +3759,6 @@ fn fit_of(header: &Header) -> HeaderFit {
         .enumerate()
         .filter_map(|(index, action)| button_of(&**action).is_none().then_some(index))
         .collect();
-    // A control has no row of its own in the menu: it fits itself to the row instead, so it keeps
-    // its place and the buttons before it give way first. The row stands its controls from the
-    // start, so keeping the last one keeps every one before it.
-    let primary = [primary, controls.last().copied()]
-        .into_iter()
-        .flatten()
-        .max();
     HeaderFit {
         capable,
         compact_now,
