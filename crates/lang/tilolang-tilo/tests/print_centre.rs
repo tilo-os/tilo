@@ -1254,3 +1254,91 @@ fn history_says_which_default_each_change_chose_in_the_readers_language() {
         }
     }
 }
+
+/// A printer's reason is the code its device's state reasons carry, said in the reader's
+/// language, with the device's own words kept beside it; a code this version has no words for
+/// is said as unknown, with the words that came.
+#[test]
+fn a_printers_reason_reads_in_the_readers_language() {
+    let cases = [
+        (
+            "out-of-paper",
+            "media-empty-error",
+            "Add paper to continue.",
+            "Legen Sie Papier ein, um fortzufahren.",
+        ),
+        (
+            "jam",
+            "media-jam-error",
+            "Clear the paper jam, then resume the printer.",
+            "Beheben Sie den Papierstau und setzen Sie den Drucker dann fort.",
+        ),
+        (
+            "cover-open",
+            "cover-open-error",
+            "Close the printer cover.",
+            "Schließen Sie die Abdeckung des Druckers.",
+        ),
+        (
+            "supply-low",
+            "toner-low",
+            "A supply is running low; printing can usually continue for now.",
+            "Ein Betriebsmittel geht zur Neige; der Druck kann meist vorerst weiterlaufen.",
+        ),
+        (
+            "supply-empty",
+            "toner-empty",
+            "Replace the empty supply to continue.",
+            "Ersetzen Sie das leere Betriebsmittel, um fortzufahren.",
+        ),
+        (
+            "offline",
+            "offline-report",
+            "Check that the printer is awake and connected.",
+            "Prüfen Sie, ob der Drucker eingeschaltet und verbunden ist.",
+        ),
+        (
+            "unknown",
+            "some-new-device-error",
+            "The printer reported a condition that may need attention.",
+            "Der Drucker meldet einen Zustand, der Aufmerksamkeit brauchen kann.",
+        ),
+    ];
+    let german = tilolang::messages::module_catalogue(include_str!(
+        "../../../../apps/tl/print-centre/locales/de-DE.ftl"
+    ));
+    let ids = include_str!("../../../../apps/tl/print-centre/app.ids");
+    for (locale, catalogs) in [
+        ("en-US", &[("en-US", "")][..]),
+        ("de-DE", &[("en-US", ""), ("de-DE", german.as_str())][..]),
+    ] {
+        tilo_ui_base::i18n::I18nManager::install("en-US", locale, catalogs).expect("the words");
+        for (code, reported, english, auf_deutsch) in cases {
+            let wanted = if locale == "en-US" {
+                english
+            } else {
+                auf_deutsch
+            };
+            let reading = PRINTERS.replace(
+                r#""reason": null"#,
+                &format!(r#""reason": "{reported}", "reason_code": "{code}""#),
+            );
+            let app = crate::fixtures::Pane::install_with_ids(&me(), SOURCE, ids)
+                .reading(&printers(), &reading)
+                .reading(&scanners(), SCANNERS)
+                .rooted("PrintCentre");
+            app.host.set_words(crate::words::Toolkit);
+            let window = app.window();
+            assert!(
+                contains(&window, wanted),
+                "{code} reads {wanted:?} in {locale}: {:?}",
+                shown(&window)
+            );
+            assert!(
+                contains(&window, reported),
+                "the device's own words stay beside {code} in {locale}: {:?}",
+                shown(&window)
+            );
+        }
+    }
+}

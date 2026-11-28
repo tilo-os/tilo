@@ -595,6 +595,7 @@ d-j5jydnqh = Diagnosebereich
     .w-no = No
     .w-reachable = Erreichbar
     .w-reason = Grund
+    .w-reported = Gemeldet
     .w-paper = Papier
     .w-paper-sizes = Papierformate
     .w-left = { $level } % übrig
@@ -682,3 +683,12 @@ d-ztplqc5x = Vorschau vorbereiten
 
 d-st6yqac6 = Lesen beginnen
     .doc = Beginnt, den Text einer gescannten Seite in der Sprache der Person zu lesen: Die Seite sagt, dass sie liest, bis sie ihn hat.
+
+d-g73u2yzt = Druckerzustände
+    .w-add-paper-to-continue = Legen Sie Papier ein, um fortzufahren.
+    .w-clear-the-paper-jam-then-resume = Beheben Sie den Papierstau und setzen Sie den Drucker dann fort.
+    .w-close-the-printer-cover = Schließen Sie die Abdeckung des Druckers.
+    .w-a-supply-is-running-low-printing = Ein Betriebsmittel geht zur Neige; der Druck kann meist vorerst weiterlaufen.
+    .w-replace-the-empty-supply-to-continue = Ersetzen Sie das leere Betriebsmittel, um fortzufahren.
+    .w-check-that-the-printer-is-awake = Prüfen Sie, ob der Drucker eingeschaltet und verbunden ist.
+    .w-the-printer-reported-a-condition-that = Der Drucker meldet einen Zustand, der Aufmerksamkeit brauchen kann.

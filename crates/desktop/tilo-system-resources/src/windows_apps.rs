@@ -264,6 +264,60 @@ pub enum PowerState {
     ShutDown,
 }
 
+/// Why a Windows action did not happen, as this computer's device names it, so every reader
+/// says it in their language instead of the layer's English words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowsProblemCode {
+    /// The Windows compatibility service cannot be managed from this session.
+    Unmanageable,
+    /// Another Windows action is already in progress.
+    Busy,
+    /// The recovery desktop needs the appliance to be set up first.
+    RecoveryUnavailable,
+    /// Its power cannot be managed before the appliance is set up.
+    SetUpPower,
+    /// It cannot be connected temporarily before the appliance is set up.
+    SetUpConnection,
+    /// Windows must run before it can be connected temporarily.
+    NotRunning,
+    /// There is no temporary connection to revoke.
+    ConnectionNoLease,
+    /// The action does not apply to the appliance's current power state.
+    PowerState,
+    /// The appliance's helper refused the command.
+    Command,
+    /// Its status cannot be read as this version reads it.
+    StatusInvalid,
+    /// The recovery desktop could not be opened.
+    RecoveryOpen,
+    /// A program or file could not be opened.
+    Open,
+    /// The program is no longer there.
+    AppGone,
+    /// What was asked of the program is no longer offered.
+    OperationGone,
+}
+
+/// Why a Windows action did not happen: the device's code, and what it said in its own words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct WindowsProblem {
+    pub code: WindowsProblemCode,
+    #[serde(default)]
+    pub detail: String,
+}
+
+impl WindowsProblem {
+    /// The words the device said, when it said any.
+    #[must_use]
+    pub fn new(code: WindowsProblemCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
 /// A temporary connection the appliance was given, for activation or Windows Update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct TemporaryConnection {
@@ -355,9 +409,9 @@ pub struct WindowsApps {
     /// Actions taken and not landed yet, by the action's id.
     #[serde(default)]
     pub pending: Vec<String>,
-    /// Why the last action did not happen, until the next.
+    /// Why the last action did not happen, until the next, as the device names it.
     #[serde(default)]
-    pub problem: Option<String>,
+    pub problem: Option<WindowsProblem>,
 }
 
 /// The `windows-apps` resource's actions.

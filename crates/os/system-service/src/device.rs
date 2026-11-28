@@ -10,7 +10,7 @@ use tilo_system_resources::firmware::Firmware;
 use tilo_system_resources::host_info::HostInfo;
 use tilo_system_resources::printers::{
     DiscoveredPrinter, JobState as PrintJobState, PrintJob as PrintJobReading, PrinterQueue,
-    PrinterSupply, Printers, QueueState as PrintQueueState,
+    PrinterReason, PrinterSupply, Printers, QueueState as PrintQueueState,
 };
 use tilo_system_resources::storage::Storage;
 use tilo_system_resources::users::Users;
@@ -923,6 +923,33 @@ impl System for OsSystem {
     }
 }
 
+/// The condition the device's stable state reasons name, so an app says it in the reader's
+/// language. The reasons are IPP keywords (`media-empty-error`, `toner-low`), never the queue's
+/// free text; a device that reports none gives no code, and one this version has no words for is
+/// [`PrinterReason::Unknown`].
+pub(crate) fn printer_reason(reasons: &[String]) -> Option<PrinterReason> {
+    if reasons.is_empty() {
+        return None;
+    }
+    let said = reasons.join(" ").to_ascii_lowercase();
+    let names = |needles: &[&str]| needles.iter().any(|needle| said.contains(needle));
+    Some(if names(&["media-empty", "media-needed", "out-of-paper"]) {
+        PrinterReason::OutOfPaper
+    } else if names(&["jam"]) {
+        PrinterReason::Jam
+    } else if names(&["cover-open", "cover-open-error", "door-open", "api-open"]) {
+        PrinterReason::CoverOpen
+    } else if names(&["supply-low", "toner-low", "ink-low"]) {
+        PrinterReason::SupplyLow
+    } else if names(&["supply-empty", "toner-empty", "ink-empty"]) {
+        PrinterReason::SupplyEmpty
+    } else if names(&["offline", "not-connected"]) {
+        PrinterReason::Offline
+    } else {
+        PrinterReason::Unknown
+    })
+}
+
 /// The queues CUPS lists, as the `printers` resource reads them.
 fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<PrinterQueue> {
     use os_actions::printing::QueueState;
@@ -944,6 +971,7 @@ fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<Printe
                     )
                 },
             );
+            let reason_code = printer_reason(&queue.telemetry.state_reasons);
             PrinterQueue {
                 name: queue.name,
                 state: match queue.state {
@@ -958,6 +986,7 @@ fn queues_reading(queues: Vec<os_actions::printing::PrinterQueue>) -> Vec<Printe
                     let reasons = queue.telemetry.state_reasons;
                     (!reasons.is_empty()).then(|| reasons.join(", "))
                 }),
+                reason_code,
                 supplies: queue
                     .telemetry
                     .supplies

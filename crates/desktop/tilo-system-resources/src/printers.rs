@@ -39,6 +39,21 @@ pub struct PrinterSupply {
     pub level: Option<u8>,
 }
 
+/// Why a printer stands as it does, as the device's own state reasons name it, so every reader
+/// says the condition in their language instead of the device's keywords.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PrinterReason {
+    OutOfPaper,
+    Jam,
+    CoverOpen,
+    SupplyLow,
+    SupplyEmpty,
+    Offline,
+    /// The device reported a condition this version has no words for.
+    Unknown,
+}
+
 /// A queue: one printer this computer sends jobs to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct PrinterQueue {
@@ -50,6 +65,9 @@ pub struct PrinterQueue {
     pub accepting: bool,
     /// Why it stands as it does, in CUPS's words.
     pub reason: Option<String>,
+    /// The condition the device's state reasons name, when it reported any.
+    #[serde(default)]
+    pub reason_code: Option<PrinterReason>,
     /// What its device says about its supplies, empty when it answers none.
     pub supplies: Vec<PrinterSupply>,
     /// Whether the device answered at all.

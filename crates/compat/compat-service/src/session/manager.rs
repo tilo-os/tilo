@@ -63,22 +63,27 @@ pub trait SessionManager: Send + Sync {
     ///
     /// # Errors
     /// The capsule store could not be read.
-    fn list(&self, workspace: &str) -> Result<ManagerList, String>;
+    fn list(&self, workspace: &str) -> Result<ManagerList, SessionError>;
     /// Open a program of a private capsule.
     ///
     /// # Errors
     /// Why it did not open.
-    fn launch(&self, workspace: &str, entry_id: &str) -> Result<(), String>;
+    fn launch(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError>;
     /// Open an appliance application, with a document when one is given.
     ///
     /// # Errors
     /// Why it did not open.
-    fn launch_vm(&self, workspace: &str, entry_id: &str, file: Option<File>) -> Result<(), String>;
+    fn launch_vm(
+        &self,
+        workspace: &str,
+        entry_id: &str,
+        file: Option<File>,
+    ) -> Result<(), SessionError>;
     /// End a program of a private capsule that is open in `workspace`.
     ///
     /// # Errors
     /// It is not open there.
-    fn stop(&self, workspace: &str, entry_id: &str) -> Result<(), String>;
+    fn stop(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError>;
     /// Inspect a setup; it then waits for [`Self::install_in_capsule`] or
     /// [`Self::install_in_vm`].
     ///
@@ -89,53 +94,53 @@ pub trait SessionManager: Send + Sync {
         workspace: &str,
         source: File,
         source_name: &str,
-    ) -> Result<VmInstallConfirmation, String>;
+    ) -> Result<VmInstallConfirmation, SessionError>;
     /// Set up the waiting setup in a private capsule.
     ///
     /// # Errors
     /// Why the setup did not start, or no setup waits.
-    fn install_in_capsule(&self, workspace: &str) -> Result<(), String>;
+    fn install_in_capsule(&self, workspace: &str) -> Result<(), SessionError>;
     /// Set up the waiting setup in the Windows appliance.
     ///
     /// # Errors
     /// Why the setup did not start, or no setup waits.
-    fn install_in_vm(&self, workspace: &str) -> Result<(), String>;
+    fn install_in_vm(&self, workspace: &str) -> Result<(), SessionError>;
     /// Add an application the appliance published to this computer's apps.
     ///
     /// # Errors
     /// Why it was not published.
-    fn publish(&self, workspace: &str, entry_id: &str) -> Result<(), String>;
+    fn publish(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError>;
     /// Read the appliance's setup and uninstall status again.
     ///
     /// # Errors
     /// Why the appliance could not be asked.
-    fn refresh(&self, workspace: &str) -> Result<(), String>;
+    fn refresh(&self, workspace: &str) -> Result<(), SessionError>;
     /// Run a failed setup again.
     ///
     /// # Errors
     /// Why the setup did not start.
-    fn retry(&self, workspace: &str, capsule_id: &str) -> Result<(), String>;
+    fn retry(&self, workspace: &str, capsule_id: &str) -> Result<(), SessionError>;
     /// Continue a setup that did not finish in the appliance.
     ///
     /// # Errors
     /// Why the appliance could not take it.
-    fn escalate(&self, workspace: &str, capsule_id: &str) -> Result<(), String>;
+    fn escalate(&self, workspace: &str, capsule_id: &str) -> Result<(), SessionError>;
     /// Remove a program's launcher; its files stay.
     ///
     /// # Errors
     /// Why it was not removed.
-    fn remove_launcher(&self, entry_id: &str) -> Result<(), String>;
+    fn remove_launcher(&self, entry_id: &str) -> Result<(), SessionError>;
     /// Run a program's own uninstaller: an appliance application's by its entry, a private
     /// capsule's by its entry or capsule.
     ///
     /// # Errors
     /// Why it did not start.
-    fn uninstall(&self, workspace: &str, app: &str) -> Result<(), String>;
+    fn uninstall(&self, workspace: &str, app: &str) -> Result<(), SessionError>;
     /// Delete everything a setup put in its private capsule.
     ///
     /// # Errors
     /// A program of it would not end, or why the data was not deleted.
-    fn delete_data(&self, capsule_id: &str) -> Result<(), String>;
+    fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError>;
     /// Choose how a program opens, or let the catalogue recommend it.
     ///
     /// # Errors
@@ -145,7 +150,7 @@ pub trait SessionManager: Send + Sync {
         workspace: &str,
         entry_id: &str,
         route: Option<RouteKind>,
-    ) -> Result<(), String>;
+    ) -> Result<(), SessionError>;
 }
 
 /// Where the service puts its [`SessionManager`] as it starts: the session's system service
@@ -212,19 +217,21 @@ where
         }
     }
 
-    fn capabilities(&self, workspace: &str, app: &str) -> Result<Vec<CapOverride>, String> {
-        self.authority.capabilities_for(workspace, app)
+    fn capabilities(&self, workspace: &str, app: &str) -> Result<Vec<CapOverride>, SessionError> {
+        self.authority
+            .capabilities_for(workspace, app)
+            .map_err(SessionError::Message)
     }
 
-    fn entry(&self, entry_id: &str) -> Result<super::RegisteredProgram, String> {
+    fn entry(&self, entry_id: &str) -> Result<super::RegisteredProgram, SessionError> {
         self.managed
             .entries()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| SessionError::Message(error.to_string()))?
             .into_iter()
             .find(|entry| {
                 entry.entry_id == entry_id && entry.program.kind == ProgramKind::Application
             })
-            .ok_or_else(|| SessionError::UnknownEntry.to_string())
+            .ok_or(SessionError::UnknownEntry)
     }
 
     fn application(&self, entry_id: &str) -> Option<crate::VmPublishedApplication> {
@@ -235,10 +242,10 @@ where
             .find(|application| application.entry_id == entry_id)
     }
 
-    fn take_pending(&self) -> Result<(File, String, VmInstallerInput), String> {
+    fn take_pending(&self) -> Result<(File, String, VmInstallerInput), SessionError> {
         let pending = lock(&self.pending)
             .take()
-            .ok_or_else(|| SessionError::VmInstallConfirmationExpired.to_string())?;
+            .ok_or(SessionError::VmInstallConfirmationExpired)?;
         Ok((pending.source, pending.source_name, pending.input))
     }
 }
@@ -254,9 +261,11 @@ where
         clippy::too_many_lines,
         reason = "one field after another of the list the app reads"
     )]
-    fn list(&self, workspace: &str) -> Result<ManagerList, String> {
+    fn list(&self, workspace: &str) -> Result<ManagerList, SessionError> {
         let managed = &self.managed;
-        let entries = managed.entries().map_err(|error| error.to_string())?;
+        let entries = managed
+            .entries()
+            .map_err(|error| SessionError::Message(error.to_string()))?;
         let administrator = (managed.administrator)();
         let running = managed.programs.running();
         {
@@ -286,10 +295,10 @@ where
             let capabilities = self.capabilities(workspace, &entry.app_id)?;
             let (explanation, recommended_route) = managed
                 .explain_entry(&entry, &capabilities)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| SessionError::Message(error.to_string()))?;
             let installation_status = managed
                 .installation_states()
-                .map_err(|error| error.to_string())?
+                .map_err(|error| SessionError::Message(error.to_string()))?
                 .into_iter()
                 .find(|state| state.id == entry.capsule_id)
                 .and_then(|state| state.installation.map(|installation| installation.status));
@@ -368,7 +377,7 @@ where
         }
         let installations = managed
             .installation_states()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| SessionError::Message(error.to_string()))?
             .into_iter()
             .filter_map(|state| {
                 let installation = state.installation?;
@@ -422,31 +431,36 @@ where
         })
     }
 
-    fn launch(&self, workspace: &str, entry_id: &str) -> Result<(), String> {
+    fn launch(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError> {
         let entry = self.entry(entry_id)?;
         let capabilities = self.capabilities(workspace, &entry.app_id)?;
         self.managed
             .launch_entry(&entry, workspace, capabilities)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn launch_vm(&self, workspace: &str, entry_id: &str, file: Option<File>) -> Result<(), String> {
+    fn launch_vm(
+        &self,
+        workspace: &str,
+        entry_id: &str,
+        file: Option<File>,
+    ) -> Result<(), SessionError> {
         let application = self
             .application(entry_id)
-            .ok_or_else(|| SessionError::UnknownEntry.to_string())?;
+            .ok_or(SessionError::UnknownEntry)?;
         let capabilities = self.capabilities(workspace, &application.app_id)?;
         self.managed
             .launch_published_vm(application, workspace, capabilities, file)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn stop(&self, workspace: &str, entry_id: &str) -> Result<(), String> {
+    fn stop(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError> {
         if self.managed.programs.stop(workspace, entry_id) {
             Ok(())
         } else {
-            Err(SessionError::NotRunning.to_string())
+            Err(SessionError::NotRunning)
         }
     }
 
@@ -455,20 +469,20 @@ where
         workspace: &str,
         source: File,
         source_name: &str,
-    ) -> Result<VmInstallConfirmation, String> {
+    ) -> Result<VmInstallConfirmation, SessionError> {
         let capabilities = self.capabilities(workspace, "so.tilo.windows.import")?;
         // The inspected installer stays open for the person's choice: the same open file goes to
         // the setup, never a path that may since have changed.
-        let kept = source
-            .try_clone()
-            .map_err(|error| format!("could not keep the installer open: {error}"))?;
+        let kept = source.try_clone().map_err(|error| {
+            SessionError::Message(format!("could not keep the installer open: {error}"))
+        })?;
         let InstallOutcome::Confirmation {
             confirmation,
             input,
         } = self
             .managed
             .install(source, source_name, workspace, &capabilities)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| SessionError::Message(error.to_string()))?;
         *lock(&self.pending) = Some(PendingSetup {
             confirmation: confirmation.clone(),
             source: kept,
@@ -478,75 +492,75 @@ where
         Ok(confirmation)
     }
 
-    fn install_in_capsule(&self, workspace: &str) -> Result<(), String> {
+    fn install_in_capsule(&self, workspace: &str) -> Result<(), SessionError> {
         let (mut source, source_name, input) = self.take_pending()?;
-        source
-            .seek(SeekFrom::Start(0))
-            .map_err(|error| format!("could not read the installer again: {error}"))?;
+        source.seek(SeekFrom::Start(0)).map_err(|error| {
+            SessionError::Message(format!("could not read the installer again: {error}"))
+        })?;
         let capabilities = self.capabilities(workspace, "so.tilo.windows.import")?;
         self.managed
             .install_in_capsule(source, &source_name, workspace, &capabilities, &input)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn install_in_vm(&self, workspace: &str) -> Result<(), String> {
+    fn install_in_vm(&self, workspace: &str) -> Result<(), SessionError> {
         let (mut source, source_name, input) = self.take_pending()?;
-        source
-            .seek(SeekFrom::Start(0))
-            .map_err(|error| format!("could not read the installer again: {error}"))?;
+        source.seek(SeekFrom::Start(0)).map_err(|error| {
+            SessionError::Message(format!("could not read the installer again: {error}"))
+        })?;
         self.managed
             .install_in_vm(source, &source_name, workspace, &input)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn publish(&self, workspace: &str, entry_id: &str) -> Result<(), String> {
+    fn publish(&self, workspace: &str, entry_id: &str) -> Result<(), SessionError> {
         self.managed
             .publish_vm_candidate(workspace, entry_id)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn refresh(&self, workspace: &str) -> Result<(), String> {
+    fn refresh(&self, workspace: &str) -> Result<(), SessionError> {
         self.managed
             .refresh_vm_installation_status(workspace)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| SessionError::Message(error.to_string()))?;
         self.managed
             .refresh_vm_uninstallation_status(workspace)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn retry(&self, workspace: &str, capsule_id: &str) -> Result<(), String> {
+    fn retry(&self, workspace: &str, capsule_id: &str) -> Result<(), SessionError> {
         let capabilities = self.capabilities(workspace, "so.tilo.windows.import")?;
         self.managed
             .retry_install(capsule_id, workspace, &capabilities)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn escalate(&self, workspace: &str, capsule_id: &str) -> Result<(), String> {
+    fn escalate(&self, workspace: &str, capsule_id: &str) -> Result<(), SessionError> {
         self.managed
             .escalate_install_to_vm(capsule_id, workspace)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn remove_launcher(&self, entry_id: &str) -> Result<(), String> {
+    fn remove_launcher(&self, entry_id: &str) -> Result<(), SessionError> {
         if self.application(entry_id).is_some() {
             return self
                 .managed
                 .remove_vm_published_application(entry_id)
-                .map_err(|error| error.to_string());
+                .map_err(|error| SessionError::Message(error.to_string()));
         }
         let entry = self.entry(entry_id)?;
         self.managed
             .remove_launcher(&entry)
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn uninstall(&self, workspace: &str, app: &str) -> Result<(), String> {
+    fn uninstall(&self, workspace: &str, app: &str) -> Result<(), SessionError> {
         if self
             .application(app)
             .is_some_and(|application| application.uninstall_available)
@@ -555,7 +569,7 @@ where
                 .managed
                 .uninstall_vm_published_application(workspace, app)
                 .map(|_| ())
-                .map_err(|error| error.to_string());
+                .map_err(|error| SessionError::Message(error.to_string()));
         }
         let capsule_id = match self.entry(app) {
             Ok(entry) => entry.capsule_id,
@@ -565,14 +579,14 @@ where
         self.managed
             .vendor_uninstall(&capsule_id, workspace, &capabilities)
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
-    fn delete_data(&self, capsule_id: &str) -> Result<(), String> {
+    fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError> {
         let retiring: Vec<_> = self
             .managed
             .entries()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| SessionError::Message(error.to_string()))?
             .into_iter()
             .filter(|entry| entry.capsule_id == capsule_id)
             .collect();
@@ -590,14 +604,14 @@ where
                 .filter(|entry| still_open.contains(&entry.entry_id))
                 .map(|entry| entry.program.display_name.as_str())
                 .collect();
-            return Err(format!(
+            return Err(SessionError::Message(format!(
                 "a program of this setup would not end: {}",
                 names.join(", ")
-            ));
+            )));
         }
         self.managed
             .delete_data(capsule_id)
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 
     fn set_route(
@@ -605,16 +619,16 @@ where
         workspace: &str,
         entry_id: &str,
         route: Option<RouteKind>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SessionError> {
         let entry = self.entry(entry_id)?;
         if !(self.managed.administrator)() {
-            return Err(SessionError::NotAdministrator.to_string());
+            return Err(SessionError::NotAdministrator);
         }
         let _ = workspace;
         self.managed
             .service
             .set_opens_with(&entry.capsule_id, &entry.program.id, route)
-            .map_err(|error| error.to_string())
+            .map_err(|error| SessionError::Message(error.to_string()))
     }
 }
 

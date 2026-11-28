@@ -150,6 +150,44 @@ fn power_words(state: device.PowerState) -> Text {
     } else if state == .shut-down { std.say("Shut down") } else { std.say("Unknown") }
 }
 
+/// Why the last Windows action did not happen, in the reader's words, with what the device said
+/// in its own words kept beside it.
+fn problem_words(problem: device.WindowsProblem) -> Text {
+    let detail = problem.detail
+    if problem.code == .command {
+        std.say("The Windows appliance command failed: {detail}")
+    } else if problem.code == .open {
+        std.say("Couldn't open it: {detail}")
+    } else if problem.code == .recovery-open {
+        std.say("Couldn't open the Windows recovery desktop: {detail}")
+    } else {
+        let line = if problem.code == .unmanageable {
+            std.say("The Windows appliance can't be managed in this session.")
+        } else if problem.code == .busy {
+            std.say("A Windows appliance action is already in progress.")
+        } else if problem.code == .recovery-unavailable {
+            std.say(
+                "The Windows recovery desktop is unavailable until the appliance is provisioned.",
+            )
+        } else if problem.code == .set-up-power {
+            std.say("Set up the Windows appliance before managing its power state.")
+        } else if problem.code == .set-up-connection {
+            std.say("Connect it temporarily only after setting up the Windows appliance.")
+        } else if problem.code == .not-running {
+            std.say("Windows must be running before it can be connected temporarily.")
+        } else if problem.code == .connection-no-lease {
+            std.say("There is no active temporary Windows connection to revoke.")
+        } else if problem.code == .power-state {
+            std.say("That isn't available in the appliance's current power state.")
+        } else if problem.code == .app-gone {
+            std.say("The Windows application is no longer available.")
+        } else {
+            std.say("The Windows operation is no longer available.")
+        }
+        if detail == "" { line } else { "{line} {detail}" }
+    }
+}
+
 /// The one sentence the appliance page states its status in.
 fn appliance_statement(appliance: device.Appliance) -> Text {
     if appliance.phase == .ready {
@@ -510,7 +548,7 @@ view window(w: Windows) {
                     )
                 }
                 if let problem = ws.problem {
-                    ui.StatusLine(problem, status: .error)
+                    ui.StatusLine(problem_words(problem), status: .error)
                 }
                 if let pending = ws.pending_install {
                     ui.ListRow(
@@ -901,6 +939,15 @@ view appliance_page(w: Windows, ws: device.WindowsApps) {
         }
     } else {
         ui.Text(appliance_statement(appliance), role: .body)
+        if appliance.phase == .unavailable {
+            if let detail = appliance.detail {
+                ui.Text(
+                    "The Windows appliance reported a status this version can't read: {detail}",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
         ui.Text(
             "Apps open in their own windows. The full Windows desktop is only for setup and recovery.",
             role: .caption,

@@ -345,6 +345,7 @@ mod tests {
             default: true,
             accepting: true,
             reason: None,
+            reason_code: None,
             supplies: Vec::new(),
             reachable: true,
             media: vec!["A4".into()],

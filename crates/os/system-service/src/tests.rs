@@ -108,6 +108,7 @@ impl Fake {
                     default: true,
                     accepting: true,
                     reason: None,
+                    reason_code: None,
                     supplies: Vec::new(),
                     reachable: true,
                     media: vec!["A4".into(), "Letter".into()],
@@ -334,6 +335,7 @@ impl System for Fake {
                     default: empty,
                     accepting: true,
                     reason: None,
+                    reason_code: None,
                     supplies: Vec::new(),
                     reachable: true,
                     media: Vec::new(),
@@ -1464,6 +1466,32 @@ fn the_scanners_resource_lists_what_sane_finds_and_looks_again() {
 }
 
 #[test]
+fn a_printers_state_reasons_are_named_by_their_device_codes() {
+    use crate::device::printer_reason;
+    use tilo_system_resources::printers::PrinterReason;
+    let said = |reasons: &[&str]| {
+        let reasons: Vec<String> = reasons.iter().map(|reason| (*reason).to_owned()).collect();
+        printer_reason(&reasons)
+    };
+    assert_eq!(said(&[]), None, "a printer that reports no reason has none");
+    for (reasons, code) in [
+        (vec!["media-empty-error"], PrinterReason::OutOfPaper),
+        (vec!["media-needed-warning"], PrinterReason::OutOfPaper),
+        (vec!["media-jam-error"], PrinterReason::Jam),
+        (vec!["cover-open-error"], PrinterReason::CoverOpen),
+        (vec!["marker-supply-low-warning"], PrinterReason::SupplyLow),
+        (
+            vec!["marker-supply-empty-error"],
+            PrinterReason::SupplyEmpty,
+        ),
+        (vec!["offline-report"], PrinterReason::Offline),
+        (vec!["some-new-device-error"], PrinterReason::Unknown),
+    ] {
+        assert_eq!(said(&reasons), Some(code), "{reasons:?}");
+    }
+}
+
+#[test]
 fn finding_printers_lands_what_the_network_answered() {
     let fake = Fake::new();
     let mut service = service(&fake);
@@ -2482,7 +2510,7 @@ struct FakeWindows {
     /// Each program an action named, by the action's id and the program: what a row's own
     /// action carries from the address it was called on.
     programs: Mutex<Vec<(String, String)>>,
-    refusal: Mutex<Option<String>>,
+    refusal: Mutex<Option<tilo_system_resources::windows_apps::WindowsProblem>>,
 }
 
 impl FakeWindows {
@@ -2504,7 +2532,7 @@ impl crate::windows_apps::WindowsManager for FakeWindows {
         &self,
         workspace: &str,
         action: &tilo_system_resources::windows_apps::WindowsAppsAction,
-    ) -> Result<(), String> {
+    ) -> Result<(), tilo_system_resources::windows_apps::WindowsProblem> {
         use tilo_resource::Effect as _;
         let refusal = self.refusal.lock().unwrap().clone();
         if let Some(refusal) = refusal {
@@ -2638,7 +2666,11 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
 
     // The action's own refusal is said in the reading until the next.
-    *windows.refusal.lock().unwrap() = Some("The capsule's runner is not installed.".to_owned());
+    *windows.refusal.lock().unwrap() =
+        Some(tilo_system_resources::windows_apps::WindowsProblem::new(
+            tilo_system_resources::windows_apps::WindowsProblemCode::Command,
+            "The capsule's runner is not installed.",
+        ));
     service
         .invoke_for(
             "so.tilo.windows",
@@ -2654,7 +2686,7 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
         .unwrap();
     assert_eq!(
         reading["problem"],
-        json!("The capsule's runner is not installed.")
+        json!({"code": "command", "detail": "The capsule's runner is not installed."})
     );
     assert_eq!(reading["pending"], json!([]));
 }

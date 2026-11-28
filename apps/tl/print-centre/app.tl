@@ -188,6 +188,26 @@ fn queue_words(state: device.QueueState) -> Text {
     } else if state == .paused { std.say("Paused") } else { std.say("Offline") }
 }
 
+/// Why a printer stands as it does, in the reader's words: the device's state reasons are the
+/// code, and its own words stay beside them as the detail.
+fn reason_words(code: device.PrinterReason) -> Text {
+    if code == .out-of-paper {
+        std.say("Add paper to continue.")
+    } else if code == .jam {
+        std.say("Clear the paper jam, then resume the printer.")
+    } else if code == .cover-open {
+        std.say("Close the printer cover.")
+    } else if code == .supply-low {
+        std.say("A supply is running low; printing can usually continue for now.")
+    } else if code == .supply-empty {
+        std.say("Replace the empty supply to continue.")
+    } else if code == .offline {
+        std.say("Check that the printer is awake and connected.")
+    } else {
+        std.say("The printer reported a condition that may need attention.")
+    }
+}
+
 /// How a job stands.
 fn job_words(state: device.JobState) -> Text {
     if state == .waiting {
@@ -961,6 +981,9 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
                 ui.Badge("Not reachable", tone: .danger)
             }
         }
+        if let code = queue.reason_code {
+            ui.Text(reason_words(code), role: .caption, secondary: true)
+        }
         if let reason = queue.reason {
             ui.Text(reason, role: .caption, secondary: true)
         }
@@ -1019,7 +1042,11 @@ view job_row(job: device.PrintJob, printers: device.Printers, cancel: State<Text
     let queue = printers.queues.find(q -> q.name == job.destination)
     let why: Option<Text> = if not job_failed(job) {
         .none
-    } else if let q = queue { q.reason } else { .none }
+    } else if let q = queue {
+        if let code = q.reason_code {
+            .some("{reason_words(code)} {q.reason ?? ""}")
+        } else { q.reason }
+    } else { .none }
     ui.ListRow(
         if job.title != "" { job.title } else { std.say("Untitled document") },
         secondary: if let reason = why {
@@ -1109,8 +1136,11 @@ view diagnostics_pane(printers: device.Printers, scanners: device.Scanners) {
                 ui.Property("State", queue_words(queue.state))
                 ui.Property("Accepting jobs", if queue.accepting { "Yes" } else { "No" })
                 ui.Property("Reachable", if queue.reachable { "Yes" } else { "No" })
+                if let code = queue.reason_code {
+                    ui.Property("Reason", reason_words(code))
+                }
                 if let reason = queue.reason {
-                    ui.Property("Reason", reason)
+                    ui.Property("Reported", reason)
                 }
                 if let media = queue.default_media {
                     ui.Property("Paper", media)

@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use tilo_system_resources::windows_apps::{
     Access, AppStatus, Appliance, AppliancePhase, Confidence, EndedProgram, License,
     PendingInstall, PowerState, Route, SharedSession, Source, TemporaryConnection, WindowsApp,
-    WindowsApps, WindowsAppsAction,
+    WindowsApps, WindowsAppsAction, WindowsProblem, WindowsProblemCode,
 };
 
-use compat_service::RouteKind;
+use compat_service::{RouteKind, SessionError};
 
 /// The owner's helper: the one program that reads and changes the appliance.
 const OWNER: &str = "/usr/libexec/tilo-windows-owner";
@@ -66,7 +66,7 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
             Ok(list) => list,
             Err(error) => {
                 return WindowsApps {
-                    summary: error,
+                    summary: error.to_string(),
                     support,
                     appliance,
                     ..WindowsApps::default()
@@ -134,92 +134,273 @@ impl tilo_system_service::windows_apps::WindowsManager for SessionWindows {
         }
     }
 
-    fn change(&self, workspace: &str, action: &WindowsAppsAction) -> Result<(), String> {
-        match action {
-            WindowsAppsAction::Install { path } => {
-                let Some(path) = path else {
-                    return Err("choose an installer first".to_owned());
-                };
-                let source =
-                    File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
-                let name = std::path::Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| "the installer's path has no file name".to_string())?
-                    .to_owned();
-                self.manager()?.install(workspace, source, &name).map(drop)
-            }
-            WindowsAppsAction::ImportIso { path } => {
-                let Some(path) = path else {
-                    return Err("choose a Windows ISO first".to_owned());
-                };
-                let source =
-                    File::open(path).map_err(|error| format!("could not open {path}: {error}"))?;
-                ApplianceOwner::import_iso(source)
-            }
-            WindowsAppsAction::Recovery => self.appliance.recovery(),
-            WindowsAppsAction::Start => ApplianceOwner::lifecycle("start"),
-            WindowsAppsAction::Restart => ApplianceOwner::lifecycle("restart"),
-            WindowsAppsAction::Suspend => ApplianceOwner::lifecycle("suspend"),
-            WindowsAppsAction::Resume => ApplianceOwner::lifecycle("resume"),
-            WindowsAppsAction::Shutdown => ApplianceOwner::lifecycle("shutdown"),
-            WindowsAppsAction::TemporaryNetwork => ApplianceOwner::egress_open("activation"),
-            WindowsAppsAction::UpdateNetwork => ApplianceOwner::egress_open("windows-update"),
-            WindowsAppsAction::RevokeNetwork => ApplianceOwner::egress_revoke(),
-            WindowsAppsAction::InstallPrivateCapsule => {
-                self.manager()?.install_in_capsule(workspace)
-            }
-            WindowsAppsAction::InstallWindowsAppliance => self.manager()?.install_in_vm(workspace),
-            WindowsAppsAction::Launch { program } => self.manager()?.launch(workspace, program),
-            WindowsAppsAction::Stop { program } => self.manager()?.stop(workspace, program),
-            WindowsAppsAction::LaunchVmFallback { program } => {
-                self.manager()?.launch_vm(workspace, program, None)
-            }
-            WindowsAppsAction::OpenFile { program, path } => {
-                let source = match path {
-                    Some(path) => Some(
-                        File::open(path)
-                            .map_err(|error| format!("could not open {path}: {error}"))?,
-                    ),
-                    None => None,
-                };
-                self.manager()?.launch_vm(workspace, program, source)
-            }
-            WindowsAppsAction::Publish { program } => self.manager()?.publish(workspace, program),
-            WindowsAppsAction::RetryInstall { capsule } => {
-                self.manager()?.retry(workspace, capsule)
-            }
-            WindowsAppsAction::EscalateInstall { capsule } => {
-                self.manager()?.escalate(workspace, capsule)
-            }
-            WindowsAppsAction::RemoveLauncher { program } => {
-                self.manager()?.remove_launcher(program)
-            }
-            WindowsAppsAction::Uninstall { program } => {
-                self.manager()?.uninstall(workspace, program)
-            }
-            WindowsAppsAction::DeleteData { capsule } => self.manager()?.delete_data(capsule),
-            WindowsAppsAction::SetRoute { program, route } => self.manager()?.set_route(
-                workspace,
-                program,
-                route.map(|route| match route {
-                    Route::Wine => RouteKind::Wine,
-                    Route::Proton => RouteKind::Proton,
-                    Route::Vm => RouteKind::Vm,
-                }),
-            ),
+    fn change(&self, workspace: &str, action: &WindowsAppsAction) -> Result<(), WindowsProblem> {
+        if let Some(result) = self.appliance_change(action) {
+            return result;
         }
+        self.layer_change(workspace, action)
     }
+}
+
+/// Why the layer refused a change, as the device names it, with its own words kept.
+fn refused(error: &SessionError) -> WindowsProblem {
+    let code = match &error {
+        SessionError::UnknownEntry => WindowsProblemCode::AppGone,
+        SessionError::NotRunning | SessionError::VmInstallConfirmationExpired => {
+            WindowsProblemCode::OperationGone
+        }
+        SessionError::AlreadyRunning => WindowsProblemCode::Busy,
+        _ => WindowsProblemCode::Command,
+    };
+    WindowsProblem::new(code, error.to_string())
+}
+
+/// Why a program or a file did not open: what is no longer there, or why it did not open.
+fn not_opened(error: &SessionError) -> WindowsProblem {
+    match &error {
+        SessionError::UnknownEntry => {
+            WindowsProblem::new(WindowsProblemCode::AppGone, error.to_string())
+        }
+        _ => opened(&error.to_string()),
+    }
+}
+
+/// Hand Windows installation media to the appliance's owner.
+fn import_iso(path: Option<&str>) -> Result<(), WindowsProblem> {
+    let Some(path) = path else {
+        return Err(WindowsProblem::new(
+            WindowsProblemCode::Open,
+            "no Windows ISO was chosen",
+        ));
+    };
+    let source =
+        File::open(path).map_err(|error| opened(&format!("could not open {path}: {error}")))?;
+    ApplianceOwner::import_iso(source)
+        .map_err(|detail| WindowsProblem::new(WindowsProblemCode::Command, detail))
+}
+
+/// What the device said as it could not open something.
+fn opened(detail: &str) -> WindowsProblem {
+    WindowsProblem::new(WindowsProblemCode::Open, detail)
+}
+
+/// Whether the appliance's power state takes `action`.
+fn power_applies(action: &str, state: PowerState) -> bool {
+    matches!(
+        (state, action),
+        (PowerState::Running, "restart" | "suspend" | "shutdown")
+            | (PowerState::Suspended | PowerState::Paused, "resume")
+            | (PowerState::ShutDown, "start")
+    )
 }
 
 impl SessionWindows {
-    fn manager(&self) -> Result<Arc<dyn compat_service::SessionManager>, String> {
-        self.manager.get().ok_or_else(|| {
-            "This computer's Windows compatibility service is not running.".to_owned()
+    /// The actions that change the appliance itself rather than the programs; `None` for the
+    /// ones the compatibility layer carries out.
+    fn appliance_change(&self, action: &WindowsAppsAction) -> Option<Result<(), WindowsProblem>> {
+        Some(match action {
+            WindowsAppsAction::Recovery => self.recovery(),
+            WindowsAppsAction::Start => self.lifecycle("start"),
+            WindowsAppsAction::Restart => self.lifecycle("restart"),
+            WindowsAppsAction::Suspend => self.lifecycle("suspend"),
+            WindowsAppsAction::Resume => self.lifecycle("resume"),
+            WindowsAppsAction::Shutdown => self.lifecycle("shutdown"),
+            WindowsAppsAction::TemporaryNetwork => self.egress_open("activation"),
+            WindowsAppsAction::UpdateNetwork => self.egress_open("windows-update"),
+            WindowsAppsAction::RevokeNetwork => self.egress_revoke(),
+            _ => return None,
         })
     }
-}
 
+    /// The actions the compatibility layer carries out: opening, stopping and installing
+    /// programs, and what a setup does.
+    fn layer_change(
+        &self,
+        workspace: &str,
+        action: &WindowsAppsAction,
+    ) -> Result<(), WindowsProblem> {
+        match action {
+            WindowsAppsAction::Install { path } => self.install(workspace, path.as_deref()),
+            WindowsAppsAction::ImportIso { path } => import_iso(path.as_deref()),
+            WindowsAppsAction::InstallPrivateCapsule => self
+                .manager()?
+                .install_in_capsule(workspace)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::InstallWindowsAppliance => self
+                .manager()?
+                .install_in_vm(workspace)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::Launch { program } => self
+                .manager()?
+                .launch(workspace, program)
+                .map_err(|error| not_opened(&error)),
+            WindowsAppsAction::Stop { program } => self
+                .manager()?
+                .stop(workspace, program)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::LaunchVmFallback { program } => self
+                .manager()?
+                .launch_vm(workspace, program, None)
+                .map_err(|error| not_opened(&error)),
+            WindowsAppsAction::OpenFile { program, path } => {
+                self.open_file(workspace, program, path.as_deref())
+            }
+            WindowsAppsAction::Publish { program } => self
+                .manager()?
+                .publish(workspace, program)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::RetryInstall { capsule } => self
+                .manager()?
+                .retry(workspace, capsule)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::EscalateInstall { capsule } => self
+                .manager()?
+                .escalate(workspace, capsule)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::RemoveLauncher { program } => self
+                .manager()?
+                .remove_launcher(program)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::Uninstall { program } => self
+                .manager()?
+                .uninstall(workspace, program)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::DeleteData { capsule } => self
+                .manager()?
+                .delete_data(capsule)
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::SetRoute { program, route } => self
+                .manager()?
+                .set_route(
+                    workspace,
+                    program,
+                    route.map(|route| match route {
+                        Route::Wine => RouteKind::Wine,
+                        Route::Proton => RouteKind::Proton,
+                        Route::Vm => RouteKind::Vm,
+                    }),
+                )
+                .map_err(|error| refused(&error)),
+            WindowsAppsAction::Recovery
+            | WindowsAppsAction::Start
+            | WindowsAppsAction::Restart
+            | WindowsAppsAction::Suspend
+            | WindowsAppsAction::Resume
+            | WindowsAppsAction::Shutdown
+            | WindowsAppsAction::TemporaryNetwork
+            | WindowsAppsAction::UpdateNetwork
+            | WindowsAppsAction::RevokeNetwork => Err(WindowsProblem::new(
+                WindowsProblemCode::Command,
+                "the action changes the appliance, not a program",
+            )),
+        }
+    }
+
+    /// Inspect an installer the person chose and set it up.
+    fn install(&self, workspace: &str, path: Option<&str>) -> Result<(), WindowsProblem> {
+        let Some(path) = path else {
+            return Err(WindowsProblem::new(
+                WindowsProblemCode::Open,
+                "no installer was chosen",
+            ));
+        };
+        let source =
+            File::open(path).map_err(|error| opened(&format!("could not open {path}: {error}")))?;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                WindowsProblem::new(
+                    WindowsProblemCode::Open,
+                    "the installer's path has no file name",
+                )
+            })?
+            .to_owned();
+        self.manager()?
+            .install(workspace, source, &name)
+            .map(drop)
+            .map_err(|error| refused(&error))
+    }
+
+    /// Open a program with a document, when one was chosen.
+    fn open_file(
+        &self,
+        workspace: &str,
+        program: &str,
+        path: Option<&str>,
+    ) -> Result<(), WindowsProblem> {
+        let source = match path {
+            Some(path) => Some(
+                File::open(path)
+                    .map_err(|error| opened(&format!("could not open {path}: {error}")))?,
+            ),
+            None => None,
+        };
+        self.manager()?
+            .launch_vm(workspace, program, source)
+            .map_err(|error| not_opened(&error))
+    }
+
+    fn manager(&self) -> Result<Arc<dyn compat_service::SessionManager>, WindowsProblem> {
+        self.manager.get().ok_or_else(|| {
+            WindowsProblem::new(
+                WindowsProblemCode::Unmanageable,
+                "This computer's Windows compatibility service is not running.",
+            )
+        })
+    }
+
+    /// Open the appliance's recovery desktop, once it is set up.
+    fn recovery(&self) -> Result<(), WindowsProblem> {
+        if !self.appliance.reading().recovery_available {
+            return Err(WindowsProblem::new(
+                WindowsProblemCode::RecoveryUnavailable,
+                "",
+            ));
+        }
+        self.appliance
+            .recovery()
+            .map_err(|detail| WindowsProblem::new(WindowsProblemCode::RecoveryOpen, detail))
+    }
+
+    /// Run one fixed lifecycle action, when the appliance's power state takes it.
+    fn lifecycle(&self, action: &str) -> Result<(), WindowsProblem> {
+        let appliance = self.appliance.reading();
+        if !appliance.configured {
+            return Err(WindowsProblem::new(WindowsProblemCode::SetUpPower, ""));
+        }
+        if !power_applies(action, appliance.power_state) {
+            return Err(WindowsProblem::new(WindowsProblemCode::PowerState, ""));
+        }
+        ApplianceOwner::lifecycle(action)
+            .map_err(|detail| WindowsProblem::new(WindowsProblemCode::Command, detail))
+    }
+
+    /// Connect the appliance for a while, once Windows runs.
+    fn egress_open(&self, purpose: &str) -> Result<(), WindowsProblem> {
+        let appliance = self.appliance.reading();
+        if !appliance.configured {
+            return Err(WindowsProblem::new(WindowsProblemCode::SetUpConnection, ""));
+        }
+        if appliance.power_state != PowerState::Running {
+            return Err(WindowsProblem::new(WindowsProblemCode::NotRunning, ""));
+        }
+        ApplianceOwner::egress_open(purpose)
+            .map_err(|detail| WindowsProblem::new(WindowsProblemCode::Command, detail))
+    }
+
+    /// End the temporary connection, when there is one.
+    fn egress_revoke(&self) -> Result<(), WindowsProblem> {
+        if self.appliance.reading().temporary_connection.is_none() {
+            return Err(WindowsProblem::new(
+                WindowsProblemCode::ConnectionNoLease,
+                "",
+            ));
+        }
+        ApplianceOwner::egress_revoke()
+            .map_err(|detail| WindowsProblem::new(WindowsProblemCode::Command, detail))
+    }
+}
 /// One program as the app's page shows it.
 fn app_of(
     application: &compat_service::ManagedApplication,

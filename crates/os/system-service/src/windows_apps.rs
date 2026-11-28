@@ -9,8 +9,8 @@
 use tilo_actions::ResourceSpec;
 use tilo_service::offer;
 use tilo_system_resources::windows_apps::{
-    AppStatus, WINDOWS_APPS, WindowsApps, WindowsAppsAction, WindowsProgram, WindowsProgramAction,
-    program_id,
+    AppStatus, WINDOWS_APPS, WindowsApps, WindowsAppsAction, WindowsProblem, WindowsProgram,
+    WindowsProgramAction, program_id,
 };
 
 use crate::i18n::name;
@@ -73,6 +73,6 @@ pub trait WindowsManager: Send + Sync {
     /// Carry out `action` for an app in `workspace`.
     ///
     /// # Errors
-    /// Why it did not happen.
-    fn change(&self, workspace: &str, action: &WindowsAppsAction) -> Result<(), String>;
+    /// Why it did not happen, as the device names it.
+    fn change(&self, workspace: &str, action: &WindowsAppsAction) -> Result<(), WindowsProblem>;
 }

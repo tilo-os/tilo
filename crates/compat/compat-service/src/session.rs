@@ -1977,6 +1977,9 @@ pub enum SessionError {
     DescriptorInvalid,
     #[error("workspace capability authority refused the request: {0}")]
     Authority(String),
+    /// What a part of the service said, in its own words: the store, the setup, the appliance.
+    #[error("{0}")]
+    Message(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -2005,7 +2008,7 @@ impl SessionError {
             Self::NotAdministrator => "not_administrator",
             Self::OpenWithOtherRunner { .. } => crate::protocol::OPEN_WITH_OTHER_RUNNER,
             Self::Authority(_) => "authority_unavailable",
-            Self::Io(_) | Self::Capsule(_) | Self::Service(_) => "service_error",
+            Self::Io(_) | Self::Capsule(_) | Self::Service(_) | Self::Message(_) => "service_error",
         }
     }
 }

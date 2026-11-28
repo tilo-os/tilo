@@ -649,15 +649,22 @@ fn what_the_service_reports_as_wrong_is_said() {
         "pending_install": null,
         "support": support(),
         "pending": [],
-        "problem": "The compatibility service did not answer."
+        "problem": null
     });
-    state["problem"] = serde_json::json!("The compatibility service did not answer.");
+    state["problem"] = serde_json::json!({
+        "code": "command",
+        "detail": "The compatibility service did not answer."
+    });
     let app = installed(state.to_string());
     let window = app.window();
-    assert!(contains(
-        &window,
-        "The compatibility service did not answer."
-    ));
+    assert!(
+        contains(
+            &window,
+            "The Windows appliance command failed: The compatibility service did not answer."
+        ),
+        "{:?}",
+        shown(&window)
+    );
 }
 
 /// The window as the system opens it: an instance of the app over this computer's reading, so
@@ -1129,5 +1136,157 @@ fn history_says_how_each_program_was_set_to_open_in_the_readers_language() {
         for (said, wanted) in said.iter().zip(wanted) {
             assert!(said.starts_with(wanted), "{wanted:?} in {locale}: {said:?}");
         }
+    }
+}
+
+/// The old messages, and what the device's code is said as in English and German.
+fn problem_cases() -> [(&'static str, &'static str, &'static str); 13] {
+    [
+        (
+            "unmanageable",
+            "The Windows appliance can't be managed in this session.",
+            "Die Windows-Umgebung lässt sich in dieser Sitzung nicht verwalten.",
+        ),
+        (
+            "busy",
+            "A Windows appliance action is already in progress.",
+            "Eine Aktion der Windows-Umgebung läuft bereits.",
+        ),
+        (
+            "recovery-unavailable",
+            "The Windows recovery desktop is unavailable until the appliance is provisioned.",
+            "Der Windows-Wiederherstellungs-Desktop ist erst verfügbar, wenn die Umgebung bereitgestellt ist.",
+        ),
+        (
+            "set-up-power",
+            "Set up the Windows appliance before managing its power state.",
+            "Richte die Windows-Umgebung ein, bevor du ihren Energiezustand verwaltest.",
+        ),
+        (
+            "set-up-connection",
+            "Connect it temporarily only after setting up the Windows appliance.",
+            "Richte die Windows-Umgebung ein, bevor du sie zeitweilig verbindest.",
+        ),
+        (
+            "not-running",
+            "Windows must be running before it can be connected temporarily.",
+            "Windows muss laufen, bevor es zeitweilig verbunden werden kann.",
+        ),
+        (
+            "connection-no-lease",
+            "There is no active temporary Windows connection to revoke.",
+            "Es gibt keine aktive zeitweilige Windows-Verbindung zum Trennen.",
+        ),
+        (
+            "power-state",
+            "That isn't available in the appliance's current power state.",
+            "Das ist im aktuellen Energiezustand der Umgebung nicht verfügbar.",
+        ),
+        (
+            "command",
+            "The Windows appliance command failed: the helper refused",
+            "Der Befehl der Windows-Umgebung ist fehlgeschlagen: the helper refused",
+        ),
+        (
+            "recovery-open",
+            "Couldn't open the Windows recovery desktop: no console",
+            "Der Windows-Wiederherstellungs-Desktop konnte nicht geöffnet werden: no console",
+        ),
+        (
+            "open",
+            "Couldn't open it: the runner is missing",
+            "Konnte nicht geöffnet werden: the runner is missing",
+        ),
+        (
+            "app-gone",
+            "The Windows application is no longer available.",
+            "Die Windows-Anwendung ist nicht mehr verfügbar.",
+        ),
+        (
+            "operation-gone",
+            "The Windows operation is no longer available.",
+            "Der Windows-Vorgang ist nicht mehr verfügbar.",
+        ),
+    ]
+}
+
+/// What the device names went wrong is said in the reader's language, with the layer's own words
+/// kept beside it: one code for each old message, and a status this version cannot read.
+#[test]
+fn a_windows_problems_code_reads_in_the_readers_language() {
+    let german = tilolang::messages::module_catalogue(include_str!(
+        "../../../../apps/tl/windows/locales/de-DE.ftl"
+    ));
+    let ids = include_str!("../../../../apps/tl/windows/app.ids");
+    for (locale, catalogs) in [
+        ("en-US", &[("en-US", "")][..]),
+        ("de-DE", &[("en-US", ""), ("de-DE", german.as_str())][..]),
+    ] {
+        tilo_ui_base::i18n::I18nManager::install("en-US", locale, catalogs).expect("the words");
+        for (code, english, auf_deutsch) in problem_cases() {
+            let wanted = if locale == "en-US" {
+                english
+            } else {
+                auf_deutsch
+            };
+            let detail = if let Some((_, said)) = english.split_once(": ") {
+                said
+            } else {
+                "the helper refused"
+            };
+            let said = full().replace(
+                r#""problem":null"#,
+                &format!(r#""problem": {{"code": "{code}", "detail": "{detail}"}}"#),
+            );
+            let app = Pane::install_with_ids(&me(), SOURCE, ids)
+                .delegating()
+                .reading(&windows(), &said)
+                .rooted("so.tilo.windows.Windows");
+            app.host.set_words(crate::words::Toolkit);
+            let window = app.window();
+            assert!(
+                contains(&window, wanted),
+                "{code} reads {wanted:?} in {locale}: {:?}",
+                shown(&window)
+            );
+        }
+    }
+}
+
+/// A status the reading cannot read is the appliance's, said in the reader's language with what
+/// the device wrote beside it.
+#[test]
+fn an_unreadable_appliance_status_is_said_in_the_readers_language() {
+    let german = tilolang::messages::module_catalogue(include_str!(
+        "../../../../apps/tl/windows/locales/de-DE.ftl"
+    ));
+    let ids = include_str!("../../../../apps/tl/windows/app.ids");
+    for (locale, catalogs) in [
+        ("en-US", &[("en-US", "")][..]),
+        ("de-DE", &[("en-US", ""), ("de-DE", german.as_str())][..]),
+    ] {
+        tilo_ui_base::i18n::I18nManager::install("en-US", locale, catalogs).expect("the words");
+        let unreadable = reading(vec![reader_app()], appliance(), None, support())
+            .replace(r#""phase":"ready""#, r#""phase":"unavailable""#)
+            .replace(
+                r#""detail":null"#,
+                r#""detail":"state is world-accessible""#,
+            );
+        let app = Pane::install_with_ids(&me(), SOURCE, ids)
+            .delegating()
+            .reading(&windows(), &unreadable)
+            .rooted("so.tilo.windows.Windows");
+        app.host.set_words(crate::words::Toolkit);
+        let window = shown_at(&app, "appliance");
+        let wanted = if locale == "en-US" {
+            "The Windows appliance reported a status this version can't read: state is world-accessible"
+        } else {
+            "Die Windows-Umgebung hat einen Status gemeldet, den diese Fassung nicht lesen kann: state is world-accessible"
+        };
+        assert!(
+            contains(&window, wanted),
+            "{wanted:?} in {locale}: {:?}",
+            shown(&window)
+        );
     }
 }

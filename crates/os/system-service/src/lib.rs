@@ -204,7 +204,7 @@ enum Landed {
     /// An action on the Windows programs landed: what it came to, and the reading to forget.
     Windows {
         action: String,
-        result: Result<(), String>,
+        result: Result<(), tilo_system_resources::windows_apps::WindowsProblem>,
     },
     /// A storage scan or change landed: its reading of this device's files, and
     /// how the action came out. Nothing else of the machine is read for it.
@@ -284,7 +284,7 @@ struct WindowsCache {
         ),
     >,
     pending: Vec<String>,
-    problem: Option<String>,
+    problem: Option<tilo_system_resources::windows_apps::WindowsProblem>,
 }
 
 /// How long a workspace's Windows reading is served before the service asks again.
@@ -588,9 +588,10 @@ impl SystemService {
         self.worker.run(move |_system| {
             let result = match &manager {
                 Some(manager) => manager.change(&workspace, &action),
-                None => {
-                    Err("This computer's Windows compatibility service is not running.".to_owned())
-                }
+                None => Err(tilo_system_resources::windows_apps::WindowsProblem::new(
+                    tilo_system_resources::windows_apps::WindowsProblemCode::Unmanageable,
+                    "This computer's Windows compatibility service is not running.",
+                )),
             };
             Landed::Windows { action: id, result }
         });
