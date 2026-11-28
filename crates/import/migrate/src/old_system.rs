@@ -253,7 +253,7 @@ pub fn find(roots: &[PathBuf]) -> Vec<OldHome> {
 /// traditional `/media` and `/mnt`.
 #[must_use]
 pub fn mounted() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
     #[cfg(unix)]
     {
         let account = std::env::var("USER")
