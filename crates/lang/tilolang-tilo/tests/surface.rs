@@ -984,8 +984,8 @@ fn a_surface_names_the_app_in_the_readers_words() {
 
 /// A record an app keeps for its whole workspace (`collab_types::WORKSPACE_DOCUMENTS`) is
 /// published beside the package's own types, so a change to it is decided by its app's surface:
-/// a native record's surface is read from the file beside its model, not from a model crate this
-/// host links.
+/// the system's record was compiled once into the file beside the host's surface code, which
+/// publishes it without linking any app's model crate.
 #[test]
 fn a_package_keeping_a_workspace_record_publishes_its_surface() {
     const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");

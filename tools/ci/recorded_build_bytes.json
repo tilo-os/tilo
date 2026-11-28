@@ -325,10 +325,6 @@
       "libraries": 30586728,
       "tests": 1056185456
     },
-    "moderation-model": {
-      "libraries": 4609223,
-      "tests": 129837376
-    },
     "monitor": {
       "libraries": 10868785,
       "tests": 740321856

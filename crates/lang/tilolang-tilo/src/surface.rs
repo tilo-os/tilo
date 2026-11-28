@@ -994,11 +994,11 @@ pub fn queued_effect_surface() -> Surface {
     }
 }
 
-/// The surface of the workspace's moderation record (`tilo.moderation`), which Chat keeps and
-/// the workspace's moderators change: the file beside the record's own model, written from that
-/// model by its crate's test, so a package keeping the record publishes what its changes are
-/// decided against without this host linking an app's model crate.
-const MODERATION_SURFACE: &str = include_str!("../../../../apps/moderation-model/surface.json");
+/// The compiled surface of the workspace's moderation record (`tilo.moderation`), which Chat
+/// keeps and the workspace's moderators change: the record is the system's, not a package's, so
+/// this host publishes what a change to it is decided against beside the surface of every
+/// package that keeps it.
+const MODERATION_SURFACE: &str = include_str!("moderation-surface.json");
 
 // The workspace's environments, which the environment model keeps as Terminal's records
 // (`environment:<key>`), whichever program makes them, have no surface file here: Terminal's
@@ -1017,9 +1017,8 @@ struct SurfaceFileResources {
 fn kept_for_workspace(app: &str) -> Vec<Surface> {
     use tilo_resource::Resource as _;
     let committed: Vec<Surface> = tilo_failure::ignored!(
-        "the moderation surface beside its model is what that model publishes: the crate's own \
-         test holds the file to it, so a file that does not read names no record in a build that \
-         was already broken",
+        "the committed moderation surface is the compiled form of a record this host publishes: \
+         a file that does not read names no record in a build that was already broken",
         serde_json::from_str::<SurfaceFileResources>(MODERATION_SURFACE)
             .map(|file| file.resources)
             .unwrap_or_default()

@@ -89,7 +89,7 @@ tilo-local-time = { version = "0.1.0", path = "../../crates/platform/local-time"
 install-plan = { path = "../../crates/os/install-plan" }
 # This computer's hardware, read the same way the live installer reads it.
 hardware-report = { path = "../../crates/os/hardware-report", optional = true }
-staging-handoff-model = { path = "../staging-handoff-model" }
+staging-handoff-model = { path = "../../crates/os/staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }

@@ -2,7 +2,7 @@
 //! `os/usr/share/tilo/install-sizes`: the file the installer's scripts source. The sizes the
 //! imager offers and plans with and the sizes the scripts check before writing a disk are one.
 
-const INSTALL_SIZES: &str = include_str!("../../../os/usr/share/tilo/install-sizes");
+const INSTALL_SIZES: &str = include_str!("../../../../os/usr/share/tilo/install-sizes");
 
 /// The EFI system partition: several signed UKIs for rollback and repair.
 pub const ESP_BYTES: u64 = size("TILO_ESP_BYTES");

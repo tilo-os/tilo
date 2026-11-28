@@ -99,9 +99,7 @@ members = [
     "crates/ui/ui-app",
 
     # Applications
-    "apps/moderation-model",
     "apps/imager",
-    "apps/staging-handoff-model",
 
     # Agent
     "crates/core/agent-session",
@@ -480,6 +478,7 @@ members = [
     "crates/os/board-successor",
     "crates/os/boot-order",
     "crates/os/boot-signin",
+    "crates/os/staging-handoff-model",
     "crates/platform/bounded-command",
     "crates/platform/tilo-scanner",
     "crates/integrations/cloud-source",

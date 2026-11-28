@@ -140,7 +140,7 @@ name = "os"
 inputs = [
   "os/", "tools/perf/image_size.py", "crates/os/extension-helper/src/machine.rs",
   "crates/os/install-helpers/",
-  "apps/staging-handoff-model/",
+  "crates/os/staging-handoff-model/",
   # The packing reads the app set's plan and the tilolang packages' build steps,
   # which the release's packing shares, and builds the language runtime
   # packages the plan's apps name from their pinned upstream releases.
@@ -979,7 +979,6 @@ package = "tilolang-tilo"
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
-  "apps/moderation-model/surface.json",
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/lang/tilolang/tests/fixtures/",
@@ -1012,7 +1011,6 @@ readers = [
   "crates/lang/tilolang-tilo/src/onboarding.rs",
   "crates/lang/tilolang-tilo/src/platform.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
-  "crates/lang/tilolang-tilo/src/surface.rs",
   "crates/lang/tilolang-tilo/tests/agent_queries.rs",
   "crates/lang/tilolang-tilo/tests/activity.rs",
   "crates/lang/tilolang-tilo/tests/block_search.rs",
@@ -1853,7 +1851,7 @@ readers = ["crates/desktop/phone/tests/server/mod.rs"]
 package = "staging-handoff-model"
 # The install sizes are the file the installer's scripts source.
 inputs = ["os/usr/share/tilo/install-sizes"]
-readers = ["apps/staging-handoff-model/src/sizes.rs"]
+readers = ["crates/os/staging-handoff-model/src/sizes.rs"]
 
 [[cargo]]
 package = "settings-sections"

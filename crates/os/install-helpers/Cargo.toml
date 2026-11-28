@@ -79,7 +79,7 @@ hex.workspace = true
 # FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The staging handoff's JSON, with a repeated field refused.
-staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
+staging-handoff-model = { path = "../staging-handoff-model" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

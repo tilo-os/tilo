@@ -394,7 +394,7 @@ class CargoReaderTests(unittest.TestCase):
             # No app source is read by the toolkit's tests any more.
             self.assertNotIn(
                 "tilo-ui",
-                suites.select_package_scopes(manifest, ["apps/moderation-model/src/lib.rs"]),
+                suites.select_package_scopes(manifest, ["apps/discord/src/lib.rs"]),
             )
             # The vendored quit request is compiled into the app runner's library.
             self.assertIsNone(suites.select_package_scopes(

@@ -377,7 +377,7 @@ class SelectorTests(unittest.TestCase):
             # A regression the reader declarations exist for: a package whose
             # tests read a file the dependency graph never selects for it.
             manifest = ci_select.path_suites.load(REPO_ROOT)
-            for path in ("apps/tl/poker/app.tl", "apps/moderation-model/src/lib.rs"):
+            for path in ("apps/tl/poker/app.tl", "apps/discord/src/lib.rs"):
                 with self.subTest(path=path):
                     self.assertNotIn(
                         "tilo-ui", ci_select.path_suites.select_packages(manifest, [path]))

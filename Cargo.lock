@@ -8465,19 +8465,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moderation-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-automerge-fork",
- "tilo-resource",
- "tilo-surface-compile",
- "workspace-hack",
-]
-
-[[package]]
 name = "module-lattice"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -27548,7 +27535,6 @@ dependencies = [
  "miracast",
  "ml-dsa",
  "ml-kem",
- "moderation-model",
  "module-lattice",
  "moka",
  "moq-net",

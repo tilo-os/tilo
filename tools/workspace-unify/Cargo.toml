@@ -594,7 +594,6 @@ doc = false
 "miracast-0_1_0" = { package = "miracast", path = "../../vendor/miracast", default-features = false, features = ["gstreamer", "networkmanager"] }
 "ml-dsa-0_1_1" = { package = "ml-dsa", version = "^0.1.1", default-features = false, features = ["alloc", "default", "getrandom", "pkcs8", "rand_core"] }
 "ml-kem-0_3_2" = { package = "ml-kem", version = "^0.3.2", default-features = false, features = ["alloc", "default", "hazmat"] }
-"moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
@@ -951,7 +950,7 @@ doc = false
 "ssip-client-0_10_2" = { package = "ssip-client", version = "^0.10.2", default-features = false, features = [] }
 "stable_deref_trait-1_2_1" = { package = "stable_deref_trait", version = "^1.2.1", default-features = false, features = ["alloc", "default", "std"] }
 "stacker-0_1_24" = { package = "stacker", version = "^0.1.24", default-features = false, features = [] }
-"staging-handoff-model" = { path = "../../apps/staging-handoff-model", default-features = false, features = [] }
+"staging-handoff-model" = { path = "../../crates/os/staging-handoff-model", default-features = false, features = [] }
 "static_assertions-1_1_0" = { package = "static_assertions", version = "^1.1.0", default-features = false, features = [] }
 "statrs-0_19_1" = { package = "statrs", version = "^0.19.1", default-features = false, features = [] }
 "stop-token-0_7_0" = { package = "stop-token", version = "^0.7.0", default-features = false, features = [] }
@@ -3073,7 +3072,6 @@ doc = false
 "miracast-0_1_0" = { package = "miracast", path = "../../vendor/miracast", default-features = false, features = ["gstreamer", "networkmanager"] }
 "ml-dsa-0_1_1" = { package = "ml-dsa", version = "^0.1.1", default-features = false, features = ["alloc", "default", "getrandom", "pkcs8", "rand_core"] }
 "ml-kem-0_3_2" = { package = "ml-kem", version = "^0.3.2", default-features = false, features = ["alloc", "default", "hazmat"] }
-"moderation-model" = { path = "../../apps/moderation-model", default-features = false, features = [] }
 "module-lattice-0_2_3" = { package = "module-lattice", version = "^0.2.3", default-features = false, features = ["alloc", "ctutils"] }
 "moka-0_12_15" = { package = "moka", version = "^0.12.15", default-features = false, features = ["default", "sync"] }
 "moq-net-0_3_3" = { package = "moq-net", version = "^0.3.3", default-features = false, features = [] }
@@ -3430,7 +3428,7 @@ doc = false
 "ssip-client-0_10_2" = { package = "ssip-client", version = "^0.10.2", default-features = false, features = [] }
 "stable_deref_trait-1_2_1" = { package = "stable_deref_trait", version = "^1.2.1", default-features = false, features = ["alloc", "default", "std"] }
 "stacker-0_1_24" = { package = "stacker", version = "^0.1.24", default-features = false, features = [] }
-"staging-handoff-model" = { path = "../../apps/staging-handoff-model", default-features = false, features = [] }
+"staging-handoff-model" = { path = "../../crates/os/staging-handoff-model", default-features = false, features = [] }
 "static_assertions-1_1_0" = { package = "static_assertions", version = "^1.1.0", default-features = false, features = [] }
 "statrs-0_19_1" = { package = "statrs", version = "^0.19.1", default-features = false, features = [] }
 "stop-token-0_7_0" = { package = "stop-token", version = "^0.7.0", default-features = false, features = [] }
