@@ -1492,9 +1492,10 @@ mod cases {
             let mut banners = Vec::new();
             of_kind(view.tree(), "ui.Banner", &mut banners);
             assert_eq!(banners.len(), 1, "the window holds one message");
+            let shown = Value::Text(notice);
             assert_eq!(
                 banners[0].props.get("title"),
-                Some(&Value::Text(notice.clone())),
+                Some(&shown),
                 "the message is the one the deck holds"
             );
             s.call("clear_notice", vec![Value::resource(&s.deck)]);
