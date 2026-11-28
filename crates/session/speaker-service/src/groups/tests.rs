@@ -699,3 +699,145 @@ fn silence_is_not_played() {
         "a group nobody can play is not played: {started:?}"
     );
 }
+
+/// The pair `world` holds playing from the office, with the shelf admitted: the route the shelf
+/// received, keyed as its own member.
+fn playing_pair(
+    world: &mut World,
+    office: &mut SpeakerGroupCore,
+    shelf: &mut SpeakerGroupCore,
+    group: SpeakerGroupId,
+    session: [u8; 16],
+) -> [u8; 16] {
+    pair(world, office, group);
+    reconcile(world, shelf, "shelf");
+    consent(world, shelf, group, true);
+    let writes = office
+        .start_session(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            GroupAudioSource::System,
+            session,
+            Instant::now(),
+        )
+        .expect("the office plays to the pair");
+    let route = writes
+        .iter()
+        .find_map(|write| match write {
+            SpeakerWrite::Offer { route, .. } => Some(*route),
+            _ => None,
+        })
+        .expect("the shelf is offered its side");
+    world.apply(writes);
+    let writes = reconcile(world, shelf, "shelf");
+    world.apply(writes);
+    reconcile(world, office, "office");
+    route
+}
+
+#[test]
+fn a_member_without_the_leaders_clock_syncs_and_plays_once_it_has_it() {
+    use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState};
+
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let session = [7; 16];
+    let route = playing_pair(&mut world, &mut office, &mut shelf, group_id(7), session);
+
+    // The shelf has not the office's clock: it is shown syncing, not counted as playing.
+    let view = office.view(&world.state(), &world.fabric, &id("office"), &|_| None);
+    assert_eq!(view.sessions.len(), 1);
+    let shown = &view.sessions[0];
+    assert_eq!(shown.status(), SpeakerSessionStatus::SyncingClocks);
+    assert_eq!(shown.playing_members, 1, "the office plays its own side");
+    assert_eq!(shown.syncing_members, 1, "the shelf is still learning");
+
+    // Once the shelf reports the clock ready, both sides play.
+    let view = office.view(&world.state(), &world.fabric, &id("office"), &|member| {
+        (member == route).then_some(ClockSyncState::Ready)
+    });
+    assert_eq!(view.sessions[0].status(), SpeakerSessionStatus::Playing);
+    assert_eq!(view.sessions[0].playing_members, 2);
+    let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| {
+        Some(ClockSyncState::Ready)
+    });
+    assert_eq!(view.sessions[0].status(), SpeakerSessionStatus::Playing);
+    assert!(view.sessions[0].inbound);
+
+    // A member whose clock never arrives is reported with why after the deadline.
+    let view = office.view(&world.state(), &world.fabric, &id("office"), &|member| {
+        (member == route).then_some(ClockSyncState::Failed(ClockSyncFailure::NoReply))
+    });
+    assert_eq!(
+        view.sessions[0].status(),
+        SpeakerSessionStatus::ClockFailed(ClockSyncFailure::NoReply)
+    );
+    assert_eq!(view.sessions[0].failed_members, 1);
+    assert_eq!(view.sessions[0].playing_members, 1);
+}
+
+#[test]
+fn media_continuity_off_ends_the_group_and_refuses_to_start_it() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(8);
+    let session = [8; 16];
+    playing_pair(&mut world, &mut office, &mut shelf, group, session);
+
+    // With Media off the office ends the session it plays and the shelf its route.
+    let mut mint = || [9; 16];
+    let stopped = office.reconcile(
+        &world.state(),
+        &world.fabric,
+        &id("office"),
+        false,
+        Instant::now(),
+        &mut mint,
+    );
+    assert!(
+        stopped
+            .iter()
+            .any(|write| matches!(write, SpeakerWrite::Stop { .. })),
+        "turning Media off stops the session: {stopped:?}"
+    );
+    world.apply(stopped);
+    let mut mint = || [9; 16];
+    let stopped = shelf.reconcile(
+        &world.state(),
+        &world.fabric,
+        &id("shelf"),
+        false,
+        Instant::now(),
+        &mut mint,
+    );
+    assert!(
+        stopped.iter().any(|write| matches!(
+            write,
+            SpeakerWrite::Stop { .. } | SpeakerWrite::Withdraw { .. }
+        )),
+        "the shelf lets go of the group it consented to: {stopped:?}"
+    );
+    world.apply(stopped);
+
+    // And a group does not start while Media continuity is off: the refusal names the reason.
+    let refused = office
+        .start_session(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            GroupAudioSource::System,
+            [10; 16],
+            Instant::now(),
+        )
+        .expect_err("no session starts with Media off");
+    assert_eq!(refused, crate::i18n::t("speaker-error-media-off"));
+}
