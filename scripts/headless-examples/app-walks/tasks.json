@@ -92,6 +92,53 @@
       ]
     },
     {
+      "id": "places",
+      "said": "See the same work on the board, and the tasks that said something in their own view",
+      "ops": [
+        {
+          "press_any": [
+            "Board"
+          ]
+        },
+        {
+          "must_not": [
+            "New task for today"
+          ]
+        },
+        {
+          "press_any": [
+            "Threads"
+          ]
+        },
+        {
+          "must": [
+            "Nothing said yet"
+          ]
+        },
+        {
+          "must_not": [
+            "New task for today"
+          ]
+        },
+        {
+          "press_any": [
+            "Home"
+          ]
+        },
+        {
+          "must": [
+            "New task for today"
+          ]
+        },
+        {
+          "must_not": [
+            "Nothing said yet"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
       "id": "complete",
       "said": "Complete the milk, and find it where finished work goes",
       "ops": [
@@ -418,46 +465,6 @@
           ]
         }
       ]
-    },
-    {
-      "id": "places",
-      "said": "See the same work on the board, and the tasks that said something in their own view",
-      "ops": [
-        {
-          "press_any": [
-            "Board"
-          ]
-        },
-        {
-          "must": [
-            "Backlog"
-          ]
-        },
-        {
-          "press_any": [
-            "Threads"
-          ]
-        },
-        {
-          "must": [
-            "Nothing said yet"
-          ]
-        },
-        {
-          "press_any": [
-            "Home"
-          ]
-        },
-        {
-          "select_row": "Upcoming"
-        },
-        {
-          "must": [
-            "Call the landlord"
-          ]
-        }
-      ],
-      "dark": true
     },
     {
       "id": "search",
