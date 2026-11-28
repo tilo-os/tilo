@@ -27,9 +27,9 @@ syntax-definitions = ["tilo-ui/syntax-definitions"]
 lazy-highlight = ["tilo-ui/lazy-highlight"]
 lazy-painter = ["tilo-ui/lazy-painter"]
 # The toolkit's clients of the session daemons.
-local-daemons = ["tilo-ui/local-daemons"]
+local-daemons = ["tilo-ui/local-daemons", "tilo-ui-webview?/local-daemons"]
 # The toolkit's `WebView` widget and the device's content store (see tilo-ui).
-webview = ["tilo-ui/webview", "tilo-ui-model?/webview"]
+webview = ["dep:tilo-ui-webview", "tilo-ui-model?/webview"]
 content = ["tilo-ui/content"]
 # The Tilo host a Rust app's process runs under: the launcher (`launch::run`) that attaches it
 # to the session's daemons and hands it its content store, the settings file it follows, and
@@ -44,8 +44,8 @@ realtime-video = ["tilo-ui/realtime-video"]
 decode = ["tilo-ui/decode"]
 presentation-feedback = ["tilo-ui/presentation-feedback"]
 dx12-shader-cache = ["tilo-ui/dx12-shader-cache"]
-webview-adblock = ["tilo-ui/webview-adblock"]
-lazy-adblock = ["tilo-ui/lazy-adblock"]
+webview-adblock = ["webview", "tilo-ui-webview?/webview-adblock"]
+lazy-adblock = ["webview-adblock", "tilo-ui-webview?/lazy-adblock"]
 dmabuf-import = ["tilo-ui/dmabuf-import"]
 gpu-video = ["tilo-ui/gpu-video"]
 mpris = ["native", "tilo-ui/mpris"]
@@ -62,6 +62,8 @@ tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
 # The frame pipeline the runner drives: the render worker, retained targets, strips and pipeline caches.
 tilo-ui-render = { version = "0.1.0", path = "../ui-render", default-features = false }
 tilo-ui-model = { version = "0.1.0", path = "../ui-model", default-features = false, optional = true }
+# The page painter a window draws its pages and shares them with (`webview`).
+tilo-ui-webview = { version = "0.1.0", path = "../ui-webview", optional = true }
 tilo-ui-base = { version = "0.1.0", path = "../ui-base", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
@@ -161,6 +163,7 @@ tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 # The charts and stat tiles the runner's tests mount, and the registry its component tests build.
 tilo-ui-charts = { path = "../ui-charts", features = ["test-support"] }
+tilo-ui-conversation = { path = "../ui-conversation", features = ["test-support"] }
 tilo-ui-keypad = { path = "../ui-keypad", features = ["test-support"] }
 tilo-ui-timeline = { path = "../ui-timeline", features = ["test-support"] }
 tilo-ui-capture = { path = "../ui-capture", features = ["test-support"] }

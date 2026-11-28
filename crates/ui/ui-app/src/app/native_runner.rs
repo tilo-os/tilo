@@ -3973,7 +3973,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // A window that closes while its page is watched hands nothing more over.
         #[cfg(feature = "webview")]
-        crate::webview::paint::forget_share();
+        tilo_ui_webview::paint::forget_share();
         self.app.close_wake_scope();
         let _entry = self.app.enter_wake_scope();
         // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it

@@ -451,9 +451,9 @@ pub struct VirtualRows {
     /// back is pressed with Return or Space, as it is with a pointer.
     jump_focused: bool,
     pill_height: f64,
-    /// The pill's width for each way back ([`crate::widget::conversation::Jump::slot`]): the words
+    /// The pill's width for each way back ([`crate::widget::jump::Jump::slot`]): the words
     /// measured at the face they are drawn in, so a narrow list shows them whole.
-    pill_widths: [f64; crate::widget::conversation::JUMPS],
+    pill_widths: [f64; crate::widget::jump::JUMPS],
     names_item: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<ListKey>>>>,
     groups: Groups,
     tail_title: Option<String>,
@@ -647,7 +647,7 @@ impl VirtualRows {
             reveal_item: None,
             reveal_without_choosing: false,
             pill_height: 0.0,
-            pill_widths: [0.0; crate::widget::conversation::JUMPS],
+            pill_widths: [0.0; crate::widget::jump::JUMPS],
             names_item: std::cell::RefCell::new(None),
             groups: Groups::default(),
             tail_title: None,
@@ -2012,7 +2012,7 @@ impl Widget for VirtualRows {
         // here, where the face's theme is known, so a list laid out and never drawn offers the
         // words whole.
         self.pill_widths = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
-            crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
+            crate::widget::jump::Jump::ALL.map(|jump| jump.width(text, theme))
         });
         // A way back the list no longer offers keeps no focus: what was the keyboard's is gone.
         self.jump_focused &= self.jump().is_some();

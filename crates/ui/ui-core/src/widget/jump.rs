@@ -38,7 +38,7 @@ impl Jump {
 
     #[must_use]
     pub fn label(self) -> String {
-        super::t(match self {
+        t(match self {
             Self::Unread => "conversation-jump-unread",
             Self::Present => "conversation-jump-present",
         })
@@ -130,4 +130,10 @@ impl JumpFace {
             &face,
         );
     }
+}
+
+/// One of the conversation's labels in the shell's language (the `conversation-` keys of the
+/// toolkit's catalogue).
+fn t(key: &str) -> String {
+    tilo_ui_base::i18n::widget_format(key, &[])
 }

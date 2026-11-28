@@ -126,10 +126,10 @@ tilo_test_env::scenario! {
             .prop("name", text("Conversation with Ada"))
             .holding("lines", line("msg:a", "are you nearby?"))
             .holding("lines", line("msg:b", "on my way"));
-        let props = tilo_ui_app::widget::ConversationListProps::from_source(&mut node).unwrap();
+        let props = tilo_ui_conversation::ConversationListProps::from_source(&mut node).unwrap();
         assert_eq!(props.lines.len(), 2);
         assert_eq!(props.lines[1].said, "on my way");
-        let widget = tilo_ui_app::widget::DescribedConversationList::from_props("chat", props);
+        let widget = tilo_ui_conversation::DescribedConversationList::from_props("chat", props);
         assert_eq!(widget.list().lines().len(), 2);
         assert_eq!(widget.list().lines()[0].author, "Ada");
     }
@@ -399,7 +399,7 @@ tilo_test_env::scenario! {
             Accepts::Component("TreeViewNode".into())
         );
         assert_eq!(
-            <Vec<tilo_ui_app::widget::ConversationEntryProps> as PartType>::accepts(),
+            <Vec<tilo_ui_conversation::ConversationEntryProps> as PartType>::accepts(),
             Accepts::Component("ConversationEntry".into())
         );
         assert_eq!(

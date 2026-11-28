@@ -129,6 +129,8 @@ members = [
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
     "crates/ui/ui-charts",
+    "crates/ui/ui-webview",
+    "crates/ui/ui-conversation",
     "crates/ui/ui-keypad",
     "crates/ui/ui-timeline",
     "crates/ui/ui-capture",
@@ -1100,6 +1102,16 @@ debug-assertions = true
 overflow-checks = true
 strip = "symbols"
 [profile.test.package.tilo-ui-keypad]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-conversation]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-webview]
 opt-level = 2
 debug-assertions = true
 overflow-checks = true

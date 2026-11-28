@@ -80,6 +80,8 @@ settings-model = { package = "tilo-settings-model", version = "0.1.0", path = ".
 # The document editor and its text stack: what an app edits rich text and notes with.
 tilo-rich-edit = { version = "0.1.0", path = "../../ui/tilo-rich-edit" }
 tilo-ui-charts = { version = "0.1.0", path = "../../ui/ui-charts" }
+tilo-ui-webview = { version = "0.1.0", path = "../../ui/ui-webview" }
+tilo-ui-conversation = { version = "0.1.0", path = "../../ui/ui-conversation" }
 tilo-ui-keypad = { version = "0.1.0", path = "../../ui/ui-keypad" }
 tilo-ui-timeline = { version = "0.1.0", path = "../../ui/ui-timeline" }
 tilo-ui-capture = { version = "0.1.0", path = "../../ui/ui-capture" }

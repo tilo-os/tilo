@@ -51,8 +51,8 @@ impl VirtualRows {
     }
 
     #[must_use]
-    pub(super) fn jump(&self) -> Option<crate::widget::conversation::Jump> {
-        use crate::widget::conversation::Jump;
+    pub(super) fn jump(&self) -> Option<crate::widget::jump::Jump> {
+        use crate::widget::jump::Jump;
         if !self.follow_end || self.model.is_empty() {
             return None;
         }
@@ -114,8 +114,8 @@ impl VirtualRows {
 
     pub(super) fn follow_pill(&mut self) {
         match self.jump() {
-            Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
-            Some(crate::widget::conversation::Jump::Present) => self.jump_to_present(),
+            Some(crate::widget::jump::Jump::Unread) => self.jump_to_unread(),
+            Some(crate::widget::jump::Jump::Present) => self.jump_to_present(),
             None => {}
         }
     }
@@ -127,12 +127,9 @@ impl VirtualRows {
     /// width: a way back cut to "Jump to first unre…" names nothing at the window it is for. Only
     /// the box it stands in can bound it, and the words a way back is written in fit that at every
     /// width a window opens at.
-    pub(super) fn pill_rect_for(
-        &self,
-        area: Rect,
-    ) -> Option<(crate::widget::conversation::Jump, Rect)> {
+    pub(super) fn pill_rect_for(&self, area: Rect) -> Option<(crate::widget::jump::Jump, Rect)> {
         let jump = self.jump()?;
-        let rect = crate::widget::conversation::pill_rect(
+        let rect = crate::widget::jump::pill_rect(
             area,
             self.gutter.max(self.bleed),
             self.pill_width(jump),
@@ -142,7 +139,7 @@ impl VirtualRows {
     }
 
     /// The width the pill says `jump` in: the words measured at the face they are drawn in.
-    pub(super) fn pill_width(&self, jump: crate::widget::conversation::Jump) -> f64 {
+    pub(super) fn pill_width(&self, jump: crate::widget::jump::Jump) -> f64 {
         self.pill_widths[jump.slot()]
     }
 
@@ -158,10 +155,10 @@ impl VirtualRows {
             .map(|rect| self.interaction.minimum_target_rect(rect))
     }
 
-    pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
+    pub(super) fn jump_face(&self) -> Option<crate::widget::jump::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
         Some(
-            crate::widget::conversation::JumpFace::new(jump, rect)
+            crate::widget::jump::JumpFace::new(jump, rect)
                 .hovered(self.jump_hovered)
                 .focused(self.jump_focused),
         )

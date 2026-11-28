@@ -21,8 +21,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
-use crate::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
+use tilo_ui::time::{Duration, Instant};
 use tilo_ui_base::{
     text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle,
     text_render::TextWeight,
@@ -466,7 +466,7 @@ impl PaintSource {
                 if *settled {
                     self.faces_recheck = None;
                 } else if self.faces_recheck.is_none() && !request.families.is_empty() {
-                    self.faces_recheck = crate::time::now()
+                    self.faces_recheck = tilo_ui::time::now()
                         .checked_add(FACES_RECHECK)
                         .map(|at| (at, FACES_RECHECKS));
                 }
@@ -741,10 +741,10 @@ struct ShareOutbox {
 }
 
 /// Every window's share, by window. A process shows several windows
-/// ([`crate::window_link`]), each with its own page, its own connection to the session and
+/// ([`tilo_ui::window_link`]), each with its own page, its own connection to the session and
 /// its own watchers: what one of them is asked for, and what it hands over, is never
 /// another's. The functions below act on the window whose events run
-/// ([`crate::window_toolbar::current_window`]); `None` is a process that runs its one
+/// ([`tilo_ui::window_toolbar::current_window`]); `None` is a process that runs its one
 /// window with no host around it, as a test does. A window nobody watches keeps nothing
 /// here.
 static SHARES: Mutex<std::collections::BTreeMap<Option<u64>, ShareOutbox>> =
@@ -763,7 +763,7 @@ fn share_of<T>(window: Option<u64>, act: impl FnOnce(&mut ShareOutbox) -> T) -> 
 
 /// The window whose events run now.
 fn window() -> Option<u64> {
-    crate::window_toolbar::current_window()
+    tilo_ui::window_toolbar::current_window()
 }
 
 /// Whether the session shares this window's page with someone watching.
@@ -986,7 +986,7 @@ impl PaintEngine {
             state.last_pixels = pixels;
             state.source.invalidate();
         }
-        let (commands, update) = state.source.poll(crate::time::now());
+        let (commands, update) = state.source.poll(tilo_ui::time::now());
         if let Some(update) = update {
             Self::absorb(state, update);
         }
@@ -1005,7 +1005,7 @@ impl PaintEngine {
     }
 
     fn update_visibility(&self, state: &mut PaintState) {
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         if self.current_pixels() == state.presented_pixels {
             state.undrawn_since = None;
         } else if state.undrawn_since.is_none() {
@@ -1098,7 +1098,7 @@ impl WebViewEngine for PaintEngine {
         }
         state
             .source
-            .due(crate::time::now())
+            .due(tilo_ui::time::now())
             .into_iter()
             .chain(state.images_due)
             .min()
@@ -1188,7 +1188,7 @@ impl WebViewEngine for PaintEngine {
             }
             if taken.saturating_add(bytes.len()) > room {
                 // The rest waits with the engine until the app has sent what it holds.
-                state.images_due = crate::time::now().checked_add(SHARE_IMAGES_RETRY);
+                state.images_due = tilo_ui::time::now().checked_add(SHARE_IMAGES_RETRY);
                 break;
             }
             taken = taken.saturating_add(bytes.len());
@@ -1586,10 +1586,9 @@ mod tests {
     use super::*;
     use tilo_webview::test_engine::TestEngine;
 
-    const TOP: &str =
-        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.top.json");
+    const TOP: &str = include_str!("../../../engines/paint-stream/tests/fixtures/layers.top.json");
     const SCROLLED: &str =
-        include_str!("../../../../engines/paint-stream/tests/fixtures/layers.scrolled.json");
+        include_str!("../../../engines/paint-stream/tests/fixtures/layers.scrolled.json");
     const TOP_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/layers.top.png"));
 
     fn paint_engine(snapshot: &str) -> (Arc<TestEngine>, Arc<PaintEngine>) {
@@ -1770,12 +1769,12 @@ mod tests {
     #[test]
     #[serial_test::serial(paint_share)]
     fn a_page_no_view_draws_stops_painting_until_one_does() {
-        use crate::time::testing::with_monotonic_time;
+        use tilo_ui::time::testing::with_monotonic_time;
         let test = TestEngine::new();
         let engine = PaintEngine::streaming(test.clone());
         engine.lock().hide_after = Duration::from_millis(30);
         set_share_watched(false);
-        let start = crate::time::now();
+        let start = tilo_ui::time::now();
         let at = |ms| start + Duration::from_millis(ms);
         with_monotonic_time(at(0), || {
             engine.presented();
@@ -1854,18 +1853,18 @@ mod tests {
     #[test]
     #[serial_test::serial(paint_share)]
     fn each_window_of_a_process_shares_its_own_page_and_no_other() {
-        use crate::hosted_window::HostedWindow;
-        use crate::time::testing::with_monotonic_time;
+        use tilo_ui::hosted_window::HostedWindow;
+        use tilo_ui::time::testing::with_monotonic_time;
         let (one, other) = (HostedWindow::new(), HostedWindow::new());
         let (first_test, first) = streaming_engine(TOP);
         let (second_test, second) = streaming_engine(SCROLLED);
         set_share_watched(false);
-        let start = crate::time::now();
+        let start = tilo_ui::time::now();
         let at = |ms| start + Duration::from_millis(ms);
 
         // The session asks the first window for its page.
         with_monotonic_time(at(0), || {
-            let _events = crate::window_toolbar::enter(Some(&one));
+            let _events = tilo_ui::window_toolbar::enter(Some(&one));
             set_share_watched(true);
             assert!(share_watched());
             assert!(take_share_keyframe(), "it starts from a whole frame");
@@ -1887,7 +1886,7 @@ mod tests {
 
         // The second window is asked for nothing.
         with_monotonic_time(at(0), || {
-            let _events = crate::window_toolbar::enter(Some(&other));
+            let _events = tilo_ui::window_toolbar::enter(Some(&other));
             assert!(!share_watched(), "nobody watches this window");
             assert!(!take_share_keyframe());
             drop(settle(&second));
@@ -1923,7 +1922,7 @@ mod tests {
         assert_eq!(captures(&second_test), 0);
 
         // The first window's share went on through the second window's stop.
-        let _events = crate::window_toolbar::enter(Some(&one));
+        let _events = tilo_ui::window_toolbar::enter(Some(&one));
         assert!(share_watched(), "another window's stop stops nothing here");
         let frames = take_share_frames();
         assert!(
@@ -1943,10 +1942,10 @@ mod tests {
     #[test]
     #[serial_test::serial(paint_share)]
     fn a_watched_page_says_when_it_has_work_and_a_still_one_has_none() {
-        use crate::time::testing::with_monotonic_time;
+        use tilo_ui::time::testing::with_monotonic_time;
         let (test, engine) = streaming_engine(TOP);
         set_share_watched(false);
-        let start = crate::time::now();
+        let start = tilo_ui::time::now();
         let at = |ms| start + Duration::from_millis(ms);
         with_monotonic_time(at(0), || {
             assert_eq!(engine.paint_due(), None, "nobody watches: nothing is due");
@@ -2131,7 +2130,7 @@ mod tests {
 
     /// The engine suite's form with every common control, as its engine laid it out.
     const CONTROLS: &str =
-        include_str!("../../../../engines/paint-stream/tests/fixtures/controls.json");
+        include_str!("../../../engines/paint-stream/tests/fixtures/controls.json");
 
     /// The engine's number for the element of the form whose `id` is `id`.
     fn control(id: &str) -> u64 {
@@ -2387,11 +2386,11 @@ mod tests {
         // something small behind it, ever more seldom, and what it answers the capture with,
         // when it does, is the page.
         {
-            use crate::time::testing::with_monotonic_time;
+            use tilo_ui::time::testing::with_monotonic_time;
             let (test, engine) = controls_engine();
             test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
             test.hold_paint();
-            let start = crate::time::now();
+            let start = tilo_ui::time::now();
             let at = |seconds| start + Duration::from_secs(seconds);
             for seconds in [0, 1, 4, 10, 30, 60, 200, 201] {
                 with_monotonic_time(at(seconds), || {
@@ -2436,11 +2435,11 @@ mod tests {
         // An engine that lost a capture never answers it. It says so by answering what it is
         // asked behind the capture: the capture is asked for again at once, and not before.
         {
-            use crate::time::testing::with_monotonic_time;
+            use tilo_ui::time::testing::with_monotonic_time;
             let (test, engine) = controls_engine();
             test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
             test.lose_paint_captures(1);
-            let start = crate::time::now();
+            let start = tilo_ui::time::now();
             let at = |seconds| start + Duration::from_secs(seconds);
             for seconds in [0, 2] {
                 with_monotonic_time(at(seconds), || {
@@ -2477,10 +2476,10 @@ mod tests {
         // An engine that predates the ask reads what it is asked behind a capture as a capture:
         // where it lost the first, what it answers is the page.
         {
-            use crate::time::testing::with_monotonic_time;
+            use tilo_ui::time::testing::with_monotonic_time;
             let (test, engine) = controls_engine();
             test.lose_paint_captures(1);
-            let start = crate::time::now();
+            let start = tilo_ui::time::now();
             let at = |seconds| start + Duration::from_secs(seconds);
             with_monotonic_time(at(0), || {
                 drop(settle(&engine));
@@ -2512,11 +2511,11 @@ mod tests {
         // once it is given up, the page is published from the capture it gave, its text in the
         // class of face its lists ask for, and the engine is not asked again.
         {
-            use crate::time::testing::with_monotonic_time;
+            use tilo_ui::time::testing::with_monotonic_time;
             let (test, engine) = controls_engine();
             test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
             test.lose_paint_asks();
-            let start = crate::time::now();
+            let start = tilo_ui::time::now();
             let at = |seconds| start + Duration::from_secs(seconds);
             with_monotonic_time(at(0), || {
                 drop(settle(&engine));
@@ -2545,11 +2544,11 @@ mod tests {
         // engine that does not answer that in time has not said its text is set differently:
         // the page stays in the class the engine said, and is not captured for it.
         {
-            use crate::time::testing::with_monotonic_time;
+            use tilo_ui::time::testing::with_monotonic_time;
             let (test, engine) = controls_engine();
             test.set_paint_classes([("\"Times New Roman\"", "sans-serif")]);
             test.set_paint_faces_loading();
-            let start = crate::time::now();
+            let start = tilo_ui::time::now();
             let at = |seconds| start + Duration::from_secs(seconds);
             with_monotonic_time(at(0), || {
                 drop(settle(&engine));

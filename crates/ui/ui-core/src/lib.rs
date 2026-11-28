@@ -239,8 +239,6 @@ pub mod text_input {
     pub use tilo_presentation::text_input::{Failure, Receipt, Resolver};
 }
 pub mod terminal;
-#[cfg(feature = "webview")]
-pub mod webview;
 pub mod widget;
 pub mod window_icon;
 

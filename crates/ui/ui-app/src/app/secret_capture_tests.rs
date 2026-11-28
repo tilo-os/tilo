@@ -76,8 +76,8 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
         FloatingSurfaceServiceClient::from_stream(app_side).unwrap(),
     ));
     app.set_secret_on_screen(true);
-    crate::webview::paint::set_share_watched(true);
-    crate::webview::paint::queue_share(crate::webview::paint::SharedFrame::whole(
+    tilo_ui_webview::paint::set_share_watched(true);
+    tilo_ui_webview::paint::queue_share(tilo_ui_webview::paint::SharedFrame::whole(
         b"secret page payload".to_vec(),
         [0.0, 0.0, 600.0, 400.0],
         1.0,
@@ -87,7 +87,7 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
         "sending does not establish protection"
     );
     assert!(
-        crate::webview::paint::take_share_frames().is_empty(),
+        tilo_ui_webview::paint::take_share_frames().is_empty(),
         "the production transport discards the protected frame's queued paint stream before any ack"
     );
     let mut line = String::new();
@@ -161,7 +161,7 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
             "no unprotect request was emitted"
         );
     }
-    crate::webview::paint::set_share_watched(false);
+    tilo_ui_webview::paint::set_share_watched(false);
 }
 
 #[test]

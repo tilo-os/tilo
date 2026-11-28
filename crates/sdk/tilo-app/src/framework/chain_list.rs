@@ -312,7 +312,7 @@ impl<P: Chained, K: Clone + Eq + Hash + 'static, T> ChainList<P, K, T> {
         self.unavailable = self
             .pager
             .unavailable()
-            .then(ui_core::widget::conversation::EarlierUnavailableFace::label);
+            .then(tilo_ui_conversation::EarlierUnavailableFace::label);
         true
     }
 }

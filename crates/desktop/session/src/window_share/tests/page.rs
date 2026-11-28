@@ -13,12 +13,12 @@ use std::os::unix::net::UnixStream;
 use crate::window_share::peer::{PeerRead, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
+use tilo_ui_webview::paint::PaintEngine;
+use tilo_ui_webview::paint::stream::Item;
+use tilo_ui_webview::paint::stream::wire::{CODEC, Payload, Receiver};
 use tilo_webview::test_engine::TestEngine;
 use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, PaintPart};
-use ui::webview::paint::PaintEngine;
-use ui::webview::paint::stream::Item;
-use ui::webview::paint::stream::wire::{CODEC, Payload, Receiver};
 
 use super::*;
 
@@ -145,11 +145,14 @@ impl App {
 
     /// Hand over the first `parts` parts of one payload of `of` bytes that starts with `bytes`,
     /// as the toolkit cuts a payload too large for one message
-    /// (`ui::webview::paint::MAX_SHARE_PART`).
+    /// (`tilo_ui_webview::paint::MAX_SHARE_PART`).
     fn hand_over_parts(&mut self, bytes: &[u8], of: usize, parts: usize) {
         use base64::Engine as _;
         let mut at = 0_usize;
-        for part in bytes.chunks(ui::webview::paint::MAX_SHARE_PART).take(parts) {
+        for part in bytes
+            .chunks(tilo_ui_webview::paint::MAX_SHARE_PART)
+            .take(parts)
+        {
             self.say(&FloatingSurfaceClientMessage::PaintStream {
                 payload: String::new(),
                 page: [0.0, 0.0, 800.0, 600.0],
@@ -871,17 +874,17 @@ fn large_whole_frame() -> Vec<u8> {
         .find(|item| matches!(item, Item::Text { .. }))
         .cloned()
         .expect("a run of text");
-    let one = ui::webview::paint::stream::encode(&text)
+    let one = tilo_ui_webview::paint::stream::encode(&text)
         .expect("an item")
         .len()
         .max(1);
-    let wanted = ui::webview::paint::MAX_SHARE_PART * 2 + 100_000;
+    let wanted = tilo_ui_webview::paint::MAX_SHARE_PART * 2 + 100_000;
     for _ in 0..wanted / one {
         layer.items.push(text.clone());
     }
-    let bytes = ui::webview::paint::stream::encode(&Payload::Key(frame)).expect("a payload");
+    let bytes = tilo_ui_webview::paint::stream::encode(&Payload::Key(frame)).expect("a payload");
     assert!(
-        bytes.len() > 2 * ui::webview::paint::MAX_SHARE_PART
+        bytes.len() > 2 * tilo_ui_webview::paint::MAX_SHARE_PART
             && bytes.len() <= crate::page_track::MAX_PAYLOAD,
         "the page is one of three parts that the live session carries as one object: {} bytes",
         bytes.len()
@@ -919,7 +922,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
         let app = two.app.as_mut().expect("the window's app is connected");
         app.hand_over_parts(&large, large.len(), 1);
         use base64::Engine as _;
-        let third = &large[2 * ui::webview::paint::MAX_SHARE_PART..];
+        let third = &large[2 * tilo_ui_webview::paint::MAX_SHARE_PART..];
         app.say(&FloatingSurfaceClientMessage::PaintStream {
             payload: String::new(),
             page: [0.0, 0.0, 800.0, 600.0],
@@ -927,7 +930,7 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_shell() {
             instance: None,
             part: Some(PaintPart {
                 bytes: base64::engine::general_purpose::STANDARD.encode(third),
-                at: (2 * ui::webview::paint::MAX_SHARE_PART) as u64,
+                at: (2 * tilo_ui_webview::paint::MAX_SHARE_PART) as u64,
                 of: large.len() as u64,
             }),
         });

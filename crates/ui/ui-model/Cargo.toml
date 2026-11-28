@@ -17,7 +17,7 @@ default = ["native"]
 native = ["tilo-ui/native", "dep:windows"]
 broker-transport = ["tilo-ui/broker-transport"]
 # The toolkit's `WebView` widget, which this layer hosts as an app's view.
-webview = ["tilo-ui/webview", "dep:tilo-webview"]
+webview = ["dep:tilo-ui-webview", "dep:tilo-webview"]
 # The fixtures the tests above this layer drive it with.
 test-support = ["tilo-ui/test-support", "dep:tilo-test-env", "collaboration/test-support"]
 
@@ -35,6 +35,8 @@ tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 fnv.workspace = true
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", optional = true }
+# The page painter the WebView draws its page with.
+tilo-ui-webview = { version = "0.1.0", path = "../ui-webview", optional = true }
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional = true }
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false, features = ["model"] }
@@ -90,7 +92,7 @@ tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 
 [dev-dependencies]
 tilo-ui-model = { path = ".", default-features = false, features = ["test-support", "webview"] }
-tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support", "model", "webview", "content"] }
+tilo-ui = { path = "../ui-core", default-features = false, features = ["test-support", "model", "content"] }
 tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 collaboration = { package = "tilo-collaboration", path = "../../core/collaboration", features = ["test-support"] }

@@ -39,6 +39,12 @@ pub use tilo_rich_edit as rich_edit;
 /// Charts and plots: lines, bars, pies, distributions, hierarchies, flows, ranges and stat tiles.
 pub use tilo_ui_charts as charts;
 
+/// The page a window shows: its engine, the page painter and which of its pages a view shows.
+pub use tilo_ui_webview as webview;
+
+/// What a conversation is made of: its list, attachments, delivery and drafts.
+pub use tilo_ui_conversation as conversation;
+
 /// The on-screen keyboard's key pad.
 pub use tilo_ui_keypad as key_pad;
 

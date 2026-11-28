@@ -184,3 +184,7 @@ pub fn day_break_indices(days: impl IntoIterator<Item = ConversationDay>) -> Vec
 pub fn line_height(text: &mut TextRenderer, theme: &Theme, role: TextRole) -> f64 {
     f64::from(text.measure_style("Ag", None, &theme.text(role)).1)
 }
+
+/// How close two messages by one author are to show as one group: the avatar, the name and the
+/// time stand over the first of them.
+pub const GROUPING_WINDOW_SECS: i64 = 5 * 60;

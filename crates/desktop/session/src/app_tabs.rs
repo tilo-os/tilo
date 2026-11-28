@@ -1160,7 +1160,7 @@ impl Answers<'_> {
         if at == 0 {
             link.assembling = None;
             if of > crate::page_track::MAX_PAYLOAD {
-                let whole = ui::webview::paint::stream::wire::Payload::is_key(&bytes);
+                let whole = tilo_ui_webview::paint::stream::wire::Payload::is_key(&bytes);
                 self.pages.borrow_mut().too_large(tab, whole, of);
                 return Ok(None);
             }
@@ -1553,7 +1553,7 @@ impl Answers<'_> {
                         match self.page_payload(connection, tab, &payload, part) {
                             Ok(Some(bytes)) => {
                                 let whole =
-                                    ui::webview::paint::stream::wire::Payload::is_key(&bytes);
+                                    tilo_ui_webview::paint::stream::wire::Payload::is_key(&bytes);
                                 self.pages.borrow_mut().received(tab, whole, bytes);
                             }
                             Ok(None) => {}

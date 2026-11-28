@@ -8,13 +8,15 @@ use super::attachment::{
     AttachmentAction, AttachmentKind, AttachmentSummary, Availability, UploadProgress,
     full_size_rect,
 };
-use super::band::SectionDivider;
 use super::composer::{ComposerIntent, ComposerRule};
-use super::day::{ConversationClock, ConversationDay, DayBreaks, day_break_indices};
 use super::delivery::{DeliveryState, DeliveryStep};
 use super::draft::{self, DraftBook};
 use super::list::{CaptionShows, captions};
 use super::list::{ConversationLine, ConversationRole, bubble_colors, run_breaks};
+use tilo_ui::widget::message_day::{
+    ConversationClock, ConversationDay, DayBreaks, day_break_indices,
+};
+use tilo_ui::widget::section_divider::SectionDivider;
 use tilo_ui_base::theme::Theme;
 
 const NOONISH: i64 = 1_782_828_300;

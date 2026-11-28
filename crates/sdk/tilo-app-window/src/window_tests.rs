@@ -4154,7 +4154,9 @@ fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
 
 /// A page in the view that shows the video its engine reports, as a browser's page does: the
 /// engine answers what video it shows, and the window's session keeps the answer.
-fn page_showing_a_video(rect: ui::kurbo::Rect) -> (ui::widget::WebView, ui::webview::PageHandle) {
+fn page_showing_a_video(
+    rect: ui::kurbo::Rect,
+) -> (ui::widget::WebView, tilo_ui_webview::PageHandle) {
     let engine = tilo_webview::test_engine::TestEngine::new();
     engine.set_media_element(Some(tilo_webview::MediaElementInfo {
         element_id: "video:1".to_owned(),
@@ -4162,7 +4164,7 @@ fn page_showing_a_video(rect: ui::kurbo::Rect) -> (ui::widget::WebView, ui::webv
         intrinsic_size: [1280, 720],
         label: "A talk on maps".to_owned(),
     }));
-    let session: ui::webview::PageHandle = std::rc::Rc::new(std::cell::RefCell::new(Some(
+    let session: tilo_ui_webview::PageHandle = std::rc::Rc::new(std::cell::RefCell::new(Some(
         tilo_page_engine::PageSession::new(engine.clone()),
     )));
     let mut view = ui::widget::WebView::new(engine).with_page(Some(std::rc::Rc::clone(&session)));

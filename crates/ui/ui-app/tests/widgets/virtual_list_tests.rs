@@ -37,7 +37,7 @@ use winit::keyboard::*;
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
     use accesskit::Role as AkRole;
     use tilo_ui_app::widget::ListRow;
-    use tilo_ui_app::widget::conversation::Jump;
+    use tilo_ui_app::widget::jump::Jump;
     use tilo_ui_base::a11y::Action;
 
     fn transcript(unread: &str) -> VirtualList<VecListModel<u32, u32>> {

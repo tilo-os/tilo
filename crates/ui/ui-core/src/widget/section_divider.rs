@@ -148,7 +148,7 @@ pub fn paint(
 
 #[must_use]
 pub fn unread_label() -> String {
-    super::t("conversation-new-messages")
+    t("conversation-new-messages")
 }
 
 #[must_use]
@@ -196,7 +196,7 @@ impl<'a> SectionDividerFace<'a> {
         leading: f64,
         trailing: f64,
     ) -> DividerParts {
-        super::band::paint(paint, band, leading, trailing, self.label, self.tone)
+        crate::widget::section_divider::paint(paint, band, leading, trailing, self.label, self.tone)
     }
 }
 
@@ -387,4 +387,10 @@ impl tilo_ui_base::widget::Widget for SectionDivider {
         use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Heading { level: 3 }).with_name(self.label.clone()))
     }
+}
+
+/// One of the conversation's labels in the shell's language (the `conversation-` keys of the
+/// toolkit's catalogue).
+fn t(key: &str) -> String {
+    tilo_ui_base::i18n::widget_format(key, &[])
 }

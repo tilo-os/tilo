@@ -7,7 +7,7 @@
 //! commands flow in through [`WebViewEngine::send`], rendered pixels come out through a
 //! shared [`FrameSlot`], and navigation/UI state changes come out as [`WebViewEvent`]s
 //! drained by the embedder during `sync`. Painting those frames is the toolkit's
-//! (`tilo_ui::webview::paint`).
+//! (`tilo_ui_webview::paint`).
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,

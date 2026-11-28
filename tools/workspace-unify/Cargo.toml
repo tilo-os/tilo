@@ -1293,7 +1293,7 @@ doc = false
 "tilo-tts" = { path = "../../crates/platform/tts", default-features = false, features = [] }
 "tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
-"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "content", "default", "dmabuf-import", "gpu-video", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview", "webview-adblock"] }
+"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "content", "default", "dmabuf-import", "gpu-video", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support"] }
 "tilo-ui-app" = { path = "../../crates/ui/ui-app", default-features = false, features = ["broker-transport", "content", "default", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "test-support", "webview"] }
 "tilo-ui-base" = { path = "../../crates/ui/ui-base", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "model", "native", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
@@ -3771,7 +3771,7 @@ doc = false
 "tilo-tts" = { path = "../../crates/platform/tts", default-features = false, features = [] }
 "tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
-"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "content", "default", "dmabuf-import", "gpu-video", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview", "webview-adblock"] }
+"tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "content", "default", "dmabuf-import", "gpu-video", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support"] }
 "tilo-ui-app" = { path = "../../crates/ui/ui-app", default-features = false, features = ["broker-transport", "content", "default", "host", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "test-support", "webview"] }
 "tilo-ui-base" = { path = "../../crates/ui/ui-base", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "model", "native", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }

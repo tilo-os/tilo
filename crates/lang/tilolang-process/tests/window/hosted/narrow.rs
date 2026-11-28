@@ -51,7 +51,7 @@ fn chat_at_a_phones_width(messages: usize) -> Session {
 /// a keyboard takes to the first message the person has not seen.
 #[test]
 fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread() {
-    use ui::widget::conversation::Jump;
+    use ui::widget::jump::Jump;
 
     let _settled = ui::motion::testing::settled();
     let mut session = chat_at_a_phones_width(40);

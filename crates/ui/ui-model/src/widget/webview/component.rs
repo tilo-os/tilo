@@ -2,12 +2,12 @@
 //!
 //! The widget shows the live output of a page engine and forwards input to it; navigation
 //! state belongs to the app's record, not this widget. The engine is the window's: the window
-//! that draws the view holds one page engine per window ([`tilo_ui::webview::window_engine`]) and
+//! that draws the view holds one page engine per window ([`tilo_ui_webview::window_engine`]) and
 //! hands it to every `ui.WebView` it builds, so the address a view names (`uri`) is the only
 //! thing that crosses the wire and no live engine does. An app that draws its own page hands
 //! its engine in, and reads that engine's events itself.
-use tilo_ui::webview::SharedEngine;
 use tilo_ui_base::{component::Component, component::Described, component::Event};
+use tilo_ui_webview::SharedEngine;
 
 use super::WebView;
 
@@ -64,12 +64,12 @@ impl Described for WebView {
         // The window's page reports its navigation to the app; an app's own engine is read by
         // the app, so this view takes nothing from it. The window's second page is read by the
         // window's session too, so this view shows it and reports nothing.
-        let shown = tilo_ui::webview::window_surface();
+        let shown = tilo_ui_webview::window_surface();
         let window_page = engine.is_none()
-            && shown == tilo_ui::webview::Surface::Page
-            && tilo_ui::webview::window_engine().is_some();
+            && shown == tilo_ui_webview::Surface::Page
+            && tilo_ui_webview::window_engine().is_some();
         let engine = engine
-            .or_else(tilo_ui::webview::window_engine)
+            .or_else(tilo_ui_webview::window_engine)
             .unwrap_or_else(|| {
                 let missing: SharedEngine = tilo_webview::chromium::UnavailableEngine::new(
                     tilo_ui_base::i18n::I18nManager::lookup_plain("webview-unavailable"),
@@ -78,13 +78,13 @@ impl Described for WebView {
             });
         let mut view = Self::new(engine);
         view.set_surface(match surface.as_deref() {
-            Some("panel") => tilo_ui::webview::Surface::Panel,
+            Some("panel") => tilo_ui_webview::Surface::Panel,
             _ => shown,
         });
         if window_page {
             view = view
                 .reporting(navigate, fail)
-                .with_page(tilo_ui::webview::window_page());
+                .with_page(tilo_ui_webview::window_page());
         } else {
             view = view.keeping_events(navigate, fail);
         }

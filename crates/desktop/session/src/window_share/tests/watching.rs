@@ -4,10 +4,10 @@
 //! device waits, and none says that anyone watches. They follow what the share's own reading says
 //! goes out (`streaming`), for a window shared as its page and for one shared as pictures.
 
+use tilo_ui_webview::paint::PaintEngine;
+use tilo_ui_webview::paint::stream::wire::Payload;
 use tilo_webview::test_engine::TestEngine;
 use tilo_webview::{WebViewCommand, WebViewEngine};
-use ui::webview::paint::PaintEngine;
-use ui::webview::paint::stream::wire::Payload;
 
 use tilo_session_core::desktop::state::WorkspaceShare;
 

@@ -7,10 +7,10 @@ use crate::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
 };
 use crate::hosted_window::HostedWindow;
-use crate::webview::paint::{self, SharedFrame};
 use crate::widget::Column;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use tilo_ui_webview::paint::{self, SharedFrame};
 
 /// One window of a process: its app, the window its events run in, and the shell's end of its
 /// connection.

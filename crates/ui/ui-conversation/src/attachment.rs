@@ -2,7 +2,7 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
-use crate::widget::{ChipFace, ChipLead};
+use tilo_ui::widget::{ChipFace, ChipLead};
 use tilo_ui_base::format;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;

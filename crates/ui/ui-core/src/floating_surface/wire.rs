@@ -20,7 +20,7 @@ pub struct PaintPart {
     /// Where this part starts in the payload: zero starts a payload.
     pub at: u64,
     /// How many bytes the whole payload has. A payload larger than the app hands over
-    /// (`ui::webview::paint::MAX_SHARE_PAYLOAD`) is said by its first part alone, so the shell
+    /// (`tilo_ui_webview::paint::MAX_SHARE_PAYLOAD`) is said by its first part alone, so the shell
     /// knows the page is too large and does not wait for it.
     pub of: u64,
 }

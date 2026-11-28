@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 pub use tilo_page_engine::Arrived;
 use tilo_page_engine::{PageSession, codec};
+use tilo_ui_webview as webview;
 use tilo_webview::{SharedEngine, WebViewCommand};
-use ui::webview;
 
 /// The page of one window, made when the window first needs it.
 pub type Page = Rc<RefCell<Option<PageSession>>>;
@@ -276,7 +276,7 @@ fn start_private(page: &Page) -> Result<(), String> {
         return Ok(());
     }
     let root = tilo_webview::chromium::allocate_private_root()?;
-    let engine = match ui::webview::new_private_page_engine(&root) {
+    let engine = match tilo_ui_webview::new_private_page_engine(&root) {
         Ok(engine) => engine,
         Err(why) => {
             tilo_webview::chromium::release_private_root(&root);
@@ -298,7 +298,8 @@ fn visitor_session() -> PageSession {
     };
     let session = match tilo_webview::chromium::allocate_private_root() {
         Ok(root) => {
-            let engine = ui::webview::new_private_page_engine(&root).unwrap_or_else(unavailable);
+            let engine =
+                tilo_ui_webview::new_private_page_engine(&root).unwrap_or_else(unavailable);
             PageSession::new_private(engine, root)
         }
         Err(why) => PageSession::new(unavailable(why)),

@@ -74,6 +74,8 @@ FRAMEWORK = (
     "crates/ui/ui-core",
     "crates/ui/ui-render",
     "crates/ui/ui-charts",
+    "crates/ui/ui-webview",
+    "crates/ui/ui-conversation",
     "crates/ui/ui-keypad",
     "crates/ui/ui-timeline",
     "crates/ui/ui-capture",

@@ -1144,25 +1144,25 @@ impl Reconciler {
         &self,
         node: &UiNode,
     ) -> (
-        ui::webview::SharedEngine,
+        tilo_ui_webview::SharedEngine,
         Option<crate::page_runner::Page>,
-        ui::webview::Surface,
+        tilo_ui_webview::Surface,
     ) {
         let panel =
             matches!(node.props.get("surface"), Some(Value::Text(surface)) if surface == "panel");
         if panel {
             return if let Some(engine) = crate::page_runner::panel_engine(&self.shown_page) {
-                (engine, None, ui::webview::Surface::Panel)
+                (engine, None, tilo_ui_webview::Surface::Panel)
             } else {
-                let missing: ui::webview::SharedEngine =
+                let missing: tilo_ui_webview::SharedEngine =
                     tilo_webview::chromium::UnavailableEngine::new(String::new());
-                (missing, None, ui::webview::Surface::Panel)
+                (missing, None, tilo_ui_webview::Surface::Panel)
             };
         }
         (
             crate::page_runner::engine_of(&self.shown_page),
             Some(Rc::clone(&self.shown_page)),
-            ui::webview::Surface::Page,
+            tilo_ui_webview::Surface::Page,
         )
     }
 
@@ -1175,14 +1175,14 @@ impl Reconciler {
         // view while the view is built, beside the session that reads the engine's events once.
         // The window's second page (an extension's side panel, a sign-in page) has an engine of
         // its own, which a node marked `surface: "panel"` is handed.
-        let outer = ui::webview::window_engine();
-        let outer_page = ui::webview::window_page();
-        let outer_surface = ui::webview::window_surface();
+        let outer = tilo_ui_webview::window_engine();
+        let outer_page = tilo_ui_webview::window_page();
+        let outer_surface = tilo_ui_webview::window_surface();
         if description.name == "WebView" {
             let (engine, page, surface) = self.page_shown_by(node);
-            ui::webview::set_window_engine(Some(engine));
-            ui::webview::set_window_page(page);
-            ui::webview::set_window_surface(surface);
+            tilo_ui_webview::set_window_engine(Some(engine));
+            tilo_ui_webview::set_window_page(page);
+            tilo_ui_webview::set_window_surface(surface);
         }
         // A terminal is shown with the sessions this window holds, as a page is with its engine:
         // the node names one by id and the window hands them in while it is built.
@@ -1199,9 +1199,9 @@ impl Reconciler {
             // the window in another language, and what it does stays what it does.
             crate::adapter::components().build(&description.name, &mut source)
         };
-        ui::webview::set_window_engine(outer);
-        ui::webview::set_window_page(outer_page);
-        ui::webview::set_window_surface(outer_surface);
+        tilo_ui_webview::set_window_engine(outer);
+        tilo_ui_webview::set_window_page(outer_page);
+        tilo_ui_webview::set_window_surface(outer_surface);
         #[cfg(not(target_arch = "wasm32"))]
         ui::terminal::set_window_sessions(outer_terminals);
         built.unwrap_or_else(|error| {
@@ -3325,14 +3325,14 @@ mod tests {
             "the panel's page draws the panel's engine"
         );
         assert!(session.is_none());
-        assert_eq!(surface, ui::webview::Surface::Panel);
+        assert_eq!(surface, tilo_ui_webview::Surface::Panel);
 
         // The page the person browsed still draws the window's own engine, read by its session.
         let plain = node("ui.WebView", "page");
         let (engine, session, surface) = reconciler.page_shown_by(&plain);
         assert!(!std::sync::Arc::ptr_eq(&engine, &panel));
         assert!(session.is_some(), "the window's one session reads its page");
-        assert_eq!(surface, ui::webview::Surface::Page);
+        assert_eq!(surface, tilo_ui_webview::Surface::Page);
     }
 
     #[test]

@@ -1740,65 +1740,6 @@
       }
     },
     {
-      "name": "SectionDivider",
-      "doc": "A divider in a conversation: a caption centred in a band, ruled out to both sides, over the row where the part it opens begins — a day of the lines, or the place the reader's unread lines start.",
-      "props": [
-        {
-          "name": "label",
-          "doc": "What the divider says: the day it opens (\"Today\", \"Sunday\", \"Jun 21\").",
-          "type": {
-            "option": "text"
-          },
-          "positional": true
-        },
-        {
-          "name": "tone",
-          "doc": "What it marks, which sets its ink: a day of the conversation unless said, or the accent where the reader's unread lines start.",
-          "type": {
-            "choice": {
-              "name": "DividerTone",
-              "cases": [
-                "quiet",
-                "accent"
-              ]
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "label"
-      }
-    },
-    {
-      "name": "ConversationList",
-      "doc": "A conversation, drawn as every conversation is drawn: each line on its own side, runs of one person's consecutive messages under their name once, a divider where the day changes, and the time and the delivery state under your own.",
-      "props": [
-        {
-          "name": "name",
-          "doc": "What the conversation is, for assistive technology: \"Conversation with Ada\".",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "parts": [
-        {
-          "name": "lines",
-          "doc": "The lines, oldest first.",
-          "accepts": {
-            "component": "ConversationEntry"
-          },
-          "many": true,
-          "default": true
-        }
-      ],
-      "semantics": {
-        "role": "List",
-        "label": "name"
-      }
-    },
-    {
       "name": "Countdown",
       "doc": "A countdown, live: the time left until `at` — or, once it has come, the time since it — and, with `total`, a ring of how much of it is left.",
       "props": [
@@ -6304,6 +6245,37 @@
       }
     },
     {
+      "name": "SectionDivider",
+      "doc": "A divider in a conversation: a caption centred in a band, ruled out to both sides, over the row where the part it opens begins — a day of the lines, or the place the reader's unread lines start.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the divider says: the day it opens (\"Today\", \"Sunday\", \"Jun 21\").",
+          "type": {
+            "option": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "tone",
+          "doc": "What it marks, which sets its ink: a day of the conversation unless said, or the accent where the reader's unread lines start.",
+          "type": {
+            "choice": {
+              "name": "DividerTone",
+              "cases": [
+                "quiet",
+                "accent"
+              ]
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "Sheet",
       "doc": "A sheet drawn as a grid: its column and row headers, its cells as they show, the cells the person chose, the cells a search found and a comment's mark in the corner.",
       "props": [
@@ -8010,7 +7982,7 @@
         },
         {
           "name": "unseen_from",
-          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither.",
+          "doc": "The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's [`SectionDivider`](crate::widget::section_divider::SectionDivider) stands over the row that shows it, and while that is above the view a pill at the foot offers the way back to it ([`VirtualList::following_end`]). `None` draws neither.",
           "type": {
             "option": "resource"
           }
@@ -10053,6 +10025,34 @@
       }
     },
     {
+      "name": "ConversationList",
+      "doc": "A conversation, drawn as every conversation is drawn: each line on its own side, runs of one person's consecutive messages under their name once, a divider where the day changes, and the time and the delivery state under your own.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the conversation is, for assistive technology: \"Conversation with Ada\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "lines",
+          "doc": "The lines, oldest first.",
+          "accepts": {
+            "component": "ConversationEntry"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "List",
+        "label": "name"
+      }
+    },
+    {
       "name": "KeyPad",
       "doc": "The keyboard's keys.",
       "props": [
@@ -11439,79 +11439,6 @@
       "semantics": {
         "role": "MenuItem",
         "label": "label"
-      }
-    },
-    {
-      "name": "ConversationEntry",
-      "doc": "One line of a conversation: who said it and when, what it says, and how far on its way it is.",
-      "props": [
-        {
-          "name": "item",
-          "doc": "The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes follow.",
-          "type": {
-            "option": "resource"
-          },
-          "positional": true
-        },
-        {
-          "name": "id",
-          "doc": "What it stands for when it is no resource of the workspace: a line a service keeps for this device alone (a message of the person's Signal history), by the id that service gives it.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "author",
-          "doc": "Who said it, as the person reads names.",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "time",
-          "doc": "When it was said: a divider marks the first line of each day, and the time shows beside an author's name and under your own line.",
-          "type": {
-            "option": "time"
-          }
-        },
-        {
-          "name": "said",
-          "doc": "What it says.",
-          "type": "text",
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "outgoing",
-          "doc": "Your own line (on the right, with its delivery state under it) rather than the other person's (on the left, under their name).",
-          "type": "bool"
-        },
-        {
-          "name": "delivery",
-          "doc": "How far your own line is on its way.",
-          "type": {
-            "option": {
-              "choice": {
-                "name": "Delivery",
-                "cases": [
-                  "queued",
-                  "sending",
-                  "submitted",
-                  "sent",
-                  "delivered",
-                  "read",
-                  "failed",
-                  "uncertain"
-                ]
-              }
-            }
-          }
-        }
-      ],
-      "semantics": {
-        "role": "ListItem",
-        "label": "said",
-        "presents": "item"
       }
     },
     {
@@ -13185,6 +13112,79 @@
       "semantics": {
         "role": "ListItem",
         "label": "summary",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "ConversationEntry",
+      "doc": "One line of a conversation: who said it and when, what it says, and how far on its way it is.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes follow.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "id",
+          "doc": "What it stands for when it is no resource of the workspace: a line a service keeps for this device alone (a message of the person's Signal history), by the id that service gives it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "author",
+          "doc": "Who said it, as the person reads names.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "time",
+          "doc": "When it was said: a divider marks the first line of each day, and the time shows beside an author's name and under your own line.",
+          "type": {
+            "option": "time"
+          }
+        },
+        {
+          "name": "said",
+          "doc": "What it says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "outgoing",
+          "doc": "Your own line (on the right, with its delivery state under it) rather than the other person's (on the left, under their name).",
+          "type": "bool"
+        },
+        {
+          "name": "delivery",
+          "doc": "How far your own line is on its way.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Delivery",
+                "cases": [
+                  "queued",
+                  "sending",
+                  "submitted",
+                  "sent",
+                  "delivered",
+                  "read",
+                  "failed",
+                  "uncertain"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "said",
         "presents": "item"
       }
     },

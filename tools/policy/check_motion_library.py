@@ -98,6 +98,8 @@ SCANNED += (
     Path("crates/ui/tilo-rich-edit"),
     Path("crates/ui/ui-base"),
     Path("crates/ui/ui-charts"),
+    Path("crates/ui/ui-webview"),
+    Path("crates/ui/ui-conversation"),
     Path("crates/ui/ui-keypad"),
     Path("crates/ui/ui-timeline"),
     Path("crates/ui/ui-capture"),

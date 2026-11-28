@@ -52,7 +52,7 @@ pub(crate) const MAX_PAYLOAD: usize =
 /// How long an app has to hand over the whole frame it was asked for, before this session says
 /// it has not and asks again. An app answers with one capture of its page and the frames it
 /// draws around it; its engine gives a capture up after three seconds and captures again
-/// (`ui::webview::paint`), so ten seconds are three captures that came to nothing, with the frames
+/// (`tilo_ui_webview::paint`), so ten seconds are three captures that came to nothing, with the frames
 /// a machine without a GPU draws around them. Longer leaves a person watching an arriving card
 /// with no reason said; shorter says it of a page that is merely slow.
 pub(crate) const HAND_OVER_BOUND: std::time::Duration =
@@ -680,12 +680,12 @@ mod over_the_live_session {
     use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
     use tilo_live::roster::Roster as LiveRoster;
     use tilo_live::scope::Scope;
-    use ui::webview::paint::stream::wire::{Payload, Receiver};
+    use tilo_ui_webview::paint::stream::wire::{Payload, Receiver};
 
     use super::*;
+    use tilo_ui_webview::paint::PaintEngine;
     use tilo_webview::test_engine::TestEngine;
     use tilo_webview::{WebViewCommand, WebViewEngine};
-    use ui::webview::paint::PaintEngine;
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const TAB: u64 = 0x5EED_0000_0000_0007;

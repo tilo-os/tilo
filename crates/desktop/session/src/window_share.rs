@@ -1401,7 +1401,7 @@ impl WindowShares {
                     start.tab = place;
                     // Whose stream it is is the device its route authenticated.
                     start.peer = from;
-                    let page = start.codec == ui::webview::paint::stream::wire::CODEC;
+                    let page = start.codec == tilo_ui_webview::paint::stream::wire::CODEC;
                     // A stream that is already decoded keeps its tile until its sender ends it,
                     // which is how a restarted stream reaches this device. One announced as the
                     // window's page over its pictures starts over in a tile of its own: a tile

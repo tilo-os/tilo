@@ -36,8 +36,8 @@ use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 use tilo_desktop_model::{Layout, Tab, TabId, TileContent as ModelTile, Workspace};
 use tilo_live::share::Control;
 use tilo_session_core::desktop::state::{DesktopHandle, Shared, route_of};
+use tilo_ui_webview::paint::stream::wire::{CODEC, Payload, Receiver};
 use ui::time::{Duration, Instant};
-use ui::webview::paint::stream::wire::{CODEC, Payload, Receiver};
 
 use super::elsewhere::Elsewhere;
 
@@ -163,7 +163,7 @@ impl PeerStreamStart {
             peer,
             width: *width,
             height: *height,
-            codec: ui::webview::paint::stream::wire::CODEC.to_owned(),
+            codec: tilo_ui_webview::paint::stream::wire::CODEC.to_owned(),
             bit_depth: 8,
             colorimetry: None,
             hdr: None,

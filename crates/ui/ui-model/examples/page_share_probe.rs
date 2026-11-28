@@ -59,15 +59,15 @@ use std::sync::{Arc, Mutex};
 
 use cosmic_text::{FontSystem, fontdb};
 use tilo_ui::time::{Duration, Instant};
-use tilo_ui::webview::paint::stream::wire::{Payload, Receiver};
-use tilo_ui::webview::paint::stream::{BlobRef, Item};
-use tilo_ui::webview::paint::{self, PaintEngine};
 use tilo_ui_base::Widget;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_model::widget::WebView;
+use tilo_ui_webview::paint::stream::wire::{Payload, Receiver};
+use tilo_ui_webview::paint::stream::{BlobRef, Item};
+use tilo_ui_webview::paint::{self, PaintEngine};
 use tilo_webview::chromium::ChromiumEngine;
 use tilo_webview::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use vello::Scene;

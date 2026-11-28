@@ -15,8 +15,9 @@ use std::rc::Rc;
 use vello::kurbo::Point;
 
 use crate::widget::arrange::{Align, Fit, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges};
-use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
-use crate::widget::conversation::{ConversationClock, SectionDivider};
+use crate::widget::message_day::ConversationClock;
+use crate::widget::message_day::GROUPING_WINDOW_SECS;
+use crate::widget::section_divider::SectionDivider;
 use crate::{
     widget::Attachments, widget::Avatar, widget::ContextMenuArea, widget::ListRow,
     widget::ListRowProps, widget::MenuEntry, widget::MenuPart, widget::RowBuild,
@@ -260,7 +261,7 @@ pub struct VirtualListProps {
     /// Escape puts the selection away. Without it a click chooses the one row the window shows.
     pub multi_select: bool,
     /// The item where the person looking has seen nothing yet (`first_unseen(c)`): the toolkit's
-    /// [`SectionDivider`](crate::widget::conversation::SectionDivider) stands over the row that shows
+    /// [`SectionDivider`](crate::widget::section_divider::SectionDivider) stands over the row that shows
     /// it, and while that is above the view a pill at the foot offers the way back to it
     /// ([`VirtualList::following_end`]). `None` draws neither.
     pub unseen_from: Option<ResourceId>,
@@ -1592,7 +1593,7 @@ fn read_faces(key: &str, read: Vec<Person>) -> Element {
 }
 
 /// `content` under the "New messages" divider, for the row of the first message the reader had
-/// not read: the divider is the toolkit's ([`crate::widget::conversation::SectionDivider`], in
+/// not read: the divider is the toolkit's ([`crate::widget::section_divider::SectionDivider`], in
 /// the accent where reading starts again), placed from what the app says is unread, so every
 /// conversation draws the same one.
 ///

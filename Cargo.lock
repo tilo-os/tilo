@@ -12355,6 +12355,7 @@ dependencies = [
  "tilo-settings-store",
  "tilo-ui",
  "tilo-ui-base",
+ "tilo-ui-webview",
  "tilo-user-identity",
  "tilo-webview",
  "workspace-hack",
@@ -14848,7 +14849,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-content-blocker",
- "tilo-ui",
+ "tilo-ui-webview",
  "workspace-hack",
 ]
 
@@ -15031,6 +15032,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-capture",
  "tilo-ui-charts",
+ "tilo-ui-conversation",
  "tilo-ui-file-picker",
  "tilo-ui-keypad",
  "tilo-ui-map",
@@ -15039,6 +15041,7 @@ dependencies = [
  "tilo-ui-secret",
  "tilo-ui-timeline",
  "tilo-ui-video",
+ "tilo-ui-webview",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15450,6 +15453,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-capture",
  "tilo-ui-charts",
+ "tilo-ui-conversation",
  "tilo-ui-file-picker",
  "tilo-ui-graph",
  "tilo-ui-keypad",
@@ -15460,6 +15464,7 @@ dependencies = [
  "tilo-ui-secret",
  "tilo-ui-timeline",
  "tilo-ui-video",
+ "tilo-ui-webview",
  "tilo-webview",
  "tracing",
  "workspace-hack",
@@ -20669,6 +20674,7 @@ dependencies = [
  "tilo-ui-app",
  "tilo-ui-base",
  "tilo-ui-render",
+ "tilo-ui-webview",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-wallpapers",
@@ -21545,7 +21551,6 @@ dependencies = [
  "tilo-media",
  "tilo-member-types",
  "tilo-mime",
- "tilo-page-engine",
  "tilo-paint-stream",
  "tilo-paint-strokes",
  "tilo-paths",
@@ -21580,7 +21585,6 @@ dependencies = [
  "tilo-ui-render",
  "tilo-vello",
  "tilo-vello-encoding",
- "tilo-webview",
  "tilo-wgpu",
  "tilo-winit",
  "tilo-winit-x11",
@@ -21666,6 +21670,7 @@ dependencies = [
  "tilo-ui-base",
  "tilo-ui-capture",
  "tilo-ui-charts",
+ "tilo-ui-conversation",
  "tilo-ui-file-picker",
  "tilo-ui-keypad",
  "tilo-ui-map",
@@ -21676,6 +21681,7 @@ dependencies = [
  "tilo-ui-secret",
  "tilo-ui-timeline",
  "tilo-ui-video",
+ "tilo-ui-webview",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21856,6 +21862,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui-conversation"
+version = "0.1.0"
+dependencies = [
+ "tilo-component-scan",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ui-file-picker"
 version = "0.1.0"
 dependencies = [
@@ -22004,6 +22024,7 @@ dependencies = [
  "tilo-ui-graph",
  "tilo-ui-model",
  "tilo-ui-render",
+ "tilo-ui-webview",
  "tilo-vello",
  "tilo-webview",
  "tilo-winit",
@@ -22142,6 +22163,27 @@ dependencies = [
  "tilo-ui-base",
  "tilo-vello",
  "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-webview"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "image",
+ "serde_json",
+ "serial_test",
+ "tilo-lock",
+ "tilo-page-engine",
+ "tilo-paint-stream",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-webview",
+ "tracing",
  "workspace-hack",
 ]
 

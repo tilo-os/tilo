@@ -107,12 +107,12 @@ pub struct WebView {
     submitted: Option<Drawn>,
     damage: Option<Vec<Rect>>,
     accepts: Option<fn(&tilo_webview::Frame) -> bool>,
-    page: tilo_ui::webview::paint::PageRenderer,
+    page: tilo_ui_webview::paint::PageRenderer,
     painted_seq: u64,
     test_id: String,
     accessible_name: String,
     /// What this view reports the page's navigation and failure through, when its window holds
-    /// the engine (`tilo_ui::webview::window_engine`).
+    /// the engine (`tilo_ui_webview::window_engine`).
     navigate: tilo_ui_base::component::Event,
     fail: tilo_ui_base::component::Event,
     /// What this view reports the shell returning its floated picture through: the person closed
@@ -122,10 +122,10 @@ pub struct WebView {
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
     /// Which of the window's pages it shows: the one the person browsed, or the window's second.
-    surface: tilo_ui::webview::Surface,
+    surface: tilo_ui_webview::Surface,
     /// The window's page, when this view is the window's: the one session that reads the
     /// engine's events, shared with the app's page calls, so the engine has one reader.
-    session: Option<tilo_ui::webview::PageHandle>,
+    session: Option<tilo_ui_webview::PageHandle>,
     /// The address this view last told the engine to open.
     opened_at: Option<String>,
     /// Whether the page's video floats above the app's window as picture-in-picture: the
@@ -232,7 +232,7 @@ impl WebView {
             submitted: None,
             damage: None,
             accepts: None,
-            page: tilo_ui::webview::paint::PageRenderer::new(),
+            page: tilo_ui_webview::paint::PageRenderer::new(),
             painted_seq: 0,
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
@@ -240,7 +240,7 @@ impl WebView {
             fail: tilo_ui_base::component::Event::None,
             pip_closed: tilo_ui_base::component::Event::None,
             reports_events: false,
-            surface: tilo_ui::webview::Surface::Page,
+            surface: tilo_ui_webview::Surface::Page,
             session: None,
             opened_at: None,
             pip: false,
@@ -379,7 +379,7 @@ impl WebView {
     /// Read the page's events from the window's session, when the window keeps one: it is the
     /// engine's one reader, and the app's page calls read their answers from it too.
     #[must_use]
-    pub fn with_page(mut self, session: Option<tilo_ui::webview::PageHandle>) -> Self {
+    pub fn with_page(mut self, session: Option<tilo_ui_webview::PageHandle>) -> Self {
         self.session = session;
         self
     }
@@ -456,14 +456,14 @@ impl WebView {
     /// the window shows. It is taken where the engine's events are taken and
     /// where the page is drawn, so a change reaches the share with no frame
     /// drawn for it. A payload larger than a share hands over
-    /// ([`paint::MAX_SHARE_PAYLOAD`](tilo_ui::webview::paint::MAX_SHARE_PAYLOAD))
+    /// ([`paint::MAX_SHARE_PAYLOAD`](tilo_ui_webview::paint::MAX_SHARE_PAYLOAD))
     /// is not dropped: its size and its start are queued, which is how the
     /// session learns that the page is too large and says so.
     fn share_page(&self) {
-        use tilo_ui::webview::paint;
+        use tilo_ui_webview::paint;
         // Only the page the person browsed is the window's page to share: a side panel or a
         // sign-in page beside it is not what someone watching the window came for.
-        if self.surface != tilo_ui::webview::Surface::Page || !paint::share_watched() {
+        if self.surface != tilo_ui_webview::Surface::Page || !paint::share_watched() {
             return;
         }
         let keyframe = paint::take_share_keyframe();
@@ -532,7 +532,7 @@ impl WebView {
 
     /// Say which of the window's pages this view shows: the one the person browsed, or the
     /// window's second page beside or over it.
-    pub fn set_surface(&mut self, surface: tilo_ui::webview::Surface) {
+    pub fn set_surface(&mut self, surface: tilo_ui_webview::Surface) {
         self.surface = surface;
     }
 
@@ -639,7 +639,7 @@ impl WebView {
         if let Some(page) = self.engine.paint_frame() {
             let engine = Arc::clone(&self.engine);
             let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
-            let mut canvas = tilo_ui::webview::paint::PageCanvas {
+            let mut canvas = tilo_ui_webview::paint::PageCanvas {
                 scene,
                 transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
                 text: text_renderer,

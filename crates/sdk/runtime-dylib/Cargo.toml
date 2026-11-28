@@ -48,7 +48,9 @@ crate-type = ["dylib"]
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris", "model"], default-features = false }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "dmabuf-import", "gpu-video", "mpris", "model"], default-features = false }
+# The page painter the WebView draws with, with the filter-list compiler the Browser blocks with.
+tilo-ui-webview = { path = "../../ui/ui-webview", features = ["webview-adblock"] }
 # The apps the runtime library carries present only what changed, through Tilo's wgpu-hal.
 tilo-presentation = { path = "../../platform/tilo-presentation", features = ["vulkan-damage"] }
 # The web engine client the toolkit's WebView displays: code that talks to a web engine
@@ -93,7 +95,8 @@ registry-types = { package = "tilo-registry-types", path = "../../core/registry-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris", "model", "host"] }
+ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "dmabuf-import", "gpu-video", "mpris", "model", "host"] }
+tilo-ui-webview = { path = "../../ui/ui-webview", features = ["webview-adblock", "local-daemons"] }
 
 [lints]
 workspace = true

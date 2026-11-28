@@ -108,7 +108,7 @@ pub(super) struct FloatingRuntime {
     /// The payload of this window's page that is being sent, and how much of it went: one too
     /// large for a message goes in parts, and the connection takes only so much at once.
     #[cfg(feature = "webview")]
-    pub share_sending: Option<(crate::webview::paint::SharedFrame, usize)>,
+    pub share_sending: Option<(tilo_ui_webview::paint::SharedFrame, usize)>,
     /// When to send on: the connection had no room for the next part of the page.
     pub share_backlog: Option<crate::time::Instant>,
     /// The shell was told this app answers selection requests.
@@ -802,8 +802,8 @@ impl App {
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
     ) -> Result<(), String> {
-        use crate::webview::paint;
         use base64::Engine as _;
+        use tilo_ui_webview::paint;
         let instance = crate::shell_tabs::launch_instance();
         self.floating.share_backlog = None;
         loop {
@@ -884,7 +884,7 @@ impl App {
         // A page is shared only from a `WebView`: a window built without one has none to hand.
         #[cfg(feature = "webview")]
         {
-            if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
+            if !self.floating.paint_capable_sent && tilo_ui_webview::paint::share_capable() {
                 client
                     .send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
                 self.floating.paint_capable_sent = true;
@@ -892,7 +892,7 @@ impl App {
             // A window withheld from captures shares no page either: what it queued is
             // dropped, and so is a payload half sent.
             if protected {
-                drop(crate::webview::paint::take_share_frames());
+                drop(tilo_ui_webview::paint::take_share_frames());
                 self.floating.share_sending = None;
                 self.floating.share_backlog = None;
             } else {
@@ -1373,12 +1373,12 @@ impl App {
                 FloatingSurfaceHostMessage::VersionMismatch { .. } => {}
                 FloatingSurfaceHostMessage::PaintKeyframe => {
                     #[cfg(feature = "webview")]
-                    crate::webview::paint::set_share_watched(true);
+                    tilo_ui_webview::paint::set_share_watched(true);
                 }
                 FloatingSurfaceHostMessage::PaintStop => {
                     #[cfg(feature = "webview")]
                     {
-                        crate::webview::paint::set_share_watched(false);
+                        tilo_ui_webview::paint::set_share_watched(false);
                         // Nobody takes the rest of a payload half sent.
                         self.floating.share_sending = None;
                     }
@@ -1577,7 +1577,7 @@ impl App {
         }
         // Without the shell nobody can be watching the shared page.
         #[cfg(feature = "webview")]
-        crate::webview::paint::set_share_watched(false);
+        tilo_ui_webview::paint::set_share_watched(false);
         let ids = self
             .floating
             .presentations

@@ -687,8 +687,10 @@ pub use {
 };
 pub mod change_mark;
 pub use {change_mark::ChangeMark, change_mark::ChangeMarkProps};
-pub mod conversation;
-pub use conversation::*;
+pub mod jump;
+pub mod message_day;
+pub mod section_divider;
+pub use section_divider::{SectionDivider, SectionDividerProps};
 pub mod card;
 pub use {
     card::Actions, card::Card, card::CardFace, card::CardGrid, card::CardGridCardProps,

@@ -447,7 +447,7 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
         }
         // The band saying where reading starts again is the one in the accent, and what tells the
         // two kinds apart is the ink: its rule is read at a glance.
-        if ui::widget::conversation::band::says_where_reading_starts(&words) {
+        if ui::widget::section_divider::says_where_reading_starts(&words) {
             accent_rule = Some((
                 words,
                 accent_rule.map_or(strength, |(_, s)| s.max(strength)),
@@ -2018,7 +2018,7 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
     // where that row also opens a day, the day and the place reading starts again are one band
     // saying both, in the accent, never a day's band stacked over the unread one.
     let dividers = dividers_of(channels);
-    let merged = ui::widget::conversation::band::day_with_unread("");
+    let merged = ui::widget::section_divider::day_with_unread("");
     let unseen: Vec<&(String, Rect)> = dividers
         .iter()
         .filter(|(words, _)| words.ends_with(&merged))

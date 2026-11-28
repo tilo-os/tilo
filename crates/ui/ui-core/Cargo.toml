@@ -58,23 +58,20 @@ lazy-highlight = ["dep:tilo-engine-loader", "tilo-ui-base/lazy-highlight"]
 # turns this on, so the shared runtime every app maps leaves wasmi out; any
 # other build links it.
 lazy-painter = ["dep:tilo-engine-loader", "tilo-ui-base/lazy-painter"]
-# The `WebView` widget and the page engine it shows (`webview`, `widget::WebView`): a page
-# shown in a view, through the Chromium helper.
-webview = ["dep:tilo-webview", "dep:tilo-page-engine"]
 # The device's content store the launcher hands a native process (`content::device`), and the
 # public copies its filesystem daemon keeps. Without it a picture or file a view keeps goes to
 # the store its host lends (`pictures::lend_content`), or nowhere.
 content = ["dep:tilo-content-device"]
 # Everything a Tilo app's process takes from the session that starts it: its daemons, the
-# collaboration transport, the `WebView` widget and the device's content store. Tilo's own apps
-# and the shell turn it on; a program on the toolkit alone needs none of it.
-host = ["native", "local-daemons", "broker-transport", "webview", "content"]
+# collaboration transport and the device's content store. Tilo's own apps and the shell turn it
+# on; a program on the toolkit alone needs none of it.
+host = ["native", "local-daemons", "broker-transport", "content"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview?/local-daemons", "tilo-ui-base/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-ui-base/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -98,17 +95,6 @@ presentation-feedback = ["tilo-ui-render/presentation-feedback"]
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
 # for apps built on the published SDK.
 dx12-shader-cache = ["tilo-ui-base/dx12-shader-cache"]
-# Brave/EasyList filter-list → WebKit content-blocker JSON compiler
-# (`webview::adblock`). Off by default: only the browser app (and any
-# other app embedding a WebView with built-in blocking) pays for the
-# adblock-rust dependency.
-webview-adblock = ["webview", "tilo-webview/webview-adblock"]
-# The compiler is not linked: `webview::adblock` opens it from
-# libtilo_adblock_engine.so the first time an app compiles lists. The engine
-# library's own build (crates/engines/loadable/adblock) turns this on, so the
-# shared runtime every app maps leaves adblock-rust out; any other build links
-# the compiler.
-lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory, which the WebView's rendered
 # pages and the video decoder's hardware frames hand over (`tilo-ui-render`). Pulls `ash` and Tilo's
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off for apps built on the
@@ -164,8 +150,6 @@ tilo-paint-strokes = { version = "0.1.0", path = "../../engines/paint-strokes" }
 # The web engine client the `WebView` widget displays: the Chromium helper transport,
 # the page protocol and their commands, so code that talks to a web engine links that
 # crate instead of the toolkit.
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", optional = true }
-tilo-page-engine = { version = "0.1.0", path = "../../engines/page-engine", optional = true }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
@@ -399,8 +383,6 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The startup probes wait on a device and mark the first frames they draw.
 pollster.workspace = true
 tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
-# Its own tests drive a page without Chromium.
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 # Hand-written painter modules for the wasm host's refusal and budget tests.
 wat = "1"
@@ -412,7 +394,7 @@ tilo-theme-bauhaus = { path = "../themes/bauhaus" }
 # package is tested, not only when a dependant happens to unify the feature in.
 # The defaults stay with the package's selection: a wasm32 test build asked for
 # without them (the page's toolkit core) must not take the native runner's.
-tilo-ui = { path = ".", default-features = false, features = ["test-support", "webview", "content"] }
+tilo-ui = { path = ".", default-features = false, features = ["test-support", "content"] }
 # The closure-built action host the driver's job tests answer calls with.
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 # The manager's fixtures the App-driven collaboration tests drive.

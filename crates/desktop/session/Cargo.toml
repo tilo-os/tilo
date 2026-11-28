@@ -240,6 +240,8 @@ tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features 
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
 ui = { package = "tilo-ui-app", path = "../../ui/ui-app", features = ["model", "host"] }
+# The page painter a shared page's frames are drawn and sent with.
+tilo-ui-webview = { version = "0.1.0", path = "../../ui/ui-webview" }
 # The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../core/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync", "macros", "time"] }

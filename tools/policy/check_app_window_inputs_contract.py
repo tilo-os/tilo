@@ -43,6 +43,8 @@ SRCS = (
     Path("crates/ui/ui-core/src"),
     Path("crates/ui/ui-render/src"),
     Path("crates/ui/ui-charts/src"),
+    Path("crates/ui/ui-webview/src"),
+    Path("crates/ui/ui-conversation/src"),
     Path("crates/ui/ui-keypad/src"),
     Path("crates/ui/ui-timeline/src"),
     Path("crates/ui/ui-capture/src"),

@@ -20,13 +20,11 @@ use tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
 
-use super::band::SectionDividerFace;
-use super::day::{ConversationClock, ConversationDay, DayBreaks};
 use super::delivery::{DeliveryFace, DeliveryState};
+use tilo_ui::widget::message_day::{ConversationClock, ConversationDay, DayBreaks};
+use tilo_ui::widget::section_divider::SectionDividerFace;
 
-/// How close two messages by one author are to show as one group: the avatar, the name and the
-/// time stand over the first of them.
-pub const GROUPING_WINDOW_SECS: i64 = 5 * 60;
+use tilo_ui::widget::message_day::GROUPING_WINDOW_SECS;
 
 /// The most of the column one bubble may take. A bubble that fills the column
 /// is no longer a bubble: you lose the side that says who is talking.

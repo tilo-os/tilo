@@ -1201,7 +1201,7 @@ fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
 /// end. Taking it moves the reader, and where it moved them to changes what it offers next.
 #[test]
 fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
-    use crate::widget::conversation::Jump;
+    use crate::widget::jump::Jump;
     let mut list = VirtualList::from_items(
         (0..300_u32).collect(),
         40.0,
