@@ -30,64 +30,38 @@ use tilo_workspace_service::workspaces::servers::{SERVERS, apply, read};
 /// confirm, so a slow helper is not taken for a refusal.
 const APPLY_WAIT: Duration = Duration::from_secs(150);
 
+/// The columns [`real_drives`] reads, as `lsblk --output` names them.
+const DRIVE_COLUMNS: &str = "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,FSTYPE,MOUNTPOINT";
+
 /// The drives this machine really has, as a plan's machine reports them.
 #[must_use]
 pub fn real_drives() -> Vec<Drive> {
-    let Ok(output) = std::process::Command::new("lsblk")
-        .args([
-            "-J",
-            "-b",
-            "-o",
-            "NAME,MODEL,SERIAL,WWN,SIZE,TYPE,FSTYPE,MOUNTPOINT",
-        ])
-        .output()
-    else {
+    let Some(devices) = block_devices::lsblk::Lsblk::new(DRIVE_COLUMNS).list() else {
         tracing::warn!("this machine cannot list its drives");
         return Vec::new();
     };
-    parse_drives(&String::from_utf8_lossy(&output.stdout))
+    drives_of(&devices)
 }
 
-/// The drives in `lsblk -J` output: each disk, whether it already holds
-/// files, and whether this machine boots from it.
+/// The drives among `devices`: each disk, whether it already holds files, and
+/// whether this machine boots from it.
 #[must_use]
-pub fn parse_drives(listing: &str) -> Vec<Drive> {
-    let Ok(document) = serde_json::from_str::<serde_json::Value>(listing) else {
-        return Vec::new();
-    };
-    let Some(devices) = document.get("blockdevices").and_then(|d| d.as_array()) else {
-        return Vec::new();
-    };
+fn drives_of(devices: &[block_devices::lsblk::BlockDevice]) -> Vec<Drive> {
     let mut drives = Vec::new();
-    for device in devices.iter().filter(|d| name(d, "type") == "disk") {
-        let identity = if name(device, "serial").is_empty() {
-            name(device, "wwn")
-        } else {
-            name(device, "serial")
-        };
-        if identity.is_empty() {
+    for device in devices.iter().filter(|device| device.kind == "disk") {
+        let Some(identity) = device.serial.clone().or_else(|| device.wwn.clone()) else {
             continue;
-        }
-        let mut holds_data = false;
-        let mut boots = false;
-        let mut inspect = |node: &serde_json::Value| {
-            holds_data |= !name(node, "fstype").is_empty();
-            let mount = name(node, "mountpoint");
-            boots |= matches!(mount.as_str(), "/" | "/sysroot" | "/boot" | "/boot/efi");
         };
-        inspect(device);
-        if let Some(children) = device.get("children").and_then(|c| c.as_array()) {
-            for child in children {
-                inspect(child);
-            }
+        let (mut holds_data, mut boots) = files_on(device);
+        for child in &device.children {
+            let (child_holds_data, child_boots) = files_on(child);
+            holds_data |= child_holds_data;
+            boots |= child_boots;
         }
         drives.push(Drive {
-            model: name(device, "model"),
+            model: device.model.clone().unwrap_or_default(),
             identity,
-            bytes: device
-                .get("size")
-                .and_then(|size| size.as_u64().or_else(|| size.as_str()?.parse().ok()))
-                .unwrap_or(0),
+            bytes: device.size,
             holds_data,
             boots,
         });
@@ -95,14 +69,14 @@ pub fn parse_drives(listing: &str) -> Vec<Drive> {
     drives
 }
 
-/// One field of `node`, as lsblk spells it in JSON, trimmed and empty when it
-/// has none.
-fn name(node: &serde_json::Value, field: &str) -> String {
-    node.get(field)
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_owned()
+/// Whether `node` holds files, and whether it is mounted where this machine boots from.
+fn files_on(node: &block_devices::lsblk::BlockDevice) -> (bool, bool) {
+    let holds_data = node.fstype.is_some();
+    let boots = matches!(
+        node.mountpoint.as_deref(),
+        Some("/" | "/sysroot" | "/boot" | "/boot/efi")
+    );
+    (holds_data, boots)
 }
 
 /// Install this machine from the plan its own entry names, applying the
@@ -272,6 +246,14 @@ impl EntryChanges {
 mod tests {
     use super::*;
 
+    /// The drives in a test's `lsblk -J` document, read as [`real_drives`] reads what this
+    /// machine lists.
+    fn drives_in(listing: &str) -> Vec<Drive> {
+        let devices =
+            block_devices::lsblk::parse_slice(listing.as_bytes()).expect("a test's lsblk document");
+        drives_of(&devices)
+    }
+
     tilo_test_env::scenario! {
         fn drives_are_read_from_what_lsblk_lists;
 
@@ -289,7 +271,7 @@ mod tests {
                 {"name":"sda","model":"QEMU HARDDISK","serial":null,"wwn":"0x5000c500a1b2c3d4",
                  "size":4000787030016,"type":"disk","fstype":null,"mountpoint":null}
             ]}"#;
-            let drives = parse_drives(listing);
+            let drives = drives_in(listing);
             assert_eq!(drives.len(), 2);
             assert_eq!(drives[0].identity, "S6XXNJ0T");
             assert_eq!(drives[0].model, "Samsung SSD 990");
@@ -307,7 +289,7 @@ mod tests {
                 {"name":"sdz","model":null,"serial":null,"wwn":null,"size":1000,
                  "type":"disk","fstype":null,"mountpoint":null}
             ]}"#;
-            assert!(parse_drives(listing).is_empty());
+            assert!(drives_in(listing).is_empty());
         }
     }
 }

@@ -19880,6 +19880,7 @@ dependencies = [
  "app-cli",
  "base64 0.22.1",
  "blake3",
+ "block-devices",
  "bytes",
  "clap",
  "ed25519-dalek 3.0.0",
