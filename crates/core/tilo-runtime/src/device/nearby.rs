@@ -959,16 +959,7 @@ fn ended(state: TransferState) -> bool {
 
 /// Whether this device's person lets files move to their other devices.
 fn permitted() -> bool {
-    use settings_store::continuity_privacy::{ContinuityCapability, ON_UNLESS_SET};
-    let document = settings_store::load();
-    let on = |name: &str| match document.get("continuity") {
-        None => ON_UNLESS_SET,
-        Some(Value::Object(section)) => section
-            .get(name)
-            .map_or(ON_UNLESS_SET, |value| value.as_bool() == Some(true)),
-        Some(_) => false,
-    };
-    on("enabled") && on(ContinuityCapability::FileTransfer.key())
+    settings_store::continuity_privacy::ContinuityCapability::FileTransfer.allowed()
 }
 
 /// The folder `handle` names, as the person reads it.

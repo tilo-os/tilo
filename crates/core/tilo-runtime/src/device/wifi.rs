@@ -148,16 +148,8 @@ fn the_persons_own(caller: &Caller, admitted: &Admitted) -> Result<(), String> {
 /// # Errors
 /// Either switch is off, said as Settings words it.
 pub fn permitted() -> Result<(), String> {
-    use settings_store::continuity_privacy::{ContinuityCapability, ON_UNLESS_SET};
-    let document = settings_store::load();
-    let on = |name: &str| match document.get("continuity") {
-        None => ON_UNLESS_SET,
-        Some(Value::Object(section)) => section
-            .get(name)
-            .map_or(ON_UNLESS_SET, |value| value.as_bool() == Some(true)),
-        Some(_) => false,
-    };
-    (on("enabled") && on(ContinuityCapability::WifiSettings.key()))
+    settings_store::continuity_privacy::ContinuityCapability::WifiSettings
+        .allowed()
         .then_some(())
         .ok_or_else(|| "Wi-Fi continuity is turned off in this device's settings".to_owned())
 }

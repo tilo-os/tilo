@@ -369,6 +369,8 @@ pub(crate) fn put(
         #[cfg(target_os = "linux")]
         crate::workspace_delete::KIND => delete_workspace(details)?,
         #[cfg(target_os = "linux")]
+        crate::tethering::KIND => share_connection(details)?,
+        #[cfg(target_os = "linux")]
         crate::app_sheets::ADD_KIND => add_app(details)?,
         #[cfg(target_os = "linux")]
         crate::app_sheets::UNINSTALL_KIND => uninstall(details)?,
@@ -564,6 +566,22 @@ fn delete_workspace(details: Value) -> Kind {
     facts.destructive = true;
     facts.verb = crate::i18n::t("workspace-delete-confirm");
     facts.decline = Some(crate::i18n::t("workspace-delete-keep"));
+    facts.by = desktop();
+    Some((facts, Reply::Confirm))
+}
+
+/// "Share this phone's connection with Ada's laptop?": another of the person's devices asks to use
+/// this one's connection for a while, over a hotspot this device starts on their yes.
+#[cfg(target_os = "linux")]
+fn share_connection(details: Value) -> Kind {
+    let asked: crate::tethering::ShareQuestion = serde_json::from_value(details).ok()?;
+    let device = [("device", tilo_ui_base::i18n::ArgValue::Text(asked.device))];
+    let mut facts = asking(
+        crate::i18n::t_args("session-tether-ask-title", &device),
+        Some(crate::i18n::t("session-tether-ask-body")),
+    );
+    facts.verb = crate::i18n::t("session-tether-ask-share");
+    facts.decline = Some(crate::i18n::t("session-tether-ask-decline"));
     facts.by = desktop();
     Some((facts, Reply::Confirm))
 }

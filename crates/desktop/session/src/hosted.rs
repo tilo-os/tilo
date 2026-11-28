@@ -287,6 +287,10 @@ pub struct DevicesReading {
     /// refused it; empty when it did not.
     #[serde(default)]
     pub refused: String,
+    /// The connection this device uses from another of the person's devices,
+    /// or shares with one, while it does.
+    #[serde(default)]
+    pub connection: Option<tilo_device_surfaces::devices::ConnectionView>,
 }
 
 impl DevicesReading {

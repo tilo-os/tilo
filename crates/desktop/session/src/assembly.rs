@@ -228,6 +228,10 @@ pub(crate) struct Shared {
     /// work the move needs.
     #[cfg(target_os = "linux")]
     pub(crate) bluetooth: crate::bluetooth_handoff::Handoffs,
+    /// Sharing a connection between the person's devices: what the panel asked for, the questions
+    /// this device's person answers, and the hotspot work each share needs.
+    #[cfg(target_os = "linux")]
+    pub(crate) tethering: crate::tethering::Tethering,
     /// The session another of the person's devices handed this one, as the
     /// now-playing card shows it, until they continue it here: published
     /// beside the person's devices.

@@ -40,6 +40,13 @@ impl WifiSharing {
         }
     }
 
+    /// Share the passphrase of this device's hotspot `ssid` with the person's other devices, as a
+    /// saved network's is shared: what one of them joins it with.
+    pub(crate) fn share_hotspot(&self, ssid: &str, password: &str) -> Result<(), String> {
+        permitted()?;
+        self.wifi()?.share(ssid, Security::Wpa2, password)
+    }
+
     fn wifi(&self) -> Result<&WifiContinuity, String> {
         self.0.get().ok_or_else(|| {
             "this device is not signed in to Tilo, so it has no other devices to share with"

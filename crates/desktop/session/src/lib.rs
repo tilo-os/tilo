@@ -437,6 +437,8 @@ pub mod termination;
 #[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
+mod tethering;
+#[cfg(target_os = "linux")]
 mod time;
 #[cfg(target_os = "linux")]
 mod tools;

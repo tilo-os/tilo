@@ -372,16 +372,8 @@ struct WireCopy {
 /// # Errors
 /// Either switch is off, said as Settings words it.
 pub fn permitted() -> Result<(), String> {
-    use settings_store::continuity_privacy::{ContinuityCapability, ON_UNLESS_SET};
-    let document = settings_store::load();
-    let on = |name: &str| match document.get("continuity") {
-        None => ON_UNLESS_SET,
-        Some(Value::Object(section)) => section
-            .get(name)
-            .map_or(ON_UNLESS_SET, |value| value.as_bool() == Some(true)),
-        Some(_) => false,
-    };
-    (on("enabled") && on(ContinuityCapability::Clipboard.key()))
+    settings_store::continuity_privacy::ContinuityCapability::Clipboard
+        .allowed()
         .then_some(())
         .ok_or_else(|| "clipboard continuity is turned off in this device's settings".to_owned())
 }

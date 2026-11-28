@@ -67,6 +67,24 @@ pub enum DevicesAction {
         #[param("The name it should read by")]
         name: String,
     },
+    /// Use another of the person's devices' connection here
+    ///
+    /// It asks its person, then shares its connection for a while over a hotspot this device
+    /// joins.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        keywords = "tether, hotspot, mobile data, share connection"
+    )]
+    UseConnection {
+        /// The device whose connection to use, as the reading lists its id.
+        #[param("The device whose connection to use")]
+        device: String,
+    },
+    /// Stop using another device's connection here, or stop sharing this one's
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    StopConnection,
     /// Start a new person on this device, when no person's certificate names it yet
     #[effect(kind = "outside")]
     #[effect(own_device)]
@@ -140,6 +158,36 @@ pub struct DevicesView {
     /// did not.
     #[serde(default)]
     pub refused: String,
+    /// The connection this device uses from another of the person's devices, or shares with one,
+    /// while it does.
+    #[serde(default)]
+    pub connection: Option<ConnectionView>,
+}
+
+/// A connection one of the person's devices shares with another for a while.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct ConnectionView {
+    /// The other device, by its id.
+    pub device: String,
+    /// What the person calls it.
+    pub label: String,
+    /// This device shares its connection, rather than using the other's.
+    pub sharing: bool,
+    /// The hotspot it is shared over; empty while the sharing device's person was not asked yet.
+    pub network: String,
+    /// The device using it joined that hotspot.
+    pub joined: bool,
+    /// When the sharing stops, in Unix milliseconds.
+    pub until_ms: i64,
 }
 
 /// One of the person's devices as a view of another language reads it.

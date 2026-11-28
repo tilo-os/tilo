@@ -31,6 +31,10 @@
 //! whether it holds the accessory's bond, the first says it let go, and the other says it
 //! connected it, each step a write the two sessions read from the record.
 //!
+//! A phone of theirs sharing its connection with another of their devices for a while is asked
+//! there too ([`Tether`], [`super::tethering`]): the device that needs it asks, the phone says
+//! whether its person let it and over which hotspot, the other says it joined, and either ends it.
+//!
 //! The person's one keyboard and pointer across their devices is handed over in the record too
 //! ([`InputHand`]): the device whose pointer pushes past its screen's edge asks the one beyond for
 //! it ([`Devices::ask_input`]), that device lets it in for a while when the person lets their
@@ -133,6 +137,9 @@ pub struct Devices {
     pub speaker_devices: Collection<SpeakerDevice>,
     /// Each playback of a group to one member, by its route.
     pub speaker_playbacks: Collection<SpeakerPlayback>,
+    /// The connection one of the person's phones shares with another of their devices, by the key
+    /// of the device it is shared with ([`super::tethering`]).
+    pub tethers: Collection<Tether>,
 }
 
 /// The longest a notification is shown on the person's other devices, ms.
@@ -310,6 +317,45 @@ pub enum MoveStage {
     /// The device it was to move to could not connect it, so it went back.
     NotConnected,
     /// One of the two gave the move up, because the other left or it took too long.
+    GivenUp,
+}
+
+/// One phone's connection shared with another of the person's devices for a while
+/// ([`super::tethering`]): which phone was asked and when, and once its person let it, the hotspot
+/// it shares and until when. Times are ms since the epoch.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct Tether {
+    /// The phone asked to share its connection, by key (lowercase hex).
+    pub phone: String,
+    pub asked_ms: i64,
+    pub stage: TetherStage,
+    /// The hotspot the phone shares, by its network name; empty until it shares one.
+    pub network: String,
+    /// When the share reached its stage.
+    pub at_ms: i64,
+    /// When the phone stops sharing.
+    pub until_ms: i64,
+}
+
+/// How far one share of a phone's connection got.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TetherStage {
+    /// Asked: the phone asks its person.
+    #[default]
+    Asked,
+    /// The phone's person let it: its hotspot is on, and the device asking joins it.
+    Shared,
+    /// The device asking joined the phone's hotspot.
+    Joined,
+    /// The phone's person said no.
+    Declined,
+    /// The phone could not start its hotspot.
+    NotStarted,
+    /// The device asking could not join the phone's hotspot.
+    NotJoined,
+    /// Either device stopped it, or its time ran out.
+    Ended,
+    /// Nobody answered in time, or one of the two devices left.
     GivenUp,
 }
 
@@ -1495,6 +1541,29 @@ impl Devices {
         Ok(())
     }
 
+    /// Take the share with `device` asked at `asked_ms` from `from` to `to`, where it stands at
+    /// `from`: a share that went on or was asked again meanwhile is left as it is.
+    fn step_tether(
+        &mut self,
+        device: &str,
+        asked_ms: i64,
+        from: TetherStage,
+        to: TetherStage,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        if at_ms <= 0 {
+            return Err(Refusal::new("a share goes on at a time since the epoch"));
+        }
+        if let Some(kept) = self.tethers.get_mut(&Id::from_raw(device.to_owned()))
+            && kept.asked_ms == asked_ms
+            && kept.stage == from
+        {
+            kept.stage = to;
+            kept.at_ms = at_ms;
+        }
+        Ok(())
+    }
+
     /// Let `input.driver` drive `input.driven`'s keyboard, pointer or both under `input.nonce`
     /// from `input.granted_ms` until `input.until_ms`, as `input.driven` decides for the ask
     /// `input.driver` made at `input.asked_ms`.
@@ -2187,6 +2256,140 @@ impl Devices {
             .is_some_and(|kept| authorization.is_empty() || kept.authorization == authorization);
         if ends {
             self.speaker_playbacks.retain(|kept, _| *kept != id);
+        }
+        Ok(())
+    }
+
+    /// Ask the phone `phone` to share its connection with the device `device` until `until_ms`,
+    /// at `asked_ms`: replaces an earlier share with that device that ended, and is refused while
+    /// one is under way.
+    #[action]
+    pub fn ask_tether(
+        &mut self,
+        device: String,
+        phone: String,
+        asked_ms: i64,
+        until_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        validate_key(&phone)?;
+        if device == phone
+            || !self.devices.contains(&Id::from_raw(device.clone()))
+            || !self.devices.contains(&Id::from_raw(phone.clone()))
+        {
+            return Err(Refusal::new(
+                "a phone shares its connection with another of your devices",
+            ));
+        }
+        if asked_ms <= 0
+            || until_ms <= asked_ms
+            || until_ms.saturating_sub(asked_ms) > super::tethering::MAX_SHARE_MS
+        {
+            return Err(Refusal::new(
+                "a phone shares its connection from when it was asked, for two hours at most",
+            ));
+        }
+        let key = Id::from_raw(device);
+        let asked = Tether {
+            phone,
+            asked_ms,
+            at_ms: asked_ms,
+            until_ms,
+            ..Tether::default()
+        };
+        match self.tethers.get_mut(&key) {
+            Some(kept) if kept.under_way(asked_ms) => {
+                return Err(Refusal::new(
+                    "that device is using a phone's connection already",
+                ));
+            }
+            Some(kept) => *kept = asked,
+            None => {
+                self.tethers.push(key, asked);
+            }
+        }
+        Ok(())
+    }
+
+    /// Say, as the phone, whether its person let it share its connection with `device` for the
+    /// share asked at `asked_ms`, at `at_ms`: shared over the hotspot `network`, or, with no
+    /// network, `declined` by its person or not started. A share asked again meanwhile is left as
+    /// it is.
+    #[action(housekeeping)]
+    pub fn answer_tether(
+        &mut self,
+        device: String,
+        asked_ms: i64,
+        network: String,
+        declined: bool,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        let stage = match (network.is_empty(), declined) {
+            (true, true) => TetherStage::Declined,
+            (true, false) => TetherStage::NotStarted,
+            (false, true) => {
+                return Err(Refusal::new("a phone that declines shares no hotspot"));
+            }
+            (false, false)
+                if network.len() > super::tethering::MAX_NETWORK
+                    || network.chars().any(char::is_control) =>
+            {
+                return Err(Refusal::new("a shared hotspot is named in 1 to 32 bytes"));
+            }
+            (false, false) => TetherStage::Shared,
+        };
+        self.step_tether(&device, asked_ms, TetherStage::Asked, stage, at_ms)?;
+        if stage == TetherStage::Shared
+            && let Some(kept) = self.tethers.get_mut(&Id::from_raw(device))
+            && kept.asked_ms == asked_ms
+            && kept.stage == TetherStage::Shared
+        {
+            kept.network = network;
+        }
+        Ok(())
+    }
+
+    /// Say, as the device the phone shares with, whether it joined the phone's hotspot for the
+    /// share asked at `asked_ms`, at `at_ms`.
+    #[action(housekeeping)]
+    pub fn tether_joined(
+        &mut self,
+        device: String,
+        asked_ms: i64,
+        joined: bool,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        let next = if joined {
+            TetherStage::Joined
+        } else {
+            TetherStage::NotJoined
+        };
+        self.step_tether(&device, asked_ms, TetherStage::Shared, next, at_ms)
+    }
+
+    /// End the share with `device` asked at `asked_ms`, at `at_ms`: stopped by either device or
+    /// run out (`ended`), or given up, because nobody answered in time or a device left.
+    #[action]
+    pub fn end_tether(
+        &mut self,
+        device: String,
+        asked_ms: i64,
+        ended: bool,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        if at_ms <= 0 {
+            return Err(Refusal::new("a share ends at a time since the epoch"));
+        }
+        if let Some(kept) = self.tethers.get_mut(&Id::from_raw(device))
+            && kept.asked_ms == asked_ms
+            && !kept.stage.ended()
+        {
+            kept.stage = if ended {
+                TetherStage::Ended
+            } else {
+                TetherStage::GivenUp
+            };
+            kept.at_ms = at_ms;
         }
         Ok(())
     }

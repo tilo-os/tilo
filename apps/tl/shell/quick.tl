@@ -888,6 +888,7 @@ view devices_section() {
     let mine = device.devices
     let send = device.nearby_send
     if not mine.devices.is_empty()
+        or mine.connection != .none
         or not mine.sounds.is_empty()
         or not mine.routes.is_empty()
         or not mine.asks.is_empty()
@@ -922,6 +923,15 @@ view devices_section() {
                                     part: .decline,
                                 )
                             }
+                        }
+                    }
+                }
+            }
+            if let c = mine.connection {
+                ui.ListRow(connection_title(c), secondary: connection_line(c), icon: .signal) {
+                    trailing: {
+                        ui.Button("Stop", size: .small, role: .plain) {
+                            on press: device.stop_connection(device.devices)
                         }
                     }
                 }
@@ -975,6 +985,20 @@ view devices_section() {
                         on activate: device.press(device.devices, row: d.id, part: .row)
                         trailing: {
                             row(gap: .related, align: .center) {
+                                if d.online and mine.connection == .none {
+                                    ui.Button(
+                                        "Use {d.label}'s connection",
+                                        icon: .signal,
+                                        icon_only: true,
+                                        size: .small,
+                                        role: .plain,
+                                    ) {
+                                        on press: device.use_connection(
+                                            device.devices,
+                                            device: d.id,
+                                        )
+                                    }
+                                }
                                 if d.online {
                                     ui.Button(
                                         "Drive {d.label} with this pointer",
@@ -1119,6 +1143,22 @@ fn device_line(d: device.PersonalDeviceView, chosen: Option<Int>) -> Text {
     return if sound_chosen(chosen) and d.online and d.audio_output {
         "Takes the sound you send"
     } else if d.online { "Here now" } else { "Away" }
+}
+
+/// What the connection shared between this device and another of the person's is, in a row.
+fn connection_title(c: device.ConnectionView) -> Text {
+    if c.sharing {
+        "Sharing this connection with {c.label}"
+    } else { "Using {c.label}'s connection" }
+}
+
+/// How far a shared connection got: asked, its hotspot up, or joined.
+fn connection_line(c: device.ConnectionView) -> Text {
+    if c.joined {
+        "Connected over its hotspot {c.network}"
+    } else if c.network != "" {
+        "Joining the hotspot {c.network}"
+    } else if c.sharing { "Waiting for your answer" } else { "Waiting for an answer there" }
 }
 
 /// Where a device of the person's stands in the Nearby Send list.

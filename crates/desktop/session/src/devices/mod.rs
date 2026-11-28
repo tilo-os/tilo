@@ -310,6 +310,8 @@ pub(crate) struct Served {
     pressed: Rc<RefCell<Vec<Press>>>,
     /// The accessories the person asked to move to another device.
     handed: Rc<RefCell<Vec<HandOff>>>,
+    /// The connections the person asked to use (the device's id) or stop using (`None`).
+    connections: Rc<RefCell<Vec<Option<String>>>>,
     /// Why the last login from here failed, as the daemon said it: written by the login's own
     /// thread, read on every pass.
     refused: Arc<Mutex<String>>,
@@ -347,6 +349,7 @@ pub(crate) struct Parts {
     pub(crate) handoff: Rc<RefCell<Option<MediaOffer>>>,
     pub(crate) pressed: Rc<RefCell<Vec<Press>>>,
     pub(crate) handed: Rc<RefCell<Vec<HandOff>>>,
+    pub(crate) connections: Rc<RefCell<Vec<Option<String>>>>,
     pub(crate) refused: Arc<Mutex<String>>,
     pub(crate) tools: crate::tools::Handle,
 }
@@ -365,6 +368,7 @@ impl Served {
             handoff,
             pressed,
             handed,
+            connections,
             refused,
             tools,
         } = parts;
@@ -377,6 +381,7 @@ impl Served {
             handoff,
             pressed,
             handed,
+            connections,
             refused,
             tools,
             published: RefCell::new(None),
@@ -415,6 +420,11 @@ impl Served {
         });
         reading.picked = !reading.workspace.is_empty();
         reading.refused.clone_from(&self.refused.lock_recover());
+        if let (Some((record, _)), Some((local, _))) =
+            (&self.record, self.fabric.local_device_fabric_identity())
+        {
+            reading.connection = crate::tethering::connection(&record.get(), local.as_str());
+        }
         reading
     }
 }
@@ -459,6 +469,12 @@ impl Service for Served {
             DevicesAction::HandOff { address, device } => {
                 self.handed.borrow_mut().push(HandOff { address, device });
             }
+            // Sharing a connection needs the record, the radios and the person's answer on the
+            // other device, so the loop carries it out.
+            DevicesAction::UseConnection { device } => {
+                self.connections.borrow_mut().push(Some(device));
+            }
+            DevicesAction::StopConnection => self.connections.borrow_mut().push(None),
             // A login is this computer's daemon's to run, and can take a while: it answers the
             // caller when it lands, refusing in the daemon's own words.
             DevicesAction::LogIn { ticket } => {
@@ -694,6 +710,7 @@ impl From<&DevicesReading> for DevicesView {
             waiting: reading.waiting,
             held_back: reading.held_back.clone(),
             refused: reading.refused.clone(),
+            connection: reading.connection.clone(),
         }
     }
 }

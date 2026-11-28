@@ -49,31 +49,27 @@ pub struct Continuity {
 impl Continuity {
     /// Take the switches from a settings document, as Settings writes it.
     pub fn read(&self, document: &serde_json::Map<String, serde_json::Value>) {
-        let section = document.get("continuity");
-        let on = |name: &str| match section {
-            None => settings_store::continuity_privacy::ON_UNLESS_SET,
-            Some(serde_json::Value::Object(section)) => section
-                .get(name)
-                .map_or(settings_store::continuity_privacy::ON_UNLESS_SET, |value| {
-                    value.as_bool() == Some(true)
-                }),
-            Some(_) => false,
-        };
-        let enabled = on("enabled");
         for (switch, facet) in [
             (&self.media, ContinuityCapability::Media),
             (&self.file_transfer, ContinuityCapability::FileTransfer),
             (&self.notifications, ContinuityCapability::Notifications),
             (&self.apps, ContinuityCapability::AppContinuations),
         ] {
-            switch.store(enabled && on(facet.key()), Ordering::Relaxed);
+            switch.store(facet.allowed_in(document), Ordering::Relaxed);
         }
         // This device takes the keyboard and pointer of the person's other devices only with
         // Display & input on and its automatic grants left on, as Settings words both.
+        let automatic = match document.get("continuity") {
+            Some(serde_json::Value::Object(section)) => section
+                .get("automatic_display_input")
+                .map_or(settings_store::continuity_privacy::ON_UNLESS_SET, |value| {
+                    value.as_bool() == Some(true)
+                }),
+            Some(_) => false,
+            None => settings_store::continuity_privacy::ON_UNLESS_SET,
+        };
         self.display_input.store(
-            enabled
-                && on(ContinuityCapability::DisplayInput.key())
-                && on("automatic_display_input"),
+            ContinuityCapability::DisplayInput.allowed_in(document) && automatic,
             Ordering::Relaxed,
         );
     }

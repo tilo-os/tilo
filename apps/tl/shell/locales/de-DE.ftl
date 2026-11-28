@@ -619,6 +619,7 @@ d-u2tma44r = Gerätebereich
     .w-one-app-s-sound = Der Klang einer App
     .w-everything-this-device-plays = Alles, was dieses Gerät abspielt
     .w-drive-with-this-pointer = { $label } mit diesem Zeiger bedienen
+    .w-use-s-connection = Die Verbindung von { $label } nutzen
 
 
 d-2abiywd2 = Kachel-Editor
@@ -2209,6 +2210,16 @@ d-5bw77ouj = Gerätezeile
     .w-takes-the-sound-you-send = Nimmt den Ton an, den du sendest
     .w-here-now = Jetzt hier
     .w-away = Abwesend
+
+d-fmkn7v3q = Verbindungstitel
+    .w-sharing-this-connection-with = Diese Verbindung wird mit { $label } geteilt
+    .w-using-s-connection = Die Verbindung von { $label } wird genutzt
+
+d-zxfismzy = Verbindungszeile
+    .w-connected-over-its-hotspot = Über seinen Hotspot { $network } verbunden
+    .w-joining-the-hotspot = Tritt dem Hotspot { $network } bei
+    .w-waiting-for-your-answer = Wartet auf deine Antwort
+    .w-waiting-for-an-answer-there = Wartet dort auf eine Antwort
 
 d-annpbov6 = Ort in der Nähe
     .w-away = Abwesend

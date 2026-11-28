@@ -28,6 +28,7 @@ pub mod connected;
 pub mod device_answers;
 pub mod devices;
 pub mod speaker;
+pub mod tethering;
 pub mod wake;
 pub mod wifi;
 

@@ -995,6 +995,9 @@ impl Session {
             // A Bluetooth accessory the person moved to another of their devices, and what came of
             // the moves under way.
             self.shared.bluetooth.pump(&self.shared, fabric);
+            // A connection one of the person's devices shares with another, and the shares under
+            // way.
+            self.shared.tethering.pump(&self.shared, fabric);
             // How the wakes of the person's sleeping devices this device asked ended.
             self.shared.waking.follow(&self.shared);
             self.shared.follow_device_vpn(fabric);
