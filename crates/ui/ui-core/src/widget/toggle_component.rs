@@ -23,6 +23,10 @@ pub struct ToggleProps {
     /// and assistive technology reads it with the state.
     #[component(positional)]
     pub label: Option<String>,
+    /// What assistive technology calls the switch where its label is not its name: a row's
+    /// switch whose label is only its state ("On", "Off") says what it turns here ("Enable the
+    /// HTTPS rule"). Spoken as given; it does not change what is drawn.
+    pub accessible_name: Option<String>,
     /// Whether it can be turned now.
     pub enabled: bool,
     /// It was turned: whether it is on now, in the app's words.
@@ -36,6 +40,7 @@ impl Default for ToggleProps {
             value: Bound::default(),
             shown: None,
             label: None,
+            accessible_name: None,
             enabled: true,
             check: Event::None,
         }
@@ -50,6 +55,7 @@ impl Described for Toggle {
             value,
             shown,
             label,
+            accessible_name,
             enabled,
             check,
         } = props;
@@ -73,6 +79,9 @@ impl Described for Toggle {
         if let Some(label) = label {
             toggle = toggle.with_label(label);
         }
+        if let Some(name) = accessible_name {
+            toggle = toggle.with_resolved_accessible_name(name);
+        }
         toggle
     }
 
@@ -84,6 +93,10 @@ impl Described for Toggle {
         }
         if let Some(label) = props.label {
             self.set_label(label);
+        }
+        if let Some(name) = props.accessible_name {
+            self.control.accessible_name = Some(name);
+            self.control.name_resolved = true;
         }
         self.set_enabled(props.enabled);
         self.set_checked(props.shown.unwrap_or_else(|| props.value.state.get()));

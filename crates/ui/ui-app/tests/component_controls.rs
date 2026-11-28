@@ -57,6 +57,24 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_toggle_speaks_the_name_it_is_given_for_its_state;
+    {
+        let queue = tilo_ui_base::Intents::default();
+        let mut node = Node::new("Toggle", "rule", &queue)
+            .prop("shown", Value::Bool(true))
+            .prop("label", text("On"))
+            .prop("accessible_name", text("Enable the HTTPS rule"));
+        let props = ToggleProps::from_source(&mut node).unwrap();
+        let host = harness(Toggle::from_props("rule", props));
+        let toggle = host.root::<Toggle>();
+        assert_eq!(
+            Widget::accessibility(toggle).unwrap().name.as_deref(),
+            Some("Enable the HTTPS rule"),
+            "a row's switch says what it turns, not only its state",
+        );
+        assert!(toggle.has_label(), "its state still reads beside it");
+    }
+
     phase a_slider_reads_its_range_and_reports_the_value_it_is_let_go_at;
     {
         let queue = tilo_ui_base::Intents::default();

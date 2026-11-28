@@ -7971,6 +7971,13 @@
           "positional": true
         },
         {
+          "name": "accessible_name",
+          "doc": "What assistive technology calls the switch where its label is not its name: a row's switch whose label is only its state (\"On\", \"Off\") says what it turns here (\"Enable the HTTPS rule\"). Spoken as given; it does not change what is drawn.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "enabled",
           "doc": "Whether it can be turned now.",
           "type": "bool"

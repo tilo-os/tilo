@@ -68,6 +68,17 @@ tilo_test_env::scenario! {
                 Widget::accessibility(&key).unwrap().name.as_deref(),
                 Some("Tilo application window"),
             );
+
+            // A labelled switch whose label is only its state says what it turns:
+            // the spoken name is the setting, and the words beside it stay the state.
+            let stateful = Toggle::bound("any", "path")
+                .with_label("On")
+                .with_resolved_accessible_name("Enable the HTTPS rule");
+            assert_eq!(
+                Widget::accessibility(&stateful).unwrap().name.as_deref(),
+                Some("Enable the HTTPS rule"),
+            );
+            assert!(stateful.has_label(), "the state still reads beside it");
         }
     }
 
