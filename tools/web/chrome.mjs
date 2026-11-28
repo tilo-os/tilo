@@ -135,11 +135,20 @@ function body(file, accept) {
 
 /** Compress everything under `root` before serving: a page load then waits on
  * the transfer, not on the server compressing it, as a deployment's edge
- * serves what it compressed ahead of time. */
+ * serves what it compressed ahead of time.
+ *
+ * A file this can't read fails here, before any browser opens: Node names a
+ * file over 2 GiB by its size alone, and the file is what a person needs to
+ * know. */
 function warm(root) {
   for (const entry of readdirSync(root, {recursive: true, withFileTypes: true})) {
     if (!entry.isFile()) continue;
-    body(join(entry.parentPath, entry.name), 'br');
+    const file = join(entry.parentPath, entry.name);
+    try {
+      body(file, 'br');
+    } catch (error) {
+      throw new Error(`warm ${root}: ${file} is ${statSync(file).size} bytes: ${error.message}`, {cause: error});
+    }
   }
 }
 
