@@ -42,7 +42,13 @@ const READING: &str = r#"{
      "health": {"supported": true, "failing": false, "warnings": [], "temperature_c": 40,
                 "power_on_hours": 1200, "power_cycles": 300, "percent_used": 4,
                 "available_spare": 100, "bytes_written": 9000000000, "bytes_read": 12000000000,
-                "media_errors": 0, "bad_sectors": 0, "self_test": "success"}},
+                "media_errors": 0, "bad_sectors": 0, "self_test": "success",
+                "attributes": [
+                  {"number": 5, "name": "Reallocated_Sector_Ct", "value": 100,
+                   "worst": 100, "threshold": 10, "raw": "0"},
+                  {"number": 194, "name": "Temperature_Celsius", "value": 60,
+                   "worst": 40, "threshold": 0, "raw": "40"}
+                ]}},
     {"name": "sda", "model": "USB Disk", "serial": "S2", "transport": "usb", "kind": "disk",
      "size_bytes": 64000000000, "rotational": true, "removable": true, "read_only": false,
      "fstype": "exfat", "mountpoint": null, "partitions": [],
@@ -184,6 +190,32 @@ fn the_health_tab_shows_what_the_drive_reports() {
             "{wanted} shows"
         );
     }
+}
+
+#[test]
+fn the_health_tab_shows_the_drives_smart_attributes() {
+    let app = installed();
+    let window = window_showing(&app, &[("chosen", "nvme0n1"), ("tab", "health")]);
+    let words = shown(&window);
+    assert!(
+        !of_kind(window.tree(), "ui.DataTable").is_empty(),
+        "the attributes are a table: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "Reallocated_Sector_Ct"),
+        "each attribute is a row: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "194") && words.iter().any(|text| text == "40"),
+        "a row shows its number and raw value: {words:?}"
+    );
+    // A drive that reports no table shows no table.
+    let usb = window_showing(&app, &[("chosen", "sda"), ("tab", "health")]);
+    assert!(
+        of_kind(usb.tree(), "ui.DataTable").is_empty(),
+        "a drive with no attributes has no table: {:?}",
+        shown(&usb)
+    );
 }
 
 #[test]

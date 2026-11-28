@@ -44,6 +44,34 @@ pub struct DiskHealth {
     /// The last self-test's outcome as `UDisks2` names it (`success`, `aborted`, `inprogress`).
     #[serde(default)]
     pub self_test: Option<String>,
+    /// The attributes the drive's SMART table holds: an ATA drive's by id, the `NVMe` health
+    /// log's by name.
+    #[serde(default)]
+    pub attributes: Vec<SmartAttribute>,
+}
+
+/// One SMART attribute a drive reports.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct SmartAttribute {
+    /// Its number in an ATA drive's table (1..=255); `NVMe` attributes carry none.
+    #[serde(default)]
+    pub number: Option<u32>,
+    /// What the drive calls it.
+    pub name: String,
+    /// Its normalized value.
+    #[serde(default)]
+    pub value: u32,
+    /// The worst value seen, where the drive says.
+    #[serde(default)]
+    pub worst: Option<u32>,
+    /// The value at which the drive fails it.
+    #[serde(default)]
+    pub threshold: Option<u32>,
+    /// Its raw value as the drive reports it.
+    #[serde(default)]
+    pub raw: String,
 }
 
 /// What a partition's own encryption is, where it is one.

@@ -677,6 +677,32 @@ pub struct DriveHealth {
     /// `aborted`, `inprogress`, ...).
     #[serde(default)]
     pub self_test: Option<String>,
+    /// The attributes the drive's SMART table holds, as `SmartGetAttributes` answers them: the
+    /// `NVMe` health log's entries by name, an ATA drive's table by id.
+    #[serde(default)]
+    pub attributes: Vec<DriveAttribute>,
+}
+
+/// One SMART attribute a drive reports.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriveAttribute {
+    /// Its id in an ATA drive's SMART table (1..=255); `NVMe` attributes carry none.
+    #[serde(default)]
+    pub id: Option<u32>,
+    /// What the drive calls it (`Reallocated_Sector_Ct`, `temperature`).
+    pub name: String,
+    /// Its normalized value.
+    #[serde(default)]
+    pub value: u32,
+    /// The worst value seen in this attribute's life, where the drive says.
+    #[serde(default)]
+    pub worst: Option<u32>,
+    /// The value at which the drive fails this attribute.
+    #[serde(default)]
+    pub threshold: Option<u32>,
+    /// Its raw value as the drive reports it (`"0"`, `"1200"`, `"1 2 3"`).
+    #[serde(default)]
+    pub raw: String,
 }
 
 pub fn write_message<W: std::io::Write + ?Sized, T: Serialize>(

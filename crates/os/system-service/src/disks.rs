@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use tilo_actions::ResourceSpec;
 use tilo_service::{offer, unavailable};
 use tilo_system_resources::disks::{
-    Benchmark, DiskAction, DiskHealth, Disks, Drive, Encryption, Partition,
+    Benchmark, DiskAction, DiskHealth, Disks, Drive, Encryption, Partition, SmartAttribute,
 };
 use tilo_system_stats::client::Client;
 use tilo_system_stats::protocol::{DriveHealth, StorageDevice};
@@ -183,6 +183,18 @@ fn health_of(health: &DriveHealth) -> DiskHealth {
         media_errors: health.media_errors,
         bad_sectors: health.bad_sectors,
         self_test: health.self_test.clone(),
+        attributes: health
+            .attributes
+            .iter()
+            .map(|attribute| SmartAttribute {
+                number: attribute.id,
+                name: attribute.name.clone(),
+                value: attribute.value,
+                worst: attribute.worst,
+                threshold: attribute.threshold,
+                raw: attribute.raw.clone(),
+            })
+            .collect(),
     }
 }
 

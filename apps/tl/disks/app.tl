@@ -671,6 +671,43 @@ view health_pane(drive: device.Drive) {
                     ui.Property("Last self-test", self_test)
                 }
             }
+            if not health.attributes.is_empty() {
+                ui.DataTable(name: "SMART attributes", fill: true) {
+                    columns: {
+                        ui.DataTableColumn("ID", kind: .numeric, width: .auto)
+                        ui.DataTableColumn("Attribute", width: .flex)
+                        ui.DataTableColumn("Value", kind: .numeric, width: .auto)
+                        ui.DataTableColumn("Worst", kind: .numeric, width: .auto)
+                        ui.DataTableColumn("Threshold", kind: .numeric, width: .auto)
+                        ui.DataTableColumn("Raw", kind: .identifier, width: .flex)
+                    }
+                    for attribute in health.attributes {
+                        ui.DataTableRow(attribute) {
+                            cells: {
+                                ui.DataTableCell(
+                                    "ID",
+                                    value: if let number = attribute.number {
+                                        "{number}"
+                                    } else { "" },
+                                )
+                                ui.DataTableCell("Attribute", value: attribute.name)
+                                ui.DataTableCell("Value", value: "{attribute.value}")
+                                ui.DataTableCell(
+                                    "Worst",
+                                    value: if let worst = attribute.worst { "{worst}" } else { "" },
+                                )
+                                ui.DataTableCell(
+                                    "Threshold",
+                                    value: if let threshold = attribute.threshold {
+                                        "{threshold}"
+                                    } else { "" },
+                                )
+                                ui.DataTableCell("Raw", value: attribute.raw)
+                            }
+                        }
+                    }
+                }
+            }
         }
     } else {
         ui.EmptyState(

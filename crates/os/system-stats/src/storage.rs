@@ -140,7 +140,7 @@ pub mod udisks {
     use zbus::blocking::Connection;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-    use crate::protocol::DriveHealth;
+    use crate::protocol::{DriveAttribute, DriveHealth};
 
     const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
     const NVME: &str = "org.freedesktop.UDisks2.NVMe.Controller";
@@ -175,9 +175,11 @@ pub mod udisks {
                 return None;
             }
             if let Some(controller) = self.all(&drive, NVME) {
-                return Some(nvme(&controller, self.nvme_log(&drive).as_ref()));
+                let log = self.nvme_log(&drive);
+                return Some(nvme(&controller, log.as_ref()));
             }
-            self.all(&drive, ATA).map(|ata_props| ata(&ata_props))
+            self.all(&drive, ATA)
+                .map(|ata_props| ata(&ata_props, self.ata_attributes(&drive)))
         }
 
         fn all(&self, path: &str, interface: &str) -> Option<Props> {
@@ -193,6 +195,44 @@ pub mod udisks {
                 .ok()?;
             let props: Props = reply.body().deserialize().ok()?;
             (!props.is_empty()).then_some(props)
+        }
+
+        /// An ATA drive's SMART table, as `SmartGetAttributes` answers it: each attribute's id
+        /// and the properties the drive reports of it.
+        fn ata_attributes(&self, drive: &str) -> Vec<DriveAttribute> {
+            let options: HashMap<&str, Value<'_>> = HashMap::new();
+            let Ok(reply) = self.connection.call_method(
+                Some(SERVICE),
+                drive,
+                Some(ATA),
+                "SmartGetAttributes",
+                &(options,),
+            ) else {
+                return Vec::new();
+            };
+            let Ok(attributes) = reply.body().deserialize::<Vec<(u32, Props)>>() else {
+                return Vec::new();
+            };
+            attributes
+                .into_iter()
+                .map(|(id, props)| {
+                    let number =
+                        |key: &str| get::<i32>(&props, key).and_then(|n| u32::try_from(n).ok());
+                    // The drive's raw value is what it prints beside the normalized one.
+                    let raw = get::<u64>(&props, "Pretty")
+                        .or_else(|| get::<u64>(&props, "Value"))
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    DriveAttribute {
+                        id: Some(id),
+                        name: get::<String>(&props, "Name").unwrap_or_default(),
+                        value: number("Value").unwrap_or_default(),
+                        worst: number("Worst"),
+                        threshold: number("Threshold"),
+                        raw,
+                    }
+                })
+                .collect()
         }
 
         fn nvme_log(&self, drive: &str) -> Option<Props> {
@@ -259,6 +299,7 @@ pub mod udisks {
         let log_u64 = |key: &str| log.and_then(|log| get::<u64>(log, key));
         let log_u8 = |key: &str| log.and_then(|log| get::<u8>(log, key));
         let updated = when(get::<u64>(controller, "SmartUpdated"));
+        let attributes = log.map(attributes_of_log).unwrap_or_default();
         DriveHealth {
             supported: true,
             updated,
@@ -279,11 +320,44 @@ pub mod udisks {
             failing_attributes: None,
             self_test: get::<String>(controller, "SmartSelftestStatus")
                 .filter(|status| !status.is_empty()),
+            attributes,
         }
     }
 
+    /// The `NVMe` health log's entries as attributes: each by the name the log gives it, with
+    /// the value as it stands.
+    fn attributes_of_log(log: &Props) -> Vec<DriveAttribute> {
+        let mut attributes: Vec<DriveAttribute> = log
+            .iter()
+            .map(|(name, value)| {
+                let plain = plain(value);
+                let value = u64::try_from(plain)
+                    .ok()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or_default();
+                let raw = match plain {
+                    Value::U64(n) => n.to_string(),
+                    Value::I64(n) => n.to_string(),
+                    Value::U32(n) => n.to_string(),
+                    Value::I32(n) => n.to_string(),
+                    other => format!("{other:?}"),
+                };
+                DriveAttribute {
+                    id: None,
+                    name: name.clone(),
+                    value,
+                    worst: None,
+                    threshold: None,
+                    raw,
+                }
+            })
+            .collect();
+        attributes.sort_by(|a, b| a.name.cmp(&b.name));
+        attributes
+    }
+
     #[must_use]
-    pub fn ata(props: &Props) -> DriveHealth {
+    pub fn ata(props: &Props, attributes: Vec<DriveAttribute>) -> DriveHealth {
         let supported = get::<bool>(props, "SmartSupported").unwrap_or(false);
         let updated = when(get::<u64>(props, "SmartUpdated"));
         let count = |key: &str| get::<i64>(props, key).and_then(|n| u64::try_from(n).ok());
@@ -309,6 +383,7 @@ pub mod udisks {
                 .and_then(|n| u32::try_from(n).ok()),
             self_test: get::<String>(props, "SmartSelftestStatus")
                 .filter(|status| !status.is_empty()),
+            attributes,
         }
     }
 
@@ -369,17 +444,37 @@ pub mod udisks {
             assert_eq!(health.percent_used, None, "no log, no wear reading");
         }
 
+        /// The `NVMe` health log's entries are the drive's attributes, by name.
+        #[test]
+        fn an_nvme_health_log_reads_as_attributes() {
+            let log = props(vec![
+                ("power_cycles", Value::from(42_u64)),
+                ("media_errors", Value::from(0_u64)),
+            ]);
+            let health = nvme(
+                &props(vec![("SmartUpdated", Value::from(1_u64))]),
+                Some(&log),
+            );
+            let names: Vec<&str> = health.attributes.iter().map(|a| a.name.as_str()).collect();
+            assert_eq!(names, ["media_errors", "power_cycles"], "each by its name");
+            assert_eq!(health.attributes[1].value, 42);
+            assert_eq!(health.attributes[1].raw, "42");
+        }
+
         #[test]
         fn an_ata_drives_health_reads_from_its_properties() {
-            let health = ata(&props(vec![
-                ("SmartSupported", Value::from(true)),
-                ("SmartUpdated", Value::from(1_792_637_448_u64)),
-                ("SmartFailing", Value::from(false)),
-                ("SmartTemperature", Value::from(312.15_f64)),
-                ("SmartPowerOnSeconds", Value::from(36_000_u64)),
-                ("SmartNumBadSectors", Value::from(8_i64)),
-                ("SmartNumAttributesFailing", Value::from(-1_i32)),
-            ]));
+            let health = ata(
+                &props(vec![
+                    ("SmartSupported", Value::from(true)),
+                    ("SmartUpdated", Value::from(1_792_637_448_u64)),
+                    ("SmartFailing", Value::from(false)),
+                    ("SmartTemperature", Value::from(312.15_f64)),
+                    ("SmartPowerOnSeconds", Value::from(36_000_u64)),
+                    ("SmartNumBadSectors", Value::from(8_i64)),
+                    ("SmartNumAttributesFailing", Value::from(-1_i32)),
+                ]),
+                Vec::new(),
+            );
             assert!(health.supported && !health.failing);
             assert_eq!(health.temperature_c, Some(39));
             assert_eq!(health.power_on_hours, Some(10));
