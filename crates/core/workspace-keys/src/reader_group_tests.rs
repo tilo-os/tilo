@@ -613,6 +613,7 @@ fn published_genesis(workspace: &Arc<Workspace>, device: &collab_types::Ed25519P
             }
             InboundGovernance::AccessRequest { .. }
             | InboundGovernance::DocumentFrame { .. }
-            | InboundGovernance::DocumentAccessRequest { .. } => false,
+            | InboundGovernance::DocumentAccessRequest { .. }
+            | InboundGovernance::Settled(_) => false,
         })
 }

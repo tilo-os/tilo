@@ -193,6 +193,11 @@ pub enum InboundGovernance {
         scope: neighbour_wire::KeyScope,
         request: Box<MlsAccessRequestV1>,
     },
+    /// A workspace's governance settled on the host holding it, naming the readers of its
+    /// records: the messages kept for it are judged in the pass this queues. It travels as
+    /// inbound work rather than a call into the service, so a host tells the pump without taking
+    /// the service's lock while it holds the workspace's.
+    Settled(WorkspaceId),
 }
 
 impl InboundGovernance {
@@ -1485,6 +1490,11 @@ impl WorkspaceKeys {
                     }
                     ScopeAnswer::Refused => (),
                 }
+            }
+            InboundGovernance::Settled(workspace) => {
+                // A workspace's governance settled on the host: what waited for the readers it
+                // names is judged in this pass, which takes the settle here.
+                self.workspace_settled(workspace);
             }
         }
     }

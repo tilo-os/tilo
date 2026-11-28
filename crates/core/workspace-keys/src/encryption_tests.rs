@@ -1297,7 +1297,8 @@ fn a_new_group_announces_its_genesis_to_the_workspace() {
             InboundGovernance::Frame { frame, .. } => Some(frame),
             InboundGovernance::AccessRequest { .. }
             | InboundGovernance::DocumentFrame { .. }
-            | InboundGovernance::DocumentAccessRequest { .. } => None,
+            | InboundGovernance::DocumentAccessRequest { .. }
+            | InboundGovernance::Settled(_) => None,
         })
         .collect();
     assert_eq!(genesis.len(), 1, "announced once per session");
@@ -2320,7 +2321,8 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
                 InboundGovernance::Frame { frame, .. } => Some(*frame),
                 InboundGovernance::AccessRequest { .. }
                 | InboundGovernance::DocumentFrame { .. }
-                | InboundGovernance::DocumentAccessRequest { .. } => None,
+                | InboundGovernance::DocumentAccessRequest { .. }
+                | InboundGovernance::Settled(_) => None,
             })
             .unwrap();
         (workspace, founder, genesis)
