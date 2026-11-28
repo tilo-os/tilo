@@ -110,6 +110,11 @@ pub struct WindowFrameProps {
     /// carry too. The border between two windows is the previous window's trailing edge, and the
     /// drag resizes the one whose width it changes.
     pub leads: bool,
+    /// Whether its leading corners meet the display's edge, where the row starts there: a corner
+    /// at the screen is square, since a rounded one would bite a hole out of the screen.
+    pub square_leading: bool,
+    /// Whether its trailing corners meet the display's edge, where the row ends there.
+    pub square_trailing: bool,
     /// A press on the window's bar, where nothing on it took the press: the person reaching for
     /// the window, which the shell answers by bringing it forward with the keyboard in it.
     #[component(event(press))]
@@ -145,6 +150,8 @@ impl Default for WindowFrameProps {
             resizable: false,
             narrowest: None,
             leads: false,
+            square_leading: false,
+            square_trailing: false,
             press: Event::None,
             resize: Event::None,
             body: None,
@@ -229,6 +236,9 @@ pub struct WindowFrame {
     narrowest: Option<f64>,
     /// Whether a window stands before it, so its leading edge is a border too.
     leads: bool,
+    /// Square corners where the window meets the display's edges.
+    square_leading: bool,
+    square_trailing: bool,
     resize: Event,
     /// A press on the trailing edge being carried.
     grip: Option<Grip>,
@@ -402,6 +412,8 @@ impl Described for WindowFrame {
             resizable,
             narrowest,
             leads,
+            square_leading,
+            square_trailing,
             press,
             resize,
             body,
@@ -475,6 +487,8 @@ impl Described for WindowFrame {
             resizable,
             narrowest,
             leads,
+            square_leading,
+            square_trailing,
             resize,
             grip: None,
             feedback: crate::widget::ResizeFeedback::new(),
@@ -511,6 +525,8 @@ impl Described for WindowFrame {
         self.resizable = props.resizable;
         self.narrowest = props.narrowest;
         self.leads = props.leads;
+        self.square_leading = props.square_leading;
+        self.square_trailing = props.square_trailing;
         self.resize = props.resize;
         self.press = tilo_ui_base::widget::Press::of(props.press);
         true
@@ -1430,6 +1446,21 @@ impl Decorator for WindowFrame {
     }
 }
 
+/// The radius at each corner of a window: square where the corner meets the display's edge, the
+/// theme's radius everywhere else. A rounded corner at the screen would bite a hole out of it.
+#[must_use]
+pub fn corner_radii(
+    radius: f64,
+    square_leading: bool,
+    square_trailing: bool,
+) -> vello::kurbo::RoundedRectRadii {
+    let (leading, trailing) = (
+        if square_leading { 0.0 } else { radius },
+        if square_trailing { 0.0 } else { radius },
+    );
+    vello::kurbo::RoundedRectRadii::new(leading, trailing, trailing, leading)
+}
+
 impl WindowFrame {
     /// The window itself, drawn where `rect` says: what [`Decorator::draw`] draws once the
     /// window is posed where its arrival or move has reached.
@@ -1441,6 +1472,7 @@ impl WindowFrame {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
+        let radii = corner_radii(radius, self.square_leading, self.square_trailing);
         if self.focused {
             tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         }
@@ -1450,7 +1482,7 @@ impl WindowFrame {
             BlendMode::default(),
             1.0,
             transform,
-            &RoundedRect::from_rect(rect, radius),
+            &RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radii),
         );
         // // The content under the window's own pill under the window's own controls: the pill // stands
         // over the app's header row where the app's row holds the bar, and over the // frame's bar
@@ -1487,7 +1519,13 @@ impl WindowFrame {
                 transform,
                 edge,
                 None,
-                &RoundedRect::from_rect(rect.inflate(0.5, 0.5), radius + 0.5),
+                &RoundedRect::new(
+                    rect.x0 - 0.5,
+                    rect.y0 - 0.5,
+                    rect.x1 + 0.5,
+                    rect.y1 + 0.5,
+                    corner_radii(radius + 0.5, self.square_leading, self.square_trailing),
+                ),
             );
         }
     }
@@ -1677,6 +1715,22 @@ mod tests {
         (tilo_ui_base::a11y::relative_luminance(seen)
             - tilo_ui_base::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
         .abs()
+    }
+
+    /// A corner at the display's edge is square, and the others keep the theme's radius.
+    #[test]
+    fn a_corner_at_the_display_s_edge_is_square() {
+        let at_the_edge = corner_radii(12.0, true, false);
+        assert_eq!(at_the_edge.top_left, 0.0, "the leading corner is square");
+        assert_eq!(at_the_edge.bottom_left, 0.0, "both leading corners are");
+        assert_eq!(
+            at_the_edge.top_right, 12.0,
+            "the trailing corner stays round"
+        );
+        let both = corner_radii(12.0, true, true);
+        assert_eq!((both.top_right, both.bottom_right), (0.0, 0.0));
+        let inside = corner_radii(12.0, false, false);
+        assert_eq!((inside.top_left, inside.bottom_right), (12.0, 12.0));
     }
 
     /// The window in front wears the accent on its edge, whatever the finish: a shell says which

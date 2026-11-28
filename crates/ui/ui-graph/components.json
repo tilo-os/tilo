@@ -8741,6 +8741,16 @@
           "name": "leads",
           "doc": "Whether a window stands before it in its row, so its leading edge is a border a person can carry too. The border between two windows is the previous window's trailing edge, and the drag resizes the one whose width it changes.",
           "type": "bool"
+        },
+        {
+          "name": "square_leading",
+          "doc": "Whether its leading corners meet the display's edge, where the row starts there: a corner at the screen is square, since a rounded one would bite a hole out of the screen.",
+          "type": "bool"
+        },
+        {
+          "name": "square_trailing",
+          "doc": "Whether its trailing corners meet the display's edge, where the row ends there.",
+          "type": "bool"
         }
       ],
       "parts": [

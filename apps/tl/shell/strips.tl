@@ -468,6 +468,9 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
     // A window with a window before it carries its leading edge too: the border between them is
     // the previous window's trailing edge, and it is that window's width the drag changes.
     let leads = if let _ = strip_lead(a, s) { true } else { false }
+    // The row's first and last windows reach the display's edges: their corners there are square,
+    // since a rounded corner at the screen bites a hole out of it.
+    let trailing = strip_after(row_strips(a, s), s) == ""
     ui.DropTarget {
         on drop(target: host.Resource): tab_place_here(a, s, target)
         ui.WindowFrame(
@@ -480,6 +483,8 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             resizable: resizable,
             narrowest: if resizable { .some(44.0 * space.rem) } else { .none },
             leads: leads,
+            square_leading: not leads,
+            square_trailing: trailing,
             fill,
         ) {
             // The narrowest a drag may leave it is the row's own floor, in the columns it draws
