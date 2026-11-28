@@ -418,6 +418,9 @@ pub struct Instance {
     out: Vec<ToUi>,
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
+    /// Where each member is in each resource's document, as presence last reported it: the
+    /// member, their point and what they selected, in the document's own units.
+    spots: HashMap<String, Vec<(MemberId, [f64; 4])>>,
     lenses_changed: bool,
     /// The workspace's members' resource named a different list since the window was last told
     /// what people are called ([`Self::take_member_names`]).
@@ -590,6 +593,7 @@ impl Instance {
             page: None,
             out: Vec::new(),
             lenses: HashMap::new(),
+            spots: HashMap::new(),
             lenses_changed: false,
             member_names_moved: false,
             calls: HashMap::new(),
@@ -1672,6 +1676,50 @@ impl Instance {
         }
         self.lenses = now;
         self.lenses_changed = true;
+    }
+
+    /// Where each other member is in the document of each resource, as their app declared it
+    /// with `presence`, by the resource's id: the member, their point and what they selected, in
+    /// the document's own units. What `spots(r)` reads in this app's views.
+    pub fn set_spots(&mut self, spots: HashMap<String, Vec<(MemberId, [f64; 4])>>) {
+        if spots == self.spots {
+            return;
+        }
+        if let Some(host) = self.host() {
+            for gone in self
+                .spots
+                .keys()
+                .filter(|resource| !spots.contains_key(*resource))
+            {
+                host.runtime().set_spots(gone, &[]);
+            }
+            for (resource, at) in &spots {
+                if self.spots.get(resource) == Some(at) {
+                    continue;
+                }
+                let at: Vec<(Actor, [f64; 4])> = at
+                    .iter()
+                    .map(|(who, at)| (Actor::Member(who.clone()), *at))
+                    .collect();
+                host.runtime().set_spots(resource, &at);
+            }
+        }
+        self.spots = spots;
+        self.lenses_changed = true;
+    }
+
+    /// Where the person looking is in the document a view of the window draws, as the view
+    /// declared it with `presence`: the resource it is in, and the point and what they selected,
+    /// in the document's own units. The detail view's when it declares one (the document in
+    /// front), else the root view's (a window that draws its document itself, like a cut).
+    #[must_use]
+    pub fn declared_spot(&self) -> Option<(ResourceRef, [f64; 4])> {
+        self.level(Level::Detail)
+            .and_then(|shown| shown.view.borrow().declared_spot())
+            .or_else(|| {
+                self.level(Level::Root)
+                    .and_then(|shown| shown.view.borrow().declared_spot())
+            })
     }
 
     // ----- staging -------------------------------------------------------------------------

@@ -41,6 +41,9 @@ pub struct PaintSurfaceProps {
     /// The frame the overlay fills, `[x, y, width, height]` in artwork units; the whole artwork
     /// when absent.
     pub overlay_rect: Option<Vec<f64>>,
+    /// Where other members are at work, as the view read them from `spots(a)`: their caret and
+    /// what they selected, in the artwork's own units.
+    pub peers: Vec<crate::widget::PeerSpot>,
     /// How strongly the overlay shows over the artwork, 0 to 1 (default 1).
     pub overlay_opacity: Option<f64>,
     /// What it shows, as assistive technology announces it.
@@ -127,6 +130,7 @@ impl Described for PaintSurface {
             Some([*x?, *y?, *width?, *height?])
         });
         self.overlay_opacity = props.overlay_opacity.unwrap_or(1.0);
+        self.peers = props.peers;
         self.label = props.label;
         self.on_stroke_start = fire_vec(props.stroke_start);
         self.on_stroke = fire_vec(props.stroke);

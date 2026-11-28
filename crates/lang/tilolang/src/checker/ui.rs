@@ -603,6 +603,17 @@ impl Checker<'_> {
             }
             return self.expand(&t, c, args, parent);
         }
+        // `presence(r, x, y, wide, tall)` in a view: where the person looking works in the
+        // document of `r`, in its own units, which the platform says to the workspace and draws
+        // everyone else's place from. It builds no node where it is written.
+        if let ExprKind::Ident(name) = &callee.kind
+            && name == "presence"
+            && self.lookup(name).is_none()
+            && prims::prim(name).is_none()
+            && self.own_callable(name).is_none()
+        {
+            return self.presence_statement(args, span);
+        }
         let node = match &callee.kind {
             ExprKind::Ident(name) => {
                 if let Some((id, ty)) = self.lookup(name) {
@@ -813,6 +824,45 @@ impl Checker<'_> {
             }
         }
         n
+    }
+
+    /// `presence(r, x, y, wide, tall)`, a view's declaration of where its person works in the
+    /// document of `r`: the point they are at and the rectangle they selected around it, in the
+    /// document's own units. The platform says it to the workspace; the view builds no node
+    /// where it is written.
+    fn presence_statement(&mut self, args: &[ast::Arg], span: Span) -> LocalId {
+        let [resource, x, y, wide, tall] = args else {
+            self.err(
+                "E022",
+                span,
+                "`presence` takes the document, the place in it and what is selected there: \
+                 `presence(r, x, y, wide, tall)`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return self.dead_node();
+        };
+        let Some(r) = self.resource_arg("presence", std::slice::from_ref(resource), span) else {
+            return self.dead_node();
+        };
+        for arg in [x, y, wide, tall] {
+            if arg.name.is_some() {
+                self.err(
+                    "E022",
+                    arg.value.span,
+                    "`presence` takes its place by position: `presence(r, x, y, wide, tall)`",
+                );
+            }
+        }
+        let mut at = vec![r];
+        at.extend(
+            [x, y, wide, tall]
+                .iter()
+                .map(|arg| self.expr_as(&arg.value, &Ty::Float)),
+        );
+        self.emit(Stmt::Eval(Ex::host(Imp::Presence, at, Ty::Unit)));
+        self.dead_node()
     }
 
     /// The people a rich input's `@` drawer offers after the conversation's own, which no view declares:

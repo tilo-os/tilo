@@ -217,6 +217,9 @@ pub struct TrackTimeline {
     pub(crate) step: f64,
     pub(crate) tracks: Vec<Track>,
     pub(crate) markers: Vec<Marker>,
+    /// Where other members are at work in the cut, as the view read them from `spots(p)`: where
+    /// each plays from and the stretch each selected.
+    pub(crate) peers: Vec<crate::widget::PeerSpot>,
     pub(crate) scrub: Event,
     pub(crate) seek: Event,
     pub(crate) zoomed: Event,
@@ -258,6 +261,7 @@ impl TrackTimeline {
             step: 0.0,
             tracks: Vec::new(),
             markers: Vec::new(),
+            peers: Vec::new(),
             scrub: Event::None,
             seek: Event::None,
             zoomed: Event::None,
@@ -1424,6 +1428,34 @@ impl TrackTimeline {
                 hairline * 2.0,
             );
         }
+        // Who else is in the cut: where each plays from, and the stretch each selected, in
+        // their own colour, placed by the same time the ruler is.
+        let marks: Vec<tilo_ui_base::presence::SpotMark<'_>> = self
+            .peers
+            .iter()
+            .map(|peer| tilo_ui_base::presence::SpotMark {
+                color: peer.color(),
+                name: &peer.name,
+                agent: peer.is_agent(),
+                point: Point::new(geom.x_of(peer.x), ruler.y1),
+                selection: peer.selection().map(|(at, _, wide, tall)| {
+                    let from = geom.x_of(at);
+                    let to = geom.x_of(at + wide);
+                    let row = if tall > 0.0 {
+                        tall
+                    } else {
+                        tracks_bottom - ruler.y1
+                    };
+                    Rect::new(
+                        from.min(to),
+                        ruler.y1,
+                        from.max(to),
+                        (ruler.y1 + row).min(tracks_bottom),
+                    )
+                }),
+            })
+            .collect();
+        tilo_ui_base::presence::draw_peer_spots(ctx.scene, ctx.transform, ctx.text, theme, &marks);
         ctx.scene.pop_layer();
 
         // The bar under the tracks: how much of the cut the lane shows and where it stands.

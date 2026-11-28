@@ -521,6 +521,29 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Spot",
+        id: "host-spot",
+        doc: "Where a member is at work in a document a view draws: the point they are at and the \
+              rectangle they selected around it, in the document's own units. What `spots(r)` \
+              reads: a view declares its own with `presence`, and the surface showing the document \
+              places everyone's.",
+        fields: &[
+            ("who", "Actor", "Whose place it is."),
+            ("x", "Float", "Across the document, in its own units."),
+            ("y", "Float", "Down the document, in its own units."),
+            (
+                "wide",
+                "Float",
+                "How wide what they selected is, in the same units; zero with `tall` for a point.",
+            ),
+            (
+                "tall",
+                "Float",
+                "How tall what they selected is, in the same units.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Meta",
         id: "host-meta",
         doc: "What the platform shows of a resource or of its type.",

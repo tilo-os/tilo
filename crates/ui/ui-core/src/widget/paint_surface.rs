@@ -20,7 +20,9 @@ use vello::peniko::{Blob, Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pictures::Pictures;
-use crate::widget::PictureSource;
+use crate::widget::{PeerSpot, PictureSource};
+use tilo_ui_base::presence::{SpotMark, draw_peer_spots};
+use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
@@ -42,6 +44,9 @@ pub struct PaintSurface {
     pub(crate) overlay: Option<PictureSource>,
     /// The frame the overlay fills, in artwork units; the whole artwork when absent.
     pub(crate) overlay_rect: Option<[f64; 4]>,
+    /// Other members at work in the artwork, as the app read them from `spots(a)`: placed on
+    /// the artwork's own units, so their carets and selections move with the view.
+    pub(crate) peers: Vec<PeerSpot>,
     pub(crate) overlay_opacity: f64,
     pub(crate) pictures: Option<Pictures>,
     pub(crate) rect: Rect,
@@ -87,6 +92,7 @@ impl Default for PaintSurface {
             picture: None,
             overlay: None,
             overlay_rect: None,
+            peers: Vec::new(),
             overlay_opacity: 1.0,
             pictures: None,
             rect: Rect::ZERO,
@@ -170,7 +176,7 @@ impl PaintSurface {
     }
 
     /// Paint what is there and the stroke under the hand.
-    fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn paint(&self, scene: &mut Scene, transform: Affine, text: &mut TextRenderer, theme: &Theme) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
@@ -209,7 +215,45 @@ impl PaintSurface {
         }
         self.paint_overlay(scene, to_screen);
         self.paint_stroke(scene, to_screen);
+        self.paint_peers(scene, transform, text, theme);
         scene.pop_layer();
+    }
+
+    /// Other members at work in the artwork: their caret where they point, and the outline of
+    /// what they selected, placed through the same view the artwork is drawn at.
+    fn paint_peers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.peers.is_empty() {
+            return;
+        }
+        let (scale, origin) = self.fit();
+        let place = |x: f64, y: f64| {
+            Point::new(
+                origin.x + (x - self.pan.x) * scale,
+                origin.y + (y - self.pan.y) * scale,
+            )
+        };
+        let marks: Vec<SpotMark<'_>> = self
+            .peers
+            .iter()
+            .map(|peer| SpotMark {
+                color: peer.color(),
+                name: &peer.name,
+                agent: peer.is_agent(),
+                point: place(peer.x, peer.y),
+                selection: peer.selection().map(|(x, y, wide, tall)| {
+                    let a = place(x, y);
+                    let b = place(x + wide, y + tall);
+                    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
+                }),
+            })
+            .collect();
+        draw_peer_spots(scene, transform, text, theme, &marks);
     }
 
     /// The picture laid over the artwork, such as a comparison's changed region, within its
@@ -334,7 +378,12 @@ impl Widget for PaintSurface {
     tilo_ui_base::rect_geometry!();
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
-        self.paint(ctx.scene, ctx.transform, ctx.theme);
+        #[allow(
+            unused_variables,
+            reason = "a draw binds only the parts it paints with"
+        )]
+        let (scene, transform, text, theme, _env) = ctx.parts();
+        self.paint(scene, transform, text, theme);
     }
 
     fn needs_redraw(&self) -> bool {

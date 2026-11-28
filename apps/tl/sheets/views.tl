@@ -251,6 +251,47 @@ fn columns_of_range(range: Text) -> List<Text> {
     }
 }
 
+/// Where the person's selection is in the sheet, in its own units: the first column and row
+/// they chose, counting from 1, and how many columns and rows it covers. What presence says.
+fn area_spot(range: Text) -> List<Float> {
+    let left = column_index(column_of(range_start(range)))
+    let right = column_index(column_of(range_end(range)))
+    let top = row_of(range_start(range))
+    let bottom = row_of(range_end(range))
+    let first = if left <= right { left } else { right }
+    let last = if left <= right { right } else { left }
+    let high = if top <= bottom { top } else { bottom }
+    let low = if top <= bottom { bottom } else { top }
+    // A1 is the first cell there is: a range that named none stands there rather than at a
+    // cell no sheet has.
+    let first = first.max(1)
+    let high = high.max(1)
+    let last = last.max(first)
+    let low = low.max(high)
+    [first.to_float(), high.to_float(), (last - first + 1).to_float(), (low - high + 1).to_float()]
+}
+
+/// Other members at work in the workbook, as presence reports them: the cells each chose, as
+/// the grid draws them.
+fn sheet_peers(w: Workbook) -> List<ui.SheetPeer> {
+    spots(w).map(p -> .peer(area: peer_area(p.x, p.y, p.wide, p.tall), who: p.who))
+}
+
+/// The cells a member's place covers, as `A1` or `A1:B2`.
+fn peer_area(x: Float, y: Float, wide: Float, tall: Float) -> Text {
+    let first = cell_reference(x.to_int(), y.to_int())
+    if wide <= 0.0 and tall <= 0.0 {
+        first
+    } else {
+        "{first}:{cell_reference(x.to_int() + wide.to_int() - 1, y.to_int() + tall.to_int() - 1)}"
+    }
+}
+
+/// One cell, counting its column and row from 1.
+fn cell_reference(column: Int, row: Int) -> Text {
+    "{column_letter(column)}{row}"
+}
+
 /// The grid of the sheet the person has open.
 template view sheet_grid(
     w: Workbook,
@@ -261,6 +302,10 @@ template view sheet_grid(
     formulas: State<Bool>,
 ) {
     let count = shown_count()
+    // Where the person works in the workbook, as presence: the cells they chose, in the sheet's
+    // own units. The platform says it to the workspace and draws everyone else's from it.
+    let at = area_spot(area)
+    presence(w, at.at(0) ?? 0.0, at.at(1) ?? 0.0, at.at(2) ?? 0.0, at.at(3) ?? 0.0)
     ui.Sheet(
         name: .some(s.name),
         columns: count.columns,
@@ -270,6 +315,7 @@ template view sheet_grid(
         sizes: sizes_of(s),
         cells: cells_of(s, cells, formulas),
         selection: .some(area),
+        peers: sheet_peers(w),
         editable: true,
     ) {
         on select(chosen): set(area, chosen).then(set(typed, input_at(s, range_start(chosen))))

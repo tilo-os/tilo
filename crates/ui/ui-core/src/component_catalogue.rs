@@ -24,6 +24,7 @@ fn toolkit_enums() -> Vec<EnumDescription> {
         crate::widget::connection_description(),
         crate::widget::sheet_component::sheet_cell_description(),
         crate::widget::sheet_component::sheet_peer_description(),
+        crate::widget::presence_marks::peer_spot_description(),
         crate::widget::sheet_component::sheet_size_description(),
     ]
 }

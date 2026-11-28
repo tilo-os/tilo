@@ -257,6 +257,13 @@ pub fn lens_key(id: &str) -> StateKey {
     StateKey::runtime(crate::view_state::LENS_WINDOW, None, id)
 }
 
+/// The key of where each member is in the document of the resource `id`, as their app declared
+/// it: what `spots(r)` reads.
+#[must_use]
+pub fn spot_key(id: &str) -> StateKey {
+    StateKey::runtime(crate::view_state::SPOT_WINDOW, None, id)
+}
+
 /// The key of who is in the call held on the resource whose own id (an item's, or a document's
 /// when it is no item) is `id`: what the call service names a call's place by.
 #[must_use]
@@ -526,6 +533,11 @@ impl Core {
             Imp::EventPress => self.ret_h(Value::EventPress),
             Imp::Actions => self.actions_import(a),
             Imp::Delivery | Imp::Reach | Imp::Lenses => self.relation_import(imp, a),
+            Imp::Spots => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(spot_key(&target.target.id_string()));
+                self.ret_h(value)
+            }
             Imp::Invoked => self.invoked_import(a),
             Imp::LinesRun => {
                 let target = self.ref_arg(a.h(0)?)?;

@@ -155,6 +155,19 @@ pub enum PeerPresencePayload {
     /// Appended so new decoders continue to read every older postcard frame;
     /// older peers reject only what they cannot show of a bridged person.
     Bridged(crate::presence::Bridged),
+    /// Where the sender is in a document a view draws, in the document's own units: the point
+    /// they work at, and the rectangle of what they selected (a selection of nothing when `wide`
+    /// and `tall` are both zero). An app declares its spot; the document's surface draws it, so
+    /// the reader never needs to know what an app's units mean.
+    ///
+    /// Appended so new decoders continue to read every older postcard frame; older peers reject
+    /// only the place they cannot draw.
+    Spot {
+        x: f32,
+        y: f32,
+        wide: f32,
+        tall: f32,
+    },
 }
 
 #[cfg(test)]
@@ -244,6 +257,18 @@ mod tests {
                 avatar: Some("ab".repeat(32)),
                 linked: None,
             }),
+            PeerPresencePayload::Spot {
+                x: 512.0,
+                y: 96.5,
+                wide: 0.0,
+                tall: 0.0,
+            },
+            PeerPresencePayload::Spot {
+                x: 0.0,
+                y: 3.0,
+                wide: 4.0,
+                tall: 2.0,
+            },
         ]
     }
 

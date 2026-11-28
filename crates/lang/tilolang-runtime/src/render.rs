@@ -81,6 +81,9 @@ pub struct Rendered {
     /// When the time it read next reads differently (seconds since 1970, UTC); `None` when it
     /// read no time.
     pub changes_at: Option<i64>,
+    /// Where the person looking is in a document the view draws, as it declared with `presence`:
+    /// the resource, and the point and what they selected, in the document's own units.
+    pub spot: Option<(crate::value::ResourceRef, [f64; 4])>,
 }
 
 pub(crate) struct Acc {
@@ -411,6 +414,7 @@ impl Core {
             return Err(RuntimeError::Package("a view must return a ui node".into()));
         };
         surfaced?;
+        let state_spot = state.declared_spot;
         let mut acc = Acc {
             reads: state.reads,
             colls: state.colls,
@@ -458,6 +462,7 @@ impl Core {
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
             changes_at: acc.changes_at,
+            spot: state_spot,
         })
     }
 
@@ -581,6 +586,7 @@ impl Core {
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
             changes_at: acc.changes_at,
+            spot: None,
         }
     }
 
@@ -641,6 +647,7 @@ impl Core {
             state_reads: acc.state_reads,
             state_seen: acc.state_seen,
             changes_at: acc.changes_at,
+            spot: None,
         }
     }
 

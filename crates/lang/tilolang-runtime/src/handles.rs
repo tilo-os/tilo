@@ -168,6 +168,10 @@ pub struct ViewState {
         std::rc::Rc<crate::value::CollRef>,
         std::rc::Rc<crate::store::Listing>,
     )>,
+    /// Where the person looking is in a document this run draws, as the view declared it with
+    /// `presence`: the resource, and the point and what they selected, in the document's own
+    /// units. The host says it of the person after the view is drawn.
+    pub declared_spot: Option<(crate::value::ResourceRef, [f64; 4])>,
     pub nodes: Vec<NodeBuild>,
 }
 
@@ -190,6 +194,7 @@ impl ViewState {
             changes_at: None,
             colls: Vec::new(),
             listings: Vec::new(),
+            declared_spot: None,
             nodes: Vec::new(),
         }
     }

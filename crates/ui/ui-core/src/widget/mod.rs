@@ -716,6 +716,8 @@ pub mod window_preview;
 pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
 pub mod peer_pointers;
 pub use peer_pointers::{PeerPointerProps, PeerPointers, PeerPointersProps};
+pub mod presence_marks;
+pub use presence_marks::{PeerSpot, peer_spot_description};
 pub mod follow_frame;
 pub use follow_frame::{FollowFrame, FollowFrameProps};
 pub mod screen_mirror;

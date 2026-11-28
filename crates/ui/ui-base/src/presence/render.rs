@@ -520,6 +520,72 @@ impl PresenceCtx {
 /// stays legible through it, strong enough that the colour reads as the person's.
 pub const OUTLINE_FILL: f32 = 0.18;
 
+/// One member's place on a surface that draws a document: where they point and what they
+/// selected there, in the surface's coordinates.
+#[derive(Clone, Copy, Debug)]
+pub struct SpotMark<'a> {
+    /// Whose it is, as their colour travels (a member's own, else the palette's).
+    pub color: Color,
+    /// Their name, on the chip above the caret.
+    pub name: &'a str,
+    /// It is software's: its caret is drawn as software's.
+    pub agent: bool,
+    /// Where they are.
+    pub point: Point,
+    /// What they selected, when they selected anything.
+    pub selection: Option<Rect>,
+}
+
+/// Draw each member's place on a surface that shows a document: a caret and their name where
+/// they point, and the outline of what they selected. The surface places the document's own
+/// units on its geometry and hands the result, so markers read the same on every surface that
+/// draws a document.
+pub fn draw_peer_spots(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    marks: &[SpotMark<'_>],
+) {
+    for mark in marks {
+        if let Some(rect) = mark.selection {
+            let shape = RoundedRect::from_rect(rect, 2.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                mark.color.with_alpha_factor(OUTLINE_FILL),
+                None,
+                &shape,
+            );
+            scene.stroke(&Stroke::new(2.0), transform, mark.color, None, &shape);
+        }
+        let caret = Rect::new(
+            mark.point.x,
+            mark.point.y,
+            mark.point.x + 2.0,
+            mark.point.y + 18.0,
+        );
+        scene.fill(Fill::NonZero, transform, mark.color, None, &caret);
+        let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, mark.name, mark.agent);
+        let chip = Rect::new(
+            mark.point.x,
+            mark.point.y - chip_h - CHIP_GAP,
+            mark.point.x + chip_w,
+            mark.point.y - CHIP_GAP,
+        );
+        draw_peer_pill_kind(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            chip,
+            mark.name,
+            mark.color,
+            mark.agent,
+        );
+    }
+}
+
 const DOT_R: f64 = 6.5;
 /// Outer edge including the contrast ring — the clearance pill placement
 /// uses.

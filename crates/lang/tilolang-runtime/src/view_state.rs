@@ -39,6 +39,10 @@ pub fn shown_window(address: &str) -> String {
     format!("{SHOWN}:{address}")
 }
 
+/// The window where each member's place in a resource's document is kept, as their app declared
+/// it: set by the host as presence moves, read by `spots(r)`.
+pub const SPOT_WINDOW: &str = "$spots";
+
 /// One slot of view state.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StateKey {

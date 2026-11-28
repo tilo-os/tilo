@@ -3377,6 +3377,10 @@ view window(e: Editor) {
         // word while the cut plays, so the head moves with the picture rather than once a second,
         // and the frame that stands otherwise.
         let head = live_word ?? if p.still_at >= 0.0 { p.still_at } else { playhead }
+        // Where the person works in the cut, as presence: the second the playhead stands at,
+        // in the timeline's own units. The platform says it to the workspace, and the timeline
+        // draws everyone else's from it.
+        presence(p, head, 0.0, 0.0, 0.0)
         // A play that reached the cut's end has stopped: the picture stands where it stopped,
         // and the transport offers the play again.
         let ended = match live_word {
@@ -3740,6 +3744,7 @@ view window(e: Editor) {
                                 length: total(p),
                                 clips: p.clips_at,
                                 step: frame(p),
+                                peers: timeline_peers(p),
                             ) {
                                 on scrub(t: Float): set(playhead, t).then(scrub_to(p, t))
                                 on seek(t: Float): set(playhead, t).then(jump_to(p, t))
@@ -3848,6 +3853,12 @@ view window(e: Editor) {
             on act: new_project(e)
         }
     }
+}
+
+/// Other members at work in the cut, as presence reports them: where each plays from, in the
+/// timeline's own units. The timeline draws them; the view only hands them where they are.
+fn timeline_peers(p: Project) -> List<ui.SpotPeer> {
+    spots(p).map(s -> .peer(who: s.who, x: s.x, y: 0.0, wide: s.wide, tall: 0.0))
 }
 
 /// What the window shows: the cut it has open, else the first there is.

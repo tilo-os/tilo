@@ -324,6 +324,13 @@ imports! {
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H, H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
+    // `spots(r)`: where each member is in the document of the resource `r`, as their app declared
+    // it: their point and what they selected around it, in the document's own units.
+    Spots = "spots" ([H] -> [H]);
+    // `presence(r, x, y, wide, tall)`: where the person looking is in the document of `r`, in
+    // its own units, and what they selected around it (nothing when `wide` and `tall` are zero).
+    // The view declares it; the platform says it and draws everyone else's.
+    Presence = "presence" ([H, F64, F64, F64, F64] -> []);
     // `call_members(r)`: who is in the system's call held on the resource `r` now, as its call
     // service hears it.
     CallMembers = "call_members" ([H] -> [H]);

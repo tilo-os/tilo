@@ -287,6 +287,8 @@ imports! {
     (ArgAt, "arg_at", "iii", "i"),
     (Actions, "actions", "ii", "i"),
     (Lenses, "lenses", "i", "i"),
+    (Spots, "spots", "i", "i"),
+    (Presence, "presence", "iffff", ""),
     (CallMembers, "call_members", "i", "i"),
     (CallInputs, "call_inputs", "i", "i"),
     (ActCall, "act_call", "iii", "i"),

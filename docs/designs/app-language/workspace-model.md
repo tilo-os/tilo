@@ -88,6 +88,12 @@ window or a place.
 - **Following** ties your lens to someone else's: you see what they see.
 - **Embedded views** (a card in a chat message, an agent's answer) aren't windows; each viewer
   has their own lens on them. Opening something from them goes to its window.
+- **A view that draws a document declares where its person works there**, in one line:
+  `presence(r, x, y, wide, tall)`, in the document's own units — the point they are at and the
+  rectangle they selected around it (a point when `wide` and `tall` are zero). The platform says
+  it to the workspace and hands every other member's back as `spots(r)`; the surface that draws
+  the document — a canvas, a sheet, a timeline — places them and draws them with the shared
+  presence marks and their colours. An app never draws another member itself.
 
 ## 6. Layout
 

@@ -5258,6 +5258,17 @@
           }
         },
         {
+          "name": "peers",
+          "doc": "Where other members are at work, as the view read them from `spots(a)`: their caret and what they selected, in the artwork's own units.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "SpotPeer"
+              }
+            }
+          }
+        },
+        {
           "name": "overlay_opacity",
           "doc": "How strongly the overlay shows over the artwork, 0 to 1 (default 1).",
           "type": {
@@ -8188,6 +8199,17 @@
           "name": "step",
           "doc": "The grid a drag lands on, in seconds: one frame (1/30) for a film, nothing for free time.",
           "type": "float"
+        },
+        {
+          "name": "peers",
+          "doc": "Where other members are at work in the cut, as the view read them from `spots(p)`: where each plays from, and the stretch each selected.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "SpotPeer"
+              }
+            }
+          }
         },
         {
           "name": "enabled",
@@ -14528,6 +14550,49 @@
               "name": "who",
               "ty": "actor",
               "doc": "Whose selection it is."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "SpotPeer",
+      "doc": "Another member's place in a document a surface draws: where they point and what they selected there, in the document's own units.",
+      "cases": [
+        {
+          "name": "peer",
+          "doc": "One member at work in the document.",
+          "fields": [
+            {
+              "name": "who",
+              "ty": "actor",
+              "doc": "Whose place it is."
+            },
+            {
+              "name": "x",
+              "ty": "float",
+              "doc": "Across the document."
+            },
+            {
+              "name": "y",
+              "ty": "float",
+              "doc": "Down the document."
+            },
+            {
+              "name": "wide",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "How wide their selection is; zero with `tall` for a point."
+            },
+            {
+              "name": "tall",
+              "ty": "float",
+              "default": {
+                "float": 0.0
+              },
+              "doc": "How tall their selection is."
             }
           ]
         }

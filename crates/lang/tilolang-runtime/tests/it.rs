@@ -209,6 +209,8 @@ mod runs;
 mod seeded_ids;
 #[path = "shown_state.rs"]
 mod shown_state;
+#[path = "spot_presence.rs"]
+mod spot_presence;
 #[path = "styles.rs"]
 mod styles;
 #[path = "sync.rs"]

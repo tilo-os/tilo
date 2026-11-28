@@ -257,6 +257,14 @@ impl ViewInstance {
         &self.live.viewer
     }
 
+    /// Where the person looking is in a document this view draws, as the view declared it with
+    /// `presence`: the resource it is in, and the point and what they selected, in the
+    /// document's own units.
+    #[must_use]
+    pub fn declared_spot(&self) -> Option<(crate::value::ResourceRef, [f64; 4])> {
+        self.live.bound(crate::live::ROOT)?.spot.clone()
+    }
+
     /// What the view asked of the host since the last call: windows to open.
     pub fn poll_events(&mut self) -> Vec<ViewEvent> {
         std::mem::take(&mut *self.events.borrow_mut())

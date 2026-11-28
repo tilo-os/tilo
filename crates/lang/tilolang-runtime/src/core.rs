@@ -54,28 +54,28 @@ use Imp::{
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
     MissingV, ModelCall, NoneV, Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt,
     PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave,
-    PdfText, PersonNamed, Phrase, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
-    RandomFloat, RandomId, RandomInt, RandomShuffle, Ranked, Reach, ReadText, ReadWith, RecNew,
-    RecOwn, RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI,
-    ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichAppended,
-    RichCellWritten, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown,
-    RichMarked, RichNew, RichPart, RichRelinked, RichReplaced, RichStyleCopied, RichStyleLook,
-    RichStyleNames, RichStyleRemoved, RichStyleSet, RichTableEdited, RichTime, RowKey, RowOpen,
-    RunChanges, SeenBy, SetAdd, SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers,
-    SheetOfFile, SheetRanges, SheetRecords, SheetValues, Single, SomeB, SomeF, SomeH, SomeI,
-    SortLit, SpaceF, SpaceI, Speakers, StageReading, StateAt, StateGet, StateShown, Steps, StrCmp,
-    StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-    StrMatches, StrMisspelled, StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions,
-    StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take,
-    TextBytes, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift,
-    TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink,
-    ToolOpenWith, ToolTerminal, TryCall, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
-    TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiBindStateAt, UiChild, UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH,
-    UiPropI, UiPropPic, Unreadable, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode,
-    VersionChange, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders,
-    WebOk, WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word,
-    Zones,
+    PdfText, PersonNamed, Phrase, Presence, Print, PrintRows, ProposalNote, Query, QueueBlock,
+    RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, Ranked, Reach, ReadText,
+    ReadWith, RecNew, RecOwn, RecSetF, RecSetH, RecSetI, RecordAt, RefEq, RefId, RefIs, RefLit,
+    ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+    ResourceRef, RichAppended, RichCellWritten, RichEmbed, RichEmpty, RichFromHtml,
+    RichFromMarkdown, RichMarkdown, RichMarked, RichNew, RichPart, RichRelinked, RichReplaced,
+    RichStyleCopied, RichStyleLook, RichStyleNames, RichStyleRemoved, RichStyleSet,
+    RichTableEdited, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd, SetRemove, Sha256,
+    SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges, SheetRecords,
+    SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers, Spots,
+    StageReading, StateAt, StateGet, StateShown, Steps, StrCmp, StrConcat, StrContains,
+    StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled,
+    StrReplace, StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim,
+    StrUpper, StrUrlDecode, StrUrlEncode, StrWords, Suggest, Take, TextBytes, TimeClock, TimeDay,
+    TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
+    ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenLink, ToolOpenWith, ToolTerminal,
+    TryCall, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
+    UiChoose, UiNode, UiOn, UiPropB, UiPropF, UiPropH, UiPropI, UiPropPic, Unreadable, Unseen,
+    UnwrapF, UnwrapH, UnwrapI, ValueEq, VaultCode, VersionChange, VersionEnd, Versions, WallClock,
+    WebBody, WebDurationMs, WebGet, WebHeaders, WebOk, WebPost, WebPostBytes, WebStatus,
+    WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -850,8 +850,8 @@ impl Core {
             | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Call | TryCall | Suggest | ProposalNote | CallFn
             | IsError | Outside | OutsideAt | Withdraw | ModelCall | Notify | Notice
-            | WindowState | Invoker | MadeFrom | ActorEq | ActorName | QueueBlock | Now
-            | TimeShift | PersonNamed | AgentNamed | InvocationPush | InvocationPop => {
+            | WindowState | Presence | Invoker | MadeFrom | ActorEq | ActorName | QueueBlock
+            | Now | TimeShift | PersonNamed | AgentNamed | InvocationPush | InvocationPop => {
                 self.effect_import(imp, a)
             }
             WebGet | WebPost | WebPostBytes | WebOk | WebStatus | WebDurationMs | WebStatusText
@@ -905,12 +905,11 @@ impl Core {
             | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
             | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave | ActBlur | ActClose
             | ActCall | ActCallInput | ActCallVolume | ActRunLine => self.ui_import(imp, a),
-            EventValue | EventPart | EventPress | Actions | Lenses | CallMembers | CallInputs
-            | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions | VersionChange | Links
-            | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy | Mentions | Steps
-            | Ranked | VersionEnd | FieldChanged | Phrase | Word | EntryParts => {
-                self.platform_import(imp, a)
-            }
+            EventValue | EventPart | EventPress | Actions | Lenses | Spots | CallMembers
+            | CallInputs | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions
+            | VersionChange | Links | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy
+            | Mentions | Steps | Ranked | VersionEnd | FieldChanged | Phrase | Word
+            | EntryParts => self.platform_import(imp, a),
             Members | MayRead | Speakers | ActorId | ActorPerson | ActorKind | ActorRole
             | ActorApp | ActorPrincipal => self.members_import(imp, a),
             EditField => self.edit_field(a),

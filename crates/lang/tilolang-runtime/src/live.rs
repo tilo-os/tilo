@@ -72,6 +72,9 @@ pub(crate) struct Bound {
     /// When the time it read next reads differently (seconds since 1970, UTC): it runs again
     /// then. `None` when it read no time.
     pub changes_at: Option<i64>,
+    /// Where the person looking is in a document this boundary draws, as the view declared it
+    /// with `presence`: the resource, and the place in the document's own units.
+    pub spot: Option<(crate::value::ResourceRef, [f64; 4])>,
     /// What the row was drawn knowing: whether the list it stands in stands a divider where
     /// its unseen part starts, which its own marks answer to. A row is built again when that
     /// changes under it, so a mark it drew for being new goes when the divider arrives.
@@ -107,6 +110,7 @@ impl Bound {
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
+            spot: None,
             says_new: false,
             open: stub.open,
             menu: stub.menu,
@@ -563,6 +567,7 @@ impl Live {
             state_reads: Vec::new(),
             state_seen: Vec::new(),
             changes_at: None,
+            spot: None,
             says_new: false,
             open: false,
             menu: true,
@@ -1151,6 +1156,11 @@ impl Live {
 
     /// Run boundary `id` and build its tree, re-running only the view calls inside it that
     /// changed. Returns the tree; the boundary's record is updated.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one boundary's whole pass, in the order its parts must be taken: the render, \
+                  the calls that left, the record it replaces and the index it updates"
+    )]
     fn render(&mut self, core: &Rc<Core>, id: BoundId) -> Result<UiNode, RuntimeError> {
         let (target, args, depth, key, old_children, row, space) = {
             let b = self
@@ -1231,6 +1241,7 @@ impl Live {
             state_reads,
             state_seen,
             changes_at,
+            spot,
         } = rendered;
         // A view over a list reads each item's fields once per expression that uses them (a
         // count and a filter), tens of thousands of reads: duplicates go by hash, not a sort.
@@ -1251,6 +1262,7 @@ impl Live {
             b.state_reads = state_reads;
             b.state_seen = state_seen;
             b.changes_at = changes_at;
+            b.spot = spot;
             b.retained = retained;
             b.says_new = says_new;
             b.rendered = true;

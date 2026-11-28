@@ -38,6 +38,9 @@ pub struct TrackTimelineProps {
     /// The moments marked on the ruler.
     #[component(part)]
     pub markers: Vec<TimelineMarkerProps>,
+    /// Where other members are at work in the cut, as the view read them from `spots(p)`:
+    /// where each plays from, and the stretch each selected.
+    pub peers: Vec<crate::widget::PeerSpot>,
     /// The playhead is being dragged: carries where it is now, as the hand moves.
     #[component(event(value = f64))]
     pub scrub: Event,
@@ -73,6 +76,7 @@ impl Default for TrackTimelineProps {
             step: 0.0,
             tracks: Vec::new(),
             markers: Vec::new(),
+            peers: Vec::new(),
             scrub: Event::None,
             seek: Event::None,
             zoomed: Event::None,
@@ -254,6 +258,7 @@ impl Described for TrackTimeline {
         timeline.length = props.length.max(0.0);
         timeline.clips = props.clips;
         timeline.step = props.step.max(0.0);
+        timeline.peers = props.peers;
         timeline.scrub = props.scrub;
         timeline.seek = props.seek;
         timeline.zoomed = props.zoomed;
@@ -277,6 +282,7 @@ impl Described for TrackTimeline {
         self.length = props.length.max(0.0);
         self.clips = props.clips;
         self.step = props.step.max(0.0);
+        self.peers = props.peers;
         self.scrub = props.scrub;
         self.seek = props.seek;
         self.zoomed = props.zoomed;

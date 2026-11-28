@@ -296,6 +296,7 @@ impl Checker<'_> {
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
             "state_shown" => return self.builtin_state_shown(args, span),
+            "spots" => return self.builtin_spots(args, span),
             "call_members" => return self.builtin_call_members(args, span),
             "call_inputs" => return self.builtin_call_inputs(args, span),
             "invoked" => return self.builtin_invoked(args, span),

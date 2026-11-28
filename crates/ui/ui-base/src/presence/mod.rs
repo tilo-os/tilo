@@ -49,10 +49,10 @@ pub use layer::{PresenceLayer, WidgetPresence};
 pub use mark::PresenceMark;
 pub use placed::PlacedPointer;
 pub use render::{
-    FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, contrast_ink,
-    draw_peer_cursors, draw_peer_presence, draw_remote_cursors, draw_remote_presence,
-    layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
-    paint_reaction, paint_speaking_ring,
+    FOLLOWED_POINTER_REACH, PeerCursor, PillPlacement, PillRequest, SpotMark, contrast_ink,
+    draw_peer_cursors, draw_peer_presence, draw_peer_spots, draw_remote_cursors,
+    draw_remote_presence, layout_peer_pills, paint_follow_frame, paint_followed_pointer,
+    paint_own_chat_bubble, paint_reaction, paint_speaking_ring,
 };
 pub use written::written_under;
 
@@ -441,6 +441,10 @@ pub struct PresenceCtx {
     bounces: HashMap<MemberId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(MemberId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(MemberId, usize)>>,
+    /// Where each member is in a document whose app declared its spot: the member and their
+    /// point and selection, in the document's own units, keyed by the resource's presence key.
+    /// A surface that draws the document places them; nobody else reads them.
+    pub spots: HashMap<PresenceKey, Vec<(MemberId, collab_types::presence::Spot)>>,
     pub remote_cursors: Vec<RemoteCursor>,
     /// Seeded by the shell from `Member::cursor_color`; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
@@ -1584,6 +1588,26 @@ impl PresenceCtx {
         found
     }
 
+    /// Who is composing a message in the resource `id` now, the person looking excluded, whoever
+    /// published it there: a channel's "Mia is typing", read by the app that shows the channel
+    /// and by any app holding a reference to it (a bridge mirroring it elsewhere). A composer
+    /// gone quiet for [`COMPOSING_LINGER`] without saying they stopped drops out, so a crashed
+    /// window leaves no one typing forever.
+    #[must_use]
+    pub fn composing_at_resource(&self, id: &str, now: Instant) -> Vec<MemberId> {
+        let mut found: Vec<MemberId> = self
+            .composing
+            .iter()
+            .filter(|((at, _), since)| {
+                matches!(at, PresenceKey::Resource { id: at, .. } if at == id)
+                    && now.saturating_duration_since(**since) < COMPOSING_LINGER
+            })
+            .map(|((_, who), _)| who.clone())
+            .collect();
+        found.sort();
+        found
+    }
+
     /// Drop composers gone quiet for [`COMPOSING_LINGER`]: what a frame does before it asks
     /// [`Self::composing_at`], so the answer does not depend on when it was last asked.
     pub fn prune_composing(&mut self, now: Instant) {
@@ -1621,8 +1645,8 @@ impl PresenceCtx {
         now: Instant,
     ) -> RemotePresenceEffect {
         use collab_types::presence::PresencePayload::{
-            Arrived, Availability, Caret, Composing, Interaction, Left, Pointer, Selection, Status,
-            Typing,
+            Arrived, Availability, Caret, Composing, Interaction, Left, Pointer, Selection, Spot,
+            Status, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1698,6 +1722,15 @@ impl PresenceCtx {
             Selection { start, end } => {
                 let uid = member.clone();
                 self.set_selection(&key, uid, SelectionRange { start, end });
+            }
+            Spot(spot) => {
+                // One place per member per document: a new one moves it rather than adding a
+                // second, as a caret or a selection does.
+                let list = self.spots.entry(key).or_default();
+                match list.iter_mut().find(|(who, _)| *who == member) {
+                    Some((_, held)) => *held = spot,
+                    None => list.push((member, spot)),
+                }
             }
             Typing { start, end } => {
                 self.record_peer_typing(member, key, SelectionRange { start, end }, now);
@@ -1802,6 +1835,10 @@ impl PresenceCtx {
                 if let Some(list) = self.selections.get_mut(&key) {
                     list.retain(|(u, _)| u != &uid);
                 }
+                if let Some(list) = self.spots.get_mut(&key) {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                self.spots.retain(|_, list| !list.is_empty());
                 self.typing.retain(|(u, at), _| !(u == &uid && at == &key));
                 self.composing.remove(&(key, member));
             }
@@ -1833,6 +1870,10 @@ impl PresenceCtx {
         for list in self.selections.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
+        for list in self.spots.values_mut() {
+            list.retain(|(u, _)| u != &uid);
+        }
+        self.spots.retain(|_, list| !list.is_empty());
         self.typing.retain(|(u, _), _| u != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);

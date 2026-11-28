@@ -52,6 +52,45 @@ pub enum PresencePayload {
     Composing {
         composing: bool,
     },
+    /// Where the sender is in a document a view draws, in the document's own units
+    /// ([`Spot`]): the point they work at, and what they selected around it. The app
+    /// declares it; the document's surface draws it.
+    Spot(Spot),
+}
+
+/// Where a member is in a document a view draws: a point in the document's own units, and the
+/// rectangle of what they selected around it.
+///
+/// The units are the app's own — artwork units on a canvas, cells on a sheet, seconds on a
+/// timeline — because the app is the only one that knows them. The surface that draws the
+/// document is the only one that knows how to place them, so the point travels as declared and
+/// is placed by the surface, never re-derived from pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Spot {
+    /// Across the document, in its own units.
+    pub x: f32,
+    /// Down the document, in its own units.
+    pub y: f32,
+    /// How wide what they selected is, in the same units; zero with `tall` for a point.
+    pub wide: f32,
+    /// How tall what they selected is, in the same units.
+    pub tall: f32,
+}
+
+impl Spot {
+    /// Whether it marks a rectangle rather than a point.
+    #[must_use]
+    pub fn is_rect(&self) -> bool {
+        self.wide != 0.0 || self.tall != 0.0
+    }
+
+    /// Whether its numbers are ones a document can be placed at.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        [self.x, self.y, self.wide, self.tall]
+            .iter()
+            .all(|value| value.is_finite())
+    }
 }
 
 impl PresencePayload {
@@ -90,6 +129,12 @@ impl PresencePayload {
             },
             Self::Composing { composing } => Payload::Composing {
                 composing: *composing,
+            },
+            Self::Spot(spot) => Payload::Spot {
+                x: spot.x,
+                y: spot.y,
+                wide: spot.wide,
+                tall: spot.tall,
             },
             Self::Availability { .. } => return None,
         })
@@ -131,6 +176,13 @@ impl PresencePayload {
             }
             Payload::Status { text, automatic } => Self::Status { text, automatic },
             Payload::Composing { composing } => Self::Composing { composing },
+            Payload::Spot { x, y, wide, tall } => {
+                let spot = Spot { x, y, wide, tall };
+                if !spot.is_finite() {
+                    return Err("a spot is not a place a document has".to_owned());
+                }
+                Self::Spot(spot)
+            }
             Payload::Availability { .. }
             | Payload::Chat { .. }
             | Payload::Reaction { .. }

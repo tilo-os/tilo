@@ -3695,6 +3695,25 @@ impl Core {
 
     /// `window_state<T>(name, value)`: sets the declared window state `name` in the window the
     /// running action was invoked from, when the value is what its view declares there.
+    /// `presence(r, x, y, wide, tall)`: where the person looking is in the document of `r`, in
+    /// the document's own units, and what they selected around it. Kept on the run, which the
+    /// host reads once the view is drawn and says of the person. The numbers must be places a
+    /// document has: a run that says otherwise fails rather than publishing a place nobody can
+    /// put anywhere.
+    fn presence_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.ref_arg(a.h(0)?)?;
+        let at = [a.float(1)?, a.float(2)?, a.float(3)?, a.float(4)?];
+        if !at.iter().all(|value| value.is_finite()) {
+            return trap("`presence` takes a place a document has: its numbers are not finite");
+        }
+        let target = (*target.target).clone();
+        self.with_view(|vs| {
+            vs.declared_spot = Some((target, at));
+            Ok(())
+        })?;
+        Ok(None)
+    }
+
     fn window_state(&self, name_h: i32, ty_h: i32, value_h: i32) -> HResult<Option<Wasm>> {
         let name = self.text(name_h)?;
         let ty = self.text(ty_h)?;
@@ -3985,6 +4004,7 @@ impl Core {
             Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?, a.h(5)?),
             Imp::Notice => self.notice_import(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::WindowState => self.window_state(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::Presence => self.presence_import(a),
             // Who invokes the action running, or the person a view is shown to: who would
             // invoke its actions. An automation's run is the automation: whom it writes for is
             // `invoker.principal()`.

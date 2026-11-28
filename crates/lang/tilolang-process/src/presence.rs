@@ -8,10 +8,15 @@
 //! back what the workspace's live session hears from the other devices. The instance's views
 //! read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
-//! detail view shows, so a conversation says "… is typing" without reading a draft. What the
-//! instance says of its own person is where they are (the resource the detail view shows) and
-//! whether they hold a draft there: where, once each time it changes; a draft, again while they
-//! type in it ([`tilo_ui_base::presence::DraftSaid`]).
+//! detail view shows, so a conversation says "… is typing" without reading a draft. A view
+//! that draws a document also declares where its person works there, in the document's own
+//! units (`presence(r, x, y, wide, tall)`); it is said here and handed back to the views as
+//! `spots(r)`, whoever's app said it, so a surface draws every member at work and an app
+//! holding a conversation's reference (a bridge) reads who types there. What the instance says
+//! of its own person is where they are (the resource the detail view shows), where in its
+//! document they work, and whether they hold a draft there: where, once each time it changes;
+//! a place, as it moves; a draft, again while they type in it
+//! ([`tilo_ui_base::presence::DraftSaid`]).
 
 use std::collections::HashMap;
 
@@ -47,6 +52,11 @@ pub struct Presence {
     heard: PresenceCtx,
     /// Where the instance last said its person is.
     said_at: Option<PresenceKey>,
+    /// The document the instance last said where its person works in, when its view declared a
+    /// spot there: the key its place is said under, so leaving the document withdraws it.
+    said_spot: Option<PresenceKey>,
+    /// Where in that document it last said the person is.
+    said_spot_at: Option<[f64; 4]>,
     /// What the instance last said of the draft its person writes.
     said_composing: DraftSaid,
     /// What the window shows of the people here as a window with a connection of its own does,
@@ -68,6 +78,8 @@ impl Presence {
             me: MemberId::person(me),
             heard,
             said_at: None,
+            said_spot: None,
+            said_spot_at: None,
             said_composing: DraftSaid::default(),
             for_window: Vec::new(),
         }
@@ -103,19 +115,24 @@ impl Presence {
         Some(ends.saturating_duration_since(ui_core::time::now()))
     }
 
-    /// Tell `instance` who else is at each resource of the app and who is composing a message in
-    /// the resource its detail view shows. What people are called and how they are drawn is the
+    /// Tell `instance` who else is at each resource and who is composing a message in the
+    /// resource its detail view shows. What people are called and how they are drawn is the
     /// workspace's `workspace/members` resource, which the window's host reads through the store.
+    ///
+    /// Who is here is read by the resource's id, whoever published it: an app that holds a
+    /// reference to a conversation (a bridge mirroring it elsewhere) reads the same people and
+    /// the same typing at it as the app showing it.
     pub fn show(&mut self, instance: &mut Instance) {
         let now = ui_core::time::now();
         self.heard.prune_composing(now);
         let composing: Vec<MemberId> = instance.detail_target().map_or_else(Vec::new, |target| {
-            self.heard
-                .composing_at(&self.key(target), now)
-                .into_iter()
-                .collect()
+            self.heard.composing_at_resource(&target.id_string(), now)
         });
         instance.set_peers_and_composers(self.peers(), &composing);
+        // Where everyone is in the document each resource holds, as their app declared it:
+        // what a view reads with `spots(r)` to place them on its surface.
+        let spots = self.spots();
+        instance.set_spots(spots);
         // The window has no connection of its own: what a presence mark it draws says of a
         // member is named here, from the same read of the workspace's members' resource that
         // names the app's own views.
@@ -149,16 +166,21 @@ impl Presence {
     /// once, under the key it was under, so nobody reads them typing after they stopped.
     pub fn say(&mut self, instance: &Instance, send: impl FnMut(Said)) {
         let at = instance.detail_target().map(|target| self.key(target));
+        let spot = instance
+            .declared_spot()
+            .map(|(target, at)| (self.key(&target), at));
         let draft = instance
             .composing_in()
             .map(|(target, revision)| (self.key(target), revision));
-        self.say_at(at, draft, ui_core::time::now(), send);
+        self.say_at(at, spot, draft, ui_core::time::now(), send);
     }
 
-    /// [`Self::say`] with the person at `at`, writing `draft`, at `now`.
+    /// [`Self::say`] with the person at `at`, at `spot` in its document, writing `draft`, at
+    /// `now`.
     fn say_at(
         &mut self,
         at: Option<PresenceKey>,
+        spot: Option<(PresenceKey, [f64; 4])>,
         draft: Option<(PresenceKey, u64)>,
         now: ui_core::time::Instant,
         mut send: impl FnMut(Said),
@@ -171,6 +193,43 @@ impl Presence {
                 });
             }
             self.said_at = at;
+        }
+        // The place they work in the document: said when it moves, and withdrawn when they
+        // leave the document (another one, or a view of the same one that draws no document).
+        let now_at = spot.as_ref().map(|(key, _)| key.clone());
+        if now_at != self.said_spot
+            && let Some(gone) = self.said_spot.take()
+        {
+            // Withdrawing a place under a key also withdraws who is at it; someone still in the
+            // document (a view of it that draws no document) says they are there again.
+            let still_here = self.said_at.as_ref() == Some(&gone);
+            send(Said {
+                key: gone.clone(),
+                payload: Payload::Left,
+            });
+            if still_here {
+                send(Said {
+                    key: gone,
+                    payload: Payload::Selection { start: 0, end: 0 },
+                });
+            }
+            self.said_spot_at = None;
+        }
+        if let Some((key, at)) = spot {
+            if self.said_spot_at != Some(at) {
+                let [x, y, wide, tall] = at;
+                send(Said {
+                    key: key.clone(),
+                    payload: Payload::Spot {
+                        x: to_f32(x),
+                        y: to_f32(y),
+                        wide: to_f32(wide),
+                        tall: to_f32(tall),
+                    },
+                });
+                self.said_spot_at = Some(at);
+            }
+            self.said_spot = Some(key);
         }
         if let Some((key, payload)) = self.said_composing.look(draft, now)
             && let Some(payload) = payload.to_live()
@@ -188,9 +247,42 @@ impl Presence {
         }
     }
 
-    /// Someone other than the person at each resource of the app, by the resource's id: where
-    /// their selection is, or their caret, which is how a selection of nothing reaches a device
-    /// from another one.
+    /// Where each other member is in each resource's document, by the resource's id, whoever
+    /// published it there: their point and what they selected, in the document's own units.
+    /// What the windows read as `spots(r)` to place them on the surface that draws the document.
+    fn spots(&self) -> HashMap<String, Vec<(MemberId, [f64; 4])>> {
+        let mut spots: HashMap<String, Vec<(MemberId, [f64; 4])>> = HashMap::new();
+        for (key, list) in &self.heard.spots {
+            let PresenceKey::Resource { id, .. } = key else {
+                continue;
+            };
+            let mut here: Vec<(MemberId, [f64; 4])> = list
+                .iter()
+                .filter(|(who, _)| *who != self.me)
+                .map(|(who, spot)| {
+                    (
+                        who.clone(),
+                        [
+                            f64::from(spot.x),
+                            f64::from(spot.y),
+                            f64::from(spot.wide),
+                            f64::from(spot.tall),
+                        ],
+                    )
+                })
+                .collect();
+            // Sorted by member, so a render is stable frame to frame.
+            here.sort_by(|a, b| a.0.cmp(&b.0));
+            if !here.is_empty() {
+                spots.insert(id.clone(), here);
+            }
+        }
+        spots
+    }
+
+    /// Someone other than the person at each resource, by the resource's id, whoever published
+    /// it there: where their selection is, or their caret, which is how a selection of nothing
+    /// reaches a device from another one.
     fn peers(&self) -> HashMap<String, MemberId> {
         let selected = self
             .heard
@@ -204,8 +296,7 @@ impl Presence {
             .map(|(key, at)| (key, at.iter().map(|(user, _)| user).collect::<Vec<_>>()));
         let mut peers = HashMap::new();
         for (key, users) in selected.chain(caret) {
-            if let PresenceKey::Resource { app, id, .. } = key
-                && *app == self.app
+            if let PresenceKey::Resource { id, .. } = key
                 && let Some(user) = users.into_iter().find(|user| **user != self.me)
             {
                 peers.entry(id.clone()).or_insert_with(|| user.clone());
@@ -213,6 +304,17 @@ impl Presence {
         }
         peers
     }
+}
+
+/// A place in a document as the live session carries it: an `f32`, clamped at its bounds so a
+/// document larger than that places its far corner at the edge rather than somewhere else.
+fn to_f32(value: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to f32's range first, so the cast is exact or at the far edge"
+    )]
+    let place = value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32;
+    place
 }
 
 #[cfg(test)]
@@ -296,6 +398,120 @@ mod tests {
         assert!(sent(&mut presence).is_empty(), "each is sent once");
     }
 
+    /// Ada says where she works in a document, and Bo's window reads it as the system reports
+    /// it: it moves with her, and it is gone from that document when she opens another one.
+    #[test]
+    fn a_persons_place_in_a_document_reaches_the_other_person_there_and_leaves_with_them() {
+        let now = ui_core::time::now();
+        let mut ada = Presence::new(APP, "ada");
+        let mut bo = Presence::new(APP, "bo");
+        let say = |ada: &mut Presence,
+                   bo: &mut Presence,
+                   at: PresenceKey,
+                   spot: Option<(PresenceKey, [f64; 4])>| {
+            ada.say_at(Some(at), spot, None, now, |said| {
+                if let Ok(Some(payload)) = PresencePayload::from_live(said.payload) {
+                    bo.heard.apply_remote_presence_at(
+                        MemberId::person("ada"),
+                        said.key,
+                        payload,
+                        now,
+                    );
+                }
+            });
+        };
+        let place = |key: PresenceKey, spot: [f64; 4]| Some((key, spot));
+        say(
+            &mut ada,
+            &mut bo,
+            channel(),
+            place(channel(), [12.0, 34.0, 0.0, 0.0]),
+        );
+        assert_eq!(
+            bo.spots(),
+            HashMap::from([(
+                "channel-1".to_owned(),
+                vec![(MemberId::person("ada"), [12.0, 34.0, 0.0, 0.0])]
+            )]),
+            "Bo reads where Ada works in the channel's document"
+        );
+        say(
+            &mut ada,
+            &mut bo,
+            channel(),
+            place(channel(), [56.0, 78.0, 4.0, 2.0]),
+        );
+        assert_eq!(
+            bo.spots(),
+            HashMap::from([(
+                "channel-1".to_owned(),
+                vec![(MemberId::person("ada"), [56.0, 78.0, 4.0, 2.0])]
+            )]),
+            "and follows her when she moves"
+        );
+        // She opens another conversation: her place in the first is withdrawn with her.
+        let other = PresenceKey::resource(APP, "channel-2", "TextChannel");
+        say(
+            &mut ada,
+            &mut bo,
+            other.clone(),
+            place(other, [1.0, 2.0, 0.0, 0.0]),
+        );
+        assert_eq!(
+            bo.spots(),
+            HashMap::from([(
+                "channel-2".to_owned(),
+                vec![(MemberId::person("ada"), [1.0, 2.0, 0.0, 0.0])]
+            )]),
+            "the place she left is gone, and the one she is in is there"
+        );
+    }
+
+    /// An app that holds a reference to a conversation another app publishes — a bridge
+    /// mirroring it elsewhere — reads the people at it and who is typing there through the same
+    /// system presence, and the typing ends by itself when the writer stops.
+    #[test]
+    fn another_app_holding_a_reference_reads_whos_typing_and_the_typing_ends_by_itself() {
+        let start = ui_core::time::now();
+        let at = |ms: u64| {
+            start
+                .checked_add(std::time::Duration::from_millis(ms))
+                .expect("a clock a moment on")
+        };
+        let mut bridge = Presence::new("so.tilo.discord", "bo");
+        // The chat's own window says Ada is there and composing in #design.
+        for payload in [
+            PresencePayload::Selection { start: 0, end: 0 },
+            PresencePayload::Composing { composing: true },
+        ] {
+            bridge.heard([Heard {
+                member: MemberId::person("ada"),
+                key: channel(),
+                payload: payload.to_live().expect("a word the live session carries"),
+            }]);
+        }
+        assert_eq!(
+            bridge.peers(),
+            HashMap::from([("channel-1".to_owned(), MemberId::person("ada"))]),
+            "the bridge reads who is at the conversation, whoever's app said it"
+        );
+        assert_eq!(
+            bridge.heard.composing_at_resource("channel-1", at(0)),
+            [MemberId::person("ada")],
+            "and who types there, which the bridge mirrors"
+        );
+        // She goes quiet without a word: the typing ends on its own after the linger.
+        let linger = u64::try_from(ui::presence::COMPOSING_LINGER.as_millis()).expect("seconds");
+        assert!(
+            bridge
+                .heard
+                .composing_at_resource("channel-1", at(linger + 1))
+                .is_empty(),
+            "a writer gone quiet stops reading as typing"
+        );
+    }
+
+    /// Someone at a resource by their caret is there as by their selection: the same lens.
     #[test]
     fn someone_at_a_resource_by_their_caret_is_there_as_by_their_selection() {
         let mut presence = Presence::new(APP, "bo");
@@ -328,7 +544,7 @@ mod tests {
                 .checked_add(std::time::Duration::from_millis(at))
                 .expect("a clock 30 s on");
             let draft = (at < typed || !sent).then(|| (channel(), at.min(typed)));
-            ada.say_at(Some(channel()), draft, now, |said| {
+            ada.say_at(Some(channel()), None, draft, now, |said| {
                 if let Ok(Some(payload)) = PresencePayload::from_live(said.payload) {
                     bo.heard.apply_remote_presence_at(
                         MemberId::person("ada"),

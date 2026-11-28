@@ -461,6 +461,16 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
+    /// `spots(r)`: where each member is in the document of `r`, as their app declared it with
+    /// `presence`: their point and what they selected around it, in the document's own units.
+    /// Presence, never stored: a view that read it runs again when someone moves.
+    pub(super) fn builtin_spots(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("spots", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Spots, vec![r], Ty::List(Box::new(host_ty("Spot"))))
+    }
+
     /// `call_members(r)`: who is in the system's call held on `r` now, the person looking among
     /// them while this device is in it. It is the call service's presence, never stored: a view
     /// that read it runs again when someone joins, leaves, talks or mutes.
