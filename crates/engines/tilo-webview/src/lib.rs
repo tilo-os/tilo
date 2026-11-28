@@ -109,11 +109,6 @@ pub mod test_engine;
 /// chosen for it.
 pub use tilo_app_id::apps::BROWSER as BROWSER_APP_ID;
 
-/// The switch a Browser window is launched with when it is opened for an agent
-/// ([`runtime_portal::process_link::VISITOR_WINDOW_FLAG`]).
-#[cfg(feature = "local-daemons")]
-pub const VISITOR_WINDOW_FLAG: &str = runtime_portal::process_link::VISITOR_WINDOW_FLAG;
-
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
 

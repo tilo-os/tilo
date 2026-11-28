@@ -2682,6 +2682,9 @@ fn window_opens(
             }),
             _ => None,
         },
+        // A window opened for whoever works the record, not for the person, browses as a
+        // visitor, whichever process it opens in.
+        visitor: matches!(launch, Launch::Record { visitor: true, .. }),
     })
 }
 

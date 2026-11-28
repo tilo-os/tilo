@@ -96,6 +96,9 @@ pub struct Opens {
     /// The file the launch opens, as content the instance reads from the content store: what an
     /// app with no path of its own is handed, the same `File` a chooser gives it.
     pub content: Option<ContentOpen>,
+    /// The window is opened for whoever works the record rather than for the person: it browses
+    /// as a visitor, with none of their sign-ins ([`WindowRequest::visitor`]).
+    pub visitor: bool,
 }
 
 /// A file an app is opened with, by the hash of its content and the name it is known by: the
@@ -552,6 +555,7 @@ impl Reservation {
                                 instance,
                                 reveal: opens.reveal.clone(),
                                 open: opens.open.clone(),
+                                visitor: opens.visitor,
                             },
                         }),
                         module,
@@ -750,6 +754,7 @@ fn send_window(
             instance,
             reveal: opens.reveal.clone(),
             open: opens.open.clone(),
+            visitor: opens.visitor,
         },
         collaboration,
         shell_ui,

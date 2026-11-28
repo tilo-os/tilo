@@ -275,6 +275,9 @@ d-l4fklfdf = Neue Seite
 d-b7o3stu4 = Geteilt
     .doc = Jedes Mitglied des Arbeitsbereichs liest die Seite. Die Seite eines privaten Fensters ist nicht geteilt: kein anderes Mitglied und keiner seiner Agenten liest sie, ihr Motor läuft auf einem eigenen Profil, das nichts enthält, womit die Person angemeldet ist, ihr keine gespeicherten Anmeldungen anbietet und mit dem Fenster verschwindet, wie die Seite selbst. Nichts, was sie öffnet, kommt in den Verlauf der Person.
 
+d-sbr2rc3t = Besucher
+    .doc = Die Seite wurde für einen Agenten geöffnet, der sie wie jeder Besucher liest: in jedem Fenster, in dem sie sich öffnet, läuft ihr Motor auf einem eigenen Profil, das keine Cookies und Anmeldungen der Person enthält, ihr keine gespeicherten Anmeldungen anbietet und mit dem Fenster verschwindet.
+
 d-vzmpfm6h = Neues privates Fenster
     .doc = Öffnet ein Fenster, das privat browst: nichts, was es liest, womit es sich anmeldet oder was es herunterlädt, kommt zu dem, was dieses Gerät über die Person behält.
 
@@ -490,6 +493,8 @@ d-vsaswu4a = Seitenansicht
     .w-panel = panel
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
+    .w-not-signed-in = Nicht angemeldet
+    .w-an-agent-browses-this-page-as = Ein Agent liest diese Seite wie jeder Besucher: keine deiner Anmeldungen, Cookies oder gespeicherten Anmeldedaten erreicht sie.
 
 d-pu2zdrbu = Schrittzeile
 

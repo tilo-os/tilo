@@ -1101,6 +1101,18 @@ pub fn refused(why: &str) -> String {
     serde_json::json!({ "ok": false, "code": "refused", "message": why }).to_string()
 }
 
+/// What a window opened for a visitor (an agent) answers when asked to open the person's sign-ins:
+/// it opens none, and browses as a visitor.
+#[must_use]
+pub fn visitor() -> String {
+    serde_json::json!({
+        "ok": false,
+        "code": "visitor",
+        "message": "This window browses for an agent, with none of your sign-ins",
+    })
+    .to_string()
+}
+
 fn record(note: &PageResourceNote) -> serde_json::Value {
     serde_json::json!({
         "seq": note.seq,

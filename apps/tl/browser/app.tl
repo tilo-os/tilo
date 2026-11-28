@@ -143,6 +143,10 @@ type Page (title: title, readers: author here until shared) {
     /// nothing the person signed in to, is not offered their saved logins, and goes when the
     /// window closes, as the page does. Nothing it opens joins the person's history.
     shared: Bool = true
+    /// The page was opened for an agent, which browses it as any visitor would: in every window
+    /// it opens in, its engine runs on a profile of its own, which holds none of the person's
+    /// cookies or sign-ins, is not offered their saved logins, and goes when the window closes.
+    visitor: Bool = false
     /// What was done in the page, newest last. The newest thousand are kept.
     steps: Collection<PageStep>
     /// What the page's own script asks, and the menu it showed, as its window last read them.
@@ -1226,14 +1230,23 @@ action refresh_page(p: Page) -> Answer uses page (
     Answer(ok: true, message: "read")
 }
 
-/// The page's window opened: it settles a private page's engine before anything is read, and
-/// opens any other signed in to the sites the person brought their sign-ins of from a browser of
-/// theirs, then reads what the page asks and shows before anyone looks.
+/// The page's window opened: it settles a private or a visitor's page's engine before anything is
+/// read, and opens any other signed in to the sites the person brought their sign-ins of from a
+/// browser of theirs, then reads what the page asks and shows before anyone looks. A window opened
+/// for an agent opens none of them, says so, and the page browses as a visitor from then on,
+/// whichever window shows it.
 opened action opened_page(p: Page) uses page {
-    if not p.shared {
+    if not p.shared or p.visitor {
         let _ = page.call(json.encode(Ask(op: "private")))
     } else {
-        let _ = page.call(json.encode(Ask(op: "sign_ins")))
+        match json.parse(page.call(json.encode(Ask(op: "sign_ins")))) {
+            .ok(answer) => {
+                if json_text(answer, "code") == "visitor" {
+                    p.visitor = true
+                }
+            }
+            .err(_) => {}
+        }
     }
     refresh_page(p)
 }
@@ -3309,6 +3322,13 @@ view page_view(p: Page) {
                         ui.Banner(
                             "Private window",
                             message: "This window keeps nothing when it closes: no history, no sign-ins, and no cookies but the page's own.",
+                            kind: .info,
+                        )
+                    }
+                    if p.visitor {
+                        ui.Banner(
+                            "Not signed in",
+                            message: "An agent browses this page as any visitor would: none of your sign-ins, cookies or saved logins reach it.",
                             kind: .info,
                         )
                     }

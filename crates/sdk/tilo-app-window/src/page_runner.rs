@@ -16,6 +16,15 @@ use ui::webview;
 /// The page of one window, made when the window first needs it.
 pub type Page = Rc<RefCell<Option<PageSession>>>;
 
+/// Have the window of `page` browse as a visitor: it was opened for whoever works its record (an
+/// agent), not for the person. Its page starts now, on a profile of its own that goes when the
+/// window closes; it is offered none of the person's saved logins and opens none of the sign-ins
+/// they brought, whatever the app asks of it. A page the window already started for the person
+/// goes.
+pub fn browse_as_visitor(page: &Page) {
+    page.borrow_mut().replace(visitor_session());
+}
+
 /// The engine of `page`, made now when the window has none: the window's one page.
 #[must_use]
 pub fn engine_of(page: &Page) -> SharedEngine {
@@ -78,9 +87,14 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Answered(codec::accepted()))
         }
         // The sites the person brought their sign-ins of open signed in in the page's profile,
-        // which names beside itself the sign-ins it holds.
+        // which names beside itself the sign-ins it holds. A page on a profile of its own (a
+        // visitor's window: the app asks no private page for them) opens none, and says it
+        // browses as a visitor.
         codec::Ask::SignIns => {
             let _ = engine_of(page);
+            if page.borrow().as_ref().is_some_and(PageSession::is_private) {
+                return Ok(Asked::Answered(codec::visitor()));
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(profile) = tilo_webview::chromium::browsing_profile() {
                 session_of(page, |session| {
@@ -189,6 +203,26 @@ fn start_private(page: &Page) -> Result<(), String> {
     };
     held.replace(PageSession::new_private(engine, root));
     Ok(())
+}
+
+/// The page of a window opened for a visitor: a profile of its own, which goes with the window,
+/// and no vault; what the page is about to send (a form, a download, a payment) waits for the
+/// person's answer. A page that cannot start one shows why, never the person's profile instead,
+/// and is given no vault either.
+fn visitor_session() -> PageSession {
+    let unavailable = |why: String| -> SharedEngine {
+        tracing::error!(%why, "a visitor's page could not start a profile of its own");
+        tilo_webview::chromium::UnavailableEngine::new(why)
+    };
+    let session = match tilo_webview::chromium::allocate_private_root() {
+        Ok(root) => {
+            let engine = ui::webview::new_private_page_engine(&root).unwrap_or_else(unavailable);
+            PageSession::new_private(engine, root)
+        }
+        Err(why) => PageSession::new(unavailable(why)),
+    };
+    session.engine().hold_departures();
+    session
 }
 
 /// Do `act` with the window's page session, refusing when the window keeps no page.
@@ -326,6 +360,41 @@ pub fn prompts_waiting(page: &Page) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A window opened for an agent starts its page on a profile of its own, which holds none of
+    /// the person's cookies, and opens none of the sign-ins they brought when the app asks: it
+    /// says it browses as a visitor instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_window_opened_for_an_agent_holds_none_of_the_persons_sign_ins() {
+        let page = Page::default();
+        browse_as_visitor(&page);
+        assert!(
+            page.borrow().is_some(),
+            "the page starts before the window shows anything"
+        );
+        let Ok(Asked::Answered(answer)) = ask(&page, r#"{"op":"sign_ins"}"#) else {
+            panic!("a visitor's window answers at once");
+        };
+        let answer: serde_json::Value = serde_json::from_str(&answer).expect("JSON");
+        assert_eq!(answer["code"], "visitor", "{answer}");
+        assert_eq!(answer["ok"], false, "{answer}");
+        // A private page keeps no vault, so it is offered no saved login and asks for no sign-in.
+        assert!(
+            page.borrow()
+                .as_ref()
+                .expect("the page started")
+                .is_private(),
+            "the page browses on a profile of its own, not the person's"
+        );
+        // Asked to browse privately or to open the sign-ins again, it stays as it is.
+        let _ = ask(&page, r#"{"op":"private"}"#);
+        let Ok(Asked::Answered(again)) = ask(&page, r#"{"op":"sign_ins"}"#) else {
+            panic!("a visitor's window answers at once");
+        };
+        assert_eq!(again, codec::visitor());
+        assert!(page.borrow().as_ref().expect("kept").is_private());
+    }
 
     #[test]
     fn a_chosen_package_is_read_from_the_content_store_by_its_address() {

@@ -416,6 +416,10 @@ pub struct WindowRequest {
     pub reveal: Option<String>,
     /// The file the window opens, when the app was opened with one.
     pub open: Option<String>,
+    /// The window is opened for whoever works its record rather than for the person (an agent):
+    /// it browses as a visitor would, on a profile of its own, with none of the person's cookies,
+    /// sign-ins or saved logins.
+    pub visitor: bool,
 }
 
 /// The person's region formats, language and time zone, as the session hands them to a process
@@ -1104,6 +1108,7 @@ mod tests {
                 instance: 41,
                 reveal: Some("chat/links/c_ada".into()),
                 open: None,
+                visitor: true,
             };
             ToProcess::Window {
                 request: request.clone(),

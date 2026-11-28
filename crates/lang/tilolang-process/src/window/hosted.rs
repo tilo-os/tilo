@@ -678,6 +678,9 @@ pub struct HostedWindow {
     waiting: ui::widget::Element,
     /// The host running the window's instance in this process, without a session.
     in_process: Option<InProcess>,
+    /// The window is opened for whoever works its record (an agent), not for the person: its
+    /// page browses as a visitor, with none of the person's cookies, sign-ins or saved logins.
+    visitor: bool,
 }
 
 impl HostedWindow {
@@ -695,6 +698,7 @@ impl HostedWindow {
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
             in_process: None,
+            visitor: ui::window_link::requested_visitor(),
         };
         window.connect();
         window
@@ -741,6 +745,7 @@ impl HostedWindow {
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
             in_process: None,
+            visitor: ui::window_link::requested_visitor(),
         }
     }
 
@@ -960,6 +965,9 @@ impl HostedWindow {
                 };
                 let watch = Watch::start(watched, wake);
                 let mut view = AppWindow::new(transport, Vec::new());
+                if self.visitor {
+                    view.browse_as_visitor();
+                }
                 // A floating surface the view asks for mirrors its app's own player.
                 if let Some(app) = super::bound()
                     .map(|bound| bound.app.as_str())
@@ -968,8 +976,13 @@ impl HostedWindow {
                     view.set_app_id(app);
                 }
                 // The page's file inputs ask the person with the chooser the session opened for
-                // this instance, the one place a file is chosen and granted.
-                if let Some(picker) = page_picker(self.instance) {
+                // this instance, the one place a file is chosen and granted. A click in a window an
+                // agent works is the agent's, and puts no chooser in front of the person: its page
+                // is told nothing was chosen, and files reach it through the page's own action,
+                // which names them.
+                if !self.visitor
+                    && let Some(picker) = page_picker(self.instance)
+                {
                     view.set_page_picker(picker);
                 }
                 self.connected = Some(Connected {

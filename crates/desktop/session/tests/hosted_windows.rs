@@ -90,7 +90,7 @@ fn launcher_as_spares(home: &tilo_test_env::TestHome, told: &Path) -> tilo_test_
 /// Not a test of its own: the spare window process [`launcher_as_spares`] starts, run from this
 /// test binary. It takes the link the session handed it as the launcher takes it, holds the display
 /// connection it is sent, and writes each binding to [`TOLD_ENV`]'s file until the session lets
-/// it go.
+/// it go, with whether its window browses as a visitor.
 #[test]
 fn recording_spare() {
     use runtime_portal::process_link::{Packet as _, ToProcess};
@@ -112,10 +112,15 @@ fn recording_spare() {
                     .unwrap();
                 writeln!(
                     file,
-                    "{} {} {}",
+                    "{} {} {} {}",
                     std::process::id(),
                     binding.app,
-                    binding.window.instance
+                    binding.window.instance,
+                    if binding.window.visitor {
+                        "visitor"
+                    } else {
+                        "person"
+                    }
                 )
                 .unwrap();
             }
@@ -694,6 +699,41 @@ fn a_window_of_its_own_opens_in_the_tab_beside_the_one_the_app_has() {
     );
 }
 
+/// Who the window a spare was bound for with instance `instance` browses as: `visitor` for one
+/// opened for whoever works its record, `person` for the person's own.
+fn browses_as(told: &Path, instance: u64) -> Option<String> {
+    fs::read_to_string(told)
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let bound: u64 = fields.get(2)?.parse().ok()?;
+            (bound == instance).then(|| fields.get(3).map(|as_who| (*as_who).to_owned()))?
+        })
+}
+
+/// A window opened on a record for whoever works it (an agent's Browser page) is bound as a
+/// visitor's: the window it opens browses with none of the person's sign-ins.
+#[test]
+fn a_window_opened_for_an_agent_is_bound_as_a_visitors() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    installed_windowed(&mut home);
+    let told = home.home().join("told");
+    let launcher = launcher_as_spares(&home, &told);
+    let _collaboration = collaboration_socket();
+    let apps = apps_at(&home, launcher.path().to_owned());
+    let mut session = session(apps.clone());
+
+    apps.open(&Launch::Record {
+        app: APP.to_owned(),
+        record: RECORD.to_owned(),
+        visitor: true,
+    })
+    .expect("the app opens on its record for an agent");
+    let (_, instance) = bound(&mut session, &told, APP, 0);
+    assert_eq!(browses_as(&told, instance).as_deref(), Some("visitor"));
+}
+
 #[test]
 fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
@@ -711,6 +751,11 @@ fn a_window_on_a_record_opens_in_the_tab_the_shell_made() {
     })
     .expect("the app opens on its record");
     let (_, instance) = bound(&mut session, &told, APP, 0);
+    assert_eq!(
+        browses_as(&told, instance).as_deref(),
+        Some("person"),
+        "the person's own window is theirs"
+    );
     let tabs = tabs_of(&session, APP);
     assert_eq!(
         tabs,

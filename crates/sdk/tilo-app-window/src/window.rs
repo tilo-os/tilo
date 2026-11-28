@@ -678,6 +678,12 @@ impl AppWindow {
         self.moved.keys(&self.app_id, action, declared.as_deref())
     }
 
+    /// Have the window's page browse as a visitor: the window was opened for whoever works its
+    /// record (an agent), not for the person ([`crate::page_runner::browse_as_visitor`]).
+    pub fn browse_as_visitor(&mut self) {
+        crate::page_runner::browse_as_visitor(&self.page);
+    }
+
     /// Give the window the person's picker: a page's file input is answered with the paths they
     /// choose there, and a window given none answers a chooser with nothing.
     pub fn set_page_picker(&mut self, picker: std::sync::Arc<dyn PagePicker>) {

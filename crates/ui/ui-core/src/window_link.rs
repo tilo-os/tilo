@@ -132,6 +132,22 @@ pub fn requested_reveal() -> Option<String> {
     }
 }
 
+/// Whether the window being built is opened for whoever works its record rather than for the
+/// person (an agent), as the shell's request for it said: the window a spare is bound for, or one
+/// more window of a process already running. Such a window browses as a visitor, with none of the
+/// person's cookies, sign-ins or saved logins.
+#[must_use]
+pub fn requested_visitor() -> bool {
+    #[cfg(feature = "local-daemons")]
+    {
+        transport::is_building() && transport::requested_visitor()
+    }
+    #[cfg(not(feature = "local-daemons"))]
+    {
+        false
+    }
+}
+
 #[cfg(all(feature = "native", feature = "model", feature = "broker-transport"))]
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
@@ -438,6 +454,16 @@ mod transport {
         })
     }
 
+    /// Whether the window being built for a request is opened for a visitor.
+    #[must_use]
+    pub fn requested_visitor() -> bool {
+        BUILDING.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|opening| opening.request.visitor)
+        })
+    }
+
     /// What the window being built for a request opens, if it names one; `None` for the
     /// process's first window, which opens what its launch named.
     #[must_use]
@@ -514,6 +540,7 @@ mod transport {
                     instance: 9,
                     reveal: Some("chat/links/c_ada".into()),
                     open: Some("/documents/Budget.txt".into()),
+                    visitor: true,
                 },
                 collaboration: connection(),
                 shell_ui: None,
@@ -535,6 +562,10 @@ mod transport {
                     Some("/documents/Budget.txt"),
                     "the window opens the file the shell named"
                 );
+                assert!(
+                    requested_visitor(),
+                    "the window browses as the visitor it was asked for"
+                );
                 assert!(is_building());
                 assert_eq!(take_collaboration().is_some(), carried);
                 assert!(take_collaboration().is_none(), "taken once");
@@ -543,6 +574,7 @@ mod transport {
             assert_eq!(instance(), None);
             assert_eq!(requested_reveal(), None);
             assert_eq!(requested_open(), None);
+            assert!(!requested_visitor());
             assert!(!is_building());
         }
 
