@@ -1740,8 +1740,6 @@ d-d63pkwee = Zuletzt geöffnet an einem Nachmittag
 
 d-7ugeomrq = Meldungsauswahl
     .w-what-the-report-is-about = Worum es in der Meldung geht
-    .w-nothing-is-open-to-report-about-2 = Nichts offen, worüber sich melden ließe.
-    .w-click-the-window-that-isn-t-2 = Klicke das Fenster an, das nicht funktioniert, oder ziehe darüber.
     .w-cancel = Abbrechen
 
 d-6mnqsxi6 = Bedienhinweise
