@@ -609,7 +609,9 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
         tilo_server_protocol::page::PageRefusal,
     > {
         use tilo_server_protocol::page::window::{WindowAnswer, WindowAsk, receive, send};
-        if app != NOTES {
+        // Notes, and the shell, whose view is the workspace's desktop.
+        let desktop = app == "so.tilo.shell";
+        if app != NOTES && !desktop {
             return Err(tilo_server_protocol::page::PageRefusal::NoSuchApp);
         }
         // The window acts in the page's workspace: a caller of another is refused.
@@ -622,6 +624,11 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
         std::thread::spawn(move || {
             while let Some(ask) = receive::<WindowAsk>(&mut window).unwrap() {
                 let answer = match ask {
+                    WindowAsk::Open { .. } if desktop => WindowAnswer::Shown {
+                        title: "Desktop".into(),
+                        css: ".d{}".into(),
+                        body: "<div class=\"tilo-view\" data-p=\"0\">the desktop</div>".into(),
+                    },
                     WindowAsk::Open { show } => WindowAnswer::Shown {
                         title: "Notes".into(),
                         css: ".n{}".into(),
@@ -712,6 +719,14 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
         home.body
             .contains(&format!("href=\"/w/{workspace_id}/notes\"")),
         "the front page opens Notes: {}",
+        home.body
+    );
+    assert!(
+        home.body.contains(
+            "<main class=\"tilo-home-canvas-view\"><div class=\"tilo-view\" data-p=\"0\">\
+             the desktop</div>"
+        ),
+        "beside them, the workspace's desktop, numbered from its own root: {}",
         home.body
     );
     assert!(

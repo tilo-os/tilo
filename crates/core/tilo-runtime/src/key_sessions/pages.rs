@@ -148,9 +148,11 @@ enum Held {
         app: String,
         /// What the page shows where the view leaves a window to the device: the desktop's.
         wells: Option<Box<DesktopWells>>,
+        /// The front page's side, which the desktop stands beside there: it carries no
+        /// element number, so the view's own elements are numbered from its root and a patch
+        /// reaches them alone. `None` on every other page.
+        side: Option<String>,
     },
-    /// The workspace's front page: it changes only when opened again.
-    Home,
     Search(Box<Search>),
 }
 
@@ -230,16 +232,6 @@ impl Inner {
     ) -> Result<OpenedPage, PageRefusal> {
         let (workspace, dispatch, caller) = self.run(workspace_id, reader)?;
         let caller = &caller;
-        if address.is_home() {
-            let (title, css, body) = home(workspace_id, &dispatch, caller)?;
-            let page = self.hold(Held::Home);
-            return Ok(OpenedPage {
-                page,
-                title,
-                css,
-                body,
-            });
-        }
         if address.app == SEARCH_APP {
             let mut search = Search {
                 workspace_id,
@@ -266,7 +258,13 @@ impl Inner {
             .views
             .get()
             .ok_or_else(|| unavailable("this device shows no app's window on a page"))?;
-        let desktop = address.app == DESKTOP;
+        // The front page is the workspace's desktop with its side beside it: the people, the
+        // way into search and the apps a member opens.
+        let side = address
+            .is_home()
+            .then(|| home_side(workspace_id, &dispatch, caller))
+            .transpose()?;
+        let desktop = side.is_some() || address.app == DESKTOP;
         let app_id = if desktop {
             tilo_app_host::shell::SHELL_APP.to_owned()
         } else {
@@ -283,12 +281,14 @@ impl Inner {
         if let Some(wells) = &mut wells {
             wells.follow(&mut window)?;
         }
-        let (title, css, body) = window.open(address.show.clone()).map_err(unavailable)?;
+        let shown = window.open(address.show.clone()).map_err(unavailable)?;
+        let (title, css, body) = beside(side.as_deref(), shown);
         let page = self.hold(Held::App {
             window: Box::new(window),
             workspace,
             app: address.app.clone(),
             wells,
+            side,
         });
         self.route_call(page, workspace_id, &app_id, caller);
         Ok(OpenedPage {
@@ -314,6 +314,7 @@ impl Inner {
                     workspace,
                     app,
                     wells,
+                    ..
                 },
                 Some(act),
             ) => {
@@ -355,14 +356,13 @@ impl Inner {
                 patches.extend(window.changed().map_err(unavailable)?);
                 Ok(patches)
             }
-            (Held::Home, _) => Ok(Vec::new()),
             (Held::Search(search), act) => Ok(search.act(act)),
         }
     }
 
     /// The pointer at `event` on `page`: carried into the view's widgets as a device's pointer
     /// is, so a drag on the page is the same gesture the shell runs natively, and answered with
-    /// what it changed. A page showing no window (the front page, the search) takes no pointer.
+    /// what it changed. A page showing no window (the search) takes no pointer.
     fn pointer(&self, page: u64, event: PointerEvent) -> Result<Vec<PagePatch>, PageRefusal> {
         let held = self
             .open
@@ -388,8 +388,8 @@ impl Inner {
     }
 
     /// Draw `page` in the light or dark look `dark` names, as a window follows the system it runs
-    /// on: the page whole again, from its window. A page showing no window (the front page, the
-    /// search) keeps the look it has.
+    /// on: the page whole again, from its window. A page showing no window (the search) keeps
+    /// the look it has.
     fn appearance(&self, page: u64, dark: bool) -> Result<Option<OpenedPage>, PageRefusal> {
         let held = self
             .open
@@ -398,10 +398,13 @@ impl Inner {
             .cloned()
             .ok_or_else(|| unavailable("the page was closed"))?;
         let mut held = held.lock_recover();
-        let Held::App { window, .. } = &mut *held else {
+        let Held::App { window, side, .. } = &mut *held else {
             return Ok(None);
         };
-        let (title, css, body) = window.appearance(dark).map_err(unavailable)?;
+        let (title, css, body) = beside(
+            side.as_deref(),
+            window.appearance(dark).map_err(unavailable)?,
+        );
         drop(held);
         Ok(Some(OpenedPage {
             page,
@@ -935,13 +938,13 @@ fn app_named(dispatch: &SessionHost, caller: &Caller, name: &str) -> Result<Stri
         .ok_or(PageRefusal::NoSuchApp)
 }
 
-/// The workspace's front page: its way into search, who is here and what they work in, and
-/// the apps a member opens, each a link to its own page.
-fn home(
+/// The side of the workspace's front page, beside its desktop: its way into search, who is
+/// here and what they work in, and the apps a member opens, each a link to its own page.
+fn home_side(
     workspace_id: WorkspaceId,
     dispatch: &SessionHost,
     caller: &Caller,
-) -> Result<(String, String, String), PageRefusal> {
+) -> Result<String, PageRefusal> {
     let apps = apps(dispatch, caller)?;
     let mut here = dispatch.here(caller).unwrap_or_default();
     here.sort_by(|a, b| a.name.cmp(&b.name));
@@ -990,7 +993,25 @@ fn home(
         );
     }
     body.push_str("</ul></aside>");
-    Ok(("Tilo".to_owned(), page_css() + HOME_CSS, body))
+    Ok(body)
+}
+
+/// The page a view `shown` (`(title, css, body)`) makes, with the front page's `side` beside it
+/// where it has one: the desktop's view fills the rest, its elements numbered as on the
+/// desktop's own page.
+fn beside(side: Option<&str>, shown: (String, String, String)) -> (String, String, String) {
+    let Some(side) = side else {
+        return shown;
+    };
+    let (_, css, body) = shown;
+    (
+        "Tilo".to_owned(),
+        css + HOME_CSS,
+        format!(
+            "<div class=\"tilo-home-canvas\">{side}<main class=\"tilo-home-canvas-view\">{body}\
+             </main></div>"
+        ),
+    )
 }
 
 /// An app's first letter, on the tile its icon stands on.
@@ -1670,9 +1691,21 @@ fn search_body(needle: &str, results: &str) -> String {
     )
 }
 
-/// The workspace's front page: a side of its people and its apps as tiles, on the theme's own
-/// ground.
+/// The workspace's front page: a side of its people and its apps as tiles beside the
+/// workspace's desktop, on the theme's own ground; on a phone the side stands over the desktop.
 const HOME_CSS: &str = "\
+.tilo-home-canvas{display:grid;grid-template-columns:minmax(240px,300px) minmax(0,1fr);height:100dvh;\
+background:var(--tilo-ground);}\
+.tilo-home-canvas>.tilo-home{padding:24px 20px;border-right:1px solid var(--tilo-border);}\
+.tilo-home-canvas .tilo-home-apps{grid-template-columns:repeat(auto-fill,minmax(84px,1fr));}\
+.tilo-home-canvas .tilo-home-app{padding:12px 6px;}\
+.tilo-home-canvas .tilo-home-initial{width:40px;height:40px;}\
+.tilo-home-canvas-view{display:flex;min-width:0;min-height:0;}\
+.tilo-home-canvas-view>*{flex:1;min-width:0;}\
+.tilo-home-canvas-view>.tilo-view{height:100%;}\
+@media (max-width:720px){.tilo-home-canvas{grid-template-columns:minmax(0,1fr);\
+grid-template-rows:auto minmax(0,1fr);}.tilo-home-canvas>.tilo-home{max-height:40dvh;border-right:0;\
+border-bottom:1px solid var(--tilo-border);}}\
 .tilo-home{height:100%;box-sizing:border-box;overflow-y:auto;display:flex;flex-direction:column;gap:20px;\
 padding:clamp(24px,6vh,56px) clamp(20px,6vw,64px);background:var(--tilo-ground);}\
 .tilo-home-title{margin:0;font-size:18px;font-weight:600;}\

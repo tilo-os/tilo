@@ -95,7 +95,18 @@ fn browser(host: &host::Host) -> (Caller, DeviceCert) {
 async fn open(
     daemon: &Arc<Daemon>,
     workspace: &str,
+    reader: &(Caller, DeviceCert),
+) -> Result<OpenedPage, PageRefusal> {
+    open_at(daemon, workspace, reader, "desktop").await
+}
+
+/// The workspace's page of `app` (`""` for its front page), opened by `reader` as [`open`]
+/// opens its desktop.
+async fn open_at(
+    daemon: &Arc<Daemon>,
+    workspace: &str,
     (caller, cert): &(Caller, DeviceCert),
+    app: &str,
 ) -> Result<OpenedPage, PageRefusal> {
     let pages = daemon
         .pages()
@@ -106,7 +117,7 @@ async fn open(
         (&caller, cert),
         PageAddress {
             workspace: workspace.to_owned(),
-            app: "desktop".into(),
+            app: app.into(),
             show: None,
         },
     ))
@@ -122,9 +133,20 @@ struct Page {
 
 impl Page {
     async fn of(daemon: &Arc<Daemon>, workspace: &str, reader: &(Caller, DeviceCert)) -> Self {
-        let opened = open(daemon, workspace, reader)
+        Self::at(daemon, workspace, reader, "desktop").await
+    }
+
+    /// The workspace's page of `app` (`""` for its front page), as [`Self::of`] opens its
+    /// desktop.
+    async fn at(
+        daemon: &Arc<Daemon>,
+        workspace: &str,
+        reader: &(Caller, DeviceCert),
+        app: &str,
+    ) -> Self {
+        let opened = open_at(daemon, workspace, reader, app)
             .await
-            .expect("a member's desktop opens");
+            .unwrap_or_else(|refused| panic!("a member's page of {app:?} opens: {refused:?}"));
         Self {
             daemon: Arc::clone(daemon),
             workspace: collab_types::WorkspaceId::parse(workspace).unwrap(),
@@ -597,6 +619,43 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
             html.contains(&tasks_page)
         })
         .await;
+        page.close();
+    });
+}
+
+/// The workspace's front page is its desktop with a side beside it: the window open on her
+/// computer stands there with its own page in its well, numbered as on the desktop's page, and
+/// closes from there; the side leads to search and to the apps she opens.
+#[test]
+fn the_front_page_carries_the_workspaces_desktop() {
+    host::run_with(&["shell", "tasks"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        let computer = Computer::of(&daemon, &workspace);
+        computer.open_first(host.person(), (TASKS, "Tasks")).await;
+
+        let page = Page::at(&daemon, &workspace, &browser(&host), "").await;
+        let body = &page.opened.body;
+        assert!(
+            body.contains(&format!("href=\"/w/{workspace}/search\""))
+                && body.contains(&format!("href=\"/w/{workspace}/tasks\"")),
+            "the side leads to search and to Tasks: {body}"
+        );
+        assert!(
+            body.contains("<main class=\"tilo-home-canvas-view\">"),
+            "the desktop stands beside the side: {body}"
+        );
+        let tasks_page = format!("src=\"/w/{workspace}/tasks");
+        let shown = page
+            .until("Tasks' window on the front page's desktop", |html| {
+                windows(html)
+                    .iter()
+                    .any(|window| window.contains("data-well=") && window.contains(&tasks_page))
+            })
+            .await;
+        let close = button_in_window(&shown, "Tasks", "Close")
+            .unwrap_or_else(|| panic!("the window's Close button: {shown}"));
+        page.act(Some((close, PageAction::Activate))).await;
+        computer.shows(&[]).await;
         page.close();
     });
 }
