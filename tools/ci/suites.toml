@@ -710,13 +710,19 @@ inputs = [
 ]
 readers = [
   "crates/ui/ui-core/src/activity_wire.rs",
-  "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/i18n/tests.rs",
   "crates/ui/ui-core/src/widget/color_picker.rs",
   "crates/ui/ui-core/src/widget/floating_window.rs",
   "crates/ui/ui-core/src/widget/tabs_new_tab_tests.rs",
 ]
+
+
+[[cargo]]
+package = "tilo-ui-webview"
+# The painter's tests draw the paint stream's recorded layers, controls and screenshot.
+inputs = ["crates/engines/paint-stream/tests/fixtures/"]
+readers = ["crates/ui/ui-webview/src/paint.rs"]
 
 
 [[cargo]]
