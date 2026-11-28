@@ -543,6 +543,54 @@ pub unsafe fn solve_built_layout(
     }
 }
 
+/// Lay `widget` out alone at `size`, from `origin`: a view drawn where no frame's layout reaches
+/// it, such as a second window's projection of the same tree or a picture of a view. Whether it
+/// could.
+pub fn lay_out_alone(
+    widget: &mut dyn Widget,
+    origin: vello::kurbo::Point,
+    size: (f64, f64),
+    theme: &Theme,
+    text: &mut TextRenderer,
+) -> bool {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = widget.build_layout(&mut taffy, theme, &mut nodes);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a view's logical size is far inside f32's range"
+    )]
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let Ok(root) = taffy.new_with_children(
+        taffy::Style {
+            size: Size {
+                width: Dimension::length(width),
+                height: Dimension::length(height),
+            },
+            ..taffy::Style::default()
+        },
+        &[child],
+    ) else {
+        return false;
+    };
+    let available = Size {
+        width: AvailableSpace::Definite(width),
+        height: AvailableSpace::Definite(height),
+    };
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: the arena and node map were just built from `widget` alone, which stays in place
+    // and unaliased for both calls.
+    let solved = unsafe {
+        bindings.rebuild(&*widget, &taffy, child, &nodes);
+        compute_widget_layout(&mut taffy, root, available, &nodes, &bindings, text)
+    };
+    if solved.is_err() {
+        return false;
+    }
+    widget.apply_layout(&taffy, child, origin);
+    true
+}
+
 /// A node's measured size from its known dimensions and the space offered.
 pub(crate) type MeasureNode<'a> =
     dyn FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId) -> Size<f32> + 'a;

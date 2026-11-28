@@ -268,7 +268,7 @@ pub struct State {
     /// The mapped windows, bottom first, in the logical layout.
     pub(crate) space: Space<Window>,
     /// Toplevels a client created that have not shown a buffer yet.
-    unmapped: Vec<Window>,
+    pub(crate) unmapped: Vec<Window>,
     /// The person's keys typed for a window that has not shown yet ([`crate::awaited_keys`]).
     pub(crate) awaited_keys: crate::awaited_keys::AwaitedKeys,
     pub(crate) popups: PopupManager,
@@ -282,7 +282,10 @@ pub struct State {
     told_outputs: Vec<SurfaceOutput>,
     /// The connector the person made primary, as the configuration names it, whether or not it is
     /// lit right now.
-    primary_output: Option<String>,
+    pub(crate) primary_output: Option<String>,
+    /// The presentation going on: the display each audience window asked for, and the
+    /// presenter's window held on its own.
+    pub(crate) presentation: crate::presentation::Presentation,
     /// The monitors the policy was last told of.
     told_monitors: Vec<(Rectangle<i32, Logical>, String)>,
     /// The primary monitor the policy was last told of.
@@ -519,6 +522,7 @@ impl State {
             uploads: crate::uploads::Uploads::default(),
             told_outputs: Vec::new(),
             primary_output: None,
+            presentation: crate::presentation::Presentation::default(),
             told_monitors: Vec::new(),
             told_primary: None,
             pointer: Point::from((0.0, 0.0)),
@@ -1873,6 +1877,15 @@ impl State {
         self.hdr.forget(info.id);
         let outputs = self.output_geometries();
         let size = window.geometry().size;
+        if self.is_audience(window) {
+            // What an app shows the room fills its display; the presenter keeps the keyboard.
+            let at = self
+                .audience_rect(window)
+                .map_or_else(Point::default, |rect| rect.loc);
+            self.space.map_element(window.clone(), at, false);
+            self.rearrange();
+            return;
+        }
         let location = self.policy.place(&info, (size.w, size.h), &outputs);
         self.space.map_element(window.clone(), location, false);
         if let Some(x11) = window.x11_surface() {
@@ -1893,10 +1906,19 @@ impl State {
     /// keeping the stacking order.
     pub(crate) fn rearrange(&mut self) {
         self.outputs_changed();
-        let windows = self.windows();
+        // An app's audience window takes no place in the policy's layout: it fills its display.
+        let windows: Vec<_> = self
+            .windows()
+            .into_iter()
+            .filter(|(info, _)| {
+                self.mapped_window(info.id)
+                    .is_none_or(|window| !self.is_audience(window))
+            })
+            .collect();
         let outputs = self.output_geometries();
         let Some(placement) = self.policy.arrange(&windows, &outputs) else {
             // The stacking, focus and closes the policy asked for apply all the same.
+            self.present();
             self.restack();
             self.apply_policy_focus_and_closes();
             return;
@@ -1910,6 +1932,10 @@ impl State {
             let Some(placement) = placement.iter().find(|placement| placement.id == id) else {
                 continue;
             };
+            // A presenter's window held on its own display goes there once the presentation ends.
+            if self.hold_placement(placement) {
+                continue;
+            }
             let was = self.space.element_location(&window);
             if was != Some(placement.location) {
                 moved = true;
@@ -1958,6 +1984,7 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
+        self.present();
         self.restack();
         self.apply_policy_focus_and_closes();
     }
@@ -2005,6 +2032,7 @@ impl State {
         for window in cards {
             self.space.raise_element(&window, true);
         }
+        self.raise_presentation();
     }
 
     /// Give the keyboard to the window the policy brought forward, and ask the clients of the
@@ -2576,7 +2604,14 @@ impl CompositorHandler for State {
                     if !toplevel.is_initial_configure_sent() {
                         let info = window_info(&self.display, &self.icons, toplevel);
                         let outputs = self.output_geometries();
-                        if let Some((w, h)) = self.policy.initial_size(&info, &outputs) {
+                        if let Some(display) = self.audience_rect(&window) {
+                            toplevel.with_pending_state(|state| {
+                                state.states.set(
+                                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                                );
+                                state.size = Some(display.size);
+                            });
+                        } else if let Some((w, h)) = self.policy.initial_size(&info, &outputs) {
                             toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
                         }
                         toplevel.send_configure();
@@ -2701,15 +2736,19 @@ impl XdgShellHandler for State {
             .as_ref()
             .and_then(Output::from_resource)
             .map(|output| output.name());
-        match self.window_of_toplevel(&surface) {
-            Some(window) => self.window_request(
-                &window,
-                &crate::policy::WindowRequest::Fullscreen { on: true, output },
-                None,
-            ),
-            None => {
-                surface.send_configure();
-            }
+        let request = crate::policy::WindowRequest::Fullscreen { on: true, output };
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(&window, &request, None);
+            return;
+        }
+        // An app's audience window names its display before its first buffer: it opens there.
+        let pending = self
+            .unmapped
+            .iter()
+            .find(|window| window.toplevel() == Some(&surface))
+            .cloned();
+        if pending.is_none_or(|window| !self.presentation_request(&window, &request)) {
+            surface.send_configure();
         }
     }
 

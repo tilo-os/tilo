@@ -226,6 +226,8 @@ mod poker_between_devices;
 mod portal_link;
 #[path = "power.rs"]
 mod power;
+#[path = "presenting.rs"]
+mod presenting;
 #[path = "primary_display.rs"]
 mod primary_display;
 #[path = "quick_devices.rs"]

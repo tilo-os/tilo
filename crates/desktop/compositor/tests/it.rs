@@ -36,6 +36,8 @@ mod hotplug;
 mod layers;
 #[path = "output_management.rs"]
 mod output_management;
+#[path = "presenter.rs"]
+mod presenter;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "shared_window_color.rs"]

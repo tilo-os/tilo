@@ -248,6 +248,9 @@ pub struct OutputConfig {
     /// The colour the panel on it shows: what a real sink's EDID and the signal it is sent would
     /// declare.
     pub colour: DisplayCapabilities,
+    /// How large the panel is, in millimetres across and down, when it says: what clients rank
+    /// screens by (`wl_output.geometry`), a television before a laptop's panel.
+    pub physical_mm: Option<(u32, u32)>,
 }
 
 impl OutputConfig {
@@ -260,6 +263,7 @@ impl OutputConfig {
             position: None,
             refresh_mhz: 60_000,
             colour: DisplayCapabilities::sdr_default(),
+            physical_mm: None,
         }
     }
 
@@ -280,6 +284,7 @@ impl OutputConfig {
             (self.size.0.unsigned_abs(), self.size.1.unsigned_abs()),
             Some(physical_mm),
         );
+        self.physical_mm = Some(physical_mm);
         self
     }
 
@@ -308,7 +313,15 @@ impl OutputConfig {
         let output = Output::new(
             self.name.clone(),
             PhysicalProperties {
-                size: (0, 0).into(),
+                size: self
+                    .physical_mm
+                    .map_or((0, 0), |(w, h)| {
+                        (
+                            i32::try_from(w).unwrap_or(i32::MAX),
+                            i32::try_from(h).unwrap_or(i32::MAX),
+                        )
+                    })
+                    .into(),
                 subpixel: Subpixel::Unknown,
                 make: "Tilo".into(),
                 model: model.into(),

@@ -3940,6 +3940,75 @@ impl tilo_ui_base::widget::FullscreenProvider for AppWindow {
     }
 }
 
+/// The view that gives the audience a view of its own while it is presented, at whatever depth
+/// the view's containers nest it: a slide deck's presentation inside the app's shell.
+fn audience_view(
+    root: &dyn Widget,
+) -> Option<&dyn tilo_ui_base::widget::AudiencePresentationProvider> {
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::AudiencePresentationProvider,
+    >(root)
+    {
+        return Some(provider);
+    }
+    root.children().into_iter().find_map(audience_view)
+}
+
+/// Run `act` on the same view, to tell it of the audience's window or have it draw there. Whether
+/// there was one.
+fn with_audience_view(
+    root: &mut dyn Widget,
+    act: &mut dyn FnMut(&mut dyn tilo_ui_base::widget::AudiencePresentationProvider),
+) -> bool {
+    if let Some(view) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::AudiencePresentationProvider,
+    >(root)
+    {
+        act(view);
+        return true;
+    }
+    root.children_mut()
+        .into_iter()
+        .any(|child| with_audience_view(child, act))
+}
+
+/// The window answers the host's audience questions for the view that gives the audience a view
+/// of its own, however the view's containers nest it.
+impl tilo_ui_base::widget::AudiencePresentationProvider for AppWindow {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<tilo_ui_base::fullscreen::AudiencePresentationRequest> {
+        audience_view(self.body.as_ref())?.audience_presentation_request()
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        with_audience_view(self.body.as_mut(), &mut |view| {
+            view.on_audience_presentation_changed(active);
+        });
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut tilo_ui_base::widget::Scene,
+        transform: ui::kurbo::Affine,
+        text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
+        theme: &tilo_ui_base::theme::Theme,
+        rect: ui::kurbo::Rect,
+    ) -> bool {
+        let mut drawn = false;
+        with_audience_view(self.body.as_mut(), &mut |view| {
+            drawn = view.draw_audience_presentation(scene, transform, text_renderer, theme, rect);
+        });
+        drawn
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        with_audience_view(self.body.as_mut(), &mut |view| {
+            view.on_audience_presentation_closed();
+        });
+    }
+}
+
 /// The request the view's fullscreen intent carries, wherever it stands in the tree: which
 /// screen a presentation fills, and whether it is the window or a surface of its own.
 fn fullscreen_params_of(root: &dyn Widget) -> Option<tilo_ui_base::fullscreen::FullscreenRequest> {
@@ -4268,6 +4337,13 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             request.provide::<dyn tilo_ui_base::widget::FullscreenProvider>(self);
             return;
         }
+        // And a presentation's view for the audience, which the host shows in a window of its own.
+        if request.wants::<dyn tilo_ui_base::widget::AudiencePresentationProvider>()
+            && audience_view(self.body.as_ref()).is_some()
+        {
+            request.provide::<dyn tilo_ui_base::widget::AudiencePresentationProvider>(self);
+            return;
+        }
         // Likewise a player's picture-in-picture: the window floats the picture the view asked
         // for, however deeply its containers nest it.
         if request.wants::<dyn ui::floating_surface::FloatingSurfaceProvider>()
@@ -4303,6 +4379,12 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             && fullscreen_intent_of(self.body.as_ref()).is_some()
         {
             request.provide::<dyn tilo_ui_base::widget::FullscreenProvider>(self);
+            return;
+        }
+        if request.wants::<dyn tilo_ui_base::widget::AudiencePresentationProvider>()
+            && audience_view(self.body.as_ref()).is_some()
+        {
+            request.provide::<dyn tilo_ui_base::widget::AudiencePresentationProvider>(self);
             return;
         }
         if request.wants::<dyn ui::floating_surface::FloatingSurfaceProvider>()

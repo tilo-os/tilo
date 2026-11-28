@@ -75,6 +75,9 @@ tilo-wayland-ext = { path = "../wayland-ext" }
 # What a surface is, and the shapes, key claims and outputs it is told of: the session's
 # own vocabulary, so a surface app is written once for the compositor and the page.
 tilo-session-core = { path = "../session-core" }
+# Which display an audience looks at and which the presenter keeps: the ranking the app chose
+# its audience screen by, so app and compositor cannot disagree about which screen is the big one.
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The liveness socket beside the control socket: whether the loop still turns,
 # and where every thread is when it does not.
 tilo-liveness = { path = "../../platform/liveness" }

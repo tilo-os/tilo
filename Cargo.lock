@@ -16439,6 +16439,7 @@ dependencies = [
  "tilo-settings-store",
  "tilo-startup-metrics",
  "tilo-test-env",
+ "tilo-ui-base",
  "tilo-wayland-ext",
  "tilo-window-share",
  "tilo-winit",

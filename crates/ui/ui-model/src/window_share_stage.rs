@@ -823,49 +823,7 @@ impl Stage {
 
 /// Lay `host` out at [`VIEW`]'s size from the origin. Whether it could.
 fn lay_out(host: &mut TileHost, theme: &Theme, text: &mut TextRenderer) -> bool {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut nodes: std::collections::HashMap<NodeId, *mut dyn Widget> =
-        std::collections::HashMap::new();
-    let child = host.build_layout(&mut taffy, theme, &mut nodes);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the view's logical size is far inside f32's range"
-    )]
-    let size = taffy::Size {
-        width: taffy::Dimension::length(VIEW.0 as f32),
-        height: taffy::Dimension::length(VIEW.1 as f32),
-    };
-    let Ok(root) = taffy.new_with_children(
-        Style {
-            size,
-            ..Style::default()
-        },
-        &[child],
-    ) else {
-        return false;
-    };
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the view's logical size is far inside f32's range"
-    )]
-    let available = taffy::Size {
-        width: taffy::AvailableSpace::Definite(VIEW.0 as f32),
-        height: taffy::AvailableSpace::Definite(VIEW.1 as f32),
-    };
-    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
-    // SAFETY: the arena and node map were just built from `host` alone, which stays in place and
-    // unaliased for both calls.
-    let solved = unsafe {
-        bindings.rebuild(&*host, &taffy, child, &nodes);
-        tilo_ui_base::widget::compute_widget_layout(
-            &mut taffy, root, available, &nodes, &bindings, text,
-        )
-    };
-    if solved.is_err() {
-        return false;
-    }
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    true
+    tilo_ui_base::widget::layout::lay_out_alone(host, Point::ORIGIN, VIEW, theme, text)
 }
 
 impl tilo_ui::window_share::host::LiveView for crate::widget::TileHost {

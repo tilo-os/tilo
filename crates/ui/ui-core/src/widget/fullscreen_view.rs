@@ -7,6 +7,12 @@
 //! presented, the view is the whole screen, so it carries its own way out: a control in its
 //! leading top corner, announced as "Exit full screen", which reports [`FullscreenProps::exit`].
 //! What the view shows is never left without a visible way back.
+//!
+//! A view can give the audience a view of its own ([`FullscreenProps::audience`]): where there is
+//! a second screen, the host opens a window of the audience's on it while the view is presented,
+//! and the window the view stands in stays the presenter's, showing the view (the speaker's notes,
+//! the next slide, a timer), which the compositor moves to the presenter's screen. With one screen
+//! the window itself fills it, as without one.
 
 use std::collections::HashMap;
 
@@ -22,11 +28,12 @@ use tilo_ui_base::widget::identity::concrete::Decorator;
 use tilo_ui_base::{
     component::Component, component::Described, component::Event, component::PartViews,
 };
+use tilo_ui_base::{fullscreen::AudiencePresentationRequest, text_render::TextRenderer};
 use tilo_ui_base::{fullscreen::FullscreenRequest, fullscreen::FullscreenTarget};
 use tilo_ui_base::{motion::Presence, motion::Transient};
 use tilo_ui_base::{
-    widget::DrawChild, widget::Element, widget::EventCtx, widget::FullscreenProvider,
-    widget::TaffyTreeExt, widget::Widget, widget::layout_rect,
+    widget::AudiencePresentationProvider, widget::DrawChild, widget::Element, widget::EventCtx,
+    widget::FullscreenProvider, widget::TaffyTreeExt, widget::Widget, widget::layout_rect,
 };
 
 /// Which screen the window fills while the view is presented.
@@ -83,6 +90,11 @@ pub struct FullscreenProps {
     /// The view it presents.
     #[component(part(default))]
     pub body: Option<Element>,
+    /// What the audience sees on a screen of its own while the view is presented, where there is
+    /// a second screen: the window then stays the presenter's and shows the view. Without it, or
+    /// on one screen, the window itself fills the audience's screen.
+    #[component(part)]
+    pub audience: Option<Element>,
     /// The person pressed the way out: the view stops presenting what it shows. The control that
     /// reports it, "Exit full screen", is drawn while the view is presented; a view leaves it
     /// unbound when the system alone ends the presentation.
@@ -99,6 +111,12 @@ fn exit_label() -> String {
 /// the view carries the way out.
 pub struct Fullscreen {
     body: Element,
+    /// What the audience's own window shows, when the view gives the audience a view of its own.
+    audience: Option<Element>,
+    /// The audience's own window is up: the view's window stays the presenter's.
+    audience_shown: bool,
+    /// The part [`PartViews`] changes now: the audience's view rather than the body.
+    editing_audience: bool,
     showing: bool,
     screen: Screen,
     /// The way out, drawn over the view's leading top corner while it is presented.
@@ -121,8 +139,13 @@ impl Fullscreen {
         Box::new(tilo_ui_base::widget::Spacer::new())
     }
 
-    fn put(&mut self, body: Element) {
-        self.body = body;
+    /// Put `view` in the part being changed.
+    fn put(&mut self, view: Element) {
+        if self.editing_audience {
+            self.audience = Some(view);
+        } else {
+            self.body = view;
+        }
     }
 
     /// The way out: a small control in the leading top corner, named "Exit full screen".
@@ -204,6 +227,10 @@ impl Decorator for Fullscreen {
             request.provide::<dyn FullscreenProvider>(self);
             return;
         }
+        if request.wants::<dyn AudiencePresentationProvider>() && self.audience.is_some() {
+            request.provide::<dyn AudiencePresentationProvider>(self);
+            return;
+        }
         self.body.provide(request);
     }
 
@@ -213,6 +240,10 @@ impl Decorator for Fullscreen {
     ) {
         if request.wants::<dyn FullscreenProvider>() {
             request.provide::<dyn FullscreenProvider>(self);
+            return;
+        }
+        if request.wants::<dyn AudiencePresentationProvider>() && self.audience.is_some() {
+            request.provide::<dyn AudiencePresentationProvider>(self);
             return;
         }
         self.body.provide_mut(request);
@@ -374,12 +405,70 @@ impl Decorator for Fullscreen {
 }
 
 impl FullscreenProvider for Fullscreen {
+    /// Presented, the window fills the audience's screen, unless the audience has a window of its
+    /// own: the presenter's window then stays a window, which the compositor moves to the
+    /// presenter's screen.
     fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.showing)
+        Some(self.showing && !self.audience_shown)
     }
 
     fn fullscreen_params(&self) -> FullscreenRequest {
         FullscreenRequest::mirror(self.screen.target())
+    }
+}
+
+impl AudiencePresentationProvider for Fullscreen {
+    fn audience_presentation_request(&self) -> Option<AudiencePresentationRequest> {
+        (self.showing && self.audience.is_some())
+            .then(|| AudiencePresentationRequest::new(self.screen.target()))
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        self.audience_shown = active;
+    }
+
+    /// The audience's view, laid out on the audience's window and drawn there.
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        if !self.showing {
+            return false;
+        }
+        let Some(audience) = self.audience.as_mut() else {
+            return false;
+        };
+        if !tilo_ui_base::widget::layout::lay_out_alone(
+            audience.as_mut(),
+            rect.origin(),
+            (rect.width(), rect.height()),
+            theme,
+            text_renderer,
+        ) {
+            return false;
+        }
+        audience.draw_child(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &tilo_ui_base::draw::DrawEnv::default(),
+        );
+        true
+    }
+
+    /// The person closed the audience's window: the presentation ends, as the way out ends it.
+    fn on_audience_presentation_closed(&mut self) {
+        self.audience_shown = false;
+        if self.showing
+            && let Some(mut exit) = self.exit.clone().handler()
+        {
+            exit();
+        }
     }
 }
 
@@ -402,6 +491,9 @@ impl Described for Fullscreen {
         }
         Self {
             body: props.body.unwrap_or_else(Self::no_body),
+            audience: props.audience,
+            audience_shown: false,
+            editing_audience: false,
             showing: props.showing,
             screen: props.screen,
             control,
@@ -418,7 +510,9 @@ impl Described for Fullscreen {
     }
 
     fn set_props(&mut self, props: FullscreenProps) -> bool {
-        if event_identity(&props.exit) != event_identity(&self.exit) {
+        if event_identity(&props.exit) != event_identity(&self.exit)
+            || props.audience.is_some() != self.audience.is_some()
+        {
             return false;
         }
         self.showing = props.showing;
@@ -427,17 +521,30 @@ impl Described for Fullscreen {
     }
 
     fn part_views(&mut self, part: &str) -> Option<&mut dyn PartViews> {
-        (part == "body").then_some(self as &mut dyn PartViews)
+        self.editing_audience = match part {
+            "body" => false,
+            "audience" if self.audience.is_some() => true,
+            _ => return None,
+        };
+        Some(self as &mut dyn PartViews)
     }
 }
 
+/// The view of the part being changed: the body, or the audience's.
 impl PartViews for Fullscreen {
     fn len(&self) -> usize {
         1
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        (index == 0).then_some(&mut self.body)
+        if index != 0 {
+            return None;
+        }
+        if self.editing_audience {
+            self.audience.as_mut()
+        } else {
+            Some(&mut self.body)
+        }
     }
 
     fn insert(&mut self, _index: usize, view: Element) {

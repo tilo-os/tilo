@@ -1486,150 +1486,174 @@ view deck(d: Deck) {
         name: "Presentation",
         screen: if audience_screen { .primary_external } else { .largest },
     ) {
-        stack(fill) {
-            if presenting {
-                present_view(d, shown, current, presenter, notes_shown, blanked, audience_screen)
-            } else if overview {
-                overview_grid(d, current, overview)
-            } else {
-                // The content is a page a person works on, not a reading pane: a narrow window
-                // keeps the slide whole and lays the rail and the properties over it as drawers.
-                ui.NavShell(
-                    content_kind: .canvas,
-                    title: deck_name(d),
-                    sidebar_title: "Slides",
-                    sidebar_collapse: .drawer,
-                    inspector_collapse: .drawer,
-                    sidebar_open: rail_open,
-                    inspector_open: properties,
-                    fill,
-                ) {
-                    on drop(files: List<File>): import_files(d, files)
-                    actions: {
-                        // Search inside this deck: the same search, narrowed to its slides and
-                        // their words, so a hit opens the slide it found here.
-                        ui.SearchButton(item: d, label: deck_name(d))
-                        ui.Button("Open", icon: .folder_open, key: "Ctrl+O") {
-                            on press: file.choose(
-                                import_file(d),
-                                accept: [
-                                    "application/vnd.oasis.opendocument.presentation",
-                                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                ],
-                            )
-                        }
-                        ui.Button("Add slide", icon: .plus, key: "n") {
-                            on press: add_slide(d).then(set(current, "")).then(set(chosen, "none"))
-                        }
-                        if d.slides.len() > 0 {
-                            ui.Button("Duplicate slide", icon: .copy, key: "Ctrl+D") {
-                                on press: duplicate_current_slide(d, current)
-                            }
-                        }
-                        if d.slides.len() > 0 {
-                            ui.Button("Present", icon: .play, role: .primary, key: "p") {
-                                // A person presenting on this device sees the presenter's
-                                // view: the slide, the next one, and what they say over it.
-                                // The audience's screen is the presentation itself.
-                                on press: begin_presenting(d)
-                                    .then(set(presenting, true))
-                                    .then(set(presenter, true))
-                                    .then(
-                                        set(notes_shown, true),
-                                    )
-                                    .then(set(blanked, ""))
-                            }
-                        }
-                        ui.Button(
-                            "All slides",
-                            icon: .layout_grid,
-                            icon_only: true,
-                            toggled: overview,
-                            key: "g",
-                        ) {
-                            on press: set(overview, true)
-                        }
-                        ui.MenuButton(zoom_label(zoom), icon: .zoom_in) {
-                            ui.MenuItem("Fit", icon: .maximize) {
-                                on choose: set(zoom, 0.0).then(set(pan, [0.0, 0.0]))
-                            }
-                            for step in zoom_steps() {
-                                let percent = (step * 100.0).round()
-                                ui.MenuItem("{percent}%", icon: .zoom_in) {
-                                    on choose: set(zoom, step).then(set(pan, [0.0, 0.0]))
-                                }
-                            }
-                        }
-                        ui.Button(
-                            "Slide list",
-                            icon: .panel_left,
-                            icon_only: true,
-                            toggled: rail_open,
-                            key: "Ctrl+Shift+L",
-                        ) {
-                            on press: set(rail_open, not rail_open)
-                        }
-                        ui.Button(
-                            "Properties",
-                            icon: .panel_right,
-                            icon_only: true,
-                            toggled: properties,
-                        ) {
-                            on press: set(properties, not properties)
-                        }
-                        ui.Button("Help", icon: .circle_help, icon_only: true, key: "Shift+?") {
-                            on press: set(help, true)
-                        }
-                    }
-                    sidebar: {
-                        slide_rail(d, current, chosen)
-                    }
-                    content: {
-                        stack(gap: .related, fill) {
-                            if d.notice != "" {
-                                ui.Banner(d.notice, kind: .warning) {
-                                    on act: clear_notice(d)
-                                }
-                            }
-                            if let s = shown {
-                                stack(gap: .related, padding: .related, fill) {
-                                    slide_stage(d, s, chosen, zoom, pan, editing)
-                                    insert_tools(s, chosen, editing)
-                                    // A compact window keeps the speaker's words under the
-                                    // slide they are said over, where the inspector's sheet
-                                    // would cover it.
-                                    if space.compact {
-                                        stack(gap: .tight) {
-                                            ui.Text(
-                                                "Speaker notes",
-                                                role: .caption,
-                                                secondary: true,
-                                            )
-                                            ui.BlockEditor(bind: s.notes, placeholder: "Notes")
-                                        }
-                                    }
-                                }
-                            } else {
-                                ui.EmptyState(
-                                    "No slides yet",
-                                    message: "Add a slide to start the deck",
-                                    icon: .monitor,
+        body: {
+            stack(fill) {
+                if presenting {
+                    present_view(
+                        d,
+                        shown,
+                        current,
+                        presenter,
+                        notes_shown,
+                        blanked,
+                        audience_screen,
+                    )
+                } else if overview {
+                    overview_grid(d, current, overview)
+                } else {
+                    // The content is a page a person works on, not a reading pane: a narrow window
+                    // keeps the slide whole and lays the rail and the properties over it as drawers.
+                    ui.NavShell(
+                        content_kind: .canvas,
+                        title: deck_name(d),
+                        sidebar_title: "Slides",
+                        sidebar_collapse: .drawer,
+                        inspector_collapse: .drawer,
+                        sidebar_open: rail_open,
+                        inspector_open: properties,
+                        fill,
+                    ) {
+                        on drop(files: List<File>): import_files(d, files)
+                        actions: {
+                            // Search inside this deck: the same search, narrowed to its slides and
+                            // their words, so a hit opens the slide it found here.
+                            ui.SearchButton(item: d, label: deck_name(d))
+                            ui.Button("Open", icon: .folder_open, key: "Ctrl+O") {
+                                on press: file.choose(
+                                    import_file(d),
+                                    accept: [
+                                        "application/vnd.oasis.opendocument.presentation",
+                                        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                    ],
                                 )
                             }
+                            ui.Button("Add slide", icon: .plus, key: "n") {
+                                on press: add_slide(d)
+                                    .then(set(current, ""))
+                                    .then(set(chosen, "none"))
+                            }
+                            if d.slides.len() > 0 {
+                                ui.Button("Duplicate slide", icon: .copy, key: "Ctrl+D") {
+                                    on press: duplicate_current_slide(d, current)
+                                }
+                            }
+                            if d.slides.len() > 0 {
+                                ui.Button("Present", icon: .play, role: .primary, key: "p") {
+                                    // A person presenting on this device sees the presenter's
+                                    // view: the slide, the next one, and what they say over it.
+                                    // The audience's screen is the presentation itself.
+                                    on press: begin_presenting(d)
+                                        .then(
+                                            set(presenting, true),
+                                        )
+                                        .then(
+                                            set(presenter, true),
+                                        )
+                                        .then(
+                                            set(notes_shown, true),
+                                        )
+                                        .then(
+                                            set(blanked, ""),
+                                        )
+                                }
+                            }
+                            ui.Button(
+                                "All slides",
+                                icon: .layout_grid,
+                                icon_only: true,
+                                toggled: overview,
+                                key: "g",
+                            ) {
+                                on press: set(overview, true)
+                            }
+                            ui.MenuButton(zoom_label(zoom), icon: .zoom_in) {
+                                ui.MenuItem("Fit", icon: .maximize) {
+                                    on choose: set(zoom, 0.0).then(set(pan, [0.0, 0.0]))
+                                }
+                                for step in zoom_steps() {
+                                    let percent = (step * 100.0).round()
+                                    ui.MenuItem("{percent}%", icon: .zoom_in) {
+                                        on choose: set(zoom, step).then(set(pan, [0.0, 0.0]))
+                                    }
+                                }
+                            }
+                            ui.Button(
+                                "Slide list",
+                                icon: .panel_left,
+                                icon_only: true,
+                                toggled: rail_open,
+                                key: "Ctrl+Shift+L",
+                            ) {
+                                on press: set(rail_open, not rail_open)
+                            }
+                            ui.Button(
+                                "Properties",
+                                icon: .panel_right,
+                                icon_only: true,
+                                toggled: properties,
+                            ) {
+                                on press: set(properties, not properties)
+                            }
+                            ui.Button("Help", icon: .circle_help, icon_only: true, key: "Shift+?") {
+                                on press: set(help, true)
+                            }
                         }
-                    }
-                    inspector: {
-                        if properties {
-                            if let s = shown {
-                                inspector(d, s, chosen)
+                        sidebar: {
+                            slide_rail(d, current, chosen)
+                        }
+                        content: {
+                            stack(gap: .related, fill) {
+                                if d.notice != "" {
+                                    ui.Banner(d.notice, kind: .warning) {
+                                        on act: clear_notice(d)
+                                    }
+                                }
+                                if let s = shown {
+                                    stack(gap: .related, padding: .related, fill) {
+                                        slide_stage(d, s, chosen, zoom, pan, editing)
+                                        insert_tools(s, chosen, editing)
+                                        // A compact window keeps the speaker's words under the
+                                        // slide they are said over, where the inspector's sheet
+                                        // would cover it.
+                                        if space.compact {
+                                            stack(gap: .tight) {
+                                                ui.Text(
+                                                    "Speaker notes",
+                                                    role: .caption,
+                                                    secondary: true,
+                                                )
+                                                ui.BlockEditor(bind: s.notes, placeholder: "Notes")
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    ui.EmptyState(
+                                        "No slides yet",
+                                        message: "Add a slide to start the deck",
+                                        icon: .monitor,
+                                    )
+                                }
+                            }
+                        }
+                        inspector: {
+                            if properties {
+                                if let s = shown {
+                                    inspector(d, s, chosen)
+                                }
                             }
                         }
                     }
                 }
+                if help {
+                    help_sheet(help)
+                }
             }
-            if help {
-                help_sheet(help)
-            }
+        }
+        // Where a second screen stands, the room sees the slide on it, and this window stays
+        // the speaker's: the slide, the next one, the notes and the clock, on the screen the
+        // speaker looks at.
+        audience: {
+            slide_on_screen(d, shown, blanked)
         }
     }
 }
@@ -2165,47 +2189,17 @@ view present_view(
     audience_screen: State<Bool>,
 ) {
     stack(fill) {
-        if blanked != "" {
-            ui.Stage(
-                name: "Blank",
-                canvas: [1280, 720],
-                background: if blanked == "black" { "#000000" } else { "#FFFFFF" },
-                fill,
-            ) {
-            }
-        } else if presenter {
+        if presenter and blanked == "" {
             presenter_view(d, shown, current)
-        } else if let s = shown {
-            ui.Stage(
-                name: "Presentation",
-                canvas: [1280, 720],
-                transition: .cross_fade,
-                motion: .standard,
-                background: slide_ground(d, s),
-                fill,
-            ) {
-                // The next slide comes over the one that was shown, on the theme's cross-fade:
-                // each place names the element it shows, so another slide is another page.
-                for e in s.elements {
-                    ui.StagePin(
-                        name: element_label(e),
-                        item: e.id(),
-                        x: e.x,
-                        y: e.y,
-                        width: e.w,
-                        height: e.h,
-                    ) {
-                        element_view(d, s, e, "", false, 1.0)
+        } else {
+            slide_on_screen(d, shown, blanked)
+            if notes_shown and blanked == "" {
+                if let s = shown {
+                    ui.Card(title: "Speaker notes") {
+                        ui.BlockEditor(s.notes)
                     }
                 }
             }
-            if notes_shown {
-                ui.Card(title: "Speaker notes") {
-                    ui.BlockEditor(s.notes)
-                }
-            }
-        } else {
-            ui.EmptyState("End of the presentation", icon: .monitor)
         }
         row(gap: .tight, align: .center, wrap: true) {
             ui.Button("Previous", icon: .chevron_left, key: "Left") {
@@ -2282,6 +2276,46 @@ view present_view(
                 }
             }
         }
+    }
+}
+
+/// What the room sees: the slide filling the screen, or the screen blanked black or white, or the
+/// end of the presentation after the last slide.
+view slide_on_screen(d: Deck, shown: Option<Slide>, blanked: Text) {
+    if blanked != "" {
+        ui.Stage(
+            name: "Blank",
+            canvas: [1280, 720],
+            background: if blanked == "black" { "#000000" } else { "#FFFFFF" },
+            fill,
+        ) {
+        }
+    } else if let s = shown {
+        ui.Stage(
+            name: "Presentation",
+            canvas: [1280, 720],
+            transition: .cross_fade,
+            motion: .standard,
+            background: slide_ground(d, s),
+            fill,
+        ) {
+            // The next slide comes over the one that was shown, on the theme's cross-fade:
+            // each place names the element it shows, so another slide is another page.
+            for e in s.elements {
+                ui.StagePin(
+                    name: element_label(e),
+                    item: e.id(),
+                    x: e.x,
+                    y: e.y,
+                    width: e.w,
+                    height: e.h,
+                ) {
+                    element_view(d, s, e, "", false, 1.0)
+                }
+            }
+        }
+    } else {
+        ui.EmptyState("End of the presentation", icon: .monitor)
     }
 }
 

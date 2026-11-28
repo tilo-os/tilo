@@ -677,8 +677,6 @@ d-rxioyyxm = Set title~present
 
 d-5al7yk7f = Deck
     .w-presentation = Präsentation
-    .w-blank = Leer
-    .w-ffffff = #FFFFFF
     .w-slide-of = Folie { $value } von { $len }
     .w-current = Aktuell
     .w-next = Weiter
@@ -851,3 +849,9 @@ d-24lcblxm = Zoom
 
 d-itas7y2z = Deckname
     .w-untitled-deck = Unbenanntes Deck
+
+d-6u346fsd = Folie auf dem Bildschirm
+    .w-blank = Leer
+    .w-ffffff = #FFFFFF
+    .w-presentation = Präsentation
+    .w-end-of-the-presentation = Ende der Präsentation

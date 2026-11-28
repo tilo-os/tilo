@@ -57,6 +57,7 @@ mod pointer_lock;
 pub mod policy;
 mod power;
 mod present;
+mod presentation;
 pub mod presses;
 mod protocols;
 pub mod remote_input;
@@ -119,6 +120,7 @@ pub use input::{
     TabletPhase,
 };
 pub use keys::KeyRepeat;
+pub use presentation::{AUDIENCE_SUFFIX, Presenting};
 pub use smithay::wayland::tablet_manager::{
     TabletDescriptor, TabletPadControl, TabletPadDescriptor, TabletPadGroupDescriptor,
 };
@@ -895,6 +897,13 @@ impl Compositor {
     #[must_use]
     pub fn fullscreen_window(&self) -> bool {
         self.data.state.fullscreen()
+    }
+
+    /// The presentation going on: an app's audience window over one display and, when there is
+    /// another, the app's own window moved over that one as the presenter's view.
+    #[must_use]
+    pub fn presenting(&self) -> Option<Presenting> {
+        self.data.state.presenting()
     }
 
     /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives on it (a controller's

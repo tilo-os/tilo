@@ -87,6 +87,20 @@ fn fullscreen_granted(window: &Window) -> bool {
         .is_some_and(|fullscreen| fullscreen.0.get())
 }
 
+/// Whether the compositor gave `window` its display to fill.
+pub(crate) fn display_granted(window: &Window) -> bool {
+    fullscreen_granted(window)
+}
+
+/// Give `window` its display to fill, or take it back, without asking its client: a presentation
+/// moves a window across the displays itself.
+pub(crate) fn grant_display(window: &Window, on: bool) {
+    window.user_data().insert_if_missing(Fullscreen::default);
+    if let Some(fullscreen) = window.user_data().get::<Fullscreen>() {
+        fullscreen.0.set(on);
+    }
+}
+
 /// The policy gave the display `window` asked for back: it no longer fills it, and its client is
 /// told so. False when it did not hold one.
 pub(crate) fn give_back_display(window: &Window) -> bool {
@@ -186,6 +200,9 @@ impl State {
         request: &WindowRequest,
         serial: Option<Serial>,
     ) {
+        if self.presentation_request(window, request) {
+            return;
+        }
         if let WindowRequest::Fullscreen { on, .. } = request {
             window.user_data().insert_if_missing(Fullscreen::default);
             if let Some(fullscreen) = window.user_data().get::<Fullscreen>() {

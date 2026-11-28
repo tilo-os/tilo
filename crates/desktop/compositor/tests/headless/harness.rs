@@ -21,9 +21,9 @@ use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_data_device,
     wl_data_device::WlDataDevice, wl_data_device_manager::WlDataDeviceManager, wl_data_offer,
     wl_data_offer::WlDataOffer, wl_data_source, wl_data_source::WlDataSource, wl_keyboard,
-    wl_keyboard::WlKeyboard, wl_pointer, wl_pointer::WlPointer, wl_region::WlRegion, wl_registry,
-    wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
+    wl_keyboard::WlKeyboard, wl_output, wl_output::WlOutput, wl_pointer, wl_pointer::WlPointer,
+    wl_region::WlRegion, wl_registry, wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm,
+    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy as _, QueueHandle, WEnum, delegate_noop,
@@ -272,6 +272,10 @@ pub struct Seen {
     pub layer_configures: u32,
     /// Where the pointer is on the surface it is over, in that surface's coordinates.
     pub pointer_at: Option<(f64, f64)>,
+    /// Every `wl_output`, with the connector name and the millimetres it advertised.
+    pub outputs: Vec<(WlOutput, String, (i32, i32))>,
+    /// Every toplevel configure: the toplevel, the size asked and whether it was fullscreen.
+    pub toplevel_configures: Vec<(XdgToplevel, (i32, i32), bool)>,
 }
 
 /// What a window drop takes, as a file manager does.
@@ -1152,6 +1156,10 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
+                "wl_output" => {
+                    let output: WlOutput = registry.bind(name, version.min(4), qh, ());
+                    seen.outputs.push((output, String::new(), (0, 0)));
+                }
                 "wl_seat" => seen.seat = Some(registry.bind(name, version.min(7), qh, ())),
                 "zwp_tablet_manager_v2" => {
                     seen.tablet_manager = Some(registry.bind(name, 1, qh, ()));
@@ -1262,14 +1270,56 @@ impl Dispatch<XdgSurface, ()> for Seen {
 impl Dispatch<XdgToplevel, ()> for Seen {
     fn event(
         seen: &mut Self,
-        _: &XdgToplevel,
+        toplevel: &XdgToplevel,
         event: xdg_toplevel::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            seen.closed = true;
+        match event {
+            xdg_toplevel::Event::Close => seen.closed = true,
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                let fullscreen = states
+                    .chunks_exact(4)
+                    .filter_map(|state| state.try_into().ok())
+                    .map(u32::from_ne_bytes)
+                    .any(|state| state == xdg_toplevel::State::Fullscreen as u32);
+                seen.toplevel_configures
+                    .push((toplevel.clone(), (width, height), fullscreen));
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<WlOutput, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        output: &WlOutput,
+        event: wl_output::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(entry) = seen
+            .outputs
+            .iter_mut()
+            .find(|(known, _, _)| known == output)
+        else {
+            return;
+        };
+        match event {
+            wl_output::Event::Name { name } => entry.1 = name,
+            wl_output::Event::Geometry {
+                physical_width,
+                physical_height,
+                ..
+            } => entry.2 = (physical_width, physical_height),
+            _ => {}
         }
     }
 }

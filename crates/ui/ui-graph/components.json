@@ -3138,6 +3138,11 @@
           "doc": "The view it presents.",
           "accepts": "view",
           "default": true
+        },
+        {
+          "name": "audience",
+          "doc": "What the audience sees on a screen of its own while the view is presented, where there is a second screen: the window then stays the presenter's and shows the view. Without it, or on one screen, the window itself fills the audience's screen.",
+          "accepts": "view"
         }
       ],
       "events": [

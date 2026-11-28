@@ -151,3 +151,93 @@ fn a_view_at_rest_is_only_the_view_it_holds() {
     laid.press_at(Point::new(10.0, 10.0));
     assert!(laid.fired().is_empty(), "nothing of the view was pressed");
 }
+
+/// A view that gives the audience a view of its own asks for the audience's window while it is
+/// presented. Until that window is up the view's own window fills the audience's screen; once it
+/// is, the view's window stays the presenter's, and the audience's view is laid out on the
+/// audience's window and drawn there. The person closing that window ends the presentation, as
+/// the way out does.
+#[test]
+fn a_view_for_the_audience_goes_to_a_window_of_its_own() {
+    use tilo_ui_base::fullscreen::{AudiencePresentationRequest, FullscreenTarget};
+    use tilo_ui_base::widget::{AudiencePresentationProvider, FullscreenProvider};
+
+    let exits = tilo_ui_base::Intents::default();
+    let props = |showing: bool, audience: bool| FullscreenProps {
+        key: "page".to_owned(),
+        showing,
+        exit: Event::View(Intent::new(&exits, "page", "exit")),
+        body: Some(Box::new(Spacer::new())),
+        audience: audience.then(|| Box::new(Spacer::new()) as Element),
+        ..FullscreenProps::default()
+    };
+    let mut view = Fullscreen::from_props("page", props(false, true));
+    assert_eq!(
+        view.audience_presentation_request(),
+        None,
+        "at rest the room is shown nothing"
+    );
+    assert!(
+        view.set_props(props(true, true)),
+        "presenting changes it in place"
+    );
+    assert_eq!(
+        view.audience_presentation_request(),
+        Some(AudiencePresentationRequest::new(FullscreenTarget::Largest)),
+        "presented, it asks for the audience's screen"
+    );
+    assert_eq!(
+        view.fullscreen_intent(),
+        Some(true),
+        "until the audience's window is up, the view's own fills the screen"
+    );
+    view.on_audience_presentation_changed(true);
+    assert_eq!(
+        view.fullscreen_intent(),
+        Some(false),
+        "with the audience's window up, the view's own stays the presenter's"
+    );
+
+    let theme = Theme::dark();
+    let window = vello::kurbo::Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    let mut scene = vello::Scene::new();
+    let drawn = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
+        view.draw_audience_presentation(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            text,
+            &theme,
+            window,
+        )
+    });
+    assert!(drawn, "the audience's window shows the audience's view");
+    let laid = view
+        .audience
+        .as_ref()
+        .expect("the audience's view")
+        .get_rect();
+    assert!(
+        laid.height() > 0.0 && window.contains_rect(laid),
+        "laid out on the audience's window: {laid:?}"
+    );
+
+    view.on_audience_presentation_closed();
+    assert_eq!(
+        exits.take(),
+        [Fired {
+            key: "page".to_owned(),
+            event: "exit".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "closing the audience's window ends the presentation"
+    );
+    assert_eq!(view.fullscreen_intent(), Some(true));
+
+    let plain = Fullscreen::from_props("page", props(true, false));
+    assert_eq!(
+        plain.audience_presentation_request(),
+        None,
+        "a view without one fills the audience's screen with its own window"
+    );
+}
