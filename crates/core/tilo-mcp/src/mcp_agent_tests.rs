@@ -17,6 +17,12 @@ const WORKSPACE: &str = "workspace:workspace";
 /// The workspace itself, as the provider above names it.
 const WORKSPACE_ID: &str = "workspace";
 const NOTEBOOK: &str = "notes.notebook";
+/// A document of a package the app's code uses, published in the app's directory as its own
+/// documents are: a root resource of another app.
+const OTHER_APP: &str = "so.tilo.other";
+const OTHER_ROOT: &str = "tl:so.tilo.other:root-other";
+/// A root resource of the app itself, as an app's documents are named (`tl:<app>:<document>`).
+const OWN_ROOT: &str = "tl:so.tilo.notes:root-own";
 const TODO: &str = "notes.page:3fa2c1d0-1111-4222-8333-444455556666";
 const SHOP: &str = "notes.page:9b8e7d6c-1111-4222-8333-777788889999";
 const TODO_BODY: &str = "notes.notebook/page/3fa2c1d0-1111-4222-8333-444455556666/body";
@@ -57,6 +63,9 @@ pub(super) struct Notes {
     /// Whether this host keeps a search of its own; one that holds no records to search
     /// keeps none.
     searches: bool,
+    /// Whether this host's directory publishes another app's root document beside its own, as
+    /// an app's directory does when its code uses another package's records.
+    foreign_root: Arc<Mutex<bool>>,
     /// The invocations stopped through their record.
     cancelled: Arc<Mutex<std::collections::HashSet<tilo_actions::InvocationId>>>,
     /// The workspace's invocations record, newest last, as its host keeps it of every call.
@@ -85,6 +94,7 @@ impl Notes {
             refuses: Arc::default(),
             person_asked: Arc::default(),
             searches: true,
+            foreign_root: Arc::default(),
             cancelled: Arc::default(),
             runs: Arc::default(),
         }
@@ -93,6 +103,14 @@ impl Notes {
     /// The same Notes, keeping no search of its own.
     fn without_search(mut self) -> Self {
         self.searches = false;
+        self
+    }
+
+    /// The same Notes, its directory publishing another app's root document beside its own: a
+    /// document of a package its code uses, as the workspace's documents stand in every app's
+    /// directory.
+    fn with_foreign_root(self) -> Self {
+        *self.foreign_root.lock().unwrap() = true;
         self
     }
 
@@ -295,6 +313,50 @@ impl Notes {
         };
         let notes = Self::notes();
         let mut rows = vec![self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true)];
+        if *self.foreign_root.lock().unwrap() {
+            // Another app's root document, before this app's own documents of the same shape:
+            // the workspace's documents stand in every app's directory, in the order the
+            // packages loaded.
+            let mut root = self.row("", "", "other.thing", "Other", None, true);
+            root.app_id = OTHER_APP.into();
+            root.resource.id = OTHER_ROOT.into();
+            let mut read = self.row(
+                "",
+                "",
+                "other.thing",
+                "Other",
+                Some(("read", "Read", vec![text("item", false)], View)),
+                false,
+            );
+            read.app_id = OTHER_APP.into();
+            read.resource.id = OTHER_ROOT.into();
+            read.parent_resource = OTHER_ROOT.into();
+            if let Some(action) = read.action.as_mut() {
+                action.address = tilo_actions::ActionAddress::new(OTHER_ROOT, "read");
+                action.resource_kind = "other.thing".into();
+                action.semantic_identity = ResourceSemanticIdentity::new("other.thing", OTHER_ROOT);
+            }
+            rows.insert(0, read);
+            rows.insert(0, root);
+            // The app's own root, under the id its documents are named by.
+            let mut own = self.row("", "", "notes.notebook", "Notebook", None, true);
+            own.resource.id = OWN_ROOT.into();
+            let mut own_read = self.row(
+                "",
+                "",
+                "notes.notebook",
+                "Notebook",
+                Some(("read", "Read", vec![text("item", false)], View)),
+                false,
+            );
+            own_read.resource.id = OWN_ROOT.into();
+            own_read.parent_resource = OWN_ROOT.into();
+            if let Some(action) = own_read.action.as_mut() {
+                action.address = tilo_actions::ActionAddress::new(OWN_ROOT, "read");
+            }
+            rows.insert(1, own_read);
+            rows.insert(1, own);
+        }
         rows.extend([
             self.row(
                 NOTEBOOK,
@@ -596,7 +658,7 @@ impl ActionProvider for Notes {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
-        let (action, arguments) = self
+        let (resource, action, arguments) = self
             .invoked
             .lock()
             .unwrap()
@@ -607,7 +669,11 @@ impl ActionProvider for Notes {
                     InvokeArgument::Json(map) => map.clone(),
                     _ => serde_json::Map::new(),
                 };
-                (request.target.address.action.clone(), arguments)
+                (
+                    request.target.address.resource.clone(),
+                    request.target.address.action.clone(),
+                    arguments,
+                )
             })?;
         let failed = |code: &str, message: &str| InvocationUpdate::Failed {
             invocation: *id,
@@ -651,6 +717,13 @@ impl ActionProvider for Notes {
             "rename" if !arguments.contains_key("title") => {
                 failed("invalid_arguments", "argument `title` is required")
             }
+            // A read of another app's root document, which this app's directory publishes, and
+            // of the app's own document.
+            "read" if resource == OTHER_ROOT => succeeded(Some(json!({"kind": "other.thing"}))),
+            "read" if resource == OWN_ROOT => succeeded(Some(json!({
+                "kind": "notes.notebook",
+                "root": "own",
+            }))),
             "read" => match arguments.get("item").and_then(Value::as_str) {
                 None => succeeded(Some(json!({
                     "kind": "notes.notebook",
@@ -1078,6 +1151,23 @@ tilo_test_env::scenario! {
                 "{} against {}",
                 text.len(),
                 structured.len()
+            );
+        });
+    }
+
+    phase a_read_of_an_app_answers_the_apps_own_root;
+    {
+        let host = Notes::new(true).with_foreign_root();
+        run(async {
+            let (text, failed) = tool(&agent(&host), "tilo_read", json!({"path": "notes"})).await;
+            assert!(!failed, "{text}");
+            assert!(
+                text.contains("\"root\":\"own\""),
+                "the app's own root document: {text}"
+            );
+            assert!(
+                !text.contains("other.thing"),
+                "not a document of a package the app's code uses: {text}"
             );
         });
     }

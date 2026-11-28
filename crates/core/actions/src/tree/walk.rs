@@ -326,6 +326,29 @@ pub fn is_chain(id: &str) -> bool {
         .is_some_and(|document| !document.is_empty())
 }
 
+/// Put the resources the app `app_id` keeps, and the actions they place on the app, before the
+/// others its directory holds: every app's directory publishes the workspace's documents, so a
+/// document of a package the app's code uses may stand before the app's own.
+fn app_first(app_id: &str, level: &mut Level) {
+    level
+        .children
+        .sort_by_key(|node| !kept_by(&node.id, app_id));
+    level
+        .own
+        .sort_by_key(|action| !kept_by(&action.address.resource, app_id));
+}
+
+/// Whether `id`, a published resource's id (`tl:<app>:<resource>`, or `tl:<app>` for the app's
+/// own resource), is one the app `app` keeps: its own resource or one of its documents.
+fn kept_by(id: &str, app: &str) -> bool {
+    id.strip_prefix("tl:").is_some_and(|rest| {
+        rest == app
+            || rest
+                .strip_prefix(app)
+                .is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
 /// The child of the workspace root a path starts with, as it was written (`browser@4711`). A
 /// device's settings section (`devices/<id>/settings/power`) is the settings app's, as a person's
 /// (`settings/appearance`) is; any other resource a device keeps of its own names its app right
@@ -1658,6 +1681,11 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                 root
             }
         };
+        // The app's own resources first, and the actions they place on it: an app's directory
+        // publishes the workspace's documents, so a document of a package its code uses can
+        // stand before the app's own. A read of the app answers the app's own root, and the
+        // action `app#action` names is the app's.
+        app_first(&app_id, &mut here);
         let mut written = app;
         if let Some(owner) = chain.last() {
             // Published beside the resource, not inside it, but its key says

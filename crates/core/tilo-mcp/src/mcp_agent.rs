@@ -1345,17 +1345,31 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .iter()
                     .any(|param| param.name.as_ref() == "item")
         };
+        // The app's own root first: an app's directory publishes the workspace's documents, so
+        // a document of a package the app's code uses may stand before the app's own. A read of
+        // the app itself answers the app's own root resource.
+        let app = resolved.app_id.clone();
+        let own = |id: &str| published_by(id, &app);
         let mut found = None;
-        for node in &root.children {
-            let level = self
-                .tree
-                .level(&resolved.provider, &node.id, levels)
-                .await?;
-            if let Some(reading) = reads_action(&level.own)
-                .or_else(|| reads_action(&node.actions))
-                .filter(reading_item)
+        for own_first in [true, false] {
+            for node in root
+                .children
+                .iter()
+                .filter(|node| own(&node.id) == own_first)
             {
-                found = Some((node.id.clone(), reading));
+                let level = self
+                    .tree
+                    .level(&resolved.provider, &node.id, levels)
+                    .await?;
+                if let Some(reading) = reads_action(&level.own)
+                    .or_else(|| reads_action(&node.actions))
+                    .filter(reading_item)
+                {
+                    found = Some((node.id.clone(), reading));
+                    break;
+                }
+            }
+            if found.is_some() {
                 break;
             }
         }
@@ -1840,6 +1854,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Err(other) => Err(other.into()),
         }
     }
+}
+
+/// Whether `id`, a published resource's id (`tl:<app>:<resource>`, or `tl:<app>` for the app's
+/// own resource), is one the app `app` keeps: its own resource or one of its documents.
+fn published_by(id: &str, app: &str) -> bool {
+    id.strip_prefix("tl:").is_some_and(|rest| {
+        rest == app
+            || rest
+                .strip_prefix(app)
+                .is_some_and(|rest| rest.starts_with(':'))
+    })
 }
 
 /// `why` naming `code`, unless it already names the documented code it was
