@@ -274,6 +274,93 @@ fn sign_ins_are_kept_per_service_and_for_the_persons_window_within_bounds() {
     }
 }
 
+/// One Safari cookie record: `(domain, name, value, flags, expires)`, its expiry in Unix
+/// seconds, laid out as Safari writes it.
+fn safari_record(domain: &str, name: &str, value: &str, flags: u32, expires: i64) -> Vec<u8> {
+    let mut strings = Vec::new();
+    let mut offsets = Vec::new();
+    for text in [domain, name, "/", value] {
+        offsets.push(u32::try_from(56 + strings.len()).unwrap());
+        strings.extend_from_slice(text.as_bytes());
+        strings.push(0);
+    }
+    let size = u32::try_from(56 + strings.len()).unwrap();
+    let mut record = Vec::new();
+    for word in [
+        size, 0, flags, 0, offsets[0], offsets[1], offsets[2], offsets[3], 0, 0,
+    ] {
+        record.extend_from_slice(&word.to_le_bytes());
+    }
+    #[allow(clippy::cast_precision_loss, reason = "fixture times are small")]
+    let mac = |unix: i64| (unix - 978_307_200) as f64;
+    record.extend_from_slice(&mac(expires).to_le_bytes());
+    record.extend_from_slice(&mac(NOW - 86_400).to_le_bytes());
+    record.extend_from_slice(&strings);
+    record
+}
+
+/// A Mac's home as its disk holds it, with Safari's cookies in its container: two pages, one of
+/// them a Slack sign-in and an expired cookie, the other damaged past its header.
+fn safari_home(home: &Path, now: i64) {
+    let records = [
+        safari_record(".slack.com", "d", "slack-session", 5, now + 86_400),
+        safari_record("github.com", "user_session", "gh-session", 1, now + 600),
+        safari_record(".example.org", "old", "expired", 0, now - 1),
+    ];
+    let mut page = vec![0, 0, 1, 0];
+    page.extend_from_slice(&u32::try_from(records.len()).unwrap().to_le_bytes());
+    let mut at = 8 + 4 * records.len() + 4;
+    let mut body = Vec::new();
+    for record in &records {
+        page.extend_from_slice(&u32::try_from(at).unwrap().to_le_bytes());
+        at += record.len();
+        body.extend_from_slice(record);
+    }
+    page.extend_from_slice(&[0; 4]);
+    page.extend_from_slice(&body);
+    let damaged = [0, 0, 1, 0, 9, 0, 0, 0, 200, 0, 0, 0];
+    let mut file = b"cook".to_vec();
+    file.extend_from_slice(&2_u32.to_be_bytes());
+    file.extend_from_slice(&u32::try_from(page.len()).unwrap().to_be_bytes());
+    file.extend_from_slice(&u32::try_from(damaged.len()).unwrap().to_be_bytes());
+    file.extend_from_slice(&page);
+    file.extend_from_slice(&damaged);
+    file.extend_from_slice(&[0; 12]);
+    let library = home.join("Library");
+    std::fs::create_dir_all(library.join("Safari")).unwrap();
+    let cookies = library.join("Containers/com.apple.Safari/Data/Library/Cookies");
+    std::fs::create_dir_all(&cookies).unwrap();
+    std::fs::write(cookies.join("Cookies.binarycookies"), file).unwrap();
+}
+
+/// Safari's sign-ins come over from a Mac's disk as its cookie file keeps them: an expired cookie
+/// and a damaged page stay, and Slack's sign-in becomes Slack's window's.
+#[test]
+fn a_macs_safari_brings_the_sites_it_is_signed_in_to() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("Library/Safari")).unwrap();
+    assert!(
+        profiles(home.path(), &home.path().join(".config")).is_empty(),
+        "a Safari that kept no cookies is no profile"
+    );
+    safari_home(home.path(), NOW);
+    let read = read_all(home.path());
+    assert_eq!(read.len(), 1);
+    let (label, cookies) = &read[0];
+    assert_eq!(label, "Safari");
+    assert_eq!(
+        values(cookies),
+        [
+            ("github.com", "user_session", "gh-session", true),
+            ("slack.com", "d", "slack-session", false),
+        ]
+    );
+    assert_eq!(cookies[0].expires_unix_seconds, Some(NOW + 600));
+    assert!(cookies[0].secure && !cookies[0].http_only);
+    assert!(cookies[1].secure && cookies[1].http_only);
+    assert_eq!(sessions(cookies)[0].0, Service::Slack);
+}
+
 /// Adds cookies to the Firefox profile `firefox_home` made: `(name, host)`, each a day long.
 pub(crate) fn firefox_signed_in(home: &Path, now: i64, cookies: &[(&str, &str)]) {
     let path = home.join(".mozilla/firefox/p.default-release/cookies.sqlite");

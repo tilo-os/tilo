@@ -1,6 +1,7 @@
 //! The sites a browser profile is signed in to: the cookies its own cookie store keeps, read from
-//! Firefox's `cookies.sqlite` and from a Chromium-family browser's `Cookies` with its `OSCrypt`
-//! key, as the profile's saved passwords are ([`super::saved_logins`]).
+//! Firefox's `cookies.sqlite`, from a Chromium-family browser's `Cookies` with its `OSCrypt`
+//! key, as the profile's saved passwords are ([`super::saved_logins`]), and from Safari's
+//! `Cookies.binarycookies` on a Mac's disk ([`safari`]).
 //!
 //! A cookie is a credential. It is held only in memory that wipes itself
 //! ([`browser_continuity::sessions::Cookie`]) and handed straight to the workspace's vault; it is
@@ -37,6 +38,7 @@ pub fn sign_ins(profile: &BrowserProfile, now: i64) -> Result<Vec<Cookie>, Login
     let read = match profile.engine {
         Engine::Firefox => firefox(profile, now)?,
         Engine::Chromium => chromium(profile, now)?,
+        Engine::Safari => safari::cookies(&profile.directory, now)?,
     };
     let mut seen = BTreeSet::new();
     let mut cookies: Vec<Cookie> = read
@@ -485,5 +487,6 @@ fn chromium(profile: &BrowserProfile, now: i64) -> Result<Vec<Cookie>, LoginsErr
     Ok(found)
 }
 
+pub(crate) mod safari;
 #[cfg(test)]
 pub(crate) mod tests;

@@ -117,7 +117,7 @@ fn read(profile: &BrowserProfile) -> Read {
             let places = parse_firefox_places_bundle(granted).ok();
             (places.clone(), places)
         }
-        (None, _) => (None, None),
+        (None, _) | (Some(_), Engine::Safari) => (None, None),
     };
     Read {
         bookmarks: bookmarks.map(|bundle| bundle.bookmark_bundle()),

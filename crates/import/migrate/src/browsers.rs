@@ -24,6 +24,8 @@ use crate::thunderbird::{LoginsError, SavedLogin};
 pub enum Engine {
     Chromium,
     Firefox,
+    /// Safari on a Mac: one profile, its directory the home's `Library/Safari`.
+    Safari,
 }
 
 /// Where an installation's directory is: under the config directory, the home, or a Flatpak's
@@ -190,6 +192,7 @@ pub const LOCATIONS: &[Location] = &[
     at(Root::MacSupport, "Chromium", Engine::Chromium, "Chromium"),
     at(Root::MacSupport, "Vivaldi", Engine::Chromium, "Vivaldi"),
     at(Root::MacSupport, "Firefox", Engine::Firefox, "Firefox"),
+    at(Root::Home, "Library/Safari", Engine::Safari, "Safari"),
     at(
         Root::Flatpak("com.microsoft.Edge"),
         "config/microsoft-edge",
@@ -250,6 +253,14 @@ pub fn profiles(home: &Path, config: &Path) -> Vec<BrowserProfile> {
         match location.engine {
             Engine::Chromium => chromium_profiles(location, &directory, &mut found),
             Engine::Firefox => firefox_profiles(location, &directory, &mut found),
+            Engine::Safari if !sign_ins::safari::keeps_cookies(&directory) => {}
+            Engine::Safari => found.push(BrowserProfile {
+                label: location.label.to_owned(),
+                engine: Engine::Safari,
+                browser: location.label,
+                directory,
+                sealed_by: None,
+            }),
         }
     }
     found
@@ -380,6 +391,11 @@ pub fn saved_logins(profile: &BrowserProfile) -> Result<Vec<SavedLogin>, LoginsE
             crate::thunderbird::logins::nss_logins(&logins, &key4)
         }
         Engine::Chromium => chromium_logins(profile),
+        Engine::Safari => Err(LoginsError::Unreadable(
+            "macOS keeps Safari's passwords in its keychain, which opens only on that Mac: \
+             export them there (File > Export > Passwords)"
+                .to_owned(),
+        )),
     }
 }
 
