@@ -39,13 +39,9 @@ use http_body_util::{BodyExt as _, Full, Limited};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
-use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::ResourceWake;
-use tilo_invocations::{Invocations, Recorded};
+use tilo_app_host::agents::telling::{LivePhase, LiveTurn};
 use tilo_lock::MutexRecover as _;
-use tilo_person_services::PersonServices;
 use tilo_person_services::person_telling::Told;
-use tilo_workspace_service::agent_shortcuts::{ANSWER, agent_of};
 
 use tilo_person_services::push_addresses::{PushAddress, PushEnvironment, PushKind};
 use tilo_server_protocol::config::ApplePushKey;
@@ -149,106 +145,11 @@ struct Inner {
     live: std::sync::Mutex<HashMap<String, LiveSent>>,
 }
 
-/// Where a turn, as the broker's record of its invocation says, stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum LivePhase {
-    #[default]
-    Working,
-    Asking,
-    Answered,
-    Stopped,
-    Failed,
-    Cancelled,
-}
-
-impl LivePhase {
-    /// Whether the turn is over: nothing follows this.
-    const fn is_over(self) -> bool {
-        !matches!(self, Self::Working | Self::Asking)
-    }
-}
-
-/// What a live activity shows of a turn, as the broker's record of its invocation says: who
-/// works, what on, how far it got, and where a press leads.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct LiveTurn {
-    id: String,
-    workspace: String,
-    conversation: String,
-    agent: String,
-    asked: String,
-    phase: LivePhase,
-    step: u32,
-    steps: u32,
-}
-
 /// Where a live activity of a person's turn stands where it was last sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct LiveSent {
     phase: LivePhase,
     step: u32,
-}
-
-/// The person whose turn `record` is: who asked it, or whom its agent works for.
-fn person_of(record: &Recorded) -> Option<[u8; 32]> {
-    let person = |caller: &tilo_actions::remote::Caller| {
-        caller
-            .acting()
-            .person_id()
-            .or_else(|| caller.acting_for_person())
-            .and_then(|text| hex::decode(text).ok())
-            .and_then(|bytes| bytes.try_into().ok())
-            .or_else(|| caller.user_public_key().copied())
-    };
-    person(&record.caller).or_else(|| person(&record.asked))
-}
-
-/// What the broker's record of `record` says a live activity shows, where it is an agent's
-/// answer turn: `names` maps its agent's id to the name its person knows it by.
-fn turn_of(record: &Recorded) -> Option<LiveTurn> {
-    let request = &record.request;
-    let target = &request.target.address;
-    if target.action != ANSWER {
-        return None;
-    }
-    let (place, event) = tilo_app_host::agents::triggered::answered(request)?;
-    let state = record.state.as_ref()?;
-    let (phase, step, steps) = match &state.update {
-        InvocationUpdate::Progress {
-            phase,
-            completed,
-            total,
-            ..
-        } => (
-            if phase == "asking" {
-                LivePhase::Asking
-            } else {
-                LivePhase::Working
-            },
-            u32::try_from(completed.unwrap_or(0)).unwrap_or(u32::MAX),
-            u32::try_from(total.unwrap_or(0)).unwrap_or(u32::MAX),
-        ),
-        InvocationUpdate::Accepted { .. } => (LivePhase::Working, 0, 0),
-        InvocationUpdate::Succeeded { .. } => (LivePhase::Answered, 0, 0),
-        InvocationUpdate::Failed { .. } => (LivePhase::Failed, 0, 0),
-        InvocationUpdate::Cancelled { .. } => (LivePhase::Cancelled, 0, 0),
-        InvocationUpdate::Item { .. } => return None,
-    };
-    Some(LiveTurn {
-        id: request.invocation.to_string(),
-        workspace: record.workspace.clone()?,
-        conversation: place.conversation(),
-        agent: record
-            .asked
-            .agent_called()
-            .or_else(|| agent_of(&target.resource))
-            .map_or_else(|| target.resource.clone(), str::to_owned),
-        asked: tilo_app_host::agents::triggered::said(&event),
-        phase,
-        step,
-        steps,
-    })
 }
 
 /// What a push is.
@@ -407,9 +308,6 @@ fn alert(told: &Told, name: &str, enc: Option<String>) -> Vec<u8> {
     push.to_string().into_bytes()
 }
 
-/// What a push of `turn` says to the device at `address` alone, encrypted for
-/// that device's key: who works, what on and what it said. None where the
-/// words may not leave the host.
 fn live_sealed(turn: &LiveTurn, address: &PushAddress) -> Option<String> {
     let plain = serde_json::to_vec(&serde_json::json!({
         "from": clip(&turn.agent, MAX_NAME_BYTES),
@@ -458,10 +356,14 @@ fn live_opens(turn: &LiveTurn) -> String {
     )
 }
 
-/// What the live activity of `turn` says to the device alone, with what Apple
-/// reads and, where the words may leave the host, the part sealed for the
-/// device.
-fn live_state(turn: &LiveTurn, name: &str, enc: Option<String>) -> serde_json::Value {
+/// The push that `event`s the live activity of `turn` on the device, known to it as `name`.
+fn live_push(
+    event: &str,
+    turn: &LiveTurn,
+    name: &str,
+    enc: Option<String>,
+    now_secs: u64,
+) -> Vec<u8> {
     let mut state = serde_json::json!({
         "phase": turn.phase,
         "step": turn.step,
@@ -471,22 +373,10 @@ fn live_state(turn: &LiveTurn, name: &str, enc: Option<String>) -> serde_json::V
     if let (Some(enc), Some(fields)) = (enc, state.as_object_mut()) {
         fields.insert("enc".to_owned(), enc.into());
     }
-    state
-}
-
-/// The push that `event`s the live activity of `turn` on the device, known to
-/// it as `name`, at `now_secs`.
-fn live_push(
-    event: &str,
-    turn: &LiveTurn,
-    name: &str,
-    enc: Option<String>,
-    now_secs: u64,
-) -> Vec<u8> {
     let mut aps = serde_json::json!({
         "timestamp": now_secs,
         "event": event,
-        "content-state": live_state(turn, name, enc),
+        "content-state": state,
     });
     if let Some(fields) = aps.as_object_mut() {
         if event == "start" {
@@ -886,53 +776,6 @@ impl ApplePush {
         }
     }
 
-    /// Follow the turns the broker keeps a record of, on every device that shows live
-    /// activities: each starts where it runs, changes as it goes and ends where it got to.
-    /// Where a workspace's invocations move, they are read again.
-    pub(crate) async fn follow_invocations(self: Arc<Self>) {
-        loop {
-            let Some(invocations) = PersonServices::of(&self.inner.workspaces).invocations() else {
-                return;
-            };
-            let workspaces: Vec<String> = self
-                .inner
-                .workspaces
-                .described()
-                .await
-                .iter()
-                .map(|workspace| workspace.id().to_string())
-                .collect();
-            let mut waits: Vec<Pin<Box<tilo_actions::remote::Pending<()>>>> = Vec::new();
-            for workspace in &workspaces {
-                let (wake, waiting) = ResourceWake::new();
-                invocations.watch(workspace, &wake);
-                waits.push(Box::pin(waiting));
-            }
-            for workspace in &workspaces {
-                Box::pin(self.live_workspace(&invocations, workspace)).await;
-            }
-            if waits.is_empty() {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-            } else {
-                drop(futures::future::select_all(waits).await);
-            }
-        }
-    }
-
-    /// Tell every device that shows a live activity where each agent turn in `workspace`
-    /// stands, as the broker's records of them say.
-    async fn live_workspace(&self, invocations: &Arc<Invocations>, workspace: &str) {
-        for record in invocations.listed(workspace) {
-            let Some(person) = person_of(&record) else {
-                continue;
-            };
-            let Some(turn) = turn_of(&record) else {
-                continue;
-            };
-            self.follow_live(&person, &turn).await;
-        }
-    }
-
     /// Follow `turn`, a turn of `person`'s own, on as many of their devices as
     /// show live activities: one starts where it runs, changes as it goes, and
     /// ends where it got to. A device is told once what it already shows.
@@ -1021,6 +864,11 @@ impl tilo_app_host::agents::telling::Outside for ApplePush {
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         let push = self.clone();
         Box::pin(async move { push.gone(&person, &ids).await })
+    }
+
+    fn live(&self, person: [u8; 32], turn: LiveTurn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let push = self.clone();
+        Box::pin(async move { push.follow_live(&person, &turn).await })
     }
 }
 

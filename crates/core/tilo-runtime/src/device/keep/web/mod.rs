@@ -109,9 +109,7 @@ impl Web {
             workspaces.clone(),
             through,
         ) {
-            let apple = Arc::new(apple);
-            runtime.spawn(Arc::clone(&apple).follow_invocations());
-            outside.push(apple);
+            outside.push(Arc::new(apple));
         }
         let Some(first) = outside.pop() else {
             return;

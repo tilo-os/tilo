@@ -17,8 +17,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::ResourceWake;
+use tilo_invocations::Recorded;
 use tilo_person_services::PersonServices;
 use tilo_person_services::person_telling::Told;
+use tilo_workspace_service::agent_shortcuts::{ANSWER, agent_of};
+
+use super::triggered::{answered, said};
 
 use tilo_lock::MutexRecover as _;
 
@@ -29,6 +35,36 @@ use tilo_workspace_service::workspaces::Workspaces;
 const IDLE: Duration = Duration::from_secs(60);
 /// The shortest it sleeps, so a due time in the past never spins it.
 const SOONEST: Duration = Duration::from_millis(250);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LivePhase {
+    #[default]
+    Working,
+    Asking,
+    Answered,
+    Stopped,
+    Failed,
+    Cancelled,
+}
+
+impl LivePhase {
+    pub const fn is_over(self) -> bool {
+        !matches!(self, Self::Working | Self::Asking)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LiveTurn {
+    pub id: String,
+    pub workspace: String,
+    pub conversation: String,
+    pub agent: String,
+    pub asked: String,
+    pub phase: LivePhase,
+    pub step: u32,
+    pub steps: u32,
+}
 
 /// What tells a person outside every Tilo of theirs.
 pub trait Outside: Send + Sync {
@@ -48,14 +84,76 @@ pub trait Outside: Send + Sync {
         drop(ids);
         Box::pin(async {})
     }
+    fn live(&self, _person: [u8; 32], _turn: LiveTurn) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async {})
+    }
 }
 
-/// What a telling outside Tilo says of `told`: its title and its body. The
-/// words are the thing's own where they may leave the host; where a person
-/// keeps them on the host, the body says only where to look.
-#[must_use]
 pub fn words_outside(told: &Told) -> (String, String) {
     tilo_person_services::person_telling::words_outside(told)
+}
+
+fn person_of(record: &Recorded) -> Option<[u8; 32]> {
+    let person = |caller: &tilo_actions::remote::Caller| {
+        caller
+            .acting()
+            .person_id()
+            .or_else(|| caller.acting_for_person())
+            .and_then(|text| {
+                tilo_failure::ignored!(
+                    "a person's id that does not read names no device to tell",
+                    hex::decode(text).ok()
+                )
+            })
+            .and_then(|bytes| bytes.try_into().ok())
+            .or_else(|| caller.user_public_key().copied())
+    };
+    person(&record.caller).or_else(|| person(&record.asked))
+}
+
+fn live_of(record: &Recorded) -> Option<LiveTurn> {
+    let request = &record.request;
+    let target = &request.target.address;
+    if target.action != ANSWER {
+        return None;
+    }
+    let (place, event) = answered(request)?;
+    let state = record.state.as_ref()?;
+    let (phase, step, steps) = match &state.update {
+        InvocationUpdate::Progress {
+            phase,
+            completed,
+            total,
+            ..
+        } => (
+            if phase == "asking" {
+                LivePhase::Asking
+            } else {
+                LivePhase::Working
+            },
+            u32::try_from(completed.unwrap_or(0)).unwrap_or(u32::MAX),
+            u32::try_from(total.unwrap_or(0)).unwrap_or(u32::MAX),
+        ),
+        InvocationUpdate::Accepted { .. } => (LivePhase::Working, 0, 0),
+        InvocationUpdate::Succeeded { .. } => (LivePhase::Answered, 0, 0),
+        InvocationUpdate::Failed { .. } => (LivePhase::Failed, 0, 0),
+        InvocationUpdate::Cancelled { .. } => (LivePhase::Cancelled, 0, 0),
+        InvocationUpdate::Item { .. } => return None,
+    };
+    Some(LiveTurn {
+        id: request.invocation.to_string(),
+        workspace: record.workspace.clone()?,
+        conversation: place.conversation(),
+        agent: record
+            .asked
+            .agent_called()
+            .or_else(|| agent_of(&target.resource))
+            .map_or_else(|| target.resource.clone(), str::to_owned),
+        asked: said(&event),
+        phase,
+        step,
+        steps,
+    })
 }
 
 /// When a thing is told outside Tilo.
@@ -143,10 +241,30 @@ impl Teller {
         self.waited.lock_recover().extend(known);
         let mut moved = PersonServices::of(&self.workspaces).told_changes();
         loop {
+            self.live().await;
             let now_ms = tilo_clock::unix_now_ms();
             let wait = self.step(now_ms).await.map_or(IDLE, |at| {
                 Duration::from_millis(at.saturating_sub(now_ms)).clamp(SOONEST, IDLE)
             });
+            let waking = {
+                let Some(invocations) = PersonServices::of(&self.workspaces).invocations() else {
+                    return;
+                };
+                let described = self.workspaces.described().await;
+                let mut waits: Vec<Pin<Box<tilo_actions::remote::Pending<()>>>> = Vec::new();
+                for workspace in &described {
+                    let (wake, waiting) = ResourceWake::new();
+                    invocations.watch(&workspace.id().to_string(), &wake);
+                    waits.push(Box::pin(waiting));
+                }
+                if waits.is_empty() {
+                    tokio::time::sleep(IDLE).await;
+                    continue;
+                }
+                async move {
+                    drop(futures::future::select_all(waits).await);
+                }
+            };
             tokio::select! {
                 changed = moved.changed() => {
                     if changed.is_err() {
@@ -154,13 +272,11 @@ impl Teller {
                     }
                 }
                 () = tokio::time::sleep(wait) => {}
+                () = waking => {}
             }
         }
     }
 
-    /// Tell everything that is due at `now_ms`, in milliseconds since the
-    /// epoch, and answer when the next thing is: none while nothing waits
-    /// to be told.
     pub async fn step(&self, now_ms: u64) -> Option<u64> {
         let people: Vec<[u8; 32]> = {
             let mut waited = self.waited.lock_recover();
@@ -258,6 +374,22 @@ impl Teller {
             self.tell(person, raised).await;
         }
         next
+    }
+
+    pub async fn live(&self) {
+        let Some(invocations) = PersonServices::of(&self.workspaces).invocations() else {
+            return;
+        };
+        for workspace in self.workspaces.described().await {
+            for record in invocations.listed(&workspace.id().to_string()) {
+                let (Some(person), Some(turn)) = (person_of(&record), live_of(&record)) else {
+                    continue;
+                };
+                for outside in &self.outside {
+                    outside.live(person, turn.clone()).await;
+                }
+            }
+        }
     }
 
     /// Tell `person` the thing `told` outside Tilo, every way this teller

@@ -333,9 +333,6 @@ package-store = { package = "tilo-package-store", path = "../package-store", fea
 
 [dev-dependencies]
 collaboration = { package = "tilo-collaboration", path = "../collaboration" }
-# A broker record a test sets up, as a dispatch would have kept one.
-tilo-invocations = { path = "../invocations", features = ["test-support"] }
-tilo-automation = { path = "../automation" }
 # What a server keeps, as its tests exercise it: a folder's zip read back, a page's fetch, the
 # surfaces its changes are decided against, the content an app reaches its store with, and
 # the offloadable action and machine plan its journeys run.

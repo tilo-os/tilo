@@ -166,8 +166,6 @@ impl PersonServices {
         &self.workspaces
     }
 
-    /// The device's one record of the invocations it was asked for, once its dispatch serves it:
-    /// what a turn of an agent is followed by, and what a live activity shows.
     #[must_use]
     pub fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
         self.inner.invocations.get().cloned()

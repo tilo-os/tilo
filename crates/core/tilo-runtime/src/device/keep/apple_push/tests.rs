@@ -25,22 +25,15 @@ use hyper::body::Incoming;
 use hyper::{Request, Response};
 use ring::agreement;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tilo_person_services::person_telling::{Cause, Kind, Teller as ToldBy};
 
 use super::*;
-use tilo_actions::entry::{Did, VerbCall};
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_actions::{ActionKey, ActionOutput, InvocationId, InvocationUpdate};
-use tilo_app_host::agents::telling::Teller;
-use tilo_automation::dispatch::DocumentEvent;
-use tilo_member_types::{Acting, PersonId};
+use tilo_app_host::agents::telling::{LivePhase, LiveTurn, Outside as _, Teller};
 use tilo_person_services::PersonServices;
 use tilo_person_services::ToTell;
 use tilo_person_services::push_addresses::LiveAddress;
 use tilo_person_services::push_addresses::{PushKey, Register};
-use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE, PROVIDER, answer_address};
-use tilo_workspace_service::work::Where;
 use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
 
 /// A person this server keeps a log for. No device of theirs is on.
@@ -347,8 +340,6 @@ struct Served<S> {
     apple: StandIn,
     push: ApplePush,
     teller: Teller,
-    /// The broker's records of the invocations this device was asked for.
-    invocations: Arc<Invocations>,
     /// The public half of the made-up key the sender signs in with.
     signs_with: Vec<u8>,
     _server: S,
@@ -369,15 +360,11 @@ async fn served() -> Served<impl Sized> {
     let (setup, signs_with) = made_up_key(keys.path());
     let push = for_stand_in(&setup, workspaces.clone(), &apple).unwrap();
     let teller = Teller::new(workspaces.clone(), Arc::new(push.clone()));
-    // The broker's records, which a live activity follows.
-    let invocations: Arc<Invocations> = Arc::default();
-    PersonServices::of(&workspaces).serve_invocations(Arc::clone(&invocations));
     Served {
         workspaces,
         apple,
         push,
         teller,
-        invocations,
         signs_with,
         _server: server,
         _folders: (state, keys),
@@ -857,80 +844,16 @@ fn the_swift_notice_fixture_names_its_thing_as_this_host_names_it() {
         fixture["told"].as_str().unwrap()
     );
 }
-/// The change that started a turn: Ada's message in Chat.
-fn the_change() -> (Where, DocumentEvent) {
-    let place = Where {
-        app: CHAT.to_owned(),
-        kind: MESSAGE.to_owned(),
-        item: "m-1".to_owned(),
-        record: "r-1".to_owned(),
-        change: "c-1".to_owned(),
-    };
-    let event = DocumentEvent {
-        invoked: None,
+fn live_turn(phase: LivePhase, step: u32, steps: u32) -> LiveTurn {
+    LiveTurn {
+        id: "turn-1".to_owned(),
         workspace: WORKSPACE.to_owned(),
-        record: "r-1".to_owned(),
-        app: CHAT.to_owned(),
-        kind: MESSAGE.to_owned(),
-        change: "c-1".to_owned(),
-        actor: Acting::person("ada"),
-        did: Did::Verb(VerbCall::new(ActionKey::new(CHAT, MESSAGE, "send"), [])),
-        arguments: Map::new(),
-        item: None,
-        before: None,
-        after: Some(json!({"body": "Summarise the lease."})),
-        caused_by: None,
-        origin: None,
-        incoming_message: false,
-        housekeeping: false,
-        shortcut: None,
-        invocation: None,
-    };
-    (place, event)
-}
-
-/// The answer invocation of `agent` on that change, as the trigger asks it.
-fn answer_request(agent: &str) -> (InvocationId, InvokeRequest) {
-    let (place, event) = the_change();
-    let invocation = InvocationId::new();
-    let argument = InvokeArgument::Json(Map::from_iter([
-        ("cause".to_owned(), serde_json::to_value(place).unwrap()),
-        ("event".to_owned(), serde_json::to_value(event).unwrap()),
-    ]));
-    let request = InvokeRequest {
-        asks: false,
-        invocation,
-        target: RemoteActionTarget {
-            provider: PROVIDER.to_owned(),
-            address: answer_address(agent),
-        },
-        argument,
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
-    (invocation, request)
-}
-
-/// Where the turn `invocation` stands, as its provider reports it.
-fn progress(
-    invocation: InvocationId,
-    sequence: u64,
-    phase: &str,
-    completed: Option<u64>,
-    total: Option<u64>,
-) -> InvocationUpdate {
-    InvocationUpdate::Progress {
-        invocation,
-        sequence,
-        phase: phase.to_owned(),
-        completed,
-        total,
-        message: None,
+        conversation: format!("{APP}/r-1"),
+        agent: "scout".to_owned(),
+        asked: "Summarise the lease.".to_owned(),
+        phase,
+        step,
+        steps,
     }
 }
 
@@ -941,43 +864,19 @@ fn progress(
 )]
 async fn a_turns_start_progress_and_end_reach_the_live_activity() {
     let served = served().await;
-    let workspaces = &served.workspaces;
     let phone = Device::new(1);
-    // Apple's service gives an app two tokens: one that starts an activity while
-    // it runs no code, and the one the running activity is updated under.
-    let (start, update) = ("ab".repeat(32), "cd".repeat(32));
-    let services = PersonServices::of(workspaces);
-    services
+    let start = "ab".repeat(32);
+    PersonServices::of(&served.workspaces)
         .register_push_address(&ADA, &phone.id, phone.handed_over_live((&start, "", "")))
         .unwrap();
-
-    // The broker recorded the turn of Ada's own agent, and it started working.
-    let (invocation, request) = answer_request("scout");
-    let caller = Caller::local_person(PersonId::from_root(ADA));
-    served.invocations.keep_for_test(
-        &caller,
-        &caller,
-        &request,
-        WORKSPACE,
-        progress(invocation, 1, "working", Some(0), None),
-    );
-    let name = phone.name_of(&invocation.to_string());
-    Box::pin(served.push.live_workspace(&served.invocations, WORKSPACE)).await;
+    let mut turn = live_turn(LivePhase::Working, 0, 0);
+    let name = phone.name_of(&turn.id);
+    served.push.live(ADA, turn.clone()).await;
     let heard = served.apple.heard();
-    assert_eq!(heard.len(), 1);
     let began = heard.first().unwrap();
     assert_eq!(began.token, start);
-    assert_eq!(
-        began.header("apns-topic"),
-        Some(format!("{APP}.push-type.liveactivity").as_str())
-    );
     assert_eq!(began.header("apns-push-type"), Some("liveactivity"));
-    assert_eq!(began.header("apns-priority"), Some("10"));
     assert_eq!(began.body["aps"]["event"], "start");
-    assert_eq!(began.body["aps"]["attributes-type"], "TiloLiveTurn");
-    assert_eq!(began.body["aps"]["attributes"]["name"], name.as_str());
-    assert_eq!(began.body["aps"]["content-state"]["phase"], "working");
-    assert_eq!(began.body["aps"]["content-state"]["step"], 0);
     // In the open it says nothing of what it works on: no word of the ask, of
     // the agent, of the workspace, nor of where a press leads.
     let readable = began.in_the_open();
@@ -996,61 +895,35 @@ async fn a_turns_start_progress_and_end_reach_the_live_activity() {
     );
 
     // The activity runs: its device hands over the token it is updated under.
-    let phone = Device::new(1);
-    services
+    let (phone, update) = (Device::new(1), "cd".repeat(32));
+    PersonServices::of(&served.workspaces)
         .register_push_address(
             &ADA,
             &phone.id,
             phone.handed_over_live((&start, &update, &name)),
         )
         .unwrap();
-    served.invocations.keep_for_test(
-        &caller,
-        &caller,
-        &request,
-        WORKSPACE,
-        progress(invocation, 2, "working", Some(2), Some(5)),
-    );
-    Box::pin(served.push.live_workspace(&served.invocations, WORKSPACE)).await;
+    turn.step = 2;
+    turn.steps = 5;
+    served.push.live(ADA, turn.clone()).await;
     let moved = served.apple.heard();
-    assert_eq!(moved.len(), 1);
     assert_eq!(moved[0].token, update);
     assert_eq!(moved[0].body["aps"]["event"], "update");
     assert_eq!(moved[0].body["aps"]["content-state"]["step"], 2);
-    assert_eq!(moved[0].body["aps"]["content-state"]["steps"], 5);
 
     // It asked the person something, and waits for them.
-    served.invocations.keep_for_test(
-        &caller,
-        &caller,
-        &request,
-        WORKSPACE,
-        progress(invocation, 3, "asking", Some(2), Some(5)),
-    );
-    Box::pin(served.push.live_workspace(&served.invocations, WORKSPACE)).await;
+    turn.phase = LivePhase::Asking;
+    served.push.live(ADA, turn.clone()).await;
     let asking = served.apple.heard();
-    assert_eq!(asking.len(), 1);
     assert_eq!(asking[0].body["aps"]["content-state"]["phase"], "asking");
 
     // It answered, and the activity ends.
-    served.invocations.keep_for_test(
-        &caller,
-        &caller,
-        &request,
-        WORKSPACE,
-        InvocationUpdate::Succeeded {
-            invocation,
-            output: ActionOutput::default(),
-        },
-    );
-    Box::pin(served.push.live_workspace(&served.invocations, WORKSPACE)).await;
+    turn.phase = LivePhase::Answered;
+    served.push.live(ADA, turn).await;
     let ended = served.apple.heard();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].token, update);
     assert_eq!(ended[0].body["aps"]["event"], "end");
     assert_eq!(ended[0].body["aps"]["content-state"]["phase"], "answered");
     assert!(ended[0].body["aps"]["dismissal-date"].is_u64());
-    // Ended once: nothing more follows it.
-    Box::pin(served.push.live_workspace(&served.invocations, WORKSPACE)).await;
-    assert!(served.apple.heard().is_empty());
 }

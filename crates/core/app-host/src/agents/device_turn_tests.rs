@@ -238,6 +238,7 @@ impl PlanTurns for Breaking {
     }
 }
 
+type Report = (String, Option<u64>, Option<u64>);
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     let scratch = tempfile::tempdir().unwrap();
@@ -263,9 +264,19 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();
+    let reported: Arc<Mutex<Vec<Report>>> = Arc::default();
+    let progress = {
+        let reported = Arc::clone(&reported);
+        Arc::new(move |phase: &str, done: Option<u64>, total: Option<u64>| {
+            reported
+                .lock()
+                .unwrap()
+                .push((phase.to_owned(), done, total));
+        })
+    };
     let started = tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        agents.triggered(
+        agents.triggered_reporting(
             &workspace,
             SCOUT,
             tilo_workspace_service::work::Where::of(&wrote)
@@ -273,6 +284,7 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
             wrote,
             person.clone(),
             (invocation, Arc::default()),
+            progress,
         ),
     )
     .await
@@ -281,6 +293,16 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     assert!(
         matches!(started, tilo_workspace_service::work::Started::Taken(_)),
         "this device took the turn: {started:?}"
+    );
+    // Its invocation says it started, and how far it got through its calls.
+    let reported = reported.lock().unwrap().clone();
+    assert!(
+        reported.first() == Some(&("working".to_owned(), Some(0), None))
+            && reported
+                .iter()
+                .any(|(phase, done, total)| phase == "working"
+                    && done.is_some_and(|done| done > 0)
+                    && total.is_some_and(|total| total > 0))
     );
 
     // The model was told the person's day and what was asked, on this device.

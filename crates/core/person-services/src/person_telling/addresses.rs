@@ -94,19 +94,12 @@ pub struct PushKey {
     pub auth: String,
 }
 
-/// Where the asking device's live activities are reached: the token Apple's
-/// service gives an app for starting one while it is closed, and, once one
-/// runs, the token that activity is updated and ended under.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveAddress {
-    /// The push-to-start token Apple's service gave the app on this device, in hex.
     pub start: String,
-    /// The token of the live activity that runs now, in hex, where one does.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub update: String,
-    /// The name that activity has on this device ([`PushAddress`]'s name for its
-    /// turn): what ties the token to the turn it shows.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub turn: String,
 }
@@ -130,7 +123,6 @@ pub enum Register {
         topic: String,
         /// The key the words of a push to this device are encrypted for.
         key: PushKey,
-        /// Where the app's live activities are reached, where it shows any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live: Option<LiveAddress>,
     },
@@ -374,8 +366,6 @@ impl Register {
 }
 
 impl LiveAddress {
-    /// This as it is kept: the tokens in hex, and the name that ties the update
-    /// token to the turn it shows.
     fn checked(self) -> Result<Self, String> {
         let hex = |text: &str| {
             let text = text.trim().to_ascii_lowercase();

@@ -2816,9 +2816,6 @@ impl Daemon {
         }
         // What a server keeps beyond its copies, on the workspace service it runs.
         let serves_pages = keeping.is_some();
-        // The device's one record of the invocations it was asked for: the app broker keeps it,
-        // and a turn's progress is followed there. Made before this server serves its pages, so
-        // a live activity reads what the daemon's agents write.
         let invocations: Arc<Invocations> = Arc::default();
         workspaces.serve_invocations(Arc::clone(&invocations));
         let kept = if let (Some(keeping), Some(relay), Some(itself)) = (keeping, relay, itself) {
