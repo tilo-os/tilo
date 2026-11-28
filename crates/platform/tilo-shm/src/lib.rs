@@ -191,12 +191,20 @@ impl Mapping {
         // SAFETY: the file is sealed against shrinking, so the mapping can never be truncated under
         // us, and against writes when `immutable`. An immutable buffer is read whole, so it is
         // populated up front: one batched fault is far cheaper than one per page. A writable buffer
-        // (the ring) is populated lazily, as the app writes it.
+        // (the ring) is populated lazily, as the app writes it. A buffer sealed against writes is
+        // mapped private: kernels before 6.7 (Android's among them) refuse any shared mapping of
+        // it, a read-only one included, and its pages can no longer change either way.
         let mut options = MmapOptions::new();
         if immutable {
             options.populate();
         }
-        let map = unsafe { options.map(file) }?;
+        let map = unsafe {
+            if immutable {
+                options.map_copy_read_only(file)
+            } else {
+                options.map(file)
+            }
+        }?;
         Ok(Self::view(map, len))
     }
 }
