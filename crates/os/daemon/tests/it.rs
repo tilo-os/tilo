@@ -1,3 +1,6 @@
+// The daemon these tests drive runs its people's apps on a headless compositor and waits on its
+// processes through pidfds: Linux's alone.
+#![cfg(target_os = "linux")]
 #![recursion_limit = "256"]
 #![allow(
     clippy::unwrap_used,
