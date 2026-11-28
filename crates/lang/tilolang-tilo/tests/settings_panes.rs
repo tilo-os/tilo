@@ -1333,3 +1333,118 @@ fn the_screen_reader_says_when_no_speech_engine_is_here() {
         assert_eq!(hint, !available, "the way to fix it is named: {shown:?}");
     }
 }
+
+/// Each screen of the person's shared layout is listed with whether it is in it, and the person
+/// can leave one out or move it earlier or later in the order.
+#[test]
+fn each_screen_is_placed_in_or_left_out_of_the_shared_layout() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::reading_at(
+        &host,
+        "session:displays",
+        "so.tilo.device#Displays",
+        serde_json::json!({
+            "displays": [],
+            "mode": "extend",
+            "pending": 0,
+            "pending_until_unix_ms": null,
+            "focused": null,
+            "level": null,
+            "ambient_sensor": false,
+            "bar_reached": false,
+            "bar_covered": false,
+            "dock_reached": false,
+            "dock_covered": false,
+            "trusted_tools": [],
+        }),
+    );
+    crate::fixtures::reading_at(
+        &host,
+        "session:devices",
+        "so.tilo.device#Devices",
+        serde_json::json!({
+            "devices": [], "access": [], "playing": null, "chosen": null, "sounds": [],
+            "routes": [], "asks": [], "signed_in": false, "workspaces": [], "workspace": "",
+            "picked": false, "waiting": false, "held_back": "", "refused": "",
+            "connection": null,
+        }),
+    );
+    crate::fixtures::set_reading(
+        &host,
+        "settings/display-person",
+        &serde_json::json!({
+            "placement": [
+                {"device": "studio", "output": "DP-1", "order": 0, "placed": true, "x": 0, "y": 0},
+                {"device": "studio", "output": "HDMI-1", "order": 1024, "placed": true, "x": 1920, "y": 0},
+                {"device": "studio", "output": "eDP-1", "order": 2048, "placed": false, "x": 0, "y": 1080},
+            ],
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("displays")]);
+    let view = open_window(&host);
+    let shown = texts(&view);
+    for words in [
+        "Each screen's place in your layout",
+        "studio · DP-1",
+        "In the layout, number 0",
+        "studio · eDP-1",
+        "Left out",
+    ] {
+        assert!(
+            shown.iter().any(|text| text == words),
+            "{words} shows in the layout list: {shown:?}"
+        );
+    }
+
+    // Putting the left-out screen in keeps its place values and marks it placed.
+    view.press_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.Button", "Put it in"),
+    )
+    .expect("the screen is put in");
+    let args = sent
+        .borrow()
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "place-display" => Some(args.clone()),
+            _ => None,
+        })
+        .expect("the placement's own verb is asked");
+    let arg = |named: &str| {
+        args.iter()
+            .find(|(held, _)| held == named)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("the verb takes `{named}`: {args:?}"))
+    };
+    assert_eq!(arg("output"), Value::text("eDP-1"));
+    let placed = arg("placed");
+    assert!(
+        matches!(
+            &placed,
+            Value::Opt(Some(held)) if matches!(held.as_ref(), Value::Bool(true) | Value::Int(1))
+        ),
+        "the screen is marked placed: {placed:?}"
+    );
+
+    // Moving the first screen later puts it after its neighbour.
+    sent.borrow_mut().clear();
+    view.press_answering(&host, &me(), &labelled(view.tree(), "ui.Button", "Later"))
+        .expect("the screen moves later");
+    let args = sent
+        .borrow()
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "place-display" => Some(args.clone()),
+            _ => None,
+        })
+        .expect("the placement's own verb is asked");
+    let order = args
+        .iter()
+        .find(|(named, _)| named == "order")
+        .map(|(_, value)| value.clone())
+        .expect("the order is given");
+    assert_eq!(order, Value::Opt(Some(Box::new(Value::Int(1025)))));
+}

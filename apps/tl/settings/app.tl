@@ -1666,6 +1666,85 @@ view displays_pane() {
             }
         }
     }
+    ui.Section("Each screen's place in your layout") {
+        let entries = settings.display_person.placement.map(e -> e).sort_by(e -> e.order)
+        ui.Text(
+            "A screen left out keeps its own arrangement on its device; the ones placed here stand together, in this order, across your devices.",
+            role: .caption,
+            secondary: true,
+        )
+        if entries.is_empty() {
+            ui.Text(
+                "No screen has been placed in your shared layout yet.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for entry in entries {
+            let earlier = entries
+                .filter(e -> e.placed and e.order < entry.order)
+                .sort_by(e -> e.order)
+                .last()
+            let later = entries
+                .filter(e -> e.placed and e.order > entry.order)
+                .sort_by(e -> e.order)
+                .first()
+            ui.ListRow(
+                "{entry.device} · {entry.output}",
+                secondary: if entry.placed {
+                    "In the layout, number {entry.order}"
+                } else { "Left out" },
+                icon: .monitor,
+            ) {
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.Button(
+                            if entry.placed { "Leave it out" } else { "Put it in" },
+                            size: .small,
+                        ) {
+                            on press: settings.place_display(
+                                settings.display_person,
+                                device: entry.device,
+                                output: entry.output,
+                                x: entry.x,
+                                y: entry.y,
+                                order: entry.order,
+                                placed: not entry.placed,
+                            )
+                        }
+                        if entry.placed {
+                            if let previous = earlier {
+                                ui.Button("Earlier", size: .small) {
+                                    on press: settings.place_display(
+                                        settings.display_person,
+                                        device: entry.device,
+                                        output: entry.output,
+                                        x: entry.x,
+                                        y: entry.y,
+                                        order: previous.order - 1,
+                                        placed: true,
+                                    )
+                                }
+                            }
+                            if let following = later {
+                                ui.Button("Later", size: .small) {
+                                    on press: settings.place_display(
+                                        settings.display_person,
+                                        device: entry.device,
+                                        output: entry.output,
+                                        x: entry.x,
+                                        y: entry.y,
+                                        order: following.order + 1,
+                                        placed: true,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if let deadline = change.deadline_unix_ms {
         ui.Section("A change being tried") {
             ui.Text(
