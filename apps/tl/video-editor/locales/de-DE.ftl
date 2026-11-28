@@ -6,7 +6,7 @@ d-so-tilo-video-editor = Videobearbeitung
 d-so-tilo-video-editor-keywords = video editor, video, film, timeline, cut, trim, split, transition, title, export, videobearbeitung, video schneiden, film, zeitleiste, schnitt, exportieren
 
 d-jqhqav7h = Quelle
-    .doc = Eine Quelle im Korb: was sie ist, wo ihre Bytes liegen und – bei einem Titel – die Worte, die sie zeichnet.
+    .doc = Eine Quelle im Korb: was sie ist, wo ihre Bytes liegen und, bei einem Titel, die Worte, die sie zeichnet.
     .noun = { $count ->
         [one] Quelle
        *[other] media
@@ -1759,7 +1759,7 @@ d-kga7o3ur = Fenster
     .w-go-to-the-clip = Zum Clip gehen
     .w-go-to-1-02-5 = Gehe zu 1:02.5
     .w-rendering-the-cut = Schnitt wird gerendert… { $pct } %
-    .w-the-film-is-ready = { $name } — der Film ist fertig
+    .w-the-film-is-ready = Der Film „{ $name }“ ist fertig
     .w-video-editor = Videobearbeitung
     .w-new-project = Neues Projekt
     .w-projects = Projekte

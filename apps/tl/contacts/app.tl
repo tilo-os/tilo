@@ -48,7 +48,7 @@ type Contact (untitled: "No name yet") {
     /// The groups they are in, by name: a group stands while its name is on someone.
     groups: Set<Text>
     favorite: Bool = false
-    /// Their picture, by where its bytes are: a `data:` address a vCard's PHOTO carried, or a
+    /// Their picture, by where its bytes are: a `data:` address a vCard's photo carried, or a
     /// content address someone put here. Empty for none; the initials show instead.
     photo: Text = ""
     /// The id of the person the workspace's directory holds for this card, once it is shared

@@ -161,7 +161,7 @@ d-qv3bkujz-filter-files = Dateien
 
 d-lipx2inw = Analysieren
     .doc = Der gewählte Ordner wird der jetzt gemessene Ordner und der Anfang seiner eigenen Reihe.
-    .w-a-folder-is-named-by-its = Ein Ordner wird durch seinen Pfad ab / oder ~ benannt
+    .w-a-folder-is-named-by-its = Ein Ordner wird durch seinen Pfad vom Wurzelverzeichnis (~ oder /) benannt
 
 d-lipx2inw-path = Pfad
 

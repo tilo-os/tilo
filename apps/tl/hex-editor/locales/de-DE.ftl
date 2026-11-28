@@ -492,7 +492,7 @@ d-ki2kthjn = Datei öffnen
 d-ki2kthjn-file = Datei
 
 d-oatl536b = Bytes öffnen
-    .doc = Öffnet Bytes, die ein Aufrufer übergibt — ein Agent, ein Skript, eine andere App — und legt sie zuerst als Inhalt des Fensters ab: die Datei, die der Dateiauswahl-Dialog der Person antwortet.
+    .doc = Öffnet Bytes, die ein Aufrufer übergibt, etwa ein Agent, ein Skript oder eine andere App, und legt sie zuerst als Inhalt des Fensters ab: die Datei, die der Dateiauswahl-Dialog der Person antwortet.
     .did = öffnete Bytes
 
 d-oatl536b-name = Name
@@ -599,7 +599,7 @@ d-wenh6lnl = Alles auswählen
 d-wenh6lnl-desk = Platz
 
 d-mr6fuewa = Kopieren
-    .doc = Kopiert die ausgewählten Bytes in der Form der Spalte: `50 4e 47 44` oder `PNGD`.
+    .doc = Kopiert die ausgewählten Bytes in der Form der Spalte: `50 4e 47 44` oder diese Bytes als Text.
 
 d-y5wcfls4 = Ausschneiden
     .doc = Kopiert die Auswahl und löscht sie.
@@ -742,9 +742,9 @@ d-it2igfh4 = Bibliothek
     .w-open-a-file-to-read-its = Öffne eine Datei, um ihre Bytes zu lesen, oder starte eine leere und tippe Bytes ein.
     .w-open-files = Geöffnete Dateien
     .w-close = Schließen
-    .w-changed = { $size_text } · { $edited } geändert
+    .w-changed = { $edited } geändert
     .w-not-on-disk = Nicht auf der Platte
-    .w-saved = Auf der Platte
+    .w-on-disk = Auf der Platte
 
 d-hecirnqi = Dokument
     .w-dismiss = Verwerfen

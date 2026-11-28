@@ -27,7 +27,7 @@ d-7j5cjuet = Endspalte
 d-u6wlx35y = Hinweise
 
 d-ds45ukw2 = Seite
-    .doc = Eine Seite des gesetzten Dokuments: wie groß sie ist, eine Kennung für das, was sie zeichnet, und die Bilder, durch die sie gezeigt wird — die Seite in der Breite, die das Fenster verlangt, und ihr Vorschaubild.
+    .doc = Eine Seite des gesetzten Dokuments: wie groß sie ist, eine Kennung für das, was sie zeichnet, und die Bilder, durch die sie gezeigt wird: die Seite in der Breite, die das Fenster verlangt, und ihr Vorschaubild.
     .noun = { $count ->
         [one] Seite
        *[other] Seite

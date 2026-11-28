@@ -79,7 +79,7 @@ type TableInfo (title: name) {
     name: Text = ""
     /// `table` or `view`.
     kind: Text = "table"
-    /// The rows a `COUNT(*)` found; nothing for a view.
+    /// The rows a count found; nothing for a view.
     row_count: Option<Int> = .none
 }
 

@@ -443,7 +443,6 @@ d-vsaswu4a = Seitenansicht
     .w-picture-in-picture = Bild im Bild
     .w-return-from-picture-in-picture = Zurück aus Bild im Bild
     .w-this-page-asks = Diese Seite fragt
-    .w-ok = In Ordnung
     .w-cancel = Abbrechen
     .w-actual-size = Tatsächliche Größe
     .w-actual-size-2 = Tatsächliche Größe ({ $percent }%)
@@ -494,6 +493,7 @@ d-vsaswu4a = Seitenansicht
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
     .w-not-signed-in = Nicht angemeldet
+    .w-send = Senden
     .w-an-agent-browses-this-page-as = Ein Agent liest diese Seite wie jeder Besucher: keine deiner Anmeldungen, Cookies oder gespeicherten Anmeldedaten erreicht sie.
 
 d-pu2zdrbu = Schrittzeile
@@ -535,7 +535,7 @@ d-qgyn4224 = Lesezeichenzeile
 d-b7sixoyk = Adresszeile
 
 d-sij6peeq = Formularzeile
-    .w-read-times = { $origin } · { $seen } Mal gelesen
+    .w-read-times = { $seen } Mal gelesen
     .w-forget-this-form = Dieses Formular vergessen
     .w-required = Erforderlich
 

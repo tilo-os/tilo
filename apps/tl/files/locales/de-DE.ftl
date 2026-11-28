@@ -630,7 +630,7 @@ d-4dnpiqnl = Apps
     .w-applications = Apps
 
 d-bkr4ph6l = Vorschau
-    .doc = Die Vorschau, die für das Bild unter `path` erstellt wurde, einmal aufbewahrt, damit das Fenster sie erneut zeichnet, ohne das Gerät jedes Mal zu fragen; die Datei ist keine, solange das Gerät sagt, dass es keine Vorschau hat, und `modified` ist, wann sich das Bild so geändert hat, wie es war, als die Vorschau entstand — eine, die vor der Änderung des Bildes entstand, wird erneut erstellt.
+    .doc = Die Vorschau, die für das Bild unter `path` erstellt wurde, einmal aufbewahrt, damit das Fenster sie erneut zeichnet, ohne das Gerät jedes Mal zu fragen; die Datei ist keine, solange das Gerät sagt, dass es keine Vorschau hat, und `modified` ist, wann sich das Bild so geändert hat, wie es war, als die Vorschau entstand, eine, die vor der Änderung des Bildes entstand, wird erneut erstellt.
     .noun = { $count ->
         [one] Vorschau
        *[other] Vorschauen
@@ -812,7 +812,7 @@ d-mhe7mk2n-transfer = Übertragung
 d-gidwg2mc = Übertragung anhalten~present
 
 d-mxaz5hjr = Übertragungszeile
-    .w-of = { $size_of } von { $size_of2 } · { $current }
+    .w-of = { $size_of } von { $size_of2 }
     .w-stop = Anhalten
     .w-dismiss = Schließen
     .w-start-again = Erneut starten
@@ -1005,7 +1005,7 @@ d-zuqw4lb7 = Übertragung erneut starten
 d-zuqw4lb7-transfer = Übertragung
 
 d-f3mu3ukc = Rückgängig
-    .doc = Nimmt zurück, was dieses Fenster zuletzt tat: holt zurück, was ein Verschieben in den Papierkorb weglegte, oder macht ein Einfügen rückgängig — die Einträge einer Kopie gehen wieder in den Papierkorb, ein verschobener geht dorthin zurück, woher er kam.
+    .doc = Nimmt zurück, was dieses Fenster zuletzt tat: holt zurück, was ein Verschieben in den Papierkorb weglegte, oder macht ein Einfügen rückgängig. Die Einträge einer Kopie gehen wieder in den Papierkorb, ein verschobener geht dorthin zurück, woher er kam.
 
 d-wapam57s = Zuletzt prüfen
     .doc = Sieht jede Datei, die dieses Fenster zuletzt öffnete, erneut an, damit Zuletzt sagt, welche verschwunden sind, statt beim Drücken nichts zu öffnen.

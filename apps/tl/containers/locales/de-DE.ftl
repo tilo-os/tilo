@@ -240,7 +240,7 @@ d-juqarauo = Eingabeverb
     .w-pull-image = Image laden
     .w-add-tag = Tag hinzufügen
     .w-remove = Entfernen
-    .w-ok = OK
+    .w-apply = Ausführen
 
 d-vqxvzopi = Container anlegen~present
 

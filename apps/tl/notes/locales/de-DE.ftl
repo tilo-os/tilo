@@ -75,7 +75,7 @@ d-qhmjwgei = Anheften
     .w-unpin = Lösen
 
 d-245xwb32 = Tastaturkürzel
-    .doc = Öffnet die Tastaturübersicht des Systems: jede Taste, die der Desktop beantwortet, mit den Kürzeln, die die Einstellungen der Person vergeben.
+    .doc = Öffnet die Tastenkürzel des Systems: jede Taste, die der Desktop beantwortet, mit den Kürzeln, die die Einstellungen der Person vergeben.
 
 d-nydyehwn = Löschen
     .doc = Löscht eine Notiz und alle Notizen unter ihr, als eine Änderung, die auf einmal zurückgenommen wird.

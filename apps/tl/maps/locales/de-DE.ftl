@@ -622,8 +622,8 @@ d-r4czgqve = Basiskarte
 d-m7wrwwy3 = Ort gespeichert
 
 d-sb4mqylm = Aktionen am Ort
-    .w-saved = Gespeichert
-    .w-save = Speichern
+    .w-remove-from-saved-places = Aus gespeicherten Orten entfernen
+    .w-save-place = Ort speichern
     .w-directions-to-this-place = Wegbeschreibung zu diesem Ort
     .w-rename-this-place = Diesen Ort umbenennen
 
@@ -724,8 +724,8 @@ d-ex73ittg = Laufende Navigation
     .w-end = End
 
 d-wjvabv4j = Ort
-    .w-saved = Gespeichert
-    .w-save = Speichern
+    .w-remove-from-saved-places = Aus gespeicherten Orten entfernen
+    .w-save-place = Ort speichern
     .w-directions = Wegbeschreibung
     .w-open-on-the-map = Auf der Karte öffnen
     .w-rename = Umbenennen
@@ -886,7 +886,7 @@ d-oeeojlox = Karte
     .w-search-places = Search places
     .w-results = Results
     .w-nearby = Nearby
-    .w-saved = Gespeichert
+    .w-saved-places = Gespeicherte Orte
     .w-recent = Recent
     .w-search-for-a-place-or-an = Search for a place or an address to see it here.
     .w-no-places-found = No places found

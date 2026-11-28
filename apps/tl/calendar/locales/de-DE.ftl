@@ -153,7 +153,7 @@ d-ahyl252g = End
     .doc = The wall time it ends at, the same way.
 
 d-yyqvqgb4 = Notizen
-    .doc = Was der Server dazu sagt: seine `DESCRIPTION`, als Text.
+    .doc = Was der Server dazu sagt: seine Beschreibung, als Text.
 
 d-dmlhzgmz = Inhalt
     .doc = Was die Person dazu schreibt, als Rich Text.
@@ -164,7 +164,7 @@ d-gqmucsa7 = Kategorien
     .doc = Die eigenen Worte der Person dafür, was für ein Termin es ist.
 
 d-igx7zgee = Wiederholung
-    .doc = Was er wiederholt, in iCalendar-Worten (`FREQ=WEEKLY;BYDAY=MO`); leer für einen, der es nicht tut.
+    .doc = Was er wiederholt, in iCalendar-Worten (zum Beispiel wöchentlich); leer für einen, der es nicht tut.
 
 d-ypsmw6x6 = Wiederholen
     .doc = Wie er sich wiederholt: in welcher Einheit die Regel zählt.
@@ -519,7 +519,7 @@ d-q23cd64i = Every week on
 d-q23cd64i-days = Days
 
 d-vk663ftr = An diesem Tag wiederholen
-    .doc = Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`, and the repeat keeps the day it ends on, if it ends on one.
+    .doc = Fügt einen Wochentag zu einer wöchentlichen Wiederholung hinzu oder nimmt ihn heraus: die gewählten Tage sind die Tage der Regel, und die Wiederholung behält den Tag, an dem sie endet, wenn sie an einem endet.
     .w-this-calendar-is-connected-for-reading = Dieser Kalender ist schreibgeschützt, deshalb wird nichts darin geändert
     .w-an-event-repeats-on-at-least = Ein Termin wiederholt sich an mindestens einem Tag
     .w-that-entry-is-its-person-s = Dieser Termin gehört seiner Person: Ein Agent ändert nur, was er selbst eingetragen hat
@@ -822,7 +822,7 @@ d-luj3kjit-g = Eingetippt
 d-luj3kjit-status = Status
 
 d-kscklssi = Die Einladung beantworten
-    .doc = Answers the person's own invitation to an account's event, telling the organiser through the account's server: what settles the RSVP the invitation asked for.
+    .doc = Beantwortet die eigene Einladung der Person zu einem Termin eines Kontos und meldet es dem Organisator über den Server des Kontos: was die angefragte Antwort abschließt.
     .w-only-your-own-invitation-is-answered = Nur die eigene Einladung wird am Server beantwortet
 
 d-kscklssi-g = G
@@ -884,7 +884,7 @@ d-wka7zl52-typed = Erinnerung aus
 
 d-3u4tdxfq = Export calendar
     .export = iCalendar
-    .doc = The calendar — every event and task it holds, or only one event — as an iCalendar file, for a person to save or an agent to hand on.
+    .doc = Der Kalender (jeder Termin und jede Aufgabe darin, oder nur ein Termin) als iCalendar-Datei, zum Speichern durch eine Person oder zum Weitergeben durch einen Agenten.
 
 d-3u4tdxfq-e = Jede Woche am
 

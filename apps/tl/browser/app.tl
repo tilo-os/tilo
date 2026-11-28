@@ -3530,7 +3530,7 @@ view page_view(p: Page) {
                             title: "This page asks",
                             description: .some(ask.origin),
                             open: true,
-                            primary: "OK",
+                            primary: if ask.kind == "prompt" { "Send" } else { "Close" },
                             secondary: if ask.kind == "alert" { .none } else { .some("Cancel") },
                         ) {
                             body: {
@@ -4056,7 +4056,7 @@ view address_row(a: Address) {
 view form_row(f: RememberedForm) {
     ui.DisclosureRow(
         title: if f.label == "" { f.origin } else { f.label },
-        secondary: "{f.origin} · read {f.seen} times",
+        secondary: "Read {f.seen} times",
     ) {
         for q in f.questions {
             ui.Text(

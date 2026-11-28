@@ -136,12 +136,7 @@ view agents_section() {
     )
     ui.Section("Agents let in") {
         if agents.is_empty() {
-            ui.EmptyState(
-                "No agent acts as you yet",
-                message: "An agent you let in shows here, with the way to remove it.",
-                icon: .bot,
-                inline: true,
-            )
+            ui.EmptyState("No agent acts as you yet", icon: .bot, inline: true)
         }
         for one in agents {
             ui.ListRow(one.label, secondary: agent_words(one), icon: .bot) {

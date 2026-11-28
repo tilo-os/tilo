@@ -2448,7 +2448,7 @@ view places_side(a: Atlas, chosen: State<Text>, seen: List<Float>, directions: B
                 )
                 ui.Segment("Results")
                 ui.Segment("Nearby")
-                ui.Segment("Saved")
+                ui.Segment("Saved places")
                 ui.Segment("Recent")
             }
             if place == "found" {
@@ -2543,7 +2543,7 @@ view place_row(place: Place, chosen: State<Text>, seen: List<Float>) {
 view place_acts(place: Place) {
     row(gap: .tight) {
         ui.Button(
-            if place.saved { "Saved" } else { "Save" },
+            if place.saved { "Remove from saved places" } else { "Save place" },
             icon: .star,
             icon_only: true,
             toggled: place.saved,
@@ -3102,7 +3102,7 @@ view place(p: Place) {
         }
         row(gap: .tight) {
             ui.Button(
-                if p.saved { "Saved" } else { "Save" },
+                if p.saved { "Remove from saved places" } else { "Save place" },
                 icon: .star,
                 toggled: p.saved,
                 keys: ["s"],

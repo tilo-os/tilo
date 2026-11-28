@@ -960,7 +960,7 @@ fn prompt_primary(prompt: Text) -> Text {
         std.say("Pull image")
     } else if prompt.starts_with("tag:") {
         std.say("Add tag")
-    } else if prompt.starts_with("remove-") { std.say("Remove") } else { std.say("OK") }
+    } else if prompt.starts_with("remove-") { std.say("Remove") } else { std.say("Apply") }
 }
 
 /// The prompt's dialog: one field for what it asks, and the verb that does it.

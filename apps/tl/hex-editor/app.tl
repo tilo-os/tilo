@@ -1370,7 +1370,7 @@ view library(lib: Library) {
                                         "{doc.edited} changed"
                                     } else { size_text(doc.length) },
                                     icon: .file_code,
-                                    value: if doc.path == "" { "Not on disk" } else { "Saved" },
+                                    value: if doc.path == "" { "Not on disk" } else { "On disk" },
                                 ) {
                                     on activate: open(doc)
                                 }

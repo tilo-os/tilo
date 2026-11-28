@@ -1083,7 +1083,7 @@ d-ibtlwzis = Betrachter
     .w-fit-width = Breite einpassen
     .w-fit-page = Ganze Seite einpassen
     .w-found-in-pages = { $matches } auf { $pages_with } Seiten gefunden
-    .w-reading-pages = · { $unread } Seiten werden gelesen
+    .w-reading-pages = { $unread } Seiten werden gelesen
     .w-duplicate-this-page = Diese Seite duplizieren
     .w-move-to-the-front = Nach vorne verschieben
     .w-move-to-the-end = Nach hinten verschieben
@@ -1243,7 +1243,7 @@ d-xd7zuh3x = Den Text der Seite kopieren
 d-xd7zuh3x-p = P
 
 d-fpwdcfk7 = Ein Teil der Seite als Bild kopieren
-    .doc = Kopiert den Teil einer Seite, den die Person aufgezogen hat, als eigenes Bild — für eine Abbildung oder eine Tabelle aus dem PDF.
+    .doc = Kopiert den Teil einer Seite, den die Person aufgezogen hat, als eigenes Bild, für eine Abbildung oder eine Tabelle aus dem PDF.
 
 d-fpwdcfk7-p = P
 

@@ -70,7 +70,7 @@ d-vea52w55 = Gruppen
 d-ur3qshor = Favorit
 
 d-kvhikhu4 = Foto
-    .doc = Ihr Bild, nach dem Ort seiner Bytes: eine `data:`-Adresse, die eine vCard im PHOTO trug, oder eine Inhaltsadresse, die jemand hier hinterlegt hat.
+    .doc = Ihr Bild, nach dem Ort seiner Bytes: eine `data:`-Adresse, die ein Foto in einer vCard trug, oder eine Inhaltsadresse, die jemand hier hinterlegt hat.
 
 d-szrijd7k = Person
     .doc = Die id der Person, die das Verzeichnis des Arbeitsbereichs für diese Karte hält, sobald sie mit den Apps geteilt ist; leer bis dahin und nachdem sie nicht mehr geteilt wird.
@@ -479,7 +479,7 @@ d-6kvgemtj = Bestätigen~present
 d-bhmovs5j = Ändern~present
 
 d-bfuqzfia = Kontakt finden oder hinzufügen
-    .doc = Sucht den Kontakt, den der Arbeitsbereich unter `name` führt, oder legt einen an: was jemanden aus einem anderen Dienst — eine Aufgabe, die ihm vor seinem Beitritt gegeben wurde — auf eine Karte bringt, egal wie viele Importe ihn nennen.
+    .doc = Sucht den Kontakt, den der Arbeitsbereich unter `name` führt, oder legt einen an: was jemanden aus einem anderen Dienst , etwa einer Aufgabe, die ihm vor seinem Beitritt gegeben wurde, auf eine Karte bringt, egal wie viele Importe ihn nennen.
     .did = hat einen Kontakt gefunden
     .w-name-the-contact = Kontakt benennen
 

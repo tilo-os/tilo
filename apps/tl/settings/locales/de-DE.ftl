@@ -13,7 +13,7 @@ d-7eg6gmz4 = Settings
     }
 
 d-b2lfahgj = Bildschirm
-    .doc = Ein Bildschirm auf der Anordnung: wem er gehört, wo er in der Anordnung der Person steht, und wie dieses Gerät ihn kennt.
+    .doc = Ein Bildschirm im Layout: wem er gehört, wo er im Layout der Person steht, und wie dieses Gerät ihn kennt.
     .noun = { $count ->
         [one] Bildschirm
        *[other] Bildschirme
@@ -1436,7 +1436,7 @@ d-c4tbp74f = Network pane
     .w-wired-network = Kabelnetzwerk
     .w-connections = Verbindungen
     .w-airplane-mode = Flugmodus
-    .w-kept = { $len } gespeichert
+    .w-kept = { $len } behalten
     .w-join-a-hidden-network = Einem verborgenen Netzwerk beitreten
     .w-one-that-does-not-say-its = Eines, das seinen Namen nicht sendet
     .w-advanced = Erweitert

@@ -130,7 +130,7 @@ type Event (origin: caldav.event, title: title, untitled: "New event") {
     /// the wall and the zone where it is read.
     timezone: Text = "floating"
     location: Text = ""
-    /// What the server says of it: its `DESCRIPTION`, as text.
+    /// What the server says of it: its description, as text.
     notes: Text = ""
     /// What the person writes of it, in rich text.
     body: RichText
@@ -138,7 +138,7 @@ type Event (origin: caldav.event, title: title, untitled: "New event") {
     attendees: Collection<Attendee>
     /// The person's own words for what kind of event it is.
     categories: Set<Text>
-    /// Its frequency, in iCalendar's words (`FREQ=WEEKLY`); empty for one that does not repeat.
+    /// Its frequency, in iCalendar's words (for example, weekly); empty for one that does not repeat.
     /// The interval, the end and the days it comes on stand in their own fields.
     recurrence: Text = ""
     /// How it repeats: which unit the rule counts in.
@@ -745,7 +745,7 @@ action repeat_weekdays(e: Event, days: List<Text>) (icon: .repeat, label: "Every
     repeat_rule(e, .weekdays, weekdays: days)
 }
 
-/// Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's `BYDAY`,
+/// Adds a weekday to a weekly repeat, or takes it off: the days chosen are the rule's days,
 /// and the repeat keeps the day it ends on, if it ends on one.
 action toggle_weekday(e: Event, day: Text) (icon: .repeat, label: "Repeat on this day") {
     require changes_for(e, invoker) "That entry is its person's: an agent changes only what it put in itself"
@@ -1259,7 +1259,7 @@ action answer(e: Event, g: Attendee, status: Text) (icon: .check, label: "Answer
 }
 
 /// Answers the person's own invitation to an account's event, telling the organiser through the
-/// account's server: what settles the RSVP the invitation asked for.
+/// account's server: what settles the reply the invitation asked for.
 action answer_and_tell(e: Event, g: Attendee, said: Text) (
     icon: .check,
     label: "Answer the invitation",
@@ -1951,7 +1951,7 @@ fn ics_task(t: Task) -> Text {
     groups.filter(g -> g != "").join("\r\n")
 }
 
-/// The calendar — every event and task it holds, or only one event — as an iCalendar file, for
+/// The calendar (every event and task it holds, or only one event) as an iCalendar file, for
 /// a person to save or an agent to hand on. Nothing is written by this. The system's one
 /// Export… lists it, and saves the file where the person says.
 action export_calendar(c: Calendars, e: Option<Event> = .none) -> File (

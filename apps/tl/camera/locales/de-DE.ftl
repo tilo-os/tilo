@@ -46,7 +46,7 @@ d-vjej4gya = Passwort
 d-cpvlblyf = Versteckt
 d-4gga5k7s-filter-hidden = Versteckt
 d-utavtcyf = Kontakt
-    .doc = Die Felder einer Kontaktkarte, aus einer vCard- oder MECARD-Nutzlast gelesen.
+    .doc = Die Felder einer Kontaktkarte, aus dem Text eines geteilten Kontakts gelesen.
     .noun = { $count ->
         [one] contact
        *[other] contacts
@@ -517,7 +517,7 @@ d-mim6ysmz = Sucher
     .w-latest-capture = Latest capture
     .w-clip = Clip
     .w-preferences = Preferences
-    .w-this-device-s-camera = This device's camera: { $device_words } · { $resolution } · { $photo_format }
+    .w-this-device-s-camera = Diese Kamera: { $device_words }
 d-bclc7wcv = Scan-Seite
     .w-photo = Photo
     .w-scan = Scan
@@ -553,8 +553,7 @@ d-c2oiqsed = Dokumentenseite
     .w-spanish = Spanish
     .w-the-scanner-is-working = The scanner is working
     .w-no-pages-yet = No pages yet
-    .w-scanned-pages-appear-here = Scanned pages appear here.
-    .w-pages = Pages
+        .w-pages = Pages
     .w-text-not-recognized = Text not recognized
     .w-words = { $words } words
     .w-scan-page = Scan page

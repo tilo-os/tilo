@@ -60,7 +60,7 @@ type Wifi {
     hidden: Bool
 }
 
-/// A contact card's fields, read out of a vCard or MECARD payload.
+/// A contact card's fields, read out of a shared contact's text.
 type Contact {
     name: Text
     phone: Text
@@ -1229,11 +1229,8 @@ view viewfinder(c: Camera) {
             }
         }
         ui.Section("Preferences") {
-            ui.Text(
-                "This device's camera: {device_words(p)} · {p.resolution} · {p.photo_format}",
-                role: .caption,
-                secondary: true,
-            )
+            ui.Text("This device's camera: {device_words(p)}", role: .caption, secondary: true)
+            ui.Text("{p.resolution}, {p.photo_format}", role: .caption, secondary: true)
         }
     }
 }
@@ -1504,7 +1501,7 @@ view documents_page(c: Camera) {
         }
         let pages = session.pages.sort_by(page -> page.order)
         if pages.is_empty() {
-            ui.EmptyState("No pages yet", message: "Scanned pages appear here.", icon: .file_text)
+            ui.EmptyState("No pages yet", icon: .file_text)
         } else {
             ui.Section("Pages") {
                 for page in pages {

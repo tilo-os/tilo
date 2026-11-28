@@ -2585,7 +2585,6 @@ d-znvl3q45 = Hosts
 d-m54htipi = Agenten
     .w-agents-let-in = Zugelassene Agenten
     .w-no-agent-acts-as-you-yet = Noch kein Agent handelt als du
-    .w-an-agent-you-let-in-shows = Ein Agent, den du zulässt, steht hier, mit dem Weg, ihn zu entfernen.
 
 d-pou22ylc = Agentenmenü
     .w-manage = { $label } verwalten

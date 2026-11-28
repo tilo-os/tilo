@@ -342,7 +342,7 @@ d-tbo6xpjg = Art
     .doc = `table` oder `view`.
 
 d-7xr4zpm5 = Zeilenzahl
-    .doc = Die Zeilen, die ein `COUNT(*)` gefunden hat; nichts bei einer Sicht.
+    .doc = Die Zeilen, die eine Zählung gefunden hat; nichts bei einer Sicht.
 
 d-txlcru2y = Spalteninfo
     .doc = Eine Spalte einer Tabelle oder Sicht aus dem Katalog der offenen Verbindung, mit der Beziehung, in der sie steht: die Suche findet sie über ihren Namen und sagt, wo sie ist.

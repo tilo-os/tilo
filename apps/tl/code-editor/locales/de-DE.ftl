@@ -6,7 +6,7 @@ d-so-tilo-code-editor = Code-Editor
 d-so-tilo-code-editor-keywords = code editor, code, editor, source, ide, programming editor, code editor online, notepad, text editor, quelltext, code-editor, editor, programmieren, entwickeln
 
 d-m2evo7on = Entry
-    .doc = Eine Datei oder ein Ordner des Projekts: its name, where it stands, the language it is written in, and — a file's — its text.
+    .doc = Eine Datei oder ein Ordner des Projekts: ihr Name, wo sie steht, die Sprache, in der sie geschrieben ist, und bei einer Datei ihr Text.
     .noun = { $count ->
         [one] Eintrag
        *[other] Einträge
@@ -36,7 +36,7 @@ d-wxaqrw5b = Stamp len
     .doc = The length of the bytes the project last read or wrote.
 
 d-bvn4nnf5 = Speichernd
-    .doc = The text as it stands on the device, so a reader sees what changed here and what is written already.
+    .doc = Der Text, wie er auf dem Gerät steht, damit eine Leserin sieht, was sich hier geändert hat und was schon geschrieben ist.
 
 d-uhopusbk = Stale
     .doc = The file changed on the device since it was read here: saving over it asks first.
@@ -726,7 +726,7 @@ d-xo5gmi2s-entry = Entry
 d-xo5gmi2s-name = Name
 
 d-avhnccjo = Verschieben
-    .doc = Verschiebens `entry` into `folder` (the top of the project when none), just before `before` — or after every entry there when none names one.
+    .doc = Verschiebt `entry` in `folder` (an die Spitze des Projekts, wenn keine), direkt vor `before`, oder nach jedem Eintrag dort, wenn keiner einen nennt.
     .w-an-entry-moves-into-a-folder = An entry moves into a folder
     .w-a-folder-cannot-hold-itself = A folder cannot hold itself
     .w-an-entry-of-that-name-is = An entry of that name is in the folder already
