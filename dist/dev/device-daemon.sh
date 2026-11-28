@@ -16,6 +16,15 @@ start_device_daemon() {
     local bin=$1 log=$2
     local socket=$XDG_RUNTIME_DIR/tilo/native.sock
     mkdir -p -m 700 "$XDG_RUNTIME_DIR/tilo"
+    # This computer's own app catalogue: the apps it runs are the builds in its own store. The
+    # official store stays named and disabled, as a workspace that keeps no store keeps its row.
+    local catalogue=$HOME/.local/state/tilo/runtime owner
+    owner=$(sed -n 's/^TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=//p' \
+        "$(dirname -- "${BASH_SOURCE[0]}")/../../os/publication.env")
+    [[ $owner =~ ^[0-9a-f]{64}$ ]] || { echo "no official registry owner key" >&2; return 1; }
+    install -d -m 700 "$catalogue"
+    printf '[[registry]]\nname = "Tilo main"\nbase_url = "https://apps.tilo.so"\nowner_pubkey_hex = "%s"\nenabled = false\n' \
+        "$owner" > "$catalogue/registries.toml"
     env -u TILO_RUNTIME_PROFILE -u WAYLAND_DISPLAY -u DISPLAY \
         setsid "$bin/tilo-runtime" >> "$log" 2>&1 &
     device_daemon_pid=$!

@@ -118,20 +118,36 @@ fn offered(registries: &RegistriesFile) -> Vec<Offered> {
 }
 
 /// The releases of `defaults` the `offered` entries resolve to, in the order `defaults` names:
-/// each app's newest version this machine runs, as the Store would offer it, or the release
-/// `cached` answers for one no entry offers.
+/// each app's newest version this machine runs, or the release `cached` answers; one neither is
+/// left out, and said plainly once.
 fn resolve(
     defaults: &[&str],
     offered: &[Offered],
     cached: &dyn Fn(&str) -> Option<AppRelease>,
 ) -> Vec<AppRelease> {
-    defaults
+    let releases: Vec<AppRelease> = defaults
         .iter()
-        .filter_map(|app| match release_of(app, offered) {
-            Some(release) => Some(with_known_surface(release, cached)),
-            None => from_cache(app, cached),
+        .filter_map(|app| {
+            release_of(app, offered)
+                .map(|release| with_known_surface(release, cached))
+                .or_else(|| from_cache(app, cached))
         })
-        .collect()
+        .collect();
+    let left_out: Vec<&str> = defaults
+        .iter()
+        .copied()
+        .filter(|app| !releases.iter().any(|release| release.app == *app))
+        .collect();
+    // A finished founding no repository answered for is not one to complain about: a device
+    // offline at first use records the apps it holds and leaves the rest until one answers.
+    if !left_out.is_empty() && !offered.is_empty() {
+        tracing::warn!(
+            apps = left_out.join(", "),
+            "no build a repository offers of these default apps runs here, and this device holds \
+             none: left out"
+        );
+    }
+    releases
 }
 
 /// `release` with the surface the device's cache knows of it, when the offer named none and the
@@ -395,6 +411,21 @@ mod tests {
                 package_store::Catalog::from_env().ok().as_ref(),
             ),
             "with no catalogue answering, a workspace starts with the releases the cache holds"
+        );
+    }
+
+    /// A default app is a release this device can run: a repository's newer build for another
+    /// machine is no release, so founding takes the one the device holds instead.
+    #[test]
+    fn a_default_app_is_a_release_this_device_can_run() {
+        let (root, publisher) = ("a".repeat(64), "b".repeat(64));
+        let (mut offer, registry, channel) = entry("so.tilo.files", "2.1.0", &root, &publisher, "");
+        let mut target = offer.entry.versions[0].tapp_mut().unwrap().target.clone();
+        target.architecture = "other".into();
+        offer.entry.versions[0].tapp_mut().unwrap().target = target;
+        assert_eq!(
+            release_of("so.tilo.files", &[(offer, registry, channel)]),
+            None
         );
     }
 }
