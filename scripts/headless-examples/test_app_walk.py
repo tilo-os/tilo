@@ -718,6 +718,64 @@ class AShellThemeShotWaitsForItsFrame(unittest.TestCase):
         self.assertEqual(session.shot_at, "01-signed-in-dark")
 
 
+class SettingsThatNameNoMode(unittest.TestCase):
+    """Settings that name no appearance mode leave the theme to the host: the walk holds its ops
+    against what the shell draws, names the mode it asks for, and waits for a frame only when
+    the shell changes."""
+
+    class Session:
+        def __init__(self, draws_dark):
+            self.draws_dark = draws_dark
+            self.mode = None
+            self.frames = 0
+            self.frames_read = 0
+            self.invoked = []
+            self.shot_at = None
+
+        def control(self, request):
+            if request["op"] == "settings":
+                appearance = {"mode": self.mode} if self.mode else {}
+                return {"answer": {"appearance": appearance}, "draws_dark": self.draws_dark}
+            raise AssertionError(f"unexpected request {request}")
+
+        def presented_frames(self):
+            self.frames_read += 1
+            return self.frames
+
+        def invoke(self, provider, resource, action, arguments=None):
+            self.invoked.append((action, arguments))
+            self.mode = "dark" if arguments["on"] else "light"
+            if self.draws_dark != arguments["on"]:
+                self.draws_dark = arguments["on"]
+                self.frames += 1
+
+        def snapshot(self, path):
+            self.shot_at = Path(path).stem
+
+    def walked(self, session):
+        return walk.Walk({"tl": {"id": None}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_the_theme_the_shell_already_draws_is_named_and_waits_for_no_frame(self):
+        session = self.Session(draws_dark=True)
+        walked = self.walked(session)
+        walked.theme_shot("01-signed-in", True)
+        self.assertEqual(session.invoked, [("set-dark-mode", {"on": True})])
+        self.assertEqual(session.frames_read, 1)
+        self.assertEqual(session.shot_at, "01-signed-in-dark")
+        self.assertIs(walked.dark, True)
+
+    def test_the_other_theme_is_named_and_waits_for_the_shell_to_draw_it(self):
+        session = self.Session(draws_dark=True)
+        walked = self.walked(session)
+        self.assertEqual(walked.op_theme(False), {"theme": "light"})
+        self.assertEqual(session.invoked, [("set-dark-mode", {"on": False})])
+        self.assertIs(session.draws_dark, False)
+        self.assertGreaterEqual(session.frames_read, 2)
+        walked.op_theme(False)
+        self.assertEqual(len(session.invoked), 1)
+
+
 class AWindowThatShowsNothing(unittest.TestCase):
     """A step leaves the app's window open: it has to show the app. A window that draws only
     its bar is a blank window, which no wait on a word of the app catches where the step's

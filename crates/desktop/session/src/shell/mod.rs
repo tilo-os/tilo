@@ -1412,6 +1412,12 @@ impl Shell {
         }
     }
 
+    /// Whether the shell draws dark now: the appearance the person chose, or the host's own where
+    /// they left it open.
+    pub(crate) fn draws_dark(&self) -> bool {
+        self.theme.document.is_dark()
+    }
+
     /// What the shell refused since the session started, in its words: every display's, and what
     /// the API refused of what it asked.
     pub(crate) fn refusals(&self) -> Vec<String> {

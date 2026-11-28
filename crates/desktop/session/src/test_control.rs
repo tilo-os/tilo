@@ -1235,7 +1235,12 @@ fn asked_of_shell(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
-        Op::Settings => json!({"answer": settings_store::load()}),
+        // The settings document, and the scheme the shell draws in: a document that names no mode
+        // leaves it to the host, and only the shell knows which one that made.
+        Op::Settings => json!({
+            "answer": settings_store::load(),
+            "draws_dark": session.shell.map(crate::shell::Shell::draws_dark),
+        }),
         Op::ShellAction => {
             let Some(action) = request.get("action").and_then(Json::as_str) else {
                 return Some(refusal("parse_error", "`shell_action` takes `action`"));

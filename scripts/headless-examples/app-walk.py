@@ -1823,46 +1823,66 @@ class Walk:
             until_value(f"the app {self.v['id']} to end",
                         lambda: not self.session.processes(self.v["id"]), 30)
 
-    def dark_now(self) -> bool:
-        """Whether the desktop draws dark now, as the settings the session keeps say: the
-        appearance the walk's theme ops are held against."""
-        settings = self.session.control({"op": "settings"}).get("answer") or {}
-        return ((settings.get("appearance") or {}).get("mode")) == "dark"
+    def dark_now(self) -> tuple[str | None, bool | None]:
+        """The appearance mode the person's settings name (`None` where they name none, and the
+        host's scheme decides), and whether the shell draws dark now (`None` without a shell)."""
+        found = self.session.control({"op": "settings"})
+        settings = found.get("answer") or {}
+        mode = (settings.get("appearance") or {}).get("mode")
+        return (mode if mode in ("dark", "light") else None), found.get("draws_dark")
 
-    def set_dark(self, dark: bool) -> bool:
+    def set_dark(self, dark: bool, before_switch=None) -> bool:
         """Switch the desktop's appearance through the action the person's Settings use,
         addressed where the settings provider keeps it: finding it by listing every action on
         the desktop waits on a catalogue that grows with what the person keeps, and the action
-        has one address. A theme that is the one asked for is left as it is: the walk does not
-        wait on colours it already has, and answers whether it switched anything."""
+        has one address. Settings that name no mode name the one asked for, so every later op
+        is held against a theme the walk chose; colours the desktop already draws are not
+        waited on. `before_switch`, when given, runs just before the switch. Whether what the
+        desktop draws changed."""
+        def switch():
+            if before_switch is not None:
+                before_switch()
+            self.session.invoke(SETTINGS, APPEARANCE, "set-dark-mode", {"on": dark})
+            self.dark = dark
+
         if self.dark is None:
-            self.dark = self.dark_now()
+            mode, draws_dark = self.dark_now()
+            drawn = draws_dark if draws_dark is not None else mode == "dark"
+            if mode is None:
+                switch()
+                return drawn != dark
+            self.dark = drawn
         if self.dark == dark:
             return False
-        self.session.invoke(SETTINGS, APPEARANCE, "set-dark-mode", {"on": dark})
-        self.dark = dark
+        switch()
         return True
+
+    def switch_shell_theme(self, dark: bool) -> bool:
+        """Switch a walk of the shell to the theme named and wait for the shell to draw in it:
+        it wears it, and has presented a frame since the switch. A theme it already draws
+        waits for nothing. Whether what it draws changed."""
+        before = []
+        switched = self.set_dark(dark, lambda: before.append(self.session.presented_frames()))
+        if switched:
+            try:
+                until_value(
+                    f"the session to draw the {'dark' if dark else 'light'} theme",
+                    lambda: self.dark_now()[1] in (None, dark)
+                    and self.session.presented_frames() > before[0], 20, 0.02)
+            except Failed:
+                pass
+        return switched
 
     def theme_shot(self, name: str, dark: bool, spent=None) -> str:
         """The state `name` again, in the theme named: the person switches it and
         looks at what they had. `spent`, when given, hears how long the switch took."""
         if self.v.get("id") is None:
             # A walk of the shell has no app window to count frames of: the session itself
-            # says how many frames it has presented, and the frame after the switch is the
-            # one that shows the theme. Read once after the switch so a frame already under
-            # way cannot be taken for it, then wait past it.
+            # says how many frames it has presented, and which theme its shell wears.
             switch_began = time.monotonic()
-            switched = self.set_dark(dark)
+            self.switch_shell_theme(dark)
             if spent is not None:
                 spent("dark_switch", switch_began)
-            if switched:
-                drawn = self.session.presented_frames()
-                try:
-                    until_value(
-                        f"the session to draw the {'dark' if dark else 'light'} theme",
-                        lambda: self.session.presented_frames() > drawn, 20, 0.02)
-                except Failed:
-                    pass
             return self.shot(f"{name}-{'dark' if dark else 'light'}")
         before = (self.window_of() or {}).get("frames") or 0
         switch_began = time.monotonic()
@@ -3309,7 +3329,10 @@ class Walk:
         return {"window": ident}
 
     def op_theme(self, value) -> dict:
-        self.set_dark(bool(value))
+        if self.v.get("id") is None:
+            self.switch_shell_theme(bool(value))
+        else:
+            self.set_dark(bool(value))
         return {"theme": "dark" if value else "light"}
 
     def op_close(self, _value) -> dict:
@@ -3602,7 +3625,10 @@ class Walk:
                     record["shot_dark"] = self.theme_shot(name, True, spent)
                     spent("dark", part_began)
                     part_began = time.monotonic()
-                    self.set_dark(False)
+                    if self.v.get("id") is None:
+                        self.switch_shell_theme(False)
+                    else:
+                        self.set_dark(False)
                     spent("back_to_light", part_began)
             record["shots_ms"] = round((time.monotonic() - shots_began) * 1000)
             record["shots_spent"] = shots_spent
