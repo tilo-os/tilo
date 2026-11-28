@@ -606,6 +606,7 @@ fn a_part_laid_out_and_never_drawn_asks_once_for_its_measure() {
 struct Tile {
     drew: Rc<std::cell::Cell<usize>>,
     changed: Rc<std::cell::Cell<bool>>,
+    rect: Rect,
 }
 
 impl Widget for Tile {
@@ -648,7 +649,7 @@ impl Widget for Tile {
     }
 
     fn name(&self) -> &'static str {
-        "Cell"
+        "Tile"
     }
 
     fn needs_redraw(&self) -> bool {
@@ -672,6 +673,7 @@ fn a_driver_that_keeps_its_pixels_draws_only_the_cell_that_changed() {
         Box::new(Tile {
             drew: Rc::clone(&drew[index]),
             changed: Rc::clone(&changed[index]),
+            rect: Rect::default(),
         }) as Box<dyn Widget>
     };
     let column = Column::new()
@@ -679,7 +681,6 @@ fn a_driver_that_keeps_its_pixels_draws_only_the_cell_that_changed() {
         .with_gap(0.0)
         .push(cell(0))
         .push(cell(1));
-    let column = column.into_widget();
     let mut framed = Framed::new(State::new(), column, (400, 200), Theme::dark());
     let driver = Framed::harness_mut(&mut framed);
     driver.draws_only_damage(true);
