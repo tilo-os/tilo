@@ -6661,9 +6661,12 @@ impl RuntimeActionProvider {
         let query = query.clone();
         let workspace = self.workspace.clone();
         let tree = self.workspace_tree(caller).is_some();
+        // The device's own rows are built once the workspace answered: in the query's language.
         answer.map(move |answer| {
             answer.map(|page| {
-                let mut page = super::ticket::with_device_actions(page, &query, &workspace);
+                let mut page = tilo_resource::label::reading_in(query.language.as_deref(), || {
+                    super::ticket::with_device_actions(page, &query, &workspace)
+                });
                 // The workspace's invocations are published beside its apps, as one more thing
                 // a walk of the workspace finds, and so is the workspace's own tree.
                 if query.provider.is_none() {

@@ -135,7 +135,7 @@ fn descriptor() -> ActionDescriptor {
         address: offload_place::target().address,
         resource_kind: offload_place::RESOURCE.to_owned(),
         resource_label: "Offload".to_owned(),
-        action_label: "Place".to_owned(),
+        action_label: crate::i18n::t("offload-place"),
         keywords: Vec::new(),
         state: tilo_actions::ActionState::default(),
         icon: None,

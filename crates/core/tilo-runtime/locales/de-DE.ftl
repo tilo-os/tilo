@@ -143,3 +143,26 @@ version-mismatch-unknown-needs-update-title = Ein anderes Gerät muss aktualisie
 version-mismatch-unknown-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
 
 so-tilo-browser-open = Browser öffnen
+
+# The workspace's own folder on this device, as its actions list it.
+device-files-open = In Dateien ablegen
+device-files-new-folder = Einen Ordner anlegen
+device-files-rename = Umbenennen
+device-files-move = Verschieben
+device-files-copy-into = Kopieren
+device-files-trash = In den Papierkorb legen
+device-files-restore = Zurücklegen
+device-files-write-file = Eine Datei schreiben
+device-files-undo = Zurücknehmen
+offload-place = Platzieren
+
+# This device and the person's other devices, as their actions list them.
+device-info = Dieses Gerät
+device-log-in = Mit einem Ticket anmelden
+device-issue = Ein Gerät hinzufügen
+device-rename = Ein Gerät umbenennen
+device-revoke = Ein Gerät widerrufen
+device-identities = Die Identitäten auflisten
+device-useIdentity = Eine Identität für neue Apps verwenden
+device-removeIdentity = Eine Identität entfernen
+device-protectIdentity = Den Schlüssel einer Identität schützen

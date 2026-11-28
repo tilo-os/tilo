@@ -110,26 +110,11 @@ impl LocalFiles {
         } else {
             Vec::new()
         };
-        let (label, description) = if action == wire::OPEN {
-            (
-                "Put in Files",
-                "Put a file, or files, into the workspace's own folder",
-            )
+        let label = crate::i18n::t(&format!("device-files-{action}"));
+        let description = if action == wire::OPEN {
+            "Put a file, or files, into the workspace's own folder"
         } else {
-            (
-                match action {
-                    "new-folder" => "Make a folder",
-                    "rename" => "Rename",
-                    "move" => "Move",
-                    "copy-into" => "Copy",
-                    "trash" => "Move to Trash",
-                    "restore" => "Put back",
-                    "write-file" => "Write a file",
-                    "undo" => "Take back",
-                    _ => "Change the workspace's folder",
-                },
-                "Change the workspace's own folder by a path in it",
-            )
+            "Change the workspace's own folder by a path in it"
         };
         ActionDescriptor {
             did: None,
@@ -138,7 +123,7 @@ impl LocalFiles {
             address: ActionAddress::new(wire::FOLDER, action),
             resource_kind: wire::FOLDER.into(),
             resource_label: "Files".into(),
-            action_label: label.into(),
+            action_label: label,
             keywords: Vec::new(),
             icon: None,
             description: Some(description.into()),

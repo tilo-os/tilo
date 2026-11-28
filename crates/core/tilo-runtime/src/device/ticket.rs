@@ -131,7 +131,7 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         row(None),
         row(Some(descriptor(
             INFO,
-            "This device",
+            &crate::i18n::t("device-info"),
             "What this device is: its key, how it is listed, and the people whose \
                  certificates name it.",
             &[],
@@ -182,7 +182,7 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             LOG_IN,
-            "Log in with a ticket",
+            &crate::i18n::t("device-log-in"),
             "Become one of the person's devices with a ticket another of their computers printed, \
              or, on a computer that holds the person's identity, log in at a server by its line.",
             &[
@@ -333,7 +333,13 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
     rows.extend(
         tilo_server_protocol::device_tickets::HANDED_ON
             .into_iter()
-            .map(|action| row(tilo_server_protocol::device_tickets::descriptor(action))),
+            .map(|action| {
+                let mut descriptor = tilo_server_protocol::device_tickets::descriptor(action);
+                if let Some(descriptor) = &mut descriptor {
+                    descriptor.action_label = crate::i18n::t(&format!("device-{action}"));
+                }
+                row(descriptor)
+            }),
     );
     // What the daemon does with the device key for the other programs of this computer.
     rows.extend(

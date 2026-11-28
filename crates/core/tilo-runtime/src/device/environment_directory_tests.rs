@@ -291,27 +291,12 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     assert_eq!(rename("en-US"), "Rename");
     assert_eq!(rename("tlh-QO"), "Rename");
 
-    // Words these actions write in English in their code, with no catalogue word of their own:
-    // they read in English in every language until they are declared, and match another
-    // crate's English only by chance.
-    let undeclared = [
-        "tilo.device-files#rename",
-        "tilo.device-files#copy-into",
-        "tilo.device-files#undo",
-        "tilo.offload#place",
-        "tilo.device#info",
-        "tilo.device#logIn",
-        "tilo.device#issue",
-        "tilo.device#rename",
-    ];
     let english = english_said_otherwise_in_german();
     let mut in_english = Vec::new();
     let check = |provider: &str, labels: Vec<(String, String)>, in_english: &mut Vec<String>| {
         for (action, label) in labels {
             let at = format!("{provider}#{action}");
-            if let Some(german) = english.get(&label)
-                && !undeclared.contains(&at.as_str())
-            {
+            if let Some(german) = english.get(&label) {
                 in_english.push(format!("{at}: {label:?}, not {german:?}"));
             }
         }
