@@ -629,6 +629,8 @@ d-4fjgzcq6 = Zusammengeführt
     .w-drafts = Entwürfe
     .w-outbox = Postausgang
     .w-trusted-senders = Vertrauenswürdige Absender
+    .w-no-message-selected = Keine Nachricht ausgewählt
+    .w-choose-a-conversation-from-the-list = Wähle eine Unterhaltung aus der Liste, um sie hier zu lesen.
 
 d-3k7hkyhl = Übernommene Mail
     .w-nothing-here = Nichts hier

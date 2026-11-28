@@ -2083,6 +2083,15 @@ view unified(m: Mail) {
                 accounts_threads(m, shown, query)
             }
         }
+        // What the reading pane says before a conversation is opened. A conversation's page
+        // stands in its place once one is.
+        content: {
+            ui.EmptyState(
+                "No message selected",
+                message: "Choose a conversation from the list to read it here.",
+                icon: .mail,
+            )
+        }
     }
 }
 

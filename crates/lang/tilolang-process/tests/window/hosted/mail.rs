@@ -1986,6 +1986,35 @@ fn second_account() -> Servers {
     servers
 }
 
+// USER REQUIREMENT: the reading pane says nothing is open, not a blank space, until a
+// conversation is opened in it.
+#[test]
+fn the_reading_pane_says_no_message_is_selected_until_a_conversation_is() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let texts = session.shown();
+    for said in [
+        "No message selected",
+        "Choose a conversation from the list to read it here.",
+    ] {
+        assert!(
+            texts.iter().any(|text| text == said),
+            "the pane says {said}: {texts:#?}"
+        );
+    }
+    let plan = session.thread("Launch plan");
+    let opened = session.conversation(&plan);
+    assert!(
+        !opened.iter().any(|text| text == "No message selected"),
+        "the conversation takes the pane: {opened:#?}"
+    );
+    assert!(
+        opened.iter().any(|text| text == "Launch plan"),
+        "what opened stands there: {opened:#?}"
+    );
+}
+
 // USER REQUIREMENT: every account shows in the sidebar and its mail is reachable from the one
 // window, not only the first account's.
 #[test]
