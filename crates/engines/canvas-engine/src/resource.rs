@@ -270,6 +270,8 @@ pub struct Export {
     pub quality: Option<u8>,
     /// Draw only the selection's area, cropped to the box its outline encloses.
     pub selection: Option<bool>,
+    /// Draw only this part of the artwork: `[x, y, width, height]` in artwork units.
+    pub region: Option<[f64; 4]>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
     pub path: Option<tilo_resource::AbsolutePath>,
 }

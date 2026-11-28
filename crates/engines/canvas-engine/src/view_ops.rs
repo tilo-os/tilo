@@ -942,6 +942,20 @@ pub fn draw_export(
     };
     let region = if export.selection.unwrap_or(false) {
         selection_bounds(art)?
+    } else if let Some(region) = export.region {
+        let asked = Rect::new(
+            region[0],
+            region[1],
+            region[0] + region[2],
+            region[1] + region[3],
+        );
+        let kept = asked.intersect(art.bounds());
+        if !asked.is_finite() || kept.width() < 1.0 || kept.height() < 1.0 {
+            return Err(
+                "region is [x, y, width, height] in artwork units, inside the artwork".into(),
+            );
+        }
+        kept
     } else {
         art.bounds()
     };

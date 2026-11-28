@@ -28,6 +28,8 @@ type Artwork (title: title, untitled: "Untitled artwork") {
     selection: Option<Area>
     /// The marks a person picked, which combine and measure act on.
     picked: List<Mark>
+    /// The checkpoints the person saved: names for places in the artwork's history.
+    checkpoints: Collection<Checkpoint>
     /// The picture to work from, which `compare_reference` shows the artwork against; it is not
     /// part of the work and never exported.
     reference: Option<Reference> = .none
@@ -260,9 +262,28 @@ type Reference {
     visible: Bool = true
 }
 
+/// One copy of marks, as the system clipboard carries them: each mark's record as JSON, so a
+/// paste anywhere makes the same marks, and the pictures they name.
+type Clip {
+    marks: List<Text>
+    pictures: List<Text>
+}
+
+/// A place in the artwork's history a person named, so they can return to it.
+type Checkpoint (title: name) {
+    name: Text
+    /// Its place among the versions the system keeps, oldest first.
+    place: Int
+}
+
 /// The workspace's artworks.
 type Library {
     artworks: Collection<Artwork>
+    /// The artworks opened last, newest first, by their ids.
+    recent: List<Text>
+    /// The marks most recently copied, as the record model holds them; the system clipboard
+    /// carries the same text, so a paste reads what this device last cut or copied.
+    clip: Option<Clip> = .none
 }
 
 /// What a look asks the device's drawing engine for.
@@ -277,6 +298,10 @@ type ExportRequest {
     scale: Float
     /// Draw only the selection's area, as the selection's outline encloses it.
     selection: Option<Bool> = .none
+    /// Leave the ground out, so a PNG or WebP keeps what is painted and nothing else.
+    transparent: Option<Bool> = .none
+    /// Draw only this part, `[x, y, width, height]` in artwork units.
+    region: Option<List<Float>> = .none
 }
 
 /// What an SVG export asks for: the whole artwork, its text as text.
@@ -491,6 +516,65 @@ view library(lib: Library) {
                 )
             }
         }
+        ui.MenuButton("Start from", icon: .palette) {
+            ui.MenuItem("Paper") {
+                on choose: new_artwork(lib, "Untitled artwork", 1024.0, 768.0)
+            }
+            ui.MenuItem("White") {
+                on choose: new_artwork(lib, "Untitled artwork", 1024.0, 768.0, "smooth", "#ffffff")
+            }
+            ui.MenuItem("Dark") {
+                on choose: new_artwork(lib, "Untitled artwork", 1024.0, 768.0, "smooth", "#1d1b19")
+            }
+            ui.MenuItem("Oil") {
+                on choose: new_artwork(
+                    lib,
+                    "Untitled artwork",
+                    1024.0,
+                    768.0,
+                    "linen",
+                    "#f4efe3",
+                    "oil",
+                )
+            }
+            ui.MenuItem("Watercolour") {
+                on choose: new_artwork(
+                    lib,
+                    "Untitled artwork",
+                    1024.0,
+                    768.0,
+                    "cold-press",
+                    "#f4efe3",
+                    "watercolour",
+                )
+            }
+            ui.MenuItem("Transparent") {
+                on choose: new_artwork(
+                    lib,
+                    "Untitled artwork",
+                    1024.0,
+                    768.0,
+                    "smooth",
+                    "#00000000",
+                )
+            }
+        }
+        ui.MenuButton("Samples", icon: .sparkles) {
+            for kind in ["study", "chart", "strokes"] {
+                ui.MenuItem(kind) {
+                    on choose: add_sample(lib, kind)
+                }
+            }
+        }
+        if not lib.recent.is_empty() {
+            ui.Section("Recent") {
+                for id in lib.recent {
+                    if let art = lib.artworks.find(x -> x.id() == id) {
+                        ui.ListRow(title: art.title, icon: .history, item: art)
+                    }
+                }
+            }
+        }
         if lib.artworks.is_empty() {
             ui.EmptyState("No artwork yet", message: "New artwork starts one", icon: .image)
         } else {
@@ -568,6 +652,7 @@ primary action open_artwork(lib: Library, file: File) -> Artwork (
                 if made.layers.is_empty() {
                     made.layers.insert(Layer(name: "Layer 1"))
                 }
+                remember(lib, made)
                 for row in array_field(opened, "marks") {
                     if let layer = by_id.get(text_field(row, "layer")) {
                         if let mark = mark_of(layer, row) {
@@ -768,16 +853,123 @@ action blank_with(lib: Library, why: Text) -> Artwork {
 }
 
 /// Starts a blank artwork with one plain layer.
-action new_artwork(lib: Library, title: Text, width: Float, height: Float) -> Artwork (
-    icon: .file_plus,
-    label: "New artwork",
-    did: "started a new artwork",
-) {
+action new_artwork(
+    lib: Library,
+    title: Text,
+    width: Float,
+    height: Float,
+    ground_texture: Text = "paper",
+    ground_colour: Text = "#f4efe3",
+    medium: Text = "",
+) -> Artwork (icon: .file_plus, label: "New artwork", did: "started a new artwork") {
     require width >= 16.0 and width <= 8192.0 "An artwork is 16 to 8192 units wide"
     require height >= 16.0 and height <= 8192.0 "An artwork is 16 to 8192 units high"
-    let made = lib.artworks.insert(Artwork(title: title, width: width, height: height))
-    made.layers.insert(Layer(name: "Layer 1"))
+    require medium == "" or medium == "oil" or medium == "watercolour" "A start is plain paint, oil or watercolour"
+    let made = lib.artworks.insert(
+        Artwork(
+            title: title,
+            width: width,
+            height: height,
+            ground_texture: ground_texture,
+            ground_colour: ground_colour,
+        ),
+    )
+    let name = if medium == "oil" {
+        "Oil"
+    } else if medium == "watercolour" { "Watercolour" } else { "Layer 1" }
+    made.layers.insert(Layer(name: name, medium: medium))
+    remember(lib, made)
     made
+}
+
+/// Keeps an artwork at the front of the workspace's recent list.
+action remember(lib: Library, art: Artwork) (label: "Remember the artwork") {
+    let id = art.id()
+    lib.recent = [[id], lib.recent.filter(x -> x != id)].flat_map(x -> x).take(8)
+}
+
+/// Starts one of the example artworks: an explicit demonstration, not a fixture in an empty
+/// library.
+action add_sample(lib: Library, kind: Text = "study") -> Artwork (
+    icon: .image,
+    label: "Add a sample",
+) {
+    require kind == "study" or kind == "chart" or kind == "strokes" "A sample is a study, a chart or strokes"
+    if kind == "chart" {
+        let art = new_artwork(lib, "Sample chart", 1024.0, 768.0, "smooth", "#ffffff")
+        add_chart(
+            art,
+            ["Jan", "Feb", "Mar", "Apr"],
+            [3.0, 5.0, 2.0, 6.0],
+            title: "A quarter",
+            values_shown: true,
+        )
+        return art
+    }
+    if kind == "strokes" {
+        let art = new_artwork(lib, "Sample strokes", 1024.0, 768.0)
+        let layer = art.layers.first() ?? add_layer(art, "")
+        for preset in ["round", "pen", "marker", "charcoal", "calligraphy"] {
+            let at = art.marks.len().to_float() * 40.0 + 60.0
+            let made = add_stroke(art, .some(layer), [80.0, at, 0.6], 18.0, "#1d1b19", preset)
+            extend_stroke(art, made, [300.0, at + 40.0, 0.8])
+            extend_stroke(art, made, [560.0, at - 20.0, 0.5])
+            finish_mark(made)
+            made.open = false
+        }
+        return art
+    }
+    let art = new_artwork(lib, "Sample study", 1024.0, 768.0)
+    let layer = art.layers.first() ?? add_layer(art, "")
+    for i in inks().take(6).map((ink, i) -> i) {
+        add_shape(
+            art,
+            .some(layer),
+            ellipse_path(
+                [160.0 + i.to_float() * 70.0, 200.0],
+                [460.0 + i.to_float() * 70.0, 560.0],
+            ),
+            inks().at(i) ?? "#1d1b19",
+        )
+    }
+    return art
+}
+
+/// Names the place in the artwork's history the person stands at: the newest when no place is
+/// named, so a checkpoint is taken of the artwork as it is now.
+action save_checkpoint(a: Artwork, name: Text, place: Int = -1) (
+    icon: .bookmark,
+    label: "Save a checkpoint",
+    did: "saved a checkpoint",
+) {
+    require name.trim() != "" "A checkpoint has a name"
+    let versions = history(a).filter(v -> not shown_only(v.kind, v.fields)).sort_by(v -> v.at)
+    let at = if place < 0 { versions.len() - 1 } else { place }
+    if at < 0 or at >= versions.len() {
+        a.notice = "That place is not one the artwork has"
+        return
+    }
+    if let held = a.checkpoints.find(c -> c.name == name.trim()) {
+        held.place = at
+    } else {
+        a.checkpoints.insert(Checkpoint(name: name.trim(), place: at))
+    }
+}
+
+/// Goes back to a checkpoint: the artwork is compared with it on the surface.
+action go_to_checkpoint(a: Artwork, c: Checkpoint) (
+    icon: .bookmark,
+    label: "Go to the checkpoint",
+) {
+    compare_at(a, c.place.to_float())
+}
+
+/// Takes a checkpoint off the artwork.
+destructive action remove_checkpoint(a: Artwork, c: Checkpoint) (
+    icon: .trash,
+    label: "Remove the checkpoint",
+) {
+    a.checkpoints.remove(c)
 }
 
 /// Adds a layer on top of the artwork.
@@ -798,7 +990,12 @@ action rename_layer(a: Artwork, layer: Layer, name: Text) (
 ) {
     require name.trim() != "" "A layer has a name"
     require a.layers.find(l -> l != layer and l.name == name.trim()) == .none "Another layer is named {name.trim()}"
+    let before = layer.name
     layer.name = name.trim()
+    // A mask names the layer it masks: the name follows it.
+    for held in a.layers.filter(l -> l.mask_of == before) {
+        held.mask_of = name.trim()
+    }
 }
 
 /// Holds a layer still, so the pointer passes through its marks, or lets its marks be picked
@@ -1639,10 +1836,24 @@ fn colour_at(a: Artwork, at: List<Float>) -> Option<Text> {
     }
 }
 
-/// Moves the picked marks by `dx`, `dy` units, as the arrow keys nudge them.
+/// Moves the picked marks by `dx`, `dy` units, as the arrow keys nudge them. A grouped mark
+/// carries its group with it, as the group moved as one.
 action nudge_picked(a: Artwork, dx: Float, dy: Float) (label: "Nudge the picked marks") {
     require a.picked.len() > 0 "Pick the marks to nudge"
+    let reach: List<Mark> = []
     for m in a.picked {
+        if reach.find(x -> x == m) == .none {
+            reach = reach + [m]
+        }
+        if m.group != "" {
+            for other in a.marks.filter(x -> x.group == m.group) {
+                if reach.find(x -> x == other) == .none {
+                    reach = reach + [other]
+                }
+            }
+        }
+    }
+    for m in reach {
         move_mark(m, dx, dy)
     }
 }
@@ -2498,6 +2709,7 @@ action compare_at(a: Artwork, place: Float) -> Option<Text> uses image (
 view version_timeline(a: Artwork) {
     state shown: Bool = false
     state at: Float = -1.0
+    state checkpoint: Text = ""
     if not shown {
         row(gap: .related, align: .center) {
             ui.Button("Versions", icon: .history) {
@@ -2530,6 +2742,24 @@ view version_timeline(a: Artwork) {
         }
         if a.version_note != "" {
             ui.Text(a.version_note, role: .caption, secondary: true)
+        }
+        ui.Section("Checkpoints") {
+            row(gap: .tight, align: .center) {
+                ui.TextInput(bind: checkpoint, placeholder: "Checkpoint name")
+                ui.Button("Save", icon: .bookmark) {
+                    on press: save_checkpoint(a, checkpoint).then(set(checkpoint, ""))
+                }
+            }
+            for c in a.checkpoints {
+                row(gap: .tight, align: .center) {
+                    ui.Button(c.name, icon: .bookmark) {
+                        on press: go_to_checkpoint(a, c)
+                    }
+                    ui.Button("Remove", icon: .trash, icon_only: true) {
+                        on press: remove_checkpoint(a, c)
+                    }
+                }
+            }
         }
     }
 }
@@ -3175,6 +3405,34 @@ action clip_picks_to_selection(a: Artwork) (
     }
 }
 
+/// Paints the selection on a layer's mask in `grey`, making a mask when the layer has none: light
+/// shows the layer there, dark hides it. This is how the selection clears or reveals part of a
+/// layer without touching its marks.
+action paint_mask(a: Artwork, layer: Layer, grey: Text = "#ffffff") -> Option<Mark> {
+    require layer.mask_of == "" "Choose the layer, not its mask"
+    if a.selection == .none {
+        a.notice = "Select an area first"
+        return .none
+    }
+    let mask = if let held = a.layers.find(m -> m.mask_of == layer.name) {
+        held
+    } else { add_mask(a, layer) }
+    if let area = a.selection {
+        a.notice = ""
+        return .some(add_shape(a, .some(mask), area.d, grey))
+    }
+    return .none
+}
+
+/// Clears the layer's paint inside the selection: the selection is painted dark on the layer's
+/// mask, so what it covers is hidden and the marks themselves stay.
+action clear_in_selection(a: Artwork, layer: Layer) -> Option<Mark> (
+    icon: .eraser,
+    label: "Clear the selection",
+) {
+    return paint_mask(a, layer, "#000000")
+}
+
 /// Selects the shape of the marks or groups `ids` name, meeting the area there is by `mode`.
 action select_marks(
     a: Artwork,
@@ -3213,6 +3471,230 @@ action pick_marks(a: Artwork, marks: List<Mark>) (label: "Pick the marks", did: 
 /// Lets every picked mark go.
 action clear_picked(a: Artwork) (label: "Clear the picked marks") {
     a.picked = []
+}
+
+/// What the system clipboard carries when it holds Canvas marks.
+fn marks_prefix() -> Text {
+    "tilo.canvas.marks:"
+}
+
+/// Copies the picked marks as one typed clipboard item: their records as JSON, and the pictures
+/// they name. A paste anywhere makes the same marks.
+action copy_picked(lib: Library, a: Artwork) uses clipboard (
+    icon: .copy,
+    label: "Copy the picked marks",
+    did: "copied marks",
+) {
+    let rows = keep_clip(lib, a)
+    clipboard.copy(marks_prefix() + "[" + rows.join(",") + "]")
+}
+
+/// Cuts the picked marks: keeps them as the copy, puts them on the clipboard and removes them.
+action cut_picked(lib: Library, a: Artwork) uses clipboard (
+    icon: .scissors,
+    label: "Cut the picked marks",
+    did: "cut marks",
+) {
+    let rows = keep_clip(lib, a)
+    clipboard.copy(marks_prefix() + "[" + rows.join(",") + "]")
+    delete_picked(a)
+}
+
+/// The picked marks as the record model's copy unit, each as the JSON a paste reads. Answers
+/// the marks' JSON.
+action keep_clip(lib: Library, a: Artwork) -> List<Text> (label: "Keep a copy of the marks") {
+    require a.picked.len() > 0 "Pick the marks to copy"
+    let rows = a.picked.map(m -> json.encode(mark_json(m)))
+    let pictures = a.picked.map(m -> m.src).filter(src -> src != "")
+    lib.clip = .some(Clip(marks: rows, pictures: pictures))
+    rows
+}
+
+/// Pastes the marks the clipboard holds onto `layer`, moved to `at` when a point is given.
+action paste_marks(
+    a: Artwork,
+    lib: Library,
+    at: List<Float> = [],
+    layer: Option<Layer> = .none,
+) -> Int uses clipboard (icon: .clipboard_paste, label: "Paste the marks", did: "pasted marks") {
+    let held = clipboard.paste() ?? ""
+    if not held.starts_with(marks_prefix()) {
+        a.notice = "The clipboard holds no Canvas marks"
+        return 0
+    }
+    let payload = held.slice(marks_prefix().len(), held.len())
+    let on = if let chosen = layer { chosen } else { top_layer(a) }
+    let count = Map<Int>()
+    match json.parse(payload) {
+        .ok(value) => {
+            for row in as_array(value) ?? [] {
+                if let mark = mark_from_copy(on, row) {
+                    let inset = a.marks.insert(mark)
+                    copy_params(inset, row)
+                    if at.len() >= 2 {
+                        move_mark(
+                            inset,
+                            (at.at(0) ?? 0.0) - (inset.x + inset.width / 2.0),
+                            (at.at(1) ?? 0.0) - (inset.y + inset.height / 2.0),
+                        )
+                    }
+                    count.put("n", (count.get("n") ?? 0) + 1)
+                }
+            }
+        }
+        .err(why) => {
+            a.notice = why
+            return 0
+        }
+    }
+    let n = count.get("n") ?? 0
+    if n == 0 {
+        a.notice = "The clipboard holds no marks this artwork can take"
+        return 0
+    }
+    a.picked = []
+    a.notice = ""
+    n
+}
+
+/// One mark read from the record a copy keeps, on `layer`.
+fn mark_from_copy(layer: Layer, row: json.Value) -> Option<Mark> {
+    let kind = text_field(row, "kind")
+    if kind == "" {
+        return .none
+    }
+    .some(
+        Mark(
+            name: text_field(row, "name"),
+            layer: layer,
+            kind: kind,
+            group: text_field(row, "group"),
+            points: numbers_at(row, "points"),
+            d: text_field(row, "d"),
+            size: number_field(row, "size") ?? 6.0,
+            colour: text_field(row, "colour"),
+            brush: text_field(row, "brush"),
+            stroke: text_field(row, "stroke"),
+            stroke_width: number_field(row, "stroke_width") ?? 0.0,
+            dash: numbers_at(row, "dash"),
+            opacity: number_field(row, "opacity") ?? 1.0,
+            src: text_field(row, "src"),
+            x: number_field(row, "x") ?? 0.0,
+            y: number_field(row, "y") ?? 0.0,
+            width: number_field(row, "width") ?? 0.0,
+            height: number_field(row, "height") ?? 0.0,
+            blend: text_field(row, "blend"),
+            crop_x: number_field(row, "crop_x") ?? 0.0,
+            crop_y: number_field(row, "crop_y") ?? 0.0,
+            crop_width: number_field(row, "crop_width") ?? 1.0,
+            crop_height: number_field(row, "crop_height") ?? 1.0,
+            straighten: number_field(row, "straighten") ?? 0.0,
+            flip_h: flag_field(row, "flip_h") ?? false,
+            flip_v: flag_field(row, "flip_v") ?? false,
+            exposure: number_field(row, "exposure") ?? 0.0,
+            contrast: number_field(row, "contrast") ?? 0.0,
+            highlights: number_field(row, "highlights") ?? 0.0,
+            shadows: number_field(row, "shadows") ?? 0.0,
+            saturation: number_field(row, "saturation") ?? 0.0,
+            vibrance: number_field(row, "vibrance") ?? 0.0,
+            hue: number_field(row, "hue") ?? 0.0,
+            temperature: number_field(row, "temperature") ?? 0.0,
+            tint: number_field(row, "tint") ?? 0.0,
+            grayscale: flag_field(row, "grayscale") ?? false,
+            invert: flag_field(row, "invert") ?? false,
+            blur: number_field(row, "blur") ?? 0.0,
+            sharpen: number_field(row, "sharpen") ?? 0.0,
+            vignette: number_field(row, "vignette") ?? 0.0,
+            gradient: text_field(row, "gradient_kind"),
+            gradient_x0: number_field(row, "gradient_x0") ?? 0.0,
+            gradient_y0: number_field(row, "gradient_y0") ?? 0.0,
+            gradient_x1: number_field(row, "gradient_x1") ?? 0.0,
+            gradient_y1: number_field(row, "gradient_y1") ?? 0.0,
+            gradient_offsets: .some(numbers_at(row, "gradient_offsets")),
+            gradient_colours: .some(texts_at(row, "gradient_colours")),
+            text: text_field(row, "text"),
+            font: text_field(row, "font"),
+            weight: int_field(row, "weight"),
+            italic: flag_field(row, "italic") ?? false,
+            align: text_field(row, "align"),
+            line_height: number_field(row, "line_height") ?? 0.0,
+            tracking: number_field(row, "tracking") ?? 0.0,
+            text_path: text_field(row, "text_path"),
+            wet: flag_field(row, "wet") ?? false,
+            transform: numbers_at(row, "transform"),
+            clip: text_field(row, "clip"),
+            pixelated: flag_field(row, "pixelated") ?? false,
+            grain: number_field(row, "grain") ?? 0.0,
+            feather: number_field(row, "feather") ?? 0.0,
+            shadow_x: number_field(row, "shadow_x") ?? 0.0,
+            shadow_y: number_field(row, "shadow_y") ?? 0.0,
+            shadow_blur: number_field(row, "shadow_blur") ?? 0.0,
+            shadow_colour: text_field(row, "shadow_colour"),
+            inner_shadow_x: number_field(row, "inner_shadow_x") ?? 0.0,
+            inner_shadow_y: number_field(row, "inner_shadow_y") ?? 0.0,
+            inner_shadow_blur: number_field(row, "inner_shadow_blur") ?? 0.0,
+            inner_shadow_colour: text_field(row, "inner_shadow_colour"),
+            curve: curves_of(row),
+        ),
+    )
+}
+
+/// Copies the medium parameters a mark's record keeps onto the mark just made.
+action copy_params(made: Mark, row: json.Value) (label: "Copy the medium parameters") {
+    if let held = object_field(row, "params") {
+        if let fields = as_object(held) {
+            for key in fields.keys() {
+                if let value = fields.get(key) {
+                    if let number = as_number(value) { made.params.put(key, number) }
+                }
+            }
+        }
+    }
+}
+
+/// Makes a copy of the picked marks, nudged by `dx`, `dy` so it shows beside the originals.
+action duplicate_picked(a: Artwork, dx: Float = 10.0, dy: Float = 10.0) (
+    icon: .copy,
+    label: "Duplicate the picked marks",
+    did: "duplicated marks",
+) {
+    require a.picked.len() > 0 "Pick the marks to duplicate"
+    for original in a.picked.map(m -> m) {
+        let parsed = json.parse(json.encode(mark_json(original)))
+        match parsed {
+            .ok(value) => {
+                if let made = mark_from_copy(original.layer, value) {
+                    let copy = a.marks.insert(made)
+                    for key in original.params.keys() {
+                        copy.params.put(key, original.params.get(key) ?? 0.0)
+                    }
+                    copy.transform = original.transform
+                    move_mark(copy, dx, dy)
+                }
+            }
+            .err(_) => {}
+        }
+    }
+}
+
+/// Puts the picked marks in a group, so they are addressed together.
+action group_picked(a: Artwork, name: Text = "Group") (
+    icon: .folder,
+    label: "Group the picked marks",
+    did: "grouped marks",
+) {
+    require a.picked.len() > 0 "Pick the marks to group"
+    for m in a.picked {
+        group_mark(m, name)
+    }
+}
+
+/// Takes the picked marks out of their groups.
+action ungroup_picked(a: Artwork) (icon: .folder_open, label: "Ungroup the picked marks") {
+    require a.picked.len() > 0 "Pick the marks to ungroup"
+    for m in a.picked {
+        group_mark(m, "")
+    }
 }
 
 /// Removes the brush strokes a path crosses, on `layer` or every layer: what a stroke eraser
@@ -3588,13 +4070,23 @@ action export_picture(
     format: Text = "png",
     scale: Float = 1.0,
     selection: Bool = false,
+    transparent: Bool = false,
+    region: List<Float> = [],
 ) -> Option<File> (icon: .download, label: "Export a picture", did: "exported a picture") {
+    require scale >= 0.05 and scale <= 4.0 "A picture is exported at 0.05 to 4 times its size"
+    require region.len() == 0 or region.len() == 4 "A region is [x, y, width, height]"
     if selection and a.selection == .none {
         a.notice = "Select an area to export it"
         return .none
     }
     let request = json.encode(
-        ExportRequest(format: format, scale: scale, selection: .some(selection)),
+        ExportRequest(
+            format: format,
+            scale: scale,
+            selection: .some(selection),
+            transparent: .some(transparent),
+            region: if region.len() == 4 { .some(region) } else { .none },
+        ),
     )
     match canvas.export(artwork_json(a), request, picture_addresses(a)) {
         .ok(file) => .some(file),
@@ -3976,12 +4468,24 @@ view artwork(a: Artwork) {
     state shape_from: List<Float> = []
     // The points a lasso has traced, `[x, y]` each, closed when the hand lifts.
     state lasso: List<List<Float>> = []
+    // The points a pen has clicked, `[x, y]` each, closed when Enter comes.
+    state pen: List<List<Float>> = []
+    // The workspace the window is set to, which picks the tools it starts with.
+    state workspace: Text = "auto"
     state zoom: Float = 1.0
     state pan_x: Float = 0.0
     state pan_y: Float = 0.0
     // The chart being made, and the keyboard reference, each open while its sheet is.
     state chart_open: Bool = false
     state help: Bool = false
+    // The name a person is typing for the chosen layer.
+    state renaming: Text = ""
+    // The export sheet and what it will write.
+    state exporting: Bool = false
+    state export_format: Text = "png"
+    state export_scale: Float = 1.0
+    state export_transparent: Bool = false
+    state export_region: Text = ""
     std.page(a, canvas: true, fill: true) {
         header: {
             artwork_head(a, show_layers, chart_open, help)
@@ -3993,7 +4497,7 @@ view artwork(a: Artwork) {
         }
         row(gap: .none, fill) {
             if show_layers {
-                layers_rail(a, chosen)
+                layers_rail(a, chosen, renaming)
             }
             stack(gap: .none, fill) {
                 ui.PaintSurface(
@@ -4011,8 +4515,16 @@ view artwork(a: Artwork) {
                     label: a.title,
                 ) {
                     on stroke_start(p: List<Float>): set(
-                            colour,
-                            if tool == "eyedropper" { colour_at(a, p) ?? colour } else { colour },
+                            pen,
+                            if tool == "pen" { pen + [p] } else { pen },
+                        )
+                        .then(
+                            set(
+                                colour,
+                                if tool == "eyedropper" {
+                                    colour_at(a, p) ?? colour
+                                } else { colour },
+                            ),
                         )
                         .then(set(shape_from, p))
                         .then(
@@ -4040,13 +4552,30 @@ view artwork(a: Artwork) {
                     on panned(delta): set(pan_x, pan_x + (delta.at(0) ?? 0.0))
                         .then(set(pan_y, pan_y + (delta.at(1) ?? 0.0)))
                 }
-                well(a, tool, brush, size, colour, chosen, pan_x, pan_y, zoom, help)
+                well(
+                    a,
+                    tool,
+                    brush,
+                    size,
+                    colour,
+                    chosen,
+                    pan_x,
+                    pan_y,
+                    zoom,
+                    help,
+                    pen,
+                    workspace,
+                    exporting,
+                )
                 version_timeline(a)
             }
         }
     }
     if chart_open {
         chart_sheet(a, chart_open)
+    }
+    if exporting {
+        export_sheet(a, exporting, export_format, export_scale, export_transparent, export_region)
     }
     if help {
         help_sheet(help)
@@ -4128,6 +4657,62 @@ view chart_sheet(a: Artwork, open: State<Bool>) {
     }
 }
 
+/// The export sheet: the format, the scale, a transparent ground and a part of the artwork.
+view export_sheet(
+    a: Artwork,
+    open: State<Bool>,
+    format: State<Text>,
+    scale: State<Float>,
+    transparent: State<Bool>,
+    region: State<Text>,
+) {
+    ui.ModalDialog(
+        title: "Export the artwork",
+        open: open,
+        primary: "Export",
+        secondary: "Cancel",
+    ) {
+        body: {
+            stack(gap: .related) {
+                ui.MenuButton("Format: {format}", icon: .file_text) {
+                    for kind in ["png", "jpeg", "webp"] {
+                        ui.MenuItem(kind) {
+                            on choose: set(format, kind)
+                        }
+                    }
+                }
+                ui.Slider(bind: scale, label: "Scale", min: 0.05, max: 4.0)
+                ui.Button(
+                    if transparent { "Transparent ground" } else { "Paint the ground" },
+                    icon: .contrast,
+                ) {
+                    on press: set(transparent, not transparent)
+                }
+                ui.Text(
+                    "A part of the artwork: x, y, width, height; empty for all of it",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.TextInput(bind: region, placeholder: "0, 0, 512, 384")
+            }
+        }
+        on act_primary: file
+            .save(
+                export_picture(a, format, scale, false, transparent, region_floats(region)),
+                name: "Artwork.{format}",
+            )
+            .then(set(open, false))
+        on act_secondary: set(open, false)
+        on dismiss: set(open, false)
+    }
+}
+
+/// The numbers a region text holds, `x, y, width, height`; nothing when it holds no four.
+fn region_floats(text: Text) -> List<Float> {
+    let numbers = text.split(",").filter(x -> x.trim() != "").map(x -> x.trim().to_float() ?? 0.0)
+    if numbers.len() == 4 { numbers } else { [] }
+}
+
 /// The keyboard reference: what each key does while the artwork has the window.
 view help_sheet(open: State<Bool>) {
     ui.ModalDialog(
@@ -4148,6 +4733,8 @@ view help_sheet(open: State<Bool>) {
                 ui.KeyHint(["E"], "Ellipse")
                 ui.KeyHint(["L"], "Line")
                 ui.KeyHint(["C"], "Crop the picture")
+                ui.KeyHint(["P, M, O, G"], "Pen, marquee, oval, bucket")
+                ui.KeyHint(["S"], "Straighten a picture by dragging")
                 ui.KeyHint(["V"], "Select")
                 ui.KeyHint(["Q"], "Lasso")
                 ui.KeyHint(["W"], "Wand")
@@ -4162,8 +4749,11 @@ view help_sheet(open: State<Bool>) {
             }
             ui.Text("Marks and artwork", role: .heading)
             ui.KeyHints {
-                ui.KeyHint(["Alt+Arrows"], "Nudge the picked marks")
+                ui.KeyHint(["Arrows"], "Nudge the picked marks")
                 ui.KeyHint(["Delete"], "Delete the picked marks")
+                ui.KeyHint(["Ctrl+C, Ctrl+X, Ctrl+V"], "Copy, cut, paste marks")
+                ui.KeyHint(["Ctrl+D"], "Duplicate the picked marks")
+                ui.KeyHint(["Ctrl+G, Ctrl+Shift+G"], "Group or ungroup the picked marks")
                 ui.KeyHint(["Escape"], "Let the picks or the selection go")
                 ui.KeyHint(["Ctrl+N"], "New artwork")
                 ui.KeyHint(["Ctrl+O"], "Open an artwork")
@@ -4177,7 +4767,7 @@ view help_sheet(open: State<Bool>) {
 
 /// The layers, each with what makes it what it is: shown or hidden, locked, its opacity and how
 /// much of the ground shows through it, moved up or down the stack, duplicated, merged, removed.
-view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
+view layers_rail(a: Artwork, chosen: State<Option<Layer>>, renaming: State<Text>) {
     stack(gap: .related, fill) {
         ui.Text("Layers", role: .heading)
         stack(gap: .group) {
@@ -4239,6 +4829,29 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                 ui.Button(if layer.locked { "Unlock" } else { "Lock" }, icon: .lock) {
                     on press: lock_layer(a, layer)
                 }
+                ui.Button(if layer.clip { "Unclip" } else { "Clip to below" }, icon: .scissors) {
+                    on press: clip_layer(a, layer)
+                }
+            }
+            row(gap: .tight, align: .center) {
+                ui.TextInput(bind: renaming, placeholder: "Layer name")
+                ui.Button("Rename", icon: .pencil) {
+                    on press: rename_layer(a, layer, renaming)
+                }
+            }
+            ui.Section("Adjust the layer") {
+                ui.Slider(bind: layer.exposure, label: "Exposure", min: -3.0, max: 3.0)
+                ui.Slider(bind: layer.contrast, label: "Contrast", min: -1.0, max: 1.0)
+                ui.Slider(bind: layer.saturation, label: "Saturation", min: -1.0, max: 1.0)
+                ui.Slider(bind: layer.blur, label: "Blur", min: 0.0, max: 40.0)
+                row(gap: .tight) {
+                    ui.Button(if layer.adjust_grayscale { "Colour" } else { "Black and white" }) {
+                        on press: adjust_layer(layer, grayscale: not layer.adjust_grayscale)
+                    }
+                    ui.Button(if layer.adjust_invert { "Un-invert" } else { "Invert" }) {
+                        on press: adjust_layer(layer, invert: not layer.adjust_invert)
+                    }
+                }
             }
             ui.MenuButton("Medium: {medium_said(layer.medium)}", icon: .droplet) {
                 ui.MenuItem("Plain paint") {
@@ -4282,107 +4895,120 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                     on press: pick_marks(a, marks)
                 }
             }
-            if a.picked.len() > 0 {
-                ui.Text("{a.picked.len()} picked", role: .caption, secondary: true)
-                row(gap: .tight, align: .center) {
-                    ui.Text("Nudge", role: .caption, secondary: true)
-                    ui.Button(
-                        "Left",
-                        role: .plain,
-                        icon: .arrow_left,
-                        icon_only: true,
-                        keys: ["Alt+ArrowLeft"],
-                    ) {
-                        on press: nudge_picked(a, -1.0, 0.0)
-                    }
-                    ui.Button(
-                        "Up",
-                        role: .plain,
-                        icon: .arrow_up,
-                        icon_only: true,
-                        keys: ["Alt+ArrowUp"],
-                    ) {
-                        on press: nudge_picked(a, 0.0, -1.0)
-                    }
-                    ui.Button(
-                        "Down",
-                        role: .plain,
-                        icon: .arrow_down,
-                        icon_only: true,
-                        keys: ["Alt+ArrowDown"],
-                    ) {
-                        on press: nudge_picked(a, 0.0, 1.0)
-                    }
-                    ui.Button(
-                        "Right",
-                        role: .plain,
-                        icon: .arrow_right,
-                        icon_only: true,
-                        keys: ["Alt+ArrowRight"],
-                    ) {
-                        on press: nudge_picked(a, 1.0, 0.0)
-                    }
+        }
+        if a.picked.len() > 0 {
+            ui.Text("{a.picked.len()} picked", role: .caption, secondary: true)
+            row(gap: .tight, align: .center) {
+                ui.Text("Nudge", role: .caption, secondary: true)
+                ui.Button(
+                    "Left",
+                    role: .plain,
+                    icon: .arrow_left,
+                    icon_only: true,
+                    keys: ["ArrowLeft"],
+                ) {
+                    on press: nudge_picked(a, -1.0, 0.0)
                 }
-                if a.picked.len() >= 2 {
-                    ui.MenuButton("Align", icon: .align_start_horizontal) {
-                        ui.MenuItem("Align left edges") {
-                            on choose: align_marks(a, a.picked, "left")
-                        }
-                        ui.MenuItem("Align centres") {
-                            on choose: align_marks(a, a.picked, "center")
-                        }
-                        ui.MenuItem("Align right edges") {
-                            on choose: align_marks(a, a.picked, "right")
-                        }
-                        ui.MenuItem("Align top edges") {
-                            on choose: align_marks(a, a.picked, "top")
-                        }
-                        ui.MenuItem("Align middles") {
-                            on choose: align_marks(a, a.picked, "middle")
-                        }
-                        ui.MenuItem("Align bottom edges") {
-                            on choose: align_marks(a, a.picked, "bottom")
-                        }
-                        ui.MenuSeparator()
-                        ui.MenuItem("Space evenly across") {
-                            on choose: align_marks(a, a.picked, distribute: "horizontal")
-                        }
-                        ui.MenuItem("Space evenly down") {
-                            on choose: align_marks(a, a.picked, distribute: "vertical")
-                        }
-                    }
-                }
-                ui.MenuButton("Align on the artwork", icon: .maximize) {
-                    ui.MenuItem("Centre across the artwork") {
-                        on choose: align_marks(a, a.picked, "center", to_artwork: true)
-                    }
-                    ui.MenuItem("Centre down the artwork") {
-                        on choose: align_marks(a, a.picked, "middle", to_artwork: true)
-                    }
-                    ui.MenuItem("Left edge of the artwork") {
-                        on choose: align_marks(a, a.picked, "left", to_artwork: true)
-                    }
-                    ui.MenuItem("Right edge of the artwork") {
-                        on choose: align_marks(a, a.picked, "right", to_artwork: true)
-                    }
-                    ui.MenuItem("Top edge of the artwork") {
-                        on choose: align_marks(a, a.picked, "top", to_artwork: true)
-                    }
-                    ui.MenuItem("Bottom edge of the artwork") {
-                        on choose: align_marks(a, a.picked, "bottom", to_artwork: true)
-                    }
+                ui.Button("Up", role: .plain, icon: .arrow_up, icon_only: true, keys: ["ArrowUp"]) {
+                    on press: nudge_picked(a, 0.0, -1.0)
                 }
                 ui.Button(
-                    "Delete the picked marks",
-                    icon: .trash,
-                    role: .destructive,
-                    keys: ["Delete"],
+                    "Down",
+                    role: .plain,
+                    icon: .arrow_down,
+                    icon_only: true,
+                    keys: ["ArrowDown"],
                 ) {
-                    on press: delete_picked(a)
+                    on press: nudge_picked(a, 0.0, 1.0)
                 }
-                ui.Button("Let the picks go", icon: .x, keys: ["Escape"]) {
-                    on press: clear_picked(a)
+                ui.Button(
+                    "Right",
+                    role: .plain,
+                    icon: .arrow_right,
+                    icon_only: true,
+                    keys: ["ArrowRight"],
+                ) {
+                    on press: nudge_picked(a, 1.0, 0.0)
                 }
+            }
+            if a.picked.len() >= 2 {
+                ui.MenuButton("Align", icon: .align_start_horizontal) {
+                    ui.MenuItem("Align left edges") {
+                        on choose: align_marks(a, a.picked, "left")
+                    }
+                    ui.MenuItem("Align centres") {
+                        on choose: align_marks(a, a.picked, "center")
+                    }
+                    ui.MenuItem("Align right edges") {
+                        on choose: align_marks(a, a.picked, "right")
+                    }
+                    ui.MenuItem("Align top edges") {
+                        on choose: align_marks(a, a.picked, "top")
+                    }
+                    ui.MenuItem("Align middles") {
+                        on choose: align_marks(a, a.picked, "middle")
+                    }
+                    ui.MenuItem("Align bottom edges") {
+                        on choose: align_marks(a, a.picked, "bottom")
+                    }
+                    ui.MenuSeparator()
+                    ui.MenuItem("Space evenly across") {
+                        on choose: align_marks(a, a.picked, distribute: "horizontal")
+                    }
+                    ui.MenuItem("Space evenly down") {
+                        on choose: align_marks(a, a.picked, distribute: "vertical")
+                    }
+                }
+            }
+            ui.MenuButton("Align on the artwork", icon: .maximize) {
+                ui.MenuItem("Centre across the artwork") {
+                    on choose: align_marks(a, a.picked, "center", to_artwork: true)
+                }
+                ui.MenuItem("Centre down the artwork") {
+                    on choose: align_marks(a, a.picked, "middle", to_artwork: true)
+                }
+                ui.MenuItem("Left edge of the artwork") {
+                    on choose: align_marks(a, a.picked, "left", to_artwork: true)
+                }
+                ui.MenuItem("Right edge of the artwork") {
+                    on choose: align_marks(a, a.picked, "right", to_artwork: true)
+                }
+                ui.MenuItem("Top edge of the artwork") {
+                    on choose: align_marks(a, a.picked, "top", to_artwork: true)
+                }
+                ui.MenuItem("Bottom edge of the artwork") {
+                    on choose: align_marks(a, a.picked, "bottom", to_artwork: true)
+                }
+            }
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.Button("Copy", icon: .copy, keys: ["Ctrl+C"]) {
+                    on press: copy_picked(root Library, a)
+                }
+                ui.Button("Cut", icon: .scissors, keys: ["Ctrl+X"]) {
+                    on press: cut_picked(root Library, a)
+                }
+                ui.Button("Duplicate", icon: .copy, keys: ["Ctrl+D"]) {
+                    on press: duplicate_picked(a)
+                }
+            }
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.Button("Group", icon: .folder, keys: ["Ctrl+G"]) {
+                    on press: group_picked(a, "Group {a.marks.len()}")
+                }
+                ui.Button("Ungroup", icon: .folder_open, keys: ["Ctrl+Shift+G"]) {
+                    on press: ungroup_picked(a)
+                }
+            }
+            ui.Button(
+                "Delete the picked marks",
+                icon: .trash,
+                role: .destructive,
+                keys: ["Delete"],
+            ) {
+                on press: delete_picked(a)
+            }
+            ui.Button("Let the picks go", icon: .x, keys: ["Escape"]) {
+                on press: clear_picked(a)
             }
         }
         if let m = a.marks.last() {
@@ -4455,6 +5081,9 @@ view layers_rail(a: Artwork, chosen: State<Option<Layer>>) {
                     }
                 }
             }
+        }
+        ui.Button("Paste marks", icon: .clipboard_paste, keys: ["Ctrl+V"]) {
+            on press: paste_marks(a, root Library)
         }
         ui.Button("Add layer", icon: .plus, role: .plain, size: .small) {
             on press: add_layer(a, "")
@@ -4577,7 +5206,12 @@ view well(
     pan_y: State<Float>,
     zoom: State<Float>,
     help: State<Bool>,
+    pen: State<List<List<Float>>>,
+    workspace: State<Text>,
+    exporting: State<Bool>,
 ) {
+    // The part of the artwork the surface shows, read from the space the window offers it.
+    let visible = [pan_x, pan_y, (space.width / zoom).max(1.0), (space.height / zoom).max(1.0)]
     row(gap: .related, align: .center, wrap: true) {
         // The tools, each answering its letter while the artwork has the window.
         row(gap: .tight, align: .center, wrap: true) {
@@ -4642,6 +5276,56 @@ view well(
                 on press: set(tool, "line")
             }
             ui.Button(
+                "Pen",
+                role: .plain,
+                icon: .pen_tool,
+                icon_only: true,
+                toggled: tool == "pen",
+                keys: ["p"],
+            ) {
+                on press: set(tool, "pen").then(set(pen, []))
+            }
+            ui.Button(
+                "Marquee",
+                role: .plain,
+                icon: .square_dashed,
+                icon_only: true,
+                toggled: tool == "marquee",
+                keys: ["m"],
+            ) {
+                on press: set(tool, "marquee")
+            }
+            ui.Button(
+                "Oval",
+                role: .plain,
+                icon: .circle_dashed,
+                icon_only: true,
+                toggled: tool == "oval",
+                keys: ["o"],
+            ) {
+                on press: set(tool, "oval")
+            }
+            ui.Button(
+                "Bucket",
+                role: .plain,
+                icon: .paint_bucket,
+                icon_only: true,
+                toggled: tool == "bucket",
+                keys: ["g"],
+            ) {
+                on press: set(tool, "bucket")
+            }
+            ui.Button(
+                "Straighten",
+                role: .plain,
+                icon: .rotate_cw,
+                icon_only: true,
+                toggled: tool == "straighten",
+                keys: ["s"],
+            ) {
+                on press: set(tool, "straighten")
+            }
+            ui.Button(
                 "Crop",
                 role: .plain,
                 icon: .crop,
@@ -4692,6 +5376,28 @@ view well(
                 on press: set(tool, "text")
             }
         }
+        ui.MenuButton("Workspace: {workspace}", icon: .layout_grid) {
+            ui.MenuItem("Auto") {
+                on choose: set(workspace, "auto")
+            }
+            ui.MenuItem("Vector") {
+                on choose: set(workspace, "vector").then(set(tool, "select"))
+            }
+            ui.MenuItem("Painting") {
+                on choose: set(workspace, "painting")
+                    .then(set(tool, "brush"))
+                    .then(set(brush, "round"))
+            }
+            ui.MenuItem("Photo") {
+                on choose: set(workspace, "photo").then(set(tool, "select"))
+            }
+            ui.MenuItem("Pixel") {
+                on choose: set(workspace, "pixel")
+                    .then(set(tool, "brush"))
+                    .then(set(brush, "pixel"))
+                    .then(set(size, 8.0))
+            }
+        }
         ui.MenuButton("Brush: {brush}", icon: .pencil) {
             for preset in brushes() {
                 ui.MenuItem(preset) {
@@ -4722,6 +5428,14 @@ view well(
                 }
             }
         }
+        if tool == "pen" and pen.len() >= 2 {
+            ui.Button("Close the path", icon: .check, keys: ["Enter"]) {
+                on press: close_pen(a, pen, chosen, colour).then(set(pen, []))
+            }
+            ui.Button("Drop the points", icon: .x, keys: ["Escape"]) {
+                on press: set(pen, [])
+            }
+        }
         if tool == "select" {
             ui.Button("Fill the selection", icon: .paint_bucket) {
                 on press: fill_selection(a, .none, colour)
@@ -4729,6 +5443,16 @@ view well(
             if a.selection != .none {
                 ui.Button("Outline the selection", icon: .circle_dashed) {
                     on press: outline_selection(a, .none, colour, 2.0)
+                }
+                if let layer = chosen {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.Button("Show the selection on the mask", icon: .contrast) {
+                            on press: paint_mask(a, layer, "#ffffff")
+                        }
+                        ui.Button("Clear the selection", icon: .eraser) {
+                            on press: clear_in_selection(a, layer)
+                        }
+                    }
                 }
             }
             if a.picked.len() > 0 and a.selection != .none {
@@ -4741,6 +5465,15 @@ view well(
             }
         }
         ui.MenuButton("File", icon: .save) {
+            ui.MenuItem("Export…", icon: .download) {
+                on choose: set(exporting, true)
+            }
+            ui.MenuItem("PNG of the view") {
+                on choose: file.save(
+                    export_picture(a, "png", 1.0, false, false, visible),
+                    name: "View.png",
+                )
+            }
             ui.MenuItem("Save the artwork", icon: .save, key: "Ctrl+S") {
                 on choose: save_artwork(a)
             }
@@ -4934,6 +5667,18 @@ fn paints_a_stroke(tool: Text) -> Bool {
     tool == "brush" or tool == "eraser"
 }
 
+/// Closes the path a pen has clicked out: a shape filled with the paint, as the shape tool draws
+/// one.
+action close_pen(
+    a: Artwork,
+    points: List<List<Float>>,
+    layer: Option<Layer> = .none,
+    colour: Text = "#1d1b19",
+) -> Option<Mark> (icon: .pen_tool, label: "Close the path", did: "drew a path") {
+    require points.len() >= 2 "A path has two corners at least"
+    return .some(add_shape(a, layer, closed_path(points), colour))
+}
+
 /// Starts what the hand lays down at `point`: a stroke with the paint loaded, or nothing when the
 /// tool draws a shape, whose outline only exists once the hand lifts. It lands on `layer`, the
 /// one the person chose, or the top one that takes paint.
@@ -4946,11 +5691,25 @@ action start_paint(
     size: Float,
     colour: Text,
 ) {
+    // The bucket fills what the colour under the point touches, on the artwork's own picture.
+    if tool == "bucket" {
+        let ask = FindAsk(at: .some(point), tolerance: .some(0.15), feather: .some(0.0))
+        match canvas.find(artwork_json(a), json.encode(ask), picture_addresses(a)) {
+            .ok(answer) => {
+                a.selection = selection_of(answer)
+                fill_selection(a, layer, colour)
+            }
+            .err(why) => {
+                a.notice = why
+            }
+        }
+        return
+    }
     if tool == "wand" {
         select_like(a, point, "", 0.15, false)
         return
     }
-    if tool == "lasso" {
+    if tool == "lasso" or tool == "pen" or tool == "marquee" or tool == "oval" {
         return
     }
     if tool == "text" {
@@ -5027,6 +5786,11 @@ action finish_paint(
     if tool == "line" and not same_place(from, point) {
         return .some(add_shape(a, layer, line_path(from, point, size), colour))
     }
+    if tool == "straighten" and not same_place(from, point) {
+        if let p = last_picture(a) {
+            straighten_picture(p, 0.0 - angle_between(from, point))
+        }
+    }
     if tool == "crop" and not same_place(from, point) {
         if let p = last_picture(a) {
             let area = dragged_crop(p, from, point)
@@ -5037,8 +5801,36 @@ action finish_paint(
             }
         }
     }
-    if tool == "select" and not same_place(from, point) { select_area(a, rect_path(from, point)) }
+    if (tool == "select" or tool == "marquee") and not same_place(from, point) {
+        select_area(a, rect_path(from, point))
+    }
+    if tool == "oval" and not same_place(from, point) {
+        select_shape(
+            a,
+            "ellipse",
+            from,
+            point,
+            mode: "replace",
+            feather: 0.0,
+            grow: 0.0,
+            invert: false,
+        )
+    }
     .none
+}
+
+/// The angle a drag from `from` to `to` makes with the horizon, in degrees, rising to the right.
+fn angle_between(from: List<Float>, to: List<Float>) -> Float {
+    let dx = (to.at(0) ?? 0.0) - (from.at(0) ?? 0.0)
+    let dy = (to.at(1) ?? 0.0) - (from.at(1) ?? 0.0)
+    if dx == 0.0 {
+        if dy >= 0.0 { 90.0 } else { -90.0 }
+    } else {
+        let base = (dy / dx).atan() * 180.0 / 3.141592653589793
+        if dx < 0.0 {
+            if dy >= 0.0 { base + 180.0 } else { base - 180.0 }
+        } else { base }
+    }
 }
 
 /// Where a crop drag over the picture `p` crops it, as fractions of the picture's own pixels:

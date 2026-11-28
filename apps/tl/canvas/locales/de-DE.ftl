@@ -216,6 +216,7 @@ d-i2shd26j = Neues Bild
     .did = hat ein neues Bild begonnen
     .w-an-artwork-is-16-to-8192 = Ein Bild ist 16 bis 8192 Einheiten breit
     .w-an-artwork-is-16-to-8192-2 = Ein Bild ist 16 bis 8192 Einheiten hoch
+    .w-a-start-is-plain-paint-oil = A start is plain paint, oil or watercolour
 
 d-i2shd26j-title = Titel
 
@@ -351,6 +352,8 @@ d-trlv6xc5-size = Größe
 d-t4ze7q3o = Bild exportieren
     .doc = Schreibt das Bild in voller Größe als PNG-, JPEG- oder WebP-Bild.
     .did = hat ein Bild exportiert
+    .w-a-picture-is-exported-at-0 = A picture is exported at 0.05 to 4 times its size
+    .w-a-region-is-x-y-width = A region is [x, y, width, height]
 
 d-t4ze7q3o-format = Format
 
@@ -387,6 +390,15 @@ d-ocgibcwg = Bibliothek
     .w-sprite-32-32 = Sprite, 32 × 32
     .w-sprite-64-64 = Sprite, 64 × 64
     .w-scene-128-128 = Scene, 128 × 128
+    .w-start-from = Start from
+    .w-paper = Paper
+    .w-white = White
+    .w-dark = Dark
+    .w-oil = Oil
+    .w-watercolour = Watercolour
+    .w-transparent = Transparent
+    .w-samples = Samples
+    .w-recent = Recent
 
 d-sqei2kjp = Neues Bild~present
 
@@ -546,7 +558,6 @@ d-vbu6ayw5 = Bild
     .w-and-2 = {""}[ and ]
     .w-smaller-or-larger-brush = Smaller or larger brush
     .w-marks-and-artwork = Marks and artwork
-    .w-alt-arrows = Alt+Arrows
     .w-nudge-the-picked-marks = Nudge the picked marks
     .w-delete = Delete
     .w-escape = Escape
@@ -558,6 +569,60 @@ d-vbu6ayw5 = Bild
     .w-ctrl-shift-e = Ctrl+Shift+E
     .w-export-a-png = Export a PNG
     .w-show-or-close-this-reference = Show or close this reference
+    .w-unclip = Unclip
+    .w-clip-to-below = Clip to below
+    .w-layer-name = Layer name
+    .w-rename = Rename
+    .w-adjust-the-layer = Adjust the layer
+    .w-exposure = Exposure
+    .w-contrast = Contrast
+    .w-saturation = Saturation
+    .w-blur = Blur
+    .w-colour = Colour
+    .w-black-and-white = Black and white
+    .w-un-invert = Un-invert
+    .w-invert = Invert
+    .w-copy = Copy
+    .w-cut = Cut
+    .w-duplicate = Duplicate
+    .w-group = Group
+    .w-ungroup = Ungroup
+    .w-paste-marks = Paste marks
+    .w-pen = Pen
+    .w-marquee = Marquee
+    .w-oval = Oval
+    .w-bucket = Bucket
+    .w-straighten = Straighten
+    .w-workspace = Workspace: { $workspace }
+    .w-auto = Auto
+    .w-vector = Vector
+    .w-painting = Painting
+    .w-photo = Photo
+    .w-pixel = Pixel
+    .w-close-the-path = Close the path
+    .w-drop-the-points = Drop the points
+    .w-show-the-selection-on-the-mask = Show the selection on the mask
+    .w-clear-the-selection = Clear the selection
+    .w-export = Export…
+    .w-png-of-the-view = PNG of the view
+    .w-export-the-artwork = Export the artwork
+    .w-export-2 = Export
+    .w-format = Format: { $format }
+    .w-scale = Scale
+    .w-transparent-ground = Transparent ground
+    .w-paint-the-ground = Paint the ground
+    .w-a-part-of-the-artwork-x = A part of the artwork: x, y, width, height; empty for all of it
+    .w-p-m-o-g = P, M, O, G
+    .w-pen-marquee-oval-bucket = Pen, marquee, oval, bucket
+    .w-s = S
+    .w-straighten-a-picture-by-dragging = Straighten a picture by dragging
+    .w-arrows = Arrows
+    .w-ctrl-c-ctrl-x-ctrl-v = Ctrl+C, Ctrl+X, Ctrl+V
+    .w-copy-cut-paste-marks = Copy, cut, paste marks
+    .w-ctrl-d = Ctrl+D
+    .w-duplicate-the-picked-marks = Duplicate the picked marks
+    .w-ctrl-g-ctrl-shift-g = Ctrl+G, Ctrl+Shift+G
+    .w-group-or-ungroup-the-picked-marks = Group or ungroup the picked marks
 
 d-y5teghkv = Offen
     .doc = Ob die Hand noch auf ihm liegt: der Strich, den ein bewegter Zeiger verlängert.
@@ -2450,6 +2515,10 @@ d-7ycx6t2x = Versionszeitleiste
     .w-versions = Versionen
     .w-versions-of = Versionen von { $title }
     .w-back-to-now = Zurück zu jetzt
+    .w-checkpoints = Checkpoints
+    .w-checkpoint-name = Checkpoint name
+    .w-save = Save
+    .w-remove = Remove
 
 d-ksv2yvrf = Stroke
     .doc = An outline drawn round the mark: its colour, its width in units, and its dashes `[on, off, …]`.
@@ -2645,3 +2714,182 @@ d-mngrxwap = Align marks~present
 d-vgter2gx = Outline selection~present
 
 d-qvft3uid = Clip picks to selection~present
+
+d-bqobwiox = Checkpoints
+    .doc = The checkpoints the person saved: names for places in the artwork's history.
+
+d-khwf6hfa = Clip
+    .doc = One copy of marks, as the system clipboard carries them: each mark's record as JSON, so a paste anywhere makes the same marks, and the pictures they name.
+    .noun = { $count ->
+        [one] clip
+       *[other] clips
+    }
+
+d-qs7nqmr4 = Marks
+
+d-bghlpkxb = Pictures
+
+d-kl2v3ynk = Checkpoint
+    .doc = A place in the artwork's history a person named, so they can return to it.
+    .noun = { $count ->
+        [one] checkpoint
+       *[other] checkpoints
+    }
+
+d-y7unmhue = Name
+
+d-vgxsdr2x = Place
+    .doc = Its place among the versions the system keeps, oldest first.
+
+d-kl2v3ynk-filter-place = Place
+
+d-lutjw27b = Recent
+    .doc = The artworks opened last, newest first, by their ids.
+
+d-bz5i2ykq = Clip
+    .doc = The marks most recently copied, as the record model holds them; the system clipboard carries the same text, so a paste reads what this device last cut or copied.
+
+d-wngt6wa6-filter-clip = Clip
+
+d-b2tbkxww = Transparent
+    .doc = Leave the ground out, so a PNG or WebP keeps what is painted and nothing else.
+
+d-nvuewwig = Region
+    .doc = Draw only this part, `[x, y, width, height]` in artwork units.
+
+d-b3ilsucz-filter-transparent = Transparent
+
+d-i2shd26j-ground_texture = Ground texture
+
+d-i2shd26j-ground_colour = Ground colour
+
+d-i2shd26j-medium = Medium
+
+d-vjg4lni3 = Remember the artwork
+    .doc = Keeps an artwork at the front of the workspace's recent list.
+
+d-vjg4lni3-art = Art
+
+d-62ochzga = Add a sample
+    .doc = Starts one of the example artworks: an explicit demonstration, not a fixture in an empty library.
+    .w-a-sample-is-a-study-a = A sample is a study, a chart or strokes
+
+d-62ochzga-kind = Kind
+
+d-caemfmg2 = Save a checkpoint
+    .doc = Names the place in the artwork's history the person stands at: the newest when no place is named, so a checkpoint is taken of the artwork as it is now.
+    .did = saved a checkpoint
+    .w-a-checkpoint-has-a-name = A checkpoint has a name
+
+d-caemfmg2-name = Name
+
+d-caemfmg2-place = Place
+
+d-jxlk3wam = Go to the checkpoint
+    .doc = Goes back to a checkpoint: the artwork is compared with it on the surface.
+
+d-jxlk3wam-c = C
+
+d-tqh2rb7p = Remove the checkpoint
+    .doc = Takes a checkpoint off the artwork.
+
+d-tqh2rb7p-c = C
+
+d-7wa3v375 = Paint mask
+    .doc = Paints the selection on a layer's mask in `grey`, making a mask when the layer has none: light shows the layer there, dark hides it.
+    .w-choose-the-layer-not-its-mask = Choose the layer, not its mask
+
+d-7wa3v375-layer = Layer
+
+d-7wa3v375-grey = Grey
+
+d-c5qrrd2q = Clear the selection
+    .doc = Clears the layer's paint inside the selection: the selection is painted dark on the layer's mask, so what it covers is hidden and the marks themselves stay.
+
+d-c5qrrd2q-layer = Layer
+
+d-kyccgmtr = Copy the picked marks
+    .doc = Copies the picked marks as one typed clipboard item: their records as JSON, and the pictures they name.
+    .did = copied marks
+
+d-kyccgmtr-a = A
+
+d-qsena3fq = Cut the picked marks
+    .doc = Cuts the picked marks: keeps them as the copy, puts them on the clipboard and removes them.
+    .did = cut marks
+
+d-qsena3fq-a = A
+
+d-2gep6qxx = Keep a copy of the marks
+    .doc = The picked marks as the record model's copy unit, each as the JSON a paste reads.
+    .w-pick-the-marks-to-copy = Pick the marks to copy
+
+d-2gep6qxx-a = A
+
+d-2c4rkp6l = Paste the marks
+    .doc = Pastes the marks the clipboard holds onto `layer`, moved to `at` when a point is given.
+    .did = pasted marks
+
+d-2c4rkp6l-lib = Lib
+
+d-2c4rkp6l-at = At
+
+d-2c4rkp6l-layer = Layer
+
+d-4my7pthr = Copy the medium parameters
+    .doc = Copies the medium parameters a mark's record keeps onto the mark just made.
+
+d-4my7pthr-row = Row
+
+d-nfnqjoga = Duplicate the picked marks
+    .doc = Makes a copy of the picked marks, nudged by `dx`, `dy` so it shows beside the originals.
+    .did = duplicated marks
+    .w-pick-the-marks-to-duplicate = Pick the marks to duplicate
+
+d-nfnqjoga-dx = Dx
+
+d-nfnqjoga-dy = Dy
+
+d-s2niimme = Group the picked marks
+    .doc = Puts the picked marks in a group, so they are addressed together.
+    .did = grouped marks
+    .w-pick-the-marks-to-group = Pick the marks to group
+
+d-s2niimme-name = Name
+
+d-oved375b = Ungroup the picked marks
+    .doc = Takes the picked marks out of their groups.
+    .w-pick-the-marks-to-ungroup = Pick the marks to ungroup
+
+d-t4ze7q3o-transparent = Transparent
+
+d-t4ze7q3o-region = Region
+
+d-qcsceoj7 = Close the path
+    .doc = Closes the path a pen has clicked out: a shape filled with the paint, as the shape tool draws one.
+    .did = drew a path
+    .w-a-path-has-two-corners-at = A path has two corners at least
+
+d-qcsceoj7-points = Points
+
+d-qcsceoj7-layer = Layer
+
+d-qcsceoj7-colour = Colour
+
+d-x3jkqvge = Add sample~present
+
+d-n5tqqnzh = Save checkpoint~present
+
+d-fm6b6zuc = Paint mask~present
+
+d-t3xxlk6z = Keep clip~present
+
+d-wue6rezd = Duplicate picked~present
+
+d-g64min43 = Group picked~present
+
+d-p52gy4k2 = Ungroup picked~present
+
+d-orjoh3e2 = Export picture~present
+
+d-ue7hiwlb = Close pen~present

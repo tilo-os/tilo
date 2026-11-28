@@ -276,6 +276,14 @@ mod cases {
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
+        /// Runs `action` as the person's yes delivers it, where it leaves the device.
+        fn admitted(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
+            let id = self.app.action(action);
+            self.rt
+                .invoke_admitted(&me(), (id.as_str(), args), None)
+                .unwrap_or_else(|why| panic!("{action}: {why}"))
+        }
+
         fn new_artwork(&self, title: &str) -> ResourceRef {
             returned_ref(self.call(
                 "new_artwork",
@@ -2142,6 +2150,497 @@ mod cases {
                 ],
             );
             assert_eq!(c.text(&bare, "notice"), "Select an area to export it");
+        }
+
+        phase marks_copy_paste_and_group_and_the_clipboard_is_typed;
+        {
+            let c = Canvas::new();
+            let clipboard = Clipboard::default();
+            c.rt.set_clipboard(clipboard.clone());
+            c.rt.set_canvas(Drawing::default());
+            let art = c.new_artwork("Copies");
+            let mut made = Vec::new();
+            for d in ["M 0 0 L 4 0 L 4 4 Z", "M 6 0 L 9 0 L 9 4 Z"] {
+                made.push(returned_ref(c.call(
+                    "add_shape",
+                    vec![
+                        Value::resource(&art),
+                        Value::none(),
+                        Value::text(d),
+                        Value::text("#2f7fb8"),
+                    ],
+                )));
+            }
+            c.call(
+                "pick_marks",
+                vec![
+                    Value::resource(&art),
+                    Value::List(made.iter().map(Value::resource).collect()),
+                ],
+            );
+            c.admitted(
+                "copy_picked",
+                vec![Value::resource(&c.root), Value::resource(&art)],
+            );
+            let copied = clipboard.text();
+            assert!(
+                copied.starts_with("tilo.canvas.marks:"),
+                "the clipboard holds a typed item: {copied}"
+            );
+            assert!(copied.contains("\"kind\":\"path\""), "{copied}");
+            match c.rt.read(&c.root, "clip").unwrap() {
+                Value::Opt(Some(inner)) => match *inner {
+                    Value::Rec(_) => {}
+                    other => panic!("the copy unit, not {other:?}"),
+                },
+                other => panic!("the copy unit, not {other:?}"),
+            }
+            // The clipboard's marks paste onto another artwork, as marks.
+            let other = c.new_artwork("Pasted");
+            c.admitted(
+                "paste_marks",
+                vec![Value::resource(&other), Value::resource(&c.root)],
+            );
+            let pasted = c.marks(&other);
+            assert_eq!(pasted.len(), 2, "both copied marks paste");
+            let kinds: Vec<String> = pasted.iter().map(|m| c.text(m, "kind")).collect();
+            assert!(kinds.iter().all(|k| k == "path"), "{kinds:?}");
+            assert!(
+                pasted.iter().any(|m| c.text(m, "d") == "M 0 0 L 4 0 L 4 4 Z"),
+                "a pasted mark keeps its outline"
+            );
+            // Duplicating makes one more mark, moved off the original.
+            let before = c.marks(&art).len();
+            c.call(
+                "duplicate_picked",
+                vec![Value::resource(&art)],
+            );
+            assert_eq!(c.marks(&art).len(), before + 2, "both picked marks are duplicated");
+            // Grouping names them together; ungrouping lets them go.
+            c.call(
+                "group_picked",
+                vec![Value::resource(&art), Value::text("Set")],
+            );
+            assert_eq!(c.text(&made[0], "group"), "Set");
+            c.call("ungroup_picked", vec![Value::resource(&art)]);
+            assert_eq!(c.text(&made[0], "group"), "");
+            // Cutting takes the mark off the artwork and leaves it on the clipboard.
+            let before = c.marks(&art).len();
+            c.call("clear_picked", vec![Value::resource(&art)]);
+            c.call(
+                "pick_marks",
+                vec![
+                    Value::resource(&art),
+                    Value::List(vec![Value::resource(&made[0])]),
+                ],
+            );
+            c.admitted(
+                "cut_picked",
+                vec![Value::resource(&c.root), Value::resource(&art)],
+            );
+            assert_eq!(c.marks(&art).len(), before - 1, "cutting removes the mark");
+            assert!(clipboard.text().starts_with("tilo.canvas.marks:"));
+
+            // The rail answers the copy keys, and the arrows nudge plain when marks are picked.
+            let again = c.marks(&art).first().cloned().expect("a mark to pick");
+            c.call(
+                "pick_marks",
+                vec![
+                    Value::resource(&art),
+                    Value::List(vec![Value::resource(&again)]),
+                ],
+            );
+            let mut view = c.window(&art);
+            let held: Vec<String> = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .flat_map(|node| match node.props.get("keys") {
+                    Some(Value::List(items)) => items
+                        .iter()
+                        .filter_map(|v| v.as_text().map(str::to_owned))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for key in ["Ctrl+C", "Ctrl+X", "Ctrl+V", "Ctrl+D", "Ctrl+G", "ArrowLeft"] {
+                assert!(held.iter().any(|k| k == key), "the rail answers {key}: {held:?}");
+            }
+            view.poll_patches().unwrap();
+        }
+
+        phase the_tools_draw_select_and_paint_in_a_pixel_workspace;
+        {
+            let c = Canvas::new();
+            c.rt.set_canvas(Drawing::default());
+            let art = c.new_artwork("Tools");
+            // The bucket selects what the colour touches and fills it.
+            let before = c.marks(&art).len();
+            c.call(
+                "start_paint",
+                vec![
+                    Value::resource(&art),
+                    Value::text("bucket"),
+                    Value::text("round"),
+                    Value::none(),
+                    Value::List(vec![Value::Float(30.0), Value::Float(30.0), Value::Float(0.5)]),
+                    Value::Float(6.0),
+                    Value::text("#ff0000"),
+                ],
+            );
+            assert_eq!(c.marks(&art).len(), before + 1, "the bucket fills what it finds");
+            // The marquee and the oval each leave a selection.
+            c.call(
+                "finish_paint",
+                vec![
+                    Value::resource(&art),
+                    Value::text("marquee"),
+                    Value::text("pen"),
+                    Value::none(),
+                    Value::List(vec![Value::Float(10.0), Value::Float(10.0)]),
+                    Value::List(vec![Value::Float(90.0), Value::Float(80.0)]),
+                    Value::Float(6.0),
+                    Value::text("#1d1b19"),
+                    Value::List(vec![]),
+                ],
+            );
+            assert!(
+                matches!(c.rt.read(&art, "selection").unwrap(), Value::Opt(Some(_))),
+                "the marquee selects its box"
+            );
+            c.call(
+                "finish_paint",
+                vec![
+                    Value::resource(&art),
+                    Value::text("oval"),
+                    Value::text("pen"),
+                    Value::none(),
+                    Value::List(vec![Value::Float(20.0), Value::Float(20.0)]),
+                    Value::List(vec![Value::Float(60.0), Value::Float(60.0)]),
+                    Value::Float(6.0),
+                    Value::text("#1d1b19"),
+                    Value::List(vec![]),
+                ],
+            );
+            assert!(
+                matches!(c.rt.read(&art, "selection").unwrap(), Value::Opt(Some(_))),
+                "the oval selects its ellipse"
+            );
+            // The pen takes clicks and closes them into a path from the window.
+            let mut view = c.window(&art);
+            let pen = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Pen")
+                .expect("the pen is offered")
+                .key
+                .clone();
+            view.fire(&pen, "press").unwrap();
+            view.poll_patches().unwrap();
+            let surface = of_kind(view.tree(), "ui.PaintSurface")[0].key.clone();
+            for point in [[10.0, 10.0], [40.0, 10.0], [40.0, 40.0]] {
+                view.fire_with(
+                    &surface,
+                    "stroke_start",
+                    Some(&Value::List(vec![
+                        Value::Float(point[0]),
+                        Value::Float(point[1]),
+                        Value::Float(0.5),
+                    ])),
+                )
+                .unwrap();
+                view.poll_patches().unwrap();
+            }
+            let before = c.marks(&art).len();
+            let close = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Close the path")
+                .expect("the pen offers its close")
+                .key
+                .clone();
+            view.fire(&close, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(c.marks(&art).len(), before + 1, "the pen closes into a mark");
+            let drawn = c.marks(&art).last().cloned().expect("the pen's mark");
+            assert!(c.text(&drawn, "d").contains("40 40"), "{}", c.text(&drawn, "d"));
+            // The pixel workspace puts the pixel brush and an eight-unit brush out.
+            let pixel = of_kind(view.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Pixel")
+                .expect("the workspace offers Pixel")
+                .key
+                .clone();
+            view.fire(&pixel, "choose").unwrap();
+            view.poll_patches().unwrap();
+            let surface = of_kind(view.tree(), "ui.PaintSurface")[0].clone();
+            assert_eq!(
+                surface.props.get("brush").and_then(Value::as_text),
+                Some("pixel"),
+                "the pixel workspace paints in pixels"
+            );
+            match surface.props.get("size") {
+                Some(Value::Float(n)) => assert!((n - 8.0).abs() < f64::EPSILON),
+                other => panic!("the surface's size, not {other:?}"),
+            }
+        }
+
+        phase a_selection_clears_and_paints_the_mask_and_layers_are_named_and_adjusted;
+        {
+            let c = Canvas::new();
+            c.rt.set_canvas(Drawing::default());
+            let art = c.new_artwork("Masked");
+            let layer = c.layer(&art, "Layer 1");
+            c.call(
+                "select_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::text("rect"),
+                    Value::List(vec![Value::Float(10.0), Value::Float(10.0)]),
+                    Value::List(vec![Value::Float(60.0), Value::Float(60.0)]),
+                    Value::text("replace"),
+                    Value::Float(0.0),
+                    Value::Float(0.0),
+                    Value::Bool(false),
+                ],
+            );
+            let marks = c.marks(&art).len();
+            c.call(
+                "paint_mask",
+                vec![
+                    Value::resource(&art),
+                    Value::resource(&layer),
+                    Value::text("#ffffff"),
+                ],
+            );
+            assert_eq!(c.layers(&art).len(), 2, "a mask is made for the layer");
+            let mask = c
+                .layers(&art)
+                .into_iter()
+                .find(|l| c.text(l, "mask_of") == "Layer 1")
+                .expect("the mask");
+            assert!(
+                c.marks(&art).len() > marks,
+                "the selection is painted on the mask"
+            );
+            assert!(
+                c.marks(&art)
+                    .iter()
+                    .any(|m| c.text(m, "colour") == "#ffffff"),
+                "light shows the layer through the mask"
+            );
+            c.call(
+                "clear_in_selection",
+                vec![Value::resource(&art), Value::resource(&layer)],
+            );
+            assert!(
+                c.marks(&art)
+                    .iter()
+                    .any(|m| c.text(m, "colour") == "#000000"),
+                "clearing paints the selection dark on the mask"
+            );
+            assert!(!c.text(&mask, "name").is_empty());
+
+            // The rail renames the layer, clips it and adjusts it.
+            let mut view = c.window(&art);
+            let row = of_kind(view.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|node| text_prop(node, "title") == "Layer 1")
+                .expect("the layer row")
+                .key
+                .clone();
+            view.fire(&row, "activate").unwrap();
+            view.poll_patches().unwrap();
+            let name = of_kind(view.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|node| text_prop(node, "placeholder") == "Layer name")
+                .expect("the name field")
+                .key
+                .clone();
+            view.edit(&name, &Value::text("Ink")).unwrap();
+            view.poll_patches().unwrap();
+            let rename = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Rename")
+                .expect("the rename button")
+                .key
+                .clone();
+            view.fire(&rename, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert!(
+                c.layer_names(&art).iter().any(|n| n == "Ink"),
+                "the layer takes the name: {:?}",
+                c.layer_names(&art)
+            );
+            let clip = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Clip to below")
+                .expect("the clip button")
+                .key
+                .clone();
+            view.fire(&clip, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert!(c.flag(&layer, "clip"), "the layer is clipped to the one below");
+            let grey = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Black and white")
+                .expect("the adjustment")
+                .key
+                .clone();
+            view.fire(&grey, "press").unwrap();
+            view.poll_patches().unwrap();
+            assert!(c.flag(&layer, "adjust_grayscale"), "the layer is adjusted");
+        }
+
+        phase export_takes_its_options_and_the_views_own_region;
+        {
+            let c = Canvas::new();
+            let log = Rc::new(RefCell::new(Vec::new()));
+            c.rt.set_canvas(Drawing::recording(log.clone()));
+            let art = c.new_artwork("Exporting");
+            c.call(
+                "export_picture",
+                vec![
+                    Value::resource(&art),
+                    Value::text("webp"),
+                    Value::Float(2.0),
+                    Value::Bool(false),
+                    Value::Bool(true),
+                    Value::List(vec![
+                        Value::Float(0.0),
+                        Value::Float(0.0),
+                        Value::Float(10.0),
+                        Value::Float(10.0),
+                    ]),
+                ],
+            );
+            let asked = log.borrow().last().cloned().expect("the engine was asked");
+            for field in [
+                "\"format\":\"webp\"",
+                "\"scale\":2.0",
+                "\"transparent\":true",
+                "\"region\":[0.0,0.0,10.0,10.0]",
+            ] {
+                assert!(asked.contains(field), "the export carries {field}: {asked}");
+            }
+            // The view's own region comes from the space the window offers it.
+            let mut view = c.window(&art);
+            let view_export = of_kind(view.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "PNG of the view")
+                .expect("the view can be exported")
+                .key
+                .clone();
+            let _ = view.fire(&view_export, "choose");
+            let asked = log.borrow().last().cloned().unwrap_or_default();
+            assert!(asked.starts_with("export|"), "the view asks the engine: {asked}");
+            assert!(asked.contains("\"region\":["), "the view's region is given: {asked}");
+            // And the export sheet offers its options.
+            let sheet = of_kind(view.tree(), "ui.MenuItem")
+                .into_iter()
+                .find(|node| text_prop(node, "label") == "Export…")
+                .expect("the export sheet")
+                .key
+                .clone();
+            let _ = view.fire(&sheet, "choose");
+            view.poll_patches().unwrap();
+            assert!(
+                of_kind(view.tree(), "ui.Slider")
+                    .into_iter()
+                    .any(|node| text_prop(node, "label") == "Scale"),
+                "the sheet has its scale"
+            );
+        }
+
+        phase recents_samples_checkpoints_starts_and_straightening;
+        {
+            let c = Canvas::new();
+            c.rt.set_canvas(Drawing::default());
+            let _one = c.new_artwork("One");
+            let two = c.new_artwork("Two");
+            let recent = match c.rt.read(&c.root, "recent").unwrap() {
+                Value::List(items) => items
+                    .iter()
+                    .filter_map(|v| v.as_text().map(str::to_owned))
+                    .collect::<Vec<_>>(),
+                other => panic!("the recent list, not {other:?}"),
+            };
+            assert_eq!(recent.len(), 2, "both artworks are recent: {recent:?}");
+            assert_eq!(recent[0], two.id_string(), "the newest leads");
+            // A start names its ground and its first layer's medium.
+            let oil = returned_ref(c.call(
+                "new_artwork",
+                vec![
+                    Value::resource(&c.root),
+                    Value::text("Oiled"),
+                    Value::Float(400.0),
+                    Value::Float(300.0),
+                    Value::text("linen"),
+                    Value::text("#112233"),
+                    Value::text("oil"),
+                ],
+            ));
+            assert_eq!(c.text(&oil, "ground_texture"), "linen");
+            assert_eq!(c.text(&oil, "ground_colour"), "#112233");
+            let layer = c.layers(&oil).first().cloned().expect("a layer");
+            assert_eq!(c.text(&layer, "medium"), "oil");
+            // The samples are explicit demonstrations with their marks.
+            let chart = returned_ref(c.call(
+                "add_sample",
+                vec![Value::resource(&c.root), Value::text("chart")],
+            ));
+            assert!(
+                c.marks(&chart).iter().any(|m| c.text(m, "group") == "chart"),
+                "the chart sample carries its chart"
+            );
+            let study = returned_ref(c.call(
+                "add_sample",
+                vec![Value::resource(&c.root), Value::text("study")],
+            ));
+            assert!(c.marks(&study).len() >= 6, "the study draws its ellipses");
+            let strokes = returned_ref(c.call(
+                "add_sample",
+                vec![Value::resource(&c.root), Value::text("strokes")],
+            ));
+            assert!(c.marks(&strokes).len() >= 5, "the strokes sample paints five brushes");
+            // A checkpoint names a place in the system's history, and returns to it.
+            let art = c.new_artwork("Book");
+            c.call(
+                "add_shape",
+                vec![
+                    Value::resource(&art),
+                    Value::none(),
+                    Value::text("M 0 0 L 10 0 L 10 10 Z"),
+                    Value::text("#2f7fb8"),
+                ],
+            );
+            let versions = c.rt.versions(&art).unwrap().len();
+            c.call(
+                "save_checkpoint",
+                vec![Value::resource(&art), Value::text("Base")],
+            );
+            let checkpoints = c.records(&art, "checkpoints");
+            assert_eq!(checkpoints.len(), 1, "the checkpoint is kept");
+            let place = c.number(&checkpoints[0], "place");
+            assert!(
+                place >= 0 && place < i64::try_from(versions).unwrap(),
+                "it names a place the history holds"
+            );
+            c.call(
+                "go_to_checkpoint",
+                vec![
+                    Value::resource(&art),
+                    Value::resource(&checkpoints[0]),
+                ],
+            );
+            assert!(!c.text(&art, "version_note").is_empty(), "returning compares with it");
+            // Dragging with the straighten tool turns the picture to the drag's horizon.
+            let picture = returned_ref(c.call(
+                "place_picture",
+                vec![Value::resource(&art), Value::file(c.dawn())],
+            ));
+            c.drag(&art, "straighten", [0.0, 0.0], [50.0, 20.0], [100.0, 50.0]);
+            let turned = c.float(&picture, "straighten");
+            assert!(
+                (turned - -26.565).abs() < 0.01,
+                "a half-rise drag turns the picture by its angle: {turned}"
+            );
         }
 
         phase the_window_offers_its_sizes_shortcuts_and_help;
