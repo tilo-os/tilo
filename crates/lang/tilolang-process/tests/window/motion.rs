@@ -261,15 +261,25 @@ fn reach_delete(app: &mut TestApp<TlApp>, title: &str) -> Delete {
         }
     });
     settle(app);
-    let row = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Delete")
-        })
-        .and_then(|(_, node)| node.bounds())
-        .expect("the row's menu offers Delete");
+    // The row's menu keeps Delete behind More, with the task's other rarer commands.
+    let item = |app: &mut TestApp<TlApp>, label: &str| {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::MenuItem && node.label() == Some(label)
+            })
+            .and_then(|(_, node)| node.bounds())
+    };
+    let more = item(app, "More").expect("the row's menu offers More");
+    with_monotonic_time(at_now(), || {
+        app.harness().click_at(
+            f64::midpoint(more.x0, more.x1),
+            f64::midpoint(more.y0, more.y1),
+        );
+    });
+    settle(app);
+    let row = item(app, "Delete").expect("the row's More offers Delete");
     Delete::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
 }
 

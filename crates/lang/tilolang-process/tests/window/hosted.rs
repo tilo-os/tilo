@@ -21,7 +21,7 @@ use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_process::TilolangProcess;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
-use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
+use tilolang_process::testing::{Broker, Inbox, Sent};
 use tilolang_process::window::hosted::HostedWindow;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::Driver;
@@ -648,7 +648,7 @@ pub(crate) struct Session {
     /// What wakes the host when its work off the frame is ready to be taken in.
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
-    broker: Box<dyn std::any::Any>,
+    broker: Inbox,
     /// The invocations the test has delivered, numbered: each is answered by its own id.
     invoked: u64,
     /// The calls of the app's own actions its runs and presses sent the dispatch, kept as the
@@ -800,9 +800,9 @@ impl Session {
         let bus = Rc::new(tilolang_process::testing::Bus::default());
         let broker = Broker::on(&bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
-        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let (sent, inbox) = (broker.sent(), broker.inbox());
         let manager = CollaborationManager::with_peer_transport(broker);
-        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let wire = (inbox, sent);
         let mut session = Self::launch(manager, &route, spec, wire, presence, window);
         for app in [TASKS, NOTES] {
             session.serve(&bus, &RouteSpec::app(app, route.cluster_id));
@@ -992,9 +992,9 @@ impl Session {
     ) -> Self {
         let broker = Broker::on(bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
-        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let (sent, inbox) = (broker.sent(), broker.inbox());
         let manager = CollaborationManager::with_peer_transport(broker);
-        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let wire = (inbox, sent);
         Self::launch(manager, route, spec, wire, presence, Window::in_harness)
     }
 
@@ -1018,9 +1018,9 @@ impl Session {
     ) -> Self {
         let broker = Broker::on(bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
-        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let (sent, inbox) = (broker.sent(), broker.inbox());
         let manager = CollaborationManager::with_peer_transport(broker);
-        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let wire = (inbox, sent);
         let mut session = Self::launch(manager, route, spec, wire, presence, window);
         session.settle();
         session
@@ -1041,9 +1041,9 @@ impl Session {
         let bus = Rc::new(tilolang_process::testing::Bus::default());
         let broker = Broker::on(&bus, route.clone(), &spec.person);
         let presence = Some(broker.presence_line());
-        let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
+        let (sent, inbox) = (broker.sent(), broker.inbox());
         let manager = CollaborationManager::with_peer_transport(broker);
-        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
+        let wire = (inbox, sent);
         let mut session = Self::launch_over(
             manager,
             &route,
@@ -1066,7 +1066,7 @@ impl Session {
         manager: CollaborationManager,
         route: &RouteSpec,
         spec: Spec,
-        wire: (Box<dyn std::any::Any>, Sent),
+        wire: (Inbox, Sent),
         presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
@@ -1079,7 +1079,7 @@ impl Session {
         mut manager: CollaborationManager,
         route: &RouteSpec,
         spec: Spec,
-        wire: (Box<dyn std::any::Any>, Sent),
+        wire: (Inbox, Sent),
         store: Option<tilolang_tilo::resources::ResourceStore>,
         presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
@@ -1108,7 +1108,7 @@ impl Session {
         connection: tilolang_process::connection::Connection,
         early: Vec<collaboration::CollabEvent>,
         spec: Spec,
-        (broker, sent): (Box<dyn std::any::Any>, Sent),
+        (broker, sent): (Inbox, Sent),
         store: Option<tilolang_tilo::resources::ResourceStore>,
         presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
@@ -1179,12 +1179,7 @@ impl Session {
 
     /// What the broker delivers to the instance's connection next.
     fn inbox(&self) -> &Inbox {
-        &self.wire().0
-    }
-
-    /// The broker's end: its inbox, and what the instance sent on routes other than its own.
-    fn wire(&self) -> &(Inbox, Routed) {
-        self.broker.downcast_ref().expect("the broker's end")
+        &self.broker
     }
 
     /// Forget the requests the instance sent so far.
@@ -1255,13 +1250,7 @@ impl Session {
         use ui::tilo_actions::remote::{
             InvocationState, OWN_PROVIDER, RemoteActionMessage, application_provider,
         };
-        let Some(inbox) = self
-            .broker
-            .downcast_ref::<(Inbox, Routed)>()
-            .map(|(inbox, _)| Rc::clone(inbox))
-        else {
-            return false;
-        };
+        let inbox = Rc::clone(&self.broker);
         let mut told = Vec::new();
         let mut handed = Vec::new();
         let mut calls = Vec::new();

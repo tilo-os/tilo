@@ -23,9 +23,6 @@ pub type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 /// What the test delivers to a connection.
 pub type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 
-/// What a connection sent on a route other than its own, and on which route.
-pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
-
 /// A workspace's store, as the broker answers the resource commands of every connection joined
 /// there: one of it per workspace, held in memory, with its app's whole documents beside it.
 pub struct Workspace {
@@ -595,7 +592,6 @@ pub struct Broker {
     bus: Rc<Bus>,
     sent: Sent,
     inbox: Inbox,
-    routed: Routed,
     directory: Rc<RefCell<Directory>>,
     routes: Rc<RefCell<Vec<RouteSpec>>>,
     joined: Option<RouteSpec>,
@@ -620,7 +616,6 @@ impl Broker {
             bus: Rc::clone(bus),
             sent: Sent::default(),
             inbox: Inbox::default(),
-            routed: Routed::default(),
             directory: Rc::default(),
             routes: Rc::default(),
             joined: None,
@@ -664,12 +659,6 @@ impl Broker {
     #[must_use]
     pub fn inbox(&self) -> Inbox {
         Rc::clone(&self.inbox)
-    }
-
-    /// What the connection sends on routes other than its own.
-    #[must_use]
-    pub fn routed(&self) -> Routed {
-        Rc::clone(&self.routed)
     }
 
     /// The documents every app of the workspace opens beside its own, as the connection joined
@@ -813,7 +802,6 @@ impl PeerTransport for Broker {
         if let CollabRequest::Document { mutation, .. } = &request {
             self.bus.relay(&route, &self.inbox, mutation);
         }
-        self.routed.borrow_mut().push((route, request));
         Ok(())
     }
 
