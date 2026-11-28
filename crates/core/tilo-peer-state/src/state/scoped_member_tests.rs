@@ -315,3 +315,44 @@ fn taking_the_last_part_back_takes_the_members_device_out_of_the_keys() {
         "the folder is no longer the member's to open"
     );
 }
+
+/// A page whose entry is in flight: a device this copy does not list yet keeps what it is
+/// offered — the change that names it may be among what arrives, and a page that dropped it
+/// would never be admitted. A member the workspace lists and gives one app still drops the same
+/// offer.
+#[test]
+fn a_device_not_listed_yet_keeps_what_it_is_offered_while_a_scoped_member_drops_it() {
+    let mut f = scoped(false);
+    let (_, page_cert) = certify(&key(150), 151, DeviceCapabilities::member());
+    let mut page = f.editor.clone();
+    page.write_as_device(page_cert.device_public_key);
+    // The owner's folder change, in the clear: what a device outside the Files part would drop.
+    let person = crate::fixture::person(&f.host, &f.owner);
+    let mut document = AutoCommit::load(&f.host.document(FILES, TREE).unwrap()).unwrap();
+    let heads = document.get_heads();
+    document.put(ROOT, "also", FILE_WORDS).unwrap();
+    document.commit_edit("fixture", "also", &person);
+    let folder = f
+        .host
+        .publication_mut()
+        .publish_incremental(FILES, TREE, document.save_after(&heads), &f.owner, f.now)
+        .unwrap();
+    let offered = page
+        .receive_from_report(origin(&f.owner), folder, f.now)
+        .expect("an offer is no error of the device's own");
+    assert_ne!(
+        offered.primary(),
+        &crate::InputDisposition::OutsidePart,
+        "a device the workspace does not list yet keeps what it is offered: its own row is \
+         among what arrives, and a page that dropped it would never be admitted"
+    );
+    let offered = f
+        .editor
+        .receive_from_report(origin(&f.owner), sealed_note(&f), f.now)
+        .expect("an offer is no error of the device's own");
+    assert_eq!(
+        offered.primary(),
+        &crate::InputDisposition::OutsidePart,
+        "a member the workspace lists and gives one app drops another app's note"
+    );
+}

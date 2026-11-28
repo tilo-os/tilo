@@ -1210,6 +1210,12 @@ impl StatePeer {
         if self.core.placed_devices.contains_key(&device) {
             return false;
         }
+        // A device this copy does not list yet — a page whose entry is in flight — keeps what it
+        // is sent: its own row is among the changes arriving, and a device that drops what it is
+        // offered before that row lands never reads again.
+        if self.core.certificates.get(&device).is_none() {
+            return false;
+        }
         tilo_failure::ignored!(
             "the workspace lists the device's own person no role, so no part of the record is \
              theirs to read or to keep",
