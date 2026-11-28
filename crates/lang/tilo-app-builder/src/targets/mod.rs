@@ -533,6 +533,7 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
                     features: build_request.features.clone(),
                     no_default_features: build_request.no_default_features,
                     force: request.force,
+                    carried_apps: None,
                 },
             )?;
             Ok(outcome.output)

@@ -19302,6 +19302,7 @@ dependencies = [
  "tilo-device-identity",
  "tilo-machine",
  "tilo-mime",
+ "tilo-package-store",
  "tilo-paths",
  "tilo-person-services",
  "tilo-process",

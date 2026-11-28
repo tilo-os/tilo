@@ -1107,6 +1107,15 @@ fn carried_list() -> String {
     }
 }
 
+/// Install the signed packages `folder` carries (`<root>.tapp` each) into this device's store,
+/// through the one installer: what a phone's first start does with the packages its APK carried,
+/// so a workspace it founds runs them and it opens them as any verified install. Answers each
+/// package the store refused, with why in words; a refused one is not cached.
+#[must_use]
+pub fn install_carried_apps(folder: &std::path::Path) -> Vec<(String, String)> {
+    crate::apps::carried_install::install_carried_apps(folder)
+}
+
 /// Where the cache keeps the Flatpak references its daemon installed.
 #[cfg(target_os = "linux")]
 const FLATPAKS_FILE: &str = "flatpaks.json";

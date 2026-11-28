@@ -30,6 +30,8 @@
 // worker, as the server host's own is.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "common/carried.rs"]
+mod carried;
 mod server;
 mod support;
 
@@ -56,9 +58,12 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         tilolang.records.serve(&server.workspaces());
     }
     let scratch = tempfile::tempdir().unwrap();
-    // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
-    server.install(&server::notes_tapp(scratch.path()));
-    carried_runtimes();
+    // The workspace runs Notes before the phone ever joins it, and the phone's own start installs
+    // the package its APK carries: it opens Notes from the install it verified, as any device.
+    let tapp = server::notes_tapp(scratch.path());
+    server.install(&tapp);
+    server::Server::install_on_device(&tapp);
+    carried::declare();
     let laptop = support::Issuing::start(
         server.runtime.handle(),
         &server.person,
@@ -122,9 +127,9 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
 
 /// A phone nobody signed in to yet opens Notes over the documents it keeps itself and makes a
 /// note; the note is still there when its window opens again. At sign-in, what it kept is carried
-/// into the person's own workspace, which installs the app there first, and the phone's window
-/// joined there shows it. A carry whose install is refused keeps the app's documents and says
-/// why in words.
+/// into the person's own workspace, which runs the app the phone carries, and the phone's window
+/// joined there shows it. A carry whose connection cannot be made keeps the app's documents and
+/// says why in words.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -132,6 +137,14 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
 )]
 fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     let mut home = support::Home::new();
+    let scratch = tempfile::tempdir().unwrap();
+    // Notes as this build makes it: the file a workspace installs and the package this phone's
+    // first start installs into its store, as the APK it runs from carried it.
+    let (notes, _bundle) = server::notes(scratch.path());
+    // The APK carries Notes: this phone's first start installs it into its store, and the
+    // person's own workspace starts with it, so what the app kept before anyone signed in is
+    // carried into a workspace that runs it.
+    server::Server::install_on_device(&notes.tapp);
     let server = Server::start();
     home.relay(&server.relay_url());
     let tilolang = tilolang_workspace::host();
@@ -143,26 +156,17 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
         let _entered = server.runtime.enter();
         tilolang.records.serve(&server.workspaces());
     }
-    let scratch = tempfile::tempdir().unwrap();
-    // Notes as this build makes it: the file the workspace installs and the bundle the phone's
-    // window runs over what it kept before anyone signed in.
-    let (notes, bundle) = server::notes(scratch.path());
-    let bundles = {
-        let mut bundles = std::collections::BTreeMap::new();
-        bundles.insert(server::NOTES.to_owned(), bundle);
-        bundles
-    };
     let own = tilo_server_protocol::servers::person_workspace_id(
         &server.person.verifying_key().to_bytes(),
     );
     // The workspace runs Notes before the phone ever joins it.
     server.install(&notes.tapp);
-    carried_runtimes();
+    carried::declare();
 
     // Before anyone signed in to the phone, Notes runs over what the phone keeps itself, under
     // the directory its window keeps an app's documents in.
     let dir = scratch.path().join("tilolang");
-    let mut window = signed_out_notes(&server, &bundles, &dir);
+    let mut window = signed_out_notes(&server, &dir);
     press("Notes offers New note", &mut window, "new_note");
     support::until("the note stands in the notebook", || {
         window.update(&(), &());
@@ -171,7 +175,7 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     drop(window);
 
     // The window opens again over the same documents: the note is still there.
-    let mut window = signed_out_notes(&server, &bundles, &dir);
+    let mut window = signed_out_notes(&server, &dir);
     support::until("the note kept on the phone is still there", || {
         window.update(&(), &());
         note_in(&window)
@@ -206,21 +210,17 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     // The phone is in the person's own workspace, which every device of theirs finds by their
     // key alone: there is where what they kept before sign-in goes.
     assert_eq!(devices.own.as_deref(), Some(own.as_str()));
-    // Nothing installed Notes in the person's own workspace: the phone follows the workspace it
-    // joined, which runs Notes, and holds the version its device verified.
+    // The person's own workspace started with Notes, and the phone holds the version it
+    // verified in its own store.
     support::until("the phone holds the version its workspace runs", || {
         tilo_runtime::device::package_runs::verified_payload(server::NOTES).map(drop)
     });
 
-    // At sign-in, what the phone kept is carried into the person's own workspace: the app is
-    // installed there first, as the person, and then through the connection its window would
-    // join there.
+    // At sign-in, what the phone kept is carried into the person's own workspace, through the
+    // connection its window would join there.
     let workspace = uuid::Uuid::parse_str(&own).expect("the workspace is one a route names");
     let made = |app: &str| {
-        let bundle = bundles
-            .get(app)
-            .cloned()
-            .ok_or_else(|| format!("{app} is not one this phone carries"))?;
+        let bundle = tilo_phone::view::bundle_of(app)?;
         let connection = phone
             .window_connection(app, &own)
             .map_err(|error| format!("{error:#}"))?;
@@ -235,24 +235,17 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
             as_app,
         })
     };
-    // The app's install in the person's own workspace, as the phone's daemon asks the workspace's
-    // host for it: here the host is this test's server, so it takes the version the phone
-    // verified from the phone's own package store, and records it in that workspace.
-    let installed = |app: &str| {
-        server.install_verified(&own, app);
-        Ok(())
-    };
     support::until("what the phone kept is carried", || {
-        let carried = tilolang_process::carry::signed_out(&dir, made, installed)?;
+        let carried = tilolang_process::carry::signed_out(&dir, made)?;
         if carried.all_carried() {
             Ok(())
         } else {
             Err(format!("{:?}", carried.refused()))
         }
     });
-    // The app the carry installed in the person's own workspace runs there now.
+    // The person's own workspace runs the app the phone carries.
     support::until(
-        "the app the phone carried is installed in the person's own workspace",
+        "the person's own workspace runs the app the phone carries",
         || {
             let apps = phone.apps(&own).map_err(|error| format!("{error:#}"))?;
             if apps.iter().any(|app| app.key == server::NOTES) {
@@ -308,12 +301,7 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
         let connection = phone
             .window_connection(server::NOTES, &own)
             .map_err(|error| format!("{error:#}"))?;
-        tilo_phone::view::open(
-            server::NOTES,
-            &own,
-            &bundles,
-            Records::Workspace(connection),
-        )
+        tilo_phone::view::open(server::NOTES, &own, Records::Workspace(connection))
     });
     support::until("the joined window shows the note the phone kept", || {
         joined.update(&(), &());
@@ -321,15 +309,13 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     });
     drop(joined);
 
-    // A carry whose install the workspace refuses keeps the app's documents and says why.
+    // A carry whose connection cannot be made keeps the app's documents and says why in words.
     let refused_dir = scratch.path().join("refused");
     std::fs::create_dir_all(refused_dir.join(server::NOTES).join("resources"))
         .expect("the app's directory is made");
-    let refused = tilolang_process::carry::signed_out(
-        &refused_dir,
-        |_| Err("nothing to connect to".to_owned()),
-        |app| Err(format!("{app} has nowhere to go")),
-    )
+    let refused = tilolang_process::carry::signed_out(&refused_dir, |app| {
+        Err(format!("{app} has nowhere to go"))
+    })
     .expect("the phone's kept documents are read");
     let (app, why) = refused
         .apps
@@ -364,16 +350,11 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
 }
 
 /// Notes opened over what the phone keeps itself, in `dir`, before a person signed in.
-fn signed_out_notes(
-    server: &Server,
-    bundles: &std::collections::BTreeMap<String, std::sync::Arc<tilolang_tilo::bundle::Bundle>>,
-    dir: &std::path::Path,
-) -> HostedWindow {
+fn signed_out_notes(server: &Server, dir: &std::path::Path) -> HostedWindow {
     support::until("Notes opens over what the phone keeps itself", || {
         tilo_phone::view::open(
             server::NOTES,
             &server.workspace,
-            bundles,
             Records::Here(Some(dir.to_path_buf())),
         )
     })
@@ -423,7 +404,6 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
     // in the window the phone's view shows it in, joined to the workspace over the connection the
     // phone's daemon made for it. The phone lists Notes and opens it; the window that comes up is
     // Notes'.
-    let bundles = std::collections::BTreeMap::new();
     let mut window = support::until("the phone opens Notes, which its workspace runs", || {
         let connection = phone
             .window_connection(server::NOTES, &server.workspace)
@@ -431,7 +411,6 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
         tilo_phone::view::open(
             server::NOTES,
             &server.workspace,
-            &bundles,
             tilo_phone::view::Records::Workspace(connection),
         )
     });
@@ -506,58 +485,36 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
     );
 }
 
-/// Declare the runtime builds this test's phone carries in itself, as the phone declares the ones
-/// its own signed manifest names: the exact Tilo runtime build it was built against and the
-/// tilolang runtime it runs tilolang apps on. A phone's manifest is stamped by packaging; this
-/// build has no APK, so the test states the same manifest and signs it.
-fn carried_runtimes() {
-    let identity = tilo_app_package::pack::SigningIdentity::from_signing_key(support::key(7));
-    let mut manifest = tilo_app_package::Manifest::from_toml_str(&format!(
-        r#"
-[package]
-id = "so.tilo.phone"
-name = "Tilo"
-category = "System"
-version = "0.1.0"
-kind = "app"
-runtime = "{tapp}"
-optional-runtimes = ["{tilolang}"]
+/// A package in the APK's apps that is not the package its name claims is refused where the
+/// device's first start installs what it carries: in words, and it is not cached.
+#[test]
+fn a_tampered_package_the_apk_carries_is_refused_at_seeding() {
+    let _home = support::Home::new();
+    let scratch = tempfile::tempdir().unwrap();
+    let tapp = server::notes_tapp(scratch.path());
+    let bytes = std::fs::read(&tapp).expect("the package builds");
+    let root = hex::encode(
+        tilo_app_package::tapp::read(bytes.as_slice(), &mut tilo_app_package::blobs::DiscardBlobs)
+            .expect("the package reads")
+            .meta
+            .id
+            .0,
+    );
+    let apps = scratch.path().join("apps");
+    std::fs::create_dir_all(&apps).unwrap();
+    let mut tampered = bytes;
+    let middle = tampered.len() / 2;
+    tampered[middle] ^= 0xff;
+    std::fs::write(apps.join(format!("{root}.tapp")), &tampered).expect("the tampered package");
 
-[package.isa]
-x86_64 = "v3"
-aarch64 = "aarch64"
-
-[publisher]
-identity = "ed25519:{publisher}"
-signature = ""
-
-[sandbox]
-namespaces = ["user"]
-seccomp = "tilo-default"
-landlock = "strict"
-
-[sandbox.net]
-mode = "host"
-
-[entrypoint]
-bin = "bin/tilo-phone"
-type = "gui"
-"#,
-        tapp = TILO_RUNTIME,
-        tilolang = tilolang_tilo::runtime(),
-        publisher = hex::encode(identity.public_key_bytes()),
-    ))
-    .unwrap();
-    manifest
-        .sign(&identity)
-        .expect("the test's phone signs its own manifest");
-    manifest
-        .verify_signature()
-        .expect("the test's phone's manifest verifies");
-    tilo_runtime::device::packages::carry_runtimes(&manifest)
-        .expect("the phone declares the runtimes it carries");
+    let refused = tilo_runtime::device::packages::install_carried_apps(&apps);
+    let (package, why) = refused
+        .first()
+        .expect("the store refuses the package its name claims");
+    assert_eq!(package, &root, "the refusal names the package it refused");
+    assert!(!why.is_empty(), "the refusal says why in words");
+    assert!(
+        tilo_runtime::device::package_runs::verified_payload(server::NOTES).is_err(),
+        "a refused package is not cached"
+    );
 }
-
-/// The exact Tilo runtime build this test's phone links: what packaging stamps into a packaged
-/// phone's manifest, its digest the build's own.
-const TILO_RUNTIME: &str = "tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef";

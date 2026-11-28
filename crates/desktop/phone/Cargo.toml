@@ -102,8 +102,10 @@ tilo-user-identity = { path = "../../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../../crates/platform/tilo-clock" }
 ed25519-dalek.workspace = true
 iroh.workspace = true
-# Notes, built from the tree and installed into the workspace the phone joins.
+# Notes, built from the tree and installed into the workspace the phone joins, and the store a
+# first start installs the packages its APK carries into.
 tilolang-cli = { path = "../../../crates/lang/tilolang-cli" }
+package-store = { package = "tilo-package-store", path = "../../../crates/core/package-store", features = ["store"] }
 # A workspace that runs Notes: its package, installed through the workspace's published action.
 tilo-actions = { path = "../../../crates/core/actions" }
 hex.workspace = true

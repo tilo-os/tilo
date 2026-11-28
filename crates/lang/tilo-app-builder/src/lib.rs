@@ -551,6 +551,9 @@ pub struct PackageRequest {
     pub features: Vec<String>,
     pub no_default_features: bool,
     pub force: bool,
+    /// A folder of the signed `.tapp`s the app carries, each named by its package root: a phone's
+    /// APK packs them so its store can install them at first start. Nothing else packs them here.
+    pub carried_apps: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]

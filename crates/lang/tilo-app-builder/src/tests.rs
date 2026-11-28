@@ -3686,6 +3686,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
                 features: Vec::new(),
                 no_default_features: false,
                 force: false,
+                carried_apps: None,
             },
         )
         .unwrap_err();
@@ -3721,6 +3722,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
                 features: Vec::new(),
                 no_default_features: false,
                 force: false,
+                carried_apps: None,
             },
         )
         .unwrap_err();
@@ -3760,6 +3762,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
                 features: Vec::new(),
                 no_default_features: false,
                 force: false,
+                carried_apps: None,
             },
         )
         .expect("a published-SDK app builds for Tilo OS");

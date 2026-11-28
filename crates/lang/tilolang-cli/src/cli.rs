@@ -1881,6 +1881,9 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         args.platform
     };
     let arch = package_arch(args.arch);
+    // An APK carries the signed packages of the tilolang apps its manifest declares: packed here,
+    // the way the fleet packs them, and handed to packaging for its assets.
+    let carried = carried_packages(&path, args.identity.as_deref(), platform)?;
     if platform != tilo_app_builder::PackagePlatform::Android
         && (args.android.keystore.is_some() || args.android.no_bundle)
     {
@@ -1921,6 +1924,7 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         features: args.features,
         no_default_features: args.no_default_features,
         force: args.force,
+        carried_apps: carried.as_ref().and_then(|(_, folder)| folder.clone()),
     };
     if platform == tilo_app_builder::PackagePlatform::Android {
         let outcomes = tilo_app_builder::android::package(
@@ -1942,6 +1946,24 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         });
     }
     Ok(tilo_app_builder::package_app(&path, &request)?.to_json())
+}
+
+/// The signed packages an APK carries: the tilolang apps its manifest declares, packed here the
+/// way the fleet packs them, and left in a folder of their own while packaging copies them into
+/// its assets. None for another platform, or for an app that declares none.
+fn carried_packages(
+    path: &Path,
+    identity: Option<&Path>,
+    platform: tilo_app_builder::PackagePlatform,
+) -> Result<Option<(tempfile::TempDir, Option<PathBuf>)>> {
+    if platform != tilo_app_builder::PackagePlatform::Android {
+        return Ok(None);
+    }
+    let folder = tempfile::tempdir()?;
+    let packed =
+        crate::package::carried_apps(path, identity, folder.path()).map_err(anyhow::Error::msg)?;
+    let handed = (!packed.is_empty()).then(|| folder.path().to_path_buf());
+    Ok(Some((folder, handed)))
 }
 
 fn run_run(args: RunArgs) -> Result<Value> {
@@ -2092,6 +2114,7 @@ fn build_android(
             bundle: false,
             features: Vec::new(),
             no_default_features: false,
+            carried_apps: None,
         },
     )?;
     let mut json = build.to_json();
@@ -2150,6 +2173,7 @@ fn build_native(
             features: Vec::new(),
             no_default_features: false,
             force: false,
+            carried_apps: None,
         },
     )?;
     let mut json = build.to_json();

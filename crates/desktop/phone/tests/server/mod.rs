@@ -133,23 +133,37 @@ impl Server {
         );
     }
 
-    /// The version of `app` this test's device verified — the one its package store holds —
-    /// installed in `workspace`, as a phone asks its workspace's host to run what it runs: the
-    /// version, package root, publisher and surface the release names, and no file.
-    pub fn install_verified(&self, workspace: &str, app: &str) {
-        let release = tilo_workspace_service::workspaces::held_release(app)
-            .unwrap_or_else(|| panic!("this device holds a verified package of {app}"));
-        self.installs(
-            workspace,
-            &json!({
-                "app": release.app,
-                "version": release.version,
-                "package": release.package,
-                "publisher": release.publisher,
-                "surface": release.surface,
-                "if_absent": true,
-            }),
-        );
+    /// The package `tapp` holds, installed into this test's device store: what a phone's first
+    /// start does with a package its APK carried, through the one installer and the verification
+    /// any cached install goes through. A workspace founded here starts with it, and the device
+    /// opens it from the install it verified.
+    pub fn install_on_device(tapp: &Path) {
+        let bytes = std::fs::read(tapp).unwrap();
+        let read = tilo_app_package::tapp::read(
+            std::io::BufReader::new(bytes.as_slice()),
+            &mut tilo_app_package::blobs::DiscardBlobs,
+        )
+        .unwrap();
+        let root = hex::encode(read.meta.id.0);
+        let store = package_store::PackageStore::from_env().expect("this test's package store");
+        let catalog = package_store::Catalog::from_env().expect("this test's package store");
+        let request = package_store::installer::Request {
+            trust: package_store::installer::Trust {
+                require_package_root: Some(root.clone()),
+                allow_self_signed: true,
+                ..package_store::installer::Trust::default()
+            },
+            ignore_missing_runtime: true,
+            ..package_store::installer::Request::default()
+        };
+        package_store::installer::install(
+            &store,
+            &catalog,
+            &package_store::installer::Candidate::file(tapp),
+            &request,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("the device takes the package {root}: {error}"));
     }
 
     /// The workspace takes the install `arguments` name, as its `install-app`.

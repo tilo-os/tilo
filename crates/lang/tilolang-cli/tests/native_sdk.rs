@@ -54,6 +54,7 @@ fn request(selection: SdkSelection, key: &Path) -> PackageRequest {
         features: Vec::new(),
         no_default_features: false,
         force: true,
+        carried_apps: None,
     }
 }
 

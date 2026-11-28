@@ -1,42 +1,22 @@
-//! The tilolang apps the phone carries. `tilolang build --platform android` packs each app's
-//! bundle into the APK's `assets/tilo/apps`, with an index (`files.txt`: a `version <hash>` line,
-//! then each file's path). Android hands assets out only as streams it cannot list, so on the
-//! first start of each build the phone copies them out under its data directory, by that version,
-//! as it does its fonts; every later start reads them from there.
+//! The signed tilolang packages the APK carries: copied out under this app's data once per build,
+//! and installed into this device's store through the one installer, as any cached install is. A
+//! phone is a device like any other: it runs the packages it verified, and a workspace it founds
+//! runs the defaults it carries. Android hands assets out only as streams it cannot list, so the
+//! build writes an index (`tilo/apps/files.txt`: a `version <hash>` line, then each file's path)
+//! and the app copies them out by that version, as it does its fonts.
 
-use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 
-use tilolang_tilo::bundle::Bundle;
-
-/// The index of the packed apps, beside them.
+/// The index of the carried packages, beside them.
 pub const INDEX: &str = "files.txt";
 
-/// Every bundle under `dir`, one directory per app, by app id.
+/// The packages the APK carries, copied out under `data` once per build and installed into this
+/// device's store. Answers each package the store refused, with why in words.
 ///
 /// # Errors
-/// `dir` cannot be read, or a bundle in it is damaged.
-pub fn read(dir: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
-    let mut bundles = BTreeMap::new();
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for entry in entries {
-        let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let bundle = Bundle::read(&path).map_err(|e| e.to_string())?;
-        bundles.insert(bundle.meta.app.clone(), Arc::new(bundle));
-    }
-    Ok(bundles)
-}
-
-/// The bundles the APK carries, copied out under `data` once per build.
-///
-/// # Errors
-/// The APK holds no index or a file it names, or the copy cannot be written.
+/// The APK's index holds no version, or a file it names cannot be copied out.
 #[cfg(target_os = "android")]
-pub fn installed(data: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
+pub fn installed(data: &Path) -> Result<Vec<(String, String)>, String> {
     let versions = data.join("tilo/apps");
     let staging = versions.join(".staging");
     let _ = std::fs::remove_dir_all(&staging);
@@ -56,7 +36,7 @@ pub fn installed(data: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
             ui::platform::android::copy_asset(&asset(file), &staging.join(file))
                 .map_err(|e| format!("{}: {e}", asset(file)))?;
         }
-        // Earlier builds' copies go: only this build's apps run here.
+        // Earlier builds' copies go: only this build's packages are installed here.
         if let Ok(entries) = std::fs::read_dir(&versions) {
             for entry in entries.flatten() {
                 if entry.path() != staging {
@@ -66,5 +46,11 @@ pub fn installed(data: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
         }
         std::fs::rename(&staging, &root).map_err(|e| format!("{}: {e}", root.display()))?;
     }
-    read(&root)
+    Ok(tilo_runtime::device::packages::install_carried_apps(&root))
+}
+
+/// Nothing off Android: a build with no APK carries no package.
+#[cfg(not(target_os = "android"))]
+pub fn installed(_data: &Path) -> Result<Vec<(String, String)>, String> {
+    Ok(Vec::new())
 }

@@ -4,7 +4,6 @@
 //! window, as `tilolang dev` runs one; Back returns to the shell.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -45,8 +44,6 @@ pub struct PhoneView {
     worker: Worker,
     /// What the invoker asked to open, taken on the next frame.
     to_open: Rc<RefCell<Option<String>>>,
-    /// The bundles the APK carries, by app id.
-    bundles: BTreeMap<String, Arc<Bundle>>,
     /// Where the apps' documents are kept on this device.
     storage: Option<PathBuf>,
     /// The workspace the window joined, which the launch installed: `None` before anyone signed
@@ -59,14 +56,13 @@ pub struct PhoneView {
 }
 
 impl PhoneView {
-    /// The shell's `phone` view over `worker`'s device, opening the apps of `bundles`, keeping
-    /// their documents under `storage`.
+    /// The shell's `phone` view over `worker`'s device, opening the apps this device holds a
+    /// verified install of, and keeping their documents under `storage`.
     ///
     /// # Errors
     /// The shell does not compile, or its view does not start.
     pub fn new(
         worker: Worker,
-        bundles: BTreeMap<String, Arc<Bundle>>,
         storage: Option<PathBuf>,
         waker: Waker,
         woken: crate::WindowWake,
@@ -117,7 +113,6 @@ impl PhoneView {
             opened: None,
             worker,
             to_open,
-            bundles,
             storage,
             joined: ui::process::environment().identity.workspace_id.clone(),
             rejoining: false,
@@ -204,7 +199,7 @@ impl PhoneView {
         } else {
             (String::new(), Records::Here(self.storage.clone()))
         };
-        match open(&app, &workspace, &self.bundles, records) {
+        match open(&app, &workspace, records) {
             Ok(window) => {
                 self.opened = Some((app, window));
                 true
@@ -315,22 +310,20 @@ pub enum Records {
     Workspace(tilo_runtime::in_process::WindowConnection),
 }
 
-/// The app `app` of `workspace`, run in this process: the bundle the APK carries, or the tilolang
-/// package this device installed from the workspace and verified as a launch of it verifies it,
-/// shown in tilolang-process's in-process window, keeping its records where `records` says. One
-/// path for either: the phone starts no process, and a fetched app is as much the app's own
-/// threads as a carried one.
+/// The app `app` of `workspace`, run in this process from the tilolang package this device
+/// installed and verified as a launch of it verifies it, shown in tilolang-process's in-process
+/// window, keeping its records where `records` says: the phone starts no process, and a carried
+/// app is as much the app's own threads as a fetched one.
 ///
 /// # Errors
-/// The phone carries no bundle of the app and holds no verified install of it, or the app's
-/// instance does not start or join its workspace.
+/// The phone holds no verified install of the app, or the app's instance does not start or join
+/// its workspace.
 pub fn open(
     app: &str,
     workspace: &str,
-    bundles: &BTreeMap<String, Arc<Bundle>>,
     records: Records,
 ) -> Result<tilolang_process::window::hosted::HostedWindow, String> {
-    let bundle = bundle_of(app, bundles)?;
+    let bundle = bundle_of(app)?;
     let id = workspace_id(workspace);
     let opened = match records {
         Records::Here(storage) => {
@@ -362,24 +355,12 @@ pub fn open(
     opened.map_err(|error| format!("{app} did not start: {error}"))
 }
 
-/// The package `app` runs from: the bundle the APK carries, or the tilolang package this device
-/// installed from the workspace and verified as a launch of it verifies it.
+/// The package `app` runs from: the tilolang package this device installed and verified as a
+/// launch of it verifies it — the one its APK carried, installed at first start.
 ///
 /// # Errors
-/// The phone carries no bundle of the app and holds no verified install of it.
-pub(crate) fn bundle_of(
-    app: &str,
-    bundles: &BTreeMap<String, Arc<Bundle>>,
-) -> Result<Arc<Bundle>, String> {
-    // A thing told names the app that holds what it is about by its id, which a telling written
-    // elsewhere may spell whole (`so.tilo.notes`) where the phone carries `notes`.
-    let found = bundles.get(app).or_else(|| {
-        let last = app.rsplit('.').next().unwrap_or_default();
-        bundles.get(last)
-    });
-    if let Some(bundle) = found {
-        return Ok(Arc::clone(bundle));
-    }
+/// The phone holds no verified install of the app.
+pub fn bundle_of(app: &str) -> Result<Arc<Bundle>, String> {
     let payload = tilo_runtime::device::package_runs::verified_payload(app)?;
     Ok(Arc::new(
         Bundle::read(&payload).map_err(|error| format!("{app}: {error}"))?,

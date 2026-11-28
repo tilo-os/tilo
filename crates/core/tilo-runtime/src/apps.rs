@@ -40,9 +40,9 @@ use tilo_lock::MutexRecover as _;
 pub(crate) mod capture;
 #[cfg(any(target_os = "macos", windows))]
 mod carried;
-// The same install, without the platform's folder: what a first start and its test drive.
-#[cfg(any(target_os = "macos", windows, test))]
-mod carried_install;
+// The same install, without the platform's folder: what a first start and its test drive, and
+// what a phone's APK hands over as a folder of its own.
+pub(crate) mod carried_install;
 mod connection;
 pub(crate) mod connectors;
 mod failures;

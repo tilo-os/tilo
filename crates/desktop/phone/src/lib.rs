@@ -62,6 +62,7 @@ fn worker() -> Result<&'static worker::Worker, String> {
             let runs_apps = declare_carried_runtimes().inspect_err(|why| {
                 tracing::error!(why, "this phone runs no workspace apps");
             });
+            install_carried_packages();
             worker::Worker::start(&profile(), notifier(), runs_apps, || {
                 window_wake()
                     .lock()
@@ -208,16 +209,9 @@ fn carry_kept(worker: &worker::Worker, workspace: &str) {
     if !dir.is_dir() {
         return;
     }
-    let bundles = match bundles() {
-        Ok(bundles) => bundles,
-        Err(why) => {
-            tracing::error!(why, "what the apps kept before sign-in is not carried");
-            return;
-        }
-    };
     let id = view::workspace_id(workspace);
     let made = |app: &str| {
-        let bundle = view::bundle_of(app, &bundles)?;
+        let bundle = view::bundle_of(app)?;
         let (person, collaboration, identity) = worker.files().ask({
             let app = app.to_owned();
             let workspace = workspace.to_owned();
@@ -247,20 +241,7 @@ fn carry_kept(worker: &worker::Worker, workspace: &str) {
             as_app,
         })
     };
-    // The app goes into the person's own workspace as the person, from the package this phone
-    // verified, before any of what it kept is written there.
-    let installed = |app: &str| {
-        worker.files().ask({
-            let app = app.to_owned();
-            let workspace = workspace.to_owned();
-            move |device| {
-                device
-                    .install_app(&workspace, &app)
-                    .map_err(|error| format!("{error:#}"))
-            }
-        })?
-    };
-    let carried = tilolang_process::carry::signed_out(&dir, made, installed);
+    let carried = tilolang_process::carry::signed_out(&dir, made);
     match carried {
         Ok(carried) => {
             for (app, why) in carried.refused() {
@@ -367,22 +348,24 @@ fn notifier() -> std::sync::Arc<dyn tilo_process_services::notify::Notifier> {
 /// The phone app's package id, as the platform knows it.
 const TILO_PHONE: &str = "so.tilo.phone";
 
-/// The apps the phone opens: those the APK carries; elsewhere (a test, a developer's computer)
-/// those under `TILO_PHONE_APPS`.
-fn bundles()
--> Result<std::collections::BTreeMap<String, std::sync::Arc<tilolang_tilo::bundle::Bundle>>, String>
-{
-    #[cfg(target_os = "android")]
-    {
-        let data = tilo_paths::data_dir().ok_or("no app data directory")?;
-        bundles::installed(&data)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        std::env::var_os("TILO_PHONE_APPS").map_or_else(
-            || Ok(std::collections::BTreeMap::default()),
-            |dir| bundles::read(std::path::Path::new(&dir)),
-        )
+/// Install the signed packages the APK carries into this device's store, as any cached install
+/// is: what a workspace it founds runs, and what its windows open. Say for each the store refused
+/// why in words; it is not cached.
+fn install_carried_packages() {
+    let Some(data) = tilo_paths::data_dir() else {
+        return;
+    };
+    match bundles::installed(&data) {
+        Ok(refused) => {
+            for (package, why) in refused {
+                tracing::error!(
+                    package,
+                    why,
+                    "the package this phone carried is not installed"
+                );
+            }
+        }
+        Err(why) => tracing::error!(why, "the packages this phone carries are not installed"),
     }
 }
 
@@ -393,7 +376,6 @@ fn opened(_cx: &ViewCx<Workspace>) -> Result<view::PhoneView, String> {
     let woken = WindowWake::take_place(wake.clone());
     view::PhoneView::new(
         worker,
-        bundles()?,
         storage,
         std::sync::Arc::new(move || wake.wake()),
         woken,

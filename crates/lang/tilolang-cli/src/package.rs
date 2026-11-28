@@ -1120,6 +1120,69 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
     deliver_all(apps, options, identity)
 }
 
+/// The signed `.tapp`s of the tilolang apps `app_dir`'s manifest declares, packed into `out` the
+/// way the fleet packs them: what an APK carries for its store to install at first start. Empty
+/// for an app that declares none.
+///
+/// # Errors
+/// The declaration does not read, or a package does not build or pack.
+pub fn carried_apps(
+    app_dir: &Path,
+    identity: Option<&Path>,
+    out: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let dirs =
+        tilo_app_builder::android::tilolang_apps(app_dir).map_err(|error| format!("{error:#}"))?;
+    if dirs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let publisher = match identity {
+        Some(path) => crate::identity_at(path)?,
+        None => match app_registry::publisher::key::discover(
+            &app_registry::publisher::key::machine_store(),
+        )
+        .map_err(|error| format!("{error:#}"))?
+        {
+            Some(key) => SigningIdentity::from_seed(&key.to_bytes()),
+            None => SigningIdentity::generate(),
+        },
+    };
+    let version = carried_version(app_dir);
+    std::fs::create_dir_all(out).map_err(io(out))?;
+    let mut packed = Vec::new();
+    for dir in dirs {
+        let built = build(
+            &BuildOptions {
+                dir: dir.clone(),
+                search: dir
+                    .parent()
+                    .map(|parent| vec![parent.to_path_buf()])
+                    .unwrap_or_default(),
+                out: out.to_path_buf(),
+                tilo_runtime: DEFAULT_TILO_RUNTIME.to_owned(),
+                tilolang_runtime: default_tilolang_runtime(),
+                version: version.clone(),
+                locked: false,
+            },
+            &publisher,
+        )?;
+        let app = built
+            .last()
+            .ok_or_else(|| format!("{}: nothing was built", dir.display()))?;
+        packed.push(app.tapp.clone());
+    }
+    Ok(packed)
+}
+
+/// The version the apps `app_dir` declares are packed as: the app's own, from its `tilo-app.toml`.
+fn carried_version(app_dir: &Path) -> String {
+    let path = app_dir.join("tilo-app.toml");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|source| tilo_app_package::Manifest::from_toml_str(&source).ok())
+        .map_or_else(|| "0.1.0".to_owned(), |manifest| manifest.package.version)
+}
+
 /// Find the deepest existing directory at or above `out` so the staging area
 /// lives on the same filesystem without creating `out` before the build passes.
 fn staging_parent(out: &Path) -> Result<PathBuf, String> {

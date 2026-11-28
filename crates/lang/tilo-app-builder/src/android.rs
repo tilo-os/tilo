@@ -1538,6 +1538,9 @@ pub struct BuildRequest {
     pub bundle: bool,
     pub features: Vec<String>,
     pub no_default_features: bool,
+    /// A folder of the signed `.tapp`s the app carries, each named by its package root: what its
+    /// assets pack for the store to install at first start.
+    pub carried_apps: Option<PathBuf>,
 }
 
 /// An APK (and bundle) an Android build left under `target/android/`.
@@ -1802,12 +1805,21 @@ fn stage_apk(
     std::fs::create_dir_all(&fonts)?;
     copy_standalone_fonts(&checkout.fonts, &fonts)
         .with_context(|| format!("copying the font catalog {}", checkout.fonts.display()))?;
-    let packages = tilolang_apps(app_dir)?;
-    pack_tilolang_apps(&packages, &assets.join("tilo").join("apps"))
-        .with_context(|| format!("packing the tilolang apps of {}", app_dir.display()))?;
+    // The signed packages the app carries: the `tilolang` command packed each app its manifest
+    // declares, and they go into the APK as they are, for its store to install at first start.
+    let packed = match &request.carried_apps {
+        Some(folder) => copy_carried_apps(folder, &assets.join("tilo").join("apps"))
+            .with_context(|| format!("packing the tilolang apps of {}", app_dir.display()))?,
+        None if tilolang_apps(app_dir)?.is_empty() => 0,
+        None => anyhow::bail!(
+            "{} declares tilolang apps, and packaging was handed no signed packages to carry: \
+             `tilolang package` packs them",
+            app_dir.display()
+        ),
+    };
     // The app reads its own signed manifest from the APK it runs from: the runtime builds it
     // carries are the ones its build stamps into it, never words written by hand.
-    write_signed_manifest(app_dir, &content, &assets, !packages.is_empty())
+    write_signed_manifest(app_dir, &content, &assets, packed > 0)
         .with_context(|| format!("writing the manifest of {}", app_dir.display()))?;
     let icon = compile_icon(tools, app_dir, metadata, stage)?;
     let debuggable = matches!(request.signing, Signing::Debug);
@@ -1898,8 +1910,9 @@ fn serves_workspace_files(app_dir: &Path) -> bool {
 }
 
 /// The directories `[package.metadata.tilo-app]` names in `tilolang`, resolved against `app_dir`:
-/// the packages the APK carries. None declared, nothing is packed.
-fn tilolang_apps(app_dir: &Path) -> Result<Vec<PathBuf>> {
+/// the packages the APK carries, which the `tilolang` command packs as signed `.tapp`s for the
+/// packaging below. None declared, nothing is packed.
+pub fn tilolang_apps(app_dir: &Path) -> Result<Vec<PathBuf>> {
     let manifest_path = app_dir.join("Cargo.toml");
     let manifest: toml::Table = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?
@@ -1925,25 +1938,30 @@ fn tilolang_apps(app_dir: &Path) -> Result<Vec<PathBuf>> {
         .collect()
 }
 
-/// Compile each tilolang package in `dirs` and write its bundle under `destination/<app>`;
-/// nothing when `dirs` is empty. Then the index naming what was written.
-fn pack_tilolang_apps(dirs: &[PathBuf], destination: &Path) -> Result<()> {
-    if dirs.is_empty() {
-        return Ok(());
-    }
+/// Copy each signed `.tapp` in `folder` under `destination`, named by the package root its name
+/// gives (`<root>.tapp`), and write the index naming what was written: the packages the app
+/// carries, which its store installs at first start. Answers how many it copied.
+fn copy_carried_apps(folder: &Path, destination: &Path) -> Result<usize> {
     std::fs::create_dir_all(destination)?;
-    for dir in dirs {
-        // The last package compiled is the directory's own; the earlier ones are those it uses.
-        let bundles = tilolang_tilo::bundle::compiled(dir, &[])
-            .map_err(|error| anyhow::anyhow!("{}: {error}", dir.display()))?;
-        let bundle = bundles
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("{}: nothing was compiled", dir.display()))?;
-        bundle
-            .write(&destination.join(&bundle.meta.app))
-            .with_context(|| format!("writing the bundle of {}", bundle.meta.app))?;
+    let mut copied = Vec::new();
+    for entry in std::fs::read_dir(folder)
+        .with_context(|| format!("listing the carried apps in {}", folder.display()))?
+    {
+        let path = entry
+            .with_context(|| format!("listing the carried apps in {}", folder.display()))?
+            .path();
+        let Some(root) = path.file_stem().and_then(|stem| stem.to_str()).filter(|_| {
+            path.extension()
+                .is_some_and(|extension| extension == "tapp")
+        }) else {
+            continue;
+        };
+        std::fs::copy(&path, destination.join(format!("{root}.tapp")))
+            .with_context(|| format!("packing {}", path.display()))?;
+        copied.push(path);
     }
-    write_apps_index(destination)
+    write_apps_index(destination)?;
+    Ok(copied.len())
 }
 
 /// Write `files.txt` into `root`: a `version <digest>` line, then each packed file's path relative
@@ -2455,6 +2473,7 @@ pub fn package(
                 bundle,
                 features: request.features.clone(),
                 no_default_features: request.no_default_features,
+                carried_apps: request.carried_apps.clone(),
             },
         )?;
         let (entrypoints, size) =
@@ -2790,6 +2809,7 @@ fn build_for_device(
             bundle: false,
             features: Vec::new(),
             no_default_features: false,
+            carried_apps: None,
         },
     )?;
     eprintln!(
@@ -2952,11 +2972,15 @@ mod tests {
         );
     }
 
+    /// Each signed package the packaging is handed goes into the APK's assets under the root its
+    /// name gives, and the index names them for the app to copy out and install at first start.
     #[test]
-    fn the_android_assets_index_names_each_packed_app() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    fn the_android_assets_index_names_each_carried_package() {
+        let carried = tempfile::tempdir().unwrap();
         let apps = tempfile::tempdir().unwrap();
-        pack_tilolang_apps(&[root.join("apps/tl/notes")], apps.path()).unwrap();
+        let tapp = carried.path().join(format!("{}.tapp", "a".repeat(64)));
+        std::fs::write(&tapp, b"a signed package").unwrap();
+        assert_eq!(copy_carried_apps(carried.path(), apps.path()).unwrap(), 1);
         let index = std::fs::read_to_string(apps.path().join(APPS_INDEX)).unwrap();
         let mut lines = index.lines();
         let version = lines.next().unwrap();
@@ -2966,9 +2990,7 @@ mod tests {
                 .is_some_and(|digest| digest.len() == 64)
         );
         let listed: Vec<_> = lines.collect();
-        assert!(listed.contains(&"so.tilo.notes/app.wasm"));
-        assert!(listed.windows(2).all(|pair| pair[0] < pair[1]));
-        tilolang_tilo::bundle::Bundle::read(&apps.path().join("so.tilo.notes")).unwrap();
+        assert_eq!(listed, [format!("{}.tapp", "a".repeat(64))]);
     }
 
     fn manifest(net: &str, portals: &str) -> tilo_app_package::Manifest {
