@@ -915,14 +915,66 @@ fn entry_responder(
 pub fn install_log() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+        // The site runs in this process, and its admissions and refusals are the only account of
+        // a join that did not land: whichever test runs first, the process keeps them.
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new(
+                "info,tilo_peer_state=debug,tilo_workspace_service=debug,tilo_runtime=debug,\
+                 tilo_session_client=debug,tilo_session::shell=debug,tilolang_tilo=debug",
+            )
+        });
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_ansi(false)
-            .with_writer(std::io::stderr)
+            .with_writer(|| Tee)
             .try_init();
     });
+}
+
+/// What the site this test runs in said, kept beside this process's stderr: the site's own
+/// account of who it admitted to its workspace and what it refused, which no device's log holds.
+/// The last [`SITE_LOG_KEEP`] bytes of it stand, so a long run keeps its end.
+#[allow(
+    dead_code,
+    reason = "a two-device step that failed reads it, and this harness is built before it"
+)]
+pub fn site_log() -> String {
+    let held = SITE_LOG
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    String::from_utf8_lossy(&held).into_owned()
+}
+
+/// How much of the site's log is kept for a failure to read.
+const SITE_LOG_KEEP: usize = 256 * 1024;
+
+/// The site's log, as a process writes it: every line to this test's stderr, and the log a
+/// failure reads ([`site_log`]).
+static SITE_LOG: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+/// A writer that keeps both: what `tracing` hands the test process goes to its stderr and to
+/// [`SITE_LOG`].
+struct Tee;
+
+impl std::io::Write for Tee {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut stderr = std::io::stderr().lock();
+        stderr.write_all(bytes)?;
+        stderr.flush()?;
+        let mut held = SITE_LOG
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.extend_from_slice(bytes);
+        let excess = held.len().saturating_sub(SITE_LOG_KEEP);
+        if excess > 0 {
+            held.drain(..excess);
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stderr().lock().flush()
+    }
 }
 
 /// A person: the identity their first device made, the root their devices are certified under.
@@ -1385,7 +1437,7 @@ impl Device {
             let answered = tilo_rt::app().handle().block_on(async {
                 let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
                 calls.founded_workspace().await?;
-                let started = calls
+                calls
                     .start(
                         None,
                         tilo_device_identity::login::RESOURCE,
@@ -1393,13 +1445,6 @@ impl Device {
                         args,
                         "A device action",
                     )
-                    .await?;
-                // What waits for the person's yes (a ticket does) they approve on this
-                // connection, as `tilo`'s own prompt answers it.
-                calls
-                    .follow_asked(None, started, async |record: &str| {
-                        calls.answer_asked(record, true).await
-                    })
                     .await
             });
             match answered {
