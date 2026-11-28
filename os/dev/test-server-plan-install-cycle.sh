@@ -21,7 +21,7 @@
 #
 # A second guest is the owner's device: the dev disk's session, started
 # headless with the throwaway identity a development profile mints. It plans
-# the machine (`tilo machine add`), serves the ticket the machine joins with,
+# the machine (`tilo machine add`) to hold one of its workspaces as a store, serves the ticket the machine joins with,
 # approves its unlock keyslot, holds the key the install hands over, lets the first boot and the restart after
 # `tilo server set-default-start` unlock its disk, and reads the recovery key
 # back with `tilo server recovery-key`.
@@ -306,9 +306,17 @@ for attempt in $(seq 1 12); do
   TILO_SSH_BOUND=30 owner_cmd tilo machine list >/dev/null 2>&1 && break
   sleep 5
 done
+# The machine holds one of the person's own workspaces, as a store of its
+# ciphertext: the one their device keeps that is not their Servers workspace.
+owner_cmd tilo do 'account/workspaces#list' --json > "$evidence/03-workspaces.json" 2>&1 \
+  || { cat "$evidence/03-workspaces.json" >&2; die "the owner's workspaces could not be listed"; }
+held_workspace="$(jq -r '[.result.workspaces // [] | .[]
+    | select(.own and .kept_here and .name != "Servers")][0].id // empty' \
+  "$evidence/03-workspaces.json")"
+[ -n "$held_workspace" ] || die 'the owner keeps no workspace of their own for the machine to hold'
 owner_cmd tilo machine add --os server --name "$server_name" \
   --disk serial:tilo-install-target --network dhcp --unlock owner-device \
-  --updates stable --no-workspaces --token-file "$owner_root/machine.token" \
+  --updates stable --hold "$held_workspace:store" --token-file "$owner_root/machine.token" \
   > "$evidence/03-plan.txt" 2>&1 \
   || {
     cat "$evidence/03-plan.txt" >&2
@@ -684,6 +692,25 @@ await_server_status() {
 await_server_status '' 09-status || die 'the installed machine never came up unlocked'
 note 'the installed machine is up and opened by its owner'
 mark_step 09-first-boot ok
+
+# --- the machine holds the workspace its plan named --------------------------
+phase=holding
+# The owner's device, which hosts the workspace, names the machine a store of it once it
+# enrolled; the machine says so in its own status once its copy is current.
+held=""
+for i in $(seq 1 "${TILO_SERVER_CYCLE_HOLD_SECONDS:-600}"); do
+  owner_cmd tilo server status "$server_name" --json > "$out/server-holding-latest.json" 2>&1 || true
+  held="$(jq -c --arg ws "$held_workspace" '[.. | objects | select(has("holding"))][0].holding // []
+      | map(select(.workspace == $ws))[0]
+      | select(. and (.holders | any(.role == "store" and .current)))' \
+    "$out/server-holding-latest.json" 2>/dev/null || true)"
+  [ -z "$held" ] || break
+  sleep 1
+done
+[ -n "$held" ] || { cat "$out/server-holding-latest.json" >&2; die 'the machine never held the workspace its plan named'; }
+printf '%s\n' "$held" > "$evidence/09-holding.json"
+note "the machine holds the owner's workspace $held_workspace as a store"
+mark_step 09-holding ok
 
 # --- Tilo becomes the default start, and a restart opens unattended ----------
 phase=default-start
