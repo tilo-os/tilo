@@ -637,19 +637,7 @@ thread_local! {
 }
 
 /// Note an invocation the person made through a control.
-#[cfg(feature = "model")]
-pub fn note_invocation(address: &crate::bound_dispatch::BoundActionAddress, done: bool) {
-    let invocation = RecentInvocation {
-        at: i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX),
-        instance: address.instance_id,
-        resource: address.address.resource.clone(),
-        action: address.address.action.clone(),
-        label: crate::history_source::sentence::action_label(
-            &address.address.resource,
-            &address.address.action,
-        ),
-        done,
-    };
+pub fn note_invocation(invocation: RecentInvocation) {
     RECENT.with_borrow_mut(|recent| {
         if recent.len() == RECENT_INVOCATIONS {
             recent.pop_front();

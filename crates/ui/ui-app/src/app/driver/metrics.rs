@@ -273,7 +273,7 @@ impl Driver {
     /// The agents' action marks the app's last frame painted: where each rests, and the pointer and
     /// name tag beside it, in surface coordinates.
     #[must_use]
-    pub fn drawn_action_markers(&self) -> &[crate::action_locus::PaintedActionMarker] {
+    pub fn drawn_action_markers(&self) -> &[crate::floating_surface::PaintedActionMarker] {
         &self.app.floating.drawn_action_markers
     }
 

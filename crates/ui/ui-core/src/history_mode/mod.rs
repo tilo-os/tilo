@@ -20,7 +20,6 @@ pub(crate) fn note_news() {
     NEWS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
-pub mod api;
 #[cfg(feature = "model")]
 pub mod capability;
 #[cfg(feature = "model")]
@@ -638,10 +637,6 @@ mod tests;
 #[cfg(feature = "model")]
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-
-#[cfg(feature = "model")]
-#[cfg(any(test, feature = "test-support"))]
-pub use api::HISTORY_RESOURCE;
 
 #[cfg(feature = "model")]
 #[cfg(any(test, feature = "test-support"))]

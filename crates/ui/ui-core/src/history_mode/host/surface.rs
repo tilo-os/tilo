@@ -513,7 +513,7 @@ impl Widget for HistoryHost {
                 &self.panel_rect,
             );
         } else if self.has_toolbar_controls() {
-            crate::history_mode::api::bar_edge(scene, transform, theme, self.toolbar.get_rect());
+            bar_edge(scene, transform, theme, self.toolbar.get_rect());
         }
         self.toolbar
             .draw_child(scene, bar_transform, text, theme, &env);
@@ -715,4 +715,25 @@ fn route_to_part(
     *ctx.handled = false;
     part.handle_event(event, &mut ctx.reborrow(ctx.path, node));
     *handled |= *ctx.handled;
+}
+
+/// The edge under a bar of window chrome: the bar stands on the content ground and is told from the app
+/// by one hairline at its bottom, never by a raised fill.
+fn bar_edge(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    theme: &tilo_ui_base::theme::Theme,
+    bar: vello::kurbo::Rect,
+) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule <= 0.0 || bar.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content),
+        None,
+        &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
+    );
 }

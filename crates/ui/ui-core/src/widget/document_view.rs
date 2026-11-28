@@ -279,11 +279,8 @@ where
         dyn tilo_ui_base::widget::FullscreenProvider,
         dyn tilo_ui_base::widget::undo_access::CommittedActions,
         dyn tilo_ui_base::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource,
-        #[cfg(feature = "model")]
-        dyn crate::resource::capability::ResourceScoped,
-        dyn crate::view::capability::ViewState
+        dyn crate::widget::resources::PublishesResources;
+        inner = child
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -371,69 +368,6 @@ where
         root: &ModelPath,
     ) {
         self.child.on_external_event(payload, state, root);
-    }
-}
-
-impl<K> crate::view::capability::ViewState for ModelView<K>
-where
-    K: PartialEq + 'static,
-{
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        crate::view::capability::view_state(self.child.as_ref())
-    }
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        crate::view::capability::restore_view_state(self.child.as_mut(), view);
-    }
-}
-
-#[cfg(feature = "model")]
-impl<K> crate::resource::capability::ResourceScoped for ModelView<K>
-where
-    K: PartialEq + 'static,
-{
-    fn record_intent(&self) -> Option<crate::resource::DocumentCheckout> {
-        crate::resource::capability::record_intent(self.child.as_ref())
-    }
-    fn set_resource_scope(&mut self, record: &crate::resource::DocumentId) {
-        crate::resource::capability::set_resource_scope(self.child.as_mut(), record);
-    }
-    fn release_resource_scope(&mut self) -> Result<(), String> {
-        crate::resource::capability::release_resource_scope(self.child.as_mut())
-    }
-}
-
-impl<K> crate::search::capability::SearchSource for ModelView<K>
-where
-    K: PartialEq + 'static,
-{
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        crate::search::capability::search_providers(self.child.as_ref())
-    }
-    fn search_provider_descriptors(
-        &self,
-    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
-        crate::search::capability::search_provider_descriptors(self.child.as_ref())
-    }
-    #[cfg(feature = "model")]
-    fn search_index_state(&self) -> Option<crate::search::index_publication::IndexState> {
-        crate::search::capability::search_index_state(self.child.as_ref())
-    }
-    #[cfg(feature = "model")]
-    fn search_index_entries(&self) -> Vec<crate::search::index_publication::IndexEntry> {
-        crate::search::capability::search_index_entries(self.child.as_ref())
-    }
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        doc: &mut tilo_ui_base::widget::Edits<'_>,
-        path: &ModelPath,
-    ) {
-        crate::search::capability::activate_search_result(
-            self.child.as_mut(),
-            action_id,
-            doc,
-            path,
-        );
     }
 }
 

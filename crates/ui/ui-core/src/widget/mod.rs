@@ -208,6 +208,7 @@ pub use {
     editable_label::EditOutcome, editable_label::EditableLabel, editable_label::EditableLabelProps,
 };
 pub mod autocomplete;
+pub mod filter_chip;
 pub use {
     autocomplete::Autocomplete, autocomplete::AutocompleteOutcome, autocomplete::AutocompleteProps,
     autocomplete::CheckColumn, autocomplete::Suggester, autocomplete::Suggestion,
@@ -245,7 +246,7 @@ pub use {
 };
 pub mod tabs;
 pub use {
-    tabs::AgentMark, tabs::PresenceFaceProps, tabs::TabAuthorProps, tabs::TabBar,
+    tabs::AgentMark, tabs::AppKind, tabs::PresenceFaceProps, tabs::TabAuthorProps, tabs::TabBar,
     tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder, tabs::TabItemProps, tabs::TabMark,
     tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark, tabs::pack_point, tabs::unpack_point,
 };
@@ -302,9 +303,9 @@ pub fn bound_app_widget(
     Box::new(app_widget::BoundAppWidget::new(component))
 }
 pub use {
-    app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent,
-    app_widget::AppWidget, app_widget::DevRoot, app_widget::HostShellAllow,
-    app_widget::IconDescriptor, app_widget::WindowPublication,
+    app_widget::AppCommand, app_widget::AppProcessIntent, app_widget::AppWidget,
+    app_widget::DevRoot, app_widget::HostShellAllow, app_widget::IconDescriptor,
+    app_widget::WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;

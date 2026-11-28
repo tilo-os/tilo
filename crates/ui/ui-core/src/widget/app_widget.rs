@@ -2,6 +2,7 @@
 //! inside a tile. Extends the base `Widget` trait with app-level metadata (kind, title, icon,
 //! permission hint, commands).
 
+use super::AppKind;
 use std::cell::RefCell;
 use std::rc::Weak;
 use tilo_ui_base::widget::Widget;
@@ -108,33 +109,6 @@ impl std::fmt::Debug for AppCommand {
             .field("shortcut", &self.shortcut)
             .field("invoke", &"<fn>")
             .finish()
-    }
-}
-
-/// What kind of app a window holds, for the mark it wears.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppKind {
-    Terminal,
-    Files,
-    Editor,
-    Browser,
-    Settings,
-    /// Any other app, by its own glyph from the icon set
-    /// ([`tilo_ui_base::icons::app_glyph`]): a window wears its own app's mark,
-    /// never another app's.
-    App(tilo_ui_base::icons::Icon),
-}
-
-impl AppKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            AppKind::Terminal => "Terminal",
-            AppKind::Files => "Files",
-            AppKind::Editor => "Editor",
-            AppKind::Browser => "Browser",
-            AppKind::Settings => "Settings",
-            AppKind::App(_) => "App",
-        }
     }
 }
 

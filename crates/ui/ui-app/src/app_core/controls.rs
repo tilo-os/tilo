@@ -81,7 +81,7 @@ impl crate::app::App {
         owner: Option<crate::history_mode::HistoryOwner>,
     ) -> bool {
         let host_action = self.is_host_action_resource(&intent.address.resource);
-        if intent.address.resource != crate::history_mode::api::HISTORY_RESOURCE && !host_action {
+        if intent.address.resource != crate::history_api::HISTORY_RESOURCE && !host_action {
             return false;
         }
         let embedded = owner.filter(|_| !host_action).and_then(|owner| {
@@ -574,7 +574,18 @@ impl crate::app::App {
             return false;
         }
         if origin.is_persons() {
-            crate::pick::note_invocation(&target.address, result.is_ok());
+            let address = &target.address.address;
+            crate::pick::note_invocation(crate::pick::RecentInvocation {
+                at: i64::try_from(crate::time::unix_now_ms()).unwrap_or(i64::MAX),
+                instance: target.address.instance_id,
+                resource: address.resource.clone(),
+                action: address.action.clone(),
+                label: crate::history_source::sentence::action_label(
+                    &address.resource,
+                    &address.action,
+                ),
+                done: result.is_ok(),
+            });
         }
         self.bound_control_settled(target, on_behalf_of, &result);
         match result {

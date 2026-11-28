@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ControlInvocation};
 
 use super::model::{CommandGroup, HostCommand};
-use crate::history_mode::api::HISTORY_RESOURCE;
+use crate::history_api::HISTORY_RESOURCE;
 use crate::widget::search_request::SEARCH_RESOURCE;
 use tilo_ui_base::platform::PlatformConventions;
 

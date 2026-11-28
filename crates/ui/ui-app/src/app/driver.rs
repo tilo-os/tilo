@@ -2121,7 +2121,7 @@ impl Driver {
         #[cfg(feature = "model")]
         {
             resources.push(self.app.history.as_ref().map_or_else(
-                || crate::history_mode::api::history_resource(false, false),
+                || crate::history_api::history_resource(false, false),
                 |history| history.api_resource(),
             ));
         }

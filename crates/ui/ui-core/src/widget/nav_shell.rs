@@ -889,11 +889,11 @@ impl NavShell {
             toggle: Box::new(toggle),
             back: Box::new(back),
             inspector_toggle: Box::new(inspector_toggle),
-            history_open: Box::new(crate::history_mode::api::history_control_button(
+            history_open: Box::new(crate::history_api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Closed,
             )),
-            history_close: Box::new(crate::history_mode::api::history_control_button(
+            history_close: Box::new(crate::history_api::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Open,
             )),

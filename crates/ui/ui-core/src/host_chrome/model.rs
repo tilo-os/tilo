@@ -9,9 +9,9 @@ use fluent::FluentArgs;
 use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, ResourceSpec};
 
 use super::edit::EDIT_RESOURCE;
-use crate::history_mode::api::HISTORY_RESOURCE;
+use crate::history_api::HISTORY_RESOURCE;
 #[cfg(feature = "model")]
-use crate::history_mode::api::encode_entry;
+use crate::history_api::encode_entry;
 use crate::widget::search_request::SEARCH_RESOURCE;
 use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::widget::HistoryEntryId;

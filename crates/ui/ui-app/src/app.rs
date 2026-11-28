@@ -521,7 +521,7 @@ pub struct ControlBindingCoverage {
     pub status: ControlBindingStatus,
 }
 
-pub use crate::action_locus::{ActionUiRoute, PaintedActionMarker};
+pub use crate::{action_locus::ActionUiRoute, floating_surface::PaintedActionMarker};
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -3468,7 +3468,7 @@ pub(crate) mod control_fixture_tests {
                     ),
                 ),
             ))
-            .push(Box::new(crate::history_mode::api::history_control_button(
+            .push(Box::new(crate::history_api::history_control_button(
                 "coverage-history",
                 crate::widget::window_header::HistoryControl::Closed,
             )))

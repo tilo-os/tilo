@@ -1,6 +1,5 @@
 use crate::color_compat::ColorCompat;
 use crate::time::{Duration, Instant};
-use crate::widget::AppKind;
 use crate::widget::window_header::HistoryControl;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -7202,3 +7201,30 @@ pub use component::{
     PresenceFaceProps, TabAuthorProps, TabItemProps, TabStrip, TabStripProps, pack_point,
     unpack_point,
 };
+
+/// What kind of app a window holds, for the mark it wears.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppKind {
+    Terminal,
+    Files,
+    Editor,
+    Browser,
+    Settings,
+    /// Any other app, by its own glyph from the icon set
+    /// ([`tilo_ui_base::icons::app_glyph`]): a window wears its own app's mark,
+    /// never another app's.
+    App(tilo_ui_base::icons::Icon),
+}
+
+impl AppKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            AppKind::Terminal => "Terminal",
+            AppKind::Files => "Files",
+            AppKind::Editor => "Editor",
+            AppKind::Browser => "Browser",
+            AppKind::Settings => "Settings",
+            AppKind::App(_) => "App",
+        }
+    }
+}

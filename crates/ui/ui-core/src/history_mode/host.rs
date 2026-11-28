@@ -251,14 +251,14 @@ impl HistoryHost {
 
     /// The window's History API as this History serves it: Open, Open at and Hide.
     pub fn api_resource(&self) -> tilo_actions::ResourceSpec {
-        crate::history_mode::api::history_resource(!self.invalid_owner, self.is_open())
+        crate::history_api::history_resource(!self.invalid_owner, self.is_open())
     }
 
     /// Run one History API operation resolved against [`Self::api_resource`] (a header History
     /// control, the History shortcut): it opens, opens at a change, or closes exactly as this History's
     /// own button does.
     pub fn invoke_api(&mut self, encoded: &tilo_actions::EncodedAction) -> Result<(), String> {
-        use crate::history_mode::api::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        use crate::history_api::{HISTORY_OPERATION, HistoryCommand, decode_entry};
         if encoded.type_id != HISTORY_OPERATION {
             return Err("Unsupported History operation".into());
         }
@@ -1738,7 +1738,7 @@ impl HistoryHost {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     row.push(Box::new(
-                        crate::history_mode::api::history_control_face(
+                        crate::history_api::history_control_face(
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
@@ -2011,7 +2011,7 @@ impl HistoryHost {
         } else {
             let clicked = self.open_requested.clone();
             Some(
-                crate::history_mode::api::history_control_face(
+                crate::history_api::history_control_face(
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )
@@ -2195,7 +2195,7 @@ pub fn press_window_control(
     history: &mut HistoryHost,
     control: crate::widget::HistoryControl,
 ) -> Result<(), String> {
-    let intent = super::api::history_control_binding(control)
+    let intent = crate::history_api::history_control_binding(control)
         .invoke(())
         .map_err(|error| error.to_string())?;
     super::embedded::run_api_control(history, &intent).map_err(|error| error.to_string())

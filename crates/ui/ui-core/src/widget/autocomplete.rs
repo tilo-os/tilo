@@ -10,7 +10,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::search::system::filters::{draw_filter_chip, share_row};
+use crate::widget::filter_chip::{draw_filter_chip, share_row};
 use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 use tilo_ui_base::chrome::SelectionState;
 use tilo_ui_base::num::f32_of_f64;

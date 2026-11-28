@@ -6,16 +6,10 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
 };
-#[cfg(feature = "model")]
-use vello::Scene;
-#[cfg(feature = "model")]
-use vello::kurbo::{Affine, Rect};
 
 use crate::widget::Button;
 use crate::widget::window_header::HistoryControl;
 use tilo_ui_base::i18n::I18nManager;
-#[cfg(feature = "model")]
-use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::HistoryEntryId;
 
 pub const HISTORY_OPERATION: &str = "tilo.host.history.view";
@@ -23,7 +17,7 @@ pub const HISTORY_RESOURCE: &str = "tilo.host:history";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum HistoryCommand {
+pub enum HistoryCommand {
     Open,
     /// Open History with one change already selected.
     OpenAt {
@@ -35,7 +29,7 @@ pub(crate) enum HistoryCommand {
 
 /// The look of the window's History control: the History glyph as a Plain icon button, announced and
 /// tooltipped as "History" with its shortcut, reading as on while History shows.
-pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
+pub fn history_control_face(id: &str, control: HistoryControl) -> Button {
     let platform = tilo_ui_base::platform::PlatformConventions::default();
     let shortcut = tilo_ui_base::platform::HostShortcut::History
         .shortcut(platform)
@@ -63,29 +57,12 @@ pub fn history_control_button(id: &str, control: HistoryControl) -> Button {
     clippy::expect_used,
     reason = "fixed unit View operations and their nullary bindings serialize infallibly"
 )]
-pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<()> {
+pub fn history_control_binding(control: HistoryControl) -> ActionBinding<()> {
     match control {
         HistoryControl::Closed => ActionBinding::unit_for(&open_resource(), "open"),
         HistoryControl::Open => ActionBinding::unit_for(&history_resource(true, true), "hide"),
     }
     .expect("unit history action")
-}
-
-/// The edge under a bar of window chrome: the bar stands on the content ground and is told from the app
-/// by one hairline at its bottom, never by a raised fill.
-#[cfg(feature = "model")]
-pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
-    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
-    if rule <= 0.0 || bar.height() <= 0.0 {
-        return;
-    }
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content),
-        None,
-        &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
-    );
 }
 
 #[expect(
@@ -181,8 +158,7 @@ pub fn encode_entry(id: HistoryEntryId) -> String {
     tilo_ui_base::HistoryEntryId::hex(&id)
 }
 /// The change `value` names in its 32 lowercase hex digits, if it is one.
-#[cfg(feature = "model")]
-pub(crate) fn decode_entry(value: &str) -> Option<HistoryEntryId> {
+pub fn decode_entry(value: &str) -> Option<HistoryEntryId> {
     if value.len() != 32
         || !value
             .bytes()

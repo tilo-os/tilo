@@ -1,16 +1,6 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
 use tilo_sort::CompactSort as _;
-/// One marker exported only by the action-presence painter, in surface-local logical coordinates.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PaintedActionMarker {
-    pub interaction: tilo_actions::SemanticInteraction,
-    pub viewport: [f64; 4],
-    pub marker: [f64; 4],
-    pub locus: [f64; 4],
-    pub protected: [f64; 4],
-}
-
 /// Paint semantic activity against this frame's exact action bindings.
 pub fn draw_action_presence(
     paint: &mut tilo_ui_base::paint::PaintCtx<'_>,
@@ -21,7 +11,7 @@ pub fn draw_action_presence(
     viewport: vello::kurbo::Rect,
     (surface, label_of): (&str, &dyn Fn(&str) -> Option<String>),
     now: crate::time::Instant,
-) -> Vec<PaintedActionMarker> {
+) -> Vec<crate::floating_surface::PaintedActionMarker> {
     let mut painted = Vec::new();
     let occupied = occupied(tree, viewport);
     presence.relabel_items(label_of);
@@ -84,7 +74,7 @@ pub fn draw_action_presence(
         if let Some(marker) = marker
             && user.is_agent()
         {
-            painted.push(PaintedActionMarker {
+            painted.push(crate::floating_surface::PaintedActionMarker {
                 interaction: interaction.clone(),
                 viewport: crate::floating_surface::protocol_rect_array(viewport),
                 marker: crate::floating_surface::protocol_rect_array(marker.bounds),

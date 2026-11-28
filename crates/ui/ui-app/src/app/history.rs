@@ -8,7 +8,7 @@
 )]
 use super::*;
 #[cfg(feature = "model")]
-use crate::history_mode::api::HISTORY_OPERATION;
+use crate::history_api::HISTORY_OPERATION;
 #[cfg(feature = "model")]
 use crate::history_mode::frame::FrameworkInputFrame;
 use crate::widget::search_request::SEARCH_OPERATION;
@@ -791,7 +791,7 @@ impl App {
     ) -> std::collections::HashSet<tilo_actions::ActionAddress> {
         self.history_local_resources()
             .into_iter()
-            .filter(|resource| resource.id.as_str() == crate::history_mode::api::HISTORY_RESOURCE)
+            .filter(|resource| resource.id.as_str() == crate::history_api::HISTORY_RESOURCE)
             .flat_map(|resource| {
                 resource.actions.into_iter().map(move |action| {
                     tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)

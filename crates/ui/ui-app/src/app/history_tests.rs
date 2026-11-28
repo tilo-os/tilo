@@ -5639,7 +5639,7 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
     let selected: Vec<_> = history
         .timeline_selection()
         .into_iter()
-        .map(crate::history_mode::api::encode_entry)
+        .map(crate::history_api::encode_entry)
         .collect();
     assert_eq!(selected, [entry(chosen)]);
     assert!(

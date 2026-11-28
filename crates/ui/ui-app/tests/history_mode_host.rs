@@ -794,7 +794,7 @@ fn header_history_control_opens_the_registered_history() {
     assert!(driver.targets().contains_key("activity_timeline"));
     driver
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(tilo_ui_app::history_mode::HISTORY_RESOURCE, "hide"),
+            &tilo_actions::ActionAddress::new(tilo_ui_app::history_api::HISTORY_RESOURCE, "hide"),
             None,
         )
         .unwrap();

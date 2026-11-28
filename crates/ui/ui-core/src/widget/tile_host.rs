@@ -1,7 +1,8 @@
 use crate::bound_dispatch::BoundWidget;
 use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
 use crate::time::{Duration, Instant};
-use crate::widget::app_widget::{AppKind, AppWidget};
+use crate::widget::AppKind;
+use crate::widget::app_widget::AppWidget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, VecDeque};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};

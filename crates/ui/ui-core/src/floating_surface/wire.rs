@@ -144,7 +144,7 @@ pub enum FloatingSurfaceClientMessage {
     },
     /// Complete primary-surface marker inventory from a successfully presented SDK frame.
     ActionMarkers {
-        markers: Vec<crate::PaintedActionMarker>,
+        markers: Vec<PaintedActionMarker>,
     },
     /// Bounded response to a trusted owner operation on this same connection.
     DeviceShellOutcome {
@@ -694,4 +694,14 @@ impl FloatingSurfaceHostMessage {
                 .and_then(tilo_ui_base::tokens::PresenceHue::from_id),
         })
     }
+}
+
+/// One marker exported only by the action-presence painter, in surface-local logical coordinates.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PaintedActionMarker {
+    pub interaction: tilo_actions::SemanticInteraction,
+    pub viewport: [f64; 4],
+    pub marker: [f64; 4],
+    pub locus: [f64; 4],
+    pub protected: [f64; 4],
 }

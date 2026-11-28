@@ -126,7 +126,7 @@ pub mod action_locus;
 pub mod local_dispatch;
 #[cfg(feature = "model")]
 pub mod local_document_action;
-pub use {action_locus::ActionUiRoute, action_locus::PaintedActionMarker};
+pub use {action_locus::ActionUiRoute, floating_surface::PaintedActionMarker};
 pub mod author;
 pub mod content_zoom;
 pub mod control_hints;
@@ -233,6 +233,7 @@ pub mod frame_probe;
 pub mod gpu_video;
 #[cfg(feature = "model")]
 pub mod harness_device;
+pub mod history_api;
 pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;
