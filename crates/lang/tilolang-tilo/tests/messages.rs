@@ -722,6 +722,26 @@ fn the_conversation_reads_page_by_page(window: &Window) {
     assert_shows(&shown, "This is the start of the conversation.");
 }
 
+/// A page before the one shown that the service refused says so, rather than calling the
+/// conversation read to its start.
+#[test]
+fn an_older_page_the_service_refused_says_so() {
+    let window = Window::new(Device::serving());
+    press(&window.window(), "NavItem", "Bo Diaz");
+    let (newest, _) = window.device.last("history");
+    window.ends(
+        &newest,
+        "done",
+        page(&[("m3", "See you at noon", true, "")], true),
+    );
+    press(&window.window(), "Button", "Load older messages");
+    let (older, _) = window.device.last("history");
+    window.ends(&older, "failed", json!({}));
+    let shown = window.window();
+    assert_shows(&shown, "This service's message history is unavailable.");
+    assert_hides(&shown, "This is the start of the conversation.");
+}
+
 /// What the service holds stays with the device: Messages keeps none of it, so neither a search
 /// nor an export has a word of it.
 fn what_the_service_holds_stays_with_the_device(window: &Window) {

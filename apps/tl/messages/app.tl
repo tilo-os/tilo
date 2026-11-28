@@ -894,12 +894,18 @@ fn more_before(s: Session) -> Bool {
     false
 }
 
-/// Why the newest page did not come, by the service's word; empty while it reads or once it did.
+/// Why a page of the history did not come, by the service's word; empty while every page reads
+/// or once they did. A page the service refused says so, whichever page it is: the newest read
+/// again or one before it.
 fn history_refusal(s: Session) -> Text {
-    if let job = s.pages.first() {
+    for job in s.pages {
         if let j = engine.job(job) {
             if j.state == .failed {
-                return j.error
+                if j.error == "" {
+                    return "unavailable"
+                } else {
+                    return j.error
+                }
             }
         }
     }
@@ -1985,7 +1991,7 @@ view conversation(m: Messages, s: Session, st: Status) {
                         ui.Button("Load older messages", icon: .history, role: .plain) {
                             on press: read_older_history(m)
                         }
-                    } else if not lines.is_empty() {
+                    } else if not lines.is_empty() and refusal == "" {
                         ui.Text(
                             "This is the start of the conversation.",
                             role: .caption,
