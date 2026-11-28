@@ -133,7 +133,7 @@ unlock-unanswered = Nobody answered in time, so the device was not unlocked
 # signs: $path is the program's file, as the system names it.
 asked-by-program = a program ({ $path })
 asked-by-a-program = a program
-asked-program-unanswered = No device of yours answered; answer at this computer’s console with a root unlock
+asked-program-unanswered = No device of yours answered, so nothing changed.
 boot-unlock-no-root-device = None of your devices that keep your identity can be reached right now. Turn one on, connect it to the internet and sign in, then try again.
 
 # Another of the person's devices speaks a peer protocol version this one does not work with:

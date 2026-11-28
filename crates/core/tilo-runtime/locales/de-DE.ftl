@@ -132,7 +132,7 @@ unlock-unanswered = Niemand hat rechtzeitig geantwortet, daher wurde das Gerät 
 # die Identität der Person signiert: $path ist die Datei des Programms, wie das System sie nennt.
 asked-by-program = ein Programm ({ $path })
 asked-by-a-program = ein Programm
-asked-program-unanswered = Keines deiner Geräte hat geantwortet; antworte an der Konsole dieses Computers mit einer Entsperrung deiner Identität
+asked-program-unanswered = Keines deiner Geräte hat geantwortet, daher hat sich nichts geändert.
 boot-unlock-no-root-device = Keines deiner Geräte, die deine Identität bewahren, ist gerade erreichbar. Schalte eines ein, verbinde es mit dem Internet und melde dich an, dann versuche es noch einmal.
 
 # Ein anderes Gerät der Person spricht eine Peer-Protokollversion, mit der dieses nicht
