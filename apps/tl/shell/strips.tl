@@ -476,53 +476,9 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                 window_controls(s, shown, lists)
             }
             tabs: {
-                // One window of one tab wears its tab too: the app's glyph and name say what the
-                // window shows, and another tab opens from the same bar.
-                if shell.strips_tabs {
-                    ui.TabStrip(place_in_front(s), focused: in_front) {
-                        on activate(p: session.Place): show_place(p)
-                        on close(p: session.Place): session.close(place: p)
-                        on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
-                        on detach(p: session.Place): detach_place(p)
-                        on opened_by(p: session.Place): show_what_the_agent_did(p)
-                        for p in placed {
-                            if let w = shown_window(p) {
-                                ui.TabItem(
-                                    the_place(p.key),
-                                    title: place_own_title(p),
-                                    icon: w.icon,
-                                    attention: w.attention,
-                                    modified: w.modified,
-                                    busy: starting(w, p),
-                                ) {
-                                    // Who else is at the window now: their faces, in their
-                                    // presence colour, on its tab.
-                                    presence: {
-                                        for f in w.presence {
-                                            ui.TabFace(name: f.name, colour: f.colour)
-                                        }
-                                    }
-                                    // Who opened it, when someone else did: their face leads
-                                    // the tab's faces, and names them when pointed at; an
-                                    // agent's names its step too, and opens what it did.
-                                    author: {
-                                        if let a = w.author {
-                                            ui.TabAuthor(
-                                                author_name(a),
-                                                colour: a.colour,
-                                                agent: a.kind == "agent",
-                                                run: a.run,
-                                                step: a.title,
-                                            )
-                                        }
-                                    }
-                                }
-                            } else {
-                                ui.TabItem(the_place(p.key), title: place_own_title(p))
-                            }
-                        }
-                    }
-                }
+                // The bar's leading area: the window's own find while it is open, taking the
+                // room the tabs have when they are not, else the tabs of its places.
+                strip_bar(a, s, shown, in_front, placed)
             }
             body: {
                 if let p = shown {
@@ -562,6 +518,79 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             }
         }
     }
+}
+
+/// The bar's leading area: the window's own find when it is open, taking the room the tabs have
+/// when it is not, else the tabs of the strip's places.
+view strip_bar(
+    a: Layout,
+    s: LayoutStrip,
+    shown: Option<LayoutPlace>,
+    in_front: Bool,
+    placed: List<LayoutPlace>,
+) {
+    if let w = shown_window_of(shown) {
+        if w.bar_field == "find" or w.bar_field == "replace" {
+            bar_search(w)
+        } else if shell.strips_tabs {
+            strip_tabs(a, s, in_front, placed)
+        }
+    } else if shell.strips_tabs {
+        strip_tabs(a, s, in_front, placed)
+    }
+}
+
+/// The strip's places as its window's tabs: one window of one tab wears its tab too, the app's
+/// glyph and name saying what the window shows, and another tab opening from the same bar.
+view strip_tabs(a: Layout, s: LayoutStrip, in_front: Bool, placed: List<LayoutPlace>) {
+    ui.TabStrip(place_in_front(s), focused: in_front) {
+        on activate(p: session.Place): show_place(p)
+        on close(p: session.Place): session.close(place: p)
+        on reorder(p: session.Place, at: Int): reorder_place(a, s, p, at)
+        on detach(p: session.Place): detach_place(p)
+        on opened_by(p: session.Place): show_what_the_agent_did(p)
+        for p in placed {
+            if let w = shown_window(p) {
+                ui.TabItem(
+                    the_place(p.key),
+                    title: place_own_title(p),
+                    icon: w.icon,
+                    attention: w.attention,
+                    modified: w.modified,
+                    busy: starting(w, p),
+                ) {
+                    // Who else is at the window now: their faces, in their presence colour, on
+                    // its tab.
+                    presence: {
+                        for f in w.presence {
+                            ui.TabFace(name: f.name, colour: f.colour)
+                        }
+                    }
+                    // Who opened it, when someone else did: their face leads the tab's faces,
+                    // and names them when pointed at; an agent's names its step too, and opens
+                    // what it did.
+                    author: {
+                        if let a = w.author {
+                            ui.TabAuthor(
+                                author_name(a),
+                                colour: a.colour,
+                                agent: a.kind == "agent",
+                                run: a.run,
+                                step: a.title,
+                            )
+                        }
+                    }
+                }
+            } else {
+                ui.TabItem(the_place(p.key), title: place_own_title(p))
+            }
+        }
+    }
+}
+
+/// The window the strip's place in front shows, when it shows one.
+fn shown_window_of(shown: Option<LayoutPlace>) -> Option<device.Window> {
+    if let p = shown { shown_window(p) }
 }
 
 /// The place a window's bar carries when the person picks it up: the place itself, by its own
@@ -702,14 +731,16 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
         if let p = shown {
             if let w = shown_window(p) {
                 // What the window's bar holds open, when its app or the person asked for it: the
-                // name field, the location the app edits, or the window's search. Each stands in
-                // the bar's own controls, and the session's own verbs act on it.
+                // name field, the location the app edits, or — shown where the tabs stand — the
+                // window's search. Each stands in the bar, and the session's own verbs act on it.
                 if w.bar_field == "rename" {
                     bar_rename(w)
                 } else if w.bar_field == "location" {
                     bar_location(w)
                 } else if w.bar_field == "find" or w.bar_field == "replace" {
-                    bar_search(w)
+                    // The find takes the bar's room the tabs have; the window's menu keeps its
+                    // pill, with the ways to move, share and close the window.
+                    this_window_menu(w, shown, listed)
                 } else {
                     this_window_menu(w, shown, listed)
                     window_bar_actions(w, starting(w, p))
