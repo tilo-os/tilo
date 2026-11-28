@@ -2136,6 +2136,13 @@ impl Instance {
                 self.show_history(open);
                 Ok(())
             }
+            // The window refused something it was sent and takes the views whole again.
+            ToApp::Resend => {
+                for level in [Level::Root, Level::Detail] {
+                    self.send_open(level, None);
+                }
+                Ok(())
+            }
             ToApp::Fire {
                 level,
                 key,

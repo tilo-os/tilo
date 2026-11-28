@@ -163,6 +163,7 @@ mod tests {
             "tilolang-home-empty",
             "tilolang-open-failed",
             "tilolang-view-failed",
+            "tilolang-try-again",
             "tilolang-seen-failed",
             "tilolang-back",
             "tilolang-detail",

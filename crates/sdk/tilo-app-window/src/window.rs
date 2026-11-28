@@ -246,6 +246,39 @@ fn part(element: Element, fit: Fit) -> Part {
 
 /// What brings a column to the front: a click or a tap slides it in; a key, an agent's action or
 /// nothing the person just did moves it without.
+/// Whether `message` builds what the window shows of its app's views: what the window leaves
+/// aside while it holds no view it can trust ([`AppWindow::fail`]).
+fn shows_a_view(message: &ToUi) -> bool {
+    match message {
+        ToUi::Loading
+        | ToUi::History(_)
+        | ToUi::CallPictures { .. }
+        | ToUi::Open { .. }
+        | ToUi::Close
+        | ToUi::Front { .. }
+        | ToUi::Patch { .. }
+        | ToUi::Bound { .. }
+        | ToUi::Rows { .. }
+        | ToUi::RowsChanged { .. }
+        | ToUi::Spaces { .. }
+        | ToUi::Ask(_)
+        | ToUi::Form(_)
+        | ToUi::Focus { .. }
+        | ToUi::Page { .. } => true,
+        ToUi::Activate
+        | ToUi::ShowRun { .. }
+        | ToUi::Desktop { .. }
+        | ToUi::Speak(_)
+        | ToUi::Kept(_)
+        | ToUi::Heard(_)
+        | ToUi::Notice { .. }
+        | ToUi::Actions(_)
+        | ToUi::Outputs(_)
+        | ToUi::Took { .. }
+        | ToUi::CloseWindow => false,
+    }
+}
+
 fn by_input() -> MotionSource {
     tilo_ui_base::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
 }
@@ -310,8 +343,15 @@ pub struct AppWindow {
     form: Option<crate::form::Shown>,
     out: Vec<ToApp>,
     structure_dirty: bool,
-    /// Why the window shows the platform's error state: a batch it refused.
+    /// Why the window shows the platform's error state: something its app sent that it refused.
+    /// It takes no view until the app sends its root whole again.
     failed: Option<String>,
+    /// The window asked its app to send its views whole again ([`ToApp::Resend`]) and has not
+    /// taken them yet: a refusal while it waits shows the error state without asking again.
+    resend_asked: bool,
+    /// The person pressed the error state's Try again: the window asks its app for its views
+    /// with its next batch.
+    try_again: Rc<std::cell::Cell<bool>>,
     /// Where the person's keys stand: input since the last look, a blur asked, a composition.
     keys: Keys,
     /// The bound control the keyboard focus was in, as last sent, by key in the composed tree.
@@ -543,6 +583,8 @@ impl AppWindow {
             out: Vec::new(),
             structure_dirty: true,
             failed: None,
+            resend_asked: false,
+            try_again: Rc::default(),
             keys: Keys::default(),
             focus: None,
             focus_binding: None,
@@ -831,11 +873,7 @@ impl AppWindow {
                     continue;
                 }
             };
-            let validator = Validator::new(crate::adapter::catalogue(), self.limits);
-            if let Err(error) = validator.to_ui(&messages) {
-                self.fail(&error.to_string());
-                continue;
-            }
+            let messages = self.valid(messages);
             if let Err(error) = self.apply(messages) {
                 self.fail(&error);
             }
@@ -846,19 +884,65 @@ impl AppWindow {
         any
     }
 
-    /// Refuse what the app sent: the window shows the platform's error state, and takes nothing
-    /// more until the app opens its root anew.
-    fn fail(&mut self, why: &str) {
-        tracing::warn!(why, "a window refused what its app sent");
-        if self.failed.is_none() {
-            let state = ui::widget::EmptyState::new(t("tilolang-open-failed"));
-            if let Some(pane) = self.shell_pane() {
-                pane.set(Box::new(state));
-            }
-            self.built = None;
-            self.structure_dirty = true;
+    /// What of `messages` the window takes. A message that breaks the protocol is refused alone:
+    /// what the app says beside the views (a notice, its actions, the presses it took) still
+    /// counts. Its views are patched against what the app last sent, so a view left out leaves
+    /// every later patch against a tree the window does not hold: the window takes no view of
+    /// this batch and asks for them whole ([`Self::fail`]).
+    fn valid(&mut self, messages: Vec<ToUi>) -> Vec<ToUi> {
+        let validator = Validator::new(crate::adapter::catalogue(), self.limits);
+        if let Err(error) = validator.to_ui(&messages) {
+            self.fail(&error.to_string());
+            return messages
+                .into_iter()
+                .filter(|message| {
+                    !shows_a_view(message) && validator.to_ui(std::slice::from_ref(message)).is_ok()
+                })
+                .collect();
         }
+        messages
+    }
+
+    /// Refuse what the app sent: the window shows the platform's error state, saying why, and
+    /// takes no view until the app sends its root whole again, which it asks for at once
+    /// ([`ToApp::Resend`]). The app's answer replaces the error state, so a window that refused
+    /// one update goes on showing what its app sends. One whose app's answer is refused again
+    /// keeps the error state, with Try again to ask once more.
+    fn fail(&mut self, why: &str) {
+        tracing::warn!(app = %self.app_id, why, "a window refused what its app sent");
+        if !self.resend_asked {
+            self.ask_resend();
+        }
+        let try_again = Rc::clone(&self.try_again);
+        let state = ui::widget::EmptyState::new(t("tilolang-view-failed"))
+            .with_quote(why)
+            .with_action(t("tilolang-try-again"))
+            .with_action_id("window-try-again")
+            .on_click(move || try_again.set(true));
+        // What the window held of its views is no longer what the app holds: the app sends again
+        // the levels it shows, and a detail it no longer shows is gone with the rest.
+        if self.detail.take().is_some() {
+            self.forget_level(Level::Detail);
+        }
+        if let Some(pane) = self.shell_pane() {
+            pane.set(Box::new(state));
+        }
+        self.built = None;
+        self.structure_dirty = true;
         self.failed = Some(why.to_owned());
+    }
+
+    /// Whether a view opened at `level` is all the window shows of its app: its root, or the
+    /// detail level of a part that has no root of its own. One opening there ends the error state.
+    fn opens_whole(&self, level: Level) -> bool {
+        level == Level::Root || (self.shape == Shape::Part && self.root.is_none())
+    }
+
+    /// Ask the app for its views whole: what the window shows is the app's again once it takes
+    /// the root they open.
+    fn ask_resend(&mut self) {
+        self.resend_asked = true;
+        self.out.push(ToApp::Resend);
     }
 
     /// The app's end of the window went before it sent a view: the window shows the platform's
@@ -907,18 +991,14 @@ impl AppWindow {
         });
     }
 
-    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing
+    /// Whether the window, showing the error state, leaves `message` aside: it takes no view
     /// until the app opens its root anew, though a page request in it still answers, so an
-    /// action waiting on the page is never left waiting.
+    /// action waiting on the page is never left waiting. What the app says beside its views (a
+    /// notice, its actions, the presses it took) still counts.
     fn refuses(&mut self, message: &ToUi) -> bool {
         if self.failed.is_none()
-            || matches!(
-                message,
-                ToUi::Open {
-                    level: Level::Root,
-                    ..
-                }
-            )
+            || !shows_a_view(message)
+            || matches!(message, ToUi::Open { level, .. } if self.opens_whole(*level))
         {
             return false;
         }
@@ -1091,8 +1171,9 @@ impl AppWindow {
         brought: Option<wire::Front>,
         capture_protected: bool,
     ) -> bool {
-        if level == Level::Root {
+        if self.opens_whole(level) {
             self.failed = None;
+            self.resend_asked = false;
         }
         self.forget_level(level);
         let view = View {
@@ -2014,6 +2095,9 @@ impl AppWindow {
         }
         if self.save.take_bar_action().is_some() {
             self.out.push(ToApp::SaveAgain);
+        }
+        if self.try_again.take() && self.failed.is_some() {
+            self.ask_resend();
         }
         if input {
             self.follow_focus();

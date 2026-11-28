@@ -937,6 +937,11 @@ pub enum ToApp {
     Desktop {
         layout: String,
     },
+    /// The window refused something the app sent and holds no view it can trust: the app sends
+    /// each level it shows again whole ([`ToUi::Open`]), as it sends a window it opens, with its
+    /// lists' rows and its bound values. Patches are made against what the app last sent, so a
+    /// window that left one out can only come back by taking the whole view anew.
+    Resend,
 }
 
 /// Largest batch either side sends or accepts.

@@ -165,6 +165,7 @@ mod weather;
 mod window_find;
 mod window_find_shot;
 mod window_reads;
+mod window_refused;
 mod windows_apps;
 mod words;
 mod workspace_members;
