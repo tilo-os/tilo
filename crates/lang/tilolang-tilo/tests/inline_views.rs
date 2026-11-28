@@ -71,6 +71,13 @@ view a_canvas() {
     }
   }
 }
+
+view a_late() {
+  let r = resource("item-1", of: b.Item)
+  stack {
+    text(r.title)
+  }
+}
 "#;
 
 const CALLEE_APP: &str = "test.b";
@@ -81,6 +88,8 @@ struct Workspace {
     host: Host,
     callee: ModuleHash,
     caller: ModuleHash,
+    /// The callee's module, kept to load a package that has not arrived yet.
+    callee_wasm: Vec<u8>,
     callee_meta: tilolang_runtime::Meta,
     caller_meta: tilolang_runtime::Meta,
 }
@@ -96,6 +105,31 @@ fn workspace(title: &str) -> Workspace {
         )
         .unwrap();
     workspace
+}
+
+/// The same packages, with the callee's package not loaded yet: a view that names one of its
+/// types waits for it, as a place waits for the package of an app no window has open.
+fn unarrived_workspace() -> Workspace {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let shown = tilolang::compile_package(CALLEE, &IdsLock::new(), &[])
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let composing =
+        tilolang::compile_package(CALLER, &IdsLock::new(), std::slice::from_ref(&shown.meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let composing_hash = tilolang_runtime::Runtime::module_hash(&composing.wasm);
+    host.load_compiled(&composing).unwrap();
+    Workspace {
+        host,
+        callee: tilolang_runtime::Runtime::module_hash(&shown.wasm),
+        caller: composing_hash,
+        callee_wasm: shown.wasm,
+        callee_meta: shown.meta,
+        caller_meta: composing.meta,
+    }
 }
 
 /// The same host before any reading of the callee's item arrived.
@@ -120,6 +154,7 @@ fn unread_workspace() -> Workspace {
         host,
         callee: shown_hash,
         caller: composing_hash,
+        callee_wasm: shown.wasm,
         callee_meta: shown.meta,
         caller_meta: composing.meta,
     }
@@ -162,6 +197,18 @@ impl Workspace {
             .open_view(
                 &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
                 &view_id(&self.caller_meta, "a_canvas"),
+                Vec::new(),
+            )
+            .unwrap()
+    }
+
+    /// The view that reads a field of the callee's item: it waits for the callee's package.
+    fn late(&self) -> ViewInstance {
+        self.host
+            .runtime()
+            .open_view(
+                &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+                &view_id(&self.caller_meta, "a_late"),
                 Vec::new(),
             )
             .unwrap()
@@ -328,5 +375,40 @@ tilo_test_env::scenario! {
             "its first reading runs the view that looked it up"
         );
         assert_eq!(texts(view.tree()), vec!["Milk", "Item", "Milk", "a well"]);
+    }
+}
+
+tilo_test_env::scenario! {
+    fn a_composed_view_waits_for_a_package_and_draws_it_when_it_arrives;
+
+    phase the_waiting_view_runs_again_when_the_callees_package_arrives;
+    {
+        let workspace = unarrived_workspace();
+        workspace
+            .host
+            .runtime()
+            .set_reading(
+                &item(),
+                &json!({ "title": "Milk", "done": false }).to_string(),
+            )
+            .unwrap();
+        // The callee's package is not here: a view that reads a field of its item draws the
+        // toolkit's waiting state, never a failure of the whole screen.
+        let mut view = workspace.late();
+        assert!(
+            kinds(view.tree()).iter().any(|kind| kind == "ui.Skeleton"),
+            "the view waits for the callee's package: {:#?}",
+            view.tree()
+        );
+        workspace
+            .host
+            .runtime()
+            .load_foreign_package(&workspace.callee_wasm, workspace.callee_meta.clone())
+            .unwrap();
+        assert!(
+            !view.poll_patches().unwrap().is_empty(),
+            "the package's arrival runs the view that waited for it"
+        );
+        assert_eq!(texts(view.tree()), vec!["Milk"]);
     }
 }
