@@ -4231,6 +4231,11 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         if self.compose_at.take().is_some() || self.moves_undrawn() {
             self.compose();
         }
+        // The keys the controls were drawn with: the next move compares against these, so moving
+        // a command back onto the keys its app declared draws them as the app's again.
+        self.drawn = self
+            .moved
+            .relabels(&self.app_id, |action| self.declared_keys(action));
         self.rem = ui::widget::arrange::rem_of(theme);
         let node = self.body.build_layout(taffy, theme, node_map);
         self.laid_nodes = Some((node, keyed_nodes(self.body.as_ref(), taffy, node, node_map)));
