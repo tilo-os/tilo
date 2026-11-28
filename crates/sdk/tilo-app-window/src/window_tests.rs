@@ -4664,3 +4664,98 @@ fn a_view_closes_its_window_as_the_person_does() {
         "the window goes the way the shell closes any tab"
     );
 }
+
+/// The state that offers the window's primary action answers the person's pointer where it draws
+/// that control, not only an assistive technology's activation: a click runs what the control
+/// does, as the click on a button of the window's own body does.
+#[test]
+fn an_empty_states_offered_action_answers_a_pointer_press() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut nothing = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    nothing
+        .props
+        .insert("title".to_owned(), Value::text("Nothing open"));
+    send(&mut app, &chooser_page(vec![nothing]));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    assert_eq!(
+        state_in(
+            drawn_window(&mut harness).composed().expect("the window"),
+            "content"
+        )
+        .props
+        .get("action"),
+        Some(&Value::text("New note")),
+        "the body's state offers the window's primary action"
+    );
+    // Where the state draws the control: the place assistive technology reads it at.
+    let node = named_node(&harness, "New note");
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == node)
+        .and_then(|(_, described)| described.bounds())
+        .expect("the state's action is described where it stands");
+    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    harness.click_at(x, y);
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the pointer press at the state's action reaches the app, as its activation does"
+    );
+}
+
+/// The state's offered action answers the pointer where it draws it inside a page that scrolls,
+/// too: a view of sections with the state under them, as an app's page holds it.
+#[test]
+fn a_states_offered_action_inside_a_scrolling_page_answers_a_pointer_press() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut page = UiNode::empty("page", "shell#page");
+    let mut stack = UiNode::empty("stack", "shell#page-stack");
+    stack.props.insert("gap".to_owned(), Value::text("group"));
+    for at in 0..8 {
+        let mut section = UiNode::empty(&kind("Text"), &format!("shell#section-{at}"));
+        section
+            .props
+            .insert("value".to_owned(), Value::text(format!("Section {at}")));
+        stack.children.push(section);
+    }
+    let mut nothing = UiNode::empty(&kind("EmptyState"), "shell#unopened");
+    nothing
+        .props
+        .insert("title".to_owned(), Value::text("Nothing open"));
+    nothing.props.insert("inline".to_owned(), Value::Bool(true));
+    stack.children.push(nothing);
+    page.children.push(stack);
+    let mut scroll = UiNode::empty(&kind("Scroll"), "shell#scroll");
+    scroll.children.push(page);
+    send(&mut app, &chooser_page(vec![scroll]));
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (1280, 800));
+    harness.present_in_window_bar();
+    harness.relayout();
+    harness.relayout();
+    let node = named_node(&harness, "New note");
+    let bounds = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == node)
+        .and_then(|(_, described)| described.bounds())
+        .expect("the state's action is described where it stands");
+    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    harness.click_at(x, y);
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. })),
+        "the pointer press at the state's action in the page reaches the app"
+    );
+}
