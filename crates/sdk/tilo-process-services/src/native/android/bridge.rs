@@ -170,7 +170,7 @@ pub(super) fn is_granted(permission: &str) -> Result<bool, String> {
         env.call_static_method(
             &results,
             "isGranted",
-            "(Landroid/app/Activity;Ljava/lang/String;)Z",
+            "(Landroid/content/Context;Ljava/lang/String;)Z",
             &[JValue::Object(activity), JValue::Object(&permission)],
         )?
         .z()

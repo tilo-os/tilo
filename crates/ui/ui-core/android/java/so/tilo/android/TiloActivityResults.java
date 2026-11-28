@@ -3,6 +3,7 @@ package so.tilo.android;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -59,8 +60,9 @@ public final class TiloActivityResults {
         });
     }
 
-    public static boolean isGranted(Activity activity, String permission) {
-        return activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    // A context, not an activity: a process started for a push runs none.
+    public static boolean isGranted(Context context, String permission) {
+        return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
     }
 
     public static boolean onActivityResult(int requestCode, int resultCode, Intent data) {
