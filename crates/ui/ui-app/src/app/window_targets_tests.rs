@@ -501,6 +501,18 @@ fn a_change_no_frame_drew_is_not_told() {
     );
 }
 
+/// A rebuild a pass has asked for has built nothing yet: the tree still stands as the last frame
+/// drew and placed it, so that frame's controls are what the shell is told.
+#[test]
+fn a_rebuild_asked_for_still_tells_the_frame_that_was_drawn() {
+    let (mut app, _shell, _) = window();
+    app.layout.request_rebuild();
+    assert!(
+        app.window_targets_to_tell().is_some(),
+        "a rebuild asked for changes no pixel, so the drawn frame is still what the window shows"
+    );
+}
+
 /// What a window shows that has no menu of its own, counting the keys that reach it.
 struct Keys(Rc<Cell<u32>>);
 

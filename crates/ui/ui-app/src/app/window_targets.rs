@@ -313,8 +313,11 @@ impl App {
     #[cfg(feature = "native")]
     fn window_targets_to_tell(&mut self) -> Option<Vec<WindowTarget>> {
         // A tree with a change no frame has drawn is not what the person sees: the shell keeps
-        // the controls of the frame that was drawn, and is told again once this tree is.
-        if self.unsettled() {
+        // the controls of the frame that was drawn, and is told again once this tree is. What a
+        // pass has only asked for is not such a change: a rebuild it asks for has not built
+        // anything yet, so the tree stands as the last frame drew and placed it — telling that
+        // frame's controls is telling what the person sees.
+        if self.needs_sync || self.layout.layout_dirty || self.rebuilt_since_frame() {
             return None;
         }
         // A tree its own consumers already refreshed on this pass is read as
