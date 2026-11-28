@@ -155,28 +155,28 @@ impl OskSourceSettings {
     #[action(id = "set-size", keywords = "keyboard, keys, height")]
     pub fn set_size(
         &mut self,
-        #[param("`compact`, `standard` or `large`")] size: String,
+        #[param("`compact`, `standard` or `large`")] value: String,
     ) -> Result<(), tilo_resource::Refusal> {
-        if !SIZES.contains(&size.as_str()) {
+        if !SIZES.contains(&value.as_str()) {
             return Err(tilo_resource::Refusal::new(format!(
-                "`{size}` is not a keyboard size: `compact`, `standard` or `large`"
+                "`{value}` is not a keyboard size: `compact`, `standard` or `large`"
             )));
         }
-        self.size = size;
+        self.size = value;
         Ok(())
     }
 
     /// Offer words above the keys, or stop.
     #[action(id = "set-suggestions", keywords = "keyboard, predictions, words")]
-    pub fn set_suggestions(&mut self, suggestions: bool) -> Result<(), tilo_resource::Refusal> {
-        self.suggestions = suggestions;
+    pub fn set_suggestions(&mut self, value: bool) -> Result<(), tilo_resource::Refusal> {
+        self.suggestions = value;
         Ok(())
     }
 
     /// Rewrite a finished word to a likely correction, or never.
     #[action(id = "set-autocorrect", keywords = "keyboard, spelling, correction")]
-    pub fn set_autocorrect(&mut self, autocorrect: bool) -> Result<(), tilo_resource::Refusal> {
-        self.autocorrect = autocorrect;
+    pub fn set_autocorrect(&mut self, value: bool) -> Result<(), tilo_resource::Refusal> {
+        self.autocorrect = value;
         Ok(())
     }
 
@@ -187,26 +187,23 @@ impl OskSourceSettings {
     )]
     pub fn set_typing_language(
         &mut self,
-        #[param("`layout` follows the key layout; `en` and `fr` are its own")] language: String,
+        #[param("`layout` follows the key layout; `en` and `fr` are its own")] value: String,
     ) -> Result<(), tilo_resource::Refusal> {
-        if !LANGUAGES.contains(&language.as_str()) {
+        if !LANGUAGES.contains(&value.as_str()) {
             return Err(tilo_resource::Refusal::new(format!(
-                "`{language}` is not a typing language: `layout`, `en` or `fr`"
+                "`{value}` is not a typing language: `layout`, `en` or `fr`"
             )));
         }
-        self.typing_language = language;
+        self.typing_language = value;
         Ok(())
     }
 
     /// Adapt to what this person types, or stop and forget what typing taught (the recent emoji
     /// the shared picker keeps are the workspace's, and stay).
     #[action(id = "set-personalization", keywords = "keyboard, learn, forget")]
-    pub fn set_personalization(
-        &mut self,
-        personalization: bool,
-    ) -> Result<(), tilo_resource::Refusal> {
-        self.personalization = personalization;
-        if !personalization {
+    pub fn set_personalization(&mut self, value: bool) -> Result<(), tilo_resource::Refusal> {
+        self.personalization = value;
+        if !value {
             self.transitions.clear();
             self.touch.clear();
             self.kept.clear();
