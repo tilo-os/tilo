@@ -60,7 +60,7 @@ const ANSWER_DEADLINE: Duration = Duration::from_secs(300);
 /// How long between asks.
 const PAUSE: Duration = Duration::from_secs(1);
 /// How long one call of an action waits for it to end before it is followed.
-const WAIT_MS: u64 = 60_000;
+pub const WAIT_MS: u64 = 60_000;
 /// The most bytes one put of many files carries.
 const PUT_BYTES: usize = 384 * 1024;
 /// The most files one put carries.
@@ -887,7 +887,13 @@ impl Calls {
     /// The action was refused or failed, the person declined it, or it still waits for them.
     pub async fn account(&self, resource: &str, action: &str, args: &Value) -> Result<Value> {
         let answer = self
-            .invoke(None, &format!("{resource}#{action}"), args, None, None)
+            .invoke(
+                None,
+                &format!("{resource}#{action}"),
+                args,
+                None,
+                (None, WAIT_MS),
+            )
             .await?;
         let mut answer = self.follow(None, answer).await?;
         if answer.get("status").and_then(Value::as_str) == Some("pending") {
@@ -993,7 +999,7 @@ impl Calls {
     }
 
     /// Run `action` on `resource` in `workspace` (the account with none), titled `title` in
-    /// History, waited for a short while only: its answer, `pending` while it runs on, which
+    /// History, waited for a while only: its answer, `pending` while it runs on, which
     /// [`Self::follow`] follows.
     ///
     /// # Errors
@@ -1006,14 +1012,31 @@ impl Calls {
         args: &Value,
         title: &str,
     ) -> Result<Value> {
-        self.invoke(
+        self.start_waiting(
             workspace,
             &format!("{resource}#{action}"),
             args,
-            Some(fresh_group(title)),
-            None,
+            title,
+            WAIT_MS,
         )
         .await
+    }
+
+    /// [`Self::start`] of `path` (`resource#action`), waited for `wait_ms` at most.
+    ///
+    /// # Errors
+    /// The action was refused or failed.
+    pub async fn start_waiting(
+        &self,
+        workspace: Option<&str>,
+        path: &str,
+        args: &Value,
+        title: &str,
+        wait_ms: u64,
+    ) -> Result<Value> {
+        let group = Some(fresh_group(title));
+        self.invoke(workspace, path, args, group, (None, wait_ms))
+            .await
     }
 
     /// The invocation `run` in `workspace` (the account with none), followed while it is
@@ -1042,17 +1065,17 @@ impl Calls {
     }
 
     /// `path` (`resource#action`) with `args`, under the invocation id `id` (a new one when
-    /// none), waited for a while: its answer as the tools name it.
+    /// none), waited for `wait_ms` at most: its answer as the tools name it.
     async fn invoke(
         &self,
         workspace: Option<&str>,
         path: &str,
         args: &Value,
         group: Option<Value>,
-        id: Option<&str>,
+        (id, wait_ms): (Option<&str>, u64),
     ) -> Result<Value> {
         let id = id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-        let call = json!({"path": path, "args": args, "wait_ms": WAIT_MS, "invocation_id": id});
+        let call = json!({"path": path, "args": args, "wait_ms": wait_ms, "invocation_id": id});
         action_answer(self.typed(workspace, "tilo_do", call, group).await?)
     }
 

@@ -215,7 +215,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 }
 
 /// The registries the desktop answers for the workspace this process belongs
-/// to ([`tilo_control::front::call_action`]), as its `registry.list` reading
+/// to ([`tilo_control::packages::registries`]), as its `registries#list` reading
 /// reports them.
 ///
 /// A reading that cannot be made — no desktop session, or no workspace — is

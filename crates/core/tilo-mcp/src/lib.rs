@@ -478,6 +478,22 @@ fn invocation_id(value: &str) -> Result<tilo_actions::InvocationId, String> {
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
+/// `params` of a `tools/call` that names an earlier tool, as the call of the tool that does it
+/// now ([`agent::earlier_tool`]).
+fn called_now(params: &mut Value) -> Result<(), String> {
+    let Some(name) = params.get("name").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(empty_object);
+    if let Some((name, arguments)) = agent::earlier_tool(name, &arguments)? {
+        params["name"] = name.into();
+        params["arguments"] = arguments;
+    }
+    Ok(())
+}
 fn error(id: &Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
@@ -1312,6 +1328,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 ));
             }
         }
+        if method == "tools/call"
+            && let Err(why) = called_now(&mut params)
+        {
+            return Some(error(&id, -32602, &why));
+        }
         let _turn = match self.turn(method, &params).await {
             Ok(turn) => turn,
             Err(message) => return Some(error(&id, -32000, message)),
@@ -1466,6 +1487,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .turn("tools/call", &json!({"name": name}))
             .await
             .map_err(|why| Refused::new("unavailable", why))?;
+        let (name, arguments) = match agent::earlier_tool(name, &arguments) {
+            Ok(Some((name, arguments))) => (name, arguments),
+            Ok(None) => (name, arguments),
+            Err(why) => return Err(Refused::new("invalid_request", why)),
+        };
         let mut meta = serde_json::Map::new();
         meta.insert("structured".into(), json!(true));
         if let Some(invocation) = invocation {

@@ -1672,3 +1672,140 @@ fn word_score(row: &CatalogueRow, words: &[String]) -> usize {
         })
         .count()
 }
+
+/// A client written against the earlier tool names is answered by the tools that do the same now:
+/// a batch stops at its first failure, a call waited on is cancelled, and apps, an action's
+/// parameters and a search answer as `tilo_ls` and `tilo_find` do. None is listed, and a peer id,
+/// which addresses nothing now, is refused in words.
+#[test]
+fn earlier_tool_names_are_answered_by_the_tools_that_do_it_now() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host);
+        let listed = server
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .await
+            .unwrap();
+        for earlier in [
+            "tilo_invoke",
+            "tilo_cancel",
+            "tilo_list_apps",
+            "tilo_query",
+            "tilo_resolve",
+        ] {
+            assert!(!listed.to_string().contains(earlier), "{earlier} is listed");
+        }
+
+        let (text, failed) = tool(
+            &server,
+            "tilo_invoke",
+            json!({"app_id": "notes", "calls": [
+                {"resource": "Todo/body", "action": "append-paragraph", "arguments": {"text": "a"}},
+                {"resource": "Todo", "action": "rename"},
+                {"resource": "Todo/body", "action": "append-paragraph", "arguments": {"text": "never"}},
+            ]}),
+        )
+        .await;
+        assert!(
+            failed && text.contains("stopped at 2 of 3; earlier steps stay applied"),
+            "{text}"
+        );
+        assert_eq!(host.invoked().len(), 2, "the third step never ran");
+
+        let (text, failed) = tool(
+            &server,
+            "tilo_invoke",
+            json!({"app_id": "notes", "resource": "Todo", "action": "slow", "wait_ms": 30}),
+        )
+        .await;
+        assert!(failed && text.starts_with("pending "), "{text}");
+        let id = text
+            .strip_prefix("pending ")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap()
+            .to_owned();
+        let (text, failed) = tool(&server, "tilo_cancel", json!({"invocation_id": id})).await;
+        assert_eq!((text.as_str(), failed), ("cancelled", true));
+
+        for (earlier, arguments, now, as_now) in [
+            ("tilo_list_apps", json!({}), "tilo_ls", json!({})),
+            (
+                "tilo_resolve",
+                json!({"app_id": "notes", "resource": "Todo", "action": "rename"}),
+                "tilo_ls",
+                json!({"path": "notes/Todo#rename"}),
+            ),
+            (
+                "tilo_query",
+                json!({"needle": "Groceries"}),
+                "tilo_find",
+                json!({"query": "Groceries"}),
+            ),
+            (
+                "tilo_query",
+                json!({"app_id": "notes"}),
+                "tilo_ls",
+                json!({"path": "notes"}),
+            ),
+        ] {
+            let (said, failed) = tool(&server, earlier, arguments).await;
+            assert!(!failed, "{earlier}: {said}");
+            assert_eq!(
+                said,
+                tool(&server, now, as_now).await.0,
+                "{earlier} answers as {now}"
+            );
+        }
+
+        let refused = server
+            .handle(
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+                "name": "tilo_invoke",
+                "arguments": {"peer_id": 3, "resource": "Todo", "action": "rename"}}}),
+            )
+            .await
+            .unwrap();
+        assert!(refused.to_string().contains("peer_id is gone"), "{refused}");
+        let refused = server
+            .typed("tilo_list_apps", json!({"after_peer": 3}), None)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.error.to_string().contains("cursor"),
+            "{:?}",
+            refused.error
+        );
+    });
+}
+
+/// `tilo do` and an agent name an action the same way: by its id or its title at the path of what
+/// it acts on, the app's name standing for its resources. Each name is the one action it names,
+/// invoked once with what was given; a name nothing carries invokes nothing.
+#[test]
+fn an_action_is_named_by_its_id_or_its_title_at_its_path() {
+    let host = Notes::new(true);
+    run(async {
+        let server = agent(&host);
+        for path in [
+            "notes/Todo/body#append-paragraph",
+            "notes/Todo/body#Append paragraph",
+        ] {
+            let (text, failed) = tool(
+                &server,
+                "tilo_do",
+                json!({"path": path, "args": {"text": "Groceries"}}),
+            )
+            .await;
+            assert!(!failed, "{path}: {text}");
+        }
+        let invoked = host.invoked();
+        assert_eq!(invoked.len(), 2, "{invoked:?}");
+        for (_, action, args) in &invoked {
+            assert_eq!(action, "append-paragraph");
+            assert_eq!(args["text"], "Groceries");
+        }
+        let (text, failed) = tool(&server, "tilo_do", json!({"path": "notes/Todo/body#fly"})).await;
+        assert!(failed, "{text}");
+        assert_eq!(host.invoked().len(), 2, "nothing unclear is invoked");
+    });
+}

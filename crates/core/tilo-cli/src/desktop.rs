@@ -1,8 +1,10 @@
-//! `tilo open`, `tilo action …` and `tilo do`: the desktop's apps and
-//! actions, as the action model's frames sent to its control socket
-//! ([`tilo_control::front`]).
+//! `tilo open`, `tilo action …` and `tilo do` on this computer.
 //!
-//! Which socket a request reaches is decided per process, never widened:
+//! `tilo do` and `tilo action list|show` are calls of Tilo's actions ([`crate::hosted`]): the
+//! agent surface's walk names the action by its path, binds what was typed to it, and the
+//! daemon decides the call as the person whose program connects, the app's scope for a program
+//! an app started. `tilo open` sends the action model's frames to the first control socket that
+//! serves this process ([`tilo_control::front`]):
 //!
 //! - **The device owner's own login or ssh** reaches the admin socket, with
 //!   their authority at the keyboard, through the same capability check as
@@ -27,19 +29,19 @@ use tilo_control::front::{self, Io, Spelling};
 /// `tilo action …` and the standalone `action`.
 #[derive(Debug, Subcommand)]
 pub enum ActionCmd {
-    /// List what this desktop can do, grouped, optionally only what matches.
+    /// List the apps, what is under a path and the actions it offers, or what words find.
     #[command(visible_alias = "ls")]
     List {
-        /// Words to look for.
-        filter: Vec<String>,
+        /// The app or resource, as `app/resource`, or words to look for; the apps with none.
+        path: Vec<String>,
     },
-    /// Do one thing this desktop can do.
+    /// Do one thing an app can do.
     #[command(
-        after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n\n\
+        after_help = "Examples:\n  tilo do terminal#new-window\n  tilo do notes/Todo#rename title=Groceries\n  tilo do sound#set-volume 40\n\n\
                       Options are written name=value; a single value goes to the one the action needs."
     )]
     Run {
-        /// The action's name, as `tilo action list` lists it, or words of its title.
+        /// The action's path, app/resource#action, as `tilo action list` lists it.
         action: String,
         /// Its options, as name=value.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -47,7 +49,7 @@ pub enum ActionCmd {
     },
     /// Show what an action does and what it takes.
     Show {
-        /// The action's name, as `tilo action list` lists it, or words of its title.
+        /// The action's path, app/resource#action.
         action: String,
     },
 }
@@ -83,43 +85,78 @@ fn with_io(run: impl FnOnce(&mut Io<'_>) -> u8) -> ExitCode {
     exit(code)
 }
 
-/// Answer one `action` subcommand, with examples spelled for `spelling`: an
-/// action done says its answer as typed JSON when `json`.
-pub fn run_action(cmd: ActionCmd, json: bool, spelling: &Spelling) -> ExitCode {
-    let sockets = sockets();
-    with_io(|io| match cmd {
-        ActionCmd::List { filter } => front::list(&sockets, &filter.join(" "), spelling, io),
-        ActionCmd::Run { action, args } => match setter_here(&sockets, &action, &args) {
-            Some(Ok(())) => 0,
-            Some(Err(why)) => {
-                let _ = writeln!(io.err, "{why}");
-                1
+/// Answer one `action` subcommand as `reach` calls Tilo's actions, in `workspace` or the one
+/// these calls serve.
+pub fn run_action(
+    reach: crate::api::Reach<'_>,
+    workspace: Option<&str>,
+    cmd: ActionCmd,
+) -> ExitCode {
+    match cmd {
+        ActionCmd::List { path } => {
+            let path = path.join(" ");
+            crate::hosted::ls(
+                reach,
+                workspace,
+                (!path.is_empty()).then_some(path.as_str()),
+                None,
+            )
+        }
+        ActionCmd::Run { action, args } => {
+            match (workspace.is_none() && reach.key_file.is_none())
+                .then(|| section_here(&action, &args))
+                .flatten()
+            {
+                Some(answered) => with_io(|io| front::say(answered, reach.json, io)),
+                None => crate::hosted::act(reach, workspace, &action, &args),
             }
-            None => front::run(&sockets, &action, &args, json, spelling, io),
-        },
-        ActionCmd::Show { action } => front::show(&sockets, &action, spelling, io),
-    })
+        }
+        ActionCmd::Show { action } => crate::hosted::ls(reach, workspace, Some(&action), None),
+    }
 }
 
-/// A setting's setter (`settings/appearance#set-mode dark`) run on this device while its session
-/// is not running: kept for the session, and read at once by the device's processes. `None` for
-/// anything else, which the session answers.
-fn setter_here(
-    sockets: &[ControlSocket],
-    action: &str,
-    args: &[String],
-) -> Option<Result<(), String>> {
-    let (resource, verb) = action.split_once('#')?;
-    if !verb.starts_with("set-") || desktop_present(sockets) {
+/// An action of a settings section (`settings/appearance#set-mode dark`), the person's or this
+/// device's: the desktop's own, which its seat serves to its control socket alone, run there as
+/// a process outside the session runs it ([`settings_store::outside`]); while no session runs,
+/// a setter's value is kept for the session and read at once by the device's processes. A lone
+/// value is the setter's. `None` for any other action, which goes through the walk.
+fn section_here(action: &str, args: &[String]) -> Option<Result<serde_json::Value, String>> {
+    if !tilo_actions::remote::settings_resources::is_section(action) {
         return None;
     }
-    let [word] = args else {
-        return Some(Err(format!("{action} takes one value")));
+    let (resource, verb) = action.split_once('#')?;
+    let args = match args {
+        [word] if !word.contains('=') && !word.starts_with("--") => {
+            let value = serde_json::from_str(word)
+                .unwrap_or_else(|_| serde_json::Value::from(word.as_str()));
+            serde_json::Map::from_iter([("value".to_owned(), value)])
+        }
+        words => {
+            let mut input = std::io::stdin().lock();
+            match crate::bind::arguments(&serde_json::Value::Null, words, &mut input) {
+                Ok(args) => args,
+                Err(why) => return Some(Err(why)),
+            }
+        }
     };
-    let word = word.strip_prefix("value=").unwrap_or(word);
-    let value = serde_json::from_str(word).unwrap_or_else(|_| serde_json::Value::from(word));
-    Some(settings_store::outside::set_on_this_device(
-        resource, verb, &value,
+    let sockets = sockets();
+    if !desktop_present(&sockets) {
+        let value = args.get("value").cloned().unwrap_or_default();
+        return Some(
+            settings_store::outside::set_on_this_device(resource, verb, &value)
+                .map(|()| serde_json::json!({"status": "ok", "path": action})),
+        );
+    }
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: tilo_actions::remote::settings_resources::PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(resource, verb),
+    };
+    Some(front::call_target(
+        &sockets,
+        target,
+        verb,
+        &serde_json::Value::Object(args),
+        &Spelling::tilo(),
     ))
 }
 
@@ -133,7 +170,7 @@ pub fn run_open(app: &str, items: &[String], spelling: &Spelling) -> ExitCode {
 /// What `tilo complete` completes.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum Completing {
-    /// Action names, matched on their titles.
+    /// Action paths, app/resource#action: the apps they start with.
     Actions,
     /// App names.
     Apps,
@@ -142,10 +179,9 @@ pub enum Completing {
 /// `tilo complete KIND [PREFIX]`: one candidate per line, for the shell
 /// completions below. Prints nothing where there is no desktop.
 pub fn complete(what: Completing, prefix: &str) -> ExitCode {
-    let sockets = sockets();
     let names = match what {
-        Completing::Actions => front::complete_actions(&sockets, prefix),
-        Completing::Apps => front::complete_apps(&sockets, prefix),
+        // An action's path starts with its app.
+        Completing::Actions | Completing::Apps => front::complete_apps(&sockets(), prefix),
     };
     let mut out = std::io::stdout().lock();
     for name in names {
@@ -158,8 +194,7 @@ pub fn complete(what: Completing, prefix: &str) -> ExitCode {
 
 /// Shell glue that asks the desktop for app and action names as they are
 /// typed: after `tilo open`, `tilo app open`, `tilo do`, `tilo action
-/// run|show` and the standalone `action run|show`. Candidates are not
-/// filtered by prefix here: the desktop matches words inside titles.
+/// run|show` and the standalone `action run|show`.
 pub fn dynamic_completions(shell: Shell) -> &'static str {
     match shell {
         Shell::Bash => BASH,

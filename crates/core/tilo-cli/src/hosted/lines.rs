@@ -48,6 +48,52 @@ pub fn listing(listed: &Value) -> String {
     said
 }
 
+/// One action, as a listing of its path (`app/resource#action`) answers it: its title, what it
+/// does, each parameter with its type and whether it must be given, and a call of it with what
+/// it needs. `None` for a listing of anything else.
+#[must_use]
+pub fn action(listed: &Value) -> Option<String> {
+    let ([action], []) = (rows(listed, "actions"), rows(listed, "rows")) else {
+        return None;
+    };
+    let path = text(listed, "path");
+    let called = format!("{path}#{}", text(action, "id"));
+    let mut said = format!("{called}  {}", text(action, "label"));
+    let description = text(action, "description");
+    if !description.is_empty() {
+        let _ = write!(said, "\n{description}");
+    }
+    let params = rows(action, "params");
+    if params.is_empty() {
+        said.push_str("\nTakes     nothing");
+    } else {
+        said.push_str("\nTakes");
+    }
+    let width = params
+        .iter()
+        .map(|param| text(param, "name").chars().count())
+        .max();
+    let mut example = format!("tilo do {called}");
+    for param in params {
+        let (name, required) = (
+            text(param, "name"),
+            param.get("required") == Some(&Value::Bool(true)),
+        );
+        let need = if required { "required" } else { "optional" };
+        let width = width.unwrap_or_default();
+        let _ = write!(said, "\n  {name:<width$}  {}, {need}", text(param, "ty"));
+        let description = text(param, "description");
+        if !description.is_empty() && description != name {
+            let _ = write!(said, "  {description}");
+        }
+        if required {
+            let _ = write!(example, " {name}=…");
+        }
+    }
+    let _ = write!(said, "\nExample\n  {example}");
+    Some(said)
+}
+
 /// One resource read (`Resource`): its markdown when it is written in it, else what it holds
 /// a line each, else its fields; an app's surface as it is published.
 #[must_use]
@@ -73,4 +119,31 @@ pub fn resource(read: &Value) -> String {
         fields
     };
     serde_json::to_string_pretty(shown).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// `tilo action show` reads one action's listing as its title, what it takes and a call of it
+    /// with what it needs; a listing of anything else is no action's page.
+    #[test]
+    fn an_actions_page_says_what_it_takes_and_how_it_is_called() {
+        let listed = json!({"path": "notes/Todo", "kind": "notes.page", "rows": [], "actions": [{
+        "id": "rename", "label": "Rename note", "kind": "document",
+        "params": [
+            {"name": "title", "ty": "text", "required": true, "description": "The new title"},
+            {"name": "quiet", "ty": "boolean", "required": false, "description": "quiet"},
+        ]}]});
+        assert_eq!(
+            super::action(&listed).as_deref(),
+            Some(
+                "notes/Todo#rename  Rename note\nTakes\n  title  text, required  The new title\n  \
+                 quiet  boolean, optional\nExample\n  tilo do notes/Todo#rename title=…"
+            )
+        );
+        let listing = json!({"path": "notes", "rows": [{"name": "Todo", "kind": "notes.page"}],
+            "actions": [{"id": "new-page", "label": "New note", "params": []}]});
+        assert_eq!(super::action(&listing), None);
+    }
 }

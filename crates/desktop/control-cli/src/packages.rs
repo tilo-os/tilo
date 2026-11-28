@@ -43,7 +43,7 @@ pub const WORKSPACE_TRUST_ENV: &str = "TILO_WORKSPACE_TRUST";
 /// on its own action listing to start what it launches.
 #[must_use]
 pub fn trust() -> (Vec<TrustAttestor>, Vec<RevokedPublisher>) {
-    let Some(value) = reading(WORKSPACE_TRUST_ENV, "trust.list") else {
+    let Some(value) = reading(WORKSPACE_TRUST_ENV, ("trust", "list")) else {
         return (Vec::new(), Vec::new());
     };
     let attestors = rows(&value, "attestors")
@@ -72,7 +72,7 @@ pub fn trust() -> (Vec<TrustAttestor>, Vec<RevokedPublisher>) {
 /// development build reads instead of asking a desktop.
 #[must_use]
 pub fn registries() -> Vec<Registry> {
-    let Some(value) = reading("TILO_WORKSPACE_REGISTRIES", "registry.list") else {
+    let Some(value) = reading("TILO_WORKSPACE_REGISTRIES", ("registries", "list")) else {
         return Vec::new();
     };
     rows(&value, "registries")
@@ -88,24 +88,20 @@ pub fn registries() -> Vec<Registry> {
         .collect()
 }
 
-/// Run the workspace action `name` with `args` and answer what it answered.
+/// Run the workspace's action `action` on its resource `child` (`trust`, `registries`) with
+/// `args` and answer what it answered.
 ///
 /// # Errors
-/// No desktop answered, the action is unknown or ambiguous, or it failed.
-pub fn call(name: &str, args: &Value) -> Result<Value, String> {
-    crate::front::call_action(
-        &crate::client::sockets_from_env(),
-        name,
-        args,
-        &crate::front::Spelling::standalone(),
-    )
+/// No desktop answered, it offers no such action, or the action failed.
+pub fn call(at: (&str, &str), args: &Value) -> Result<Value, String> {
+    crate::front::call_workspace(&crate::client::sockets_from_env(), at, args)
 }
 
-/// The JSON `env` names, or else the workspace's reading `action`.
-fn reading(env: &str, action: &str) -> Option<Value> {
+/// The JSON `env` names, or else the workspace's reading `at`.
+fn reading(env: &str, at: (&str, &str)) -> Option<Value> {
     match std::env::var_os(env) {
         Some(json) => serde_json::from_str(&json.to_string_lossy()).ok(),
-        None => call(action, &Value::Object(serde_json::Map::new())).ok(),
+        None => call(at, &Value::Object(serde_json::Map::new())).ok(),
     }
 }
 

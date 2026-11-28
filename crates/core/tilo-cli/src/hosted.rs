@@ -99,11 +99,18 @@ fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The id of the workspace `named` names, by its name or id; none for the account.
-async fn workspace_of(client: &Calls, named: Option<&str>) -> Result<Option<String>> {
+/// The id of the workspace `named` names, by its name or id; none for the account's own
+/// `path`; else the one these calls serve (the daemon's, or the desktop's).
+async fn workspace_of(client: &Calls, named: Option<&str>, path: &str) -> Result<Option<String>> {
     Ok(match named {
         Some(named) => Some(client.workspace_id(named).await?),
-        None => None,
+        None if on_account(path) => None,
+        None => Some(
+            client
+                .served_workspace()
+                .context("name the workspace: -w <name or id>")?
+                .to_owned(),
+        ),
     })
 }
 
@@ -125,10 +132,20 @@ pub fn on_account(path: &str) -> bool {
 /// workspace, or of the account with none, as `app/resource#action`, said as `tilo do` says an
 /// action this desktop ran ([`tilo_control::front::say`]). An argument the action takes as a
 /// workspace is named by the workspace's name or id. With `--out`, what the action answers as
-/// a secret is written to FILE, readable by this account only, and never printed.
+/// a secret is written to FILE, readable by this account only, and never printed. `-` for the
+/// path reads several calls (`[{path, args}, …]`) from standard input, run in order until one
+/// fails. `--wait=MS` answers after MS at most, and `--no-wait` at once: one still running then
+/// says how to follow it.
 pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String]) -> ExitCode {
     crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
     let mut args = args.to_vec();
+    let wait = match waited(&mut args) {
+        Ok(wait) => wait,
+        Err(why) => {
+            eprintln!("tilo: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
     let out = args.iter().position(|arg| arg == "--out").map(|at| {
         let file = args.get(at.saturating_add(1)).cloned();
         args.drain(at..(at.saturating_add(2)).min(args.len()));
@@ -150,17 +167,33 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
             return site_key(&args, out.as_deref()).await;
         }
         let client = open(reach).await?;
-        let Some((resource, action)) = path.rsplit_once('#') else {
+        if path == "-" {
+            let workspace = workspace_of(&client, workspace, path).await?;
+            let calls: Value = serde_json::from_reader(std::io::stdin().lock()).context(
+                "standard input has the calls as JSON: [{\"path\": …, \"args\": {…}}, …]",
+            )?;
+            let wait_ms = wait.unwrap_or(tilo_api::calls::WAIT_MS);
+            return client
+                .typed(
+                    workspace.as_deref(),
+                    "tilo_do",
+                    json!({"calls": calls, "wait_ms": wait_ms}),
+                    None,
+                )
+                .await;
+        }
+        if !path.contains('#') {
             bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
-        };
-        let workspace = workspace_of(&client, workspace).await?;
-        let mut arguments = tilo_control::front::arguments(&args).map_err(anyhow::Error::msg)?;
+        }
+        let workspace = workspace_of(&client, workspace, path).await?;
         let described = client
             .list(workspace.as_deref(), Some(path), None)
             .await
             .ok()
             .and_then(|listed| listed.pointer("/actions/0").cloned())
             .unwrap_or_default();
+        let mut arguments = crate::bind::arguments(&described, &args, &mut std::io::stdin().lock())
+            .map_err(anyhow::Error::msg)?;
         for name in workspace_params(&described) {
             if let Some(Value::String(named)) = arguments.get(&name) {
                 let id = client.workspace_id(named).await?;
@@ -168,9 +201,14 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
             }
         }
         let arguments = Value::Object(arguments);
+        let wait_ms = wait.unwrap_or(tilo_api::calls::WAIT_MS);
         let started = client
-            .start(workspace.as_deref(), resource, action, &arguments, path)
+            .start_waiting(workspace.as_deref(), path, &arguments, path, wait_ms)
             .await?;
+        if wait.is_some() {
+            still_running(&started);
+            return Ok(started);
+        }
         // This command is a program of the person's, never their own act: what it asks waits for
         // their answer on their session or another device of theirs.
         let mut answer = client
@@ -200,6 +238,71 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         },
     );
     ExitCode::from(code)
+}
+
+/// How long `tilo do` waits, taken out of `args`: `--wait=MS` at most MS, `--no-wait` not at all,
+/// and `--wait` (as with none) until it ends, `None`.
+fn waited(args: &mut Vec<String>) -> Result<Option<u64>, String> {
+    let mut wait = None;
+    for arg in std::mem::take(args) {
+        match (arg.as_str(), arg.strip_prefix("--wait=")) {
+            ("--wait", _) => wait = None,
+            ("--no-wait", _) => wait = Some(0),
+            (_, Some(ms)) => {
+                wait =
+                    Some(ms.parse().map_err(|_| {
+                        format!("--wait=MS: `{ms}` is not a number of milliseconds")
+                    })?);
+            }
+            _ => args.push(arg),
+        }
+    }
+    Ok(wait)
+}
+
+/// Say how to follow an invocation `answer` says is still running when its wait ran out.
+fn still_running(answer: &Value) {
+    if let (Some(state @ ("pending" | "asked")), Some(id)) = (
+        answer.get("status").and_then(Value::as_str),
+        answer.get("invocation").and_then(Value::as_str),
+    ) {
+        eprintln!(
+            "tilo: still {state} when the wait ran out; follow it with `tilo invocations {id} --wait`"
+        );
+    }
+}
+
+/// `tilo invocations <invocation> -w <workspace>`: how one invocation stands, as `tilo_status`
+/// answers, after stopping it (`cancel`), followed for `wait_ms` at most while it runs.
+pub fn invocation(
+    reach: Reach<'_>,
+    workspace: &str,
+    id: &str,
+    (wait_ms, cancel): (Option<u64>, bool),
+) -> ExitCode {
+    run(async {
+        let client = open(reach).await?;
+        let workspace = client.workspace_id(workspace).await?;
+        if cancel {
+            client
+                .typed(
+                    Some(&workspace),
+                    "tilo_status",
+                    json!({"invocation_id": id, "cancel": true}),
+                    None,
+                )
+                .await?;
+        }
+        let answer = client
+            .invocation(Some(&workspace), id, wait_ms.unwrap_or(0).div_ceil(1000))
+            .await?;
+        still_running(&answer);
+        Ok(show(
+            reach.json,
+            &answer,
+            &tilo_control::front::answer_text(&answer),
+        ))
+    })
 }
 
 /// Write the answer's secret (one of `secrets`) to `out`, readable by this account only, and say
@@ -235,7 +338,9 @@ async fn site_key(args: &[String], out: Option<&Path>) -> Result<Value> {
         .context(format!("{site} names no API server keys are asked for at"))?
         .to_owned();
     let api = Origin::new(&http, &api);
-    let new = Value::Object(tilo_control::front::arguments(args).map_err(anyhow::Error::msg)?);
+    let new = crate::bind::arguments(&Value::Null, args, &mut std::io::stdin().lock())
+        .map_err(anyhow::Error::msg)?;
+    let new = Value::Object(new);
     let (status, asked) = json_at(&api, tilo_api::keys::NEW_PATH, new).await?;
     if status != 201 {
         bail!("the site refused the key: {}", refusal(&asked));
@@ -329,9 +434,43 @@ pub fn ls(
 ) -> ExitCode {
     run(async {
         let client = open(reach).await?;
-        let workspace = workspace_of(&client, workspace).await?;
-        let listed = client.list(workspace.as_deref(), path, cursor).await?;
-        Ok(show(reach.json, &listed, &lines::listing(&listed)))
+        let workspace = workspace_of(&client, workspace, path.unwrap_or_default()).await?;
+        let listed = match client.list(workspace.as_deref(), path, cursor).await {
+            Ok(listed) => listed,
+            // Words that name no path are looked for, as `tilo action list` filtered by them.
+            Err(_) if path.is_some_and(|words| !words.contains(['/', '#'])) => {
+                let query = path.unwrap_or_default();
+                let arguments = json!({"query": query});
+                let found =
+                    (client.typed(workspace.as_deref(), "tilo_find", arguments, None)).await?;
+                let text = |hit: &Value, name: &str| {
+                    hit.get(name)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let hits = found
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten();
+                let said: Vec<String> = hits
+                    .map(|hit| format!("{}  {}", text(hit, "path"), text(hit, "label")))
+                    .collect();
+                let said = if said.is_empty() {
+                    format!("Nothing matches “{query}”.")
+                } else {
+                    said.join("\n")
+                };
+                return Ok(show(reach.json, &found, &said));
+            }
+            Err(error) => return Err(error),
+        };
+        let said = path
+            .filter(|path| path.contains('#'))
+            .and_then(|_| lines::action(&listed))
+            .unwrap_or_else(|| lines::listing(&listed));
+        Ok(show(reach.json, &listed, &said))
     })
 }
 
@@ -345,7 +484,7 @@ pub fn read(
 ) -> ExitCode {
     run(async {
         let client = open(reach).await?;
-        let workspace = workspace_of(&client, workspace).await?;
+        let workspace = workspace_of(&client, workspace, path).await?;
         let read = client
             .read(workspace.as_deref(), path.trim(), cursor)
             .await?;
@@ -1124,8 +1263,26 @@ fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+
+    /// `tilo do`'s wait is taken out of its options: at most MS, none, or until it ends; a time
+    /// that is no number is refused in words.
+    #[test]
+    fn a_wait_is_taken_out_of_the_options() {
+        let mut args: Vec<String> = ["title=Groceries", "--wait=250"].map(String::from).to_vec();
+        assert_eq!(super::waited(&mut args), Ok(Some(250)));
+        assert_eq!(args, ["title=Groceries"]);
+        let mut args = vec!["--no-wait".to_owned()];
+        assert_eq!(super::waited(&mut args), Ok(Some(0)));
+        let mut args = vec!["--no-wait".to_owned(), "--wait".to_owned()];
+        assert_eq!(super::waited(&mut args), Ok(None));
+        assert!(args.is_empty());
+        let mut args = vec!["--wait=soon".to_owned()];
+        assert_eq!(
+            super::waited(&mut args),
+            Err("--wait=MS: `soon` is not a number of milliseconds".to_owned())
+        );
+    }
     use crate::api;
     use std::sync::Arc;
 

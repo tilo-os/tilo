@@ -6,18 +6,13 @@ use std::sync::Arc;
 use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{self, CataloguePage, CatalogueResource, InvokeRequest};
 use tilo_actions::{
-    ActionAddress, ActionContract, ActionOutput, ActionParam, ActionState, ExecutionLocus,
-    InputSpec, OperationKind, ParamType,
+    ActionAddress, ActionContract, ActionOutput, ActionState, ExecutionLocus, InputSpec,
+    OperationKind,
 };
 
 use super::*;
 
-fn row(
-    provider: &str,
-    (resource, label): (&str, &str),
-    (id, title): (&str, &str),
-    params: Vec<ActionParam>,
-) -> CatalogueRow {
+fn row(provider: &str, (resource, label): (&str, &str), (id, title): (&str, &str)) -> CatalogueRow {
     CatalogueRow {
         offered: None,
         provider: provider.into(),
@@ -44,7 +39,7 @@ fn row(
             kind: OperationKind::Document,
             contract: ActionContract::default(),
             input: InputSpec::None,
-            params,
+            params: Vec::new(),
             view: None,
         }),
         has_children: false,
@@ -53,42 +48,13 @@ fn row(
     }
 }
 
-/// What the fake desktop below offers: the shell's own action, an action two
-/// places offer under one id, one with a typed parameter, and an app.
+/// What the fake desktop below offers: an app to open.
 fn rows() -> Vec<CatalogueRow> {
-    let named = |name: &'static str, ty| vec![ActionParam::required(name, ty, "")];
-    vec![
-        row(
-            "so.tilo.session",
-            ("desktop:chrome", "Desktop"),
-            ("new-terminal-window", "New terminal window"),
-            Vec::new(),
-        ),
-        row(
-            "7",
-            ("notes.page:1", "Todo"),
-            ("rename", "Rename note"),
-            named("title", ParamType::Text),
-        ),
-        row(
-            "8",
-            ("sheets.sheet:1", "Budget"),
-            ("rename", "Rename"),
-            named("name", ParamType::Text),
-        ),
-        row(
-            "so.tilo.session",
-            ("session:audio", "Sound"),
-            ("set-volume", "Set volume"),
-            named("level", ParamType::Integer),
-        ),
-        row(
-            "workspace:w1",
-            ("app.so.tilo.notes", "Notes"),
-            (remote::APPLICATION_OPEN_ACTION, "Open"),
-            Vec::new(),
-        ),
-    ]
+    vec![row(
+        "workspace:w1",
+        ("app.so.tilo.notes", "Notes"),
+        (remote::APPLICATION_OPEN_ACTION, "Open"),
+    )]
 }
 
 /// A desktop's control socket answering frames as a session does, through
@@ -191,105 +157,6 @@ fn args(request: &InvokeRequest) -> Value {
     }
 }
 
-#[test]
-fn do_picks_by_id_title_or_place_and_invokes_the_one_frame() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let desktop = FakeDesktop::serve(dir.path(), "control.sock");
-    let sockets = [ControlSocket::Named(desktop.path.clone())];
-    let spelling = Spelling::tilo();
-
-    let done = ran(|io| run(&sockets, "new terminal window", &[], false, &spelling, io));
-    assert_eq!(
-        (done.code, done.out.as_str()),
-        (0, "ok\ndone\n"),
-        "{}",
-        done.err
-    );
-    let renamed = ran(|io| {
-        run(
-            &sockets,
-            "todo#rename",
-            &["Groceries".into()],
-            false,
-            &spelling,
-            io,
-        )
-    });
-    assert_eq!(renamed.code, 0, "{}", renamed.err);
-    let louder = ran(|io| run(&sockets, "set-volume", &["40".into()], false, &spelling, io));
-    assert_eq!(louder.code, 0, "{}", louder.err);
-    let invoked = desktop.invoked();
-    assert_eq!(invoked.len(), 3);
-    assert_eq!(invoked[0].target.provider, "so.tilo.session");
-    assert_eq!(invoked[0].target.address.action, "new-terminal-window");
-    assert_eq!(invoked[1].target.provider, "7");
-    assert_eq!(args(&invoked[1]), serde_json::json!({"title": "Groceries"}));
-    assert_eq!(args(&invoked[2]), serde_json::json!({"level": 40}));
-
-    let ambiguous = ran(|io| run(&sockets, "rename", &["x".into()], false, &spelling, io));
-    assert_eq!(ambiguous.code, 1);
-    assert!(
-        ambiguous.err.contains("tilo do 7:notes.page:1#rename")
-            && ambiguous.err.contains("tilo do 8:sheets.sheet:1#rename"),
-        "each suggestion is the full address that runs as typed: {}",
-        ambiguous.err
-    );
-    let unknown = ran(|io| run(&sockets, "fly", &[], false, &spelling, io));
-    assert_eq!(unknown.code, 1);
-    assert_eq!(desktop.invoked().len(), 3, "nothing unclear is invoked");
-    // A suggestion typed back finds the one row it names.
-    let picked = ran(|io| {
-        run(
-            &sockets,
-            "7:notes.page:1#rename",
-            &["x".into()],
-            false,
-            &spelling,
-            io,
-        )
-    });
-    assert_eq!(picked.code, 0, "{}", picked.err);
-    assert_eq!(desktop.invoked()[3].target.provider, "7");
-
-    let json = ran(|io| {
-        run(
-            &sockets,
-            "set-volume",
-            &["level=5".into()],
-            true,
-            &spelling,
-            io,
-        )
-    });
-    let typed: Value = serde_json::from_str(&json.out).expect("typed JSON");
-    assert_eq!(typed["status"], "ok");
-    assert_eq!(typed["result"], "done");
-
-    let listed = ran(|io| list(&sockets, "", &spelling, io));
-    assert_eq!(listed.code, 0, "{}", listed.err);
-    assert!(
-        listed
-            .out
-            .contains("new-terminal-window  New terminal window"),
-        "{}",
-        listed.out
-    );
-    assert!(listed.out.contains("todo#rename"), "{}", listed.out);
-
-    let shown = ran(|io| show(&sockets, "todo#rename", &spelling, io));
-    assert_eq!(shown.code, 0, "{}", shown.err);
-    assert!(
-        shown.out.starts_with("Rename note\nTodo\n"),
-        "{}",
-        shown.out
-    );
-    assert!(
-        shown.out.contains("tilo do todo#rename title=…"),
-        "{}",
-        shown.out
-    );
-}
-
 /// A verb that names its own action (`tilo machine show`) says its answer as
 /// the lines a person reads, or with `--json` as Tilo's typed answer alone.
 #[test]
@@ -305,15 +172,8 @@ fn a_named_verb_says_its_answer_as_lines_or_typed_json() {
     let asking = serde_json::json!({"plan": "0123456789abcdef0123456789abcdef"});
 
     let typed = ran(|io| {
-        run_target(
-            &sockets,
-            target.clone(),
-            "Show a machine you planned",
-            &asking,
-            &spelling,
-            true,
-            io,
-        )
+        let answer = call_target(&sockets, target.clone(), "Show", &asking, &spelling);
+        say(answer, true, io)
     });
     assert_eq!(typed.code, 0, "{}", typed.err);
     let answer: Value = serde_json::from_str(&typed.out).expect("the answer is JSON");
@@ -322,12 +182,8 @@ fn a_named_verb_says_its_answer_as_lines_or_typed_json() {
     assert!(answer["invocation"].is_string(), "{}", typed.out);
 
     let spoken = ran(|io| {
-        run_target(
-            &sockets,
-            target,
-            "Show a machine you planned",
-            &asking,
-            &spelling,
+        say(
+            call_target(&sockets, target, "Show", &asking, &spelling),
             false,
             io,
         )
@@ -337,26 +193,6 @@ fn a_named_verb_says_its_answer_as_lines_or_typed_json() {
     assert_eq!(desktop.invoked().len(), 2);
     let asked = args(&desktop.invoked()[0]);
     assert_eq!(asked["plan"], "0123456789abcdef0123456789abcdef");
-}
-
-/// One action has one entry: a provider that offers the same address twice,
-/// with another row between the copies, is still one action to pick.
-#[test]
-fn one_address_is_one_action_however_often_it_is_offered() {
-    let duplicate = row("p", ("res", "Res"), ("do-thing", "Do thing"), Vec::new());
-    let elsewhere = row(
-        "p",
-        ("other", "Other"),
-        ("other-thing", "Other thing"),
-        Vec::new(),
-    );
-    let offers: Vec<Offer> = [duplicate.clone(), elsewhere, duplicate]
-        .into_iter()
-        .filter_map(Offer::of)
-        .collect();
-    let found = find(&offers, "do-thing", &Spelling::tilo()).expect("one action, not two");
-    assert_eq!(found.provider, "p");
-    assert_eq!(found.action.address.resource, "res");
 }
 
 #[test]
@@ -400,13 +236,15 @@ fn inside_an_app_the_frames_go_to_the_mcp_server() {
         ControlSocket::Admin(admin),
         ControlSocket::Agent(agent.path.clone()),
     ];
+    let target = RemoteActionTarget {
+        provider: "so.tilo.session".into(),
+        address: ActionAddress::new("desktop:chrome", "new-terminal-window"),
+    };
     let done = ran(|io| {
-        run(
-            &sockets,
-            "new-terminal-window",
-            &[],
+        let spelling = Spelling::tilo();
+        say(
+            call_target(&sockets, target, "New", &Value::Null, &spelling),
             false,
-            &Spelling::tilo(),
             io,
         )
     });
@@ -415,38 +253,13 @@ fn inside_an_app_the_frames_go_to_the_mcp_server() {
 }
 
 #[test]
-fn the_listing_with_no_daemon_answering_says_how_to_look() {
-    let listed = ran(|io| list(&[], "", &Spelling::tilo(), io));
-    assert_eq!(listed.code, 1);
+fn a_command_with_no_daemon_answering_says_how_to_look() {
+    let opened = ran(|io| open(&[], "notes", &[], Path::new("/"), &Spelling::tilo(), io));
+    assert_eq!(opened.code, 1);
     assert_eq!(
-        listed.err,
+        opened.err,
         "Tilo isn't answering on this computer: the session that holds your workspaces is not \
          running. Run `tilo status` to see how it stands.\n"
-    );
-}
-
-#[test]
-fn loose_options_are_json_where_they_parse() {
-    let args = arguments(&["count=3".into(), "--title=Groceries".into()]).expect("args");
-    assert_eq!(args["count"], 3);
-    assert_eq!(args["title"], "Groceries");
-    assert_eq!(
-        arguments(&["oops".into()]).unwrap_err(),
-        "Write “oops” as name=value."
-    );
-}
-
-#[test]
-fn a_value_written_at_dash_is_read_from_standard_input_as_text() {
-    let mut input = &b"sk-secret-123\n"[..];
-    let args =
-        arguments_reading(&["key=@-".into(), "provider=p1".into()], &mut input).expect("args");
-    assert_eq!(args["key"], "sk-secret-123");
-    assert_eq!(args["provider"], "p1");
-    let mut input = &b"1"[..];
-    assert_eq!(
-        arguments_reading(&["a=@-".into(), "b=@-".into()], &mut input).unwrap_err(),
-        "Only one value is read from standard input; “b” is a second."
     );
 }
 
@@ -580,7 +393,30 @@ impl AskingDesktop {
         Self { path, resolved }
     }
 
-    fn call(&self, prompt: &mut dyn FnMut(&str) -> Option<bool>) -> Result<Value, String> {
+    /// The person's `resolution` (`approve`, `decline`) of the record, made where they answer
+    /// it, on their session or another device of theirs, never on the command's connection.
+    fn answer(&self, resolution: &str) {
+        let mut answer = Map::new();
+        answer.insert("resolution".into(), resolution.into());
+        self.resolved.lock().unwrap().push(InvokeRequest {
+            asks: false,
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER.into(),
+                address: ActionAddress::new("7d1c", tilo_actions::remote::asked::RESOLVE),
+            },
+            argument: InvokeArgument::Json(answer),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        });
+    }
+
+    fn call(&self) -> Result<Value, String> {
         let sockets = [ControlSocket::Named(self.path.clone())];
         let mut desktop = Desktop::connect(&sockets).expect("the asking desktop");
         let mut args = Map::new();
@@ -593,52 +429,39 @@ impl AskingDesktop {
             },
             args,
             ("Send", &Spelling::tilo()),
-            prompt,
         )
     }
 }
 
-/// A call the workspace asks the person first waits in its asked record: `tilo do` asks them at
-/// its own prompt, once, showing what it does and with what, and their answer is that record's
-/// own resolve on the same connection. Their yes runs it; their no ends it with nothing done.
+/// A call the workspace asks the person first waits in its asked record until the person answers
+/// it where they answer questions: the command, a program of theirs, never answers its own
+/// question. Their yes runs it; their no ends it with nothing done.
 #[test]
-fn a_call_that_asks_first_is_confirmed_at_tilos_own_prompt() {
+fn a_call_that_asks_first_waits_for_the_persons_own_answer() {
     let dir = tempfile::tempdir().expect("tempdir");
-
-    let yes = AskingDesktop::serve(dir.path());
-    let mut asked = Vec::new();
-    let answer = yes.call(&mut |question| {
-        asked.push(question.to_owned());
-        Some(true)
-    });
-    assert_eq!(answer.expect("it runs on the yes")["result"], "sent");
-    assert_eq!(asked.len(), 1, "asked once: {asked:?}");
-    assert!(
-        asked[0].contains("“Send”") && asked[0].contains("to=bo@example.test"),
-        "{asked:?}"
-    );
-    let resolved = yes.resolved.lock().unwrap().clone();
-    assert_eq!(resolved.len(), 1, "{resolved:?}");
-    assert_eq!(
-        resolved[0].target.provider,
-        tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER
-    );
-    assert_eq!(
-        resolved[0].target.address,
-        ActionAddress::new("7d1c", tilo_actions::remote::asked::RESOLVE)
-    );
-    assert_eq!(args(&resolved[0])["resolution"], "approve");
-    assert!(
-        resolved[0].confirmation.is_none(),
-        "the CLI writes no approve itself"
-    );
-
-    std::fs::remove_file(&yes.path).expect("the socket goes");
-    let no = AskingDesktop::serve(dir.path());
-    let declined = no.call(&mut |_| Some(false));
-    assert!(declined.is_err(), "{declined:?}");
-    assert_eq!(
-        args(&no.resolved.lock().unwrap()[0])["resolution"],
-        "decline"
-    );
+    for (resolution, ends) in [
+        ("approve", Ok("sent")),
+        ("decline", Err("“Send” was cancelled.")),
+    ] {
+        let desktop = Arc::new(AskingDesktop::serve(dir.path()));
+        let calling = Arc::clone(&desktop);
+        let call = std::thread::spawn(move || calling.call());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!call.is_finished(), "it waits for the person");
+        desktop.answer(resolution);
+        let answer = call.join().expect("the call ends");
+        assert_eq!(
+            answer
+                .as_ref()
+                .map(|answer| answer["result"].as_str().unwrap_or_default()),
+            ends.map_err(str::to_owned).as_ref().map(|sent| *sent),
+            "{resolution}"
+        );
+        assert_eq!(
+            desktop.resolved.lock().unwrap().len(),
+            1,
+            "the command answered nothing itself"
+        );
+        std::fs::remove_file(&desktop.path).expect("the socket goes");
+    }
 }

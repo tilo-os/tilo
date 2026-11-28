@@ -192,7 +192,7 @@ mod mcp_agent_tools;
 mod mcp_agent_pick;
 
 use mcp_agent_pick::{pick_action_anywhere, published_on};
-pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
+pub(super) use mcp_agent_tools::{earlier_tool, held_until_ended, tool_definitions};
 use tilo_actions::tree::{
     Address, AppRef, CLOSE_MATCHES, InstalledApp, Level, Levels, LsCursor, Names, Node, PageMark,
     Resolved, TypeNames, action_rank, app_names, app_of, below_app, bound_key, is_program_form,
@@ -1437,6 +1437,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                         if structured {
                             reply.structured = Some(json!({
                                 "status": "failed",
+                                "error": stopped(steps.last(), index, total),
                                 "stopped_at": index,
                                 "links": link::step_links(&steps),
                                 "steps": steps,
@@ -1874,3 +1875,18 @@ fn no_read_action(resolved: &Resolved) -> Reply {
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]
 mod tests;
+
+/// A batch's refusal: the refusal of `failed`, the step at `index` of `total` it stopped at,
+/// saying where it stopped.
+fn stopped(failed: Option<&Value>, index: usize, total: usize) -> Value {
+    let said = |field: &str| {
+        failed
+            .and_then(|step| step.get("error")?.get(field)?.as_str())
+            .unwrap_or_default()
+    };
+    json!({"code": said("code"), "message": format!(
+        "stopped at {} of {total}; earlier steps stay applied: {}",
+        index.saturating_add(1),
+        said("message")
+    )})
+}

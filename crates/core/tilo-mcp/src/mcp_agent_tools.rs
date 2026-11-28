@@ -126,3 +126,96 @@ fn tools() -> Vec<Value> {
     })
     .collect()
 }
+
+/// A tool an earlier client still names, as the tool that does it now: its name and arguments.
+/// None is listed, so a model sees one set; a client written against the earlier names is
+/// answered by the tool each maps to. Instances addressed by peer have no address now: a path
+/// names what they had.
+pub(crate) fn earlier_tool(
+    name: &str,
+    args: &Value,
+) -> Result<Option<(&'static str, Value)>, String> {
+    let text = |field: &str| {
+        args.get(field)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    };
+    if args.get("peer_id").is_some() {
+        return Err(format!(
+            "{name}: peer_id is gone; name the app (app_id) or a path, as tilo_ls lists them"
+        ));
+    }
+    // An app's resource, as a path: `app.<id>` of the workspace is the app itself.
+    let path = |resource: Option<&str>| match (text("app_id"), resource) {
+        (_, Some(resource)) if resource.starts_with("app.") => {
+            resource.strip_prefix("app.").map(str::to_owned)
+        }
+        (Some(app), Some(resource)) => Some(format!("{app}/{resource}")),
+        (app, resource) => app.or(resource).map(str::to_owned),
+    };
+    let action = |resource: Option<&str>, action: Option<&str>| match (path(resource), action) {
+        (Some(path), Some(action)) => Ok(format!("{path}#{action}")),
+        _ => Err(format!("{name}: name resource and action")),
+    };
+    let tool = match name {
+        "tilo_cancel" => (
+            "tilo_status",
+            json!({"invocation_id": args.get("invocation_id"), "cancel": true}),
+        ),
+        "tilo_list_apps" if args.get("after_peer").is_some() => {
+            return Err(
+                "tilo_list_apps: after_peer is gone; tilo_ls pages the apps with cursor".into(),
+            );
+        }
+        "tilo_list_apps" => ("tilo_ls", json!({"limit": args.get("max_results")})),
+        "tilo_resolve" => (
+            "tilo_ls",
+            json!({"path": action(text("resource"), text("action"))?}),
+        ),
+        "tilo_query" => match text("needle") {
+            Some(needle) => (
+                "tilo_find",
+                json!({"query": needle, "app": text("app_id"), "limit": args.get("max_results")}),
+            ),
+            None => (
+                "tilo_ls",
+                json!({"path": path(text("parent_resource")), "cursor": args.get("cursor"), "limit": args.get("max_results")}),
+            ),
+        },
+        "tilo_invoke" => {
+            let calls = match args.get("calls").and_then(Value::as_array) {
+                Some(calls) => Some(
+                    calls
+                        .iter()
+                        .map(|call| {
+                            let field = |field: &str| call.get(field).and_then(Value::as_str);
+                            Ok(json!({"path": action(field("resource"), field("action"))?, "args": call.get("arguments").cloned().unwrap_or_else(|| json!({}))}))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                ),
+                None => None,
+            };
+            let (path, arguments) = if calls.is_some() {
+                (None, None)
+            } else {
+                let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                (
+                    Some(action(text("resource"), text("action"))?),
+                    Some(arguments),
+                )
+            };
+            (
+                "tilo_do",
+                json!({"path": path, "args": arguments, "calls": calls,
+                    "invocation_id": args.get("invocation_id"), "wait_ms": args.get("wait_ms")}),
+            )
+        }
+        _ => return Ok(None),
+    };
+    // What the earlier tool left unnamed stays unnamed: the tool it maps to takes no nulls.
+    let (name, mut called) = tool;
+    if let Some(fields) = called.as_object_mut() {
+        fields.retain(|_, value| !value.is_null());
+    }
+    Ok(Some((name, called)))
+}

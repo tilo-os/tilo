@@ -79,6 +79,7 @@ fn said(mut to: impl Write, stream: &str, newline: bool, args: std::fmt::Argumen
 
 mod agent;
 mod aliases;
+mod bind;
 use tilo_api::calls as api;
 mod cleanup;
 mod desktop;
@@ -187,7 +188,7 @@ struct AgentCli {
 #[command(
     name = "action",
     about = "See what this desktop can do, and do it",
-    after_help = "Examples:\n  action list            Everything this desktop can do now\n  action list volume     Only what matches\n  action show mute       What an action does and takes\n  action run mute        Do it"
+    after_help = "Examples:\n  action list              The apps\n  action list sound        What Sound has and offers\n  action show sound#mute   What an action does and takes\n  action run sound#mute    Do it"
 )]
 struct ActionCli {
     #[command(subcommand)]
@@ -218,7 +219,7 @@ enum Cmd {
     },
     /// See what this desktop can do, and do it.
     #[command(
-        after_help = "Examples:\n  tilo action list         Everything this desktop can do now\n  tilo action list volume  Only what matches\n  tilo action show mute    What an action does and takes\n  tilo do mute             Do it"
+        after_help = "Examples:\n  tilo action list              The apps\n  tilo action list sound        What Sound has and offers\n  tilo action show sound#mute   What an action does and takes\n  tilo do sound#mute            Do it"
     )]
     Action {
         #[command(subcommand)]
@@ -226,17 +227,20 @@ enum Cmd {
     },
     /// Do one thing this desktop, or a hosted workspace (-w), can do.
     #[command(
-        after_help = "Examples:\n  tilo do new-terminal-window\n  tilo do rename-note title=Groceries\n  tilo do set-volume 40\n  \
+        after_help = "Examples:\n  tilo do terminal#new-window\n  tilo do notes/Todo#rename title=Groceries\n  tilo do sound#set-volume 40\n  \
                       tilo -w jane-doe do pdf-viewer/application.pdf#read-form-fields\n\n\
-                      `tilo action list` shows what this desktop can do; in a hosted workspace,\n\
-                      `tilo ls -w <workspace>` lists what it holds. Options are written name=value; a\n\
-                      single value goes to the one the action needs; name=@- reads that value from\n\
-                      standard input, for a secret that should stand in no command line. With -w, the path is\n\
-                      app/resource#action in that hosted workspace, as this computer's own login\n\
-                      or the key file --key-file names; an account/… path acts on your account\n\
+                      The path is app/resource#action, as `tilo ls` (or `tilo action list`) lists it.\n\
+                      Options are written name=value; a single value goes to the one the action needs;\n\
+                      name=@- reads that value from standard input, for a secret that should stand in\n\
+                      no command line. With -w, it acts in that hosted workspace, as this computer's own\n\
+                      login or the key file --key-file names; an account/… path acts on your account\n\
                       with no -w (tilo do account/keys#create name=\"My backend\"). An argument\n\
                       taking a workspace takes its name. --out FILE writes a secret the action\n\
                       answers (a key) to FILE, readable by you only, and never prints it.\n\n\
+                      `tilo do -` runs the calls standard input has ([{\"path\": …, \"args\": {…}}, …])\n\
+                      in order, stopping at the first that fails. It waits until the action ends;\n\
+                      --wait=MS answers after MS at most and --no-wait at once, with the command\n\
+                      that follows one still running (tilo invocations <invocation> --wait).\n\n\
                       --in-person says it is the person's own act, and is refused unless this\n\
                       computer holds their identity and no key is named: this computer's daemon\n\
                       takes it as theirs, so it answers what only they answer, such as a call of\n\
@@ -248,7 +252,7 @@ enum Cmd {
         /// this computer holds their identity and no key is named.
         #[arg(long)]
         in_person: bool,
-        /// The action's name, as `tilo action list` lists it, or words of its title.
+        /// The action's path, app/resource#action, as `tilo ls` lists it; `-` for several.
         action: String,
         /// Its options, as name=value.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -337,9 +341,19 @@ enum Cmd {
         after_help = "Examples:\n  tilo invocations -w jane-doe\n  tilo invocations -w jane-doe --limit 10\n\n\
                       Each line is an invocation: its id, how it stands (waiting for you, running,\n\
                       ended, failed, cancelled, undone), who made it and what it changed. A long list\n\
-                      ends with a cursor: `tilo invocations --cursor <cursor> -w` reads on."
+                      ends with a cursor: `tilo invocations --cursor <cursor> -w` reads on.\n\n\
+                      Named by its id, one invocation: how it stands, followed while it runs with\n\
+                      --wait (--wait=MS at most MS), and stopped first with --cancel."
     )]
     Invocations {
+        /// One invocation, by its id.
+        invocation: Option<String>,
+        /// Follow it while it runs: --wait=MS at most MS.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "60000", value_name = "MS")]
+        wait: Option<u64>,
+        /// Stop it first.
+        #[arg(long)]
+        cancel: bool,
         /// How many invocations at most: 50 unless said, at most 200.
         #[arg(long)]
         limit: Option<u32>,
@@ -827,7 +841,7 @@ fn examples(here: Here) -> String {
             ("tilo open calculator", "Open Calculator"),
             ("tilo open notes ~/plan.md", "Open a file in Notes"),
             ("tilo action list", "What this desktop can do"),
-            ("tilo do new-terminal-window", "Do one of those things"),
+            ("tilo do terminal#new-window", "Do one of those things"),
         ]);
     }
     if here.apps {
@@ -1027,11 +1041,7 @@ fn main() -> ExitCode {
         Some("app") => run_app(args.get(1..).unwrap_or_default(), &invoked, None),
         Some("action") => {
             let cli: ActionCli = parse_with(ActionCli::command().bin_name(&invoked), args);
-            Ok(desktop::run_action(
-                cli.cmd,
-                false,
-                &tilo_control::front::Spelling::standalone(),
-            ))
+            Ok(desktop::run_action(api::Reach::default(), None, cli.cmd))
         }
         _ => dispatch(command_here(here), args, &[], run),
     };
@@ -1108,7 +1118,6 @@ fn run_do(
     mut workspace: Option<String>,
     (action, in_person): (String, bool),
     mut args: Vec<String>,
-    spelling: &tilo_control::front::Spelling,
 ) -> ExitCode {
     if let Some(at) = args
         .iter()
@@ -1133,13 +1142,11 @@ fn run_do(
         return ExitCode::FAILURE;
     }
     let reach = api::Reach { json, ..reach };
-    if workspace.is_none() && hosted::on_account(&action) {
-        return hosted::act(reach, None, &action, &args);
-    }
-    let Some(workspace) = workspace else {
-        return desktop::run_action(desktop::ActionCmd::Run { action, args }, json, spelling);
-    };
-    hosted::act(reach, Some(&workspace), &action, &args)
+    desktop::run_action(
+        reach,
+        workspace.as_deref(),
+        desktop::ActionCmd::Run { action, args },
+    )
 }
 
 /// `tilo completions <shell>`: every name this program goes by.
@@ -1182,7 +1189,6 @@ fn run_hosted(
     json: bool,
     workspace: Option<String>,
     cmd: Cmd,
-    spelling: &tilo_control::front::Spelling,
 ) -> Result<Result<ExitCode>, Box<Cmd>> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
     let reach = api::Reach { key_file, json };
@@ -1191,27 +1197,19 @@ fn run_hosted(
             in_person,
             action,
             args,
-        } => Ok(run_do(
+        } => Ok(run_do(reach, workspace, (action, in_person), args)),
+        Cmd::Ls { what, cursor } => Ok(hosted::ls(
             reach,
-            workspace,
-            (action, in_person),
-            args,
-            spelling,
+            workspace.as_deref(),
+            what.as_deref(),
+            cursor.as_deref(),
         )),
-        Cmd::Ls { what, cursor } => (workspace.is_some()
-            || what.as_deref().is_some_and(hosted::on_account))
-        .then(|| {
-            hosted::ls(
-                reach,
-                workspace.as_deref(),
-                what.as_deref(),
-                cursor.as_deref(),
-            )
-        })
-        .ok_or_else(needs_workspace),
-        Cmd::Read { resource, cursor } => (workspace.is_some() || hosted::on_account(&resource))
-            .then(|| hosted::read(reach, workspace.as_deref(), &resource, cursor.as_deref()))
-            .ok_or_else(needs_workspace),
+        Cmd::Read { resource, cursor } => Ok(hosted::read(
+            reach,
+            workspace.as_deref(),
+            &resource,
+            cursor.as_deref(),
+        )),
         Cmd::View { resource, picture } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::view(reach, &workspace, &resource, picture.as_deref())),
@@ -1221,10 +1219,19 @@ fn run_hosted(
         Cmd::Run { file } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(reach, &workspace, &file)),
-        Cmd::Invocations { limit, cursor } => workspace
+        Cmd::Invocations {
+            invocation: Some(id),
+            wait,
+            cancel,
+            ..
+        } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::invocation(reach, &workspace, &id, (wait, cancel))),
+        Cmd::Invocations { limit, cursor, .. } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
+        Cmd::Action { cmd } => Ok(desktop::run_action(reach, workspace.as_deref(), cmd)),
         // A migration runs on the device that holds the data and lands in the workspace that
         // device is in: `-w` names that workspace, and a workspace it is not in is refused there,
         // naming `tilo login`.
@@ -1423,13 +1430,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         return logged_in;
     }
     let workspace = workspace_or_entered(&cli)?;
-    let cmd = match run_hosted(
-        cli.key_file.as_deref(),
-        cli.json,
-        workspace,
-        cli.cmd,
-        &spelling,
-    ) {
+    let cmd = match run_hosted(cli.key_file.as_deref(), cli.json, workspace, cli.cmd) {
         Ok(answered) => return answered,
         Err(cmd) => *cmd,
     };
@@ -1441,9 +1442,9 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         | Cmd::Files { .. }
         | Cmd::Run { .. }
         | Cmd::Invocations { .. }
+        | Cmd::Action { .. }
         | Cmd::Sdk { .. } => bail!("run_hosted takes the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
-        Cmd::Action { cmd } => Ok(desktop::run_action(cmd, cli.json, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
         Cmd::Machine { cmd } => machine::serve(cmd, cli.json),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
@@ -2366,6 +2367,18 @@ mod tests {
                 cli.json
             );
 
+            // One invocation, followed for a while and stopped first; `--wait` with no time follows it
+            // for a minute.
+            let cli = Cli::try_parse_from(["tilo", "invocations", "0f3c", "--wait=500", "--cancel", "-w", "jane-doe"])
+                .expect("one invocation");
+            assert!(matches!(
+                cli.cmd,
+                Cmd::Invocations { invocation: Some(ref id), wait: Some(500), cancel: true, .. } if id == "0f3c"
+            ));
+            let cli = Cli::try_parse_from(["tilo", "invocations", "0f3c", "--wait"]).expect("--wait alone");
+            assert!(matches!(cli.cmd, Cmd::Invocations { wait: Some(60_000), cancel: false, .. }));
+            assert!(Cli::try_parse_from(["tilo", "invocations", "0f3c", "--wait=soon"]).is_err());
+
             // A command whose --json means something of its own keeps it: the system's
             // record. A new identity answers in JSON through the one global flag.
             let cli = Cli::try_parse_from(["tilo", "status", "--json"]).expect("status --json");
@@ -2650,8 +2663,7 @@ mod tests {
                 );
             }
             assert!(help.contains("\nExamples:\n"), "{help}");
-            // `do` names commands that exist: this desktop's own listing,
-            // and the one a hosted workspace answers.
+            // `do` names commands that exist: the listing that names its paths.
             let mut everywhere = command_here(EVERYWHERE);
             let doing = everywhere
                 .find_subcommand_mut("do")
@@ -2659,7 +2671,7 @@ mod tests {
                 .render_help()
                 .to_string();
             assert!(doing.contains("`tilo action list`"), "{doing}");
-            assert!(doing.contains("`tilo ls -w <workspace>`"), "{doing}");
+            assert!(doing.contains("`tilo ls`"), "{doing}");
             assert!(!doing.contains("tilo actions"), "{doing}");
         }
 
@@ -2873,12 +2885,12 @@ mod tests {
                 in_person.cmd,
                 Cmd::Do { in_person: true, ref action, .. } if action == "invocations/workspace/0f3c#resolve"
             ));
-            let list = Cli::try_parse_from(["tilo", "action", "list", "volume"]).expect("action list parses");
+            let list = Cli::try_parse_from(["tilo", "action", "list", "dark", "mode"]).expect("filter words parse");
             assert!(matches!(
                 list.cmd,
                 Cmd::Action {
-                    cmd: desktop::ActionCmd::List { ref filter }
-                } if filter == &["volume"]
+                    cmd: desktop::ActionCmd::List { ref path }
+                } if path.join(" ") == "dark mode"
             ));
             let show = Cli::try_parse_from(["tilo", "action", "show", "mute"]).expect("show parses");
             assert!(matches!(

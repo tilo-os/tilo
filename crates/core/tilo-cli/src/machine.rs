@@ -138,18 +138,12 @@ fn ask(
         out: &mut stdout,
         err: &mut stderr,
     };
-    let code = front::run_target(
-        &sockets,
-        tilo_actions::remote::RemoteActionTarget {
-            provider: machines::PROVIDER.to_owned(),
-            address: ActionAddress::new(machines::RESOURCE, step),
-        },
-        title,
-        args,
-        &Spelling::tilo(),
-        json,
-        &mut io,
-    );
+    let target = tilo_actions::remote::RemoteActionTarget {
+        provider: machines::PROVIDER.to_owned(),
+        address: ActionAddress::new(machines::RESOURCE, step),
+    };
+    let answer = front::call_target(&sockets, target, title, args, &Spelling::tilo());
+    let code = front::say(answer, json, &mut io);
     std::io::Write::flush(&mut stdout)?;
     Ok(std::process::ExitCode::from(code))
 }

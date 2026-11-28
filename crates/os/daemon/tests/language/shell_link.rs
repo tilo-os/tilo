@@ -689,32 +689,33 @@ fn tilo_do_and_an_agent_reach_what_the_session_serves_at_the_daemons_socket() {
             ))
             .unwrap();
 
-        // `tilo do`, as the person types it, with no desktop's socket anywhere.
-        let daemon = [tilo_control::client::ControlSocket::Daemon(socket.clone())];
-        let typed = |run: &dyn Fn(&mut tilo_control::front::Io<'_>) -> u8| {
-            let (mut out, mut err) = (Vec::new(), Vec::new());
-            let code = run(&mut tilo_control::front::Io {
-                out: &mut out,
-                err: &mut err,
-            });
-            (
-                code,
-                String::from_utf8_lossy(&out).into_owned(),
-                String::from_utf8_lossy(&err).into_owned(),
-            )
-        };
-        let spelling = tilo_control::front::Spelling::tilo();
-        let (code, out, err) = typed(&|io| {
-            tilo_control::front::run(
-                &daemon,
-                "pin-note",
-                &["echo=pinned by hand".to_owned()],
-                true,
-                &spelling,
-                io,
-            )
+        // `tilo do`, as the person types it, with no desktop's socket anywhere: a call of the
+        // agent surface's walk over the daemon's socket.
+        let (done, listed) = runtime.block_on(async {
+            let calls = tilo_api::calls::Calls::connect(Some(&socket), None)
+                .await
+                .expect("tilo reaches the daemon");
+            let workspace = calls.served_workspace().map(str::to_owned);
+            let done = calls
+                .start_waiting(
+                    workspace.as_deref(),
+                    "shell/board/notes#pin-note",
+                    &json!({"echo": "pinned by hand"}),
+                    "Pin a note",
+                    30_000,
+                )
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let mut listed = Vec::new();
+            for path in [None, Some("shell/board/notes")] {
+                listed.push(format!(
+                    "{:?}",
+                    calls.list(workspace.as_deref(), path, None).await
+                ));
+            }
+            let listed = listed.join("\n");
+            (done, listed)
         });
-        let (_, listed, _) = typed(&|io| tilo_control::front::list(&daemon, "", &spelling, io));
         // An agent's MCP client, at the same socket.
         let answers = mcp_over(
             &socket,
@@ -738,9 +739,15 @@ fn tilo_do_and_an_agent_reach_what_the_session_serves_at_the_daemons_socket() {
             "the agent's call reaches the session's action: {called}\nwhat it finds: {}",
             answers[answers.len() - 2]
         );
-        assert_eq!(
-            code, 0,
-            "tilo do reaches the session's action: {err}\nwhat it lists:\n{listed}"
+        let out = match &done {
+            Ok(answer) => answer.to_string(),
+            Err(error) => {
+                panic!("tilo do reaches the session's action: {error}\nwhat it lists:\n{listed}")
+            }
+        };
+        assert!(
+            listed.contains("pin-note"),
+            "the session's action is listed: {listed}"
         );
         let typed_echo = board.asked().first().map(|asked| asked.argument.clone());
         assert!(
