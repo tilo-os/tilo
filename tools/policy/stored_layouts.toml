@@ -33,6 +33,28 @@ version = "crates/core/tilo-peer-state/src/state/durable.rs:DURABLE_VERSION"
 name = "peer store frames"
 version = "crates/core/tilo-peer-state/src/store.rs:FRAMES_VERSION"
 
+# The device's process links: what the daemon, a session and the tilolang runtime's processes
+# send each other. The two sides are often different builds (a runtime installed from the store
+# beside a newer daemon), so a message whose shape changes raises the link's version, and the
+# older side answers "update Tilo" instead of misreading the bytes.
+[[format]]
+name = "process link"
+version = "crates/core/runtime-portal/src/packet.rs:VERSION"
+
+[[layout]]
+format = "process link"
+version = 2
+digest = "92c9db1a6406cfe5"
+what = """every packet on a process link: the daemon's and a session's to a tilolang process or window (ToProcess, among them an instance's request and a spare window's binding), its answers (FromProcess), the device's processes link (ToDevice, FromDevice) and an origin connector's (Ready, Attach)"""
+types = [
+    "crates/core/runtime-portal/src/process_link.rs:ToProcess",
+    "crates/core/runtime-portal/src/process_link.rs:FromProcess",
+    "crates/core/runtime-portal/src/device_processes.rs:ToDevice",
+    "crates/core/runtime-portal/src/device_processes.rs:FromDevice",
+    "crates/core/runtime-portal/src/origin_connector.rs:Ready",
+    "crates/core/runtime-portal/src/origin_connector.rs:Attach",
+]
+
 [[layout]]
 format = "peer durable state"
 version = 11

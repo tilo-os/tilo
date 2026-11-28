@@ -890,7 +890,7 @@ def schema(text: str) -> int:
 
 def constant_version(root: Path, written: str) -> int | None:
     """The number a `[[format]]` `version = "<path>:<CONST>"` names, if that
-    constant is a `u32` of the file."""
+    constant is an unsigned integer of the file (a link's version may be a byte)."""
     path, _, constant = written.partition(":")
     if not path or not constant:
         return None
@@ -898,7 +898,7 @@ def constant_version(root: Path, written: str) -> int | None:
     if not file.is_file():
         return None
     found = re.search(
-        rf"\bconst\s+{re.escape(constant)}\s*:\s*u32\s*=\s*([0-9]+)\s*;",
+        rf"\bconst\s+{re.escape(constant)}\s*:\s*(?:u8|u16|u32)\s*=\s*([0-9]+)\s*;",
         file.read_text(errors="replace"),
     )
     return int(found.group(1)) if found else None

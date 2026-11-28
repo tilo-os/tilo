@@ -99,8 +99,9 @@ pub const MAX_PACKET: usize = 96 * 1024;
 
 /// The version of every packet on this link, written first: a message whose shape changed is a
 /// higher version, and a side of another build answers the mismatch by name instead of reading
-/// the bytes as its own message.
-pub const VERSION: u8 = 1;
+/// the bytes as its own message. The messages' layout is pinned under this number
+/// (`tools/policy/stored_layouts.toml`, "process link"): a change to one fails until it is raised.
+pub const VERSION: u8 = 2;
 
 /// The byte a versioned packet starts with. No message variant has this index, so a packet that
 /// does not start with it was written before the link carried a version. A page has no
