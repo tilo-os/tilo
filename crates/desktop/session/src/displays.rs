@@ -696,6 +696,7 @@ impl Inner {
                 .and_then(|deadline| i64::try_from(deadline).ok()),
             focused: self.focused.clone(),
             level: None,
+            ambient_sensor: os_actions::has_ambient_light_sensor(),
             // The device's own summary of its displays' edges: whether any display is reached or
             // covered, for a reader that has no display of its own (a page's shell). A shell on
             // the desktop reads the display its part stands on.

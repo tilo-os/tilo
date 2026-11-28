@@ -273,6 +273,10 @@ pub struct Reading {
     /// ([`Reading::brightness`]), when one can be dimmed: what a slider over the displays shows.
     #[serde(default)]
     pub level: Option<f32>,
+    /// Whether this machine has an ambient-light sensor, which automatic brightness reads: where
+    /// it has none, the setting is not offered.
+    #[serde(default)]
+    pub ambient_sensor: bool,
     /// Whether the pointer is at, or resting against, the top edge: a bar that hides until it is
     /// reached for shows while this holds.
     #[serde(default)]

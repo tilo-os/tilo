@@ -1875,8 +1875,21 @@ view displays_pane() {
         }
     }
     ui.Section("This device") {
-        setting("Automatic brightness", "Follow the light in the room") {
-            ui.Toggle(bind: d.auto_brightness)
+        if screens.ambient_sensor {
+            setting("Automatic brightness", "Follow the light in the room") {
+                ui.Toggle(bind: d.auto_brightness)
+            }
+        } else {
+            ui.ListRow(
+                "Automatic brightness",
+                secondary: "No ambient-light sensor detected on this device",
+                icon: .sun,
+            )
+            ui.Text(
+                "This device has no ambient-light sensor, so its brightness cannot follow the room.",
+                role: .caption,
+                secondary: true,
+            )
         }
         setting("Rotation lock", "Keep the picture as it is when the device turns") {
             ui.Toggle(bind: d.rotation_lock)

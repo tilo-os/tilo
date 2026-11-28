@@ -1078,3 +1078,68 @@ fn the_shortcuts_list_names_every_shortcut_in_words() {
         "the menu names the shortcuts in words: {options:?}"
     );
 }
+
+/// The displays page offers automatic brightness only where an ambient-light sensor is; without
+/// one it says so instead of offering a setting nothing reads.
+#[test]
+fn the_displays_pane_hides_automatic_brightness_without_a_sensor() {
+    let displays = |sensor: bool| {
+        serde_json::json!({
+            "displays": [],
+            "mode": "extend",
+            "pending": 0,
+            "pending_until_unix_ms": null,
+            "focused": null,
+            "level": null,
+            "ambient_sensor": sensor,
+            "bar_reached": false,
+            "bar_covered": false,
+            "dock_reached": false,
+            "dock_covered": false,
+            "trusted_tools": [],
+        })
+    };
+    let devices = serde_json::json!({
+        "devices": [],
+        "access": [],
+        "playing": null,
+        "chosen": null,
+        "sounds": [],
+        "routes": [],
+        "asks": [],
+        "signed_in": false,
+        "workspaces": [],
+        "workspace": "",
+        "picked": false,
+        "waiting": false,
+        "held_back": "",
+        "refused": "",
+        "connection": null,
+    });
+    for (sensor, offered) in [(false, false), (true, true)] {
+        let (host, _) = settings();
+        crate::fixtures::reading_at(
+            &host,
+            "session:displays",
+            "so.tilo.device#Displays",
+            displays(sensor),
+        );
+        crate::fixtures::reading_at(
+            &host,
+            "session:devices",
+            "so.tilo.device#Devices",
+            devices.clone(),
+        );
+        invoke(&host, "open_pane", vec![Value::text("displays")]);
+        let view = open_window(&host);
+        let shown = texts(&view);
+        let note = shown
+            .iter()
+            .any(|text| text == "No ambient-light sensor detected on this device");
+        assert_eq!(
+            note, !offered,
+            "a machine with a sensor offers automatic brightness, and one without says why not: \
+             {shown:?}"
+        );
+    }
+}
