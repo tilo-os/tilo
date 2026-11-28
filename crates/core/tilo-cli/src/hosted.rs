@@ -14,9 +14,11 @@ use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::api::{Calls, Reach};
 use tilo_api::v1::lines;
+use tilo_server_client::https::{HttpClient as _, Origin};
 
 #[derive(Subcommand)]
 pub enum FilesCmd {
@@ -133,14 +135,23 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         file
     });
     let acting = async {
-        let client = open(reach).await?;
-        let Some((resource, action)) = path.rsplit_once('#') else {
-            bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
-        };
         let out = match out {
             Some(Some(file)) => Some(PathBuf::from(file)),
             Some(None) => bail!("--out names the file the answer's secret is written to"),
             None => None,
+        };
+        // A key asked for on a computer that is no device of the person's: it has no daemon to
+        // ask them on their behalf, and no key of theirs to certify with. Their site asks them.
+        if path == "account/keys#create"
+            && reach.key_file.is_none()
+            && !crate::login::logged_in()
+            && !crate::identity::holds_root()
+        {
+            return site_key(&args, out.as_deref()).await;
+        }
+        let client = open(reach).await?;
+        let Some((resource, action)) = path.rsplit_once('#') else {
+            bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
         };
         let workspace = workspace_of(&client, workspace).await?;
         let mut arguments = tilo_control::front::arguments(&args).map_err(anyhow::Error::msg)?;
@@ -176,18 +187,7 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
             })
             .await?;
         if let Some(out) = out {
-            let secrets = secret_fields(&described);
-            let Some(result) = answer.get_mut("result").and_then(Value::as_object_mut) else {
-                bail!("{path} answered nothing to write to {}", out.display());
-            };
-            let Some((name, Value::String(secret))) = secrets
-                .iter()
-                .find_map(|name| Some((name.clone(), result.remove(name)?)))
-            else {
-                bail!("{path} answered no secret to write to {}", out.display());
-            };
-            write_secret(&out, secret.as_bytes())?;
-            result.insert(name, json!(format!("written to {}", out.display())));
+            write_out(&out, &secret_fields(&described), &mut answer)?;
         }
         Ok(answer)
     };
@@ -205,6 +205,86 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         },
     );
     ExitCode::from(code)
+}
+
+/// Write the answer's secret (one of `secrets`) to `out`, readable by this account only, and say
+/// in its place that it was written.
+fn write_out(out: &Path, secrets: &[String], answer: &mut Value) -> Result<()> {
+    let Some(result) = answer.get_mut("result").and_then(Value::as_object_mut) else {
+        bail!("the answer named nothing to write to {}", out.display());
+    };
+    let Some((name, Value::String(secret))) = secrets
+        .iter()
+        .find_map(|name| Some((name.clone(), result.remove(name)?)))
+    else {
+        bail!("the answer named no secret to write to {}", out.display());
+    };
+    write_secret(out, secret.as_bytes())?;
+    result.insert(name, json!(format!("written to {}", out.display())));
+    Ok(())
+}
+
+/// `account/keys#create` from a computer that is no device of the person's: it has no daemon to
+/// ask them and no root of theirs to certify the key, so their site asks them, and this terminal
+/// waits there for the key they approve. It reads no device key.
+async fn site_key(args: &[String], out: Option<&Path>) -> Result<Value> {
+    let http = tilo_net::Client::new();
+    let site = std::env::var("TILO_SITE").unwrap_or_else(|_| "https://tilo.sh".to_owned());
+    let (_, entry) = Origin::new(&http, &site)
+        .get("/entry.json")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let api = serde_json::from_slice::<Value>(&entry)?
+        .get("api")
+        .and_then(Value::as_str)
+        .context(format!("{site} names no API server keys are asked for at"))?
+        .to_owned();
+    let api = Origin::new(&http, &api);
+    let new = Value::Object(tilo_control::front::arguments(args).map_err(anyhow::Error::msg)?);
+    let (status, asked) = json_at(&api, tilo_api::keys::NEW_PATH, new).await?;
+    if status != 201 {
+        bail!("the site refused the key: {}", refusal(&asked));
+    }
+    let field = |name: &str| asked.get(name).and_then(Value::as_str).unwrap_or_default();
+    eprintln!(
+        "tilo: waiting for you: approve it at {}",
+        field("approve_url")
+    );
+    let poll = json!({"poll": field("poll")});
+    let interval = asked.get("interval").and_then(Value::as_u64).unwrap_or(2);
+    let pause = Duration::from_secs(interval.max(1));
+    loop {
+        tokio::time::sleep(pause).await;
+        let (status, answer) = json_at(&api, tilo_api::keys::POLL_PATH, poll.clone()).await?;
+        match status {
+            202 => {}
+            200 => {
+                let mut answer = json!({"result": answer});
+                if let Some(out) = out {
+                    write_out(out, &["key".to_owned()], &mut answer)?;
+                }
+                return Ok(answer);
+            }
+            _ => bail!("the site made no key: {}", refusal(&answer)),
+        }
+    }
+}
+
+/// `api`'s `path`, asked `body`: its status, and its answer as JSON.
+async fn json_at(api: &Origin, path: &str, body: Value) -> Result<(u16, Value)> {
+    let answer = api
+        .post_answer(path, body.to_string().into_bytes())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    Ok((answer.status, serde_json::from_slice(&answer.body)?))
+}
+
+/// Why the site refused, in its words, or nothing.
+fn refusal(answer: &Value) -> &str {
+    answer
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 /// The parameters an action, as `tilo_ls path#action` describes it, takes as a workspace: those
