@@ -407,9 +407,19 @@ for name in "${tl_apps[@]}"; do
     "$bin/tilolang" build --locked "$repo_root/apps/tl/$name" --search "$repo_root/apps/tl" \
         --out "$out" --tilo-runtime "$runtime_id" \
         || die "could not build apps/tl/$name"
-    tapp=$(find "$out" -maxdepth 1 -name '*.tapp' -print -quit)
-    [[ -n $tapp ]] || die "apps/tl/$name built no package"
-    install_tapps+=("$tapp")
+    # The build writes the app's package beside those of the packages it uses (Notes'
+    # Discussion, Settings' Files): every one is installed, so the app is there to open, and a
+    # package two apps use once.
+    built=()
+    mapfile -t built < <(find "$out" -maxdepth 1 -name '*.tapp' | sort)
+    (( ${#built[@]} )) || die "apps/tl/$name built no package"
+    for tapp in "${built[@]}"; do
+        seen=
+        for kept in "${install_tapps[@]}"; do
+            [[ $(basename "$kept") == $(basename "$tapp") ]] && seen=1
+        done
+        [[ -n $seen ]] || install_tapps+=("$tapp")
+    done
 done
 
 # The tilolang runtime bundle: the binary every tilolang app's entrypoint
