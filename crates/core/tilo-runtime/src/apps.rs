@@ -917,7 +917,7 @@ impl Apps {
         {
             let sockets = self.sockets.clone();
             let original = self.original_launch(&app)?;
-            let child = linux::connector(
+            let (mut launch, heard) = linux::connector(
                 self,
                 &app,
                 workspace,
@@ -925,8 +925,27 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            self.record_connection(connectors::pid(&child), app_id, workspace);
-            Ok(child)
+            let ticket = self.tickets.decide(
+                app_id,
+                workspace,
+                (None, true, None),
+                executor::Kind::Package,
+            );
+            match self.go_on(
+                &mut launch,
+                (app_id, workspace, Shows::Connection, None),
+                ticket,
+            ) {
+                Ok(true) => self.tickets.here(ticket),
+                // It ended as it started: the connectors answer why from what it said.
+                Ok(false) => self.tickets.forget(ticket),
+                Err(error) => {
+                    self.tickets.forget(ticket);
+                    launch.kill();
+                    return Err(error);
+                }
+            }
+            Ok(AppProcess::of(launch, heard))
         }
         #[cfg(target_os = "macos")]
         {
@@ -1015,7 +1034,7 @@ impl Apps {
 
     /// Decide and record `pid` as the process this runtime started as `app`'s held connection in
     /// `workspace`: a connector, which the device starts for the app's origin.
-    #[cfg(any(target_os = "linux", target_os = "macos", feature = "test-support"))]
+    #[cfg(any(target_os = "macos", feature = "test-support"))]
     fn record_connection(&self, pid: u32, app: &str, workspace: &str) {
         let ticket =
             self.tickets
@@ -1368,41 +1387,60 @@ impl Apps {
         // call *with* a capture — no instance is offered, and it ends by itself — but a connection
         // refused here leaves the app's own platform readings (its journal, its sound, its
         // settings) unread, and a capture that joins its workspace unreachable.
-        if !self
-            .launched
-            .record_launch(&launch, (&app.app_id, workspace, shows, open), ticket)
-        {
-            launch.kill();
-            return Err(format!(
-                "refusing to keep {app_id} running: its process could not be identified"
-            ));
-        }
-        // A launch the app host started connects nothing itself: its connections are made now,
-        // each bound to the record just made.
-        #[cfg(target_os = "linux")]
-        if let Running::Hosted { handing, .. } = &mut launch.child
-            && let Err(error) = handing.bind(self, launch.pid, (app.app_id.as_str(), workspace))
-        {
-            self.launched.forget(launch.pid);
-            launch.kill();
-            return Err(format!("refusing to launch {app_id}: {error}"));
-        }
-        // Only now may the launcher go on and connect: the broker attests it
-        // once, against the record just made.
-        if let Err(error) = launch.release_registration() {
+        match self.go_on(&mut launch, (&app.app_id, workspace, shows, open), ticket) {
+            Ok(true) => {}
             // A launcher that already ended took its hold with it: the start answers what it
             // said ([`Self::started`]), not the hold it could no longer be released by.
-            if matches!(launch.ended(), Ok(Some(_))) {
-                return Ok(launch);
+            Ok(false) => return Ok(launch),
+            Err(error) => {
+                launch.kill();
+                return Err(error);
             }
-            self.launched.forget(launch.pid);
-            launch.kill();
-            return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
         // A person opening the app is a change: what stopped coming up here is tried again.
         self.failures.forget(workspace, app_id);
         self.tickets.here(ticket);
         Ok(launch)
+    }
+
+    /// Record `launch` as `app` in `workspace` showing `shows` on `record` under `ticket`, make
+    /// the connections a launch the app host started is handed, each bound to the record just
+    /// made, and only then let its launcher go on and connect: the broker attests it once,
+    /// against that record. `false` where the launcher already ended, taking its hold with it.
+    /// The caller ends a launch this refuses.
+    ///
+    /// # Errors
+    /// Its process could not be identified, a connection it is handed could not be made, or its
+    /// hold could not be released.
+    fn go_on(
+        &self,
+        launch: &mut Launch,
+        (app, workspace, shows, record): (&str, &str, Shows, Option<&str>),
+        ticket: u64,
+    ) -> Result<bool, String> {
+        if !self
+            .launched
+            .record_launch(launch, (app, workspace, shows, record), ticket)
+        {
+            return Err(format!(
+                "refusing to keep {app} running: its process could not be identified"
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        if let Running::Hosted { handing, .. } = &mut launch.child
+            && let Err(error) = handing.bind(self, launch.pid, (app, workspace))
+        {
+            self.launched.forget(launch.pid);
+            return Err(format!("refusing to launch {app}: {error}"));
+        }
+        if let Err(error) = launch.release_registration() {
+            if matches!(launch.ended(), Ok(Some(_))) {
+                return Ok(false);
+            }
+            self.launched.forget(launch.pid);
+            return Err(format!("could not let {app}'s launcher go on: {error}"));
+        }
+        Ok(true)
     }
 
     /// The start's answer, once the app is up: its launcher has connected, as the broker
@@ -2136,18 +2174,7 @@ impl Launch {
     fn ended(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
         #[cfg(target_os = "linux")]
         {
-            match &mut self.child {
-                Running::Here(child) => child.try_wait(),
-                Running::Hosted { hosted, .. } => match hosted.try_wait() {
-                    None => Ok(None),
-                    Some(runtime_portal::app_host::Ended(Some(status))) => {
-                        Ok(Some(exit_status(status)))
-                    }
-                    Some(runtime_portal::app_host::Ended(None)) => Err(std::io::Error::other(
-                        "the app host went without saying how the app ended",
-                    )),
-                },
-            }
+            self.child.try_wait()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2173,9 +2200,9 @@ impl Launch {
     )]
     pub fn wait(self) -> Option<std::process::ExitStatus> {
         #[cfg(target_os = "linux")]
-        let status = match self.child {
-            Running::Here(mut child) => child.wait().ok(),
-            Running::Hosted { hosted, .. } => hosted.wait().map(exit_status),
+        let status = {
+            let mut child = self.child;
+            child.wait().ok()
         };
         #[cfg(target_os = "macos")]
         let status = {
@@ -2201,15 +2228,10 @@ impl Launch {
     )]
     fn kill(self) {
         #[cfg(target_os = "linux")]
-        match self.child {
-            Running::Here(mut child) => {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            Running::Hosted { hosted, .. } => {
-                hosted.stop();
-                let _ = hosted.wait();
-            }
+        {
+            let mut child = self.child;
+            child.kill();
+            let _ = child.wait();
         }
         #[cfg(target_os = "macos")]
         {
@@ -2219,6 +2241,103 @@ impl Launch {
         }
         #[cfg(windows)]
         self.app.kill();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Running {
+    /// Whether the process ended, and how.
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Here(child) => child.try_wait(),
+            Self::Hosted { hosted, .. } => match hosted.try_wait() {
+                None => Ok(None),
+                Some(runtime_portal::app_host::Ended(Some(status))) => {
+                    Ok(Some(exit_status(status)))
+                }
+                Some(runtime_portal::app_host::Ended(None)) => Err(ended_unsaid()),
+            },
+        }
+    }
+
+    /// Wait for the process to end, and how it did.
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Here(child) => child.wait(),
+            Self::Hosted { hosted, .. } => hosted.wait().map(exit_status).ok_or_else(ended_unsaid),
+        }
+    }
+
+    /// End the process: this daemon's child is killed, the app host's is stopped by it.
+    fn kill(&mut self) {
+        match self {
+            Self::Here(child) => {
+                let _ = child.kill();
+            }
+            Self::Hosted { hosted, .. } => hosted.stop(),
+        }
+    }
+}
+
+/// An app host that went without saying how the app it ran ended.
+#[cfg(target_os = "linux")]
+fn ended_unsaid() -> std::io::Error {
+    std::io::Error::other("the app host went without saying how the app ended")
+}
+
+/// A launch that went on, as the device keeps an app's held connection: its process, whoever
+/// runs it ([`Running`]), and what it says on its error output, for its caller to read.
+#[cfg(target_os = "linux")]
+pub(crate) struct AppProcess {
+    pid: u32,
+    child: Running,
+    pub(crate) stderr: Option<std::io::PipeReader>,
+}
+
+#[cfg(target_os = "linux")]
+impl AppProcess {
+    /// `launch`, gone on, heard on `stderr`.
+    fn of(launch: Launch, stderr: std::io::PipeReader) -> Self {
+        Self {
+            pid: launch.pid,
+            child: launch.child,
+            stderr: Some(stderr),
+        }
+    }
+
+    /// A process this daemon started itself, as a test starts one.
+    #[cfg(test)]
+    pub(crate) fn here(child: std::process::Child) -> Self {
+        Self {
+            pid: child.id(),
+            child: Running::Here(child),
+            stderr: None,
+        }
+    }
+
+    /// The pid it runs as.
+    pub(crate) fn id(&self) -> u32 {
+        self.pid
+    }
+
+    /// End it.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "a held connection's process is ended as a child is"
+    )]
+    pub(crate) fn kill(&mut self) -> std::io::Result<()> {
+        self.child.kill();
+        Ok(())
+    }
+
+    /// Whether it ended, and how.
+    pub(crate) fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Wait for it to end, and how it did.
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait()
     }
 }
 

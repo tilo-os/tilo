@@ -131,7 +131,7 @@ fn spawn(
     let joined = joined_links(&mut command, workspace, runs)?;
     // A launch the app host starts reaches none of this daemon's sockets: the daemon hands it
     // each connection, and the launch names them to take them.
-    let handing = host.map(|_| Handing::for_launch(app, workspace, sockets));
+    let handing = host.map(|_| Handing::for_launch(app, workspace, sockets, true));
     for name in handing.iter().flat_map(Handing::names) {
         command.arg("--handed-service").arg(name);
     }
@@ -140,15 +140,32 @@ fn spawn(
     if !runs.args.is_empty() {
         command.arg("--").args(&runs.args);
     }
+    start(
+        host,
+        app,
+        (command, &launcher, grants.as_deref()),
+        handing,
+        (origin_reader, joined),
+        None,
+    )
+}
+
+/// Start `command`, the launcher's command for `app`, held at its launch hold until the launch is
+/// recorded: by the app host at `host`, released with what `handing` makes for it, or as this
+/// daemon's own child, where it runs as its person. `links` go with its release; `heard` hears
+/// what it says on its error output, which then goes nowhere else.
+fn start(
+    host: Option<&Path>,
+    app: &InstalledApp,
+    (mut command, launcher, grants): (Command, &Path, Option<&Path>),
+    handing: Option<Handing>,
+    links: (Option<std::os::fd::OwnedFd>, Vec<std::os::fd::OwnedFd>),
+    heard: Option<std::io::PipeWriter>,
+) -> Result<Launch, String> {
     if let (Some(host), Some(handing)) = (host, handing) {
-        return hosted(
-            host,
-            app,
-            (&command, grants.as_deref()),
-            handing,
-            (origin_reader, joined),
-        );
+        return hosted(host, app, (&command, grants), handing, links, heard);
     }
+    let (origin_reader, joined) = links;
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
     let registration = launcher::launch_hold::install(&mut command)
@@ -160,7 +177,7 @@ fn spawn(
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
     Ok(Launch {
-        stderr: said_by(&mut child),
+        stderr: said_by(&mut child, heard),
         pid: child.id(),
         child: super::Running::Here(child),
         registration: Some(registration),
@@ -249,7 +266,7 @@ pub(super) fn window(
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
     drop(command);
     Ok(Launch {
-        stderr: said_by(&mut child),
+        stderr: said_by(&mut child, None),
         pid: child.id(),
         child: super::Running::Here(child),
         registration: Some(registration),
@@ -290,36 +307,59 @@ fn window_files(
     Ok((sealed("module", &module)?, surface))
 }
 
-/// What `child` says on its standard error, kept (bounded) to answer a start that ends as it
-/// starts, and carried on to the daemon's own standard error, its log among them.
-fn said_by(child: &mut std::process::Child) -> std::sync::Arc<std::sync::Mutex<String>> {
-    let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+/// What `child` says on its standard error, heard as [`hearing`] hears it.
+fn said_by(
+    child: &mut std::process::Child,
+    heard: Option<std::io::PipeWriter>,
+) -> std::sync::Arc<std::sync::Mutex<String>> {
+    let (stderr, mut hear) = hearing(heard);
     if let Some(mut pipe) = child.stderr.take() {
-        let captured = std::sync::Arc::clone(&stderr);
         std::thread::Builder::new()
             .name("app-start-stderr".into())
             .spawn(move || {
-                use std::io::{Read as _, Write as _};
+                use std::io::Read as _;
                 let mut chunk = [0_u8; 512];
                 while let Ok(read) = pipe.read(&mut chunk) {
                     let Some(read_bytes) = chunk.get(..read).filter(|bytes| !bytes.is_empty())
                     else {
                         break;
                     };
-                    // The app's words still go where the daemon's own go, its log among them,
-                    // as they did when the app wrote to the daemon's standard error itself.
-                    let _ = std::io::stderr().write_all(read_bytes);
-                    let mut said = captured
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if said.len() < 8192 {
-                        said.push_str(&String::from_utf8_lossy(read_bytes));
-                    }
+                    hear(read_bytes);
                 }
             })
             .ok();
     }
     stderr
+}
+
+/// What a launch says on its error output, kept (bounded) to answer a start that ends as it
+/// starts, and what hears the rest: `heard` where its caller reads it, otherwise the daemon's own
+/// standard error, its log among them, as when the app wrote there itself.
+fn hearing(
+    mut heard: Option<std::io::PipeWriter>,
+) -> (
+    std::sync::Arc<std::sync::Mutex<String>>,
+    impl FnMut(&[u8]) + Send + 'static,
+) {
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let captured = std::sync::Arc::clone(&stderr);
+    (stderr, move |bytes: &[u8]| {
+        use std::io::Write as _;
+        match heard.as_mut() {
+            Some(heard) => {
+                let _ = heard.write_all(bytes);
+            }
+            None => {
+                let _ = std::io::stderr().write_all(bytes);
+            }
+        }
+        let mut said = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if said.len() < 8192 {
+            said.push_str(&String::from_utf8_lossy(bytes));
+        }
+    })
 }
 
 /// The connections this daemon hands a launch the app host starts ([`runtime_portal::app_host::Handed`]),
@@ -334,8 +374,9 @@ pub(super) struct Handing {
 
 impl Handing {
     /// What `app`'s launch in `workspace` is handed of the profile's `sockets`: what its launcher
-    /// would connect there, as the manifest declares it.
-    fn for_launch(app: &InstalledApp, workspace: &str, sockets: &Sockets) -> Self {
+    /// would connect there, as the manifest declares it, its collaboration service only where
+    /// `collab` (a connector keeps none of the app's records).
+    fn for_launch(app: &InstalledApp, workspace: &str, sockets: &Sockets, collab: bool) -> Self {
         use launcher::services::{COLLAB_SERVICE, IDENTITY_SERVICE, NATIVE_SERVICE};
         let services = &app.manifest.sandbox.services;
         let app_id = app.app_id.as_str();
@@ -361,8 +402,7 @@ impl Handing {
                 blobs,
             },
             native: services.contains_key(NATIVE_SERVICE),
-            collab: services
-                .contains_key(COLLAB_SERVICE)
+            collab: (collab && services.contains_key(COLLAB_SERVICE))
                 .then(|| sockets.collab.clone()),
         }
     }
@@ -432,6 +472,7 @@ fn hosted(
     (command, grants): (&Command, Option<&Path>),
     handing: Handing,
     (origin_reader, joined): (Option<std::os::fd::OwnedFd>, Vec<std::os::fd::OwnedFd>),
+    heard: Option<std::io::PipeWriter>,
 ) -> Result<Launch, String> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = |value: &std::ffi::OsStr| value.as_bytes().to_vec();
@@ -458,20 +499,8 @@ fn hosted(
         .map(std::fs::read)
         .transpose()
         .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
-    let stderr = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let captured = std::sync::Arc::clone(&stderr);
-    let hosted = runtime_portal::app_host::order(host, order, move |bytes| {
-        use std::io::Write as _;
-        // The app's words still go where the daemon's own go, as a launch it starts itself.
-        let _ = std::io::stderr().write_all(bytes);
-        let mut said = captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if said.len() < 8192 {
-            said.push_str(&String::from_utf8_lossy(bytes));
-        }
-    })
-    .map_err(|error| {
+    let (stderr, hear) = hearing(heard);
+    let hosted = runtime_portal::app_host::order(host, order, hear).map_err(|error| {
         format!(
             "could not start {} through this device's app host at {}: {error}",
             app.app_id,
@@ -519,7 +548,9 @@ fn joined_links(
 
 /// Start `app`'s connector for `origin` in `workspace`: the app's own launch with no window
 /// (`tilo-launcher run --tilolang-connector <origin>`), in the sandbox its signed manifest
-/// declares for that origin, handed `socket` as its own service through the launch hold.
+/// declares for that origin, held until it is recorded and then handed `socket` as its own
+/// service with its release, started as every launch of the app is ([`start`]). Answered with
+/// what it says on its error output.
 pub(super) fn connector(
     apps: &Apps,
     app: &InstalledApp,
@@ -527,31 +558,36 @@ pub(super) fn connector(
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
     (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
-) -> Result<std::process::Child, String> {
+) -> Result<(Launch, std::io::PipeReader), String> {
     let (mut command, launcher, grants) = command(apps, app, workspace, sockets, original, None)?;
-    if let Some(grants) = grants {
+    let host = apps.app_host.as_deref();
+    if host.is_none()
+        && let Some(grants) = &grants
+    {
         command.arg("--capabilities").arg(grants);
     }
-    // What a launch that fails says is read here, to answer why it did not come up.
-    command.stderr(std::process::Stdio::piped());
-    // A connector draws nothing, opens nothing and reads no record: no display goes with it.
+    // A connector draws nothing, opens nothing and reads no record: no display goes with it, and
+    // it keeps none of the app's records, so no collaboration connection either.
     command.arg("--tilolang-connector").arg(origin);
-    let hold = launcher::launch_hold::install(&mut command)
-        .map_err(|error| format!("{}'s connector has no launch hold: {error}", app.app_id))?;
-    let child = command
-        .spawn()
-        .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;
-    drop(command);
-    if let Err(error) = hold.release_with_window_link(socket) {
-        let mut child = child;
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(format!(
-            "{}'s connector was not released: {error}",
-            app.app_id
-        ));
+    let handing = host.map(|_| Handing::for_launch(app, workspace, sockets, false));
+    for name in handing.iter().flat_map(Handing::names) {
+        command.arg("--handed-service").arg(name);
     }
-    Ok(child)
+    let socket = socket
+        .try_clone_to_owned()
+        .map_err(|error| format!("{}'s connector has no socket: {error}", app.app_id))?;
+    // What a launch that fails says is read by the caller, to answer why it did not come up.
+    let (heard, said) = std::io::pipe()
+        .map_err(|error| format!("{}'s connector is heard by nothing: {error}", app.app_id))?;
+    let launch = start(
+        host,
+        app,
+        (command, &launcher, grants.as_deref()),
+        handing,
+        (Some(socket), Vec::new()),
+        Some(said),
+    )?;
+    Ok((launch, heard))
 }
 
 /// The launcher's command for `app` in `workspace`, as installed, with the profile's services,

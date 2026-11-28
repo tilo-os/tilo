@@ -1461,6 +1461,92 @@ fn a_held_connection_runs_at_the_app_host() {
     }
 }
 
+/// On a device whose daemon is the device's own, an app's origin connector is started as every
+/// launch of the app is: by the app host, as an account of its own, recorded by its pidfd before
+/// it goes on, and handed the connections the daemon made for it, never its collaboration
+/// connection, since it keeps none of the app's records.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_origin_connector_runs_at_the_app_host() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        VIEWER,
+        &manifest(
+            VIEWER,
+            "gui",
+            "\n[sandbox.services]\nnative = \"required@58\"\ncollab = \"required@1\"\n",
+        ),
+        &[("probe", b"binary")],
+    );
+    let sockets = crate::daemon::Sockets::in_dir(&root);
+    let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
+    let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
+    let said = root.join("said");
+    std::fs::create_dir(&said).unwrap();
+    let launcher = saying_launcher(&root, &said);
+    let socket = root.join("app-host.sock");
+    let hosts = app_host_at(&socket);
+    let apps = apps(&store, &root, vec![launcher])
+        .ordering_of_the_seat()
+        .hosting_connections_at(socket);
+    let lines = own_lines_made(&apps);
+    let (_ours, theirs) = runtime_portal::origin_connector::pair().unwrap();
+
+    let mut connector = apps
+        .start_connector(VIEWER, WORKSPACE, "imap", &theirs)
+        .expect("its connector starts at the app host");
+    let pid = connector.id();
+    assert_eq!(
+        apps.process_of(pid),
+        Some(super::ProcessOf::Launched {
+            app: VIEWER.to_owned(),
+            workspace: WORKSPACE.to_owned(),
+            connection: true,
+        }),
+        "it is recorded as the app's held connection"
+    );
+    assert_eq!(
+        *lines.lock().unwrap(),
+        [(pid, VIEWER.to_owned(), WORKSPACE.to_owned())],
+        "its native line is answered as the launch the daemon recorded"
+    );
+    let launch = wait_for(&said.join("launch").display().to_string());
+    let mut said_lines = launch.lines();
+    let parent: u32 = said_lines.next().unwrap().parse().unwrap();
+    assert_eq!(
+        hosts
+            .lock()
+            .unwrap()
+            .iter()
+            .map(std::process::Child::id)
+            .collect::<Vec<_>>(),
+        [parent],
+        "the app host started it, never the daemon itself: {launch}"
+    );
+    let rest: Vec<&str> = said_lines.collect();
+    assert!(
+        rest.windows(2)
+            .any(|pair| pair == ["--tilolang-connector", "imap"]),
+        "{launch}"
+    );
+    let handed: Vec<&str> = rest
+        .windows(2)
+        .filter(|pair| pair[0] == "--handed-service")
+        .map(|pair| pair[1])
+        .collect();
+    assert_eq!(
+        handed,
+        ["native", "identity"],
+        "it is handed what the daemon made for it, and no collaboration connection: {launch}"
+    );
+    connector.kill().unwrap();
+    assert!(
+        !connector.wait().unwrap().success(),
+        "the daemon stopped it"
+    );
+}
+
 /// A launcher stand-in that waits at its launch hold as the real one does, says into `said` who
 /// started it and what it was handed, then keeps running until it is stopped.
 #[cfg(target_os = "linux")]

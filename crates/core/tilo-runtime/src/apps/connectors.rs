@@ -56,8 +56,12 @@ const SAID_LINES: usize = 8;
 /// workspace.
 type Key = (String, String, String);
 
+/// A held connection's process, as the platform's launcher started it: on Linux, as every
+/// launch of an app is started, by the device's app host where the daemon is the device's.
+#[cfg(target_os = "linux")]
+pub(crate) type Process = super::AppProcess;
 /// A held connection's process, as the platform's launcher started it.
-#[cfg(any(target_os = "linux", target_os = "android", windows))]
+#[cfg(any(target_os = "android", windows))]
 pub(crate) type Process = std::process::Child;
 /// A held connection's process, as the platform's launcher started it.
 #[cfg(target_os = "macos")]
@@ -555,6 +559,7 @@ mod tests {
             .args(["-c", "exec cat >/dev/null"])
             .stdin(std::process::Stdio::from(socket))
             .spawn_locked()
+            .map(Process::here)
             .map_err(|error| error.to_string())
     }
 
