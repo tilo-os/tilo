@@ -39,12 +39,21 @@ d-gubc3b62 = Auftrag
 d-hhqtcu4c = Zeilen
     .doc = Die Ausgabe der Engine, die neueste zuletzt.
 
+d-6hsymzh7 = Geladene Bytes
+    .doc = Die Bytes, die seine Ebenen geladen haben, und ihre Gesamtheit, wo die Engine sie nennt.
+
+d-difbpusi = Gesamtbytes
+
 d-jgmjny63 = Fertig
 
 d-m3krkqoe = Gestoppt
     .doc = Die Person hat es gestoppt; das bereits Geladene bleibt im Image-Speicher.
 
 d-wektgccg = Fehlgeschlagen
+
+d-uk5fnglc-filter-done_bytes = Geladene Bytes
+
+d-uk5fnglc-filter-total_bytes = Gesamtbytes
 
 d-uk5fnglc-filter-done = Fertig
 
@@ -80,6 +89,14 @@ d-xjgsomkl = Download-Details
     }
 
 d-bldlgtsf = Zeilen
+
+d-j6eidej7 = Geladen
+
+d-5thk5iaa = Gesamt
+
+d-xjgsomkl-filter-done = Geladen
+
+d-xjgsomkl-filter-total = Gesamt
 
 d-xcaqps73 = Entwurf leeren
     .doc = Leert das Formular für einen neuen Container.
@@ -201,6 +218,11 @@ d-2q7ehgyb = Image-Übersicht
 d-6inrmjr5 = Volume-Übersicht
     .w-1-of-volumes-is-in-use = 1 von { $total } Volumes wird verwendet.
     .w-of-volumes-are-in-use = { $in_use } von { $total } Volumes werden verwendet.
+
+d-ua6m55k2 = Geladen
+    .w-downloading-layers-of = Ebenen werden geladen: { $size } von { $size2 }
+    .w-downloading-layers-so-far = Ebenen werden geladen: { $size } bisher
+    .w-the-engine-is-fetching-the-image = Die Engine lädt das Image.
 
 d-l5th2rd2 = Eingabetitel
     .w-new-volume = Neues Volume
@@ -332,7 +354,6 @@ d-72k7h2qu = Download-Banner
     .w-pulling = { $image } wird geladen
     .w-stopped-what-had-been-fetched-stays = Gestoppt. Was bereits geladen wurde, bleibt im Image-Speicher.
     .w-the-image-is-ready-to-create = Das Image ist bereit, um Container daraus anzulegen.
-    .w-the-engine-is-fetching-the-image = Die Engine lädt das Image.
     .w-stop-this-pull = Diesen Download stoppen
     .w-close = Schließen
 

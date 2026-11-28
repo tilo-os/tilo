@@ -51,6 +51,9 @@ type Pull (readers: author) {
     job: Text = ""
     /// The engine's output, newest last.
     lines: List<Text>
+    /// The bytes its layers have fetched, and their whole where the engine names it.
+    done_bytes: Int = 0
+    total_bytes: Int = 0
     done: Bool = false
     /// The person stopped it; what had been fetched stays in the image store.
     stopped: Bool = false
@@ -72,9 +75,12 @@ type PullAsk {
     image: Text
 }
 
-/// What the engine says of a pull as it runs: the image's output so far.
+/// What the engine says of a pull as it runs: the image's output, and the bytes its layers
+/// have fetched.
 type PullDetail {
     lines: List<Text>
+    done: Int = 0
+    total: Int = 0
 }
 
 /// How a container's state reads.
@@ -267,11 +273,13 @@ action begin_pull(c: Containers, image: Text) {
     }
 }
 
-/// The pull moved on: what the engine wrote so far.
+/// The pull moved on: what the engine wrote so far, and the bytes it fetched.
 action pull_moved(p: Pull, j: host.Job) {
     match json.decode<PullDetail>(j.detail) {
         .ok(detail) => {
             p.lines = detail.lines
+            p.done_bytes = detail.done
+            p.total_bytes = detail.total
         }
         .err(why) => {}
     }
@@ -282,6 +290,8 @@ action pull_ended(p: Pull, j: host.Job) {
     match json.decode<PullDetail>(j.detail) {
         .ok(detail) => {
             p.lines = detail.lines
+            p.done_bytes = detail.done
+            p.total_bytes = detail.total
         }
         .err(why) => {}
     }
@@ -711,6 +721,17 @@ view terminal_pane(item: device.Container) {
     }
 }
 
+/// What a pull has fetched of its layers, in the words a person reads while it runs.
+fn downloaded(p: Pull) -> Text {
+    if p.total_bytes > 0 {
+        std.say("Downloading layers: {std.size(p.done_bytes)} of {std.size(p.total_bytes)}")
+    } else if p.done_bytes > 0 {
+        std.say("Downloading layers: {std.size(p.done_bytes)} so far")
+    } else {
+        std.say("The engine is fetching the image.")
+    }
+}
+
 /// The pull in flight: what it is fetching, all its output, and the control that ends it.
 view pull_banner(c: Containers, pull: Pull) {
     ui.Banner(
@@ -721,7 +742,7 @@ view pull_banner(c: Containers, pull: Pull) {
             "Stopped. What had been fetched stays in the image store."
         } else if pull.job == "" {
             "The image is ready to create containers from."
-        } else { "The engine is fetching the image." },
+        } else { downloaded(pull) },
         kind: if pull.failed != "" { .error } else { .info },
         icon: .download,
         action: if pull.job != "" { "Stop this pull" } else { "Close" },

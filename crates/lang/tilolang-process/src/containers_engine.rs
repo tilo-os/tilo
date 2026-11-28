@@ -6,6 +6,7 @@
 //! Everything a pull changes in the engine shows in the `containers` reading the session's system
 //! service publishes.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,21 +35,123 @@ struct Containers;
 struct Pull {
     stopped: AtomicBool,
     lines: Mutex<Vec<String>>,
+    /// What each layer has fetched, by the layer the engine names: its bytes so far, and the
+    /// whole where the engine said it.
+    layers: Mutex<BTreeMap<String, (u64, Option<u64>)>>,
     child: Mutex<Option<Child>>,
     moved: JobSink,
 }
 
 impl Pull {
-    /// Tell the pull's lines as they stand, at `state`, failing with `error`.
+    /// Tell the pull's lines as they stand, at `state`, failing with `error`, with the bytes
+    /// its layers have fetched.
     fn tell(&self, state: State, error: &str) {
         let lines = self
             .lines
             .lock()
             .map(|lines| lines.clone())
             .unwrap_or_default();
-        self.moved
-            .moved(state, serde_json::json!({ "lines": lines, "why": error }));
+        let (done, total) = self.fetched();
+        self.moved.moved(
+            state,
+            serde_json::json!({
+                "lines": lines,
+                "why": error,
+                "done": done,
+                "total": total,
+            }),
+        );
     }
+
+    /// The bytes the pull's layers have fetched, and their whole where every one of them said
+    /// it: `0` there while a layer names none.
+    fn fetched(&self) -> (u64, u64) {
+        let Ok(layers) = self.layers.lock().map(|layers| layers.clone()) else {
+            return (0, 0);
+        };
+        let done = layers.values().map(|(done, _)| *done).sum();
+        let known = layers.len() == layers.values().filter(|(_, total)| total.is_some()).count();
+        let total = if known {
+            layers.values().filter_map(|(_, total)| *total).sum()
+        } else {
+            0
+        };
+        (done, total)
+    }
+
+    /// Read what a line the engine wrote says about its layer: what it has fetched of the
+    /// whole. Podman rewrites one line as a layer fetches, so each part of the line counts.
+    fn record(&self, line: &str) {
+        let Ok(mut layers) = self.layers.lock() else {
+            return;
+        };
+        for part in line.split('\r') {
+            if let Some((layer, done, total)) = fetched(part) {
+                let entry = layers.entry(layer).or_insert((0, total));
+                entry.0 = done;
+                if let Some(total) = total {
+                    entry.1 = Some(total);
+                }
+            }
+        }
+    }
+}
+
+/// What a line the engine wrote says about one layer: which layer, the bytes it has fetched,
+/// and the whole where the line names it. Podman writes `Copying blob 9e2c… 2.1MiB / 3.4MiB`,
+/// or the size alone where it names no whole.
+fn fetched(line: &str) -> Option<(String, u64, Option<u64>)> {
+    let layer = layer_of(line)?;
+    let (done, total) = line.split_once('/').unwrap_or((line, ""));
+    let done = size_of(done)?;
+    let total = size_of(total);
+    Some((layer, done, total))
+}
+
+/// The layer a line names, as `Copying blob 9e2c…` or `Copying config 0123…` writes it.
+fn layer_of(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace();
+    while let Some(word) = words.next() {
+        if matches!(word, "blob" | "config" | "layer") {
+            if let Some(name) = words.next() {
+                return Some(
+                    name.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != ':' && c != '.')
+                        .to_owned(),
+                );
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// The last size a piece of a line names, in bytes: `2.1MiB` or a number and its unit beside it.
+fn size_of(piece: &str) -> Option<u64> {
+    let words: Vec<&str> = piece.split_whitespace().collect();
+    let scale = |unit: &str| {
+        Some(match unit.to_ascii_lowercase().as_str() {
+            "b" => 1.0,
+            "kb" | "kib" => 1024.0,
+            "mb" | "mib" => 1024.0 * 1024.0,
+            "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
+            "tb" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+            _ => return None,
+        })
+    };
+    words.iter().enumerate().rev().find_map(|(index, word)| {
+        let (number, unit) = match word.find(|c: char| c.is_ascii_alphabetic()) {
+            Some(at) => word.split_at(at),
+            None => (*word, *words.get(index.checked_add(1)?)?),
+        };
+        let value: f64 = number.parse().ok()?;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a parsed byte count is a whole, positive number well inside u64"
+        )]
+        let bytes = (value * scale(unit)?) as u64;
+        Some(bytes)
+    })
 }
 
 fn running() -> &'static Running<Pull> {
@@ -110,6 +213,7 @@ fn pull(job: &str, input: &str, moved: JobSink) -> Result<(), String> {
     let state = Arc::new(Pull {
         stopped: AtomicBool::new(false),
         lines: Mutex::new(Vec::new()),
+        layers: Mutex::new(BTreeMap::new()),
         child: Mutex::new(Some(child)),
         moved: moved.clone(),
     });
@@ -122,6 +226,7 @@ fn pull(job: &str, input: &str, moved: JobSink) -> Result<(), String> {
         .spawn(move || {
             let read = |reader: Box<dyn BufRead>, pull: &Pull| {
                 for line in reader.lines().map_while(Result::ok) {
+                    pull.record(&line);
                     if let Ok(mut lines) = pull.lines.lock() {
                         lines.push(line);
                         if lines.len() > LINES_KEPT {
@@ -164,4 +269,50 @@ fn pull(job: &str, input: &str, moved: JobSink) -> Result<(), String> {
         })
         .map_err(|error| format!("could not start the pull: {error}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A layer's fetched bytes read from the line Podman rewrites as it fetches, and the whole
+    /// where the engine names it.
+    #[test]
+    fn a_lines_bytes_are_read_for_its_layer() {
+        assert_eq!(
+            fetched("Copying blob 9e2c41 done   |"),
+            None,
+            "a finished layer names no bytes"
+        );
+        assert_eq!(
+            fetched("Copying blob 9e2c41 2.1MiB / 3.4MiB"),
+            Some(("9e2c41".to_owned(), 2_202_009, Some(3_565_158)))
+        );
+        assert_eq!(
+            fetched("Copying config 0123abcd: 1.0MB / 1.0MB"),
+            Some(("0123abcd:".to_owned(), 1_048_576, Some(1_048_576)))
+        );
+        assert_eq!(
+            fetched("Copying blob 9e2c41 512kB"),
+            Some(("9e2c41".to_owned(), 524_288, None))
+        );
+        assert_eq!(fetched("Getting image source signatures"), None);
+    }
+
+    /// Each part of a rewritten line counts, so the bytes are the newest the engine said.
+    #[test]
+    fn a_rewritten_line_keeps_its_newest_bytes() {
+        let pull = Pull {
+            stopped: AtomicBool::new(false),
+            lines: Mutex::new(Vec::new()),
+            layers: Mutex::new(BTreeMap::new()),
+            child: Mutex::new(None),
+            moved: JobSink::new(|_, _| {}),
+        };
+        pull.record("Copying blob aaa 1MiB / 4MiB\rCopying blob aaa 3MiB / 4MiB");
+        pull.record("Copying blob bbb 2MiB / 2MiB");
+        let (done, total) = pull.fetched();
+        assert_eq!(done, 5 * 1024 * 1024);
+        assert_eq!(total, 6 * 1024 * 1024);
+    }
 }

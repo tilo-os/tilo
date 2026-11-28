@@ -688,11 +688,42 @@ fn a_pull_runs_in_the_apps_engine_and_its_output_shows() {
         |handlers| handlers.progress.clone(),
         &record(
             "running",
-            serde_json::json!({"lines": ["Copying blob nginx"]}),
+            serde_json::json!({
+                "lines": ["Copying blob nginx 2.2MB / 3.6MB"],
+                "done": 2_202_009,
+                "total": 3_565_158,
+            }),
         ),
     );
     let window = app.window();
-    assert!(has(&window, "Copying blob nginx"), "{:?}", shown(&window));
+    assert!(
+        has(&window, "Copying blob nginx 2.2MB / 3.6MB"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        has(&window, "Downloading layers: 2.2 MB of 3.6 MB"),
+        "the pull says how much of its layers it has: {:?}",
+        shown(&window)
+    );
+    // The engine names no whole for the layers it has fetched: it says how far it got.
+    app.moves(
+        |handlers| handlers.progress.clone(),
+        &record(
+            "running",
+            serde_json::json!({
+                "lines": ["Copying blob nginx 2.2MB"],
+                "done": 2_202_009,
+                "total": 0,
+            }),
+        ),
+    );
+    let window = app.window();
+    assert!(
+        has(&window, "Downloading layers: 2.2 MB so far"),
+        "the pull says what it fetched where no whole is known: {:?}",
+        shown(&window)
+    );
 
     app.moves(
         |handlers| handlers.done.clone(),
