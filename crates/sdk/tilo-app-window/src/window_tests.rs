@@ -5169,3 +5169,70 @@ fn a_control_the_window_drew_again_takes_a_press_the_pointer_has_not_moved_for()
         "the control built again at the pointer takes the press, at {x},{y}"
     );
 }
+
+/// A save that never settles speaks without the app saying anything and nobody touching the
+/// window: the window asks the host's clock for a frame at the stall, and the frame it owes says
+/// in the bar that the save still waits and asks the app to submit it again.
+#[test]
+fn a_save_that_never_settles_stalls_into_the_bar_with_no_input_and_no_frame() {
+    use ui::time::testing::with_monotonic_time;
+    tilo_ui_base::i18n::I18nManager::init("en-US");
+    let (mut app, mut saved_window) = window();
+    saved_window.receive();
+    let mut harness =
+        ui::headless::Driver::new(ui::State::new(), Box::new(saved_window), (900, 700));
+    harness.present_in_window_bar();
+
+    let start = ui::time::now();
+    let after = |secs| {
+        start
+            .checked_add(ui::time::Duration::from_secs(secs))
+            .expect("the clock reaches it")
+    };
+    with_monotonic_time(start, || {
+        send(&mut app, &[ToUi::Save(wire::SaveStatus::Saving)]);
+        drawn_window(&mut harness).receive();
+    });
+    // What the window arrived showing settles, its frames a second apart; the save alone is
+    // still under way.
+    with_monotonic_time(after(2), || harness.relayout());
+    with_monotonic_time(after(3), || harness.relayout());
+    let quiet = with_monotonic_time(after(3), || harness.frame_schedule());
+    // The window asks the host's clock for a frame at the stall by itself, as any widget with a
+    // deadline does; the app says nothing more.
+    let deadline = quiet
+        .next_wake_deadline
+        .expect("the window asks for the frame the stall is due at");
+    assert_eq!(
+        deadline,
+        start
+            .checked_add(ui::SAVE_STALL)
+            .expect("the clock reaches it"),
+        "the frame is due when the save has waited the stall"
+    );
+    assert_eq!(
+        ui::window_toolbar::notice(),
+        None,
+        "nothing is said while the save may land"
+    );
+
+    // The frame the deadline owes: no input, no message from the app.
+    let schedule = with_monotonic_time(deadline, || harness.frame_schedule());
+    assert!(schedule.needs_redraw, "the due deadline is a frame owed");
+    with_monotonic_time(deadline, || {
+        drawn_window(&mut harness).flush();
+        harness.relayout();
+    });
+    let shown = ui::window_toolbar::notice().expect("the stall stands in the bar");
+    assert_eq!(shown.text, "Couldn't save yet. Retrying…");
+    assert!(
+        shown.actions.is_empty(),
+        "the stall asks by itself before it asks the person"
+    );
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::SaveAgain)),
+        "the stall asks the app to submit the change again"
+    );
+}

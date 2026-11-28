@@ -4209,6 +4209,20 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         self.capture_protected()
     }
 
+    /// When the window next needs a frame by itself, its app saying nothing: a save under way
+    /// that stalls speaks to a person who is not typing, so the host's clock wakes at the
+    /// surface's next stage, as it does at any widget's deadline, and no input is needed for the
+    /// bar to say it.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        match (
+            self.save.next_wake_deadline(),
+            self.inner().next_wake_deadline(),
+        ) {
+            (Some(save), Some(inner)) => Some(save.min(inner)),
+            (save, inner) => save.or(inner),
+        }
+    }
+
     // The window is the publisher of the app's actions and the one that answers choosing one
     // ([`crate::catalogue`]), and it answers for the views' search where their frame says where it
     // goes; everything else is the body's and forwarded to it.
