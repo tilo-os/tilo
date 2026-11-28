@@ -86,6 +86,7 @@ mod messages;
 mod migrations;
 mod monitor;
 mod naming;
+mod nested_collections;
 mod note_import;
 mod notebook_order;
 mod notes;

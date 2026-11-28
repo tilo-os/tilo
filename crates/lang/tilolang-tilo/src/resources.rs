@@ -5860,13 +5860,17 @@ impl Store for ResourceStore {
         let Some(parent) = held.parent else {
             return Ok(None);
         };
-        // The types whose collections hold items of this type, and the one the parent is.
+        // The types whose collections hold items of this type, and the one the parent is: a
+        // collection field, or a field that holds one record of the type — an embedded record is
+        // held in its holder's field, not in a collection of its own.
         let holders: Vec<(TypeId, FieldId)> = {
             let kinds = self.inner.kinds.borrow();
             let mut holders = Vec::new();
             for entry in kinds.types() {
                 for (field_id, field) in &entry.fields {
-                    if field.items.iter().any(|ty| ty == &at.ty) {
+                    if field.items.iter().any(|ty| ty == &at.ty)
+                        || field.held.as_ref().is_some_and(|ty| ty == &at.ty)
+                    {
                         holders.push((entry.id.clone(), field_id.clone()));
                     }
                 }
