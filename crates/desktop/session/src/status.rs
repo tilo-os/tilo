@@ -239,6 +239,9 @@ mod tests {
             on_battery: false,
             minutes_left: None,
             charge_limit: None,
+            health: None,
+            cycles: None,
+            capacity_wh: None,
             notice: None,
         }
     }
