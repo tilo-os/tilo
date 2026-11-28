@@ -450,7 +450,46 @@ mod cases {
                 Some("{\"secret_key_hex\":\"9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f\"}".into()),
                 "the file the person keeps is the key file"
             );
+            // The save's outcome is what the window says, from the place it went to.
+            let saved = |at: &str, cancelled: bool, refused: &str| {
+                Value::Tuple(vec![
+                    Value::text(at),
+                    Value::Bool(cancelled),
+                    Value::text(refused),
+                ])
+            };
+            p.done(
+                "exported",
+                vec![
+                    Value::resource(&p.root),
+                    saved("publisher-key.json", false, ""),
+                ],
+            );
             assert_eq!(p.text("notice_title"), "Exported your publisher key");
+            assert!(
+                p.text("notice_detail").contains("publisher-key.json"),
+                "the words say where it went: {}",
+                p.text("notice_detail")
+            );
+
+            // A closed chooser says so, and writes nothing.
+            p.done(
+                "exported",
+                vec![Value::resource(&p.root), saved("", true, "")],
+            );
+            assert_eq!(p.text("notice_kind"), "info");
+            assert_eq!(p.text("notice_title"), "Export cancelled");
+
+            // A refused save hands its reason.
+            p.done(
+                "exported",
+                vec![
+                    Value::resource(&p.root),
+                    saved("", false, "the disk is full"),
+                ],
+            );
+            assert_eq!(p.text("notice_kind"), "error");
+            assert!(p.text("notice_detail").contains("the disk is full"));
         }
 
         phase an_application_starts_as_a_job_and_its_answer_is_kept;

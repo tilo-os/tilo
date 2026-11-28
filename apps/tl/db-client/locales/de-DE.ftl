@@ -821,3 +821,8 @@ d-yyr6b46g = Zeilenzahlen lesen
     .doc = Liest die Zeilenzahl jeder Tabelle erneut, damit eine Seite nach einer Anweisung die Zahl der Tabelle nennt, wie sie jetzt steht.
 
 d-yyr6b46g-s = S
+
+d-wx5ssygv = CSV exportiert
+    .doc = Das Speichern der CSV ist vorbei: das Fenster sagt, wohin sie ging und wie viele Zeilen, dass die Person den Auswahldialog geschlossen hat, oder warum es verweigert wurde.
+
+d-wx5ssygv-saved = Gespeichert

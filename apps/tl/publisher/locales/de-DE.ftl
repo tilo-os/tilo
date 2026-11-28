@@ -146,8 +146,16 @@ d-cp6smsn5 = Schlüssel kopieren
 
 d-mje63lgo = Schlüssel exportieren…
     .doc = Die Schlüsseldatei, damit die Person sie sicher aufbewahrt: daraus stellt sie den Schlüssel wieder her.
+
+d-3f5jfxyj = Exportiert
+    .doc = Das Speichern der Schlüsseldatei ist vorbei: das Fenster sagt, wohin sie ging, dass die Person den Auswahldialog geschlossen hat, oder warum es verweigert wurde.
+    .w-the-key-could-not-be-saved = Der Schlüssel konnte nicht gespeichert werden
+    .w-export-cancelled = Export abgebrochen
     .w-exported-your-publisher-key = Deinen Publisher-Schlüssel exportiert
+    .w-kept-at-it-is-the-only = Gespeichert unter { $at }. Es ist die einzige Kopie außerhalb dieses Geräts: bewahre sie sicher auf.
     .w-keep-publisher-key-json-somewhere-safe = Bewahre publisher-key.json sicher auf; es ist die einzige Kopie außerhalb dieses Geräts.
+
+d-3f5jfxyj-saved = Gespeichert
 
 d-uiuxe7rl = Beantragen
     .doc = Bittet die Registry um die Namensräume, die Domain und Forge-Konto des Profils nennen.

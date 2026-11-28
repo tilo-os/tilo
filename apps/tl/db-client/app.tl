@@ -1112,6 +1112,28 @@ action export_csv(d: Database) -> Option<File> (icon: .download, label: "Export 
     return .some(File.of_text("query-results.csv", csv_text(o, rows)))
 }
 
+/// The CSV's save is over: the window says where it went and how many rows, that the person
+/// closed the chooser, or why it was refused.
+action exported_csv(d: Database, saved: host.Saved) {
+    let s = ensure_session(d)
+    let rows = s.result_rows.len()
+    if saved.refused != "" {
+        s.status = "The CSV could not be written: {saved.refused}"
+    } else if saved.cancelled {
+        s.status = "The save dialog closed before a place was chosen."
+    } else if saved.at != "" {
+        s.status = exported_words(rows, "to {saved.at}")
+    } else {
+        s.status = exported_words(rows, "")
+    }
+}
+
+/// How many rows a save wrote, and where.
+fn exported_words(rows: Int, where: Text) -> Text {
+    let said = if rows == 1 { "Exported 1 row" } else { "Exported {rows} rows" }
+    if where == "" { said } else { "{said} {where}" }
+}
+
 /// Clears what the window last said.
 action dismiss(d: Database) {
     let s = ensure_session(d)
@@ -1518,7 +1540,11 @@ view result_menu(d: Database, s: Session) {
             on choose: copy_result(d)
         }
         ui.MenuItem("Export as CSV…", icon: .download, disabled: not exportable(d)) {
-            on choose: file.save(export_csv(d), name: "query-results.csv")
+            on choose: file.save(
+                export_csv(d),
+                name: "query-results.csv",
+                then: saved -> exported_csv(d, saved),
+            )
         }
         ui.MenuItem("Save the query…", icon: .save, disabled: d.sql.trim() == "") {
             on choose: save_query(d, first_line(d.sql))

@@ -316,13 +316,34 @@ action export_key(p: Publisher) -> File (icon: .download, label: "Export key…"
             File.of_text("The key could not be read.txt", why)
         }
         .ok(key) => {
-            p.notice_kind = "success"
-            p.notice_title = std.say("Exported your publisher key")
-            p.notice_detail = std.say(
-                "Keep publisher-key.json somewhere safe; it is the only copy outside this device.",
-            )
             File.of_text("publisher-key.json", key.text)
         }
+    }
+}
+
+/// The key file's save is over: the window says where it went, that the person closed the
+/// chooser, or why it was refused.
+action exported(p: Publisher, saved: host.Saved) {
+    if saved.refused != "" {
+        p.notice_kind = "error"
+        p.notice_title = std.say("The key could not be saved")
+        p.notice_detail = saved.refused
+    } else if saved.cancelled {
+        p.notice_kind = "info"
+        p.notice_title = std.say("Export cancelled")
+        p.notice_detail = ""
+    } else if saved.at != "" {
+        p.notice_kind = "success"
+        p.notice_title = std.say("Exported your publisher key")
+        p.notice_detail = std.say(
+            "Kept at {saved.at}. It is the only copy outside this device: keep it safe.",
+        )
+    } else {
+        p.notice_kind = "success"
+        p.notice_title = std.say("Exported your publisher key")
+        p.notice_detail = std.say(
+            "Keep publisher-key.json somewhere safe; it is the only copy outside this device.",
+        )
     }
 }
 
@@ -493,7 +514,11 @@ view key_section(p: Publisher) {
                     on press: copy_secret(p)
                 }
                 ui.Button("Export key…", icon: .download) {
-                    on press: file.save(export_key(p), name: "publisher-key.json")
+                    on press: file.save(
+                        export_key(p),
+                        name: "publisher-key.json",
+                        then: saved -> exported(p, saved),
+                    )
                 }
                 ui.Button("Check application", icon: .refresh_ccw) {
                     on press: check_status(p)

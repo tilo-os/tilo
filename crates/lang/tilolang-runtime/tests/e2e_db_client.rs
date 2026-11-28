@@ -820,6 +820,42 @@ mod cases {
             )
             .into_owned();
             assert_eq!(bytes, "\"said\",\"counted\"\n\"a,b\",\"2\"\n");
+
+            // The save's outcome says where it went, or why nothing was written.
+            let saved = |at: &str, cancelled: bool, refused: &str| {
+                Value::Tuple(vec![
+                    Value::text(at),
+                    Value::Bool(cancelled),
+                    Value::text(refused),
+                ])
+            };
+            c.with(
+                "exported_csv",
+                &[
+                    ("d", c.root_arg()),
+                    ("saved", saved("query-results.csv", false, "")),
+                ],
+            );
+            assert_eq!(c.status(), "Exported 1 row to query-results.csv");
+            c.with(
+                "exported_csv",
+                &[("d", c.root_arg()), ("saved", saved("", true, ""))],
+            );
+            assert_eq!(
+                c.status(),
+                "The save dialog closed before a place was chosen."
+            );
+            c.with(
+                "exported_csv",
+                &[
+                    ("d", c.root_arg()),
+                    ("saved", saved("", false, "the disk is full")),
+                ],
+            );
+            assert_eq!(
+                c.status(),
+                "The CSV could not be written: the disk is full"
+            );
         }
 
         phase a_saved_query_loads_into_the_editor;
