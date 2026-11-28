@@ -1,6 +1,6 @@
 //! A secret a view reveals hides again when its window loses the person's focus: a `ui.Property`
-//! value or a `ui.Text` the app says is a secret masks itself, and assistive technology reads
-//! only that it is hidden, until the app sends a value it has not shown before.
+//! value or a `ui.Text` the app says is a secret masks itself, assistive technology reads only
+//! that it is hidden, and the view is told so it clears the reveal it made.
 
 use crate::hosted::{SECRET, Session, accessible, shown_at};
 
@@ -37,7 +37,8 @@ fn a_revealed_secret_hides_when_its_window_loses_focus() {
         "the text shows it: {shown:?}"
     );
 
-    // The window loses the focus: neither reaches a frame or a reader any more.
+    // The window loses the focus: neither reaches a frame or a reader any more, and the view is
+    // told, so the reveal it made is gone and its one control reads "Reveal" again.
     session.window.focus(false);
     session.settle();
     let hidden = spoken(&mut session);
@@ -49,8 +50,12 @@ fn a_revealed_secret_hides_when_its_window_loses_focus() {
         !hidden.contains("SOLO-SECRET-CODE"),
         "the text's secret is hidden: {hidden:?}"
     );
+    assert!(
+        hidden.contains("Reveal") && !hidden.contains("Hide"),
+        "the view cleared its reveal: {hidden:?}"
+    );
 
-    // Taking the focus back does not show it again: only a value the app sends anew does.
+    // Taking the focus back changes nothing: one press on Reveal is what shows it.
     session.window.focus(true);
     session.settle();
     let refocused = spoken(&mut session);
@@ -58,18 +63,12 @@ fn a_revealed_secret_hides_when_its_window_loses_focus() {
         !refocused.contains("482913") && !refocused.contains("SOLO-SECRET-CODE"),
         "a refocus keeps it hidden: {refocused:?}"
     );
-
-    // Hide masks the values, and Reveal sends them again: a value the window has not shown
-    // before shows while it has the focus.
-    let (x, y) = shown_at(&mut session, "Hide");
-    session.window.click_at(x, y);
-    session.settle();
     let (x, y) = shown_at(&mut session, "Reveal");
     session.window.click_at(x, y);
     session.settle();
     let fresh = spoken(&mut session);
     assert!(
         fresh.contains("482913") && fresh.contains("SOLO-SECRET-CODE"),
-        "a new value shows again: {fresh:?}"
+        "one Reveal shows it again: {fresh:?}"
     );
 }

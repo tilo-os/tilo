@@ -1,6 +1,6 @@
 //! [`PropertyList`] and its [`Property`] rows as described components.
 
-use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{Property, PropertyList};
 
@@ -13,6 +13,10 @@ pub struct PropertyListProps {
     pub properties: Vec<PropertyProps>,
     /// Shade every other row, for a long list read across.
     pub striped: bool,
+    /// A secret hid itself: the window lost the person's focus (or the app sent one it could not
+    /// show). The view clears the reveal it made, so its control reads "Reveal" again.
+    #[component(event)]
+    pub hidden: Event,
 }
 
 /// One fact of a property list: what it is, and its value.
@@ -50,13 +54,15 @@ impl Described for PropertyList {
     type Props = PropertyListProps;
 
     fn from_props(key: &str, props: PropertyListProps) -> Self {
-        let list =
+        let mut list =
             Self::new(props.properties.into_iter().map(Property::from).collect()).with_id(key);
+        list.hidden_event = props.hidden;
         if props.striped { list.striped() } else { list }
     }
 
     fn set_props(&mut self, props: PropertyListProps) -> bool {
         let rows = props.properties.into_iter().map(Property::from).collect();
+        self.hidden_event = props.hidden;
         self.take_rows(rows);
         self.striped = props.striped;
         self.layout = super::ListLayout::empty();

@@ -808,7 +808,11 @@ view account_card(
                             role: .display,
                             numeric: true,
                             secret: true,
-                        )
+                        ) {
+                            // The window hid the code when it lost the focus: the reveal it
+                            // showed goes, so the card offers Reveal again.
+                            on hidden: set(shown, "").then(set(shown_until, 0))
+                        }
                     } else {
                         ui.Text("••• •••", role: .display, numeric: true)
                     }
@@ -935,7 +939,16 @@ view account_window(a: Account) {
         row(gap: .section, align: .center) {
             if let generated = made {
                 if unveiled {
-                    ui.Text(group_code(generated.code), role: .display, numeric: true, secret: true)
+                    ui.Text(
+                        group_code(generated.code),
+                        role: .display,
+                        numeric: true,
+                        secret: true,
+                    ) {
+                        // The window hid the code when it lost the focus: the reveal it showed
+                        // goes, so the window offers Reveal again.
+                        on hidden: set(shown_until, 0)
+                    }
                 } else {
                     ui.Text("••• •••", role: .display, numeric: true)
                 }

@@ -740,6 +740,15 @@ impl Event {
             Self::Action(binding) => Some(binding.address()),
         }
     }
+
+    /// Fire a view intent now, with `value`: what a widget reports of an event it causes itself
+    /// (a secret hiding itself), never a press of its control. An event bound to an action is not
+    /// fired this way; a control's press is where its action runs.
+    pub fn fire_view(&self, value: Option<Value>) {
+        if let Self::View(intent) = self {
+            intent.fire(value);
+        }
+    }
 }
 
 impl std::fmt::Debug for Event {

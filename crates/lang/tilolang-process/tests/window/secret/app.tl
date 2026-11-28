@@ -18,23 +18,31 @@ view account(a: Account) {
     stack {
         text(a.name)
         row {
-            ui.Button("Reveal") {
-                on press: set(revealed, true)
-            }
-            ui.Button("Hide") {
-                on press: set(revealed, false)
+            if revealed {
+                ui.Button("Hide") {
+                    on press: set(revealed, false)
+                }
+            } else {
+                ui.Button("Reveal") {
+                    on press: set(revealed, true)
+                }
             }
         }
         ui.PropertyList {
+            // The window hid a secret when it lost the focus: the reveal goes, so the item reads
+            // "Hidden" and its control reads "Reveal" again.
+            on hidden: set(revealed, false)
             ui.Property(
                 "One-time code",
                 if revealed { "482913" } else { "Hidden" },
                 secret: revealed,
             )
         }
-        text(
+        ui.Text(
             if revealed { "SOLO-SECRET-CODE" } else { "Hidden" },
             secret: revealed,
-        )
+        ) {
+            on hidden: set(revealed, false)
+        }
     }
 }

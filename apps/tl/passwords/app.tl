@@ -1312,6 +1312,9 @@ view item_page(
         }
         std.body() {
             ui.PropertyList {
+                // The window hid a secret when it lost the focus: the reveal it showed goes, so
+                // the item reads "Hidden" and its control reads "Reveal" again.
+                on hidden: set(showing, .none).then(set(shown, .none))
                 if item.kind != .note {
                     ui.Property(
                         identity_label(item.kind),

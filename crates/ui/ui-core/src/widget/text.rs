@@ -159,6 +159,9 @@ pub struct Text {
     hidden: bool,
     /// Whether the window has the person's focus: a secret sent while it has none stays hidden.
     window_focused: bool,
+    /// What the view does when a secret hides itself: it sends the app an event, so the app clears
+    /// the reveal whose value the window can no longer show.
+    hidden_event: tilo_ui_base::component::Event,
     tone: Option<tilo_ui_base::widget::Tone>,
     access: TextAccess,
     /// Whether assistive technology may move focus to these words: what a
@@ -223,6 +226,7 @@ impl Text {
             secret: false,
             hidden: false,
             window_focused: true,
+            hidden_event: tilo_ui_base::component::Event::None,
             tone: None,
             access: TextAccess::Text,
             focusable: false,
@@ -419,16 +423,10 @@ impl Text {
     /// Take what the app sent now: `value` is its words, `secret` whether they are a secret, and
     /// `new_value` whether they differ from what it last sent.
     fn take_secret(&mut self, secret: bool, new_value: bool) {
-        let was_hidden = self.hidden;
         self.secret = secret;
         // A lost focus keeps its mask, a value it has not shown shows while the window has the
         // focus, and one sent while it has none stays hidden.
-        self.hidden = secret && (!self.window_focused || (self.hidden && !new_value));
-        if self.hidden != was_hidden {
-            self.dirty = true;
-            self.layout_dirty = true;
-            self.prepared_input = None;
-        }
+        self.set_hidden(secret && (!self.window_focused || (self.hidden && !new_value)));
         if secret && self.modifiers.kind != Some(TextKind::Secret) {
             self.modifiers.kind = Some(TextKind::Secret);
             self.restyle_default();
@@ -436,6 +434,21 @@ impl Text {
             // The secret face is this prop's: a value the app no longer calls secret reads plainly.
             self.modifiers.kind = None;
             self.restyle_default();
+        }
+    }
+
+    /// Show or hide the words, and tell the view when they hide: the app clears the reveal whose
+    /// value the window cannot show any more, so its one control reads "Reveal" again.
+    fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden;
+        self.dirty = true;
+        self.layout_dirty = true;
+        self.prepared_input = None;
+        if hidden {
+            self.hidden_event.fire_view(None);
         }
     }
 
@@ -942,11 +955,8 @@ impl Widget for Text {
     /// after it comes back until the app sends a new value.
     fn window_focus_changed(&mut self, focused: bool) {
         self.window_focused = focused;
-        if !focused && self.secret && !self.hidden {
-            self.hidden = true;
-            self.dirty = true;
-            self.layout_dirty = true;
-            self.prepared_input = None;
+        if !focused && self.secret {
+            self.set_hidden(true);
         }
     }
 

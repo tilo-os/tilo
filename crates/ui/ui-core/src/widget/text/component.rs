@@ -2,13 +2,13 @@
 
 use tilo_ui_base::text_render::ParagraphAlign;
 use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{Text, TextSource};
 
 /// Words on the page, set in one of the design system's text roles. What it says is content,
 /// never looked up as interface copy.
-#[derive(Clone, Component, Debug, Default, PartialEq)]
+#[derive(Clone, Component, Debug, Default)]
 #[component(name = "Text", role = "Label", label = "value")]
 pub struct TextProps {
     /// What it says.
@@ -38,6 +38,10 @@ pub struct TextProps {
     /// window hides them behind dots when it loses the person's focus, and shows them again only
     /// when the app sends a value it has not sent before.
     pub secret: bool,
+    /// A secret hid itself: the window lost the person's focus (or the app sent one it could not
+    /// show). The view clears the reveal it made, so its control reads "Reveal" again.
+    #[component(event)]
+    pub hidden: Event,
 }
 
 impl Described for Text {
@@ -54,6 +58,7 @@ impl Described for Text {
             live,
             align,
             secret,
+            hidden,
         } = props;
         let mut text = Self::new("").with_role(role).with_id(key);
         if align != ParagraphAlign::Start {
@@ -72,6 +77,7 @@ impl Described for Text {
             .with_lines(lines.and_then(|lines| u32::try_from(lines).ok()))
             .with_truncate(truncate)
             .with_secret(secret);
+        text.hidden_event = hidden;
         text.show_content(value);
         text
     }
@@ -98,6 +104,7 @@ impl Described for Text {
             return false;
         }
         let new_value = props.value != self.label;
+        self.hidden_event = props.hidden;
         self.show_content(props.value);
         self.take_secret(props.secret, new_value);
         true

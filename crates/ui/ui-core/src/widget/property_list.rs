@@ -870,6 +870,9 @@ pub struct PropertyList {
     /// Whether the window has the person's focus: a secret value sent while it has none stays
     /// hidden.
     window_focused: bool,
+    /// What the view does when a secret hides itself: it sends the app an event, so the app clears
+    /// the reveal whose value the window can no longer show.
+    hidden_event: tilo_ui_base::component::Event,
     rect: Rect,
     dirty: bool,
 }
@@ -901,6 +904,7 @@ impl PropertyList {
             hovered_action: None,
             pressed_action: crate::pointer_replay::HeldPress::default(),
             window_focused: true,
+            hidden_event: tilo_ui_base::component::Event::None,
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -960,18 +964,22 @@ impl PropertyList {
             .map(|property| (property.label.clone(), property.value.clone()))
             .collect();
         let window_focused = self.window_focused;
+        let mut hid = false;
         let rows: Vec<Property> = rows
             .into_iter()
             .map(|mut property| {
-                property.hidden = property.secret
-                    && (!window_focused
-                        || hidden.iter().any(|(label, value)| {
-                            *label == property.label && *value == property.value
-                        }));
+                let was_hidden = hidden
+                    .iter()
+                    .any(|(label, value)| *label == property.label && *value == property.value);
+                property.hidden = property.secret && (!window_focused || was_hidden);
+                hid |= property.hidden && !was_hidden;
                 property
             })
             .collect();
         self.groups = vec![(None, rows)];
+        if hid {
+            self.hidden_event.fire_view(None);
+        }
     }
 
     /// What names a row's action across a rebuild: the list, the row's
@@ -1199,6 +1207,7 @@ impl Widget for PropertyList {
         }
         if hid {
             self.dirty = true;
+            self.hidden_event.fire_view(None);
         }
     }
 

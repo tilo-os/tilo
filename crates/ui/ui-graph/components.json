@@ -5995,6 +5995,12 @@
           "default": true
         }
       ],
+      "events": [
+        {
+          "name": "hidden",
+          "doc": "A secret hid itself: the window lost the person's focus (or the app sent one it could not show). The view clears the reveal it made, so its control reads \"Reveal\" again."
+        }
+      ],
       "semantics": {
         "role": "List"
       }
@@ -7440,6 +7446,12 @@
           "name": "secret",
           "doc": "The words are a secret the app shows (a revealed one-time code, a revealed password): the window hides them behind dots when it loses the person's focus, and shows them again only when the app sends a value it has not sent before.",
           "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "hidden",
+          "doc": "A secret hid itself: the window lost the person's focus (or the app sent one it could not show). The view clears the reveal it made, so its control reads \"Reveal\" again."
         }
       ],
       "semantics": {
