@@ -56,20 +56,22 @@ pub enum EntryKind {
 }
 
 /// A workspace's files by path, read and written where this device holds them.
-pub struct Paths<'a> {
+pub struct Paths {
     workspaces: Workspaces,
     /// Where the bytes of the files are kept and asked for; `None` reads the tree alone, as a
     /// caller that never opens a file.
     content: Option<Arc<RouteContent>>,
-    runtime: &'a tokio::runtime::Runtime,
+    /// The runtime the workspace's records are driven on, as the caller's thread hands it: none
+    /// of these calls may be made from inside it.
+    runtime: tokio::runtime::Handle,
 }
 
-impl<'a> Paths<'a> {
+impl Paths {
     #[must_use]
     pub fn new(
         workspaces: Workspaces,
         content: Option<Arc<RouteContent>>,
-        runtime: &'a tokio::runtime::Runtime,
+        runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
             workspaces,

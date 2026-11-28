@@ -1010,7 +1010,13 @@ fn a_file_reads_whole_from_a_device_that_holds_none_of_it() {
     assert!(fan.b.kept(&route, &hash).is_none() && fan.c.kept(&route, &hash).is_none());
 
     // One device reads the file by its path, another by the content address an offer carries.
-    let reader = |content| Paths::new(put.workspaces.clone(), Some(content), &runtime);
+    let reader = |content| {
+        Paths::new(
+            put.workspaces.clone(),
+            Some(content),
+            runtime.handle().clone(),
+        )
+    };
     let by_path = reader(Arc::clone(&fan.c)).read(&put.name, "photo.jpg");
     assert_eq!(by_path.expect("the file reads by its path"), photo);
     let by_hash = reader(Arc::clone(&fan.b));

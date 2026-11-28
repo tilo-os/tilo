@@ -44,7 +44,7 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
     let (_home, server) = Server::for_phone();
     let kept = kept_workspace(&server);
     let Joined { laptop, phone, .. } = server.joined();
-    let workspace = server.workspace.clone();
+    let workspace = server.workspace;
 
     // The phone offers the person's workspace as a root of the picker, by the name the person
     // gave it.
@@ -85,7 +85,7 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
 /// the person's, watched as that device changes it, and renamed and deleted from the phone.
 fn photos_written_and_read_back(
     phone: &tilo_runtime::in_process::Device,
-    kept: &WorkspaceKept<'_>,
+    kept: &WorkspaceKept,
     workspace: &str,
 ) {
     // A picture saved on the phone is written into the workspace, under a folder it makes.
@@ -208,20 +208,20 @@ fn refusals_keep_the_phone_to_its_workspaces(
 /// The workspace as the person's server keeps it, which is also what the laptop whose ticket
 /// entered the phone reads and writes: the same files by path the phone's provider uses, over the
 /// workspace's own copy, with the bytes on its route.
-struct WorkspaceKept<'a> {
-    files: Paths<'a>,
+struct WorkspaceKept {
+    files: Paths,
     /// The route the bytes travel on, held for as long as the workspace is read.
     _content: RouteContentService,
 }
 
-fn kept_workspace(server: &Server) -> WorkspaceKept<'_> {
+fn kept_workspace(server: &Server) -> WorkspaceKept {
     let workspaces = server.workspaces();
     let content = routes_content(&workspaces, Arc::new(MemoryShelf::default()));
     WorkspaceKept {
         files: Paths::new(
             workspaces,
             Some(Arc::clone(&content.content)),
-            &server.runtime,
+            server.runtime.handle().clone(),
         ),
         _content: content,
     }

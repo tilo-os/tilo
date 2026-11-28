@@ -1,12 +1,13 @@
 //! Nearby Send between the person's devices, carried by the device's daemon: one device offers a
 //! file, the other device's person answers it through their asked record, and the bytes reach the
-//! workspace's Files with the address offered.
+//! workspace's Files whole.
 //!
 //! The one daemon in these tests is the receiving device. The sending device is another of the
-//! person's, a real action endpoint serving what a sending daemon serves: it takes the offer and
-//! hands the content over a piece at a time.
+//! person's, a real action endpoint serving what a sending daemon serves: it takes the offer. The
+//! content is read by its address through the workspace's one content path, so the bytes need no
+//! route of their own; the offer alone crosses the action link.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use runtime_collab::ShellClient;
@@ -15,42 +16,27 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId};
 use tilo_runtime::device::nearby;
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
 
-use crate::language::files_support;
+use crate::language::files_support::{self, Session, varied};
 use crate::language::host::{self, Host};
 
 /// The file the sending device offers.
 const NAME: &str = "note.txt";
 
-/// One byte past the document-media capability's size: a file's content is a file
-/// record's, which that bound does not carry.
-const LARGE_FILE: usize = 64 * 1024 * 1024 + 1;
-
-/// The sending device, as another of the person's devices answers: it takes an offer and hands
-/// over the content it holds, and says how a transfer ended.
+/// The sending device, as another of the person's devices answers: it takes an offer and hears
+/// how the transfer ended. Its content is read through the workspace's own content path, so it
+/// serves no bytes over the action link.
 struct Sender {
     transfer: String,
-    bytes: Vec<u8>,
     hash: String,
-    asked: Mutex<Vec<String>>,
 }
 
 impl Sender {
-    fn new(transfer: String, bytes: Vec<u8>) -> Arc<Self> {
-        let hash = blake3::hash(&bytes).to_hex().to_string();
-        Arc::new(Self {
-            transfer,
-            bytes,
-            hash,
-            asked: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn asked(&self) -> Vec<String> {
-        self.asked.lock().unwrap().clone()
+    fn new(transfer: String, hash: String) -> Arc<Self> {
+        Arc::new(Self { transfer, hash })
     }
 }
 
@@ -59,13 +45,12 @@ impl ActionProvider for Sender {
         provider == nearby::PROVIDER
     }
 
-    /// A piece of the content is a read, as a sending daemon's Nearby Send describes it.
     fn invocation(
         &self,
-        address: &ActionAddress,
+        _address: &ActionAddress,
         _argument: Option<&str>,
     ) -> Option<tilo_actions::api::ActionDescriptor> {
-        (address.action == nearby::CONTENT).then(nearby::piece)
+        None
     }
 
     fn query(
@@ -81,36 +66,10 @@ impl ActionProvider for Sender {
         _caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let action = request.target.address.action.clone();
-        let arguments = match &request.argument {
-            InvokeArgument::Json(fields) => Value::Object(fields.clone()),
-            _ => json!({}),
-        };
-        self.asked.lock().unwrap().push(action.clone());
-        let value = match action.as_str() {
-            nearby::CONTENT => {
-                let offset = arguments["offset"].as_u64().unwrap_or_default();
-                let length = arguments["length"].as_u64().unwrap_or_default();
-                let start = usize::try_from(offset).unwrap_or(usize::MAX);
-                let end = start
-                    .saturating_add(usize::try_from(length).unwrap_or(0))
-                    .min(self.bytes.len());
-                let piece = self.bytes.get(start..end).unwrap_or_default();
-                json!({
-                    "size": self.bytes.len(),
-                    "offset": offset,
-                    "bytes": hex::encode(piece),
-                })
-            }
-            _ => json!({}),
-        };
         Pending::ready(Ok(InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value: Some(value),
-                    resources: Vec::new(),
-                },
+                output: ActionOutput::default(),
             },
         }))
     }
@@ -175,7 +134,7 @@ async fn row(host: &Host, workspace: &str, handle: &str) -> Value {
 }
 
 /// The transfer `handle` once the content stopped coming, one way or another: the person's yes
-/// starts it, and it ends when the last piece is kept or the transfer stops.
+/// starts it, and it ends when the file is kept or the transfer fails.
 async fn settled(host: &Host, workspace: &str, handle: &str) -> Value {
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -215,12 +174,27 @@ fn request(provider: &str, resource: &str, action: &str, arguments: Value) -> In
     }
 }
 
-/// Offer `bytes` from another device of the person's to this one, as the sending daemon does.
+/// Put `bytes` into `workspace`'s Files as a file of chunks, and answer its content address.
+async fn put_chunks(host: &Host, workspace: &str, bytes: &[u8]) -> String {
+    let key = host.key("Nearby");
+    let session = Session::Key(&key);
+    let content = files_support::put(&session, workspace, bytes).await;
+    files_support::files(
+        &session,
+        workspace,
+        "open",
+        json!({"content": content, "name": NAME}),
+    )
+    .await;
+    files_support::keeps(&session, host, workspace, ("", NAME), bytes).await
+}
+
+/// Offer the content `hash` from another device of the person's to this one, as the sending
+/// daemon does.
 async fn offered(
-    _host: &Host,
     sender: &Arc<Sender>,
     member: &host::Member,
-) -> Result<InvocationUpdate, ActionCallError> {
+) -> Result<tilo_actions::InvocationUpdate, ActionCallError> {
     member
         .call(
             nearby::PROVIDER,
@@ -230,7 +204,6 @@ async fn offered(
                 "device": hex::encode(member.device()),
                 "name": NAME,
                 "hash": sender.hash.clone(),
-                "size": sender.bytes.len(),
                 "label": "phone",
             }),
         )
@@ -243,7 +216,7 @@ async fn waiting_record(host: &Host, invocation: InvocationId) -> String {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(state) = dispatch.observe(&caller, &invocation)
-            && let InvocationUpdate::Progress { phase, message, .. } = &state.update
+            && let tilo_actions::InvocationUpdate::Progress { phase, message, .. } = &state.update
             && phase == "asked"
             && let Some(at) = message.as_deref()
             && let Some((_, record)) = at.split_once('/')
@@ -312,37 +285,20 @@ async fn keep(host: &Host, transfer: &str) {
     );
 }
 
-/// Whether the workspace's tree names the file, with the address offered, before the test's hang
-/// bound passes.
-async fn installed(host: &Host, workspace: &str, hash: &str) -> bool {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        if let Some(tree) = files_support::tree_if_kept(host, workspace).await
-            && files_support::content_at(&tree, "Downloads", NAME).as_deref() == Some(hash)
-        {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// A file another device offered is kept once the person says yes: the bytes come over the action
-/// link, hash to the address offered, and land in their Files at the folder they chose.
+/// A file another device offered is kept once the person says yes: its content is read whole by
+/// the address offered through the workspace's one content path, and lands in their Files at the
+/// folder they chose.
 #[test]
 fn a_file_offered_by_another_device_is_kept_through_the_persons_yes() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
-        let bytes = b"a note from the phone".to_vec();
-        let sender = Sender::new(transfer_id(), bytes.clone());
+        let bytes = varied(700_000, 8);
+        let hash = put_chunks(&host, &workspace, &bytes).await;
+        let sender = Sender::new(transfer_id(), hash);
         let member = host
             .member_serving("phone", &workspace, Arc::clone(&sender) as _)
             .await;
-        offered(&host, &sender, &member)
-            .await
-            .expect("the offer is taken");
+        offered(&sender, &member).await.expect("the offer is taken");
 
         let offer = row(&host, &workspace, &sender.transfer).await;
         assert_eq!(offer["state"], "offered", "{offer}");
@@ -352,16 +308,9 @@ fn a_file_offered_by_another_device_is_kept_through_the_persons_yes() {
 
         let done = settled(&host, &workspace, &sender.transfer).await;
         assert_eq!(done["state"], "done", "{done}");
-        assert!(
-            sender
-                .asked()
-                .iter()
-                .any(|action| action == nearby::CONTENT)
-        );
-        assert!(
-            installed(&host, &workspace, &sender.hash).await,
-            "the file is in the person's Files at the address offered"
-        );
+        let key = host.key("Reader");
+        let session = Session::Key(&key);
+        files_support::keeps(&session, &host, &workspace, ("Downloads", NAME), &bytes).await;
     });
 }
 
@@ -370,13 +319,11 @@ fn a_file_offered_by_another_device_is_kept_through_the_persons_yes() {
 fn a_file_offered_by_another_device_is_turned_down() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
-        let sender = Sender::new(transfer_id(), b"never kept".to_vec());
+        let sender = Sender::new(transfer_id(), hex::encode([0x33; 32]));
         let member = host
             .member_serving("phone", &workspace, Arc::clone(&sender) as _)
             .await;
-        offered(&host, &sender, &member)
-            .await
-            .expect("the offer is taken");
+        offered(&sender, &member).await.expect("the offer is taken");
 
         let decline = request(
             nearby::PROVIDER,
@@ -392,61 +339,12 @@ fn a_file_offered_by_another_device_is_turned_down() {
 
         let row = row(&host, &workspace, &sender.transfer).await;
         assert_eq!(row["state"], "declined", "{row}");
+        let tree = files_support::tree_if_kept(&host, &workspace).await;
         assert!(
-            !sender
-                .asked()
-                .iter()
-                .any(|action| action == nearby::CONTENT),
-            "no content was asked for"
+            tree.and_then(|tree| files_support::content_at(&tree, "Downloads", NAME))
+                .is_none(),
+            "nothing lands in the person's Files"
         );
-        assert!(!installed(&host, &workspace, &sender.hash).await);
-    });
-}
-
-/// A transfer the person accepted is stopped: the bytes stop arriving and the sending device is
-/// told.
-#[test]
-fn a_transfer_the_person_accepted_is_stopped() {
-    host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
-        // Large enough to take several pieces: the stop lands while it is still coming.
-        let bytes = vec![0x5a_u8; 1024 * 1024 + 7];
-        let sender = Sender::new(transfer_id(), bytes);
-        let member = host
-            .member_serving("phone", &workspace, Arc::clone(&sender) as _)
-            .await;
-        offered(&host, &sender, &member)
-            .await
-            .expect("the offer is taken");
-        keep(&host, &sender.transfer).await;
-
-        // The stop goes in once the first piece arrived.
-        let deadline = tilo_test_env::hang_deadline();
-        while !sender
-            .asked()
-            .iter()
-            .any(|action| action == nearby::CONTENT)
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the content never started coming"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let cancel = request(
-            nearby::PROVIDER,
-            nearby::RESOURCE,
-            nearby::CANCEL,
-            json!({"transfer": sender.transfer}),
-        );
-        let _ = host
-            .dispatch()
-            .invoke(&host.caller(), cancel)
-            .await
-            .expect("the stop is admitted");
-        let row = row(&host, &workspace, &sender.transfer).await;
-        assert_eq!(row["state"], "declined", "{row}");
-        assert!(!installed(&host, &workspace, &sender.hash).await);
     });
 }
 
@@ -455,7 +353,7 @@ fn a_transfer_the_person_accepted_is_stopped() {
 fn an_offer_naming_another_device_than_the_one_that_asked_is_refused() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
-        let sender = Sender::new(transfer_id(), b"not yours".to_vec());
+        let sender = Sender::new(transfer_id(), hex::encode([0x22; 32]));
         let member = host
             .member_serving("phone", &workspace, Arc::clone(&sender) as _)
             .await;
@@ -468,39 +366,12 @@ fn an_offer_naming_another_device_than_the_one_that_asked_is_refused() {
                     "device": hex::encode([0x11; 32]),
                     "name": NAME,
                     "hash": sender.hash.clone(),
-                    "size": sender.bytes.len(),
                 }),
             )
             .await;
         assert!(
             matches!(answered, Err(ActionCallError::Refused { .. })),
             "{answered:?}"
-        );
-    });
-}
-
-/// A file larger than the document-media capability's size still crosses whole: a file's
-/// content belongs in a file record, not in the media capability's bound, and its bytes
-/// wait on disk rather than in memory on the way.
-#[test]
-fn a_file_larger_than_the_media_size_is_kept() {
-    host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
-        let bytes = vec![0x5a_u8; LARGE_FILE];
-        let sender = Sender::new(transfer_id(), bytes);
-        let member = host
-            .member_serving("phone", &workspace, Arc::clone(&sender) as _)
-            .await;
-        offered(&host, &sender, &member)
-            .await
-            .expect("the offer is taken");
-        keep(&host, &sender.transfer).await;
-
-        let done = settled(&host, &workspace, &sender.transfer).await;
-        assert_eq!(done["state"], "done", "{done}");
-        assert!(
-            installed(&host, &workspace, &sender.hash).await,
-            "the whole file is in the person's Files at the address offered"
         );
     });
 }

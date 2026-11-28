@@ -53,7 +53,7 @@ impl From<Entry> for FileEntry {
 impl Device {
     /// The person's workspace files, read and written where the daemon in this process holds
     /// them.
-    fn paths(&self) -> Result<Paths<'_>, String> {
+    fn paths(&self) -> Result<Paths, String> {
         let Some(running) = self.running.as_ref() else {
             return Err("the device daemon has stopped".to_owned());
         };
@@ -65,7 +65,7 @@ impl Device {
         Ok(Paths::new(
             services.workspaces().clone(),
             services.record_content(),
-            &self.runtime,
+            self.runtime.handle().clone(),
         ))
     }
 

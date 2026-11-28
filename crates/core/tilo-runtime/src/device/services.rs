@@ -3120,13 +3120,9 @@ impl Daemon {
         )
         .register(&workspaces.copies().providers());
         // Nearby Send between the person's devices: the offers and transfers answered over the
-        // action service this daemon already serves, staged and kept on the device's content
-        // shelf, and read by their shell as the resource it lists.
-        let nearby = super::nearby::Nearby::new(
-            &workspaces,
-            person_devices.clone(),
-            identity.place.dir().join("nearby"),
-        );
+        // action service this daemon already serves, their bytes read through the workspace's one
+        // content path, and read by their shell as the resource it lists.
+        let nearby = super::nearby::Nearby::new(&workspaces, person_devices.clone())?;
         nearby.register(&workspaces.copies().providers());
         // Clipboard continuity between the person's devices: what their session here copies is
         // shared over the action service this daemon already serves, and what their other devices

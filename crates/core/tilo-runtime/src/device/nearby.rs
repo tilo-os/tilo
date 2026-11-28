@@ -6,14 +6,15 @@
 //! serves (`tilo-actions/1`), the service another of their devices is already reached over
 //! ([`super::own_device`]). The receiving daemon keeps the offer as a resource of its own, and its
 //! person answers it with the typed [`ACCEPT`] action, which is kept as an asked record until they
-//! say yes ([`super::asked`]). On their yes the receiving daemon asks the sending device for the
-//! content by its hash, a piece at a time ([`CONTENT`]), keeps what it receives on its own shelf,
-//! checks it hashes to what was offered, and installs it in the person's Files at the folder they
-//! chose, through the one writer of the workspace's tree.
+//! say yes ([`super::asked`]). On their yes the receiving daemon reads the content whole by its
+//! hash through the workspace's one content path
+//! ([`Paths::read_content`](tilo_workspace_service::files::Paths::read_content)): the bytes it
+//! does not hold are fetched from a device that does, each chunk checked against its hash and
+//! opened with the workspace's Files keys, and the file is written into the person's Files at the
+//! folder they chose by the same path the workspace's files are written by.
 //!
 //! The offer's content is staged on the shelf by the session that shows the share sheet, which is
-//! the seat's: the daemon holds the offers, the transfers and the bytes' route, and binds no
-//! endpoint of its own.
+//! the seat's: the daemon holds the offers and the transfers, and binds no endpoint of its own.
 //!
 //! The reading ([`RESOURCE`]) is what the person's shell shows: the devices a file can be handed
 //! to, the folders here that take one, and every offer and transfer in order.
@@ -42,6 +43,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::FOLLOW_DEADLINE;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::content::ContentScope;
+use tilo_workspace_service::files::Paths;
 use tilo_workspace_service::workspaces::FollowedRecord;
 use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, KeyKind};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
@@ -76,9 +78,6 @@ pub const RESULT: &str = "result";
 
 /// The files one offer carries at most, as the shell's host already bounds a send.
 const MAX_ITEMS: usize = 32;
-/// The most of a content one piece carries: the action protocol's own content bound, which hex
-/// doubles into the one reply frame that carries a piece.
-const PIECE_BYTES: usize = tilo_actions::remote::MAX_CONTENT_FRAME_BYTES;
 /// The folder a received file lands in unless the person chose another.
 const DEFAULT_FOLDER: &str = "Downloads";
 /// How many transfers a device remembers before the oldest ended one goes.
@@ -93,9 +92,9 @@ struct Inner {
     workspaces: Arc<ServiceWorkspaces>,
     /// The record of the person's devices in their own workspace: where an offer can go.
     devices: FollowedRecord,
-    /// Where a transfer's bytes wait on this device until they are checked and
-    /// kept: a file far larger than one read holds.
-    scratch: std::path::PathBuf,
+    /// Drives a content read and the workspace's own writes off this daemon's app runtime, whose
+    /// one thread must not wait on another device's bytes.
+    read: tokio::runtime::Runtime,
     state: Mutex<State>,
     /// Moves with every change of the state: what a reading follows.
     changed: tokio::sync::watch::Sender<u64>,
@@ -164,19 +163,22 @@ impl Nearby {
     pub(crate) fn new(
         workspaces: &Arc<ServiceWorkspaces>,
         devices: FollowedRecord,
-        scratch: std::path::PathBuf,
-    ) -> Arc<Self> {
-        let _ = std::fs::create_dir_all(&scratch);
+    ) -> std::io::Result<Arc<Self>> {
         let (changed, _) = tokio::sync::watch::channel(0);
-        Arc::new(Self {
+        let read = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .thread_name("tilo-nearby-read")
+            .build()?;
+        Ok(Arc::new(Self {
             inner: Arc::new(Inner {
                 workspaces: Arc::clone(workspaces),
                 devices,
-                scratch,
+                read,
                 state: Mutex::new(State::default()),
                 changed,
             }),
-        })
+        }))
     }
 
     /// Answer the offers and transfers on this device's action service from now on, and to
@@ -447,9 +449,9 @@ impl Nearby {
         Ok(())
     }
 
-    /// Keep the file `transfer` names, now that the person said yes: ask the sending device for
-    /// its content piece by piece, keep it on this device's shelf under the address offered,
-    /// and install it in the workspace's Files at the folder they chose.
+    /// Keep the file `transfer` names, now that the person said yes: read its content whole
+    /// through the workspace's one content path, and write it into the workspace's Files at the
+    /// folder they chose.
     fn accept(
         &self,
         workspace: &str,
@@ -457,7 +459,7 @@ impl Nearby {
         destination: Option<&str>,
     ) -> Result<(), String> {
         let id = bytes_of(transfer).ok_or("that is not a transfer the reading listed")?;
-        let (peer, hash, name, total) = {
+        let (peer, hash, name) = {
             let state = self.inner.state.lock_recover();
             let found = state
                 .transfers
@@ -472,12 +474,7 @@ impl Nearby {
                     "that offer belongs to another workspace, not {workspace}"
                 ));
             }
-            let offer = (
-                found.peer_device,
-                found.hash.clone(),
-                found.name.clone(),
-                found.total,
-            );
+            let offer = (found.peer_device, found.hash.clone(), found.name.clone());
             drop(state);
             offer
         };
@@ -515,33 +512,12 @@ impl Nearby {
                     .get(&id)
                     .map_or_else(Arc::default, |found| Arc::clone(&found.stopped)),
             );
-            let settled = match fetch(&nearby, id, peer, &workspace, &hash, total, &stopped).await {
-                Err(reason) => {
-                    tracing::warn!(%reason, "a nearby file was not received");
-                    Err(())
-                }
-                Ok(staged) => {
-                    let kept = match nearby.workspaces.content_shelf() {
-                        Some(content_shelf) => content_shelf.keep_file(
-                            &Nearby::scope(&workspace),
-                            &hash,
-                            &staged,
-                            total,
-                        ),
-                        None => Err("this device keeps no content".to_owned()),
-                    };
-                    let _ = std::fs::remove_file(&staged);
-                    match kept {
-                        Err(reason) => {
-                            tracing::warn!(%reason, "a received file was not kept");
-                            Err(())
-                        }
-                        Ok(()) => {
-                            Inner::install(&nearby, &workspace, &hash, &name, &chosen, total).await
-                        }
-                    }
-                }
-            };
+            let settled =
+                Inner::keep_content(&nearby, id, &workspace, &hash, &name, &chosen, &stopped)
+                    .await
+                    .map_err(|reason| {
+                        tracing::warn!(%reason, "a nearby file was not received");
+                    });
             let (state, ok) = match settled {
                 Ok(()) => (TransferState::Done, true),
                 Err(()) if stopped.load(Ordering::Relaxed) => (TransferState::Declined, false),
@@ -642,7 +618,8 @@ impl Nearby {
         Ok(())
     }
 
-    /// One piece of the content `transfer` names, for the device it was offered to.
+    /// One piece of the content `transfer` names, for the device it was offered to: a range of
+    /// the whole file read by the address offered through the workspace's one content path.
     fn content(&self, caller: &Caller, request: &Piece) -> Result<ActionOutput, String> {
         let id = bytes_of(&request.transfer).ok_or("that is not a transfer")?;
         let (hash, peer, workspace) = {
@@ -663,21 +640,20 @@ impl Nearby {
         if caller.device_public_key() != Some(&peer) {
             return Err("that transfer was offered to another device".to_owned());
         }
-        let content_shelf = self
-            .inner
-            .workspaces
-            .content_shelf()
-            .ok_or("this device keeps no content")?;
-        let scope = Self::scope(&workspace);
-        let total = content_shelf
-            .size(&scope, &hash)
-            .ok_or("this device does not keep that content")?;
+        let paths = Paths::new(
+            self.inner.workspaces.copies().clone(),
+            self.inner.workspaces.record_content_service(),
+            self.inner.read.handle().clone(),
+        );
+        let bytes = paths.read_content(&workspace, &hash)?;
+        let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let start = request.offset.min(total);
         let len = request.length.min(total.saturating_sub(start));
-        let len = usize::try_from(len).unwrap_or(usize::MAX);
-        let piece = content_shelf
-            .read_range(&scope, &hash, start, len)
-            .ok_or("this device does not keep that content")?;
+        let start = usize::try_from(start).unwrap_or(usize::MAX);
+        let end = start
+            .saturating_add(usize::try_from(len).unwrap_or(usize::MAX))
+            .min(bytes.len());
+        let piece = bytes.get(start..end).unwrap_or_default();
         Ok(ActionOutput {
             value: Some(json!({
                 "size": total,
@@ -759,34 +735,12 @@ impl Inner {
             stopped,
         } = again;
         if incoming {
-            let settled = match fetch(inner, id, peer, &workspace, &hash, total, &stopped).await {
-                Err(reason) => {
-                    tracing::warn!(%reason, "a nearby file was not received again");
-                    Err(())
-                }
-                Ok(staged) => {
-                    let kept = match inner.workspaces.content_shelf() {
-                        Some(content_shelf) => content_shelf.keep_file(
-                            &Nearby::scope(&workspace),
-                            &hash,
-                            &staged,
-                            total,
-                        ),
-                        None => Err("this device keeps no content".to_owned()),
-                    };
-                    let _ = std::fs::remove_file(&staged);
-                    match kept {
-                        Err(reason) => {
-                            tracing::warn!(%reason, "a received file was not kept");
-                            Err(())
-                        }
-                        Ok(()) => {
-                            Inner::install(inner, &workspace, &hash, &name, &destination, total)
-                                .await
-                        }
-                    }
-                }
-            };
+            let settled =
+                Inner::keep_content(inner, id, &workspace, &hash, &name, &destination, &stopped)
+                    .await
+                    .map_err(|reason| {
+                        tracing::warn!(%reason, "a nearby file was not received again");
+                    });
             let state = if settled.is_ok() {
                 TransferState::Done
             } else {
@@ -877,55 +831,77 @@ impl Inner {
         }
     }
 
-    /// Write `hash`'s content into `workspace`'s Files at `folder`, under `name`.
-    async fn install(
+    /// Read `hash`'s content whole through the workspace's one content path and write it into
+    /// `folder` under `name`: what the person's yes to an offer does, and its retry.
+    async fn keep_content(
         inner: &Arc<Self>,
+        id: [u8; 16],
         workspace: &str,
         hash: &str,
         name: &str,
         folder: &str,
-        size: u64,
-    ) -> Result<(), ()> {
-        let Some(id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
-            return Err(());
-        };
-        let (hash, name, folder) = (hash.to_owned(), name.to_owned(), folder.to_owned());
-        let writing = Arc::clone(inner);
-        let written = blocking(move || {
-            let puts = writing.workspaces.copies().puts();
-            let handle = tilo_rt::app().handle().clone();
-            handle.block_on(puts.change(id, None, &mut |tree| {
-                let mtime = tilo_clock::unix_now_ms();
-                let mut tried = 0_u32;
-                loop {
-                    let candidate = free_name(&name, tried);
-                    match tree.write_file(&folder, &candidate, (&hash, size), tried > 0, mtime) {
-                        Ok(written) => {
-                            return Ok(json!({
-                                "path": format!("/{folder}/{candidate}"),
-                                "replaced": written.replaced,
-                            }));
-                        }
-                        Err(reason) if tried < 99 => {
-                            tried = tried.saturating_add(1);
-                            tracing::debug!(%reason, "a received file's name is taken");
-                        }
-                        Err(reason) => return Err(reason),
-                    }
+        stopped: &Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let held = Arc::clone(inner);
+        let (workspace, hash, name, folder) = (
+            workspace.to_owned(),
+            hash.to_owned(),
+            name.to_owned(),
+            folder.to_owned(),
+        );
+        let stopped = Arc::clone(stopped);
+        on_a_thread(move || {
+            let reading = Paths::new(
+                held.workspaces.copies().clone(),
+                held.workspaces.record_content_service(),
+                held.read.handle().clone(),
+            );
+            if stopped.load(Ordering::Relaxed) {
+                return Err("stopped".to_owned());
+            }
+            let bytes = reading.read_content(&workspace, &hash)?;
+            if stopped.load(Ordering::Relaxed) {
+                return Err("stopped".to_owned());
+            }
+            let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            {
+                let mut state = held.state.lock_recover();
+                if let Some(found) = state.transfers.get_mut(&id) {
+                    found.total = size;
+                    found.transferred = size;
                 }
-            }))
+            }
+            held.changed
+                .send_modify(|revision| *revision = revision.wrapping_add(1));
+            // The workspace's own writes are driven on this daemon's app runtime, as the folder
+            // and the share sheet's writes are.
+            let writing = Paths::new(
+                held.workspaces.copies().clone(),
+                held.workspaces.record_content_service(),
+                tilo_rt::app().handle().clone(),
+            );
+            let mut tried = 0_u32;
+            loop {
+                let candidate = free_name(&name, tried);
+                match writing.write(
+                    &workspace,
+                    &format!("{folder}/{candidate}"),
+                    &bytes,
+                    tried > 0,
+                ) {
+                    Ok(()) => {
+                        tracing::info!(%candidate, "a file arrived from one of the person's devices");
+                        return Ok(());
+                    }
+                    Err(reason) if tried < 99 => {
+                        tried = tried.saturating_add(1);
+                        tracing::debug!(%reason, "a received file's name is taken");
+                    }
+                    Err(reason) => return Err(reason),
+                }
+            }
         })
-        .await;
-        match written {
-            Ok(Ok(value)) => {
-                tracing::info!(%value, "a file arrived from one of the person's devices");
-                Ok(())
-            }
-            Ok(Err(reason)) | Err(reason) => {
-                tracing::warn!(%reason, "a received file is not installed");
-                Err(())
-            }
-        }
+        .await
     }
 }
 
@@ -935,6 +911,16 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|error| format!("a blocking task of this device's: {error}"))
+}
+
+/// Run `f` on the runtime's blocking pool: a read through the workspace's one content path
+/// waits on bytes, and the app runtime's one thread must not wait with it.
+async fn on_a_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| format!("a blocking task of this device's: {error}"))?
 }
 
 /// `name`, made free among taken names by the `n`th try: "photo.png", "photo (2).png".
@@ -1059,86 +1045,6 @@ async fn call(
     }
 }
 
-/// Ask `peer` for `hash`'s content a piece at a time and write it to a file of this
-/// device's own, answering that file once it hashes to the address offered: a file far
-/// larger than one read holds never waits in memory, and its bytes land on the shelf from
-/// there.
-async fn fetch(
-    inner: &Arc<Inner>,
-    transfer: [u8; 16],
-    peer: [u8; 32],
-    workspace: &str,
-    hash: &str,
-    total: u64,
-    stopped: &AtomicBool,
-) -> Result<std::path::PathBuf, String> {
-    let path = inner.scratch.join(format!("{}.part", hex(&transfer)));
-    let written: Result<(), String> = async {
-        use tokio::io::AsyncWriteExt as _;
-        let mut file = tokio::fs::File::create(&path)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut hasher = blake3::Hasher::new();
-        let mut received = 0_u64;
-        while received < total {
-            if stopped.load(Ordering::Relaxed) {
-                return Err("stopped".to_owned());
-            }
-            let answer = call(
-                inner,
-                peer,
-                workspace,
-                CONTENT,
-                json!({
-                    "transfer": hex(&transfer),
-                    "offset": received,
-                    "length": PIECE_BYTES,
-                }),
-            )
-            .await?;
-            let Some(value) = answer else {
-                return Err("the other device answered no piece".to_owned());
-            };
-            let piece = value
-                .get("bytes")
-                .and_then(Value::as_str)
-                .ok_or("the other device answered no bytes")?;
-            let piece = hex::decode(piece).map_err(|_| "a piece is not hex".to_owned())?;
-            if piece.is_empty() {
-                return Err("the other device answered an empty piece".to_owned());
-            }
-            received = received.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
-            if received > total {
-                return Err("the other device sent more than it offered".to_owned());
-            }
-            file.write_all(&piece)
-                .await
-                .map_err(|error| error.to_string())?;
-            hasher.update(&piece);
-            {
-                let mut state = inner.state.lock_recover();
-                if let Some(found) = state.transfers.get_mut(&transfer) {
-                    found.transferred = received;
-                }
-            }
-            inner
-                .changed
-                .send_modify(|revision| *revision = revision.wrapping_add(1));
-        }
-        file.flush().await.map_err(|error| error.to_string())?;
-        drop(file);
-        if hasher.finalize().to_hex().as_str() != hash {
-            return Err("the bytes do not hash to the address offered".to_owned());
-        }
-        Ok(())
-    }
-    .await;
-    if written.is_err() {
-        let _ = std::fs::remove_file(&path);
-    }
-    written.map(|()| path)
-}
-
 /// One action's descriptor, as an agent's catalogue lists it.
 fn descriptor(action: &str, label: &str, detail: &str) -> ActionDescriptor {
     let t = crate::i18n::t;
@@ -1202,16 +1108,26 @@ impl ActionProvider for Nearby {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let answered = self.start(caller, &request).map(|value| InvocationReceipt {
-            invocation: request.invocation,
-            status: ReceiptStatus::Completed {
-                output: ActionOutput {
-                    value,
-                    resources: Vec::new(),
-                },
-            },
-        });
-        Pending::ready(answered)
+        // A piece is read from the workspace's one content path, which waits on bytes: it is
+        // answered on a thread of its own, never on this daemon's one app runtime thread.
+        if request.target.address.resource == RESOURCE && request.target.address.action == CONTENT {
+            let (completer, answer) = tilo_actions::remote::pending();
+            let nearby = Nearby {
+                inner: Arc::clone(&self.inner),
+            };
+            let caller = caller.clone();
+            return match std::thread::Builder::new()
+                .name("tilo-nearby-content".into())
+                .spawn(move || {
+                    completer.complete(nearby.receipt(&caller, &request));
+                }) {
+                Ok(_) => answer,
+                Err(error) => Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: format!("a thread for the offer's bytes: {error}"),
+                })),
+            };
+        }
+        Pending::ready(self.receipt(caller, &request))
     }
 
     fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
@@ -1277,6 +1193,23 @@ impl Nearby {
                 ],
             ),
             ..asked::AskedFacts::default()
+        })
+    }
+
+    /// The receipt `start` answers `request` with.
+    fn receipt(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        self.start(caller, request).map(|value| InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: ActionOutput {
+                    value,
+                    resources: Vec::new(),
+                },
+            },
         })
     }
 
@@ -1409,7 +1342,30 @@ fn argument<T: serde::de::DeserializeOwned>(request: &InvokeRequest) -> Result<T
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_name, free_name};
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "a fixture failing is its test failing"
+    )]
+
+    use std::sync::Arc;
+
+    use tilo_actions::remote::Caller;
+    use tilo_lock::MutexRecover as _;
+    use tilo_server_protocol::WorkspaceId;
+    use tilo_workspace_service::content::CrdtRoute;
+    use tilo_workspace_service::content::fixtures::{Shelf, fan};
+
+    use super::super::workspaces::ServiceWorkspaces;
+    use super::{Nearby, Piece, Transfer, TransferState, folder_name, free_name, hex};
+
+    const WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
+    const NAME: &str = "photo.jpg";
+    /// A content-defined chunker cuts this into several chunks.
+    const PHOTO: usize = 716_800;
 
     #[test]
     fn a_taken_name_grows_a_number() {
@@ -1423,5 +1379,125 @@ mod tests {
         assert_eq!(folder_name("Downloads"), "Downloads");
         assert_eq!(folder_name("/a/b/Screenshots"), "Screenshots");
         assert_eq!(folder_name(""), "Workspace files");
+    }
+
+    /// A device that holds none of a file's chunks serves another device the offer for it whole:
+    /// the bytes are read by the address offered through the workspace's one content path, each
+    /// chunk checked against its hash, and the peer receives the file byte for byte.
+    #[test]
+    fn a_multi_chunk_offer_is_served_whole_from_a_device_that_holds_none_of_it() {
+        let workspace = WorkspaceId::parse(WORKSPACE).expect("the test's workspace id");
+        let (workspaces, _directory) = tilo_rt::app()
+            .block_on(ServiceWorkspaces::test_hosting(workspace))
+            .unwrap();
+        let fan = fan();
+        let route = CrdtRoute::app(tilo_fs::tree_sync::FILES_APP, WORKSPACE);
+        let photo = varied(PHOTO);
+        let (manifest, _) = tilo_fs::content::build(&photo, None);
+        assert!(manifest.chunks().len() > 1, "the file is several chunks");
+        let mut chunks = Vec::new();
+        for (index, chunk) in manifest.chunks().iter().enumerate() {
+            let range = manifest
+                .chunk_range(index)
+                .expect("every chunk has a range");
+            let start = usize::try_from(range.start).unwrap_or(0);
+            let end = usize::try_from(range.end).unwrap_or(start);
+            let bytes = photo.get(start..end).unwrap_or_default().to_vec();
+            chunks.push((hex::encode(chunk.hash), bytes));
+        }
+        let encoded = manifest.encode();
+        let hash = hex::encode(blake3::hash(&encoded).as_bytes());
+        fan.a
+            .offer(&route, &hash, &encoded)
+            .expect("the offering device keeps the manifest");
+        for (chunk, bytes) in &chunks {
+            fan.a
+                .offer(&route, chunk, bytes)
+                .expect("the offering device keeps each chunk");
+        }
+        assert!(fan.a.kept(&route, &hash).is_some(), "a keeps the manifest");
+        for (chunk, _) in &chunks {
+            assert!(fan.a.kept(&route, chunk).is_some(), "a keeps each chunk");
+        }
+        // The receiving device's content route holds none of it: the bytes come from a device
+        // that does.
+        workspaces.install_content(&fan.c, Arc::new(Shelf::default()));
+        assert!(fan.c.kept(&route, &hash).is_none());
+        for (chunk, _) in &chunks {
+            assert!(
+                fan.c.kept(&route, chunk).is_none(),
+                "the receiving device holds no chunk"
+            );
+        }
+        let devices = {
+            let _driving = tilo_rt::app().handle().enter();
+            workspaces
+                .copies()
+                .follow_record(WORKSPACE, ("files", "devices"))
+        };
+        let nearby = Nearby::new(&workspaces, devices).expect("a nearby transfer reader");
+
+        // This device made the offer: it holds none of the file's chunks, and serves the file
+        // whole to the device it was offered to by the address the offer carries.
+        let sender = [0x42; 32];
+        let transfer = [0x7a; 16];
+        nearby.inner.state.lock_recover().transfers.insert(
+            transfer,
+            Transfer {
+                id: transfer,
+                incoming: false,
+                name: NAME.to_owned(),
+                hash,
+                total: 0,
+                transferred: 0,
+                state: TransferState::Offered,
+                peer_device: sender,
+                peer: "laptop".to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                destination: String::new(),
+                created_ms: 0,
+                stopped: Arc::default(),
+            },
+        );
+        let caller = Caller::authenticated([0x11; 32], sender).in_workspace(WORKSPACE);
+        let mut whole = Vec::new();
+        let mut offset = 0_u64;
+        loop {
+            let answer = nearby
+                .content(
+                    &caller,
+                    &Piece {
+                        transfer: hex(&transfer),
+                        offset,
+                        length: 300_000,
+                    },
+                )
+                .expect("a piece of the offer is served");
+            let value = answer.value.expect("a piece carries its value");
+            let size = value["size"].as_u64().expect("a size");
+            let bytes = hex::decode(value["bytes"].as_str().expect("bytes")).expect("hex");
+            if bytes.is_empty() {
+                break;
+            }
+            whole.extend_from_slice(&bytes);
+            offset = offset.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+            if offset >= size {
+                break;
+            }
+        }
+        assert_eq!(whole, photo);
+    }
+
+    /// `bytes` no two runs of which repeat.
+    fn varied(len: usize) -> Vec<u8> {
+        let mut state = 7_u64;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                state.to_be_bytes()[0]
+            })
+            .collect()
     }
 }
