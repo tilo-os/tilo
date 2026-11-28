@@ -705,7 +705,8 @@ pub const POKER: &str = "so.tilo.poker";
 pub const GALLERY: &str = "so.tilo.lang.gallery";
 
 /// The two people's laptops in the site's workspace, each carrying what `install` puts in its
-/// store before its session starts, and the workspace letting `authored` author its records.
+/// store before its session starts, and the workspace running `authored`, tree apps of `apps/tl`
+/// the site holds as it founds it ([`hold_packages`]).
 pub fn two_people_at_a_site_carrying(
     authored: &[&str],
     install: impl Fn(&Device),
@@ -731,23 +732,36 @@ pub fn two_people_at_a_site_carrying(
 /// [`two_people_at_a_site`] with the Files app, before the second person joins: Ada's laptop holds
 /// the workspace, and what brings Bob in is the invitation her session hands out for it.
 pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
-    let (site, ada, bob, mut ada_laptop) = site_carrying(&[FILES_APP], &Device::install_files);
+    let (site, ada, bob, mut ada_laptop) = site_carrying(&[], &Device::install_files);
     let hers = site.invite(ada.public, Role::Editor);
     ada_laptop.join(&hers);
     ada_laptop.wait_holding(&site.workspace);
     (site, ada, bob, ada_laptop)
 }
 
-/// The site the two people share and the first person's laptop made, carrying what `install` puts
-/// in its store, before its session starts: the caller starts it, beside whatever it starts with
-/// it.
-fn site_carrying(_apps: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
+/// The site the two people share, founded holding the packages of `authored` ([`hold_packages`]),
+/// and the first person's laptop made, carrying what `install` puts in its store, before its
+/// session starts: the caller starts it, beside whatever it starts with it.
+fn site_carrying(authored: &[&str], install: &impl Fn(&Device)) -> (Site, Person, Person, Device) {
+    hold_packages(authored);
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
     let ada_laptop = ada.device("Ada's laptop");
     install(&ada_laptop);
     (site, ada, bob, ada_laptop)
+}
+
+/// Have the site this process starts next hold the run's packages of the development session's
+/// apps and of `tree_apps`, directories of `apps/tl`, the same builds its people's devices
+/// install: a site founds its workspace running the default apps it holds, as any device does,
+/// so every member opens them there without installing them. The site runs in this process, so
+/// this process's own store ([`crate::common::app_store`]) is the site's.
+pub fn hold_packages(tree_apps: &[&str]) {
+    let store = crate::common::app_store();
+    for app in tree_apps {
+        super::dev_apps::install_tree_app(app, store);
+    }
 }
 
 /// The invitation `device`'s session hands out for the workspace it holds, made by the shell's own
@@ -793,6 +807,7 @@ pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
 /// [`two_devices_of_one_person`] for two devices that carry the development session's tilolang
 /// apps, as `tilolang run` leaves them; [`seed_the_apps`] runs them.
 pub fn two_devices_of_one_person_with_apps() -> (Site, Person, Device, Device) {
+    hold_packages(&[]);
     let (site, ada, laptop, phone) = two_devices_of_one_person_carrying(|device| {
         crate::common::dev_apps::install(&device.store(), &device.store().join("scratch"));
     });

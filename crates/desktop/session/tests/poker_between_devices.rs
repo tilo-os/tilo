@@ -63,7 +63,14 @@ fn wait_for_open_seats(device: &Device, wanted: usize) {
 #[test]
 fn a_seat_taken_on_either_device_is_taken_in_the_others_open_window() {
     let (site, _ada, _bob, first, second) =
-        two_people_at_a_site_carrying(&[], super::common::people::Device::install_poker);
+        two_people_at_a_site_carrying(&["poker"], super::common::people::Device::install_poker);
+    // The site founded its workspace running Poker, a default app it holds: neither member, who
+    // may not install, has to.
+    assert!(
+        site.runs(POKER),
+        "the site's workspace runs Poker as founded; the site holds {:?}",
+        tilo_workspace_service::workspaces::held_release(POKER)
+    );
     show(&first, &site);
     show(&second, &site);
     // Both devices read the workspace they joined as their person: a refused read is why the

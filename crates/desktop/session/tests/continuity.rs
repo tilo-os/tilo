@@ -24,8 +24,9 @@ use serde_json::json;
 use tilo_actions::remote::CatalogueRow;
 
 use crate::common::people::{
-    Device, Site, seed_the_apps, two_devices_of_one_person_with_apps, waited,
+    Device, Person, Site, join_together, seed_the_apps, two_devices_of_one_person_with_apps, waited,
 };
+use tilo_server_protocol::workspaces::Role;
 
 /// The app the laptop has in front first, and whose notebook the phone continues.
 const NOTES: &str = "so.tilo.notes";
@@ -116,12 +117,24 @@ fn targets_ending(device: &Device, suffix: &str) -> Vec<String> {
 }
 
 /// The apps a session runs itself are installed in the workspace before their records move there,
-/// through the workspace's own install, as opening one installs it: the site, which holds no
-/// package of them, runs Notes once the laptop keeps its apps' records in the workspace.
+/// through the workspace's own install, as opening one installs it: a site that founded its
+/// workspace holding none of them runs Notes once its owner's laptop keeps its apps' records
+/// there.
 #[test]
 fn the_apps_a_session_runs_are_installed_where_their_records_go() {
     seed_the_apps();
-    let (site, _ada, laptop, _phone) = two_devices_of_one_person_with_apps();
+    let ada = Person::new("Ada");
+    let site = Site::start(&ada, "Studio");
+    assert!(
+        !site.runs(NOTES),
+        "a site holding no packages runs no Notes"
+    );
+    let mut laptop = ada.device("Ada's laptop");
+    crate::common::dev_apps::install(&laptop.store(), &laptop.store().join("scratch"));
+    let hers = site.invite(ada.public, Role::Owner);
+    join_together(&mut [&mut laptop], &[hers.as_str()]);
+    laptop.wait_holding(&site.workspace);
+    laptop.wait_apps_kept();
     assert!(
         site.runs(NOTES),
         "the workspace runs Notes once the laptop keeps its records there\n{}",
