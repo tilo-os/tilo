@@ -147,7 +147,9 @@ fn choose(session: &mut Session, theme: &str, mode: &str) {
     } else {
         "dark_theme"
     };
-    for (field, value) in [(key, theme), ("mode", mode)] {
+    // The person's own accent, chosen rather than the hue a scratch identity derives: the same
+    // in every run of the test, so the looks it captures compare.
+    for (field, value) in [(key, theme), ("mode", mode), ("accent", "violet")] {
         let arguments: Map<String, Value> = json!({ "value": value })
             .as_object()
             .expect("an object")
@@ -164,7 +166,9 @@ fn choose(session: &mut Session, theme: &str, mode: &str) {
         let read = session
             .read(APPEARANCE)
             .unwrap_or_else(|| panic!("the session publishes the appearance section"));
-        read.get(key) == Some(&json!(theme)) && read.get("mode") == Some(&json!(mode))
+        read.get(key) == Some(&json!(theme))
+            && read.get("mode") == Some(&json!(mode))
+            && read.get("accent") == Some(&json!("violet"))
     };
     crate::common::wait_for(session, format!("the {mode} look"), |session| {
         session.settle_services();
