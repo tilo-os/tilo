@@ -1459,6 +1459,36 @@ impl SessionServices {
         answer
     }
 
+    /// Send every ask held for `from`, the workspace the shell started with, to `to`, the
+    /// person's own that stands in its place: the asker meant the workspace the shell showed, and
+    /// that is theirs. Each is delivered once `to` is no longer being founded
+    /// ([`Self::release_founding`]).
+    pub(crate) fn retarget_founding(&self, from: &str, to: &str) {
+        let moved = |workspace: &mut String, caller: &mut Caller| {
+            if workspace != from {
+                return false;
+            }
+            to.clone_into(workspace);
+            if caller.workspace() == Some(from) {
+                *caller = caller.clone().in_workspace(to);
+            }
+            true
+        };
+        for ask in self.held.lock_recover().iter_mut() {
+            if moved(&mut ask.workspace, &mut ask.caller) {
+                ask.request.target.provider = ask.request.target.provider.replace(from, to);
+            }
+        }
+        for ask in self.held_catalogues.lock_recover().iter_mut() {
+            if moved(&mut ask.workspace, &mut ask.caller)
+                && let Some(provider) = &mut ask.query.provider
+            {
+                *provider = provider.replace(from, to);
+            }
+        }
+        (self.wake)();
+    }
+
     /// Deliver every ask held for a workspace this session is no longer founding: as of the loop's
     /// last pass it is this device's now, or the founding was given up, and the asker hears what
     /// the broker says either way.

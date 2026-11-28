@@ -361,8 +361,9 @@ impl Session {
         // them; what this device keeps of its own is what it showed.
         let restore = crate::restore::Restore::default();
         let mut tree = handle.read(Clone::clone);
-        // A device that kept no workspace shows the one the shell started with: whether it is the
-        // person's first is known only once their hosts listed what they have.
+        // A device that kept no workspace shows the one the shell started with, waiting, until the
+        // device's daemon answers which workspace the person starts in: theirs, or this one
+        // founded as their first.
         let seed = activity
             .keeps_no_workspace()
             .then(|| {
@@ -1037,9 +1038,9 @@ impl Session {
                 ),
             )));
         }
-        // Until the first pass says whether the person has workspaces of their own, an ask of the
-        // workspace the shell started with waits: that workspace is founded the moment it is known
-        // to be theirs, and taken off the shell otherwise. A session with no identity founds none.
+        // Until the daemon answers which workspace the person starts in, an ask of the workspace
+        // the shell started with waits, and goes to the one it answered. A session with no
+        // identity founds none.
         if let Some(seed) = seed
             && personal.is_some()
             && view.is_some()

@@ -31,7 +31,8 @@ use tilo_app_host::services::{PublishedResources, Reading, ResourceWatch};
 use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{
-    BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource, resource,
+    BRANCH, CREATE, DELETE, FIRST, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource,
+    resource,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
@@ -694,6 +695,10 @@ pub(super) async fn listed(
             super::founding_create::found(workspaces, workspace, text("name")?).await?;
             Ok(Value::String(workspace.to_string()))
         }
+        FIRST => {
+            let (workspace, name) = first(workspaces, text("id")?, text("name")?).await?;
+            Ok(serde_json::json!({ "workspace": workspace, "name": name }))
+        }
         // A workspace whose entry is open is joined through it, as its directory publishes its
         // host: this device signs its own admission. Any other is joined by its invitation.
         JOIN if arguments.contains_key("workspace") => {
@@ -753,6 +758,38 @@ pub(super) async fn listed(
         }
         _ => Err(format!("the person's workspaces have no action `{action}`")),
     }
+}
+
+/// The workspace the person's shell starts in ([`FIRST`]): the first their list names, read once
+/// this device holds their own workspace, where the list lives, or, when it names none, the one
+/// founded at once as `id`, called `name`.
+///
+/// # Errors
+/// This device's workspaces stopped before it held the person's own, their list does not read,
+/// or the founding failed.
+async fn first(
+    workspaces: &ServiceWorkspaces,
+    id: &str,
+    name: &str,
+) -> Result<(String, String), String> {
+    use tilo_workspace_service::workspaces::person_workspace;
+    let copies = workspaces.copies();
+    if !person_workspace::when_held(copies).await {
+        return Err(
+            "this device's workspaces stopped before it held the person's own workspace".to_owned(),
+        );
+    }
+    let list = person_workspace::read::<tilo_user_identity::WorkspaceList>(
+        copies,
+        tilo_server_protocol::workspaces::IDENTITY_LIST,
+    )
+    .await?;
+    if let Some((workspace, listed)) = list.listed().next() {
+        return Ok((workspace.to_string(), listed.name.clone()));
+    }
+    let workspace = WorkspaceId::parse(id).ok_or("that is not a workspace")?;
+    super::founding_create::found(workspaces, workspace, name).await?;
+    Ok((workspace.to_string(), name.to_owned()))
 }
 
 /// Follow `invocation` on `provider` until it finishes, as long as a request is followed.

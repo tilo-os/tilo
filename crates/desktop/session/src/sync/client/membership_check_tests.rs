@@ -306,10 +306,9 @@ fn on_shell(session: &tilo_session_core::desktop::state::DesktopHandle) -> Vec<W
     })
 }
 
-/// The shell's first workspace goes when the person has a workspace of their own, and one their
-/// governance names them the owner of is theirs however it came to this device: a computer restored
-/// from their words that joined their own site's workspace does not found a first workspace beside
-/// it, and needs no host's list to say so.
+/// The shell's first workspace goes when the daemon answers a workspace of the person's own,
+/// however it came to this device: a computer restored from their words that joined their own
+/// site's workspace does not found a first workspace beside it.
 #[test]
 fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
     let session = fresh_session();
@@ -331,9 +330,11 @@ fn a_joined_workspace_the_person_owns_is_theirs_before_any_host_answers() {
         .push(tilo_desktop_model::Workspace::new(site, "Lounge"));
     session.replace_tree(tree);
 
-    // No host has answered a list, and the device holds a workspace of theirs: they have one, so
-    // the one this shell started with goes.
-    assert!(personal.settle_seed(&session, &WorkspaceList::default(), &[site], None));
+    // The daemon answers the workspace of theirs it holds: the one this shell started with goes.
+    assert_eq!(
+        personal.settle_seed(&session, (site, "Lounge"), true),
+        Some((seed, site))
+    );
     assert_eq!(personal.seed(), None);
     assert_eq!(
         on_shell(&session),

@@ -512,6 +512,38 @@ impl WorkspaceView {
         founded
     }
 
+    /// Ask this device's daemon which workspace the person's shell starts in
+    /// (`account/workspaces#first`): the first their list names, or, when it names none, one it
+    /// founds at once as `workspace`, called `name`. Its id and name.
+    pub fn first(
+        &self,
+        workspace: WorkspaceId,
+        name: &str,
+    ) -> impl std::future::Future<Output = Result<(WorkspaceId, String), String>> + use<> {
+        let asked = self.asks.account(
+            LIST,
+            tilo_peer_state::workspace_view::FIRST,
+            serde_json::Map::from_iter([
+                ("name".to_owned(), name.into()),
+                ("id".to_owned(), workspace.to_string().into()),
+            ]),
+        );
+        async move {
+            let answer = asked.await?;
+            let workspace = answer
+                .get("workspace")
+                .and_then(serde_json::Value::as_str)
+                .and_then(WorkspaceId::parse)
+                .ok_or_else(|| format!("the daemon named no workspace to start in: {answer}"))?;
+            let name = answer
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            Ok((workspace, name))
+        }
+    }
+
     /// Ask this device's daemon for the one-use ticket a new computer of the person's joins with
     /// (`tilo.device devices#issue`): the code Settings' "Add a device" shows, and the one a
     /// machine without anyone at it takes as its `tilo.ticket` credential.

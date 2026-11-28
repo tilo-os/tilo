@@ -21,6 +21,11 @@ pub const LIST: &str = "account/workspaces";
 /// [`LIST`]'s action that founds a workspace on this device, which keeps it: `{name, id}`.
 pub const CREATE: &str = "create";
 
+/// [`LIST`]'s action that answers the workspace the person's shell starts in: the first their list
+/// names, once this device holds their own workspace, or, when it names none, one founded at
+/// once: `{name, id}`, what that one is founded as. Answers `{workspace, name}`.
+pub const FIRST: &str = "first";
+
 /// [`LIST`]'s action that joins the workspace an invitation is to: `{invite}`, the invitation's
 /// text or link.
 pub const JOIN: &str = "join";
