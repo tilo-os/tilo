@@ -292,13 +292,20 @@ pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
     install_named(store, &APPS)
 }
 
-/// Install the apps [`EXTRA`] names, built from this tree into signed `.tapp`s ([`built`]), into
-/// the app store under `store`: a session a test gave one opens it as it opens any installed app.
+/// Install the apps built beside [`APPS`] (the directories [`EXTRA`] names), from the signed
+/// `.tapp`s of [`built`] into the app store under `store`: a session a test gave one opens it as
+/// it opens any installed app.
 ///
 /// # Panics
 /// A package does not compile, the store refuses one, or a file cannot be written.
 pub fn install_extra(store: &Path) -> Vec<String> {
-    install_named(store, &EXTRA)
+    let extra: Vec<&str> = built()
+        .apps
+        .iter()
+        .map(|(app, _)| app.as_str())
+        .filter(|app| !APPS.contains(app))
+        .collect();
+    install_named(store, &extra)
 }
 
 /// The signed package of `app`, by its package id, as this run built it ([`built`]): what a
