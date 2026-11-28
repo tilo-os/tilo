@@ -1256,3 +1256,190 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
         "no record of the workspace holds the password"
     );
 }
+
+/// Each device that attaches an account keeps its own row of how the account's sync goes, and
+/// every device reads every row; a device that says it no longer has the account leaves the
+/// others' rows as they were, and no device writes another's.
+#[tokio::test]
+async fn every_device_attaching_an_account_keeps_its_own_row_and_writes_no_other() {
+    let server = Arc::new(
+        tokio::task::spawn_blocking(MailServer::start)
+            .await
+            .unwrap(),
+    );
+    let members = Members::new().await;
+    let workspace = members.workspace.clone();
+    members.keep_account(&server.account()).await;
+    // Both devices hold the account before either reports its sync of it.
+    for device in [&members.owner, &members.member] {
+        tilo_test_env::within("the account reaches the device", async {
+            loop {
+                if let Ok(held) = device.workspace_accounts(&workspace).await
+                    && held.account(ADDRESS).is_some()
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+    let owner_by = members.owner_caller();
+    let member_by = members.member_caller();
+    let member_device = hex::encode(members.member_cert.device_public_key);
+    let owner_device = hex::encode(members.owner_cert.device_public_key);
+
+    // Both devices attach the account and check it.
+    for (device, by) in [(&members.owner, &owner_by), (&members.member, &member_by)] {
+        device
+            .report_account_sync(
+                (&workspace, by.acting(), None),
+                ADDRESS,
+                accounts::SyncHealth::Healthy,
+                false,
+                "",
+                (true, false),
+                None,
+            )
+            .await
+            .expect("a device reports its own sync");
+    }
+    // Every device reads every row: both devices' checks are there, and the account is attached.
+    for device in [&members.owner, &members.member] {
+        let held = tilo_test_env::within("both devices' rows reach the device", async {
+            loop {
+                if let Ok(held) = device.workspace_accounts(&workspace).await
+                    && held.syncs_of(ADDRESS).len() == 2
+                {
+                    return held;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(held.attached_to(ADDRESS), "both devices still have it");
+        let devices: Vec<&str> = held
+            .syncs_of(ADDRESS)
+            .into_iter()
+            .map(|row| row.device.as_str())
+            .collect();
+        assert!(
+            devices.contains(&member_device.as_str()),
+            "the member's row is read here"
+        );
+        assert!(
+            devices.contains(&owner_device.as_str()),
+            "the owner's row is read here"
+        );
+        let reading = device.accounts_reading(&workspace).await;
+        let account = &reading["accounts"][0];
+        let rows = account["devices"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 2, "both devices' rows are read here");
+        assert!(
+            rows.iter()
+                .all(|row| row["attached"] == serde_json::json!(true)),
+            "both devices still have it: {rows:?}"
+        );
+    }
+
+    // The member's device no longer has the account: its row says so, the owner's stays.
+    members
+        .member
+        .report_account_sync(
+            (&workspace, member_by.acting(), None),
+            ADDRESS,
+            accounts::SyncHealth::Healthy,
+            false,
+            "",
+            (false, false),
+            None,
+        )
+        .await
+        .unwrap();
+    tilo_test_env::within("the owner reads the member's detaching", async {
+        loop {
+            if let Ok(held) = members.owner.workspace_accounts(&workspace).await
+                && held
+                    .sync_of(ADDRESS, &member_device)
+                    .is_some_and(|row| !row.attached)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let held = members.owner.workspace_accounts(&workspace).await.unwrap();
+    assert!(
+        held.sync_of(ADDRESS, &member_device)
+            .is_some_and(|row| !row.attached),
+        "the member says it no longer has the account"
+    );
+    assert!(
+        held.sync_of(ADDRESS, &owner_device)
+            .is_some_and(|row| row.attached),
+        "the owner still has it, and still checks it"
+    );
+
+    // A report for another device is refused, and leaves that device's row as it was.
+    let refused = members
+        .member
+        .report_account_sync(
+            (&workspace, member_by.acting(), None),
+            ADDRESS,
+            accounts::SyncHealth::Error,
+            false,
+            "written by another device",
+            (true, false),
+            Some(&owner_device),
+        )
+        .await;
+    assert!(refused.is_err(), "a device writes no other device's row");
+    let held = members.member.workspace_accounts(&workspace).await.unwrap();
+    assert_eq!(
+        held.sync_of(ADDRESS, &owner_device).map(|row| row.health),
+        Some(accounts::SyncHealth::Healthy),
+        "the owner's row kept what the owner reported"
+    );
+
+    // The owner detaches too: no device has the account now.
+    members
+        .owner
+        .report_account_sync(
+            (&workspace, owner_by.acting(), None),
+            ADDRESS,
+            accounts::SyncHealth::Healthy,
+            false,
+            "",
+            (false, false),
+            None,
+        )
+        .await
+        .unwrap();
+    let reading = tilo_test_env::within("both devices' detaching reaches the owner", async {
+        loop {
+            let reading = members.owner.accounts_reading(&workspace).await;
+            let detached = reading["accounts"][0]["devices"]
+                .as_array()
+                .is_some_and(|rows| {
+                    rows.len() == 2
+                        && rows
+                            .iter()
+                            .all(|row| row["attached"] == serde_json::json!(false))
+                });
+            if detached {
+                return reading;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        reading["accounts"][0]["devices"]
+            .as_array()
+            .is_some_and(|rows| rows
+                .iter()
+                .all(|row| row["attached"] == serde_json::json!(false))),
+        "no device has the account now: {reading}"
+    );
+}

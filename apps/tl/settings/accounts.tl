@@ -49,9 +49,12 @@ view accounts_pane() {
                 } else if account.kind == .calendar { .calendar } else { .cloud },
             ) {
                 trailing: {
+                    let checking = account_check_word(account, a.now_ms)
                     row(gap: .tight, align: .center, wrap: true) {
                         ui.Chip(
-                            if account.status == .connected {
+                            if checking != "" {
+                                checking
+                            } else if account.status == .connected {
                                 "Up to date"
                             } else if account.status == .needs-reconnect {
                                 if account.words == "" {
@@ -70,7 +73,8 @@ view accounts_pane() {
                             } else { "Not synced yet" },
                             tone: if account.status == .error
                                 or account.status == .needs-reconnect
-                                or account.paused {
+                                or account.paused
+                                or not any_attached(account) and not account.devices.is_empty() {
                                 .warning
                             } else { .neutral },
                         )
@@ -830,4 +834,70 @@ fn smtp_place(places: List<Text>) -> Text {
 /// `smtp` one. The vault lists every login it keeps; the ones for a mail server are Mail's.
 fn is_mail_login(choice: accounts.MailSignIn) -> Bool {
     imap_place(choice.places) != "" and smtp_place(choice.places) != ""
+}
+
+/// What the account's row says about a device checking it now, when that is what it says: none
+/// when the rows say an ordinary status, which the pane's own words name (up to date, needs
+/// signing in again, and the rest). An account only a device that is not here now has says that
+/// no device can check it, rather than that nothing ever synced it, and one a device here checks
+/// names that device and how long ago it did.
+fn account_check_word(a: accounts.AccountView, now: Int) -> Text {
+    // The devices here now are the only ones this window can tell anything about: with none
+    // read, the account is shown as its row last said rather than as one no device has.
+    if a.devices.is_empty() or device.devices.devices.is_empty() {
+        return ""
+    }
+    if not any_attached(a) {
+        return "No device can check it right now"
+    }
+    if any_checking(a) {
+        return "Checking it now…"
+    }
+    if a.status == .connected {
+        if let row = newest_live_check(a) {
+            let seconds = (now - row.checked_ms) / 1000
+            let label = checked_device_label(row.device)
+            let when = said_ago(seconds)
+            return "Checked by {label} {when}"
+        }
+    }
+    ""
+}
+
+/// Whether any device that reported still has the account set up.
+fn any_attached(a: accounts.AccountView) -> Bool {
+    a.devices.any(d -> d.attached)
+}
+
+/// Whether a device that has the account is checking it now.
+fn any_checking(a: accounts.AccountView) -> Bool {
+    a.devices.any(d -> d.attached and d.checking)
+}
+
+/// The newest check an attached device that is online now made of `a`, when one did.
+fn newest_live_check(a: accounts.AccountView) -> Option<accounts.AccountDevice> {
+    a.devices
+        .filter(d -> d.attached and d.checked_ms > 0 and device_online(d.device))
+        .sort_by(d -> d.checked_ms, desc)
+        .first()
+}
+
+/// Whether the device `key` is one of the person's that is online now.
+fn device_online(key: Text) -> Bool {
+    device.devices.devices.any(d -> d.id == key and d.online)
+}
+
+/// What the device `key` is called, or the start of its key when the person's devices do not
+/// name it here.
+fn checked_device_label(key: Text) -> Text {
+    device.devices.devices.find(d -> d.id == key)?.label ?? key.slice(0, 8)
+}
+
+/// How long ago a check was, in words a person reads.
+fn said_ago(seconds: Int) -> Text {
+    if seconds < 60 {
+        "just now"
+    } else if seconds < 3600 {
+        "{seconds / 60} min ago"
+    } else if seconds < 86400 { "{seconds / 3600} h ago" } else { "{seconds / 86400} d ago" }
 }

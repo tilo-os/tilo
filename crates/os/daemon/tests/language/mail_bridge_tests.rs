@@ -433,7 +433,7 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
             .daemon()
             .app_connection_for_test(MAIL, &workspace)
             .expect("the daemon hands Mail's connection");
-        let source = tilolang_mail::sign_ins::follow(link, || {});
+        let (source, _reporting) = tilolang_mail::sign_ins::follow(link, || {});
         tilo_test_env::within("the connector signs in", async {
             while source().is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -495,7 +495,7 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
             .daemon()
             .app_connection_for_test(MAIL, &workspace)
             .expect("the daemon hands Mail's connection");
-        let source = tilolang_mail::sign_ins::follow(link, || {});
+        let (source, _reporting) = tilolang_mail::sign_ins::follow(link, || {});
 
         // Nothing is kept yet: the connector reads no account. The account is added after it
         // started, and reaches it on a later answer.

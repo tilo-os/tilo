@@ -31,6 +31,7 @@ use mail_engine::engine::{EngineEvent, EngineRequest};
 
 use crate::connector::{AccountRef, Event, MailConnector, Request};
 use crate::engine::{AccountSource, EngineConnector};
+use crate::sign_ins::SigningIn;
 use crate::wire::{self, FromConnector, ToConnector};
 
 /// What wakes the connector's loop.
@@ -114,6 +115,38 @@ pub struct Connector {
     online: Arc<AtomicBool>,
     /// The content store the files messages carry are kept in ([`EngineConnector::keeping`]).
     content: Option<tilo_content::ContentStore>,
+    /// The dispatch reader this connector reports its device's rows of each account's sync
+    /// through, when the device's connection opened.
+    reporter: Option<SigningIn>,
+    /// How this device's row of each account's sync stands, by the account: what it last
+    /// reported, so a row is written when it changes and not once per poll.
+    rows: BTreeMap<String, Reported>,
+    /// The accounts whose row changed since it was last written.
+    dirty: BTreeSet<String>,
+}
+
+/// How this device's sync of one account stands, as the connector reports it.
+#[derive(Clone, PartialEq, Eq)]
+struct Reported {
+    /// It has the account set up, so it can check it.
+    attached: bool,
+    /// It is checking it now.
+    checking: bool,
+    /// Where the sync stands, as the accounts name a health.
+    health: &'static str,
+    /// What a person reads about it.
+    message: String,
+}
+
+impl Default for Reported {
+    fn default() -> Self {
+        Self {
+            attached: false,
+            checking: false,
+            health: "never",
+            message: String::new(),
+        }
+    }
 }
 
 fn shared(source: &Rc<AccountSource>) -> AccountSource {
@@ -132,6 +165,7 @@ impl Connector {
         (requests, events): (Sender<EngineRequest>, Receiver<EngineEvent>),
         online: Arc<AtomicBool>,
         content: Option<tilo_content::ContentStore>,
+        reporter: Option<SigningIn>,
     ) -> Self {
         let source = Rc::new(source);
         let own = EngineConnector::sharing(shared(&source), requests.clone())
@@ -153,8 +187,12 @@ impl Connector {
             unfiled: HashMap::new(),
             online,
             content,
+            reporter,
+            rows: BTreeMap::new(),
+            dirty: BTreeSet::new(),
         };
         connector.follow_accounts();
+        connector.report_rows();
         connector
     }
 
@@ -178,6 +216,100 @@ impl Connector {
         if self.online.swap(false, Ordering::AcqRel) {
             self.broadcast(&FromConnector::Online);
         }
+        self.report_rows();
+    }
+
+    /// Say how this device's sync of each account goes, for the rows that changed: one row
+    /// of this device's own, written where every member's Settings and the app read it. A row
+    /// whose report was refused stays to be reported again.
+    fn report_rows(&mut self) {
+        let Some(reporter) = self.reporter.take() else {
+            return;
+        };
+        for account in std::mem::take(&mut self.dirty) {
+            let Some(row) = self.rows.get(&account) else {
+                continue;
+            };
+            if reporter
+                .report_sync(
+                    crate::sign_ins::report_sync(),
+                    &account,
+                    row.health,
+                    false,
+                    &row.message,
+                    row.attached,
+                    row.checking,
+                )
+                .is_err()
+            {
+                tracing::info!(%account, "the device's sync row was not written");
+                self.dirty.insert(account);
+            }
+        }
+        self.reporter = Some(reporter);
+    }
+
+    /// A device checking an account says so while its check is in flight: the row says it is
+    /// checking, and takes the health of its own outcome only once the server answered.
+    fn note_checking(&mut self, asked: &ToConnector) {
+        let (ToConnector::Changes { account, .. }
+        | ToConnector::Older { account, .. }
+        | ToConnector::Search { account, .. }) = asked
+        else {
+            return;
+        };
+        let mut row = self.rows.get(account).cloned().unwrap_or_default();
+        row.attached = true;
+        row.checking = true;
+        row.health = "syncing";
+        self.note_row(account, row);
+    }
+
+    /// Keep this device's row of `account`'s sync as `row`, reporting it when it changed.
+    fn note_row(&mut self, account: &str, row: Reported) {
+        if self.rows.get(account) != Some(&row) {
+            self.rows.insert(account.to_owned(), row);
+            self.dirty.insert(account.to_owned());
+        }
+    }
+
+    /// Take in what an account's server said as this device's row of the account's sync: a
+    /// fetch that went through says it is up to date, and a server that could not be reached
+    /// says why, in the words a person reads.
+    fn note_event(&mut self, event: &Event) {
+        let (account, row) = match event {
+            Event::Changes(changes) => (
+                &changes.account,
+                Reported {
+                    attached: true,
+                    health: "healthy",
+                    ..Reported::default()
+                },
+            ),
+            Event::Found { account, .. } => (
+                account,
+                Reported {
+                    attached: true,
+                    health: "healthy",
+                    ..Reported::default()
+                },
+            ),
+            Event::Unreachable {
+                account,
+                reason,
+                kind,
+            } => (
+                account,
+                Reported {
+                    attached: true,
+                    checking: false,
+                    health: health_of(kind),
+                    message: reason.clone(),
+                },
+            ),
+            _ => return,
+        };
+        self.note_row(account, row);
     }
 
     /// How many messages wait for an instance to attach: what the queue holds.
@@ -271,6 +403,7 @@ impl Connector {
     }
 
     fn asked(&mut self, session: u64, asked: ToConnector) {
+        self.note_checking(&asked);
         if let ToConnector::Send {
             request,
             account,
@@ -485,6 +618,7 @@ impl Connector {
     /// Say `event` to the instance `session` that asked, or, when nobody attached asked, to
     /// every instance attached, or keep it until one attaches.
     fn answer(&mut self, session: Option<u64>, event: Event) {
+        self.note_event(&event);
         // A copy the server kept none of is said with the answer that the message went, under
         // the request whoever waits knows it by: kept here until that answer comes.
         if let Event::Unfiled { request, reason } = &event
@@ -593,13 +727,37 @@ impl Connector {
         if accounts == self.accounts {
             return;
         }
+        let held: BTreeSet<String> = accounts.iter().map(|account| account.id.clone()).collect();
+        for gone in self.rows.clone().into_keys() {
+            if held.contains(&gone) {
+                continue;
+            }
+            let mut row = self.rows.get(&gone).cloned().unwrap_or_default();
+            row.attached = false;
+            row.checking = false;
+            self.note_row(&gone, row);
+        }
         for account in &accounts {
             if self.watched.insert(account.id.clone()) {
                 self.own.watch(&account.id);
             }
+            // A device has an account set up when its connector holds it.
+            let mut row = self.rows.get(&account.id).cloned().unwrap_or_default();
+            row.attached = true;
+            self.note_row(&account.id, row);
         }
         self.accounts.clone_from(&accounts);
         self.broadcast(&FromConnector::Accounts(accounts));
+    }
+}
+
+/// The health the accounts name for a server trouble of `kind`, as [`Event::Unreachable`]
+/// carries it.
+fn health_of(kind: &str) -> &'static str {
+    match kind {
+        "signed-out" => "needs_sign_in",
+        "offline" => "offline",
+        _ => "error",
     }
 }
 
@@ -619,6 +777,7 @@ pub fn serve(link: Stream, attachments: impl Iterator<Item = Stream> + Send + 's
         let wake = Arc::clone(&wake);
         crate::sign_ins::follow(link, move || wake())
     };
+    let (accounts, reporter) = accounts;
     let (requests, events) = mail_engine::engine::spawn(tilo_content::ContentStore::memory(), wake);
     let attaching = woken.clone();
     let spawned = std::thread::Builder::new()
@@ -639,6 +798,7 @@ pub fn serve(link: Stream, attachments: impl Iterator<Item = Stream> + Send + 's
         (requests, events),
         online,
         tilo_content_device::device(),
+        reporter,
     );
     connector.run(&wakeups, &woken);
 }
@@ -682,7 +842,7 @@ mod tests {
         let (requests, asked) = channel();
         let (answer, events) = channel();
         let (woken, wakeups) = channel();
-        let connector = Connector::new(source, (requests, events), Arc::default(), None);
+        let connector = Connector::new(source, (requests, events), Arc::default(), None, None);
         Rig {
             connector,
             asked,

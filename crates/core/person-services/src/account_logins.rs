@@ -323,15 +323,16 @@ impl crate::PersonServices {
     }
 
     /// The accounts of every workspace this device holds that `keep` keeps, each with its
-    /// workspace and how its sync went, in the order the workspaces and their records list them.
-    /// A workspace whose accounts do not read here yet lists none.
+    /// workspace and how its sync goes on every device that attached it, in the order the
+    /// workspaces and their records list them. A workspace whose accounts do not read here yet
+    /// lists none.
     pub async fn held_accounts(
         &self,
         keep: impl Fn(&accounts::Account) -> bool,
     ) -> Vec<(
         String,
         accounts::Account,
-        Option<accounts::person::AccountSync>,
+        Vec<accounts::person::AccountSync>,
     )> {
         let mut held = Vec::new();
         let mut workspaces = self.held_workspaces();
@@ -346,8 +347,12 @@ impl crate::PersonServices {
                     .into_iter()
                     .filter(|account| keep(account))
                     .map(|account| {
-                        let sync = accounts.sync_of(account.id.as_str()).cloned();
-                        (workspace.clone(), account, sync)
+                        let syncs = accounts
+                            .syncs_of(account.id.as_str())
+                            .into_iter()
+                            .cloned()
+                            .collect();
+                        (workspace.clone(), account, syncs)
                     }),
             );
         }
@@ -439,12 +444,16 @@ impl crate::PersonServices {
         .await
     }
 
-    /// Report how the sync of `workspace`'s account `id` went on this device, for `by`, who
+    /// Report how the sync of `workspace`'s account `id` goes on this device, for `by`, who
     /// asked, as every member reads it in the workspace's accounts ([`AccountList::report_sync`]).
-    /// A report saying what the account already says writes nothing.
+    /// The row written is this device's own: `named`, the device a caller says the report is
+    /// about, is refused when it is another, so no device writes another's row. `state` is
+    /// whether the device still has the account and whether it is checking it now. A report
+    /// saying what the account's row already says writes nothing.
     ///
     /// # Errors
-    /// The workspace has no such account, or the record does not take the write on this device.
+    /// The workspace has no such account, the report is for another device, or the record does
+    /// not take the write on this device.
     pub async fn report_account_sync(
         &self,
         (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
@@ -452,10 +461,22 @@ impl crate::PersonServices {
         health: accounts::SyncHealth,
         signed_in: bool,
         message: &str,
+        state: (bool, bool),
+        named: Option<&str>,
     ) -> Result<(), String> {
         let device = hex::encode(self.signing_device().device());
+        if let Some(named) = named
+            && named != device
+        {
+            return Err(
+                "a device reports only its own sync of an account, never another device's"
+                    .to_owned(),
+            );
+        }
+        let (attached, checking) = state;
         self.change_workspace_accounts((workspace, by, call), |held| {
-            let edit = held
+            let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
+            if let Some(edit) = held
                 .reporting(
                     id,
                     &device,
@@ -464,8 +485,17 @@ impl crate::PersonServices {
                     signed_in,
                     message,
                 )
-                .map_err(|refusal| refusal.to_string())?;
-            Ok((edit.into_iter().collect(), ()))
+                .map_err(|refusal| refusal.to_string())?
+            {
+                edits.push(edit);
+            }
+            if let Some(edit) = held
+                .reporting_attachment(id, &device, attached, checking)
+                .map_err(|refusal| refusal.to_string())?
+            {
+                edits.push(edit);
+            }
+            Ok((edits, ()))
         })
         .await
     }

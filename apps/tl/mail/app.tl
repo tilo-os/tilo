@@ -8,7 +8,9 @@ app so.tilo.mail "Mail" (
 )
 
 use so.tilo.contacts as contacts
+use so.tilo.device as device
 use tilo.workspace as workspace
+use tilo.accounts as accounts
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
@@ -1857,7 +1859,9 @@ fn place_title(m: Mail, query: Text) -> Text {
 /// says nothing and takes no room, so the list stands at the column's edge. A sign-in the server
 /// refused, an account with no password on this device, and one whose password the workspace's
 /// rules keep back each say what they are and lead to the Settings that change them; a device
-/// that is offline says new mail waits for the connection.
+/// that is offline says new mail waits for the connection. An account no device that is here now
+/// has set up says so, since this device reads its mail but cannot check for more, and one a
+/// device here checks names that device and how long ago it did.
 view account_notice(a: Account) {
     if a.trouble != "" {
         stack(padding: .group, gap: .tight) {
@@ -1911,7 +1915,105 @@ view account_notice(a: Account) {
                 )
             }
         }
+    } else if no_device_can_check(a) {
+        stack(padding: .group, gap: .tight) {
+            ui.Banner(
+                "No device can check {a.address} right now",
+                message: "This shows the mail your devices already fetched. To check for new mail and send, a computer with this account set up needs to be on and signed in.",
+                kind: .neutral,
+                icon: .wifi_off,
+                action: "Try again",
+            ) {
+                on act: check_now(a)
+            }
+        }
+    } else if let checked = checked_by(a) {
+        if checked.device != this_device() {
+            let when = said_ago(checked.seconds)
+            stack(padding: .group, gap: .tight) {
+                ui.Text("Checked by {checked.label} {when}", role: .caption, secondary: true)
+            }
+        }
     }
+}
+
+/// What a device that is here now said last about checking the account `a`.
+type Checked {
+    /// The device that checked it, by its key.
+    device: Text
+    /// What that device is called.
+    label: Text
+    /// How many seconds ago it checked.
+    seconds: Int
+}
+
+/// Whether no device that is here now has the account `a` set up, so none can check it: what a
+/// window says when a device that went away left the account with it. Unknown while no device
+/// has said anything of the account yet, so it says nothing rather than guess.
+fn no_device_can_check(a: Account) -> Bool {
+    if let row = account_row(a) {
+        // The devices here now are the only ones this window can tell anything about: with none
+        // read, it says nothing rather than call every device away.
+        a.trouble == ""
+            and not device.devices.devices.is_empty()
+            and not row.devices.is_empty()
+            and live_checks(row).is_empty()
+    } else { false }
+}
+
+/// The newest check of the account `a` by a device that is here now, when one made one.
+fn checked_by(a: Account) -> Option<Checked> {
+    if let row = account_row(a) {
+        if let newest = live_checks(row)
+                .filter(d -> d.checked_ms > 0)
+                .sort_by(d -> d.checked_ms, desc)
+                .first() {
+            let seconds = (accounts.accounts.now_ms - newest.checked_ms) / 1000
+            return .some(
+                Checked(
+                    device: newest.device,
+                    label: device_label(newest.device),
+                    seconds: seconds,
+                ),
+            )
+        }
+    }
+    return .none
+}
+
+/// The account `a` as the workspace's accounts read it, when they read it at all.
+fn account_row(a: Account) -> Option<accounts.AccountView> {
+    accounts.accounts.accounts.find(row -> row.id == a.key)
+}
+
+/// The devices that still have an account set up and are here now: the ones that can check it.
+fn live_checks(row: accounts.AccountView) -> List<accounts.AccountDevice> {
+    row.devices.filter(d -> d.attached and device_online(d.device))
+}
+
+/// Whether the device `key` is one that is here now.
+fn device_online(key: Text) -> Bool {
+    device.devices.devices.any(d -> d.id == key and d.online)
+}
+
+/// This device's key, as the devices here now name it; empty when they do not.
+fn this_device() -> Text {
+    device.devices.devices.find(d -> d.local)?.id ?? ""
+}
+
+/// What the device `key` is called, or the start of its key when the person's devices do not
+/// name it here.
+fn device_label(key: Text) -> Text {
+    device.devices.devices.find(d -> d.id == key)?.label ?? key.slice(0, 8)
+}
+
+/// How long ago a check was, in words a person reads.
+fn said_ago(seconds: Int) -> Text {
+    if seconds < 60 {
+        "just now"
+    } else if seconds < 3600 {
+        "{seconds / 60} min ago"
+    } else if seconds < 86400 { "{seconds / 3600} h ago" } else { "{seconds / 86400} d ago" }
 }
 
 /// The mail window: every account's mail. The unified inbox is every account's inbox in one

@@ -391,14 +391,21 @@ impl crate::PersonServices {
         // What a device's cloud mount reads and signs in with: the accounts it mounts and the
         // sign-in of one, answered to the person's own connection alone. The mount runs as the
         // person on this computer, outside any app or page, so what it reads is decided by the
-        // workspace's own rules for them, as the vault's releases are.
+        // workspace's own rules for them, as the vault's releases are. An app that speaks to an
+        // account's server reports only how its sync goes, and only for the device it runs on.
         if matches!(
             action,
             workspace_accounts::CLOUD_ACCOUNTS
                 | workspace_accounts::CLOUD_CREDENTIAL
                 | workspace_accounts::REPORT_SYNC
         ) {
-            return self.cloud_mount_invoke(workspace_id, caller, request).await;
+            let reporting = action == workspace_accounts::REPORT_SYNC
+                && caller
+                    .launched_app()
+                    .is_some_and(|app| workspace_accounts::SYNC_REPORTERS.contains(&app.as_str()));
+            return self
+                .cloud_mount_invoke(workspace_id, caller, request, reporting)
+                .await;
         }
         // A person's own accounts at issuers their apps describe: never the workspace's.
         if let Some(answered) = self
@@ -502,8 +509,9 @@ impl crate::PersonServices {
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
         request: &InvokeRequest,
+        reporting: bool,
     ) -> Result<Value, ActionCallError> {
-        if !caller.is_own_connection() {
+        if !caller.is_own_connection() && !reporting {
             return Err(ActionCallError::Refused {
                 reason: "A cloud mount's sign-in is answered only to a connection of your \
                          own on this computer"
@@ -513,6 +521,9 @@ impl crate::PersonServices {
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let asked = asked_of(request)?;
         let here = workspace.to_string();
+        if reporting {
+            return Box::pin(cloud_mounts::reported(self, &here, caller.acting(), &asked)).await;
+        }
         let root = self.workspace_root(&here);
         let signing = Signing {
             vault: self.vault_for(&here, caller.acting()).serving(request),

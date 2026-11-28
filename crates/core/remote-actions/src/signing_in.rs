@@ -118,4 +118,40 @@ impl SigningIn {
             ReceiptStatus::Accepted => Err("The call was only accepted".to_owned()),
         }
     }
+
+    /// A second reader of the same connection, kept apart so a connector reports on a thread
+    /// that never waits on the accounts it follows.
+    #[must_use]
+    pub fn for_reports(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            caller: self.caller.clone(),
+            released: HashMap::new(),
+        }
+    }
+
+    /// Report how this device's sync of the account `account` goes, through `report_sync` (the
+    /// accounts' action that writes one device's own row), as the app whose connector it is.
+    ///
+    /// # Errors
+    /// The dispatch refused, in words a person reads.
+    pub fn report_sync(
+        &self,
+        report_sync: RemoteActionTarget,
+        account: &str,
+        health: &str,
+        signed_in: bool,
+        message: &str,
+        attached: bool,
+        checking: bool,
+    ) -> Result<(), String> {
+        let mut arguments = Map::new();
+        arguments.insert("account".into(), Value::String(account.to_owned()));
+        arguments.insert("health".into(), Value::String(health.to_owned()));
+        arguments.insert("signedIn".into(), Value::Bool(signed_in));
+        arguments.insert("message".into(), Value::String(message.to_owned()));
+        arguments.insert("attached".into(), Value::Bool(attached));
+        arguments.insert("checking".into(), Value::Bool(checking));
+        self.ask(report_sync, arguments).map(drop)
+    }
 }

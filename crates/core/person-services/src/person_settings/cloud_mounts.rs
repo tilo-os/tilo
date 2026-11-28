@@ -54,8 +54,9 @@ pub(super) async fn invoke(
                 })
                 .filter_map(|account| {
                     let signed_in = held
-                        .sync_of(account.id.as_str())
-                        .is_some_and(|sync| sync.signed_in_ms.is_some());
+                        .syncs_of(account.id.as_str())
+                        .into_iter()
+                        .any(|sync| sync.signed_in_ms.is_some());
                     Some(CloudAccount {
                         account: serde_json::to_value(account).ok()?,
                         signed_in,
@@ -79,21 +80,68 @@ pub(super) async fn invoke(
             health,
             signed_in,
             message,
+            attached,
+            checking,
+            device,
         } => {
-            let report = (&*account, &*health, signed_in.unwrap_or(false));
-            let message = message.unwrap_or_default();
-            Box::pin(report_sync(
+            report_sync(
                 workspaces,
                 (workspace, acting),
-                report,
-                &message,
-            ))
+                (&account, &health, signed_in.unwrap_or(false)),
+                &message.unwrap_or_default(),
+                attached.unwrap_or(true),
+                checking.unwrap_or(false),
+                device.as_deref(),
+            )
             .await
             .map_err(ActionCallError::refused)?;
             Ok(Value::Null)
         }
         _ => Err(ActionCallError::UnknownAction),
     }
+}
+
+/// Report from an app that speaks to an account's server, as [`AccountsAction::ReportSync`]
+/// carries it: the row written is the device the app runs on, and a report naming another
+/// device is refused.
+///
+/// # Errors
+/// The action is not a report, the account is not the workspace's, its health is no health, or
+/// the report names another device.
+pub(super) async fn reported(
+    workspaces: &Workspaces,
+    workspace: &str,
+    acting: &tilo_member_types::Acting,
+    asked: &AccountsAction,
+) -> Result<Value, ActionCallError> {
+    let AccountsAction::ReportSync {
+        account,
+        health,
+        signed_in,
+        message,
+        attached,
+        checking,
+        device,
+    } = asked
+    else {
+        return Err(ActionCallError::Refused {
+            reason: "An app that speaks to an account's server reports only how its sync \
+                     goes"
+                .to_owned(),
+        });
+    };
+    report_sync(
+        workspaces,
+        (workspace, acting),
+        (account, health, signed_in.unwrap_or(false)),
+        &message.clone().unwrap_or_default(),
+        attached.unwrap_or(true),
+        checking.unwrap_or(false),
+        device.as_deref(),
+    )
+    .await
+    .map_err(ActionCallError::refused)?;
+    Ok(Value::Null)
 }
 
 /// What `account` signs in with now, from the sign-in the workspace's vault
@@ -185,17 +233,20 @@ async fn credential(
     Ok(credential)
 }
 
-/// Report how the sync of `account` went on this device, `message` summing it up, as every
+/// Report how the sync of `account` goes on this device, `message` summing it up, as every
 /// member's Settings reads it.
 ///
 /// # Errors
-/// The account is not the workspace's, its health is no health, or the record does not take the
-/// write on this device.
+/// The account is not the workspace's, its health is no health, the report names another
+/// device, or the record does not take the write on this device.
 async fn report_sync(
     workspaces: &Workspaces,
     (workspace, acting): (&str, &tilo_member_types::Acting),
     (account, health, signed_in): (&str, &str, bool),
     message: &str,
+    attached: bool,
+    checking: bool,
+    named: Option<&str>,
 ) -> Result<(), String> {
     let health = accounts::SyncHealth::from_word(health)
         .ok_or_else(|| format!("{health} is no account's sync health"))?;
@@ -206,6 +257,8 @@ async fn report_sync(
             health,
             signed_in,
             message,
+            (attached, checking),
+            named,
         )
         .await
 }

@@ -15,7 +15,8 @@ use crate::PersonServices as Workspaces;
 use crate::person_settings;
 use crate::person_settings::cloud_control::Mount;
 use tilo_workspace_records::accounts::{
-    AccountKind as Kind, AccountStatus as Status, AccountView as View, Accounts, CalendarView,
+    AccountDevice, AccountKind as Kind, AccountStatus as Status, AccountView as View, Accounts,
+    CalendarView,
 };
 
 impl crate::PersonServices {
@@ -59,8 +60,32 @@ async fn reading(workspaces: &Workspaces, workspace: &str) -> Value {
     let reading = Accounts {
         accounts,
         connected,
+        now_ms: tilo_clock::unix_now_ms(),
     };
     serde_json::to_value(reading).unwrap_or(Value::Null)
+}
+
+/// How one device's sync stands, as a person reads it on the account's row.
+fn status_of(health: accounts::SyncHealth) -> Status {
+    match health {
+        accounts::SyncHealth::Healthy => Status::Connected,
+        accounts::SyncHealth::NeedsSignIn => Status::NeedsReconnect,
+        accounts::SyncHealth::Error => Status::Error,
+        accounts::SyncHealth::Offline => Status::Waiting,
+        accounts::SyncHealth::Syncing => Status::Syncing,
+        accounts::SyncHealth::Never => Status::Never,
+    }
+}
+
+/// What a person reads about one device's sync: what that device said, or the
+/// summary of a health it named none for.
+fn words_of(health: accounts::SyncHealth, message: &str) -> String {
+    let said = message.trim();
+    if said.is_empty() {
+        health.summary().to_owned()
+    } else {
+        said.to_owned()
+    }
 }
 
 /// The kind `type_id` names; a kind this build does not know is [`Kind::Other`].
@@ -103,20 +128,24 @@ fn view_of(
     } else {
         account.display_name.trim().to_owned()
     };
-    let sync = held.sync_of(account.id.as_str());
-    let health = sync.map_or(accounts::SyncHealth::Never, |sync| sync.health);
-    let status = match health {
-        accounts::SyncHealth::Healthy => Status::Connected,
-        accounts::SyncHealth::NeedsSignIn => Status::NeedsReconnect,
-        accounts::SyncHealth::Error => Status::Error,
-        accounts::SyncHealth::Offline => Status::Waiting,
-        accounts::SyncHealth::Syncing => Status::Syncing,
-        accounts::SyncHealth::Never => Status::Never,
-    };
-    let said = sync
-        .map(|sync| sync.message.trim())
-        .filter(|message| !message.is_empty())
-        .map_or_else(|| health.summary().to_owned(), str::to_owned);
+    let syncs = held.syncs_of(account.id.as_str());
+    let devices: Vec<AccountDevice> = syncs
+        .iter()
+        .map(|sync| AccountDevice {
+            device: sync.device.clone(),
+            attached: sync.attached,
+            checking: sync.checking,
+            health: status_of(sync.health),
+            attempted_ms: sync.attempted_ms,
+            checked_ms: sync.succeeded_ms.unwrap_or_default(),
+            words: words_of(sync.health, &sync.message),
+        })
+        .collect();
+    // What the account's one row says, from every device's rows: the newest attempt is how it
+    // last went. A device that went away says what its last try did but claims nothing now.
+    let newest = syncs.iter().max_by_key(|sync| sync.attempted_ms);
+    let status = newest.map_or(Status::Never, |sync| status_of(sync.health));
+    let said = newest.map_or_else(String::new, |sync| words_of(sync.health, &sync.message));
     let services = person_settings::services_of(account);
     Some(View {
         id: account.id.to_string(),
@@ -133,6 +162,7 @@ fn view_of(
         provider: person_settings::provider_key(account),
         status,
         words: said,
+        devices,
         enabled: account.enabled,
         incoming: mail_server(&account.config, "imap_host", "imap_port", 993),
         outgoing: mail_server(&account.config, "smtp_host", "smtp_port", 465),

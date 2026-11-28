@@ -1377,6 +1377,8 @@ async fn vault(
                 health,
                 signed_in,
                 &message,
+                (true, false),
+                None,
             ))
             .await?;
             Ok(account)

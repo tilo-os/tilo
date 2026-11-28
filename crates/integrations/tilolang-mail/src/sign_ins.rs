@@ -20,7 +20,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_remote_actions::signing_in::{NOT_ANSWERED, SigningIn};
+use tilo_remote_actions::signing_in::NOT_ANSWERED;
+pub use tilo_remote_actions::signing_in::SigningIn;
 
 /// The workspace's accounts, as the service that keeps them publishes their actions.
 mod workspace_accounts {
@@ -38,30 +39,43 @@ use crate::engine::{AccountSource, MailAccount};
 const EVERY: Duration = Duration::from_secs(30);
 
 /// The accounts the dispatch on `link` tells, followed on a thread of its own that calls
-/// `changed` each time they change.
+/// `changed` each time they change; and a second reader of the same dispatch, for the connector
+/// to report how the sync of each goes on this device.
 #[must_use]
-pub fn follow(link: Stream, changed: impl Fn() + Send + 'static) -> AccountSource {
+pub fn follow(
+    link: Stream,
+    changed: impl Fn() + Send + 'static,
+) -> (AccountSource, Option<SigningIn>) {
     let signed: Arc<Mutex<Vec<MailAccount>>> = Arc::default();
     let followed = Arc::clone(&signed);
-    let spawned = std::thread::Builder::new()
-        .name("mail-accounts".into())
-        .spawn(
-            move || match SigningIn::over(link) {
-                Ok(signing) => following(signing, &followed, &changed),
-                Err(error) => {
-                    tracing::error!(%error, "the mail connector's connection to this device does not open");
-                }
-            },
-        );
-    if let Err(error) = spawned {
-        tracing::error!(%error, "the mail connector does not follow the workspace's accounts");
-    }
-    Box::new(move || {
+    let source = Box::new(move || {
         signed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    })
+    });
+    let signing = match SigningIn::over(link) {
+        Ok(signing) => signing,
+        Err(error) => {
+            tracing::error!(%error, "the mail connector's connection to this device does not open");
+            return (source, None);
+        }
+    };
+    let reporting = signing.for_reports();
+    let spawned = std::thread::Builder::new()
+        .name("mail-accounts".into())
+        .spawn(move || following(signing, &followed, &changed));
+    if let Err(error) = spawned {
+        tracing::error!(%error, "the mail connector does not follow the workspace's accounts");
+    }
+    (source, Some(reporting))
+}
+
+/// How a device reports its own sync of an account: the accounts' `report-sync` action, bound
+/// from the surface their service publishes.
+#[must_use]
+pub fn report_sync() -> tilo_actions::remote::RemoteActionTarget {
+    workspace_accounts::accounts::report_sync()
 }
 
 fn following(mut signing: SigningIn, signed: &Mutex<Vec<MailAccount>>, changed: &dyn Fn()) {

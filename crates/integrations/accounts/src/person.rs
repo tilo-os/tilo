@@ -45,16 +45,22 @@ pub struct ListedAccount {
     pub enabled: bool,
     /// Tints the account's avatar so several read as distinct.
     pub tint: u8,
-    /// How its last sync went, as the device that last synced it reported.
-    pub sync: Option<AccountSync>,
+    /// How its sync goes on each device that attaches it, by the device's key
+    /// in hex: every device writes its own row and no other's, so one going
+    /// quiet, failing or going away leaves the others as they were.
+    pub syncs: Collection<AccountSync>,
 }
 
-/// How an account's sync is going, as the device that reported last saw it.
-/// Several devices may sync one account; the last report wins.
+/// How an account's sync is going on one device that attaches it.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct AccountSync {
-    /// The device that reported it, by its key in hex.
+    /// The device that reported it, by its key in hex: the row's own key.
     pub device: String,
+    /// Whether the device still has the account set up, so it can check it. A
+    /// device that no longer does says so before it stops.
+    pub attached: bool,
+    /// Whether it is checking the account now.
+    pub checking: bool,
     pub health: SyncHealth,
     /// When that device last tried, in milliseconds since the Unix epoch.
     pub attempted_ms: u64,
@@ -96,6 +102,8 @@ impl AccountList {
 
 #[resource(
     kind = "tilo.accounts",
+    version = 2,
+    migrate = AccountList::upgrade,
     read_content = tilo_resource::read::fields
 )]
 impl AccountList {
@@ -234,11 +242,11 @@ impl AccountList {
             config,
             enabled,
             tint,
-            sync: None,
+            syncs: Collection::default(),
         };
         if let Some(existing) = self.accounts.get_mut(&key) {
-            // Saving what an account is keeps how its sync went.
-            account.sync = existing.sync.take();
+            // Saving what an account is keeps how its sync goes on every device.
+            account.syncs = std::mem::take(&mut existing.syncs);
             *existing = account;
         } else {
             self.accounts.push(key, account);
@@ -261,12 +269,13 @@ impl AccountList {
         )
     }
 
-    /// Report how an account's sync went on the device `device`: what every
-    /// member's window says about it. The last report wins. A report that
-    /// says what the account already says is not written, unless it is a
+    /// Report how an account's sync goes on the device `device`: what every
+    /// member's window says about it. That device's row alone is written; a
+    /// report saying what it already says is not written, unless it is a
     /// success more than ten minutes newer than the one kept.
     ///
-    /// Whoever may save an account may report its sync.
+    /// Whoever may save an account may report its sync. Which device a call
+    /// reports for is decided where the call comes in, never by the caller.
     #[action]
     pub fn report_sync(
         &mut self,
@@ -277,11 +286,7 @@ impl AccountList {
         #[param("Whether its person just signed in to it")] signed_in: bool,
         #[param("A short summary a person reads, never a server's own words")] message: String,
     ) -> Result<(), Refusal> {
-        let listed = self
-            .accounts
-            .get_mut(&account)
-            .ok_or_else(|| Refusal::from("there is no such account"))?;
-        let previous = listed.sync.clone().unwrap_or_default();
+        let previous = self.existing_row(&account, &device)?;
         let message = sync_message(&message);
         let succeeded = health == SyncHealth::Healthy;
         let next = AccountSync {
@@ -296,9 +301,9 @@ impl AccountList {
             // A sign-in stands until the next sync says how it went.
             signed_in_ms: signed_in.then_some(at_ms),
             message,
+            ..previous
         };
-        let unchanged = listed.sync.is_some()
-            && previous.health == next.health
+        let unchanged = previous.health == next.health
             && previous.message == next.message
             && previous.signed_in_ms.is_some() == next.signed_in_ms.is_some()
             && !(succeeded
@@ -308,9 +313,61 @@ impl AccountList {
                         .unwrap_or_default()
                         .saturating_add(SYNC_SUCCESS_REFRESH_MS));
         if !unchanged {
-            listed.sync = Some(next);
+            self.keep_row(&account, next);
         }
         Ok(())
+    }
+
+    /// Say whether the device `device` still has the account set up, and whether
+    /// it is checking it now: its own row alone changes.
+    #[action]
+    pub fn report_attachment(
+        &mut self,
+        #[param("The account's id")] account: Id,
+        #[param("The device, by its key in hex")] device: String,
+        #[param("Whether it still has the account set up")] attached: bool,
+        #[param("Whether it is checking the account now")] checking: bool,
+    ) -> Result<(), Refusal> {
+        let previous = self.existing_row(&account, &device)?;
+        if previous.attached != attached || previous.checking != checking {
+            self.keep_row(
+                &account,
+                AccountSync {
+                    device,
+                    attached,
+                    checking,
+                    ..previous
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// The row `device` keeps of the account `account`, or an empty one it never
+    /// reported.
+    ///
+    /// # Errors
+    /// The record has no such account, or the report names no device.
+    fn existing_row(&self, account: &Id, device: &str) -> Result<AccountSync, Refusal> {
+        if device.trim().is_empty() {
+            return Err(Refusal::from("a sync report names the device it is from"));
+        }
+        let listed = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Refusal::from("there is no such account"))?;
+        Ok(listed
+            .syncs
+            .get(&Id::from_raw(device.to_owned()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Keep `row` as `account`'s row for its device: no other device's row changes.
+    fn keep_row(&mut self, account: &Id, row: AccountSync) {
+        if let Some(listed) = self.accounts.get_mut(account) {
+            listed.syncs.push(Id::from_raw(row.device.clone()), row);
+        }
     }
 
     /// Remove account.
@@ -345,6 +402,70 @@ fn account_of(id: &Id, account: &ListedAccount) -> Account {
         config: account.config.clone(),
         enabled: account.enabled,
         tint: account.tint,
+    }
+}
+
+impl AccountList {
+    /// Bring a record written before each device kept its own row up to this version: the one
+    /// row an account kept, from whichever device reported last, becomes that device's row, and
+    /// no other device is taken to have it.
+    ///
+    /// # Errors
+    /// The record is of no version this knows, or its document cannot be read or changed.
+    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
+        use automerge::transaction::Transactable as _;
+        use automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+        if from != 1 {
+            return Err(tilo_resource::ModelError::invalid(format!(
+                "no migration from {from}"
+            )));
+        }
+        let Some((Value::Object(_), accounts)) = doc.get(&ROOT, "accounts")? else {
+            return Ok(());
+        };
+        for entry in doc.keys(&accounts).collect::<Vec<_>>() {
+            let Some((Value::Object(_), holder)) = doc.get(&accounts, entry.as_str())? else {
+                continue;
+            };
+            let Some((Value::Object(_), value)) = doc.get(&holder, "v")? else {
+                continue;
+            };
+            let Some((Value::Object(_), one)) = doc.get(&value, "sync")? else {
+                continue;
+            };
+            let Some((Value::Scalar(device), _)) = doc.get(&one, "device")? else {
+                continue;
+            };
+            let ScalarValue::Str(device) = device.as_ref() else {
+                continue;
+            };
+            let device = device.to_string();
+            if device.is_empty() {
+                continue;
+            }
+            let existing = match doc.get(&value, "syncs")? {
+                Some((Value::Object(_), syncs)) => Some(syncs),
+                _ => None,
+            };
+            let syncs = match existing {
+                Some(syncs) => syncs,
+                None => doc.put_object(&value, "syncs", ObjType::Map)?,
+            };
+            let entry = doc.put_object(&syncs, device.as_str(), ObjType::Map)?;
+            doc.put(&entry, "k", ScalarValue::Str(device.as_str().into()))?;
+            let row = doc.put_object(&entry, "v", ObjType::Map)?;
+            for field in doc.keys(&one).collect::<Vec<_>>() {
+                let scalar = match doc.get(&one, field.as_str())? {
+                    Some((Value::Scalar(scalar), _)) => Some(scalar.into_owned()),
+                    _ => None,
+                };
+                if let Some(scalar) = scalar {
+                    doc.put(&row, field, scalar)?;
+                }
+            }
+            doc.delete(&value, "sync")?;
+        }
+        Ok(())
     }
 }
 
@@ -395,12 +516,45 @@ impl AccountList {
         self.accounts.len()
     }
 
-    /// How the account `id`'s sync went, when a device reported it.
+    /// How the account `id`'s sync goes on each device that reported it, in the
+    /// order the record keeps the rows: every device's own, never just this one's.
     #[must_use]
-    pub fn sync_of(&self, id: &str) -> Option<&AccountSync> {
+    pub fn syncs_of(&self, id: &str) -> Vec<&AccountSync> {
+        let Some(account) = self.accounts.get(&Id::from_raw(id.to_owned())) else {
+            return Vec::new();
+        };
+        account.syncs.iter().map(|(_, sync)| sync).collect()
+    }
+
+    /// How the account `id`'s sync goes on `device`, when that device reported it.
+    #[must_use]
+    pub fn sync_of(&self, id: &str, device: &str) -> Option<&AccountSync> {
         self.accounts
             .get(&Id::from_raw(id.to_owned()))
-            .and_then(|account| account.sync.as_ref())
+            .and_then(|account| account.syncs.get(&Id::from_raw(device.to_owned())))
+    }
+
+    /// How the account `id`'s sync goes on the device that tried most
+    /// recently, when any device reported it: what a row says before it names
+    /// a device.
+    #[must_use]
+    pub fn latest_of(&self, id: &str) -> Option<&AccountSync> {
+        self.accounts
+            .get(&Id::from_raw(id.to_owned()))
+            .and_then(|account| {
+                account
+                    .syncs
+                    .iter()
+                    .map(|(_, sync)| sync)
+                    .max_by_key(|sync| sync.attempted_ms)
+            })
+    }
+
+    /// Whether any device says it still has the account `id` set up, so it
+    /// can check it.
+    #[must_use]
+    pub fn attached_to(&self, id: &str) -> bool {
+        self.syncs_of(id).into_iter().any(|sync| sync.attached)
     }
 
     /// The edit that reports `health` for the account `id` from `device` at `at_ms`, when it
@@ -434,6 +588,35 @@ impl AccountList {
                 at_ms,
                 signed_in,
                 message.to_owned(),
+            ))
+        }))
+    }
+
+    /// The edit that says whether `device` still has the account `id` set up, and whether it is
+    /// checking it now, when it changes what the record says.
+    ///
+    /// # Errors
+    /// The record has no such account.
+    pub fn reporting_attachment(
+        &self,
+        id: &str,
+        device: &str,
+        attached: bool,
+        checking: bool,
+    ) -> Result<Option<Invoke<Self>>, Refusal> {
+        let mut reported = self.clone();
+        reported.report_attachment(
+            Id::from_raw(id.to_owned()),
+            device.to_owned(),
+            attached,
+            checking,
+        )?;
+        Ok((reported != *self).then(|| {
+            Self::REPORT_ATTACHMENT.with((
+                Id::from_raw(id.to_owned()),
+                device.to_owned(),
+                attached,
+                checking,
             ))
         }))
     }
@@ -758,22 +941,37 @@ mod tests {
         ))
     }
 
-    /// Every member reads how an account's sync went from the device that
-    /// reported last; a report saying nothing new is not written, a success
-    /// is again once it is ten minutes newer, and saving the account keeps
-    /// what its sync says.
+    /// The edit that says whether `device` still has `id` set up and is checking it now.
+    fn attached(
+        id: &str,
+        device: &str,
+        still_attached: bool,
+        checking: bool,
+    ) -> Invoke<AccountList> {
+        AccountList::REPORT_ATTACHMENT.with((
+            Id::from_raw(id),
+            device.into(),
+            still_attached,
+            checking,
+        ))
+    }
+
+    /// Every member reads how an account's sync goes on every device that
+    /// attached it: one device's report writes its own row and leaves the
+    /// other's as it was, a report saying nothing new is not written, a
+    /// success is again once it is ten minutes newer, and saving the account
+    /// keeps every row.
     #[test]
-    fn the_last_device_to_report_says_how_an_accounts_sync_went() {
+    fn every_device_that_attached_an_account_keeps_its_own_row() {
         let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
         save(&mut replica, "work", "caldav", "dav.example");
         let minute = 60_000;
-        let succeeded = |replica: &Replica<AccountList, AppNamed>| {
+        let succeeded = |replica: &Replica<AccountList, AppNamed>, device: &str| {
             replica
                 .state()
                 .unwrap()
-                .sync_of("work")
-                .unwrap()
-                .succeeded_ms
+                .sync_of("work", device)
+                .and_then(|sync| sync.succeeded_ms)
         };
         replica
             .apply(report(
@@ -793,15 +991,51 @@ mod tests {
                 "Waiting\nfor a connection\u{7}",
             ))
             .unwrap();
-        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
-        assert_eq!(sync.device, "phone", "the last device wins");
-        assert_eq!(sync.health, SyncHealth::Offline);
-        assert_eq!(sync.succeeded_ms, Some(minute), "the last success stays");
+        let rows = replica.state().unwrap().syncs_of("work").len();
+        assert_eq!(rows, 2, "both devices' rows are kept");
+        let phone = replica
+            .state()
+            .unwrap()
+            .sync_of("work", "phone")
+            .cloned()
+            .unwrap();
+        assert_eq!(phone.device, "phone");
+        assert_eq!(phone.health, SyncHealth::Offline);
         assert_eq!(
-            sync.message, "Waiting for a connection",
+            phone.message, "Waiting for a connection",
             "one line, no control characters"
         );
+        assert_eq!(
+            succeeded(&replica, "laptop"),
+            Some(minute),
+            "the laptop's success stands beside the phone's failure"
+        );
+    }
 
+    /// A success more than ten minutes newer is written again, a report that
+    /// changes nothing is not, and saving the account keeps what every device's
+    /// row says.
+    #[test]
+    fn a_success_ten_minutes_newer_is_written_again_and_saving_keeps_the_rows() {
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        save(&mut replica, "work", "caldav", "dav.example");
+        let minute = 60_000;
+        let succeeded = |replica: &Replica<AccountList, AppNamed>, device: &str| {
+            replica
+                .state()
+                .unwrap()
+                .sync_of("work", device)
+                .and_then(|sync| sync.succeeded_ms)
+        };
+        replica
+            .apply(report(
+                "work",
+                "laptop",
+                SyncHealth::Healthy,
+                minute,
+                "Up to date",
+            ))
+            .unwrap();
         replica
             .apply(report(
                 "work",
@@ -822,9 +1056,9 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            succeeded(&replica),
-            Some(3 * minute),
-            "the same success minutes later is not written"
+            succeeded(&replica, "laptop"),
+            Some(minute),
+            "the same success minutes later is not written, the phone's row being another's"
         );
         assert_eq!(replica.save(), written, "nothing new is written");
         replica
@@ -836,7 +1070,7 @@ mod tests {
                 "Up to date",
             ))
             .unwrap();
-        assert_eq!(succeeded(&replica), Some(14 * minute));
+        assert_eq!(succeeded(&replica, "laptop"), Some(14 * minute));
 
         let long = "x".repeat(400);
         replica
@@ -849,11 +1083,16 @@ mod tests {
             ))
             .unwrap();
         save(&mut replica, "work", "caldav", "dav.moved.example");
-        let sync = replica.state().unwrap().sync_of("work").cloned().unwrap();
+        let sync = replica
+            .state()
+            .unwrap()
+            .sync_of("work", "laptop")
+            .cloned()
+            .unwrap();
         assert_eq!(
             sync.health,
             SyncHealth::Error,
-            "saving the account keeps its sync"
+            "saving the account keeps every device's row"
         );
         assert_eq!(sync.message.chars().count(), SYNC_MESSAGE_LIMIT);
         assert!(
@@ -861,6 +1100,94 @@ mod tests {
                 .apply(report("gone", "laptop", SyncHealth::Healthy, minute, ""))
                 .is_err(),
             "no report for an account the workspace does not have"
+        );
+    }
+
+    /// A record written before each device kept its own row keeps the row it had: it becomes
+    /// the row of the device that wrote it, and reading it is that device's.
+    #[test]
+    fn an_older_records_one_row_becomes_the_row_of_the_device_that_wrote_it() {
+        use automerge::transaction::Transactable as _;
+        use automerge::{ObjType, ROOT, ScalarValue};
+        use tilo_resource::Resource as _;
+        let mut doc = tilo_resource::Doc::new();
+        let accounts = doc.put_object(&ROOT, "accounts", ObjType::Map).unwrap();
+        let entry = doc.put_object(&accounts, "work", ObjType::Map).unwrap();
+        doc.put(&entry, "k", ScalarValue::Str("work".into()))
+            .unwrap();
+        let account = doc.put_object(&entry, "v", ObjType::Map).unwrap();
+        doc.put(&account, "type_id", ScalarValue::Str("caldav".into()))
+            .unwrap();
+        doc.put(&account, "display_name", ScalarValue::Str("Work".into()))
+            .unwrap();
+        doc.put(&account, "enabled", ScalarValue::Boolean(true))
+            .unwrap();
+        doc.put(&account, "tint", ScalarValue::Uint(2)).unwrap();
+        let one = doc.put_object(&account, "sync", ObjType::Map).unwrap();
+        doc.put(&one, "device", ScalarValue::Str("laptop".into()))
+            .unwrap();
+        doc.put(&one, "health", ScalarValue::Str("healthy".into()))
+            .unwrap();
+        doc.put(&one, "attempted_ms", ScalarValue::Uint(60_000))
+            .unwrap();
+        doc.put(&one, "succeeded_ms", ScalarValue::Uint(60_000))
+            .unwrap();
+        doc.put(&one, "message", ScalarValue::Str("Up to date".into()))
+            .unwrap();
+
+        AccountList::upgrade(&mut doc, 1).unwrap();
+        tilo_resource::evolution::write_version(&mut doc, 2).unwrap();
+        let read = AccountList::read(&doc).unwrap();
+        let rows = read.syncs_of("work");
+        assert_eq!(rows.len(), 1, "the one row it had is the one it has");
+        assert_eq!(rows[0].device, "laptop");
+        assert_eq!(rows[0].health, SyncHealth::Healthy);
+        assert_eq!(rows[0].succeeded_ms, Some(60_000_u64));
+        assert!(!rows[0].attached, "no device is taken to have it anew");
+    }
+
+    /// A device that no longer has the account says so, and one that is
+    /// checking it now says that; the account is attached while any device
+    /// says it has it.
+    #[test]
+    fn a_device_says_whether_it_still_attaches_an_account_and_whether_it_is_checking() {
+        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
+        save(&mut replica, "work", "caldav", "dav.example");
+        replica
+            .apply(report("work", "laptop", SyncHealth::Healthy, 1, ""))
+            .unwrap();
+        replica
+            .apply(attached("work", "laptop", true, false))
+            .unwrap();
+        replica
+            .apply(report("work", "phone", SyncHealth::Healthy, 1, ""))
+            .unwrap();
+        replica
+            .apply(attached("work", "phone", true, true))
+            .unwrap();
+        {
+            let accounts = replica.state().unwrap();
+            assert!(accounts.attached_to("work"));
+            assert!(
+                accounts
+                    .sync_of("work", "phone")
+                    .is_some_and(|sync| sync.checking),
+                "the phone is checking now"
+            );
+        }
+        replica
+            .apply(attached("work", "phone", false, false))
+            .unwrap();
+        let accounts = replica.state().unwrap();
+        assert!(
+            accounts.attached_to("work"),
+            "the laptop still has the account"
+        );
+        assert!(
+            !accounts
+                .sync_of("work", "phone")
+                .is_some_and(|sync| sync.attached),
+            "the phone says it no longer has it"
         );
     }
 

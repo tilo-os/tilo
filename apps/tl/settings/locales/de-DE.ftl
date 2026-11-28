@@ -260,8 +260,7 @@ d-6hknmq22 = Accessibility pane
 
 d-ifgepts4 = Accounts pane
     .w-connected-accounts = Verbundene Konten
-    .w-you-have-no-accounts-yet-add = Du hast noch keine Konten. Füge unten eines hinzu, damit dieser Arbeitsbereich Mail, Kalender und Dateien bekommt.
-    .w-mail-and-calendar = Mail und Kalender
+    .w-you-have-no-accounts-yet-add = Du hast noch keine Konten. Füge unten eines hinzu, damit dieser Arbeitsbereich Mail, Kalender und Dateien bekommt.    .w-mail-and-calendar = Mail und Kalender
     .w-mail = Mail
     .w-calendar = Kalender
     .w-cloud-storage = Cloud-Speicher
@@ -2800,3 +2799,14 @@ d-wvl2zv4i = Worte zum Identitätsschutz
     .w-some-keys-sit-in-a-private = einige Schlüssel liegen in einer unverschlüsselten privaten Datei; entsperre deinen Schlüsselbund, um sie zu schützen
     .w-signs-with-this-device-s-certificate = signiert mit dem Zertifikat dieses Geräts
     .w-protection-not-available = Schutz nicht verfügbar
+
+d-ze32dmpz = Kontostatus
+    .w-no-device-can-check-it-right = Gerade kann kein Gerät es abrufen
+    .w-checking-it-now = Wird gerade abgerufen…
+    .w-checked-by = Geprüft von { $label }, { $when }
+
+d-fitxnaxo = Vor gesagt
+    .w-just-now = gerade eben
+    .w-min-ago = vor { $value } Min.
+    .w-h-ago = vor { $value } Std.
+    .w-d-ago = vor { $value } Tagen

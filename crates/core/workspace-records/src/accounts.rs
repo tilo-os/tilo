@@ -86,6 +86,11 @@ pub const PROVIDER: &str = <AccountsAction as tilo_resource::Effect>::OPERATION;
 /// The resource the accounts are actions of.
 pub const RESOURCE: &str = "accounts";
 
+/// The apps whose connector speaks to an account's own server, and so whose process may report
+/// how its sync goes. A report is always written for the device the reporting process runs on,
+/// whatever a caller names: a device publishes its own row and no other's.
+pub const SYNC_REPORTERS: &[&str] = &[tilo_app_id::apps::MAIL];
+
 /// The accounts' actions, each with the parameters its argument carries. A password or a code
 /// typed in travels in as a secret and is never answered back.
 #[derive(Clone, tilo_resource::Effect)]
@@ -358,10 +363,11 @@ pub enum AccountsAction {
         #[param("The mount refused the last sign-in, so its grant is renewed once more.")]
         rejected: Option<bool>,
     },
-    /// Say how a cloud mount's sync went
+    /// Say how a device's sync of an account goes
     ///
-    /// How a cloud mount's sync of the account went on this device, as every member's Settings
-    /// reads it: what its own device could not say itself.
+    /// How the device's sync of the account goes, as every member's Settings reads it: what its
+    /// cloud mount or the app that speaks to the account's server reports. The row written is
+    /// the reporting device's own; a report that names another device is refused.
     #[effect(kind = "undoable")]
     ReportSync {
         #[param("The account's id.")]
@@ -375,6 +381,21 @@ pub enum AccountsAction {
         signed_in: Option<bool>,
         #[param("A short summary a person reads.")]
         message: Option<String>,
+        #[param(
+            "Whether the device still has the account set up; left out, it does.",
+            name = "attached"
+        )]
+        attached: Option<bool>,
+        #[param(
+            "Whether it is checking the account now; left out, it is not.",
+            name = "checking"
+        )]
+        checking: Option<bool>,
+        #[param(
+            "The device the report is about, when it is not the one calling: a report for \
+             another device is refused."
+        )]
+        device: Option<String>,
     },
     /// Sync an account now
     ///
@@ -577,6 +598,9 @@ pub struct Accounts {
     pub accounts: Vec<AccountView>,
     /// The accounts this device's person connected at issuers their apps describe.
     pub connected: Vec<ConnectedAccount>,
+    /// When the reading was made, in milliseconds since the Unix epoch: what a window measures
+    /// how long ago a device checked an account by.
+    pub now_ms: u64,
 }
 
 /// One account the workspace connected, without its secret.
@@ -599,6 +623,10 @@ pub struct AccountView {
     pub status: AccountStatus,
     /// What a person reads about that, when the account's device said something.
     pub words: String,
+    /// How its sync goes on each device that attaches it, by the device it
+    /// reported from: what a window joins with the devices online now to say
+    /// whether any device can check the account.
+    pub devices: Vec<AccountDevice>,
     /// Whether the account is in use.
     pub enabled: bool,
     /// A mail account's incoming server as a person writes it.
@@ -621,6 +649,29 @@ pub struct AccountView {
     /// A messaging account's scope, which a contact's address on its service is confirmed
     /// under; empty for any other account.
     pub scope: String,
+}
+
+/// How one device that attaches an account is getting on with it.
+#[derive(Debug, Serialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDevice {
+    /// The device, by its key in hex: the one a window matches against the
+    /// devices online now.
+    pub device: String,
+    /// Whether it still has the account set up, so it can check it.
+    pub attached: bool,
+    /// Whether it is checking the account now.
+    pub checking: bool,
+    /// How its last sync went.
+    pub health: AccountStatus,
+    /// When it last tried, in milliseconds since the Unix epoch.
+    pub attempted_ms: u64,
+    /// When a sync last went through on it, in milliseconds since the Unix
+    /// epoch: zero when none has.
+    pub checked_ms: u64,
+    /// What a person reads about it: what the device said, never a server's
+    /// own words.
+    pub words: String,
 }
 
 /// One of a calendar account's calendars, as its person chooses which show.

@@ -617,6 +617,9 @@ d-dhradxj7 = Kontohinweis
     .w-mail-can-t-use-s-password = Mail kann das Passwort von { $address } nicht verwenden
     .w-you-re-offline = Du bist offline
     .w-new-mail-arrives-when-you-re = Neue Mail kommt, wenn du wieder online bist.
+    .w-no-device-can-check-right-now = Gerade kann kein Gerät { $address } abrufen
+    .w-this-shows-the-mail-your-devices = Hier steht die Mail, die deine Geräte schon abgerufen haben. Um neue Mail abzurufen und zu senden, muss ein Computer an und angemeldet sein, auf dem dieses Konto eingerichtet ist.
+    .w-checked-by = Geprüft von { $label }, { $when }
 
 d-7rcrynvm = Mail
 
@@ -962,3 +965,27 @@ d-h7kwugun-name = Name
 d-hrcqmsg3 = Wartende Nachricht
     .w-take-back = Zurücknehmen
     .w-try-again = Erneut versuchen
+
+d-tkbrn5ah = Vor gesagt
+    .w-just-now = gerade eben
+    .w-min-ago = vor { $value } Min.
+    .w-h-ago = vor { $value } Std.
+    .w-d-ago = vor { $value } Tagen
+
+d-5kggz5hr = Geprüft
+    .doc = Was ein Gerät, das jetzt hier ist, zuletzt über das Abrufen des Kontos `a` gesagt hat.
+    .noun = { $count ->
+        [one] geprüft
+       *[other] geprüft
+    }
+
+d-3qmmanlq = Gerät
+    .doc = Das Gerät, das es abgerufen hat, nach seinem Schlüssel.
+
+d-jwnh3dcg = Name
+    .doc = Wie das Gerät heißt.
+
+d-taeh5q5z = Sekunden
+    .doc = Wie viele Sekunden es her ist, dass es abgerufen hat.
+
+d-5kggz5hr-filter-seconds = Sekunden

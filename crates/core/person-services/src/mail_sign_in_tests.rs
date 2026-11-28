@@ -1306,7 +1306,7 @@ async fn a_cloud_mount_is_handed_its_sign_in_by_the_workspace() {
         .await
         .unwrap();
     assert_eq!(
-        held.sync_of("files-1").map(|sync| sync.health),
+        held.syncs_of("files-1").first().map(|sync| sync.health),
         Some(accounts::SyncHealth::Healthy)
     );
 }

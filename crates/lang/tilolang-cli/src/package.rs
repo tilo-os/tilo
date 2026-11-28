@@ -867,8 +867,10 @@ fn manifest_text(
     // What the app may do on the session's action API beyond its own
     // actions: an action or a view of it that reaches another app's
     // published action asks it at that app's action API, under its own
-    // identity.
-    let invokes = if calls_another_app(meta) {
+    // identity. An app whose connector signs in to the workspace's accounts
+    // also reports how that goes, on the device it runs on, so it asks the
+    // accounts' action the same way.
+    let invokes = if calls_another_app(meta) || signs_in(&origins) {
         "[actions]\ninvoke = true\n"
     } else {
         ""
@@ -1794,6 +1796,7 @@ fn digest(manifest: &str, bundle: &Bundle, files: &[(PathBuf, PathBuf)]) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilolang::meta::TypeMeta;
 
     #[test]
     fn an_app_that_reads_the_devices_files_declares_that_it_opens_them() {
@@ -1862,6 +1865,45 @@ mod tests {
         let none = sandbox(&[], false, None, &[], false);
         assert!(!none.capabilities().contains("network.http"));
         assert_eq!(none.net, "mode = \"off\"");
+    }
+
+    /// An app whose connector signs in to the workspace's accounts reports how its sync goes on
+    /// the device it runs on: it declares that it invokes the accounts' action the same way an
+    /// app reaching another app's action does.
+    #[test]
+    fn an_app_whose_connector_signs_in_declares_that_it_invokes_the_accounts_action() {
+        let meta = |origin: Option<&str>| PackageMeta {
+            app: "so.tilo.example".into(),
+            types: origin
+                .map(|kind| {
+                    vec![TypeMeta {
+                        origin: Some(kind.to_owned()),
+                        ..TypeMeta::default()
+                    }]
+                })
+                .unwrap_or_default(),
+            ..PackageMeta::default()
+        };
+        let manifest = |origin: Option<&str>| {
+            manifest_text(
+                &meta(origin),
+                "so.tilo.example",
+                None,
+                None,
+                &[],
+                &BuildOptions::default(),
+                Some("00"),
+            )
+        };
+        assert!(
+            manifest(Some("imap.message")).contains("[actions]\ninvoke = true"),
+            "a mail connector reports its sync"
+        );
+        assert!(
+            !manifest(Some("session.layout")).contains("[actions]"),
+            "a kind the session writes asks nothing of another app"
+        );
+        assert!(!manifest(None).contains("[actions]"));
     }
 
     #[test]
