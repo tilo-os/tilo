@@ -351,12 +351,7 @@ fn widget_glance(kind: WidgetKind, a: Layout) -> Text {
 
 /// What this machine is doing, in four words: its processors, then its memory.
 fn load_words() -> Text {
-    let machine = device.processes.machine
-    let memory = if machine.memory.total > 0 {
-        (100.0 * (machine.memory.total - machine.memory.available).to_float() / machine.memory.total.to_float())
-            .max(0.0)
-    } else { 0.0 }
-    std.say("{machine.cpu.total.to_int()}% cpu · {memory.to_int()}% memory")
+    std.say("{device.processes.machine.cpu.total.to_int()}% cpu")
 }
 
 /// The music widget: what plays, with its own controls, the quiet form its name and play button

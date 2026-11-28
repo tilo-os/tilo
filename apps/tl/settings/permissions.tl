@@ -288,9 +288,7 @@ fn moment_text(at: Int) -> Text {
 fn grant_words(grant: workspace.AccessEntry) -> Text {
     if grant.granted_by == "" {
         "{grant.allows} · {grant.expiry}"
-    } else {
-        "{grant.allows} · {grant.expiry} · given by {grant.granted_by}"
-    }
+    } else { "Given by {grant.granted_by}" }
 }
 
 /// What an application of the saved secrets keeps and how often it used them.

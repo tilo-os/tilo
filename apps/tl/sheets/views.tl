@@ -184,7 +184,7 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>, jumping: Sta
         ui.MenuItem("Text", icon: .type) {
             on choose: format_cells(w, s, area, format: "text")
         }
-        ui.MenuItem("Yes / no", icon: .check) {
+        ui.MenuItem("Yes or no", icon: .check) {
             on choose: format_cells(w, s, area, format: "boolean")
         }
         ui.MenuItem("General", icon: .eraser) {

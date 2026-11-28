@@ -1264,7 +1264,7 @@ view face_row(lib: Library, f: Font, renaming: State<Text>, draft: State<Text>) 
         ui.ListRow(
             item: f,
             title: font_title(f),
-            secondary: "{f.family} · set at {f.size}×",
+            secondary: "{f.family} at {f.size}×",
             icon: .type,
             selected: chosen,
         ) {

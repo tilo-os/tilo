@@ -34,7 +34,7 @@ enum Align {
     right
 }
 
-/// One source in the bin: what it is, where its bytes are, and — for a title — the words it
+/// One source in the bin: what it is, where its bytes are, and, for a title, the words it
 /// draws.
 ///
 /// A clip references its source; the bytes stay where the file was chosen from, so another
@@ -519,7 +519,7 @@ type ShotMarker {
 }
 
 /// A project file as it is written: what a person hands to someone else.
-type Saved {
+type Saved (label: "Saved project", noun: "project") {
     name: Text = ""
     fps: Float = 30.0
     width: Int = 1920
@@ -3485,7 +3485,7 @@ view window(e: Editor) {
         let title = if p.job != "" {
             std.say("Rendering the cut… {pct}%")
         } else if p.exported != "" {
-            std.say("{p.name} — the film is ready")
+            std.say("The film “{p.name}” is ready")
         } else { p.name }
         ui.NavShell(content_kind: .canvas, title: title, sidebar_title: std.say("Video Editor")) {
             actions: {

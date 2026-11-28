@@ -403,7 +403,7 @@ view agent_models_pane() {
                 if let package = local.recommendation {
                     ui.ListRow(
                         package.name,
-                        secondary: "{local_fit_words(local.hardware.fit)} · {local_size_words(package.download_bytes)} to download · {local_size_words(package.installed_bytes)} on disk",
+                        secondary: "{local_size_words(package.download_bytes)} to download",
                         icon: .download,
                     ) {
                         trailing: {

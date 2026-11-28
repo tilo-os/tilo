@@ -190,7 +190,7 @@ view model_choice() {
                     for each in p.models {
                         ui.MenuItem(
                             if m.providers.len() > 1 {
-                                "{each.label} · {p.label}"
+                                "{each.label} ({p.label})"
                             } else { each.label },
                         ) {
                             on choose: settings.use_model(m, p.id, each.id)

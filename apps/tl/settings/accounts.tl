@@ -39,21 +39,11 @@ view accounts_pane() {
         for account in a.accounts {
             ui.ListRow(
                 account.name,
-                secondary: if account.address == account.name or account.address == "" {
-                    if account.kind == .mail {
-                        if account.services.calendar { "Mail and Calendar" } else { "Mail" }
-                    } else if account.kind == .calendar {
-                        "Calendar"
-                    } else if account.kind == .cloud { "Cloud storage" } else { "Account" }
-                } else if account.kind == .mail {
-                    if account.services.calendar {
-                        "{account.address} · Mail and Calendar"
-                    } else { "{account.address} · Mail" }
+                secondary: if account.kind == .mail {
+                    if account.services.calendar { "Mail and Calendar" } else { "Mail" }
                 } else if account.kind == .calendar {
-                    "{account.address} · Calendar"
-                } else if account.kind == .cloud {
-                    "{account.address} · Cloud storage"
-                } else { "{account.address} · Account" },
+                    "Calendar"
+                } else if account.kind == .cloud { "Cloud storage" } else { "Account" },
                 icon: if account.kind == .mail {
                     .mail
                 } else if account.kind == .calendar { .calendar } else { .cloud },
@@ -444,7 +434,7 @@ view accounts_pane() {
                     }
                     ui.Text(
                         if sign_in_prompt == "" {
-                            "Waiting for you to approve it in your browser. The account appears here once you do."
+                            "Waiting for you to approve it in your browser. The account connects once you do."
                         } else { sign_in_prompt },
                         role: .caption,
                         secondary: true,

@@ -1,6 +1,6 @@
 /// Reporting a problem: the screen dims to the desktop's ground, every window of the workspace in
 /// front stands as a card with its own live picture, and the person chooses the window the report
-/// is about — a click on its card, or a rectangle dragged over it. The report's box then opens
+/// is about, by a click on its card or a rectangle dragged over it. The report's box then opens
 /// about that window, as pointing at what is wrong did before the shell was tilolang: what the
 /// window is and the part the person points at in it are what the report carries.
 ///
@@ -141,8 +141,8 @@ action pick_report_window(s: Shell, key: Text (label: "Window")) {
     }
 }
 
-/// The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas
-/// pixels — picks the window it covers first, as a click on that card does. A rectangle over none
+/// The rectangle `area` the person dragged over the picker (its x, y, width and height in canvas
+/// pixels) picks the window it covers first, as a click on that card does. A rectangle over none
 /// of them keeps the picker up, its outline saying what was covered.
 action pick_report_region(s: Shell, area: List<Int>, room: List<Float>) (
     label: "Pick the window a report is about",

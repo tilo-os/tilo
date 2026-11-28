@@ -1245,11 +1245,10 @@ view hero(place: Place, here: PlaceReading, imperial: Bool) {
             ui.Text(degree_words(reading.temperature, imperial), role: .display, numeric: true)
             ui.Text(condition(reading.code), role: .heading)
             if let today = here.days.first() {
-                ui.Text(
-                    "High {degrees(today.high, imperial)}° · low {degrees(today.low, imperial)}°",
-                    role: .body,
-                    secondary: true,
-                )
+                row(gap: .tight, align: .center) {
+                    ui.Text("High {degrees(today.high, imperial)}°", role: .body, secondary: true)
+                    ui.Text("Low {degrees(today.low, imperial)}°", role: .body, secondary: true)
+                }
             }
             ui.Text(subtitle(place), role: .caption, secondary: true)
             row(gap: .tight, align: .center) {

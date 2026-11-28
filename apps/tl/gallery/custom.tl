@@ -94,7 +94,7 @@ view custom(g: Gallery) {
         }
         ui.Section("A page you arrange") {
             ui.Text(
-                "A page of a fixed size, the places on it standing in the page's own coordinates: each a view the app puts there, moved and sized by hand — and a second page standing empty.",
+                "A page of a fixed size, the places on it standing in the page's own coordinates: each a view the app puts there, moved and sized by hand, and a second page standing empty.",
                 role: .caption,
                 secondary: true,
             )

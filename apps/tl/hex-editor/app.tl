@@ -880,7 +880,7 @@ action select_all(d: Document, desk: Desk) {
     show(d)
 }
 
-/// Copies the selected bytes in the column's form: `50 4e 47 44`, or `PNGD`.
+/// Copies the selected bytes in the column's form: `50 4e 47 44`, or those bytes as text.
 // ---------------------------------------------------------------- the clipboard
 action copy(d: Document) uses clipboard (icon: .copy, label: "Copy", key: "Ctrl+C") {
     if let desk = d.desks.first() {
@@ -1367,7 +1367,7 @@ view library(lib: Library) {
                                 ui.ListRow(
                                     title: doc.name,
                                     secondary: if doc.edited > 0 {
-                                        "{size_text(doc.length)} · {doc.edited} changed"
+                                        "{doc.edited} changed"
                                     } else { size_text(doc.length) },
                                     icon: .file_code,
                                     value: if doc.path == "" { "Not on disk" } else { "Saved" },

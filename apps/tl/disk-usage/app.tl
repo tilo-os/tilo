@@ -87,7 +87,7 @@ fn parent_of(path: Text) -> Text {
 
 /// The folder the person chose, made the folder measured now and its own chain's start.
 action analyze(a: Analyzer, path: Text, label: Text) uses files, time {
-    require path == "" or path.starts_with("/") or path.starts_with("~") "A folder is named by its path from / or ~"
+    require path == "" or path.starts_with("/") or path.starts_with("~") "A folder is named by its path from the root (~ or /)"
     let rooted = if path == "" { "~" } else { path }
     if a.job != "" { engine.cancel(a.job) }
     a.folder = rooted

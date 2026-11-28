@@ -20,18 +20,8 @@ reason = "What the facts tool answers an agent, never shown in a window."
 
 [[allow]]
 file = "crates/sdk/tilo-app/src/framework/root.rs"
-text = "Open the app at one item: the anchor of a search hit."
-reason = "What the open tool does, told to an agent."
-
-[[allow]]
-file = "crates/sdk/tilo-app/src/framework/root.rs"
 text = "Show this item."
 reason = "What the show tool does, told to an agent."
-
-[[allow]]
-file = "crates/sdk/tilo-app/src/framework/root/open_link.rs"
-text = "Show what a link names, in the app that claims its scheme."
-reason = "What the open-link tool does, told to an agent."
 
 [[allow]]
 file = "crates/sdk/tilo-app/src/runner/presentation.rs"
@@ -73,3 +63,13 @@ reason = "What the group tool answers an agent, never shown in a window."
 file = "crates/core/tilo-resource/src/resource/field_edit.rs"
 text = "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \\\"upsert-item\\\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \\\"end\\\" | {after: id} | {before: id}."
 reason = "What the field-edit tool answers an agent, never shown in a window."
+
+[[allow]]
+file = "crates/desktop/session/src/app_wire.rs"
+text = "the arguments are not a JSON object: {error}"
+reason = "What the action service answers the app that sent arguments that are not a JSON object; the caller reads it, never a person in a window."
+
+[[allow]]
+file = "crates/ui/ui-core/src/composition/page/testing.rs"
+text = "New note"
+reason = "The composition fixture the page and app-runner tests draw; no window paints it."

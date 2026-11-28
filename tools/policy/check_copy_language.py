@@ -308,6 +308,7 @@ ACRONYMS = frozenset("""
     PATCH DELETE HEAD OPTIONS HOME PATH XDG_STATE_HOME FCAST RAW AVIF FLAC OGG
     WEBM MKV MOV AVI MPEG WAV OPUS H264 VP9 AV1 VAAPI NVENC IPV4 IPV6 DHCP IMAPS
     POP3 CALDAV CARDDAV WEBDAV OAUTH JMAP EWS ASCII UTF CJK RTL LTR FOMO GGUF
+ RRGGBB REST SATA HSPA CDMA EDGE GPRS
 """.split())
 
 ALL_CAPS_WORD = re.compile(r"(?<![\w$-])[A-ZÄÖÜ][A-ZÄÖÜ0-9_]+(?![\w-])")
@@ -418,6 +419,9 @@ def misused_term(terms: list[Term], lang: str, key: str, text: str) -> str | Non
 
 
 def all_caps(line: str) -> str | None:
+    if line.strip().startswith("#"):
+        # A colour value ("#FFFFFF") reads as data, not shouting.
+        return None
     # Tokens with digits or underscores are identifiers (BLAKE3, FP32, an
     # environment variable), never shouting.
     words = [w for w in ALL_CAPS_WORD.findall(line)

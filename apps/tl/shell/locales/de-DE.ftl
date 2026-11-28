@@ -923,7 +923,7 @@ d-thduakjg = Netzwerkbereich
     .w-network-name = Netzwerkname
     .w-saved-networks = Gemerkte Netzwerke
     .w-joins-by-itself = Tritt von selbst bei
-    .w-saved = Gemerkt
+    .w-stored-on-this-device = Auf diesem Gerät gespeichert
     .w-this-network = Dieses Netzwerk
     .w-stop-joining-by-itself = Nicht mehr von selbst beitreten
     .w-join-by-itself = Von selbst beitreten
@@ -2470,7 +2470,7 @@ d-tadzd3lm = Widget-Kurzform
     .w-here = { $len } hier
 
 d-vlo5ghj4 = Lastangabe
-    .w-cpu-memory = { $to_int } % CPU · { $to_int2 } % Speicher
+    .w-cpu = { $to_int } % CPU
 
 d-3qxhd5dh = Widget-Ebene
     .w-menu = Menü
@@ -2554,11 +2554,9 @@ d-jexq3d24 = Hostworte
     .w-your-host-could-not-be-reached = Dein Host war nicht erreichbar.
     .w-not-signed-in-yet-so-there = Noch nicht angemeldet, daher kein Tarif.
     .w-your-workspaces-run-on-this-machine = Deine Arbeitsbereiche laufen auf diesem Rechner selbst, es gibt nichts zu bezahlen.
-    .w-no-plan-yet = Noch kein Tarif
     .w-of-this-period = { $machine_time } von { $machine_time2 } in diesem Zeitraum
     .w-nothing-used-this-period = In diesem Zeitraum nichts genutzt
     .w-this-period = { $machine_time } in diesem Zeitraum
-    .w-credit = { $plan } · { $used } · { $credit } Guthaben
 
 d-cpntobds = Agentenworte
     .w-removed-every-device-of-yours-refuses = Entfernt; jedes deiner Geräte lehnt ihn ab
@@ -2591,10 +2589,10 @@ d-m54htipi = Agenten
 
 d-pou22ylc = Agentenmenü
     .w-manage = { $label } verwalten
-    .w-remove-no-longer-used = { $label } entfernen — nicht mehr genutzt
-    .w-remove-it-was-lost = { $label } entfernen — verloren
-    .w-remove-it-was-stolen = { $label } entfernen — gestohlen
-    .w-remove-someone-knows-its-key = { $label } entfernen — jemand kennt den Schlüssel
+    .w-remove-because-it-is-no-longer = { $label } entfernen, weil es nicht mehr gebraucht wird
+    .w-remove-because-it-was-lost = { $label } entfernen, weil es verloren ging
+    .w-remove-because-it-was-stolen = { $label } entfernen, weil es gestohlen wurde
+    .w-remove-because-someone-knows-its-key = { $label } entfernen, weil jemand seinen Schlüssel kennt
 
 d-zmfop5wt = Fortsetzen-Angebot
     .w-continue-from = { $running } von { $elsewhere } fortsetzen

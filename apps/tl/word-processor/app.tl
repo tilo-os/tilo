@@ -39,7 +39,7 @@ type Document (untitled: "Untitled Document") {
     /// Who reacted to the document, by emoji: the person and agent each pill in the window's bar
     /// stands for, and whose own reaction a press on it takes back.
     reactions: Map<Set<Actor>>
-    /// Why the last thing asked of the document did not happen, such as a file no codec reads;
+    /// Why the last thing asked of it did not happen, such as a file no codec reads;
     /// empty while nothing went wrong. The page shows it over the writing until it is dismissed.
     notice: Text = ""
     /// The address of the picture the person last chose to write in, and how many times they

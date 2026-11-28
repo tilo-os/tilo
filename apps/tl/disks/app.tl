@@ -406,7 +406,7 @@ view overview_pane(
                         on press: set(chosen_part, partition.name)
                     }
                 }
-                ui.Chip("Unallocated · {size_words(free)}")
+                ui.Chip("Unallocated")
             }
             if let part = drive.partitions.find(item -> item.name == chosen_part) {
                 ui.Text(partition_words(part), role: .caption, secondary: true)

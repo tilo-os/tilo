@@ -454,9 +454,11 @@ d-f2a66q6a-page_at = Page at
 
 d-gqdd5xo6 = Seiten gesagt
     .w-1-page = 1 Seite
-    .w-pages = { $pages } Seiten
-    .w-1-problem = { $said }, 1 Problem
-    .w-problems = { $said }, { $errors } Probleme
+    .w-pages = { $len } Seiten
+
+d-2gt3amcp = Gefundene Probleme
+    .w-1-problem = 1 Problem
+    .w-problems = { $errors } Probleme
 
 d-gog7heib = Bibliothek
     .w-no-typst-documents-yet = Noch keine Typst-Dokumente

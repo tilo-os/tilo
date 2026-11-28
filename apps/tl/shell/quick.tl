@@ -630,7 +630,9 @@ view network_section() {
                 for s in saved {
                     ui.ListRow(
                         s.name,
-                        secondary: if s.autoconnect { "Joins by itself" } else { "Saved" },
+                        secondary: if s.autoconnect {
+                            "Joins by itself"
+                        } else { "Stored on this device" },
                         icon: .wifi,
                     ) {
                         on activate: s.join()

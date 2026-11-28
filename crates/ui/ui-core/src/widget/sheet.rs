@@ -1491,14 +1491,16 @@ impl Widget for Sheet {
                     .with_children(cells),
             );
         }
-        Some(
-            AccessNode::new(Role::Table)
-                .with_name(self.name.clone().unwrap_or_else(|| "Sheet".to_owned()))
-                .with_value(format!("Active cell {}", cell_ref(self.focus)))
-                .with_bounds(self.rect)
-                .with_state(AccessState::new().focusable(true).focused(self.focused))
-                .with_children(row_nodes),
-        )
+        let mut table = AccessNode::new(Role::Table)
+            .with_value(format!("Active cell {}", cell_ref(self.focus)))
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().focusable(true).focused(self.focused))
+            .with_children(row_nodes);
+        let name = self.name.clone().unwrap_or_default();
+        if !name.is_empty() {
+            table = table.with_name(name);
+        }
+        Some(table)
     }
 }
 

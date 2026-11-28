@@ -360,7 +360,7 @@ view known_networks(page: State<Text>, chosen: State<Text>) {
                 s.name,
                 secondary: if s.open and net.ask_before_open_networks {
                     "Asks first"
-                } else if s.autoconnect { "Joins by itself" } else { "Saved" },
+                } else if s.autoconnect { "Joins by itself" } else { "Stored on this device" },
                 value: if s.proxy != .none { "Proxy" },
                 icon: if s.kind == .wired {
                     .ethernet_port

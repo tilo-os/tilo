@@ -719,7 +719,7 @@ action free_entry(f: Files, path: Text) uses files, time {
 }
 
 /// Opens the system's History on this workspace, where a file's earlier versions are restored:
-/// the history every app's changes are kept in, never a copy Files keeps.
+/// the history every app's changes are kept in, never a copy of its own.
 action show_history(f: Files) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     let key = workspace_key()
@@ -776,7 +776,7 @@ action retry_transfer(f: Files, transfer: Transfer) uses files, time {
 }
 
 /// Takes back what this window last did: brings back what a Move to Trash put away, or undoes a
-/// paste — a copy's entries go to Trash again, a moved one goes back where it came from.
+/// paste. A copy's entries go to Trash again, a moved one goes back where it came from.
 action undo_last(f: Files) uses files, time (icon: .undo_2, label: "Undo", key: "Ctrl+Z") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if let step = s.undo {
@@ -2654,7 +2654,7 @@ view transfer_row(f: Files, t: Transfer) {
             secondary: if t.failed != "" {
                 t.failed
             } else if t.total > 0 {
-                "{size_of(t.done)} of {size_of(t.total)} · {t.current}"
+                "{size_of(t.done)} of {size_of(t.total)}"
             } else { t.current },
             mark: if t.failed != "" { .triangle_alert } else { .copy },
         )

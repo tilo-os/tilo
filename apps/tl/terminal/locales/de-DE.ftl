@@ -993,7 +993,7 @@ d-2ejm6m4e = Hinweis zum angehaltenen Befehl
 
 d-jrudigsy = Befehlsliste
     .w-no-commands-yet = Noch keine Befehle
-    .w-commands-this-session-runs-show-here = Befehle, die diese Sitzung ausführt, erscheinen hier, mit dem, was jeder ausgegeben hat.
+    .w-no-command-has-run-in-this = In dieser Sitzung ist noch kein Befehl gelaufen.
 
 d-p23env37 = Befehlszeile
     .w-run-again = Erneut ausführen
@@ -1002,7 +1002,7 @@ d-p23env37 = Befehlszeile
 
 d-thaaij7x = Terminal-Übersicht
     .w-no-commands-yet = Noch keine Befehle
-    .w-commands-run-in-the-workspace-s = Befehle, die in den Terminals des Arbeitsbereichs laufen, erscheinen hier.
+    .w-no-command-has-run-in-this = In den Terminals dieses Arbeitsbereichs ist noch kein Befehl gelaufen.
     .w-exit-in = Exit { $exit }, in { $cwd }
 
 d-ucew7fdw = Geheimnisseite

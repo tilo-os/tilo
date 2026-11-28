@@ -193,7 +193,7 @@ view devices_pane() {
             // the computer they are adding, by copying it or by typing it there.
             ui.Section("The new device's code") {
                 ui.Text(
-                    "On the new computer, open Tilo and choose to use your existing identity, then type this code. It works once.",
+                    "On the new computer, open Tilo, choose “Use your existing identity”, then type this code. It works once.",
                     role: .caption,
                     secondary: true,
                 )
@@ -361,17 +361,25 @@ template view manage_menu(
         }
         if removable {
             ui.MenuSeparator()
-            ui.MenuItem("Remove {one.label} — no longer used", destructive: true, icon: .trash) {
+            ui.MenuItem(
+                "Remove {one.label} because it is no longer used",
+                destructive: true,
+                icon: .trash,
+            ) {
                 on choose: device.revoke(device.devices, device: one.id, reason: "retired")
             }
-            ui.MenuItem("Remove {one.label} — it was lost", destructive: true, icon: .trash) {
+            ui.MenuItem("Remove {one.label} because it was lost", destructive: true, icon: .trash) {
                 on choose: device.revoke(device.devices, device: one.id, reason: "lost")
             }
-            ui.MenuItem("Remove {one.label} — it was stolen", destructive: true, icon: .trash) {
+            ui.MenuItem(
+                "Remove {one.label} because it was stolen",
+                destructive: true,
+                icon: .trash,
+            ) {
                 on choose: device.revoke(device.devices, device: one.id, reason: "stolen")
             }
             ui.MenuItem(
-                "Remove {one.label} — someone knows its key",
+                "Remove {one.label} because someone knows its key",
                 destructive: true,
                 icon: .trash,
             ) {
@@ -614,7 +622,7 @@ view about_pane() {
                 role: .reading,
             )
             ui.Text(
-                "Every change is kept, and can be taken back; what others change shows here as it happens.",
+                "Every change is kept and can be taken back. Everyone in the workspace sees each change as it happens.",
                 role: .body,
                 secondary: true,
             )

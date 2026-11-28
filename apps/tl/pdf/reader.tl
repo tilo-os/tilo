@@ -1221,7 +1221,7 @@ view find_bar(d: Document, query: State<Text>, page_at: State<Int>) {
                 secondary: true,
             )
             if unread(d) > 0 {
-                ui.Text("· reading {unread(d)} pages", role: .caption, secondary: true)
+                ui.Text("Reading {unread(d)} pages", role: .caption, secondary: true)
             }
             ui.Button("Previous", icon: .chevron_left, role: .plain, size: .small) {
                 on press: set(page_at, next_hit(d, page_at, query, -1))

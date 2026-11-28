@@ -40,7 +40,7 @@ type Problem (title: message) {
 }
 
 /// One page of the typeset document: how big it is, an identity for what it draws, and the
-/// pictures it is shown by — the page at the width the window asks for, and its thumbnail.
+/// pictures it is shown by: the page at the width the window asks for, and its thumbnail.
 type Page (untitled: "Page") {
     /// Its width and height as the document lays it out, in points.
     width: Float
@@ -238,12 +238,13 @@ view document_row(d: Document) {
 
 /// How many pages a document has, in words.
 fn pages_said(d: Document) -> Text {
-    let pages = d.pages.len()
+    if d.pages.len() == 1 { "1 page" } else { "{d.pages.len()} pages" }
+}
+
+/// The problems the typesetter found that stop the document, if any.
+fn problems_said(d: Document) -> Text {
     let errors = d.problems.filter(p -> p.severity == .error).count()
-    let said = if pages == 1 { "1 page" } else { "{pages} pages" }
-    if errors == 0 {
-        said
-    } else if errors == 1 { "{said} · 1 problem" } else { "{said} · {errors} problems" }
+    if errors == 1 { "1 problem" } else { "{errors} problems" }
 }
 
 /// The library's own controls: opening a document, and starting one.
@@ -382,6 +383,9 @@ view status_line(d: Document) {
     row(gap: .related, align: .center, wrap: true) {
         ui.EditableLabel(bind: d.name, label: "Document name")
         ui.Text(pages_said(d), role: .caption, secondary: true)
+        if d.problems.filter(p -> p.severity == .error).count() > 0 {
+            ui.Text(problems_said(d), role: .caption, secondary: true)
+        }
         if d.took_ms > 0 {
             ui.Text("typeset in {d.took_ms} ms", role: .caption, secondary: true)
         }

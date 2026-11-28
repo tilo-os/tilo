@@ -140,7 +140,6 @@ d-iq7enjwf = Fenster
     .w-how-it-is-divided = Wie es aufgeteilt ist
     .w-the-whole-drive = Das ganze Laufwerk
     .w-unallocated = Nicht zugeteilt
-    .w-unallocated-2 = Nicht zugeordnet
     .w-the-drive-read = Das Laufwerk las { $rate_words }
     .w-random-reads-a-second = { $to_int } wahlfreie Lesezugriffe pro Sekunde
     .w-filesystems = Dateisysteme

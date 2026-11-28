@@ -297,7 +297,8 @@ d-5je2us5k = Tageszeile
     .w-to-degrees = { $coldest } bis { $warmest } Grad
 
 d-muxhyqlx = Kopf
-    .w-high-low = Hoch { $degrees }° · tief { $degrees2 }°
+    .w-high = Höchstwert { $degrees }°
+    .w-low = Tiefstwert { $degrees }°
     .w-out-of-date = Nicht mehr aktuell
 
 d-ejanp5lv = Messwerte

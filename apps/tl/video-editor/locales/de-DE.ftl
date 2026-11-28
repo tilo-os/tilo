@@ -991,11 +991,11 @@ d-ofec2skm-filter-t = Zeit
 
 d-ofec2skm-filter-palette = Palette
 
-d-rsaogmjm = Gespeicherter Schnitt
+d-rsaogmjm = Gespeichertes Projekt
     .doc = Eine Projektdatei, wie sie geschrieben wird: was eine Person jemand anderem gibt.
     .noun = { $count ->
-        [one] saved
-       *[other] saveds
+        [one] Projekt
+       *[other] Projekte
     }
 
 d-y5f2zb7y = Name

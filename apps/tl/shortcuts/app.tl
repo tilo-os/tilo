@@ -322,7 +322,7 @@ type Trigger (untitled: "Trigger") {
     every_secs: Float = 0.0
 }
 
-/// What a person can choose to add in the action picker while it is open: one action an app
+/// What a person can add in the action picker while it is open: one action an app
 /// offers, with what it takes.
 type Offer (title: label, untitled: "Action") {
     app_id: Text = ""
@@ -362,7 +362,7 @@ type Suggested (untitled: "Suggested shortcut", readers: author) {
 }
 
 /// One shortcut saved in the workspace, as the app last read the library.
-type Saved (title: name, untitled: "Shortcut") {
+type Saved (title: name, untitled: "Shortcut", label: "Saved shortcut", noun: "shortcut") {
     id: Text = ""
     name: Text = ""
     /// The saved shortcut: its steps, its grant and its triggers.
@@ -3390,7 +3390,7 @@ fn problem_line(problem: Problem) -> Text {
 
 fn heard_words(one: Heard) -> Text {
     let named = if one.label != "" { one.label } else { one.action_name }
-    "• {named} on {one.resource}"
+    "{named} on {one.resource}"
 }
 
 fn connected_word(connected: Connected) -> Text {
@@ -3496,9 +3496,9 @@ fn offer_matches(query: Text, o: Offer) -> Bool {
 fn offer_detail(o: Offer) -> Text {
     let needs = o.params.filter(one -> one.required).map(one -> one.name)
     if needs.is_empty() {
-        "{o.resource} · {o.app_label}"
+        "{o.app_label}"
     } else {
-        "{o.resource} · {o.app_label} · needs {needs.join(" and ")}"
+        "{o.app_label} needs {needs.join(" and ")}"
     }
 }
 
@@ -3557,7 +3557,7 @@ view window(w: Workbench) {
                     }
                 }
                 if not w.saved.is_empty() {
-                    ui.NavSection("Saved") {
+                    ui.NavSection("Saved shortcuts") {
                         for s in w.saved {
                             ui.NavItem("saved:{s.id}", s.name, icon: .play) {
                                 on select: set(showing, "saved")

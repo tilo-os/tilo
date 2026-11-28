@@ -41,7 +41,7 @@ view themes_pane(s: Settings) {
         ui.Section("Installed theme packages") {
             if packages.packages.is_empty() {
                 ui.Text(
-                    "A theme package brings its own painters; install one from the Store and it appears here.",
+                    "No theme package is installed yet. The Store has more.",
                     role: .caption,
                     secondary: true,
                 )
@@ -610,7 +610,7 @@ fn preset_ids() -> List<Text> {
 }
 
 /// Takes in a theme saved with Export, from this workspace or another: every role, tuned value
-/// and glass shader, once it is admitted and keeps every contrast floor. Importing names it by
+/// and glass shader, once it is installed and keeps every contrast floor. Importing names it by
 /// its own name, so what a person exported under a name comes back under one.
 action import_theme(s: Settings, file: File) (
     icon: .upload,

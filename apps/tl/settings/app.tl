@@ -1467,7 +1467,7 @@ fn screen_status(screen: Screen, screens: List<Screen>) -> Text {
 
 /// The layout as assistive technology hears it: every screen of every device, and where it
 /// stands.
-fn arrangement_label(screens: List<Screen>) -> Text {
+fn screen_layout_label(screens: List<Screen>) -> Text {
     let places = screens.map(s -> screen_name(s))
     "Your screens, left to right and top to bottom: {places.join("; ")}"
 }
@@ -1605,9 +1605,9 @@ view displays_pane() {
     state picked: Int = 0
     state start: List<Float> = []
     state drag: List<Float> = []
-    ui.Section("Arrangement") {
+    ui.Section("Layout") {
         ui.Text(
-            "Your screens across your devices. Drag one to where it stands: this device keeps its own screens' arrangement, and another device's screens move together.",
+            "Your screens across your devices. Drag one to where it stands: this device keeps its own screens' layout, and another device's screens move together.",
             role: .caption,
             secondary: true,
         )
@@ -1629,7 +1629,7 @@ view displays_pane() {
             ui.Drawing(
                 arrangement_shapes(arranged, picked, start, drag),
                 meaning: .picture,
-                label: arrangement_label(arranged),
+                label: screen_layout_label(arranged),
                 height: .some(240.0),
             ) {
                 on press(at: Int): set(picked, (at / 2).min(arranged.len() - 1))

@@ -180,22 +180,12 @@ fn host_words(h: device.Host) -> Text {
             std.say("Your workspaces run on this machine itself, so there is nothing to pay for.")
         }
     } else {
-        let plan = if h.plan_name == "" {
-            std.say("No plan yet")
-        } else if h.plan_price == "" {
-            h.plan_name
-        } else { std.say("{h.plan_name}, {h.plan_price}") }
-        let used = if let included = h.included_seconds {
+        if let included = h.included_seconds {
             std.say("{machine_time(h.usage_seconds)} of {machine_time(included)} this period")
         } else if h.usage_seconds == 0 {
             std.say("Nothing used this period")
         } else {
             std.say("{machine_time(h.usage_seconds)} this period")
-        }
-        if h.credit == "" {
-            std.say("{plan} · {used}")
-        } else {
-            std.say("{plan} · {used} · {h.credit} credit")
         }
     }
 }
@@ -214,17 +204,21 @@ fn agent_words(one: device.AccessKey) -> Text {
 /// here, on the row, with the reason in the words the person chooses.
 view agent_menu(one: device.AccessKey) {
     ui.MenuButton("Manage {one.label}", icon: .ellipsis) {
-        ui.MenuItem("Remove {one.label} — no longer used", destructive: true, icon: .trash) {
+        ui.MenuItem(
+            "Remove {one.label} because it is no longer used",
+            destructive: true,
+            icon: .trash,
+        ) {
             on choose: device.revoke(device.devices, device: one.id, reason: "retired")
         }
-        ui.MenuItem("Remove {one.label} — it was lost", destructive: true, icon: .trash) {
+        ui.MenuItem("Remove {one.label} because it was lost", destructive: true, icon: .trash) {
             on choose: device.revoke(device.devices, device: one.id, reason: "lost")
         }
-        ui.MenuItem("Remove {one.label} — it was stolen", destructive: true, icon: .trash) {
+        ui.MenuItem("Remove {one.label} because it was stolen", destructive: true, icon: .trash) {
             on choose: device.revoke(device.devices, device: one.id, reason: "stolen")
         }
         ui.MenuItem(
-            "Remove {one.label} — someone knows its key",
+            "Remove {one.label} because someone knows its key",
             destructive: true,
             icon: .trash,
         ) {

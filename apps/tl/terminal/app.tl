@@ -1484,7 +1484,7 @@ view commands_list(s: Session) {
     if s.commands.is_empty() {
         ui.EmptyState(
             "No commands yet",
-            message: "Commands this session runs show here, with what each printed.",
+            message: "No command has run in this session.",
             icon: .terminal,
             inline: true,
         )
@@ -1573,7 +1573,7 @@ view terminal_overview(t: Terminal) {
             if t.history.is_empty() {
                 ui.EmptyState(
                     "No commands yet",
-                    message: "Commands run in the workspace's terminals show here.",
+                    message: "No command has run in this workspace's terminals.",
                     icon: .terminal,
                 )
             } else {

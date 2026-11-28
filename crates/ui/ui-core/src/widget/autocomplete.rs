@@ -1607,11 +1607,8 @@ impl Widget for Autocomplete {
                         }),
                 );
             }
-            node.children.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Result kinds")
-                    .with_children(chips),
-            );
+            node.children
+                .push(AccessNode::new(Role::Group).with_children(chips));
         }
         if self.open {
             node.children.extend(self.list.access_rows(|suggestion| {
