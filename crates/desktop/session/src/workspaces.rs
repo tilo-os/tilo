@@ -228,8 +228,8 @@ pub(crate) enum First {
     Asked,
     /// Answered: the workspace, and its name.
     Answered(WorkspaceId, String),
-    /// Refused, which the log says why: asked again on a later pass.
-    Refused,
+    /// Refused at what the daemon last published: asked again once that changes, never on a pass.
+    Refused(u64),
 }
 
 /// The shell's workspaces, by id with their names, in its order.
@@ -520,11 +520,6 @@ impl Personal {
         }
         tracing::info!(target: JOIN_FLOW_TARGET, %seed, %first, "the person's workspace stands where the one this shell started with did");
         Some((seed, first))
-    }
-
-    /// The daemon's answer for the workspace the person starts in, as it stands.
-    pub(crate) fn first(&self) -> Rc<RefCell<First>> {
-        Rc::clone(&self.first)
     }
 
     /// Whether this device is the one that made `workspace` : it hosts it, or the person's `list`
@@ -1525,11 +1520,14 @@ impl crate::Shared {
         if self.directory_store.joining().is_some() || self.directory_store.settling() {
             return;
         }
-        let first = personal.first();
+        let first = Rc::clone(&personal.first);
+        #[expect(clippy::match_same_arms, reason = "an ask or a refusal both wait")]
         let answered = match &*first.borrow() {
             First::Answered(workspace, name) => Some((*workspace, name.clone())),
             First::Asked => return,
-            First::Unasked | First::Refused => None,
+            First::Unasked => None,
+            First::Refused(at) if *at == view.revision() => return,
+            First::Refused(_) => None,
         };
         let Some((workspace, name)) = answered else {
             *first.borrow_mut() = First::Asked;
@@ -1542,6 +1540,7 @@ impl crate::Shared {
                     .map(|shown| tilo_session_core::desktop::names::workspace(&shown.name))
             });
             let named = named.unwrap_or_else(|| tilo_session_core::desktop::names::workspace(""));
+            let asked_at = view.revision();
             let asked = view.first(seed, &named);
             let answer = crate::landing::off_loop(asked);
             self.landings.then(answer, move |answer| {
@@ -1549,11 +1548,11 @@ impl crate::Shared {
                     Some(Ok((workspace, name))) => First::Answered(workspace, name),
                     Some(Err(error)) => {
                         tracing::warn!(target: JOIN_FLOW_TARGET, %error, "the daemon did not say which workspace the person starts in");
-                        First::Refused
+                        First::Refused(asked_at)
                     }
                     None => {
                         tracing::warn!(target: JOIN_FLOW_TARGET, "the daemon's answer for the workspace the person starts in was dropped");
-                        First::Refused
+                        First::Refused(asked_at)
                     }
                 };
             });
@@ -2164,6 +2163,110 @@ mod tests {
         assert_eq!(
             here.label, "",
             "the stand-in provisioning fills in is no name of the person's"
+        );
+    }
+}
+
+#[cfg(test)]
+mod list_asks {
+    //! A desktop is told about the person's workspaces; it does not ask again on every pass.
+
+    use std::time::Duration;
+
+    use tilo_desktop_model::WorkspaceId;
+
+    use crate::daemon_fixture::TestDaemon;
+
+    /// The workspace-list actions a session asked its daemon for, in order: `account/workspaces`'s.
+    fn list_asks(daemon: &TestDaemon) -> Vec<String> {
+        daemon
+            .asks()
+            .into_iter()
+            .filter(|(resource, _)| resource == tilo_peer_state::workspace_view::LIST)
+            .map(|(_, action)| action)
+            .collect()
+    }
+
+    /// Step `session` until the calls of the workspace list stood still for eight passes, and
+    /// answer how many there were: what the daemon publishes arrives as a burst of readings, and
+    /// nothing more is asked once they have all come.
+    fn settled(session: &mut crate::Session, daemon: &TestDaemon) -> usize {
+        let (mut count, mut still) = (list_asks(daemon).len(), 0_usize);
+        for _ in 0..40 {
+            session.step(Duration::from_millis(10)).expect("a pass");
+            let now = list_asks(daemon).len();
+            if now == count {
+                still = still.saturating_add(1);
+                if still >= 8 {
+                    return now;
+                }
+            } else {
+                (count, still) = (now, 0);
+            }
+        }
+        count
+    }
+
+    /// A desktop on a daemon that does not say which workspace the person starts in asks it once,
+    /// not on every pass: a refusal is asked again only when the daemon publishes something new,
+    /// which is what the follow is told, and nothing is asked while it publishes nothing.
+    #[test]
+    fn an_idle_desktop_asks_for_the_person_s_workspaces_once() {
+        let mut home = tilo_test_env::TestHome::new().expect("a home");
+        let daemon = TestDaemon::start();
+        daemon.serve_identity(&mut home);
+        daemon.found_person_workspace();
+        let person = hex::encode(daemon.certificate().user_public_key);
+        let mut session = crate::Session::headless(
+            crate::Options {
+                person,
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: false,
+                state: Some(home.state().to_path_buf()),
+                shell_link: Some(daemon.shell_link()),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session");
+        let asked = settled(&mut session, &daemon);
+        assert!(
+            asked > 0,
+            "the daemon is asked which workspace the person starts in: {:?}",
+            daemon.asks()
+        );
+        assert!(
+            list_asks(&daemon).iter().all(|action| action == "first"),
+            "only by the one action that answers it: {:?}",
+            daemon.asks()
+        );
+        for _ in 0..20 {
+            session.step(Duration::from_millis(10)).expect("a pass");
+        }
+        assert_eq!(
+            list_asks(&daemon).len(),
+            asked,
+            "an idle desktop asks nothing more: {:?}",
+            daemon.asks()
+        );
+
+        // The daemon publishes a workspace of the person's: that is what the follow is told, so
+        // the list is read again then, and only then.
+        daemon.found(WorkspaceId::new(), "Elsewhere");
+        let told = settled(&mut session, &daemon);
+        assert!(
+            told > asked,
+            "the daemon's news is read: {:?}",
+            daemon.asks()
+        );
+        for _ in 0..20 {
+            session.step(Duration::from_millis(10)).expect("a pass");
+        }
+        assert_eq!(
+            list_asks(&daemon).len(),
+            told,
+            "and nothing more after that: {:?}",
+            daemon.asks()
         );
     }
 }

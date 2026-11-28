@@ -183,6 +183,9 @@ pub struct TestDaemon {
     /// The device key this process took as the daemon's, where a session in this process reads
     /// its identity from: held for the daemon's life, as the one writer of the key.
     identity: std::sync::OnceLock<tilo_device_identity::persist::DeviceKeyLock>,
+    /// Every ask a session's shell made of this daemon, by resource and action, as it made it:
+    /// what a test counts to tell a follow from a poll.
+    asks: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     _dir: tempfile::TempDir,
 }
 
@@ -297,8 +300,10 @@ impl TestDaemon {
             Arc::new(key.clone()),
         );
         standing.follow();
+        let asks: Arc<std::sync::Mutex<Vec<(String, String)>>> = Arc::default();
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
+            asks: Arc::clone(&asks),
         });
         let online =
             Online::new(tilo_workspace_service::workspaces::person_workspace::devices::ONLINE);
@@ -396,6 +401,7 @@ impl TestDaemon {
             nearby,
             speakers,
             identity: std::sync::OnceLock::new(),
+            asks,
             _dir: dir,
         }
     }
@@ -795,6 +801,12 @@ impl TestDaemon {
         Arc::clone(&self.view)
     }
 
+    /// Every ask a session's shell made of this daemon so far, by resource and action, in order:
+    /// what a test counts to tell a follow from a poll.
+    pub fn asks(&self) -> Vec<(String, String)> {
+        self.asks.lock().expect("what the session asked").clone()
+    }
+
     /// Have `layouts` read and write the workspaces through the daemon, through `reads` and
     /// `writes`, and read a record again whenever the daemon tells of a write to it.
     #[cfg(test)]
@@ -912,6 +924,8 @@ impl LauncherServices for Held {
 /// serves it, exactly as the daemon does in a running session.
 struct Governance {
     workspaces: Workspaces,
+    /// Every ask its dispatch handed to a provider, by resource and action.
+    asks: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 impl ShellActions for Governance {
@@ -922,6 +936,7 @@ impl ShellActions for Governance {
         _pressed: Option<runtime_collab::wire::shell::ShellPress>,
     ) -> ShellDispatch {
         let workspaces = self.workspaces.clone();
+        let asked = Arc::clone(&self.asks);
         let shell = *caller;
         Box::pin(std::future::ready({
             let cert = workspaces.device_cert();
@@ -935,7 +950,10 @@ impl ShellActions for Governance {
                     None => person,
                 };
                 let provider: Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync> =
-                    Arc::new(GovernanceCall { workspaces });
+                    Arc::new(GovernanceCall {
+                        workspaces,
+                        asks: asked,
+                    });
                 Ok((provider, caller))
             } else {
                 Err("this device acts for its own person only".to_owned())
@@ -948,6 +966,8 @@ impl ShellActions for Governance {
 /// device's person in the workspace the call names.
 struct GovernanceCall {
     workspaces: Workspaces,
+    /// Every call made here, by resource and action, as it was made.
+    asks: Arc<std::sync::Mutex<Vec<(String, String)>>>,
 }
 
 impl tilo_actions::remote::ActionProvider for GovernanceCall {
@@ -970,6 +990,10 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
     ) -> tilo_actions::remote::Pending<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
+        self.asks.lock().expect("what the session asked").push((
+            request.target.address.resource.clone(),
+            request.target.address.action.clone(),
+        ));
         // A governance operation is the device action service's answer; every other call is the
         // workspace's own, handed to the provider that serves it as a device's daemon hands it —
         // the window steps the shell asks of its apps among them.
