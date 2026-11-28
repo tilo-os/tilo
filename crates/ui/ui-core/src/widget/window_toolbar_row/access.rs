@@ -269,15 +269,23 @@ impl ToolbarRow {
                 self.parts.overflow,
                 true,
             );
-            more.state.expanded = Some(self.menu_open_for(&Part::Overflow));
+            let open = self.menu_open_for(&Part::Overflow);
+            more.state.expanded = Some(open);
             let entries = self.overflow_entries();
             if !entries.is_empty() {
-                more = more.with_children(vec![self.menu_node(
-                    name,
-                    &Part::Overflow,
-                    self.parts.overflow,
-                    entries.into_iter(),
-                )]);
+                // What the row could not fit is named whether or not its menu stands open: a
+                // screen reader, an agent and a test find it behind the button, as they find
+                // the row's own buttons. Only an open menu draws it, so only then does it stand
+                // as a menu and at the rows it draws.
+                let mut items = self.entry_nodes(&entries, self.parts.overflow, open, false);
+                if open {
+                    items = vec![
+                        tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Menu)
+                            .with_name(name)
+                            .with_children(items),
+                    ];
+                }
+                more = more.with_children(items);
             }
             nodes.push(more);
         }
@@ -320,9 +328,29 @@ impl ToolbarRow {
     ) -> tilo_ui_base::a11y::AccessNode {
         use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.menu_open_for(part);
-        let entries: Vec<MenuEntry> = entries.collect();
+        let items = self.entry_nodes(&entries.collect::<Vec<_>>(), anchor, open, !open);
+        AccessNode::new(Role::Menu)
+            .with_name(name)
+            .with_children(items)
+            .with_state(AccessState {
+                hidden: !open,
+                ..Default::default()
+            })
+    }
+
+    /// The rows of a menu `entries` names: each where the open menu draws it, or at `anchor`
+    /// while the menu is shut. `hidden` keeps them out of a reader's way where their menu is a
+    /// control's own (a File menu), rather than what the row could not fit.
+    pub(super) fn entry_nodes(
+        &self,
+        entries: &[MenuEntry],
+        anchor: Rect,
+        open: bool,
+        hidden: bool,
+    ) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let count = entries.len();
-        let items = entries
+        entries
             .iter()
             .enumerate()
             .filter_map(|(position, entry)| {
@@ -343,22 +371,15 @@ impl ToolbarRow {
                         .with_bounds(rect)
                         .with_position(position.saturating_add(1), count)
                         .with_state(AccessState {
-                            focusable: enabled && open,
+                            focusable: enabled,
                             disabled: !enabled,
                             checked,
-                            hidden: !open,
+                            hidden,
                             ..Default::default()
                         }),
                 )
             })
-            .collect();
-        AccessNode::new(Role::Menu)
-            .with_name(name)
-            .with_children(items)
-            .with_state(AccessState {
-                hidden: !open,
-                ..Default::default()
-            })
+            .collect()
     }
 
     pub(super) fn entry_semantics(

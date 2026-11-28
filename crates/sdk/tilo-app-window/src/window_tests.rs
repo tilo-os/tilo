@@ -5236,3 +5236,178 @@ fn a_save_that_never_settles_stalls_into_the_bar_with_no_input_and_no_frame() {
         "the stall asks the app to submit the change again"
     );
 }
+
+/// The shell a view draws with no overview and no title its content edits, as Tasks' board does:
+/// the runtime puts the view switch in the bar's `actions`, so what reaches the content header is
+/// what a person reads the switch from. The title is long, as a project's name is: the bar has
+/// more than it can stand, at a desktop's width.
+fn bar_shell(actions: Vec<UiNode>) -> Vec<ToUi> {
+    let part = |name: &str, children: Vec<UiNode>| {
+        let mut node = UiNode::empty(PART, &format!("shell#{name}"));
+        node.props.insert("name".to_owned(), Value::text(name));
+        node.children = children;
+        node
+    };
+    let places = UiNode::empty(&kind("NavList"), "shell#places");
+    let mut board = UiNode::empty(&kind("Board"), "shell#board");
+    board.props.insert("name".to_owned(), Value::text("Tasks"));
+    let mut shell = UiNode::empty(&kind("NavShell"), "shell");
+    shell
+        .props
+        .insert("content_kind".to_owned(), Value::text("page"));
+    shell.props.insert(
+        "title".to_owned(),
+        Value::text("Everything that happened in the autumn release, and the review after it"),
+    );
+    shell
+        .props
+        .insert("sidebar_title".to_owned(), Value::text("Tasks"));
+    shell.children.extend([
+        part("sidebar", vec![places]),
+        part("content", vec![board]),
+        part("actions", actions),
+    ]);
+    let mut target = doc();
+    target.id = "1".to_owned();
+    target.ty = "test.tasks".to_owned();
+    vec![ToUi::Open {
+        level: Level::Root,
+        target,
+        tree: shell,
+        front: None,
+        capture_protected: false,
+    }]
+}
+
+/// A button of a view's bar, running `action` on the app's record.
+fn bar_button(key: &str, label: &str, role: Option<&str>, action: &str) -> UiNode {
+    let mut node = UiNode::empty(&kind("Button"), key);
+    node.props.insert("label".to_owned(), Value::text(label));
+    if let Some(role) = role {
+        node.props.insert("role".to_owned(), Value::text(role));
+    }
+    node.events.insert(
+        "press".to_owned(),
+        crate::Event {
+            invokes: Some(crate::Invocation {
+                resource: "1".to_owned(),
+                action: action.to_owned(),
+            }),
+            ..crate::Event::default()
+        },
+    );
+    node
+}
+
+/// The view switch a type offers, as the runtime draws it: a tab per view, the shown one chosen,
+/// and the app's own event reaching it.
+fn view_switch() -> UiNode {
+    let mut tabs = UiNode::empty(&kind("ViewTabs"), "shell#views");
+    tabs.props.insert("label".to_owned(), Value::text("Tasks"));
+    tabs.props.insert("selected".to_owned(), Value::Int(1));
+    for (index, label) in ["List", "Board", "Threads"].iter().enumerate() {
+        let mut segment = UiNode::empty(&kind("Segment"), &format!("shell#views-{index}"));
+        segment
+            .props
+            .insert("label".to_owned(), Value::text(*label));
+        tabs.children.push(segment);
+    }
+    tabs.events.insert(
+        "change".to_owned(),
+        crate::Event {
+            invokes: Some(crate::Invocation {
+                resource: "1".to_owned(),
+                action: "show".to_owned(),
+            }),
+            ..crate::Event::default()
+        },
+    );
+    tabs
+}
+
+/// The view switch in the content bar is a tab a person finds by its name, wherever the runtime
+/// puts it: a view with no overview and no title it edits stands it in the content header's
+/// actions, and a row short of room stands the switch rather than folding it away.
+#[test]
+fn a_views_switch_in_the_content_bar_is_named_and_activates() {
+    let page = bar_shell(vec![
+        bar_button("shell#new", "New task", Some("primary"), "new"),
+        view_switch(),
+        bar_button("shell#clear", "Clear done", None, "clear"),
+    ]);
+    let (mut app, mut window) = window();
+    send(&mut app, &page);
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 800));
+    harness.relayout();
+    let threads = node_named(&harness, "Threads");
+    harness
+        .perform_a11y_action(threads, &tilo_ui_base::a11y::Action::Activate)
+        .expect("the tab is in the frame");
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app).iter().any(|message| matches!(
+            message,
+            ToApp::Invoke { address, .. } if address.action == "show"
+        ) || matches!(
+            message,
+            ToApp::Fire { key, event, .. } if key == "shell#views" && event == "change"
+        )),
+        "choosing the tab reaches the app that shows the view"
+    );
+}
+
+/// A command the row could not fit waits in its "…" and is still a control by name: a person
+/// reading the window, a screen reader and a walk find it there, and pressing it runs it.
+#[test]
+fn a_bar_action_behind_more_is_named_and_runs() {
+    let page = bar_shell(vec![
+        bar_button("shell#new", "New task", Some("primary"), "new"),
+        view_switch(),
+        bar_button("shell#clear", "Clear done", None, "clear"),
+        bar_button("shell#help", "Help", None, "help"),
+    ]);
+    let (mut app, mut window) = window();
+    send(&mut app, &page);
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 800));
+    harness.relayout();
+    // Nothing of it stands in the row: it is behind the bar's own "…".
+    let help = node_named(&harness, "Help");
+    harness
+        .perform_a11y_action(help, &tilo_ui_base::a11y::Action::Activate)
+        .expect("the row is in the frame");
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app).iter().any(|message| matches!(
+            message,
+            ToApp::Invoke { address, .. } if address.action == "help"
+        ) || matches!(
+            message,
+            ToApp::Fire { key, event, .. } if key == "shell#help" && event == "press"
+        )),
+        "pressing the row behind More runs what it says"
+    );
+}
+
+/// The window's search is in the bar with the app's own actions, and a row short of room keeps
+/// it named behind the bar's "…" as it names its buttons there: the window that searches is
+/// found by name wherever it stands.
+#[test]
+fn a_bar_search_is_named_behind_more() {
+    let search = UiNode::empty(&kind("SearchButton"), "shell#search");
+    let page = bar_shell(vec![
+        bar_button("shell#new", "New task", Some("primary"), "new"),
+        view_switch(),
+        search,
+    ]);
+    let (mut app, mut window) = window();
+    send(&mut app, &page);
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 800));
+    harness.relayout();
+    let name = node_named(&harness, "Search");
+    harness
+        .perform_a11y_action(name, &tilo_ui_base::a11y::Action::Activate)
+        .expect("the search is in the frame");
+}

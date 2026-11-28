@@ -742,6 +742,10 @@ struct InertPart;
 
 static INERT_PART: InertPart = InertPart;
 
+/// The action target of a command behind a column's "…": the column and the action's index in
+/// its header, while the menu is shut.
+const MORE_TARGET: &str = "nav-more:";
+
 impl Widget for InertPart {
     fn build_layout(
         &mut self,
@@ -3556,6 +3560,7 @@ impl Widget for NavShell {
                     resize
                         .into_iter()
                         .chain(self.sheet_accessibility())
+                        .chain(self.more_accessibility())
                         .collect(),
                 ),
         )
@@ -3565,11 +3570,14 @@ impl Widget for NavShell {
         &mut self,
         target: &str,
         action: &tilo_ui_base::a11y::Action,
-        _state: &mut tilo_ui_base::widget::Edits<'_>,
-        _path: &ModelPath,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
         if target == self.sheet_target() {
             return self.perform_sheet_action(action);
+        }
+        if let Some(ran) = self.more_action(target, action, state, path) {
+            return ran;
         }
         if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
             return false;
@@ -4019,6 +4027,80 @@ mod component;
 pub use component::NavShellProps;
 
 impl NavShell {
+    /// The commands behind each column's "…" while its menu is shut: what a row did not give
+    /// room is named there for a screen reader, an agent and a tool that presses it by name,
+    /// exactly as it is once the menu opens. They stand at the button they wait behind, since
+    /// they are drawn nowhere until it opens.
+    fn more_accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::a11y::{AccessNode, AccessState, Role};
+        let mut nodes = Vec::new();
+        for column in Column::ALL {
+            let header = at(&self.headers, column);
+            if header.more.is_open() || !header.more.is_shown() {
+                continue;
+            }
+            let count = header.actions.len();
+            let (shown, control_only) = self.row_actions(column);
+            for (index, action) in header.actions.iter().enumerate() {
+                if !action_in_menu(shown, control_only, count, index) {
+                    continue;
+                }
+                let Some(node) = action_node(&**action) else {
+                    continue;
+                };
+                let Some(name) = node.name.clone() else {
+                    continue;
+                };
+                let mut item = AccessNode::new(Role::MenuItem)
+                    .with_name(name)
+                    .with_action_target(format!("{MORE_TARGET}{}:{index}", column.key()))
+                    .with_bounds(header.more.rect())
+                    .with_position(index.saturating_add(1), count)
+                    .with_state(AccessState {
+                        focusable: !node.state.disabled,
+                        disabled: node.state.disabled,
+                        checked: node.state.checked,
+                        ..Default::default()
+                    });
+                item.action.clone_from(&node.action);
+                item.description.clone_from(&node.description);
+                nodes.push(item);
+            }
+        }
+        nodes
+    }
+
+    /// Run the command `target` names behind a column's "…", as pressing the row of its open
+    /// menu runs it: `None` when the target names no such command.
+    fn more_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> Option<bool> {
+        let (column, index) = target.strip_prefix(MORE_TARGET)?.split_once(':')?;
+        let column = Column::ALL
+            .into_iter()
+            .find(|known| known.key() == column)?;
+        let index = index.parse::<usize>().ok()?;
+        let count = at(&self.headers, column).actions.len();
+        let (shown, control_only) = self.row_actions(column);
+        if !action_in_menu(shown, control_only, count, index) {
+            return None;
+        }
+        let header = self.headers.get_mut(column.index())?;
+        if header.more.is_open() {
+            return None;
+        }
+        let action_widget = header.actions.get_mut(index)?;
+        let ran = action_widget.perform_action(action, &[], state, path);
+        if ran {
+            self.invalidate();
+        }
+        Some(ran)
+    }
+
     fn region_size() -> Size<taffy::Dimension> {
         Size::from_percent(1.0, 1.0)
     }

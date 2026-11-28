@@ -495,8 +495,20 @@ tilo_test_env::scenario! {
         let import = find_node(&more.children, Role::MenuItem, "Import contacts")
             .expect("what the row cannot fit is the overflow menu's");
         assert!(
-            import.state.hidden,
-            "a closed menu's item is hidden from a reader"
+            !import.state.hidden && !import.state.disabled,
+            "a shut menu's item is still reachable by name"
+        );
+        assert_eq!(
+            import.bounds,
+            more.bounds,
+            "it waits at the button it stands behind"
+        );
+        let target = import.action_target.clone().unwrap();
+        let mut closed = address_book_row(false, 900.0);
+        assert!(closed.perform(&target), "a shut menu's item runs");
+        assert_eq!(
+            closed.take_events(),
+            vec![(4, ToolbarEvent::Action { id: "import".into() })]
         );
         assert!(
             find_node(&wide, Role::Button, "Import contacts").is_none(),

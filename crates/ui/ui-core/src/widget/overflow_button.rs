@@ -133,6 +133,12 @@ impl OverflowButton {
         self.rect
     }
 
+    /// Whether anything is behind the API, so it stands in the row.
+    #[must_use]
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
     pub fn take_open_request(&self) -> bool {
         self.requested.replace(false)
     }

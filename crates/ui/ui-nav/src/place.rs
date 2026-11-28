@@ -235,9 +235,9 @@ fn place_header(
     let never = if inputs.actions_listed {
         0
     } else {
-        fit.primary
-            .map_or(0, |primary| primary + 1)
-            .min(items.len())
+        let primary = fit.primary.map_or(0, |primary| primary + 1);
+        let control = fit.controls.last().map_or(0, |control| control + 1);
+        primary.max(control).min(items.len())
     };
     // A column too narrow to hold even those keeps none of them in its row: what it cannot stand
     // waits in the row's menu, rather than spilling past the column's own edge.
@@ -248,13 +248,15 @@ fn place_header(
     };
     // A column too narrow for any of its buttons beside the control it hosts stands the control
     // alone, in the narrow form it fits itself to (a strip of choices folds into a picker), and
-    // every button waits in the row's menu, which runs them. A control itself waits there for
-    // nobody: its row would run nothing.
+    // every button waits in the row's menu, which runs them. A control that cannot narrow — a
+    // view switch, whose choices are its own — keeps its whole width, and the buttons give way
+    // instead: the control is never one the row drops, since the menu would carry no way to
+    // choose it.
     let mut alone: Option<(usize, f64)> = None;
     if must == 0
         && !inputs.actions_listed
         && let Some(control) = fit.controls.last().copied()
-        && let Some((part, _, _)) = items.get(control)
+        && let Some((part, natural, _)) = items.get(control)
     {
         let narrow = ctx
             .widget(*part)
@@ -264,9 +266,14 @@ fn place_header(
                 >(widget)
             })
             .and_then(|narrows| narrows.narrow_width());
-        if let Some(width) = narrow
-            && width + gap + more_w <= avail
-        {
+        let wanted = narrow.unwrap_or(*natural).min(avail);
+        if wanted > 0.0 {
+            // The row's own overflow button keeps its place beside it.
+            let width = if wanted + gap + more_w <= avail {
+                wanted
+            } else {
+                (avail - gap - more_w).max(1.0)
+            };
             if let Some(slot) = full.get_mut(control) {
                 *slot = width;
             }
@@ -356,6 +363,9 @@ fn place_header(
         let fits = tilo_ui::widget::plan_overflow(band, compact.iter().copied(), gap, gap + more_w);
         (true, false, fits.min(kept).max(must))
     };
+    // What the row never gives up stands, whatever form it settled on: the primary and the
+    // control it hosts keep their place in the row.
+    let shown = shown.max(must);
     // What each action takes: the row's narrower width, but for the primary where it says its words.
     let widths: Vec<f64> = (0..items.len())
         .map(|i| {
@@ -433,28 +443,6 @@ fn place_header(
         if let Some(slot) = placed.get_mut(index) {
             *slot = Some(rect);
         }
-    }
-    if column.key() == "overview" {
-        let mut listed: Vec<(
-            Option<String>,
-            Option<(super::ButtonRole, bool, bool, bool)>,
-        )> = Vec::new();
-        for (index, _, _) in &items {
-            let name = ctx.widget(*index).map(|widget| widget.name().to_owned());
-            let facts = ctx.widget(*index).and_then(super::button_of).map(|button| {
-                (
-                    button.role_of(),
-                    button.is_menu_only(),
-                    button.shrinks_to_icon(),
-                    button.is_shown_compact(),
-                )
-            });
-            listed.push((name, facts));
-        }
-        eprintln!(
-            "OVERVIEW primary={:?} controls={:?} must={must} kept={kept} shown={shown} listed={listed:?}",
-            fit.primary, fit.controls
-        );
     }
     drop(fits);
 

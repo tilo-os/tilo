@@ -88,8 +88,9 @@ tilo_test_env::scenario! {
             Some("Three"),
             "the bar shows what arrived, not what it showed"
         );
-        // What the bar keeps in its closed More menu stands nowhere: a reader, an agent and a
-        // press by name find no control for it until the menu is open.
+        // What the bar keeps in its closed More menu is named by that button's tree, so a
+        // reader, an agent and a press by name reach a control the row gave no room: the
+        // window bar's own item says what the row could not fit, wherever the row is.
         let names: Vec<_> = h
             .controls()
             .into_iter()
@@ -97,8 +98,8 @@ tilo_test_env::scenario! {
             .collect();
         assert!(
             names.iter().any(|name| name == "Three")
-                && !names.iter().any(|name| name == "Five" || name == "Six"),
-            "the closed menu's actions are no controls: {names:?}"
+                && names.iter().any(|name| name == "Five" || name == "Six"),
+            "the closed menu's actions are named behind the bar's More: {names:?}"
         );
     }
 
