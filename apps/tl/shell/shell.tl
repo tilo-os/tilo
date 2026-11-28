@@ -49,8 +49,13 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         stack(gap: .tight, fill) {
             // The bar and the band stand apart as far as the band stands from a dock's band:
             // the dock's body keeps its `related` inset from the edge it rides plus the stack's
-            // `tight`, so the page keeps that same room under the bar.
-            stack(gap: .sibling, fill) {
+            // `tight`. A bar that rides edge to edge has no inset of its own, so the band takes
+            // the whole `sibling` step from it; a floating bar already keeps its `related`
+            // inset, and the band takes the rest.
+            stack(
+                gap: if bar_shows(s) and s.bar_fit != .full { .related } else { .sibling },
+                fill,
+            ) {
                 if bar_shows(s) {
                     bar_on_edge(s, traditional)
                 }
@@ -255,10 +260,11 @@ template view band(content: View) {
 /// rests in, so a magnified item grows over the page rather than moving it, and a floating dock
 /// stands the theme's gap in from the screen's edge.
 view side_dock(s: Shell, edge: Edge) {
-    // Its own width, under the same rule as the dock on the foot's height: `fill` here would
-    // share the shell's width between the dock and the windows, leaving the page half its room.
-    // A full dock takes the edge's width from `dock_ground` itself.
-    row(align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
+    // Its own width, under the same rule as the dock on the foot's height: a row fills its
+    // parent's width by default, so beside the band it would take half the display and leave
+    // the page half its room. `fill: 0` keeps it at the dock's own band, and a full dock takes
+    // the edge's width from `dock_ground` itself.
+    row(fill: 0, align: .center, padding: if s.dock_fit == .floating { .related } else { .none }) {
         dock_ground(s, edge)
     }
 }
