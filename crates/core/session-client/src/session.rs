@@ -1164,21 +1164,43 @@ impl Task {
         let actions = self.actions.clone();
         let store = self.own_store();
         let (list_from, lists) = (self.list_from(), Arc::clone(&self.entered_lists));
+        let commands = self.commands.clone();
         n0_future::task::spawn(async move {
-            let answer = ask_entry(
+            let held = actions.is_some();
+            let mut answer = ask_entry(
                 (actions.as_ref(), store.clone()),
                 &list_from,
-                signer,
-                cert,
+                Arc::clone(&signer),
+                cert.clone(),
                 host,
                 &entering,
             )
-            .await
-            .map(|(entered, list)| {
-                entry_list::keep_entered((store.as_ref(), &lists), &entering.workspace, list);
-                entered
-            })
-            .map_err(|failure| LinkError::Unavailable(failure.message));
+            .await;
+            // The link the host closed under the ask, or none this session holds: ask again on
+            // a fresh one, as a session's other asks do. An entry refused for any other reason
+            // keeps its answer.
+            let unasked = !held
+                || answer
+                    .as_ref()
+                    .err()
+                    .is_some_and(|failure| failure.message.starts_with(LINK_FAILED));
+            if unasked && let Some(fresh) = dialed_again(&commands).await {
+                answer = ask_entry(
+                    (Some(&fresh), store.clone()),
+                    &list_from,
+                    signer,
+                    cert,
+                    host,
+                    &entering,
+                )
+                .await;
+            }
+            let answer = answer
+                .map(|(entered, list)| {
+                    entry_list::keep_entered((store.as_ref(), &lists), &entering.workspace, list);
+                    entered
+                })
+                .map_err(|failure| LinkError::Unavailable(failure.message));
             let _ = done.send(answer);
         });
     }
@@ -2362,7 +2384,7 @@ impl Task {
                 )
                 .await;
                 // The link the host closed under the ask: dial another and ask it there.
-                if matches!(asked, Err(tilo_server_protocol::refusal::Refusal::NotReady))
+                if asked.as_ref().err().is_some_and(link_failed)
                     && let Some(fresh) = dialed_again(&commands).await
                 {
                     asked = ask_action(
@@ -4475,7 +4497,7 @@ impl Task {
             )
             .await;
             // The link the host closed under the ask: dial another and ask it there.
-            if matches!(asked, Err(tilo_server_protocol::refusal::Refusal::NotReady))
+            if asked.as_ref().err().is_some_and(link_failed)
                 && let Some(fresh) = dialed_again(&commands).await
             {
                 asked = ask_action(&fresh, signer, device, &scope, to, message).await;
@@ -4669,18 +4691,40 @@ pub async fn ask_action(
                 "the action does not encode: {error}"
             ))
         })?;
-    let (mut send, mut recv) = link
-        .open_bi()
-        .await
-        .map_err(|_| tilo_server_protocol::refusal::Refusal::NotReady)?;
+    let (mut send, mut recv) = link.open_bi().await.map_err(|error| {
+        tilo_server_protocol::refusal::Refusal::Other(format!(
+            "{LINK_FAILED} opened no stream: {error}"
+        ))
+    })?;
     tilo_server_client::frame::write_frame(&mut send, &bytes)
         .await
-        .map_err(|_| tilo_server_protocol::refusal::Refusal::NotReady)?;
+        .map_err(|error| {
+            tilo_server_protocol::refusal::Refusal::Other(format!(
+                "{LINK_FAILED} did not carry the request: {error}"
+            ))
+        })?;
     send.finish();
     let answer = tilo_server_client::frame::read_frame(&mut recv, MAX_ACTION_FRAME)
         .await
-        .map_err(|_| tilo_server_protocol::refusal::Refusal::NotReady)?;
+        .map_err(|error| {
+            tilo_server_protocol::refusal::Refusal::Other(format!(
+                "{LINK_FAILED} carried no answer: {error}"
+            ))
+        })?;
     Ok(answer)
+}
+
+/// How an ask that carried no answer begins: its link, then the step of it that failed. A host
+/// that answered nothing did not say the workspace is unready; the link did not carry the ask.
+const LINK_FAILED: &str = "the link to the workspace's host";
+
+/// Whether `refusal` is an ask whose link failed rather than a host's answer about it: what a
+/// caller asks again on another link.
+fn link_failed(refusal: &tilo_server_protocol::refusal::Refusal) -> bool {
+    matches!(
+        refusal,
+        tilo_server_protocol::refusal::Refusal::Other(why) if why.starts_with(LINK_FAILED)
+    )
 }
 
 /// How long the host holds one ask about a ticket call before it answers with how it stands.
@@ -4859,7 +4903,7 @@ impl TicketLink {
             .await;
             match answer {
                 // The kept link dropped: dial it again, once.
-                Err(tilo_server_protocol::refusal::Refusal::NotReady) if again => {
+                Err(refusal) if again && link_failed(&refusal) => {
                     again = false;
                     link.close("");
                     *self.link.lock().await = None;
