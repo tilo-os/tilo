@@ -909,7 +909,13 @@ class Session:
                     argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                     env=launch_env, pass_fds=tuple(fds.values()),
                 )
-            until("the session to start", lambda: self._starting(ready, abort), 300, 0.25)
+            try:
+                until("the session to start", lambda: self._starting(ready, abort), 300, 0.25)
+            except Failed as error:
+                # A deadline with nothing said is a failure nobody can read: the launcher's own
+                # words, and every service log the session wrote, go into the error the caller
+                # records, so the start that did not answer says where it stopped.
+                raise Failed(f"{error}\n{self._said_starting()}") from None
             if self.proc.poll() is not None:
                 code = self.proc.returncode
                 self.proc = None
@@ -925,6 +931,19 @@ class Session:
             self._keep_launch_file(self.launcher_log)
         self._keep_launch_file(ready)
         return self
+
+    def _said_starting(self, lines: int = 40) -> str:
+        """The end of what the launcher and the session's services said while the start was
+        waited on: the only account of a start that never answered."""
+        logs = [self.launcher_log, *sorted((self.state / "logs").glob("*.log"))]
+        said = []
+        for log in logs:
+            if log is None or not log.is_file():
+                continue
+            text = log.read_text(errors="replace").splitlines()[-lines:]
+            if text:
+                said.append(f"--- {log.name}:\n" + "\n".join(text))
+        return "\n".join(said) or "the launcher and the session wrote nothing"
 
     def _starting(self, ready: Path, abort: Callable[[], str | None] | None) -> bool:
         """Whether the session has started, or ended: `abort`'s reason for the start failing
