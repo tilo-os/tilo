@@ -142,17 +142,22 @@ python3 "$dev_dir/probe-kvm.py" "$arch" >/dev/null 2>&1 && kvm=1
 # account is chosen and the passcode field has focus.
 "$vm" login --passcode-only "$TILO_PASS"
 
-# A fresh installed user: the compositor starts directly into its trusted
-# first-login identity ceremony. The three setup actions go through the AT-SPI
-# provider, each resulting tree transaction is observed, and finishing uses
-# ordinary keyboard input. The artifact poll is the barrier between Create and
-# the final screen.
-for attempt in $(seq 1 60); do
-  "$vm" ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1' && break
-  if [ "$attempt" = 60 ]; then
+# A fresh installed user: the compositor's first use of this computer, whose
+# controls go through the AT-SPI provider, each resulting tree transaction
+# observed, and whose finishing uses ordinary keyboard input. The artifact poll
+# is the barrier between Create and the final screen.
+#
+# The compositor owns its bus name as soon as its services are up, seconds
+# before it has drawn anything: on a CPU rasterizer the first frame follows the
+# shell's own startup. The desktop is on screen once the session publishes its
+# ready record, written after every output has shown its first frame, so that
+# is what this step waits for before it judges the pixels.
+for attempt in $(seq 1 90); do
+  "$vm" ssh 'test -s "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/desktop-ready"' && break
+  if [ "$attempt" = 90 ]; then
     "$vm" serial | tail -120
     session_journal
-    die "the compositor did not reach first-login onboarding"
+    die "the desktop did not come on screen after sign-in"
   fi
   sleep 1
 done
