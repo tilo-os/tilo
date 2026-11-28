@@ -474,6 +474,32 @@ impl System for Fake {
                 let mut storage = self.storage.lock().unwrap();
                 storage.cache_policy.get_or_insert_default().budget_bytes = *bytes;
             }
+            StorageChange::KeepFile {
+                workspace,
+                path,
+                keep,
+            } => {
+                let mut storage = self.storage.lock().unwrap();
+                let mut kept = storage
+                    .kept
+                    .iter()
+                    .find(|file| &file.workspace == workspace && &file.path == path)
+                    .cloned()
+                    .unwrap_or_else(|| tilo_system_resources::storage::KeptFile {
+                        workspace: workspace.clone(),
+                        path: path.clone(),
+                        ..tilo_system_resources::storage::KeptFile::default()
+                    });
+                kept.pinned = *keep;
+                match storage
+                    .kept
+                    .iter_mut()
+                    .find(|file| &file.workspace == workspace && &file.path == path)
+                {
+                    Some(held) => *held = kept,
+                    None => storage.kept.push(kept),
+                }
+            }
             StorageChange::FreeFile { .. } | StorageChange::FreeSyncedFiles => {
                 let mut storage = self.storage.lock().unwrap();
                 storage.reclaimable.clear();
@@ -1926,6 +1952,7 @@ fn the_storage_resource_reads_the_disk_and_clears_the_cache() {
     assert!(actions.contains(&"free-workspace-cache"), "{actions:?}");
     assert!(actions.contains(&"set-prefetch"), "{actions:?}");
     assert!(actions.contains(&"set-cache-size"), "{actions:?}");
+    assert!(actions.contains(&"keep-file"), "{actions:?}");
     assert!(actions.contains(&"free-file"), "{actions:?}");
     assert!(actions.contains(&"free-synced-files"), "{actions:?}");
 
@@ -2084,6 +2111,30 @@ fn how_fetched_files_are_kept_is_tuned_and_one_file_freed() {
     let storage = service.read(STORAGE).unwrap();
     assert_eq!(storage["reclaimable"], json!([]));
     assert_eq!(storage["reclaimable_bytes"], json!(0));
+
+    // A file is kept offline: the daemon is asked to pin it, and the reading says it stands so.
+    let keep = Map::from_iter([
+        ("workspace".to_owned(), json!("studio")),
+        ("path".to_owned(), json!("/films/rough-cut.mov")),
+        ("keep".to_owned(), json!(true)),
+    ]);
+    service.invoke(STORAGE, "keep-file", &keep).unwrap();
+    service.settle();
+    assert_eq!(
+        fake.storage_changes().last(),
+        Some(&StorageChange::KeepFile {
+            workspace: "studio".into(),
+            path: "/films/rough-cut.mov".into(),
+            keep: true,
+        })
+    );
+    let storage = service.read(STORAGE).unwrap();
+    assert_eq!(storage["kept"][0]["path"], json!("/films/rough-cut.mov"));
+    assert_eq!(
+        storage["kept"][0]["pinned"],
+        json!(true),
+        "the file the person kept offline reads as kept"
+    );
 }
 
 #[test]

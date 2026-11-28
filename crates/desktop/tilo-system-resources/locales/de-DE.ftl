@@ -45,6 +45,7 @@ so-tilo-system-storage-keep-here = Einen Arbeitsbereich auf diesem Gerät behalt
 so-tilo-system-storage-scan = Den Speicher neu lesen
 so-tilo-system-storage-set-prefetch = Dateien vor dem Öffnen holen
 so-tilo-system-storage-set-cache-size = Wie viel geholte Dateien belegen dürfen
+so-tilo-system-storage-keep-file = Eine Datei auf diesem Gerät behalten
 so-tilo-system-storage-free-file = Die Kopie einer synchronisierten Datei hier freigeben
 so-tilo-system-storage-free-synced-files = Jede freigebbare Datei freigeben
 so-tilo-system-update-rollback = Zum vorherigen System zurückkehren

@@ -6,7 +6,9 @@
 //! A transfer is long work — a folder of photos onto a slow drive — so it is a job: it says how
 //! many bytes of how many it has written, which entry it is on, and it can be stopped, which
 //! takes away the entry it was half way through so nothing half-copied is left behind. A name
-//! the folder already holds is kept both ("photo (2).jpg"), so a transfer never replaces a file.
+//! the folder already holds is kept both ("photo (2).jpg") unless the person chose another of
+//! the three answers when Files asked: skip it, or move the existing entry to the trash and put
+//! the new one in its place.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,6 +44,8 @@ impl tilolang_engine::Provider for Transfers {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "facts" => facts(Path::new(input)),
+            "empty-trash" => crate::files::empty_trash()
+                .map(|emptied| serde_json::json!({ "emptied": emptied }).to_string()),
             other => Err(format!("`{other}` is no op this device runs for {APP}")),
         }
     }
@@ -107,13 +111,39 @@ fn facts(path: &Path) -> Result<String, String> {
 }
 
 /// What a transfer is asked to do: put the entries at `paths` into `folder`, moving them or
-/// copying them.
+/// copying them, and what to do with a name the folder already holds: "skip", "replace", or
+/// nothing for keeping both.
 #[derive(Debug, Deserialize)]
 struct Ask {
     paths: Vec<String>,
     folder: String,
     #[serde(default)]
     moving: bool,
+    #[serde(default)]
+    clash: String,
+}
+
+/// What to do when the folder already holds the name an entry arrives under.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Clash {
+    /// Keep both: the arriving entry lands as "name (2).ext".
+    #[default]
+    KeepBoth,
+    /// Leave the entry where it is.
+    Skip,
+    /// Move the entry the folder holds to this device's trash, and put the arriving one there.
+    Replace,
+}
+
+impl Clash {
+    /// The answer `word` names, or keeping both for anything else.
+    fn of(word: &str) -> Self {
+        match word {
+            "skip" => Self::Skip,
+            "replace" => Self::Replace,
+            _ => Self::KeepBoth,
+        }
+    }
 }
 
 /// One transfer in flight, and how far it has got.
@@ -131,6 +161,9 @@ struct Job {
     count: usize,
     /// The name of the entry it is on.
     current: Mutex<String>,
+    /// Each entry it put in place, by where it came from and where it landed, in the order it
+    /// did them: what an undo of the transfer moves back or takes away.
+    placed: Mutex<Vec<(String, String)>>,
     error: Mutex<Option<String>>,
 }
 
@@ -165,6 +198,7 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
         .name("files-transfer".to_owned())
         .spawn(move || {
             let sources: Vec<PathBuf> = ask.paths.iter().map(PathBuf::from).collect();
+            let clash = Clash::of(&ask.clash);
             job.total.store(
                 sources.iter().map(|path| size_of(path)).sum(),
                 Ordering::Relaxed,
@@ -182,15 +216,26 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
                     job.cancelled.store(true, Ordering::Relaxed);
                     break;
                 }
-                if let Err(error) = put(&job, from, &folder, ask.moving, &tell) {
-                    if error == STOPPED {
-                        job.cancelled.store(true, Ordering::Relaxed);
-                    } else if let Ok(mut slot) = job.error.lock() {
-                        *slot = Some(error);
+                match put(&job, from, &folder, ask.moving, clash, &tell) {
+                    Ok(Some(to)) => {
+                        if let Ok(mut placed) = job.placed.lock() {
+                            placed.push((
+                                from.to_string_lossy().into_owned(),
+                                to.to_string_lossy().into_owned(),
+                            ));
+                        }
+                        job.items.fetch_add(1, Ordering::Relaxed);
                     }
-                    break;
+                    Ok(None) => {}
+                    Err(error) => {
+                        if error == STOPPED {
+                            job.cancelled.store(true, Ordering::Relaxed);
+                        } else if let Ok(mut slot) = job.error.lock() {
+                            *slot = Some(error);
+                        }
+                        break;
+                    }
                 }
-                job.items.fetch_add(1, Ordering::Relaxed);
             }
             job.finished.store(true, Ordering::Relaxed);
             let (state, detail) = said(&job);
@@ -200,8 +245,16 @@ fn transfer(id: &str, ask: Ask, moved: JobSink) -> Result<(), String> {
     Ok(())
 }
 
-/// Puts one entry into `folder` under a name the folder does not hold yet.
-fn put(job: &Job, from: &Path, folder: &Path, moving: bool, tell: &dyn Fn()) -> Result<(), String> {
+/// Puts one entry into `folder`, answering `clash` for a name the folder already holds: where it
+/// landed, or `None` when the answer skipped it.
+fn put(
+    job: &Job,
+    from: &Path,
+    folder: &Path,
+    moving: bool,
+    clash: Clash,
+    tell: &dyn Fn(),
+) -> Result<Option<PathBuf>, String> {
     let name = from
         .file_name()
         .ok_or_else(|| format!("{} has no name", from.display()))?;
@@ -211,11 +264,27 @@ fn put(job: &Job, from: &Path, folder: &Path, moving: bool, tell: &dyn Fn()) -> 
     if from.is_dir() && folder.starts_with(from) {
         return Err(format!("{} cannot go into itself", from.display()));
     }
-    let to = free_path(folder, &name.to_string_lossy());
+    let held = folder.join(name);
+    if held.symlink_metadata().is_ok() && moving && from == held {
+        // A move of an entry onto itself changes nothing, and is no clash to answer.
+        return Ok(None);
+    }
+    let to = if held.symlink_metadata().is_ok() {
+        match clash {
+            Clash::Skip => return Ok(None),
+            Clash::Replace => {
+                replace_held(&held)?;
+                held
+            }
+            Clash::KeepBoth => free_path(folder, &name.to_string_lossy()),
+        }
+    } else {
+        held
+    };
     // A move on one disk is a rename, at once whatever it holds.
     if moving && std::fs::rename(from, &to).is_ok() {
         job.done.fetch_add(size_of(&to), Ordering::Relaxed);
-        return Ok(());
+        return Ok(Some(to));
     }
     let copied = copy_tree_told(from, &to, &mut |bytes| {
         job.done.fetch_add(bytes, Ordering::Relaxed);
@@ -234,7 +303,18 @@ fn put(job: &Job, from: &Path, folder: &Path, moving: bool, tell: &dyn Fn()) -> 
         // Across disks a move is a copy, and the original goes once the copy is whole.
         remove_tree(from)?;
     }
-    Ok(())
+    Ok(Some(to))
+}
+
+/// Takes away the entry `held`, which an arriving one replaces: into this device's trash where it
+/// keeps one, and removed where it keeps none.
+fn replace_held(held: &Path) -> Result<(), String> {
+    match crate::files::trash(&held.to_string_lossy()) {
+        Ok(_) => Ok(()),
+        Err(_) if held.symlink_metadata().is_err() => Ok(()),
+        Err(why) if why == "this device has no data folder" => remove_tree(held),
+        Err(why) => Err(format!("{} cannot be replaced: {why}", held.display())),
+    }
 }
 
 /// `name` in `folder`, or the first of "name (2).ext", "name (3).ext"… the folder does not hold.
@@ -292,6 +372,16 @@ fn said(job: &Job) -> (State, serde_json::Value) {
         .lock()
         .map(|current| current.clone())
         .unwrap_or_default();
+    let placed: Vec<serde_json::Value> = job
+        .placed
+        .lock()
+        .map(|placed| {
+            placed
+                .iter()
+                .map(|(from, to)| serde_json::json!({ "from": from, "to": to }))
+                .collect()
+        })
+        .unwrap_or_default();
     (
         state,
         serde_json::json!({
@@ -300,6 +390,7 @@ fn said(job: &Job) -> (State, serde_json::Value) {
             "items": job.items.load(Ordering::Relaxed),
             "count": job.count,
             "current": current,
+            "placed": placed,
             "why": error,
         }),
     )
@@ -364,6 +455,10 @@ mod tests {
     }
 
     fn started(paths: &[&Path], folder: &Path, moving: bool) -> Started {
+        started_answering(paths, folder, moving, "")
+    }
+
+    fn started_answering(paths: &[&Path], folder: &Path, moving: bool, clash: &str) -> Started {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let job = format!("transfer-{}", NEXT.fetch_add(1, Ordering::Relaxed));
         let ask = Ask {
@@ -373,6 +468,7 @@ mod tests {
                 .collect(),
             folder: folder.to_string_lossy().into_owned(),
             moving,
+            clash: clash.to_owned(),
         };
         let (tell, ended) = std::sync::mpsc::channel();
         let tell = Mutex::new(tell);
@@ -422,9 +518,79 @@ mod tests {
             std::fs::read(to.join("notes (2).txt")).expect("the copy"),
             b"notes"
         );
+        // Each entry it put in place says where it came from and where it landed, which is what
+        // an undo of the paste moves back or takes away.
+        let placed = state["placed"].as_array().expect("the placed entries");
+        assert_eq!(placed.len(), 2, "{state}");
+        assert_eq!(
+            placed[1]["from"],
+            serde_json::json!(from.join("notes.txt").to_string_lossy())
+        );
+        assert_eq!(
+            placed[1]["to"],
+            serde_json::json!(to.join("notes (2).txt").to_string_lossy())
+        );
         assert!(
             from.join("notes.txt").exists(),
             "a copy leaves the original"
+        );
+    }
+
+    #[test]
+    fn a_clashing_name_is_skipped_when_the_person_chose_skip() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+        std::fs::create_dir_all(&from).expect("folders");
+        std::fs::create_dir_all(&to).expect("folders");
+        std::fs::write(from.join("notes.txt"), b"new notes").expect("notes");
+        std::fs::write(to.join("notes.txt"), b"older notes").expect("older notes");
+
+        let state = finished(&started_answering(
+            &[&from.join("notes.txt")],
+            &to,
+            false,
+            "skip",
+        ));
+        assert_eq!(state["state"], "done", "{state}");
+        assert_eq!(
+            std::fs::read(to.join("notes.txt")).expect("kept"),
+            b"older notes",
+            "the entry the folder held stays as it was"
+        );
+        assert!(
+            !to.join("notes (2).txt").exists(),
+            "a skipped entry lands nowhere"
+        );
+        assert!(
+            from.join("notes.txt").exists(),
+            "a skipped copy leaves its source"
+        );
+    }
+
+    #[test]
+    fn a_clashing_name_is_replaced_when_the_person_chose_replace() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let (from, to) = (dir.path().join("from"), dir.path().join("to"));
+        std::fs::create_dir_all(&from).expect("folders");
+        std::fs::create_dir_all(&to).expect("folders");
+        std::fs::write(from.join("notes.txt"), b"new notes").expect("notes");
+        std::fs::write(to.join("notes.txt"), b"older notes").expect("older notes");
+
+        let state = finished(&started_answering(
+            &[&from.join("notes.txt")],
+            &to,
+            false,
+            "replace",
+        ));
+        assert_eq!(state["state"], "done", "{state}");
+        assert_eq!(
+            std::fs::read(to.join("notes.txt")).expect("the new one"),
+            b"new notes",
+            "the arriving entry takes the name"
+        );
+        assert!(
+            !to.join("notes (2).txt").exists(),
+            "replace leaves one entry, not two"
         );
     }
 

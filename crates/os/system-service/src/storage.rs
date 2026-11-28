@@ -20,8 +20,8 @@ use tilo_fs_client::storage::{
 use tilo_service::offer;
 use tilo_storage_scan::{StorageCategory, StorageRoots};
 use tilo_system_resources::storage::{
-    CACHE_SIZES, CachePolicy, CategoryUsage, DiskUsage, ReclaimableFile, STORAGE, Storage,
-    StorageAction, StoredItem, WorkspaceHold,
+    CACHE_SIZES, CachePolicy, CategoryUsage, DiskUsage, KEPT_SHOWN, KeptFile, ReclaimableFile,
+    STORAGE, Storage, StorageAction, StoredItem, WorkspaceHold,
 };
 
 use crate::i18n::name;
@@ -106,6 +106,40 @@ fn reclaimable(snapshot: &SyncStorageSnapshot) -> (Vec<ReclaimableFile>, u64) {
     (files, bytes)
 }
 
+/// The synced files this device does not plainly hold whole and keeps elsewhere, as the reading
+/// lists them: those the person keeps offline first, then those this device fetched and may
+/// free, then the rest.
+fn kept_files(snapshot: &SyncStorageSnapshot) -> Vec<KeptFile> {
+    let mut files: Vec<&tilo_fs_client::storage::SyncedFileState> = snapshot
+        .files
+        .iter()
+        .filter(|file| {
+            file.pinned
+                || file.remote_only
+                || file.in_flight
+                || file.hydrated_bytes < file.logical_bytes
+                || file.reclaimable_bytes > 0
+        })
+        .collect();
+    files.sort_by_key(|file| (!file.pinned, std::cmp::Reverse(file.reclaimable_bytes)));
+    files
+        .into_iter()
+        .take(KEPT_SHOWN)
+        .map(|file| KeptFile {
+            workspace: file.workspace.clone(),
+            path: file.logical_path.clone(),
+            pinned: file.pinned,
+            elsewhere: file.remotely_durable,
+            local: !file.remote_only && file.hydrated_bytes >= file.logical_bytes,
+            bytes: file.logical_bytes,
+            local_bytes: file.hydrated_bytes,
+            reclaimable_bytes: file.reclaimable_bytes,
+            transfer: if file.in_flight { "in flight" } else { "idle" }.to_owned(),
+            unsaved: file.dirty,
+        })
+        .collect()
+}
+
 /// What the filesystem daemon says of the workspace files this device syncs, into `reading`: what
 /// it holds of each mounted workspace, how it fetches and keeps them, and what can be freed. Each
 /// answer lands on its own, so one the daemon refuses leaves the others readable.
@@ -133,6 +167,7 @@ fn fill_synced(reading: &mut Storage) {
         match client.snapshot() {
             Ok(snapshot) => {
                 let (files, bytes) = reclaimable(&snapshot);
+                reading.kept = kept_files(&snapshot);
                 reading.reclaimable = files;
                 reading.reclaimable_bytes = bytes;
             }
@@ -360,6 +395,26 @@ pub fn free_file(workspace: &str, path: &str) -> Result<(), String> {
     {
         let _ = (workspace, path);
         Err("The workspace files this device holds cannot be freed here".to_owned())
+    }
+}
+
+/// Keep `path` in `workspace` on this device ("Keep offline"), or stop keeping it; answers
+/// whether the file stands pinned itself now, rather than under a folder's pin.
+///
+/// # Errors
+/// No workspace is mounted, `workspace` holds no such file, or the filesystem daemon refuses
+/// the change.
+pub fn keep_file(workspace: &str, path: &str, keep: bool) -> Result<bool, String> {
+    #[cfg(unix)]
+    {
+        connect()?
+            .pin_file(workspace, path, keep)
+            .map_err(|error| format!("That file cannot be kept offline: {error}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (workspace, path, keep);
+        Err("The workspace files this device holds cannot be changed here".to_owned())
     }
 }
 

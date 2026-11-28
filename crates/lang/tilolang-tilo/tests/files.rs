@@ -332,6 +332,14 @@ impl EngineHost for Transfers {
     /// What a file's header states, as the device reads it: a movie plays for a minute and five
     /// seconds, a document has twelve pages, anything else states nothing.
     fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
+        if (app, op) == ("so.tilo.file-explorer", "empty-trash") {
+            let names: Vec<String> = self.disk.trash.borrow().keys().cloned().collect();
+            let mut trash = self.disk.trash.borrow_mut();
+            for name in &names {
+                trash.remove(name);
+            }
+            return Ok(serde_json::json!({ "emptied": names.len() }).to_string());
+        }
         if (app, op) != ("so.tilo.file-explorer", "facts") {
             return Err(format!("{app}'s {op} is not the file explorer's facts"));
         }
@@ -373,10 +381,25 @@ impl EngineHost for Transfers {
                 |(stem, extension)| (stem.to_owned(), format!(".{extension}")),
             );
             let mut to = folder.join(&name);
-            let mut number = 2u32;
-            while to.exists() {
-                to = folder.join(format!("{stem} ({number}){extension}"));
-                number = number.saturating_add(1);
+            if to.exists() {
+                match ask["clash"].as_str().unwrap_or("") {
+                    // The answers the person gives when the folder holds the name already.
+                    "skip" => continue,
+                    "replace" => {
+                        if to.is_dir() {
+                            std::fs::remove_dir_all(&to).expect("the replaced folder");
+                        } else {
+                            std::fs::remove_file(&to).expect("the replaced file");
+                        }
+                    }
+                    _ => {
+                        let mut number = 2u32;
+                        while to.exists() {
+                            to = folder.join(format!("{stem} ({number}){extension}"));
+                            number = number.saturating_add(1);
+                        }
+                    }
+                }
             }
             if ask["moving"] == true {
                 std::fs::rename(&from, &to).expect("a move");
@@ -779,6 +802,11 @@ fn select_all_and_paste_copy_every_chosen_entry_and_a_taken_name_is_kept_both() 
     );
     app.call("go", vec![app.root_value(), Files::text("~/Archive")]);
     app.call("paste", vec![app.root_value()]);
+    // The folder holds a.txt already, so the window asks, and keeping both is the answer.
+    app.call(
+        "answer_clash",
+        vec![app.root_value(), Files::text("keep-both")],
+    );
 
     assert_eq!(
         std::fs::read_to_string(home.join("Archive/a.txt")).expect("the older file"),
@@ -842,6 +870,11 @@ fn chosen_entries_move_or_copy_into_a_folder_the_menu_names_and_nothing_is_repla
     app.call(
         "copy_into",
         vec![app.root_value(), Files::text("~/Documents")],
+    );
+    // Documents holds report.pdf already: the window asks, and keeping both is the answer.
+    app.call(
+        "answer_clash",
+        vec![app.root_value(), Files::text("keep-both")],
     );
     assert_eq!(
         std::fs::read_to_string(home.join("Documents/report.pdf")).expect("the older one"),
@@ -1329,4 +1362,232 @@ fn the_inspector_says_how_long_a_recording_plays_and_how_many_pages_a_document_h
     for gone in ["Duration", "Pages", "Codec"] {
         assert!(!words.iter().any(|word| word == gone), "{gone}: {words:?}");
     }
+}
+
+#[test]
+fn a_cloud_folder_whose_sign_in_was_refused_says_so_in_the_sidebar() {
+    let app = Files::new();
+    app.host
+        .runtime()
+        .set_reading(
+            &reading("folders"),
+            r#"{"folders": [{"workspace": "drive-1", "name": "Drive", "server": "drive.example",
+                "path": "/var/workspace/drive", "state": "stalled", "stuck": "",
+                "refused": "the sign-in expired", "files": 3}]}"#,
+        )
+        .expect("the folders reading is set");
+    app.call("arrive", vec![app.root_value()]);
+    let words = shown(&mut app.window());
+    assert!(
+        words
+            .iter()
+            .any(|word| word.contains("Drive") && word.contains("Sign in again")),
+        "a cloud folder whose sign-in was refused says so: {words:?}"
+    );
+}
+
+#[test]
+fn the_sidebar_starts_with_the_persons_places() {
+    let app = Files::new();
+    app.call("arrive", vec![app.root_value()]);
+    let mut window = app.window();
+    let words = shown(&mut window);
+    for wanted in [
+        "Home",
+        "Documents",
+        "Downloads",
+        "Pictures",
+        "Music",
+        "Videos",
+        "Root",
+        "Trash",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "the sidebar offers {wanted}: {words:?}"
+        );
+    }
+}
+
+#[test]
+fn emptying_the_trash_removes_what_it_holds_for_good() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Inbox/old.txt", "old");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Inbox")]);
+    app.call(
+        "trash_entries",
+        vec![
+            app.root_value(),
+            Value::List(vec![Value::Text("~/Inbox/old.txt".into())]),
+        ],
+    );
+    assert_eq!(app.disk.trash.borrow().len(), 1, "the file is in the trash");
+
+    app.call("empty_trash", vec![app.root_value()]);
+    assert!(
+        app.disk.trash.borrow().is_empty(),
+        "nothing stays in the trash once it is emptied"
+    );
+    assert!(
+        !home.join("Inbox/old.txt").exists(),
+        "what the trash held is gone for good"
+    );
+}
+
+#[test]
+fn undo_brings_back_what_a_move_to_trash_put_away() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Inbox/keep.txt", "keep me");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Inbox")]);
+    app.call(
+        "trash_entries",
+        vec![
+            app.root_value(),
+            Value::List(vec![Value::Text("~/Inbox/keep.txt".into())]),
+        ],
+    );
+    assert!(!home.join("Inbox/keep.txt").exists());
+
+    app.call("undo_last", vec![app.root_value()]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("Inbox/keep.txt")).expect("the file is back"),
+        "keep me",
+        "the undo brings back what the trash put away"
+    );
+}
+
+#[test]
+fn undo_takes_a_pastes_copies_away_again() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Inbox/copy.txt", "a copy");
+    std::fs::create_dir_all(home.join("Archive")).expect("a folder");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Inbox")]);
+    app.call("select_all", vec![app.root_value()]);
+    app.call(
+        "carry_selection",
+        vec![app.root_value(), Value::Bool(false)],
+    );
+    app.call("go", vec![app.root_value(), Files::text("~/Archive")]);
+    app.call("paste", vec![app.root_value()]);
+    assert!(
+        home.join("Archive/copy.txt").exists(),
+        "the paste copied it"
+    );
+
+    // The device says where the paste put it, which is what an undo takes away.
+    app.transfer_moves(
+        "done",
+        serde_json::json!({
+            "done": 6,
+            "total": 6,
+            "current": "copy.txt",
+            "placed": [{"from": "~/Inbox/copy.txt", "to": "~/Archive/copy.txt"}],
+        }),
+    );
+    app.call("undo_last", vec![app.root_value()]);
+    assert!(
+        !home.join("Archive/copy.txt").exists(),
+        "the undo takes the copy away again"
+    );
+    assert!(
+        home.join("Inbox/copy.txt").exists(),
+        "the original stays where it was"
+    );
+}
+
+#[test]
+fn a_name_the_folder_holds_is_asked_about_and_answered() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Inbox/a.txt", "new a");
+    std::fs::create_dir_all(home.join("Archive")).expect("a folder");
+    write(&home, "Archive/a.txt", "older a");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Inbox")]);
+    app.call("select_all", vec![app.root_value()]);
+
+    // Copying into a folder that holds the name asks first: it puts nothing in place yet.
+    app.call(
+        "copy_into",
+        vec![app.root_value(), Files::text("~/Archive")],
+    );
+    let mut window = app.window();
+    let words = shown(&mut window);
+    for wanted in ["already exists", "Skip", "Keep both", "Replace"] {
+        assert!(
+            words.iter().any(|word| word.contains(wanted)),
+            "the window asks about {wanted}: {words:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join("Archive/a.txt")).expect("the older file"),
+        "older a"
+    );
+
+    // Skip keeps what the folder holds alone.
+    app.call("answer_clash", vec![app.root_value(), Files::text("skip")]);
+    assert_eq!(
+        std::fs::read_to_string(home.join("Archive/a.txt")).expect("the older file"),
+        "older a"
+    );
+    assert!(
+        !home.join("Archive/a (2).txt").exists(),
+        "a skipped entry lands nowhere"
+    );
+
+    // Keep both lands the copy beside it.
+    app.call(
+        "copy_into",
+        vec![app.root_value(), Files::text("~/Archive")],
+    );
+    app.call(
+        "answer_clash",
+        vec![app.root_value(), Files::text("keep-both")],
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("Archive/a (2).txt")).expect("the copy"),
+        "new a"
+    );
+}
+
+#[test]
+fn a_recent_file_that_is_gone_says_so_and_can_be_removed() {
+    let app = Files::new();
+    let home = app.disk.home.clone();
+    write(&home, "Documents/plan.md", "# Plan");
+    app.call("arrive", vec![app.root_value()]);
+    app.call("go", vec![app.root_value(), Files::text("~/Documents")]);
+    app.call(
+        "open_entry",
+        vec![app.root_value(), Files::text("~/Documents/plan.md")],
+    );
+    app.call("go", vec![app.root_value(), Files::text("recent")]);
+    let mut window = app.window();
+    assert!(has(&mut window, "plan.md"), "{:?}", shown(&mut window));
+
+    // The file goes away behind the window: Recent says so rather than opening nothing.
+    std::fs::remove_file(home.join("Documents/plan.md")).expect("the file is gone");
+    app.call("check_recent", vec![app.root_value()]);
+    let mut window = app.window();
+    assert!(
+        has(
+            &mut window,
+            "Gone: it was moved, renamed or deleted since you opened it."
+        ),
+        "the row says why it opens nothing: {:?}",
+        shown(&mut window)
+    );
+
+    app.call(
+        "forget_recent",
+        vec![app.root_value(), Files::text("~/Documents/plan.md")],
+    );
+    let mut window = app.window();
+    assert!(!has(&mut window, "plan.md"), "the row is gone");
 }

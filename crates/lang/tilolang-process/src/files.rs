@@ -1079,6 +1079,35 @@ pub fn trash_entries() -> Result<Vec<TrashEntry>, String> {
     Ok(entries)
 }
 
+/// Empties this device's trash for good: every entry it holds, and the receipt that would put it
+/// back. What it removes nothing brings back. Answers how many entries it emptied.
+///
+/// # Errors
+///
+/// Why the trash cannot be read, or one of its entries cannot be removed.
+pub fn empty_trash() -> Result<usize, String> {
+    let (files, info) = trash_dirs()?;
+    let emptied = trash_entries()?;
+    for entry in &emptied {
+        remove(&entry.path)?;
+        let receipt = info.join(format!("{}.trashinfo", entry.name));
+        if receipt.exists() {
+            remove(&receipt.to_string_lossy())?;
+        }
+    }
+    // A file the trash keeps with no receipt is emptied too: it is nothing a person can restore.
+    if let Ok(reading) = std::fs::read_dir(&files) {
+        for item in reading.flatten() {
+            let left = &item.path();
+            let name = item.file_name().to_string_lossy().into_owned();
+            if !info.join(format!("{name}.trashinfo")).exists() {
+                remove(&left.to_string_lossy())?;
+            }
+        }
+    }
+    Ok(emptied.len())
+}
+
 /// Restore the trashed entry `name` to where it came from, answering the entry it made there.
 ///
 /// # Errors

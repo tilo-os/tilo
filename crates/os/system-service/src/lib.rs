@@ -2112,6 +2112,18 @@ impl SystemService {
                     crate::storage::cache_budget(&size).map_err(ApiError::InvalidArguments)?;
                 Ok(self.start_storage(id, Some(StorageChange::SetCacheSize { bytes })))
             }
+            tilo_system_resources::storage::StorageAction::KeepFile {
+                workspace,
+                path,
+                keep,
+            } => Ok(self.start_storage(
+                id,
+                Some(StorageChange::KeepFile {
+                    workspace,
+                    path,
+                    keep,
+                }),
+            )),
             tilo_system_resources::storage::StorageAction::FreeFile { workspace, path } => {
                 Ok(self.start_storage(id, Some(StorageChange::FreeFile { workspace, path })))
             }

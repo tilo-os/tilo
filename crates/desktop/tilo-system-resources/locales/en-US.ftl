@@ -45,6 +45,7 @@ so-tilo-system-storage-keep-here = Keep a workspace on this device
 so-tilo-system-storage-scan = Scan the storage
 so-tilo-system-storage-set-prefetch = Fetch files ahead of their open
 so-tilo-system-storage-set-cache-size = How much fetched files may take
+so-tilo-system-storage-keep-file = Keep a file on this device
 so-tilo-system-storage-free-file = Free a synced file's copy here
 so-tilo-system-storage-free-synced-files = Free every file that can be freed
 so-tilo-system-update-rollback = Go back to the previous system

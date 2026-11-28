@@ -503,9 +503,15 @@ d-n9jkqy4o = Dateien
     .w-delete-permanently = Endgültig löschen
     .w-rename = Umbenennen
     .w-files-is-starting = Dateien startet…
-
+    .w-undo = Rückgängig
+    .w-share = Teilen…
+    .w-version-history = Versionsverlauf…
+    .w-keep-offline = Offline behalten
+    .w-use-automatic-storage = Automatischen Speicher verwenden
+    .w-free-local-space = Lokalen Speicher freigeben
 d-z6cheebf = Orte
     .w-places = Orte
+    .w-workspaces = Arbeitsbereiche
     .w-drives = Laufwerke
     .w-favorites = Favoriten
     .w-folders = Ordner
@@ -516,7 +522,9 @@ d-wsk8uwkt = Zuletzt geöffnete Dateien
     .w-no-recent-files-yet = Noch keine zuletzt geöffneten Dateien
     .w-files-you-open-stand-here-one = Dateien, die du öffnest, stehen hier, einen Druck entfernt.
     .w-recent-files = Zuletzt geöffnete Dateien
-
+    .w-gone-it-was-moved-renamed-or = Verschwunden: Sie wurde verschoben, umbenannt oder gelöscht, seit du sie geöffnet hast.
+    .w-containing-folder = Enthaltender Ordner
+    .w-remove = Entfernen
 d-qfj1tkgq = Geprüft
     .w-selected = { $len } ausgewählt
     .w-type = Art
@@ -537,7 +545,8 @@ d-qfj1tkgq = Geprüft
     .w-you-gave-this = Du hast das vergeben
     .w-gave-this = { $granted_by_name } hat das vergeben
     .w-take-back = Zurücknehmen
-
+    .w-share = Teilen…
+    .w-version-history = Versionsverlauf…
 d-wduoe4ej = Ausgewählt
     .doc = Die Einträge, die die Person gewählt hat, nach ihren Pfaden; der Eintrag, den die Inspektion zuletzt unter ihnen zeigt; leer, solange nichts gewählt ist.
 
@@ -806,7 +815,7 @@ d-mxaz5hjr = Übertragungszeile
     .w-of = { $size_of } von { $size_of2 } · { $current }
     .w-stop = Anhalten
     .w-dismiss = Schließen
-
+    .w-start-again = Erneut starten
 d-f55s4nn4 = Dateiangaben
     .doc = Was der Kopf einer Datei über sie sagt: die Größe eines Bildes, wie lange eine Aufnahme läuft, wie viele Seiten ein Dokument hat, und ihr Codec und Container; `0` oder leer, wo er nichts sagt.
     .noun = { $count ->
@@ -839,3 +848,175 @@ d-27yiejjv = Angaben
     .doc = Was der eigene Kopf der gewählten Datei über sie sagt, wie das Gerät ihn las.
 
 d-rb1nrssu-filter-facts = Angaben
+
+d-i5x2zzcm = Konflikt
+
+d-4woecne2 = Konflikt
+    .doc = Zwei Namen, die zusammentreffen: was die Person in `folder` bringt, wo `clashing` schon steht, damit das Fenster nach einer der drei Antworten fragen kann.
+    .noun = { $count ->
+        [one] Konflikt
+       *[other] Konflikte
+    }
+
+d-4z3q55rz = Pfade
+
+d-ye2fzlih = Ordner
+
+d-u5bhsqil = Verschieben
+
+d-ou2duglw = Zusammentreffend
+
+d-4woecne2-filter-moving = Verschieben
+
+d-t53amr7z = Konflikt
+    .doc = Eine Kopie, ein Verschieben oder ein Einfügen, deren Namen auf solche treffen, die der Ordner hält, und die auf die Antwort der Person warten; nichts, solange nichts wartet.
+
+d-rjib5yfd = Teilen
+    .doc = Der Eintrag, der geteilt wird, nach seinem Pfad; leer, solange das Teilen-Blatt nicht offen ist.
+
+d-rb1nrssu-filter-clash = Konflikt
+
+d-ibi5ogyw-clash = Konflikt
+
+d-5l3tzbid = Konflikt beantworten
+    .doc = Beantwortet die Frage, die die Namen des Ordners stellen: `skip` überspringt die Einträge, deren Namen zusammentreffen, `keep-both` legt sie unter „Name (2)“ ab, und `replace` ersetzt, was der Ordner hält; leer legt die Frage weg und legt nichts ab.
+d-5l3tzbid-answer = Antwort
+
+d-4yv24xt6 = Eintrag teilen
+    .doc = Öffnet das Einladungsblatt des Systems für den Eintrag unter `path`: etwas zu teilen heißt, Menschen in den Arbeitsbereich einzuladen, der es hält, und die Ressource benennt, was geteilt wird.
+d-4yv24xt6-path = Pfad
+
+d-znji25hc = Teilen schließen
+    .doc = Legt das Einladungsblatt weg.
+
+d-lu7vaezh = Eintrag behalten
+    .doc = Behält den Eintrag unter `path` auf diesem Gerät, damit er ohne Netz öffnet, oder hört auf, ihn zu behalten.
+d-lu7vaezh-path = Pfad
+d-lu7vaezh-keep = Behalten
+
+d-taexnozm = Eintrag freigeben
+    .doc = Gibt die Kopie des Eintrags unter `path` auf diesem Gerät frei: der Arbeitsbereich hält ihn anderswo, und wer ihn hier öffnet, holt ihn wieder.
+d-taexnozm-path = Pfad
+
+d-fm27szvc = Verlauf zeigen
+    .doc = Öffnet den Verlauf des Systems zu diesem Arbeitsbereich, wo frühere Fassungen einer Datei wiederhergestellt werden: der Verlauf, in dem die Änderungen jeder App liegen, nie eine Kopie, die Files hält.
+
+d-g4offtzv = Konflikttitel
+    .w-already-exists-in = „{ $name_of }“ ist bereits in „{ $name_of2 }“
+    .w-items-already-exist-in = { $len } Einträge sind bereits in „{ $name_of }“
+
+d-xvrwceq2 = Konfliktzeile
+    .w-replacing-moves-what-the-folder-holds = Ersetzen verschiebt, was der Ordner hält, in den Papierkorb.
+    .w-skip = Überspringen
+    .w-keep-both = Beide behalten
+    .w-replace = Ersetzen
+    .w-cancel = Abbrechen
+
+d-2op5ougp = Teilenzeile
+    .w-sharing-with-your-workspace = „{ $name_of }“ wird mit deinem Arbeitsbereich geteilt
+    .w-done = Fertig
+
+d-ttry6qg6 = Aufbewahrung
+    .w-storage = Speicher
+    .w-on-this-device = Auf diesem Gerät
+    .w-partly-of = Teilweise, { $size_of } von { $size_of2 }
+    .w-not-yet = Noch nicht
+    .w-keeping = Aufbewahrung
+    .w-kept-offline = Offline behalten
+    .w-automatic = Automatisch
+    .w-elsewhere = Anderswo
+    .w-kept-on-another-device = Auf einem anderen Gerät behalten
+    .w-no-other-device-holds-a-copy = Noch hält kein anderes Gerät eine Kopie
+    .w-transfer = Übertragung
+    .w-unsaved = Nicht gesichert
+    .w-this-device-holds-changes-no-other = Dieses Gerät hält Änderungen, die noch kein anderes Gerät hat
+    .w-can-be-freed = Freigebbar
+    .w-use-automatic-storage = Automatischen Speicher verwenden
+    .w-keep-offline = Offline behalten
+    .w-free-here = { $size_of } hier freigeben
+    .w-on-this-device-using-automatic-storage = Auf diesem Gerät, mit automatischem Speicher.
+
+d-dh6siypq = Reihenfolge
+    .doc = Wo er unter den Orten seiner Überschrift steht: kleiner weiter oben.
+
+d-khab557i-filter-order = Reihenfolge
+
+d-g43zsydh = Verschwunden
+    .doc = Ob die Datei, die er nennt, von ihrem Ort verschwunden ist, damit die Zeile sagt, warum sie nichts öffnet.
+
+d-hyjz9xk8-filter-gone = Verschwunden
+
+d-cwntrelw = Pfade
+    .doc = Was er tun sollte, damit ein erneuter Versuch es wieder fragt.
+
+d-cehxsx3r = Ordner
+
+d-uwc6zph4 = Verschieben
+
+d-j5otssel = Abgelegt
+    .doc = Jeder Eintrag, den eine Übertragung ablegte, damit ein Einfügen rückgängig gemacht werden kann.
+
+d-spg47sjt-filter-moving = Verschieben
+
+d-vduse5nj = Abgelegt
+    .doc = Ein Eintrag, den eine Übertragung ablegte: woher er kam und wohin er ging.
+    .noun = { $count ->
+        [one] abgelegt
+       *[other] abgelegt
+    }
+
+d-cvqojrvm = Von
+
+d-y4z2zc4s = Nach
+
+d-sap56bfe = Rückgängig-Schritt
+    .doc = Was das Fenster zuletzt tat und zurücknehmen kann: die Einträge, die ein Verschieben in den Papierkorb weglegte, oder die Einträge, die ein Einfügen ablegte.
+    .noun = { $count ->
+        [one] Rückgängig-Schritt
+       *[other] Rückgängig-Schritte
+    }
+
+d-jackeg7e = Was
+    .doc = `trash` für ein Verschieben in den Papierkorb, `transfer` für ein Einfügen oder Verschieben.
+
+d-lzkzny7t = Papierkorb
+    .doc = Die Papierkorb-Namen, die zurückgeholt werden.
+
+d-wzfa6526 = Eingefügt
+    .doc = Was eine Übertragung ablegte, nach Herkunft und Ziel.
+
+d-o5i7rzx2 = Verschieben
+
+d-sap56bfe-filter-moving = Verschieben
+
+d-qab7rhyv = Abgelegt
+    .doc = Jeder Eintrag, den eine Übertragung ablegte, damit ein Einfügen rückgängig gemacht werden kann.
+
+d-zzbowqur = Rückgängig
+    .doc = Was dieses Fenster zuletzt tat und zurücknehmen kann.
+
+d-rb1nrssu-filter-undo = Rückgängig
+
+d-osz6vqbt = Standardorte hinzufügen
+    .doc = Fügt die Orte hinzu, die ein früheres Files noch nicht in seiner Seitenleiste hat.
+
+d-zuqw4lb7 = Übertragung erneut starten
+    .doc = Startet die Übertragung `transfer` nach einem Abbruch erneut: was sie tun sollte, noch einmal gefragt.
+d-zuqw4lb7-transfer = Übertragung
+
+d-f3mu3ukc = Rückgängig
+    .doc = Nimmt zurück, was dieses Fenster zuletzt tat: holt zurück, was ein Verschieben in den Papierkorb weglegte, oder macht ein Einfügen rückgängig — die Einträge einer Kopie gehen wieder in den Papierkorb, ein verschobener geht dorthin zurück, woher er kam.
+
+d-wapam57s = Zuletzt prüfen
+    .doc = Sieht jede Datei, die dieses Fenster zuletzt öffnete, erneut an, damit Zuletzt sagt, welche verschwunden sind, statt beim Drücken nichts zu öffnen.
+
+d-bgovrb2p = Enthaltenden Ordner zeigen
+    .doc = Öffnet den Ordner, der die zuletzt geöffnete Datei unter `path` hält, mit der Datei dort gewählt.
+d-bgovrb2p-path = Pfad
+
+d-glaogsbv = Aus Zuletzt entfernen
+    .doc = Nimmt die Datei unter `path` aus Zuletzt.
+d-glaogsbv-path = Pfad
+
+d-ih5smaws = Ordnerbeschriftung
+    .w-sign-in-again = Erneut anmelden

@@ -154,6 +154,12 @@ pub enum StorageChange {
     SetPrefetch { on: bool },
     /// Set the bytes of fetched workspace files this device keeps; `None` is the daemon's own.
     SetCacheSize { bytes: Option<u64> },
+    /// Keep one synced file on this device, or stop keeping it.
+    KeepFile {
+        workspace: String,
+        path: String,
+        keep: bool,
+    },
     /// Free one synced file's copy on this device.
     FreeFile { workspace: String, path: String },
     /// Free every synced file whose copy here can be freed without losing anything.
@@ -835,6 +841,11 @@ impl System for OsSystem {
             StorageChange::FreeCache { workspace } => crate::storage::free_cache(workspace),
             StorageChange::SetPrefetch { on } => crate::storage::set_prefetch(*on),
             StorageChange::SetCacheSize { bytes } => crate::storage::set_cache_size(*bytes),
+            StorageChange::KeepFile {
+                workspace,
+                path,
+                keep,
+            } => crate::storage::keep_file(workspace, path, *keep).map(drop),
             StorageChange::FreeFile { workspace, path } => {
                 crate::storage::free_file(workspace, path)
             }

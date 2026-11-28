@@ -79,6 +79,14 @@ pub async fn serve(listener: tilo_socket::tokio::Listener, authority: StorageAut
                             Err(error) => StorageResponse::Error(error.to_string()),
                         }
                     }
+                    StorageRequest::PinFile {
+                        workspace,
+                        path,
+                        keep,
+                    } => match authority.pin_file(&workspace, &path, keep) {
+                        Ok(pinned) => StorageResponse::Pinned { pinned },
+                        Err(error) => StorageResponse::Error(error.to_string()),
+                    },
                 };
                 if STORAGE_FRAMING
                     .write_value_async(&mut stream, &response)
@@ -427,6 +435,64 @@ impl StorageAuthority {
             .lock_recover()
             .set_policy_along(&[(root, EntryKind::Directory, None)], policy)?;
         Ok(())
+    }
+
+    /// Keep one file of this workspace on this device ("Keep offline"), or stop keeping it:
+    /// the file's own policy, which its folder's pin reaches while that stands. Answers whether
+    /// the file stands pinned itself now.
+    ///
+    /// # Errors
+    ///
+    /// `workspace` is not this one, `path` names no entry of it, or the policy cannot be
+    /// recorded.
+    pub fn pin_file(&self, workspace: &str, path: &str, keep: bool) -> Result<bool> {
+        self.check_workspace(workspace)?;
+        let registry = self
+            .availability
+            .as_ref()
+            .ok_or_else(|| anyhow!("durable availability registry is unavailable"))?;
+        let (document_id, ancestry) = {
+            let mut ns = self.namespace.lock_recover();
+            let ino = ns
+                .resolve_path_ino(path.trim_matches('/'))
+                .ok_or_else(|| anyhow!("{path} is no file of this workspace"))?;
+            let document_id = ns
+                .document_id_for(ino)
+                .ok_or_else(|| anyhow!("{path} is no file of this workspace"))?;
+            let mut ancestry = Vec::new();
+            let mut cursor = Some(ino);
+            while let Some(current) = cursor {
+                let id = ns
+                    .document_id_for(current)
+                    .ok_or_else(|| anyhow!("{path} is no file of this workspace"))?;
+                let attr = ns
+                    .getattr(current)
+                    .ok_or_else(|| anyhow!("{path} is no file of this workspace"))?;
+                let kind = if attr.kind == crate::node::FileType::Directory {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                };
+                let parent = ns
+                    .parent_ino(current)
+                    .and_then(|parent| ns.document_id_for(parent));
+                ancestry.push((id, kind, parent));
+                cursor = ns.parent_ino(current);
+            }
+            ancestry.reverse();
+            drop(ns);
+            (document_id, ancestry)
+        };
+        let policy = if keep {
+            fs_protocol::AvailabilityPolicy::Pinned
+        } else {
+            fs_protocol::AvailabilityPolicy::Automatic
+        };
+        let mut registry = registry.lock_recover();
+        registry.set_policy_along(&ancestry, policy)?;
+        Ok(registry
+            .get(document_id)
+            .is_some_and(|record| record.policy == fs_protocol::AvailabilityPolicy::Pinned))
     }
 
     /// # Errors
@@ -874,6 +940,55 @@ mod tests {
         assert!(refused.is_err(), "a budget below the minimum is refused");
         assert!(!heuristics.prefetch_enabled());
         assert_eq!(hydrator.store.files().budget(), MIN_CACHE_BUDGET_BYTES * 4);
+
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_file_is_kept_offline_and_released_through_the_socket() {
+        use runtime_fs::storage::StorageClient;
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = Arc::new(Mutex::new(Namespace::new("storage").unwrap()));
+        namespace
+            .lock()
+            .unwrap()
+            .make_folder("", "album", 1)
+            .expect("a folder");
+        let hydrator = Arc::new(Hydrator::new(
+            Arc::new(crate::store::ContentStore::memory()),
+        ));
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let authority = StorageAuthority::new(
+            Arc::clone(&namespace),
+            hydrator,
+            Arc::new(Mutex::new(HashMap::new())),
+            Some(Arc::clone(&registry)),
+            None,
+            "work",
+        );
+        let socket = dir.path().join("storage.sock");
+        let server = tokio::spawn(serve(
+            tokio::net::UnixListener::bind(&socket).unwrap(),
+            authority,
+        ));
+
+        let (kept, released, refused) = tokio::task::spawn_blocking(move || {
+            let mut client = StorageClient::connect(&socket).unwrap();
+            let kept = client.pin_file("work", "album", true).unwrap();
+            let released = client.pin_file("work", "album", false).unwrap();
+            let refused = client.pin_file("elsewhere", "album", true);
+            (kept, released, refused)
+        })
+        .await
+        .unwrap();
+        assert!(kept, "a file kept offline answers that it is pinned");
+        assert!(
+            !released,
+            "a file released answers that it is not pinned itself"
+        );
+        assert!(refused.is_err(), "another workspace is refused");
 
         server.abort();
     }

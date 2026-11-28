@@ -218,6 +218,13 @@ pub enum StorageRequest {
         workspace: String,
         keep: bool,
     },
+    /// Keep one file of `workspace` on this device ("Keep offline"), or stop keeping it. Its
+    /// folder's pin reaches it while that stands.
+    PinFile {
+        workspace: String,
+        path: String,
+        keep: bool,
+    },
 }
 
 /// An answer on the storage socket; new variants go last, as in
@@ -230,7 +237,13 @@ pub enum StorageResponse {
     CachePolicy(CachePolicy),
     Residency(ResidencySummary),
     CacheFreed(CacheFreed),
-    Kept { keep: bool },
+    Kept {
+        keep: bool,
+    },
+    /// The policy the file stands at now: whether it is pinned itself.
+    Pinned {
+        pinned: bool,
+    },
 }
 
 #[cfg(unix)]
@@ -336,6 +349,25 @@ impl StorageClient {
             keep,
         })? {
             StorageResponse::Kept { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Keep `path` in `workspace` on this device, or stop keeping it; answers whether the file
+    /// stands pinned itself now (its folder's pin is not its own).
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the socket write/read fails, the daemon reports
+    /// [`StorageResponse::Error`], the path is no file of that workspace, or it answers another
+    /// kind.
+    pub fn pin_file(&mut self, workspace: &str, path: &str, keep: bool) -> std::io::Result<bool> {
+        match self.request(&StorageRequest::PinFile {
+            workspace: workspace.to_owned(),
+            path: path.to_owned(),
+            keep,
+        })? {
+            StorageResponse::Pinned { pinned } => Ok(pinned),
             other => Err(unexpected(other)),
         }
     }

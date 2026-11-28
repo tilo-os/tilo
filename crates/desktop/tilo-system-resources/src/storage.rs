@@ -135,6 +135,44 @@ pub struct ReclaimableFile {
     pub bytes: u64,
 }
 
+/// Where one synced file's bytes on this device stand: what a person asks about a file of a
+/// workspace before opening it ("Kept on this device", "Kept offline", "Kept on another device").
+/// Only files that are not plainly local and kept elsewhere are listed, so a workspace with
+/// thousands of files lists the ones the person kept and the ones this device fetched and may
+/// free.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a reading's facts: whether it is pinned, on another device, local and unsaved are each read on their own, not a state machine"
+)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct KeptFile {
+    /// The workspace the file belongs to, as the reading names its workspaces.
+    pub workspace: String,
+    /// The file's path in that workspace.
+    pub path: String,
+    /// Whether the person keeps this file offline ("Keep offline").
+    pub pinned: bool,
+    /// Whether another device the person's acknowledged holding this version.
+    pub elsewhere: bool,
+    /// Whether this device holds the file's bytes whole.
+    pub local: bool,
+    /// The bytes of the file, and how many of them are on this device.
+    pub bytes: u64,
+    pub local_bytes: u64,
+    /// The bytes freeing this device's copy would give back, when it may be freed safely.
+    pub reclaimable_bytes: u64,
+    /// What fetch or save of it is doing: "in flight", or "idle".
+    pub transfer: String,
+    /// Whether this device holds changes of it no other device has saved yet.
+    pub unsaved: bool,
+}
+
+/// The most files [`Storage::kept`] lists: the ones a person kept come first, then those this
+/// device fetched and may free.
+pub const KEPT_SHOWN: usize = 256;
+
 /// What this computer's storage reads as now.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -153,6 +191,10 @@ pub struct Storage {
     /// reached.
     #[serde(default)]
     pub cache_policy: Option<CachePolicy>,
+    /// Where each synced file that is not plainly local and kept elsewhere stands: the ones the
+    /// person keeps offline, and the ones this device fetched and may free.
+    #[serde(default)]
+    pub kept: Vec<KeptFile>,
     /// Synced files whose copy here can be freed without losing anything, largest first.
     #[serde(default)]
     pub reclaimable: Vec<ReclaimableFile>,
@@ -260,6 +302,26 @@ pub enum StorageAction {
         /// The space to keep, as `CACHE_SIZES` names it.
         #[param("The space to keep", choices = CACHE_SIZES)]
         size: String,
+    },
+    /// Keep one file of a workspace on this device, so it opens with no network, or stop keeping
+    /// it. A file kept offline is never freed to make room.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "pin",
+        keywords = "keep offline, keep on this device, offline behalten, datei offline"
+    )]
+    KeepFile {
+        /// The file's workspace, as the reading lists it.
+        #[param("The file's workspace, as the reading lists it")]
+        workspace: String,
+        /// The file's path in that workspace.
+        #[param("The file's path in its workspace, as the reading lists it")]
+        path: String,
+        /// Whether to keep it on this device.
+        #[param("Whether to keep it on this device")]
+        keep: bool,
     },
     /// Free one synced file's copy on this device. The workspace keeps it elsewhere, and opening
     /// it here fetches it again.

@@ -12,6 +12,9 @@ use tilo.workspace as workspace
 op "transfer"
 op "facts"
 
+/// Emptying this device's trash deletes what it holds for good: no undo brings it back.
+op "empty-trash" changes device
+
 /// How a folder's entries read.
 enum SortBy {
     /// By what they are called.
@@ -65,6 +68,8 @@ type Place (title: label) {
     path: Text = ""
     /// The heading over it in the sidebar.
     group: Text = "Places"
+    /// Where it stands among the places of its heading: smaller above.
+    order: Int = 500
 }
 
 /// A place the person marked in the sidebar.
@@ -77,6 +82,8 @@ type Recent (title: name) {
     name: Text = ""
     path: Text = ""
     opened: Time
+    /// Whether the file it names is gone from where it stood, so the row says why it opens nothing.
+    gone: Bool = false
 }
 
 /// The preview made for the picture at `path`, kept once so the window draws it again without
@@ -96,7 +103,8 @@ type Destination (title: name) {
 }
 
 /// A copy or a move the device carries out as its own work, so a large one says how far it has
-/// got and can be stopped: what it is doing, in the person's words, and how it stands.
+/// got and can be stopped: what it is doing, in the person's words, and how it stands. It keeps
+/// what it was asked, so one that stopped short can be started again.
 type Transfer (title: label) {
     /// The device's job; empty once it ended.
     job: Text = ""
@@ -109,6 +117,30 @@ type Transfer (title: label) {
     current: Text = ""
     /// Why it stopped short; empty while it runs or once it finished.
     failed: Text = ""
+    /// What it was asked to do, so a retry asks again.
+    paths: List<Text>
+    folder: Text = ""
+    moving: Bool = false
+    /// Each entry it put in place, so a paste can be undone.
+    placed: List<Placed>
+}
+
+/// One entry a transfer put in place: where it came from, and where it landed.
+type Placed {
+    from: Text = ""
+    to: Text = ""
+}
+
+/// What the window last did that it can take back: the entries a Move to Trash put away, or the
+/// entries a paste put in place.
+type UndoStep {
+    /// `trash` for a Move to Trash, `transfer` for a paste or a move.
+    what: Text = ""
+    /// The trash names to bring back.
+    trash: List<Text>
+    /// What a transfer placed, by where it came from and where it landed.
+    pasted: List<Placed>
+    moving: Bool = false
 }
 
 /// What a file's header says it is: a picture's size, how long a recording plays, how many pages
@@ -123,11 +155,22 @@ type FileFacts {
     container: Text = ""
 }
 
-/// What a transfer asks of the device: the entries at `paths` put into `folder`.
+/// What a transfer asks of the device: the entries at `paths` put into `folder`, and what to do
+/// with a name the folder already holds: `skip`, `replace`, or empty to keep both.
 type TransferAsk {
     paths: List<Text>
     folder: Text
     moving: Bool
+    clash: Text = ""
+}
+
+/// A pair of names that meet: what the person carries into `folder`, where `clashing` already
+/// stands, so the window can ask which of the three answers to give.
+type Clash {
+    paths: List<Text>
+    folder: Text
+    moving: Bool
+    clashing: List<Text>
 }
 
 /// How far a transfer has got, as the device records it.
@@ -135,6 +178,9 @@ type TransferState {
     done: Int
     total: Int
     current: Text
+    /// Each entry it has put in place so far; none while its device says none, as an older
+    /// device does.
+    placed: Option<List<Placed>> = .none
 }
 
 /// One person's window on this device's files: where they are, how they look, what they marked,
@@ -182,6 +228,13 @@ type Session (readers: author) {
     notice: Text = ""
     /// The copies and moves under way from this window, and the ones that stopped short.
     transfers: Collection<Transfer>
+    /// A copy, move or paste whose names meet ones the folder holds, waiting for the person's
+    /// answer; none while nothing waits.
+    clash: Option<Clash> = .none
+    /// The entry being shared, by its path; empty while the share sheet is not open.
+    sharing: Text = ""
+    /// What this window last did that it can take back.
+    undo: Option<UndoStep> = .none
 }
 
 /// The workspace's Files: one window per person, the places they marked, and what they opened.
@@ -199,13 +252,40 @@ default view files for Files
 /// A new Files starts with the places its sidebar offers: the workspace's own folder, and the
 /// places this app keeps itself.
 initial action standard_places(f: Files) {
-    f.places.insert(Place(label: "Files", path: "", group: "Places"))
-    f.places.insert(Place(label: "Recent", path: "recent"))
-    f.places.insert(Place(label: "Applications", path: "applications", group: "Places"))
+    f.places.insert(Place(label: "Files", path: "", group: "Places", order: 0))
+    for place in default_places() {
+        f.places.insert(place)
+    }
+}
+
+/// The places a Files sidebar offers beside the workspace's own folder: this person's home and
+/// the folders under it, this computer's root, its trash, the files opened lately and its apps.
+fn default_places() -> List<Place> {
+    [
+        Place(label: "Home", path: "~", order: 10),
+        Place(label: "Desktop", path: "~/Desktop", order: 15),
+        Place(label: "Documents", path: "~/Documents", order: 20),
+        Place(label: "Downloads", path: "~/Downloads", order: 30),
+        Place(label: "Pictures", path: "~/Pictures", order: 40),
+        Place(label: "Music", path: "~/Music", order: 50),
+        Place(label: "Videos", path: "~/Videos", order: 60),
+        Place(label: "Trash", path: "trash", order: 70),
+        Place(label: "Recent", path: "recent", order: 80),
+        Place(label: "Applications", path: "applications", group: "Places", order: 90),
+        Place(label: "Root", path: "/", group: "This computer", order: 10),
+    ]
+}
+
+/// Adds the places a Files made before these stood in its sidebar still lacks.
+action add_standard_places(f: Files) {
+    for place in default_places() {
+        if f.places.find(x -> x.path == place.path) == .none { f.places.insert(place) }
+    }
 }
 
 /// Opening Files reads the folder the person is in, unless this window has read it already.
 opened action arrive(f: Files) uses files, time {
+    add_standard_places(f)
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if s.listings.find(l -> l.path == s.here) == .none { read_listing(f, s.here) }
 }
@@ -349,6 +429,7 @@ action go(f: Files, place: Text) uses files, time {
     s.previewed = ""
     s.words = ""
     read_listing(f, place)
+    if place == "recent" { check_recent(f) }
 }
 
 /// Goes back to the place the person came from.
@@ -462,12 +543,27 @@ action copy_into(f: Files, folder: Text) uses files, time {
 }
 
 /// Puts the entries at `paths` into `folder`, moving them or copying them, as the device's own work:
-/// the window shows how far it has got and can stop it. What arrives under a name the folder
-/// already holds lands as “name (2)”, so nothing is replaced.
-action put_into(f: Files, paths: List<Text>, folder: Text, moving: Bool) uses files, time {
+/// the window shows how far it has got and can stop it. A name the folder already holds is asked
+/// about first, unless `clash` is the answer already given: skip it, keep both as “name (2)”, or
+/// replace it.
+action put_into(
+    f: Files,
+    paths: List<Text>,
+    folder: Text,
+    moving: Bool,
+    clash: Text = "",
+) uses files, time {
     require not paths.is_empty() "Choose a file first"
     require folder_place(folder) "Choose a folder to put them in"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if clash == "" {
+        let held = names_in(f, folder, s)
+        let meeting = paths.filter(p -> held.contains(name_of(p)))
+        if not meeting.is_empty() {
+            s.clash = .some(Clash(paths: paths, folder: folder, moving: moving, clashing: meeting))
+            return
+        }
+    }
     let what = if paths.len() == 1 {
         "“{name_of(paths.first() ?? "")}”"
     } else { "{paths.len()} items" }
@@ -476,10 +572,10 @@ action put_into(f: Files, paths: List<Text>, folder: Text, moving: Bool) uses fi
     } else {
         "Copying {what} to “{name_of(folder)}”"
     }
-    let t = s.transfers.insert(Transfer(label: label))
+    let t = s.transfers.insert(Transfer(label: label, paths: paths, folder: folder, moving: moving))
     match engine.start(
         "transfer",
-        json.encode(TransferAsk(paths: paths, folder: folder, moving: moving)),
+        json.encode(TransferAsk(paths: paths, folder: folder, moving: moving, clash: clash)),
         done: j -> transfer_ended(f, t, j),
         progress: j -> transfer_moved(t, j),
     ) {
@@ -493,6 +589,124 @@ action put_into(f: Files, paths: List<Text>, folder: Text, moving: Bool) uses fi
     }
 }
 
+/// The names of what `folder` holds, as this window reads it: the listing it already has for the
+/// place it shows, the workspace's own reading of a folder of its tree, or the disk.
+fn names_in(f: Files, folder: Text, s: Session) -> List<Text> {
+    if let held = s.listings.find(l -> l.path == folder) {
+        held.entries.map(e -> e.name)
+    } else if workspace_place(folder) {
+        workspace_folder(folder).entries.map(e -> e.name)
+    } else {
+        match File.list(folder) {
+            .ok(found) => found.map(e -> e.name),
+            .err(_) => [],
+        }
+    }
+}
+
+/// Answers the question the folder's names put: `skip` the entries whose names meet, `keep-both`
+/// put them under “name (2)”, or `replace` what the folder holds; empty puts the question away
+/// and puts nothing.
+action answer_clash(f: Files, answer: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if let waiting = s.clash {
+        s.clash = .none
+        if answer != "" {
+            put_into(f, waiting.paths, waiting.folder, waiting.moving, answer)
+        }
+    }
+}
+
+/// The entry at `path` as this window reads it: what the folder shown lists, or the workspace's
+/// own reading of its tree.
+fn entry_at(f: Files, s: Session, path: Text) -> Option<Entry> {
+    match place_entry(f, path) {
+        .some(held) => held,
+        .none => {
+            if workspace_place(s.here) {
+                workspace_entries(s.here).find(e -> e.path == path)
+            } else { .none }
+        }
+    }
+}
+
+/// The workspace in front, as the session names it: what its files are shared and kept in.
+fn workspace_key() -> Text {
+    if let one = workspace.access.workspaces.first() { one.id } else { "" }
+}
+
+/// Opens the system's invitation sheet for the entry at `path`: sharing something is inviting
+/// people into the workspace that holds it, and the resource names what is shared.
+action share_entry(f: Files, path: Text) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if not workspace_place(s.here) {
+        s.notice = "Only something in a workspace can be shared"
+        return
+    }
+    if workspace_key() == "" {
+        s.notice = "Sharing isn’t available on this device"
+        return
+    }
+    let entry = entry_at(f, s, path) ?? Entry(name: name_of(path), path: path)
+    let resource = if entry.folder { "folder:" + path } else { "file:" + path }
+    device.nearby_send.invite_people(resource: resource)
+    s.sharing = path
+}
+
+/// Puts the invitation sheet away.
+action close_share(f: Files) {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.sharing = ""
+}
+
+/// Keeps the entry at `path` on this device, so it opens with no network, or stops keeping it.
+action keep_entry(f: Files, path: Text, keep: Bool) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let key = workspace_key()
+    if key == "" {
+        s.notice = "Sharing isn’t available on this device"
+        return
+    }
+    device.storage.keep_file(workspace: key, path: path, keep: keep)
+    if let why = device.storage.problem {
+        s.notice = "Couldn’t change how “{name_of(path)}” is kept: {why}"
+    } else if keep {
+        s.notice = "Keeping “{name_of(path)}” offline"
+    } else {
+        s.notice = "Using automatic storage for “{name_of(path)}”"
+    }
+    device.storage.scan()
+}
+
+/// Frees this device's copy of the entry at `path`: the workspace keeps it elsewhere, and opening
+/// it here fetches it again.
+action free_entry(f: Files, path: Text) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let key = workspace_key()
+    if key == "" {
+        return
+    }
+    device.storage.free_file(workspace: key, path: path)
+    if let why = device.storage.problem {
+        s.notice = "Couldn’t free “{name_of(path)}”: {why}"
+    } else {
+        s.notice = "Freeing local space for “{name_of(path)}”"
+    }
+    device.storage.scan()
+}
+
+/// Opens the system's History on this workspace, where a file's earlier versions are restored:
+/// the history every app's changes are kept in, never a copy Files keeps.
+action show_history(f: Files) uses files, time {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let key = workspace_key()
+    if not workspace_place(s.here) or key == "" {
+        s.notice = "Only something in a workspace has history"
+        return
+    }
+    session.activity(workspace: key, view: "history")
+}
+
 /// How far the transfer `t` has got, as the device records each move.
 action transfer_moved(t: Transfer, j: host.Job) {
     match json.decode<TransferState>(j.detail) {
@@ -500,6 +714,9 @@ action transfer_moved(t: Transfer, j: host.Job) {
             t.done = state.done
             t.total = state.total
             t.current = state.current
+            if let placed = state.placed {
+                t.placed = placed
+            }
         }
         .err(_) => {}
     }
@@ -514,8 +731,60 @@ action transfer_ended(f: Files, t: Transfer, j: host.Job) uses files, time {
         t.failed = j.error
     }
     if let s = f.sessions.first() {
+        if j.state != .failed {
+            if not t.placed.is_empty() {
+                s.undo = .some(UndoStep(what: "transfer", pasted: t.placed, moving: t.moving))
+            }
+            s.transfers.remove(t)
+        }
         read_listing(f, s.here)
-        if j.state != .failed { s.transfers.remove(t) }
+    }
+}
+
+/// Starts the transfer `transfer` again, after it stopped short: what it was asked, asked once
+/// more.
+action retry_transfer(f: Files, transfer: Transfer) uses files, time {
+    if transfer.job != "" or transfer.paths.is_empty() {
+        return
+    }
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.transfers.remove(transfer)
+    put_into(f, transfer.paths, transfer.folder, transfer.moving)
+}
+
+/// Takes back what this window last did: brings back what a Move to Trash put away, or undoes a
+/// paste — a copy's entries go to Trash again, a moved one goes back where it came from.
+action undo_last(f: Files) uses files, time (icon: .undo_2, label: "Undo", key: "Ctrl+Z") {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if let step = s.undo {
+        s.undo = .none
+        if step.what == "trash" {
+            for name in step.trash {
+                match File.restore(name) {
+                    .ok(_) => {}
+                    .err(_) => {}
+                }
+            }
+            s.notice = "Trash undone."
+        } else {
+            for placed in step.pasted {
+                if step.moving {
+                    match File.move(placed.to, parent_of(placed.from)) {
+                        .ok(_) => {}
+                        .err(_) => {}
+                    }
+                } else {
+                    match File.trash(placed.to) {
+                        .ok(_) => {}
+                        .err(_) => {}
+                    }
+                }
+            }
+            s.notice = "Paste undone."
+        }
+        read_listing(f, s.here)
+    } else {
+        s.notice = "Nothing to undo"
     }
 }
 
@@ -790,6 +1059,31 @@ action note_recent(f: Files, name: Text, path: Text) uses time {
     }
 }
 
+/// Looks again at each file this window opened lately, so Recent says which are gone rather than
+/// opening nothing when pressed.
+action check_recent(f: Files) uses files {
+    for r in f.recent {
+        match File.stat(r.path) {
+            .ok(found) => {
+                r.gone = found == .none
+            }
+            .err(_) => {
+                r.gone = true
+            }
+        }
+    }
+}
+
+/// Opens the folder that holds the recent file at `path`, with the file chosen there.
+action show_containing(f: Files, path: Text) uses files, time {
+    show(f, path)
+}
+
+/// Takes the file at `path` out of Recent.
+action forget_recent(f: Files, path: Text) {
+    if let held = f.recent.find(r -> r.path == path) { f.recent.remove(held) }
+}
+
 /// Makes a folder named `name` in the place shown.
 action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .folder_plus) {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
@@ -985,13 +1279,19 @@ action trash_entries(f: Files, paths: List<Text>) uses files, time (
 ) {
     require not paths.is_empty() "Select files first"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let gone: List<Text> = []
     for path in paths {
         match File.trash(path) {
-            .ok(_) => {}
+            .ok(entry) => {
+                gone = gone + [entry.name]
+            }
             .err(why) => {
                 s.notice = "Couldn’t move “{name_of(path)}” to Trash: {why}"
             }
         }
+    }
+    if not gone.is_empty() {
+        s.undo = .some(UndoStep(what: "trash", trash: gone))
     }
     read_listing(f, s.here)
 }
@@ -1024,25 +1324,12 @@ action delete_permanently(f: Files, path: Text) uses files (
     }
 }
 
-/// Empties this device's trash: every entry, and the receipt that would put it back.
-action empty_trash(f: Files) uses files, time (icon: .trash, label: "Empty Trash") {
+/// Empties this device's trash for good: every entry, and the receipt that would put it back.
+/// Nothing brings them back, so the person is asked first every time.
+destructive action empty_trash(f: Files) uses files, time (icon: .trash, label: "Empty Trash") {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    match File.trash_entries() {
-        .ok(items) => {
-            for t in items {
-                match File.remove(t.path) {
-                    .ok(_) => {}
-                    .err(why) => {
-                        s.notice = "Couldn’t empty Trash: {why}"
-                    }
-                }
-                let info = parent_of(parent_of(t.path)) + "/info/" + t.name + ".trashinfo"
-                match File.remove(info) {
-                    .ok(_) => {}
-                    .err(_) => {}
-                }
-            }
-        }
+    match engine.call("empty-trash", "") {
+        .ok(_) => {}
         .err(why) => {
             s.notice = "Couldn’t empty Trash: {why}"
         }
@@ -1198,6 +1485,11 @@ action inspect(f: Files, path: Text) uses files {
             }
         }
     }
+}
+
+/// Whether this window has something it can take back.
+fn can_undo(s: Session) -> Bool {
+    if let step = s.undo { true } else { false }
 }
 
 /// Whether this window has a place behind it.
@@ -1548,6 +1840,12 @@ view files(f: Files) {
                     for t in s.transfers {
                         transfer_row(f, t)
                     }
+                    if let c = s.clash {
+                        clash_row(f, c)
+                    }
+                    if s.sharing != "" {
+                        share_row(f, s)
+                    }
                     if naming != "" {
                         naming_row(f, s, naming, name)
                     }
@@ -1627,7 +1925,7 @@ view places(f: Files, s: Session) {
     let nearby = device.nearby_send.devices.filter(d -> d.reachable)
     ui.NavList(selected: s.here) {
         ui.NavSection("Places") {
-            for place in f.places.filter(x -> x.group == "Places").sort_by(x -> x.label) {
+            for place in f.places.filter(x -> x.group == "Places").sort_by(x -> x.order) {
                 ui.NavItem(
                     place.path,
                     place.label,
@@ -1654,6 +1952,22 @@ view places(f: Files, s: Session) {
                     } else if place.path == "~/Remote" { .cloud } else { .folder },
                 ) {
                     on select: go(f, place.path)
+                }
+            }
+        }
+        // The folders this device mounts: the workspace's own folders and the cloud accounts it
+        // connected, each with where its sync stands.
+        let mounted = device.folders.folders.filter(x -> x.path != "")
+        if not mounted.is_empty() {
+            ui.NavSection("Workspaces") {
+                for folder in mounted {
+                    ui.NavItem(
+                        folder.path,
+                        folder_label(folder),
+                        icon: if folder.server != "" { .cloud } else { .folder },
+                    ) {
+                        on select: go(f, folder.path)
+                    }
                 }
             }
         }
@@ -1756,6 +2070,17 @@ view places(f: Files, s: Session) {
     }
 }
 
+/// What a mounted folder is called in the sidebar, with where its sync stands when it is not
+/// plainly in step: a cloud account whose server refused the sign-in says to sign in again.
+fn folder_label(folder: device.Folder) -> Text {
+    let health = if folder.refused != "" {
+        "Sign in again"
+    } else if folder.stuck != "" {
+        folder.stuck
+    } else if folder.state != "" and folder.state != "in-sync" { folder.state } else { "" }
+    if health == "" { folder.name } else { "{folder.name} — {health}" }
+}
+
 /// The bar over the folder: the way back and up, and the steps to the folder shown.
 view path_bar(f: Files, s: Session, typing: State<Bool>, typed: State<Text>) {
     if typing {
@@ -1852,6 +2177,35 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
             ui.MenuItem("Clear selection", icon: .x, disabled: acted_on(f).is_empty()) {
                 on choose: clear_selection(f)
             }
+            ui.MenuItem("Undo", icon: .undo_2, key: "Ctrl+Z", disabled: not can_undo(s)) {
+                on choose: undo_last(f)
+            }
+            ui.MenuSeparator()
+            ui.MenuItem("Share…", icon: .share, disabled: acted_on(f).is_empty()) {
+                on choose: share_entry(f, s.selected)
+            }
+            ui.MenuItem(
+                "Version history…",
+                icon: .history,
+                disabled: not workspace_place(s.here),
+            ) {
+                on choose: show_history(f)
+            }
+            ui.MenuItem("Keep offline", icon: .pin, disabled: acted_on(f).is_empty()) {
+                on choose: keep_entry(f, s.selected, true)
+            }
+            ui.MenuItem("Use automatic storage", icon: .pin_off, disabled: acted_on(f).is_empty()) {
+                on choose: keep_entry(f, s.selected, false)
+            }
+            ui.MenuItem(
+                "Free local space",
+                icon: .trash,
+                destructive: true,
+                disabled: acted_on(f).is_empty(),
+            ) {
+                on choose: free_entry(f, s.selected)
+            }
+            ui.MenuSeparator()
             ui.MenuItem("Copy", icon: .copy, key: "Ctrl+C", disabled: acted_on(f).is_empty()) {
                 on choose: carry_selection(f, false)
             }
@@ -1900,6 +2254,130 @@ view openers_row(f: Files, s: Session) {
         }
         ui.Button("Cancel", role: .plain) {
             on press: close_openers(f)
+        }
+    }
+}
+
+/// What the folder's names ask: the entries that meet ones it holds, and the three answers, or
+/// putting the question away.
+view clash_row(f: Files, c: Clash) {
+    stack(padding: .related) {
+        text(clash_title(c), role: .label)
+        text("Replacing moves what the folder holds to Trash.", role: .caption, secondary: true)
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Skip", role: .plain) {
+                on press: answer_clash(f, "skip")
+            }
+            ui.Button("Keep both", role: .primary) {
+                on press: answer_clash(f, "keep-both")
+            }
+            ui.Button("Replace", role: .destructive) {
+                on press: answer_clash(f, "replace")
+            }
+            ui.Button("Cancel", role: .plain) {
+                on press: answer_clash(f, "")
+            }
+        }
+    }
+}
+
+/// What a clash asks, in the folder's own names.
+fn clash_title(c: Clash) -> Text {
+    if c.clashing.len() == 1 {
+        "“{name_of(c.clashing.first() ?? "")}” already exists in “{name_of(c.folder)}”"
+    } else {
+        "{c.clashing.len()} items already exist in “{name_of(c.folder)}”"
+    }
+}
+
+/// The invitation sheet the system opened for the entry being shared.
+view share_row(f: Files, s: Session) {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.Icon(.share, size: .small, secondary: true)
+        text(
+            "Sharing “{name_of(s.sharing)}” with your workspace",
+            role: .caption,
+            secondary: true,
+        )
+        ui.Button("Done", role: .plain) {
+            on press: close_share(f)
+        }
+    }
+}
+
+/// Where a synced file stands on this device, with what keeps it here and what may free it: what
+/// a person asks before opening something away from the network.
+view keeping(f: Files, s: Session, e: Entry) {
+    let key = workspace_key()
+    if workspace_place(s.here) and key != "" {
+        let held = device.storage.kept.find(k -> k.workspace == key and k.path == e.path)
+        ui.Section("Storage") {
+            match held {
+                .some(k) => {
+                    ui.PropertyList {
+                        ui.Property(
+                            "On this device",
+                            if k.local {
+                                size_of(k.local_bytes)
+                            } else if k.local_bytes > 0 {
+                                "Partly, {size_of(k.local_bytes)} of {size_of(k.bytes)}"
+                            } else { "Not yet" },
+                        )
+                        ui.Property("Keeping", if k.pinned { "Kept offline" } else { "Automatic" })
+                        ui.Property(
+                            "Elsewhere",
+                            if k.elsewhere {
+                                "Kept on another device"
+                            } else { "No other device holds a copy yet" },
+                        )
+                        if k.transfer != "idle" {
+                            ui.Property("Transfer", k.transfer)
+                        }
+                        if k.unsaved {
+                            ui.Property(
+                                "Unsaved",
+                                "This device holds changes no other device has yet",
+                            )
+                        }
+                        if k.reclaimable_bytes > 0 {
+                            ui.Property("Can be freed", size_of(k.reclaimable_bytes))
+                        }
+                    }
+                    row(gap: .related, align: .center, wrap: true) {
+                        if k.pinned {
+                            ui.Button("Use automatic storage", icon: .pin_off, size: .small) {
+                                on press: keep_entry(f, e.path, false)
+                            }
+                        } else {
+                            ui.Button("Keep offline", icon: .pin, size: .small) {
+                                on press: keep_entry(f, e.path, true)
+                            }
+                        }
+                        if k.reclaimable_bytes > 0 {
+                            ui.Button(
+                                "Free {size_of(k.reclaimable_bytes)} here",
+                                icon: .trash,
+                                role: .destructive,
+                                size: .small,
+                            ) {
+                                on press: free_entry(f, e.path)
+                            }
+                        }
+                    }
+                }
+                .none => {
+                    ui.Text(
+                        "On this device, using automatic storage.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Button("Keep offline", icon: .pin, size: .small) {
+                            on press: keep_entry(f, e.path, true)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1983,6 +2461,23 @@ view entry_list(
                     }
                     ui.MenuItem("Get info", icon: .info) {
                         on choose: inspect(f, e.path)
+                    }
+                    if workspace_place(s.here) {
+                        ui.MenuItem("Share…", icon: .share) {
+                            on choose: share_entry(f, e.path)
+                        }
+                        ui.MenuItem("Keep offline", icon: .pin) {
+                            on choose: keep_entry(f, e.path, true)
+                        }
+                        ui.MenuItem("Use automatic storage", icon: .pin_off) {
+                            on choose: keep_entry(f, e.path, false)
+                        }
+                        ui.MenuItem("Free local space", icon: .trash, destructive: true) {
+                            on choose: free_entry(f, e.path)
+                        }
+                        ui.MenuItem("Version history…", icon: .history) {
+                            on choose: show_history(f)
+                        }
                     }
                     ui.MenuSeparator()
                     if s.here == "trash" {
@@ -2111,8 +2606,15 @@ view transfer_row(f: Files, t: Transfer) {
                 on press: stop_transfer(f, t)
             }
         } else {
-            ui.Button("Dismiss", icon: .x, role: .plain) {
-                on press: dismiss_transfer(f, t)
+            row(gap: .related, align: .center, wrap: true) {
+                if not t.paths.is_empty() {
+                    ui.Button("Start again", icon: .refresh, role: .plain) {
+                        on press: retry_transfer(f, t)
+                    }
+                }
+                ui.Button("Dismiss", icon: .x, role: .plain) {
+                    on press: dismiss_transfer(f, t)
+                }
             }
         }
     }
@@ -2162,8 +2664,15 @@ view entry_row(f: Files, e: Entry, smaller: Bool) {
     }
 }
 
-/// Opens the app `a`, as pressing its row does.
+/// Opens the app `app_key`, as pressing its row does, and says it started; an app that does not
+/// start says so in the system's own notice, where the launch was refused.
 action open_app(f: Files, app_key: Text) {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    let named = match device.apps.installed.find(a -> a.key == app_key) {
+        .some(found) => found.name,
+        .none => app_key,
+    }
+    s.notice = "Opening “{named}”…"
     session.open_app(app_key)
 }
 
@@ -2201,8 +2710,27 @@ view recent_files(f: Files, s: Session) {
         ui.VirtualList(name: "Recent files", in_column: true) {
             for r in f.recent.sort_by(x -> x.opened, desc) {
                 ui.ListItem(value: r.path) {
-                    ui.ListRow(title: r.name, secondary: r.path, icon: .clock, meta: r.opened) {
-                        on activate: open_entry(f, r.path)
+                    ui.ListRow(
+                        title: r.name,
+                        secondary: if r.gone {
+                            "Gone: it was moved, renamed or deleted since you opened it."
+                        } else { r.path },
+                        icon: if r.gone { .triangle_alert } else { .clock },
+                        meta: r.opened,
+                    ) {
+                        on activate: if r.gone { check_recent(f) } else { open_entry(f, r.path) }
+                        trailing: {
+                            row(gap: .related, align: .center, wrap: true) {
+                                if not r.gone {
+                                    ui.Button("Containing folder", icon: .folder, size: .small) {
+                                        on press: show_containing(f, r.path)
+                                    }
+                                }
+                                ui.Button("Remove", icon: .x, size: .small) {
+                                    on press: forget_recent(f, r.path)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2256,7 +2784,18 @@ view inspected(f: Files, s: Session, entries: List<Entry>) {
                         "No app or person was given this folder."
                     } else { "No app or person was given this file." },
                 )
+                if workspace_place(s.here) {
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Button("Share…", icon: .share, size: .small) {
+                            on press: share_entry(f, e.path)
+                        }
+                        ui.Button("Version history…", icon: .history, size: .small) {
+                            on press: show_history(f)
+                        }
+                    }
+                }
             }
+            keeping(f, s, e)
             if let picture = s.preview {
                 ui.Image(src: picture.url, alt: e.name, fit: .contain)
             }
