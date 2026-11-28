@@ -27,6 +27,9 @@ const ANSWER_WAIT: Duration = Duration::from_secs(30);
 const UNWOKEN: &str = "the workspace's store answered, but the connection never woke the wait \
                        for it: the connection was joined outside the wake scope its host waits \
                        on, so every command would wait out its time before its answer is read";
+/// Why a command fails when the store did not answer within [`ANSWER_WAIT`]: what the person's
+/// save bar says, and what every command after it says at once.
+const NO_ANSWER: &str = "the workspace's store did not answer, so this change was not saved";
 /// How long a command that the connection cannot take yet waits before it is offered again, when
 /// nothing arrives on the connection sooner.
 const SEND_RETRY: Duration = Duration::from_millis(20);
@@ -112,6 +115,7 @@ impl Connection {
             arrived,
             next: Cell::new(1),
             unwoken: Cell::new(false),
+            stalled: Cell::new(false),
         }
     }
 }
@@ -128,6 +132,11 @@ pub struct CallPort {
     /// another wake, or none, so every answer would be found only once its wait ran out. Every
     /// command fails at once from then on, saying so.
     unwoken: Cell<bool>,
+    /// A command waited out [`ANSWER_WAIT`] and nothing has come back since: every command made
+    /// meanwhile fails at once, so a press behind a stalled one is answered now instead of
+    /// waiting out a bound of its own and queueing the person's next presses behind it. Anything
+    /// the connection delivers says it is answering again.
+    stalled: Cell<bool>,
 }
 
 impl CallPort {
@@ -148,6 +157,9 @@ impl Port for CallPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
         if self.unwoken.get() {
             return Err(UNWOKEN.to_owned());
+        }
+        if self.stalled.get() {
+            return Err(NO_ANSWER.to_owned());
         }
         let request_id = self.next.get();
         self.next.set(request_id.wrapping_add(1));
@@ -185,6 +197,8 @@ impl Port for CallPort {
         loop {
             let mut answer = None;
             for event in self.manager.borrow_mut().poll() {
+                // What the connection delivers says it is answering again.
+                self.stalled.set(false);
                 match event {
                     CollabEvent::ResourceCommandResult {
                         request_id: answered,
@@ -201,7 +215,8 @@ impl Port for CallPort {
                 return serde_json::from_slice(&answer?).map_err(|error| error.to_string());
             }
             if Instant::now() >= until {
-                return Err("the workspace's store did not answer".to_owned());
+                self.stalled.set(true);
+                return Err(NO_ANSWER.to_owned());
             }
             woken = self.wait(until);
         }

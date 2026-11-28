@@ -84,6 +84,34 @@ fn press(device: &Device, name: &str) {
     );
 }
 
+/// Click the first drawn control whose name is `name` or starts with it, where the session
+/// draws it, as the person at `device` does with the pointer.
+#[track_caller]
+fn click(device: &Device, name: &str) -> Value {
+    let target = wait_drawn(device, name);
+    let rect = target["rect"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}'s control has a place: {target}", device.label));
+    let at = |index: usize| {
+        rect[index]
+            .as_f64()
+            .unwrap_or_else(|| panic!("a rect of numbers: {target}"))
+    };
+    let answer = device.ask(&json!({
+        "op": "click_at",
+        "x": at(0) + at(2) / 2.0,
+        "y": at(1) + at(3) / 2.0,
+    }));
+    assert!(
+        answer.get("err").is_none(),
+        "{} clicks {:?} where it stands: {answer}\n{}",
+        device.label,
+        target["name"],
+        device.diagnostic()
+    );
+    target
+}
+
 /// What the app's window shows, as the app reads its own records to draw it: the app's
 /// `outline` action, the text an agent reads of the window.
 #[track_caller]
@@ -104,17 +132,23 @@ fn outline(device: &Device) -> String {
         )
 }
 
-/// A person starts a draft in Shortcuts and picks what starts it: the pick is a control's own
-/// edit of the trigger record, it is kept there, and the workspace's admission does not refuse
-/// it for naming no kind of the record it wrote.
-#[test]
-fn a_pick_in_a_tl_apps_trigger_form_is_kept_in_its_record() {
+/// A device where Ada's Shortcuts is open, its window drawn: what each press below starts from.
+fn opened_shortcuts() -> Device {
     let ada = Person::new("Ada");
     let mut device = ada.device("Ada's laptop");
     device.install_shortcuts();
     device.start();
     device.open(APP);
     device.wait_for_window(APP);
+    device
+}
+
+/// A person starts a draft in Shortcuts and picks what starts it: the pick is a control's own
+/// edit of the trigger record, it is kept there, and the workspace's admission does not refuse
+/// it for naming no kind of the record it wrote.
+#[test]
+fn a_pick_in_a_tl_apps_trigger_form_is_kept_in_its_record() {
+    let device = opened_shortcuts();
 
     // New shortcut opens a draft, and its trigger form stands in the window.
     press(&device, "New shortcut");
@@ -141,5 +175,59 @@ fn a_pick_in_a_tl_apps_trigger_form_is_kept_in_its_record() {
         "{}: the app's write reached its record\n{}",
         device.label,
         log.lines().rev().take(40).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// A person clicks New shortcut where the session draws it, and the draft it starts stands in
+/// the window: the control a window's content offers is drawn where it says it is, so a pointer
+/// aimed at its place acts.
+#[test]
+fn a_pointer_click_on_new_shortcut_opens_its_draft() {
+    let device = opened_shortcuts();
+
+    click(&device, "New shortcut");
+    wait_drawn(&device, "Add trigger");
+}
+
+/// A person sets what starts a shortcut the way the window asks: a click opens the trigger
+/// form, a click picks what starts it, a click puts the cursor in the app id field and what they
+/// type reaches the app, and a click on Add trigger puts the trigger in the draft with the app
+/// they named.
+#[test]
+fn a_person_types_an_app_id_and_adds_a_trigger() {
+    let device = opened_shortcuts();
+
+    click(&device, "New shortcut");
+    wait_drawn(&device, "Add trigger");
+
+    // Add trigger opens the form the person fills.
+    click(&device, "Add trigger");
+    wait_drawn(&device, "What starts it");
+
+    // What starts it: the field's menu, opened and picked where it stands.
+    click(&device, "What starts it");
+    click(&device, CASE);
+    wait_drawn(&device, &format!("What starts it, {CASE}"));
+
+    // The app the trigger is for: the field takes the keyboard from the click, and what the
+    // person types reaches the app's own tree, which its window draws.
+    click(&device, "App id");
+    device.type_text("so.tilo.chat");
+    tilo_test_env::wait_for("the field to hold the app id", || {
+        outline(&device).contains("so.tilo.chat").then_some(())
+    });
+    let shown = outline(&device);
+    assert!(
+        shown.contains("so.tilo.chat"),
+        "the field holds the typed app id: {shown}"
+    );
+
+    // Add trigger takes the form into the draft: the trigger stands in it with the app.
+    click(&device, "Add trigger");
+    wait_drawn(&device, "An app opens");
+    let shown = outline(&device);
+    assert!(
+        shown.contains("so.tilo.chat"),
+        "the draft's trigger carries the app the person named: {shown}"
     );
 }

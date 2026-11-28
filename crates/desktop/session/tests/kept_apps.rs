@@ -1047,12 +1047,7 @@ fn an_app_from_before_an_update_says_so_in_its_tab_and_restart_opens_it_again() 
     assert_eq!(rig.starts(), [pid], "no second copy started beside it");
     assert!(running(pid, at), "it goes on with what it holds");
 
-    // Its Restart, as an assistive technology presses it by name: the press the person's pointer
-    // makes of the card goes to the window it stands in, which is the shell's to hit-test.
-    second
-        .session
-        .press_action("Restart", ui::window_targets::TargetAction::Activate)
-        .expect("the card takes the press");
+    crate::common::press_control(&mut second.session, "Restart");
     until(
         &mut second.session,
         "the old app ended and a new one started",

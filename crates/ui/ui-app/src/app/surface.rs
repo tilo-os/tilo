@@ -305,7 +305,9 @@ impl App {
             // took in while the person typed) left the layout map behind: a
             // press would name a control the map no longer reaches, and the
             // control it leaves would keep the keyboard.
-            self.build_tree_before_input();
+            if self.build_tree_before_input() {
+                self.lay_out_before_input(window);
+            }
             // A context-menu press or key names the item of the window it lands on (the focused
             // one, for a key), for the menu it opens.
             let pointed = (crate::widget::context_menu::context_gesture()
@@ -397,7 +399,9 @@ impl App {
             // The tree a widget builds takes up the way it is reached (a finger's target, a
             // hover's fade), so this event lands on the tree built for its modality: the frame
             // after the input would replace what the input itself opened.
-            let _ = app.build_tree_before_input();
+            if app.build_tree_before_input() {
+                app.lay_out_before_input(window);
+            }
         }
         if history_input {
             // History's own chrome took this input: what widgets queued runs in no frame that
@@ -1281,6 +1285,38 @@ impl App {
         }
         self.rebuild_structure();
         true
+    }
+
+    /// Lay out `window`'s tree now when it was rebuilt since the last frame, as the frame that
+    /// follows would: a rebuilt tree has no places, and input dispatched against it reaches no
+    /// control at all — a press the person made on what they see ran nothing, and nothing said
+    /// why. The frame draws what this pass laid out, as it would its own.
+    fn lay_out_before_input(&mut self, window: &dyn AppSurface) {
+        let Some(root) = self.layout.root_node else {
+            return;
+        };
+        let scale = window.scale_factor();
+        let size = window.inner_size();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a window's logical size is a small non-negative pixel count"
+        )]
+        let (width, height) = (
+            (f64::from(size.width) / scale.max(f64::EPSILON)) as u32,
+            (f64::from(size.height) / scale.max(f64::EPSILON)) as u32,
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a window's scale is a small ratio"
+        )]
+        let scale_factor = scale as f32;
+        if crate::app::run_layout_pass(self, root, width, height, scale_factor, true, None)
+            .is_none()
+        {
+            tracing::warn!("a rebuilt tree could not be laid out for the input that follows it");
+        }
+        self.layout.layout_dirty = true;
     }
 
     /// Run one frame of the app on `surface` and paint it into `scene`, in
