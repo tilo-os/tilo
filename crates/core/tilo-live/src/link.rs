@@ -121,6 +121,12 @@ pub enum Toward {
     /// Into the device's own live session, which the daemon holds for `workspace`: what a
     /// person's desktop captures and plays out through.
     Call { workspace: String },
+    /// Into the scope of the person's device `device` ([`collab_types::scope::Scope::device`]),
+    /// which the daemon joins as this device under the person's own workspace's keys: publishing
+    /// there when `device` is another of theirs, reading it when it is this one. What the
+    /// desktop says crosses unsealed and what is heard comes back opened, as for
+    /// [`Self::Call`].
+    Device { device: [u8; 32] },
 }
 
 /// Write `toward` to `writer`: the opening of a link.
@@ -1275,6 +1281,14 @@ pub trait Calls: Send + Sync {
         workspace: String,
         session: Session,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Carry `session`, a link the desktop opened into the scope of its person's device
+    /// `device`, until it ends ([`Toward::Device`]).
+    fn carry_device<'a>(
+        &'a self,
+        device: [u8; 32],
+        session: Session,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 /// Carry one link a session opened on its daemon: read where it goes ([`Toward`]), then serve it
@@ -1301,6 +1315,10 @@ where
     match toward {
         Toward::Call { workspace } => match calls {
             Some(calls) => calls.carry(workspace, session).await,
+            None => session.close(0, "this device holds no live session"),
+        },
+        Toward::Device { device } => match calls {
+            Some(calls) => calls.carry_device(device, session).await,
             None => session.close(0, "this device holds no live session"),
         },
         Toward::Relay(addr) if *addr.id.as_bytes() != own => {

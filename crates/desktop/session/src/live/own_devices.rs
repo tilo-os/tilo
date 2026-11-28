@@ -2,28 +2,26 @@
 //! keyboard and pointer, driving it.
 //!
 //! Each device's daemon relays a scope of its own in the person's own workspace
-//! ([`Scope::Device`]). The device driving dials that relay directly, from its daemon to the other
-//! device's, and publishes there; the device driven joins its own daemon's relay and reads it. No
-//! third device stands between them, and the person's own workspace needs no device serving it.
-//! What crosses is sealed under that workspace's keys, which only the person's devices hold, and
-//! the relay admits only the devices their record keeps and has not taken back, and lets only the
-//! device driven read it. What a message says is its sender's affair: this carries bytes.
+//! ([`collab_types::scope::Scope::device`]). This session holds no key, so it opens a link on its
+//! daemon's socket toward that scope ([`Toward::Device`]) and the daemon joins it as the device:
+//! the scope of the device driven at that device's relay, dialled straight from this device's
+//! daemon, or this device's own on the relay its daemon runs. No third device stands between
+//! them, and the person's own workspace needs no device serving it. What crosses is sealed by the
+//! daemons under that workspace's keys, which only the person's devices hold; each relay admits
+//! only the devices whose certificates the person's root signed and which they have not taken
+//! back, and lets only the device driven read it. What a message says is its sender's affair:
+//! this carries bytes.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use collab_types::scope::Scope;
-use iroh::{EndpointAddr, EndpointId};
-use tilo_desktop_model::WorkspaceId;
-use tilo_live::frame::LiveKeys;
-use tilo_live::link;
+use tilo_live::link::Toward;
+use tilo_live::link_call::Call;
 use tilo_live::live::Track;
-use tilo_live::live_session::{Join, LiveSession};
-use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 
-use super::{ATTEMPT, Shared};
+use super::Shared;
 
 /// The way to the person's other devices, and from them to this one.
 #[derive(Clone)]
@@ -40,21 +38,19 @@ impl std::fmt::Debug for OwnDevices {
 
 #[derive(Default)]
 struct State {
-    /// The sessions this device publishes to each device it sends to, by that device.
+    /// The links this device publishes to each device it sends to, by that device.
     to: BTreeMap<[u8; 32], Sending>,
-    /// This device's own scope, read here: what the devices driving it send.
+    /// The link into this device's own scope: what the devices driving it send.
     here: Receiving,
-    /// The devices this device's own scope hears, as last told.
+    /// The devices this device's own scope is read for, as last told.
     heard_from: BTreeSet<[u8; 32]>,
 }
 
 enum Sending {
-    /// The other device's relay is being dialled: what was sent meanwhile goes as it opens.
+    /// The link toward the other device's scope is opening: what was sent meanwhile goes as it
+    /// opens.
     Opening(VecDeque<Vec<u8>>),
-    Open {
-        session: Arc<LiveSession>,
-        sequence: u32,
-    },
+    Open(Arc<Call>),
 }
 
 /// How long this device's own scope waits, after it was not joined, before a pass joins it
@@ -66,7 +62,7 @@ enum Receiving {
     #[default]
     Closed,
     Opening,
-    Open(Arc<LiveSession>),
+    Open(Arc<Call>),
     /// It was not joined at `since`: joined again once other devices are to be heard, or
     /// [`JOIN_AGAIN`] later.
     Missed {
@@ -83,8 +79,8 @@ impl OwnDevices {
     }
 
     /// Send `body` to the person's device `to`, after what was sent to it before: `false` when it
-    /// cannot go, because this session has no link to its daemon yet or the other device's relay
-    /// turned it away. The first message to a device dials its relay, and goes once that opens.
+    /// cannot go, because this session has no link to its daemon yet or the link toward the
+    /// other device ended. The first message to a device opens the link, and goes once it opens.
     pub(crate) fn send(&self, to: [u8; 32], body: Vec<u8>) -> bool {
         if to == self.shared.device {
             return false;
@@ -95,19 +91,14 @@ impl OwnDevices {
                 waiting.push_back(body);
                 return true;
             }
-            Some(Sending::Open { session, sequence }) if !session.ended() => {
-                let next = sequence.wrapping_add(1);
-                if session
-                    .publish_burst(Track::Input, &[(next, body.as_slice())])
-                    .is_ok()
-                {
-                    *sequence = next;
+            Some(Sending::Open(call)) if !call.ended() => {
+                if call.publish(Track::Input, 0, &body).is_ok() {
                     return true;
                 }
                 tracing::debug!(to = %hex::encode(to),
-                    "the session to the person's other device ended: it is dialled again");
+                    "the link to the person's other device ended: it is opened again");
             }
-            Some(Sending::Open { .. }) | None => {}
+            Some(Sending::Open(_)) | None => {}
         }
         let Some(runtime) = self.shared.runtime.get().cloned() else {
             state.to.remove(&to);
@@ -119,50 +110,39 @@ impl OwnDevices {
         drop(state);
         let (shared, sent) = (Arc::clone(&self.shared), Arc::clone(&self.state));
         runtime.spawn(async move {
-            let opened = open(&shared, to, true, Roster::new([])).await;
+            let opened = open(&shared, to).await;
             let mut state = sent.lock_recover();
             let Some(Sending::Opening(waiting)) = state.to.remove(&to) else {
                 return;
             };
-            let Some(session) = opened else {
+            let Some(call) = opened else {
                 tracing::info!(to = %hex::encode(to),
                     dropped = waiting.len(),
                     "the person's other device was not reached: what was sent to it is dropped");
                 return;
             };
-            let mut sequence = 0_u32;
-            let objects: Vec<(u32, &[u8])> = waiting
-                .iter()
-                .map(|body| {
-                    sequence = sequence.wrapping_add(1);
-                    (sequence, body.as_slice())
-                })
-                .collect();
-            if !objects.is_empty() && session.publish_burst(Track::Input, &objects).is_err() {
-                return;
+            for body in &waiting {
+                if call.publish(Track::Input, 0, body).is_err() {
+                    return;
+                }
             }
-            state.to.insert(
-                to,
-                Sending::Open {
-                    session: Arc::new(session),
-                    sequence,
-                },
-            );
+            state.to.insert(to, Sending::Open(call));
         });
         true
     }
 
     /// What the person's devices `from` sent this one since it was last asked, in the order each
     /// sent it, with the device that sealed it. This device's own scope is joined on the first
-    /// ask, and heard from `from` from then on.
+    /// ask; its daemon hears every device of the person there, and what a device not in `from`
+    /// sent is left out here.
     pub(crate) fn heard(&self, from: &BTreeSet<[u8; 32]>) -> Vec<([u8; 32], Vec<u8>)> {
         let mut state = self.state.lock_recover();
         let heard_moved = state.heard_from != *from;
         if heard_moved {
             state.heard_from.clone_from(from);
         }
-        let session = match &state.here {
-            Receiving::Open(session) if !session.ended() => Arc::clone(session),
+        let call = match &state.here {
+            Receiving::Open(call) if !call.ended() => Arc::clone(call),
             Receiving::Opening => return Vec::new(),
             Receiving::Missed { since } if !heard_moved && since.elapsed() < JOIN_AGAIN => {
                 return Vec::new();
@@ -172,13 +152,12 @@ impl OwnDevices {
                     return Vec::new();
                 };
                 state.here = Receiving::Opening;
-                let roster = Roster::new(from.iter().copied());
                 let (shared, heard) = (Arc::clone(&self.shared), Arc::clone(&self.state));
                 let own = self.shared.device;
                 runtime.spawn(async move {
-                    let opened = open(&shared, own, false, roster).await;
+                    let opened = open(&shared, own).await;
                     let mut state = heard.lock_recover();
-                    let Some(session) = opened else {
+                    let Some(call) = opened else {
                         // Nothing came to hear: the session's pass is not woken for it, or each
                         // pass would join again at once and wake the next.
                         state.here = Receiving::Missed {
@@ -186,11 +165,9 @@ impl OwnDevices {
                         };
                         return;
                     };
-                    // The devices named while it opened are the ones it hears, and what they
-                    // send wakes the session's pass the moment it is here.
-                    session.set_roster(Roster::new(state.heard_from.iter().copied()));
-                    session.set_wake(Arc::clone(&shared.wake));
-                    state.here = Receiving::Open(Arc::new(session));
+                    // What the devices send wakes the session's pass the moment it is here.
+                    call.set_wake(Arc::clone(&shared.wake));
+                    state.here = Receiving::Open(call);
                     drop(state);
                     (shared.wake)();
                 });
@@ -198,78 +175,21 @@ impl OwnDevices {
             }
         };
         drop(state);
-        if heard_moved {
-            session.set_roster(Roster::new(from.iter().copied()));
-        }
-        std::iter::from_fn(|| session.try_recv())
-            .filter(|heard| heard.track == Track::Input)
+        std::iter::from_fn(|| call.try_recv())
+            .filter(|heard| heard.track == Track::Input && from.contains(&heard.sender))
             .map(|heard| (heard.sender, heard.body))
             .collect()
     }
 }
 
-/// The person's own workspace, as this session's device names its person.
-fn person_workspace(shared: &Shared) -> WorkspaceId {
-    let root = shared.cert.user_public_key;
-    WorkspaceId::from(collab_types::workspace_id::person_workspace(&root))
-}
-
-/// The keys `workspace`'s live scopes are sealed with, as this session holds them: none, since
-/// a workspace's keys stay with the device's daemon and the daemon does not yet carry a scope of
-/// the person's devices for the session.
-fn own_keys(_workspace: WorkspaceId) -> Option<LiveKeys> {
-    None
-}
-
-/// Join the scope of the person's device `device`, at its relay: publishing to it from here
-/// (`publish`), or this device reading its own, hearing `roster`. `None` when it could not be
-/// joined now: no link to the daemon, no keys of the person's workspace, or the relay was not
-/// reached or turned this device away.
-async fn open(
-    shared: &Shared,
-    device: [u8; 32],
-    publish: bool,
-    roster: Roster,
-) -> Option<LiveSession> {
+/// Open the link toward the scope of the person's device `device`, which this device's daemon
+/// joins as this device. `None` when it could not be opened now: no link to the daemon yet, or
+/// the daemon could not join the scope (the person's own workspace's keys are not there yet, or
+/// the other device was not reached or turned this one away).
+async fn open(shared: &Shared, device: [u8; 32]) -> Option<Arc<Call>> {
     let links = Arc::clone(shared.links.get()?);
-    let workspace = person_workspace(shared);
-    // The person's own workspace's keys stay with this device's daemon, which seals nothing of
-    // this scope for the session yet: until it does, no other device of theirs is driven from here.
-    let Some(keys) = own_keys(workspace) else {
-        tracing::debug!("the person's own workspace's keys are not here");
-        return None;
-    };
-    let scope = Scope::device(workspace.to_string(), device);
-    let epoch = keys.epoch();
-    let grant = match shared.grant(workspace, &scope, epoch) {
-        Ok(grant) => grant,
-        Err(error) => {
-            tracing::warn!(%error, "this device has no grant for its person's devices");
-            return None;
-        }
-    };
-    let toward = if device == shared.device {
-        link::Toward::Here
-    } else {
-        // The person's devices keep sessions with each other's endpoints already: the daemon's
-        // endpoint reaches the other device at the address it last learned.
-        let Ok(id) = EndpointId::from_bytes(&device) else {
-            tracing::debug!(device = %hex::encode(device), "a device key that names no endpoint");
-            return None;
-        };
-        link::Toward::Relay(EndpointAddr::new(id))
-    };
-    let dial = Arc::new(link::Daemon::new(move || links(), toward));
-    let join = Join {
-        scope,
-        device: shared.device,
-        keys,
-        roster,
-        publish,
-        presence: false,
-    };
-    match LiveSession::join_within(dial, &grant, join, ATTEMPT).await {
-        Ok(session) => Some(session),
+    match Call::open_toward(move || links(), Toward::Device { device }, shared.device).await {
+        Ok(call) => Some(call),
         Err(error) => {
             tracing::warn!(device = %hex::encode(device), %error,
                 "the scope of the person's device was not joined");
@@ -286,20 +206,6 @@ mod tests {
 
     use super::*;
 
-    /// A device of a person: the scope's join reads only its keys.
-    fn cert() -> tilo_user_identity::DeviceCert {
-        tilo_user_identity::DeviceCert {
-            user_public_key: [7; 32],
-            device_public_key: [9; 32],
-            device_label: "Laptop".to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 0,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        }
-    }
-
     /// A scope that does not join wakes no pass, and is not joined again by the passes after it
     /// while the devices it hears stay the same: a session that cannot join its own scope
     /// would otherwise wake itself to join again, round after round.
@@ -309,7 +215,7 @@ mod tests {
         let wakes = Arc::new(AtomicUsize::new(0));
         let woken = Arc::clone(&wakes);
         let live = super::super::Live::new(
-            cert(),
+            [9; 32],
             Arc::new(move || {
                 woken.fetch_add(1, Ordering::SeqCst);
             }),

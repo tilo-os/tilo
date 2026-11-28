@@ -741,10 +741,14 @@ impl Session {
         // The workspaces' live sessions: this device's one place in each, run through the
         // device's daemon, which holds the endpoint and relays them. Whom its relay turned away,
         // and why, is the daemon's own reading: shown beside them.
-        let live_sessions: Rc<RefCell<Option<crate::live::Live>>> =
-            Rc::new(RefCell::new(crate::sync::device_identity().map(
-                |identity| crate::live::Live::new(identity.device_cert, options.wake.handle()),
-            )));
+        let live_sessions: Rc<RefCell<Option<crate::live::Live>>> = Rc::new(RefCell::new(
+            crate::sync::device_identity().map(|identity| {
+                crate::live::Live::new(
+                    identity.device_cert.device_public_key,
+                    options.wake.handle(),
+                )
+            }),
+        ));
         if let Ok(link) = &daemon_link {
             let turned = crate::followed_resource::FollowedReading::follow(
                 &daemon,

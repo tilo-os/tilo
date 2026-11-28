@@ -10,8 +10,8 @@ use moq_net::Timestamp;
 use tilo_lock::MutexRecover as _;
 
 use super::{
-    ACTIVITY, AUDIO, CAPTURE, DEMAND, HEARD, HEARING, HELD, HELD_RETAIN, PAGE, PICTURE, SHARE,
-    SHOW, STATE, WINDOW, encode_page, encode_picture, encode_window,
+    ACTIVITY, AUDIO, CAPTURE, DEMAND, HEARD, HEARING, HELD, HELD_RETAIN, INPUT, PAGE, PICTURE,
+    SHARE, SHOW, STATE, WINDOW, encode_page, encode_picture, encode_window,
 };
 use crate::Task;
 use crate::carrier;
@@ -88,6 +88,21 @@ impl Call {
         workspace: String,
         device: [u8; 32],
     ) -> Result<Arc<Self>, String> {
+        Self::open_toward(open, Toward::Call { workspace }, device).await
+    }
+
+    /// Open one link the daemon takes `toward` as this device, on its socket, and run it until
+    /// it ends: into a workspace's live session ([`Toward::Call`]) or into the scope of one of
+    /// the person's devices ([`Toward::Device`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub async fn open_toward(
+        open: impl Fn() -> Opening + Send + Sync + 'static,
+        toward: Toward,
+        device: [u8; 32],
+    ) -> Result<Arc<Self>, String> {
         let (capture, capture_task) =
             carrier::OriginTask::produce(carrier::origin_config(CAPTURE_BYTES, CAPTURE_RETAIN));
         let (held, held_task) =
@@ -117,7 +132,9 @@ impl Call {
             .create_broadcast(CAPTURE)
             .map_err(|error| error.to_string())?;
         let mut tracks = BTreeMap::new();
-        for name in [AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE] {
+        for name in [
+            AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE, INPUT,
+        ] {
             let track = broadcast
                 .create_track(
                     name,
@@ -130,7 +147,7 @@ impl Call {
         broadcast
             .announce(moq_net::origin::Route::default())
             .map_err(|error| error.to_string())?;
-        let connected = Self::connect(&open, &workspace, capture.consume(), held.clone()).await?;
+        let connected = Self::connect(&open, &toward, capture.consume(), held.clone()).await?;
         // The reader's view of what the daemon hands back: the daemon announces its broadcast
         // before the session starts, and a view made from the origin reads it as it is.
         let handed = held.consume();
@@ -151,7 +168,7 @@ impl Call {
     /// first.
     async fn connect(
         open: &(dyn Fn() -> Opening + Send + Sync),
-        workspace: &str,
+        toward: &Toward,
         capture: moq_net::origin::Consumer,
         held: moq_net::origin::Producer,
     ) -> Result<carrier::Connected, String> {
@@ -160,14 +177,9 @@ impl Call {
             let opened = open();
             let result = async {
                 let (reader, mut writer) = opened.await.map_err(|error| error.to_string())?;
-                write_route(
-                    &mut writer,
-                    &Toward::Call {
-                        workspace: workspace.to_owned(),
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
+                write_route(&mut writer, toward)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let transport = Session::new(reader, writer, End::Dialler);
                 carrier::start(
                     transport,
@@ -357,7 +369,7 @@ impl Call {
         Ok(())
     }
 
-    /// Publish `body` as object `sequence` of `track`: voice and activity travel this way, and
+    /// Publish `body` as object `sequence` of `track`: voice, activity and input travel this way, and
     /// everything else has its own call.
     ///
     /// # Errors
@@ -370,6 +382,7 @@ impl Call {
         match track {
             Track::Audio => self.put_datagram(AUDIO, body),
             Track::Activity => self.put(ACTIVITY, body),
+            Track::Input => self.put(INPUT, body),
             _ => Err(LiveError::Invalid),
         }
     }

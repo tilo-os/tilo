@@ -36,9 +36,6 @@ use crate::followed_resource::FollowedReading;
 mod own_devices;
 pub(crate) use own_devices::OwnDevices;
 
-/// How long one dial of a device's relay may take.
-const ATTEMPT: Duration = Duration::from_secs(4);
-
 /// How a live session is read by the capture loops: the one session surface, whether it is the
 /// daemon's (over the link) or a local one in a test.
 pub(crate) type Sessions = Arc<dyn CaptureSession>;
@@ -192,8 +189,6 @@ impl std::fmt::Debug for Live {
 }
 
 struct Shared {
-    /// This device's certificate: what a grant to join a live session presents.
-    cert: tilo_user_identity::DeviceCert,
     device: [u8; 32],
     /// The workspaces the device's daemon keeps, whose live sessions this desktop takes part in.
     view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
@@ -217,16 +212,11 @@ struct Shared {
 }
 
 impl Live {
-    /// This session's live session. Nothing runs until [`Self::open_links`] hands it the way to
-    /// its daemon.
-    pub(crate) fn new(
-        cert: tilo_user_identity::DeviceCert,
-        wake: Arc<dyn Fn() + Send + Sync>,
-    ) -> Self {
-        let device = cert.device_public_key;
+    /// The live session of this session's device, by its key. Nothing runs until
+    /// [`Self::open_links`] hands it the way to its daemon.
+    pub(crate) fn new(device: [u8; 32], wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         Self {
             shared: Arc::new(Shared {
-                cert,
                 device,
                 view: std::sync::OnceLock::new(),
                 calls: Mutex::default(),
@@ -508,26 +498,6 @@ async fn open_or_keep(shared: &Arc<Shared>, workspace: WorkspaceId) {
             );
             tokio::time::sleep(wait).await;
         }
-    }
-}
-
-impl Shared {
-    /// The grant this device presents to join `scope` of `workspace`, sealed under `epoch`.
-    fn grant(
-        &self,
-        workspace: WorkspaceId,
-        scope: &collab_types::scope::Scope,
-        epoch: u64,
-    ) -> Result<Vec<u8>, String> {
-        let certificate = serde_json::to_vec(&self.cert).map_err(|error| error.to_string())?;
-        tilo_live::grant::Native::new(
-            *workspace.as_uuid().as_bytes(),
-            &scope.id(),
-            epoch,
-            certificate,
-            Vec::new(),
-        )
-        .map(|grant| grant.encode())
     }
 }
 

@@ -379,18 +379,25 @@ fn members(
             Err("the record of the person's devices is not here yet".to_owned()),
         ));
     };
-    let devices: Vec<Device> = record
-        .listed(&root)
+    let devices = own_devices(&record, &root, now_ns);
+    let relays =
+        device == own.device_public_key && devices.iter().any(|listed| listed.device == device);
+    Some((relays, Ok(devices)))
+}
+
+/// The person's devices, from `record`, the record of them: each whose certificate their root
+/// `root` signed, less the ones they took back and the ones whose certificate ran out at `now_ns`.
+/// One identity system says who the person's devices are; this is that answer.
+fn own_devices(record: &Devices, root: &[u8; 32], now_ns: u64) -> Vec<Device> {
+    record
+        .listed(root)
         .into_iter()
         .filter(|listed| !listed.device.revoked(&listed.cert) && !listed.cert.is_expired_at(now_ns))
         .map(|listed| Device {
             device: listed.cert.device_public_key,
             cert: listed.cert,
         })
-        .collect();
-    let relays =
-        device == own.device_public_key && devices.iter().any(|listed| listed.device == device);
-    Some((relays, Ok(devices)))
+        .collect()
 }
 
 /// Whether `certificate` is one this host placed for `workspace`'s records, which works on the
@@ -1646,7 +1653,18 @@ impl link::Calls for Live {
             }
         })
     }
+
+    fn carry_device<'a>(
+        &'a self,
+        device: [u8; 32],
+        session: link::Session,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(self.carry_device_scope(device, session))
+    }
 }
+
+#[path = "live_own.rs"]
+mod own;
 
 /// The endpoints the relay turned away from each workspace's live session and has not let in
 /// since: this device's own resource [`link::TURNED_AWAY`] (`record` empty), read in the person's

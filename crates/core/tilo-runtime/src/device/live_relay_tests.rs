@@ -379,3 +379,62 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_devices_own_scope_admits_the_devices_its_persons_root_signed_and_nobody_else;
+
+    phase the_persons_other_device_is_admitted_and_another_persons_is_turned_away;
+    // Whom a device's own scope admits is the one identity system's answer: the devices in the
+    // record of the person's devices whose certificates the person's root signed, less the ones
+    // they took back. A device of another person written into that record is in no such answer,
+    // and the relay turns it away.
+    {
+        use ed25519_dalek::SigningKey;
+        use tilo_peer_state::fixture::member_cert;
+
+        let root = SigningKey::from_bytes(&[41; 32]);
+        let laptop = member_cert(&root, &SigningKey::from_bytes(&[42; 32]), "Laptop");
+        let desk = member_cert(&root, &SigningKey::from_bytes(&[43; 32]), "Desk");
+        let theirs = member_cert(
+            &SigningKey::from_bytes(&[51; 32]),
+            &SigningKey::from_bytes(&[52; 32]),
+            "Someone else's laptop",
+        );
+        let mut record = Devices::default();
+        for cert in [&laptop, &desk, &theirs] {
+            record
+                .keep_device(
+                    hex::encode(cert.device_public_key),
+                    hex::encode(postcard::to_allocvec(cert).unwrap()),
+                )
+                .unwrap();
+        }
+        let person = laptop.user_public_key;
+        let devices = own_devices(&record, &person, 10);
+        let keys: BTreeSet<[u8; 32]> = devices.iter().map(|device| device.device).collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([laptop.device_public_key, desk.device_public_key]),
+            "the person's devices are the ones their root signed"
+        );
+
+        let workspace = person_workspace(&person);
+        let here = Scope::device(workspace.to_string(), desk.device_public_key);
+        let presenting = |cert: &DeviceCert| {
+            let mut grant = grant(workspace, cert);
+            grant.scope = here.id();
+            bind(
+                Peer(cert.device_public_key),
+                &grant,
+                &here,
+                &devices,
+                (true, |_: &DeviceCert| false),
+                10,
+            )
+            .map(|bound| bound.device)
+            .map_err(|refusal| refusal.word())
+        };
+        assert_eq!(presenting(&laptop), Ok(laptop.device_public_key));
+        assert_eq!(presenting(&theirs), Err("not-a-member"));
+    }
+}

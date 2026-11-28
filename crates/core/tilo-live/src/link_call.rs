@@ -50,6 +50,9 @@ pub const PICTURE: &str = "picture";
 pub const WINDOW: &str = "window";
 /// Every shared window's page: one [`PageWire`] each.
 pub const PAGE: &str = "page";
+/// What the desktop sends one of its person's devices: one object each, carried as
+/// [`Track::Input`] in that device's scope ([`crate::link::Toward::Device`]).
+pub const INPUT: &str = "input";
 
 /// What the live session heard, one object each.
 pub const HEARD: &str = "heard";
@@ -260,7 +263,9 @@ async fn take_capture(from: moq_net::origin::Consumer, live: Arc<LiveSession>) {
     let Ok(broadcast) = from.routed_broadcast(CAPTURE).await else {
         return;
     };
-    let names = [AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE];
+    let names = [
+        AUDIO, ACTIVITY, SHARE, SHOW, HEARING, PICTURE, WINDOW, PAGE, INPUT,
+    ];
     let mut readers = Vec::new();
     for name in names {
         readers.push(Task::spawn(take_one(
@@ -338,6 +343,9 @@ fn do_object(live: &LiveSession, name: &str, sequence: u32, body: &[u8]) {
         AUDIO => send_audio(live, body),
         ACTIVITY => {
             let _ = live.publish_burst(Track::Activity, &[(sequence, body)]);
+        }
+        INPUT => {
+            let _ = live.publish_burst(Track::Input, &[(sequence, body)]);
         }
         SHARE => {
             if let Some(said) = crate::share::Said::decode(body) {
