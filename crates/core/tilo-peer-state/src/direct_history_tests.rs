@@ -543,3 +543,48 @@ async fn a_second_link_joins_the_serving_instance_and_a_device_on_it_still_hears
         "a device attached before the second link is still sent what the host publishes"
     );
 }
+
+/// A frame a link brings live is admitted before the retained history is taken in whole: the
+/// history is bulk, and what changes the state it is judged by cannot wait behind all of it.
+#[tokio::test]
+async fn a_live_frame_goes_before_the_history_being_admitted() {
+    let ((_, _, _, _, _), owner_copy, key) = hosted_fixture_at(tilo_clock::wall());
+    let link = DirectSync::over(Replica::new(owner_copy), key.clone());
+    let frames: Vec<([u8; 32], crate::NeighbourMsg)> = (0..200)
+        .map(|_| {
+            (
+                key.verifying_key().to_bytes(),
+                channel_frame(&key, collab_types::WorkspaceId::new(), 0),
+            )
+        })
+        .collect();
+    let mut heard = link.heard();
+    // A frame the link brought live is being admitted: the history waits for it.
+    link.0
+        .live_waiting
+        .send_modify(|waiting| *waiting = waiting.saturating_add(1));
+    let mut admitting = tokio::spawn({
+        let link = link.clone();
+        async move { link.admit_history(frames).await }
+    });
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        heard.try_recv().is_err(),
+        "the history's first frame was taken in before the frame the link brought live"
+    );
+    link.0
+        .live_waiting
+        .send_modify(|waiting| *waiting = waiting.saturating_sub(1));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), &mut admitting)
+            .await
+            .is_ok(),
+        "the history is taken in once the frame the link brought live is"
+    );
+    assert!(
+        heard.try_recv().is_ok(),
+        "the history's first frame is taken in once the frame the link brought live is"
+    );
+}

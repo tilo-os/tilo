@@ -1330,6 +1330,9 @@ struct Inner {
     changed: watch::Sender<u64>,
     /// Set once the other device's retained history is in hand.
     caught_up: watch::Sender<bool>,
+    /// How many frames this device's links brought live and are being admitted: the retained
+    /// history goes aside for each of them, so a key or a governance frame never waits behind it.
+    live_waiting: watch::Sender<usize>,
     /// Set once this device has written what the other one lacks — its
     /// certificate, the revocations and the workspace's governance — to the
     /// link. The other one decides the retained history it asks for next
@@ -1425,6 +1428,17 @@ impl std::fmt::Debug for DirectSync {
     }
 }
 
+/// One frame a link brought live, being admitted: the count the history waits on is let go of
+/// whether it is taken in or the link ends with it.
+struct LiveAdmission<'a>(&'a watch::Sender<usize>);
+
+impl Drop for LiveAdmission<'_> {
+    fn drop(&mut self) {
+        self.0
+            .send_modify(|waiting| *waiting = waiting.saturating_sub(1));
+    }
+}
+
 impl DirectSync {
     /// Share `replica`, the replica of the device `signer` is the ownership of
     /// (and whose key its iroh endpoint's secret key is).
@@ -1456,6 +1470,7 @@ impl DirectSync {
             answered: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
+            live_waiting: watch::channel(0).0,
             catch_up_written: watch::channel(false).0,
             ended: watch::channel(None).0,
             ended_links: Arc::default(),
@@ -1495,6 +1510,7 @@ impl DirectSync {
             answered: self.0.answered.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
+            live_waiting: self.0.live_waiting.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
             ended: self.0.ended.clone(),
             ended_links: Arc::clone(&self.0.ended_links),
@@ -4458,7 +4474,7 @@ impl DirectSync {
             let in_hand = *history.borrow();
             if in_hand {
                 for authored in std::mem::take(&mut waiting) {
-                    self.receive_live(remote, link, answering, authored, admit, opening)
+                    self.receive_live_counted(remote, link, answering, authored, admit, opening)
                         .await;
                 }
             }
@@ -4469,9 +4485,36 @@ impl DirectSync {
                 waiting.push(authored);
                 continue;
             }
-            self.receive_live(remote, link, answering, authored, admit, opening)
+            self.receive_live_counted(remote, link, answering, authored, admit, opening)
                 .await;
         }
+    }
+
+    /// [`Self::receive_live`], with the frame noted as being admitted while it is
+    /// ([`Self::let_live_through`]).
+    async fn receive_live_counted(
+        &self,
+        remote: [u8; 32],
+        link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
+        authored: Authored,
+        admit: &LinkAdmit,
+        opening: &Opening,
+    ) {
+        self.0
+            .live_waiting
+            .send_modify(|waiting| *waiting = waiting.saturating_add(1));
+        // Counted while it runs, and let go of even when the link ends with it.
+        let _admitting = LiveAdmission(&self.0.live_waiting);
+        self.receive_live(remote, link, answering, authored, admit, opening)
+            .await;
+    }
+
+    /// Wait until no frame a link brought live is being admitted: the history is taken in one
+    /// frame after another, and goes aside for a key or a governance frame before the next.
+    async fn let_live_through(&self) {
+        let mut waiting = self.0.live_waiting.subscribe();
+        while *waiting.borrow_and_update() > 0 && waiting.changed().await.is_ok() {}
     }
 
     /// Whether `authored`, a frame `remote` sent live on its link, is decided as history: a
@@ -4722,6 +4765,8 @@ impl DirectSync {
         let Some(admission) = &self.0.admission else {
             let mut lacks_history = false;
             for (author, message) in frames {
+                // A frame a link brought live goes before the next one of the history.
+                self.let_live_through().await;
                 lacks_history |= self.admit(author, message, true).await;
             }
             return lacks_history;
