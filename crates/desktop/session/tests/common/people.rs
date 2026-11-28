@@ -2660,23 +2660,40 @@ impl Device {
     }
 
     /// Approve the asked record `record` (`<workspace>/<record>`, as the call's progress names
-    /// it), as the person's own connection does.
+    /// it), as the person's own connection does: answered once their session took the record's
+    /// workspace in, since a card is drawn where its answer goes, and asked again until then.
     fn approve(&self, record: &str) {
         let record = record.split_once('/').map_or(record, |(_, record)| record);
         let target = RemoteActionTarget {
             provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
         };
-        let request = super::invocation(&target, &json!({"resolution": "approve"}), None, None);
-        let answer = self.frame(RemoteActionMessage::Invoke(request));
-        assert!(
-            matches!(&answer, RemoteActionMessage::Receipt(receipt) if !matches!(
-                receipt.status,
-                ReceiptStatus::Rejected { .. } | ReceiptStatus::Failed { .. }
-            )),
-            "{} approves {record}: {answer:?}",
-            self.label
-        );
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let request = super::invocation(&target, &json!({"resolution": "approve"}), None, None);
+            let answer = self.frame(RemoteActionMessage::Invoke(request));
+            let RemoteActionMessage::Receipt(receipt) = &answer else {
+                panic!("{} answers {record}'s approval with {answer:?}", self.label);
+            };
+            match &receipt.status {
+                // The session showed the person no card of it yet: nothing ran, and the answer
+                // is given once the workspace is one it shows.
+                ReceiptStatus::Rejected { error }
+                    if error.said().contains("has no copy of that workspace") =>
+                {
+                    assert!(
+                        Instant::now() < deadline,
+                        "{} approves {record}: {answer:?}",
+                        self.label
+                    );
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                ReceiptStatus::Rejected { .. } | ReceiptStatus::Failed { .. } => {
+                    panic!("{} approves {record}: {answer:?}", self.label);
+                }
+                _ => return,
+            }
+        }
     }
 
     fn invoke(

@@ -2411,6 +2411,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             {
                 return Ok(state_json(id, state));
             }
+            // Kept for a device of theirs that keeps their identity: only they answer it, so
+            // whoever asked is told that it waits for them now and follows it until they do,
+            // rather than holding the call open for a wait nothing of it brings.
+            if let Some(state) = state.as_ref().filter(|state| waits_at_root(&state.update)) {
+                return Ok(state_json(id, state));
+            }
             let wait = match wait {
                 Hold::For(wait) => wait,
                 // Held for as long as its provider says the action is under way: nothing
@@ -2640,6 +2646,15 @@ fn person_asked(update: &tilo_actions::InvocationUpdate) -> bool {
         update,
         tilo_actions::InvocationUpdate::Progress { phase, .. }
             if phase == tilo_actions::remote::asked::ASKED_PHASE
+    )
+}
+/// Whether `update` says its invocation waits for its person at a device of theirs that keeps
+/// their root: the call is kept for them there, and only their answer moves it.
+fn waits_at_root(update: &tilo_actions::InvocationUpdate) -> bool {
+    matches!(
+        update,
+        tilo_actions::InvocationUpdate::Progress { phase, .. }
+            if phase == tilo_actions::remote::asked::AT_ROOT
     )
 }
 /// How long a call is held for its action.

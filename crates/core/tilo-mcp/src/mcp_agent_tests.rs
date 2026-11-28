@@ -60,6 +60,9 @@ pub(super) struct Notes {
     /// An action its person is asked to allow, by its name, and when they answer: until
     /// then the app says that its person is asked, and nothing of it has happened.
     person_asked: Arc<Mutex<Option<(&'static str, tokio::time::Instant)>>>,
+    /// An action kept for a device of the person's that keeps their identity, by its name: it
+    /// waits there for their answer, and nothing of it has happened on this device.
+    at_root: Arc<Mutex<Option<&'static str>>>,
     /// Whether this host keeps a search of its own; one that holds no records to search
     /// keeps none.
     searches: bool,
@@ -93,6 +96,7 @@ impl Notes {
             asks: Arc::default(),
             refuses: Arc::default(),
             person_asked: Arc::default(),
+            at_root: Arc::default(),
             searches: true,
             foreign_root: Arc::default(),
             cancelled: Arc::default(),
@@ -698,6 +702,11 @@ impl ActionProvider for Notes {
             .is_some_and(|(asked, answers)| {
                 asked == action.as_str() && tokio::time::Instant::now() < answers
             });
+        let at_root = self
+            .at_root
+            .lock()
+            .unwrap()
+            .is_some_and(|asked| asked == action.as_str());
         let update = match action.as_str() {
             _ if self.cancelled.lock().unwrap().contains(id) => InvocationUpdate::Cancelled {
                 invocation: *id,
@@ -710,6 +719,14 @@ impl ActionProvider for Notes {
                 completed: None,
                 total: None,
                 message: Some(ASKED_RECORD.to_owned()),
+            },
+            _ if at_root => InvocationUpdate::Progress {
+                invocation: *id,
+                sequence: 1,
+                phase: tilo_actions::remote::asked::AT_ROOT.to_owned(),
+                completed: None,
+                total: None,
+                message: Some("Waiting for a device of yours that keeps your identity".to_owned()),
             },
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             // The workspace's start of Notes names the instance it started.
@@ -1580,6 +1597,35 @@ fn a_call_whose_person_allows_it_within_its_wait_is_answered_with_what_it_did() 
     assert!(
         held >= std::time::Duration::from_secs(2)
             && held < std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+        "answered after {held:?}"
+    );
+}
+
+/// A call kept for a device of the person's that keeps their identity is answered as under way
+/// at once, naming what it waits for: only they answer it, and no wait of the caller's brings
+/// that answer, so the caller goes on and follows the call instead of holding it open.
+#[test]
+fn a_call_waiting_at_the_persons_root_is_answered_at_once() {
+    let notes = Notes::new(true);
+    *notes.at_root.lock().unwrap() = Some("slow");
+    let (text, failed, held) = waited(async {
+        let started = tokio::time::Instant::now();
+        let (text, failed) = tool(
+            &agent(&notes),
+            "tilo_do",
+            json!({"path": "notes/Todo#slow", "wait_ms": 60_000}),
+        )
+        .await;
+        (text, failed, started.elapsed())
+    });
+    // A call still waiting is no tool's success: it says so, as any pending answer does.
+    assert!(failed && text.starts_with("pending "), "{text}");
+    assert!(
+        text.contains("Waiting for a device of yours that keeps your identity"),
+        "{text}"
+    );
+    assert!(
+        held < std::time::Duration::from_secs(1),
         "answered after {held:?}"
     );
 }
