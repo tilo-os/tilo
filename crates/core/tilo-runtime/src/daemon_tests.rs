@@ -1553,7 +1553,8 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
     const BO: u32 = 1001;
 
     // A device bound to Ada: her root certified its key. Bo is another person, with a root of
-    // their own.
+    // their own. Each account keeps its own person's record, which only its own asks change.
+    let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
     keys.ensure_directories().unwrap();
@@ -1587,6 +1588,15 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         &certified(&ada, device),
     )
     .unwrap();
+    let _key_taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
+    let (now, enrolled) = (tilo_clock::unix_now_ns(), keys.clone());
+    let profile = |uid| {
+        let dir = crate::device::services::account_identity_dir(uid).unwrap();
+        tilo_identity::provisioning::complete_enrolled_device(&dir, &enrolled, now).unwrap();
+        let active = tilo_identity::store::resolve_active_identity(&dir).unwrap();
+        tilo_identity::store::load_metadata_from_path(&active).unwrap()
+    };
+    let (adas, _) = (profile(ADA), profile(BO));
 
     let answers = crate::device::unclaimed::DeviceOnly::new(
         key,
@@ -1792,6 +1802,11 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
     );
     assert_eq!(status(ADA)["workspace"], "home");
     assert_eq!(who(ADA)["key"], Value::Null);
+    let asked = json!({"name": "Bo", "photo": {"width": 1, "height": 1, "rgba": [9, 9, 9, 9]}});
+    let (_, why) = act(BO, "devices#setProfile", asked);
+    assert_eq!(profile(BO).display_name, "Bo", "{why}");
+    assert!(profile(BO).profile_photo.is_some());
+    assert_eq!(profile(ADA), adas, "Bo's profile changed Ada's");
 
     // Bo leaves: their key acts no more, and a new sign-in makes a new one, which the old
     // certificate does not certify.
