@@ -774,17 +774,41 @@ impl Widget for Card {
                     .with_state(AccessState::new().selected(self.selected))
             });
         }
-        Some(
-            AccessNode::new(Role::Button)
-                .with_semantic_key(self.activation.id())
-                .with_optional_name(name)
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.activation.state.focused)
-                        .selected(self.selected),
-                ),
-        )
+        let mut node = AccessNode::new(Role::Button)
+            .with_semantic_key(self.activation.id())
+            .with_optional_name(name)
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.activation.state.focused)
+                    .selected(self.selected),
+            );
+        // The card's own press is its activation, and its node names it: a reader's Activate — a
+        // window's, or a page's press on the element the page numbers — runs that action where it
+        // stands, as the person's click does, rather than falling back to a press at a point a
+        // page has no pointer for.
+        node.action_target = node.semantic_key.clone();
+        Some(node)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
+        // Its own activation's Activate is what a click runs: run it where the reader aimed it,
+        // so a card opens the same way from assistive technology, a window and a page.
+        let own = self.activation.is_bound()
+            && (target == self.activation.id()
+                || self
+                    .accessibility()
+                    .is_some_and(|node| node.action_target.as_deref() == Some(target)));
+        if own && matches!(action, tilo_ui_base::a11y::Action::Activate) {
+            return self.activation.activate();
+        }
+        false
     }
 }
 

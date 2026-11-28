@@ -129,3 +129,24 @@ tilo_test_env::scenario! {
     }
 
 }
+
+/// A card that opens names its action to assistive technology: a reader's Activate reaches the
+/// card's own press instead of a point press a page has no pointer for.
+#[test]
+fn an_opening_card_names_its_action_to_assistive_technology() {
+    let card = Card::new(Box::new(Text::new("body"))).on_activate("invite-card", || {});
+    let node = card.accessibility().expect("an opening card is a control");
+    assert_eq!(node.role, tilo_ui_base::a11y::Role::Button);
+    assert_eq!(node.action_target.as_deref(), Some("invite-card"));
+    assert_eq!(
+        node.action_target, node.semantic_key,
+        "the node names the control it stands on"
+    );
+    let bindings = tilo_ui_base::widget::semantic_action_bindings(Some(node));
+    assert!(
+        bindings
+            .iter()
+            .any(|binding| binding.control_id == "invite-card"),
+        "a reader can press the card by name: {bindings:?}"
+    );
+}
