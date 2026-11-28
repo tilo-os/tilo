@@ -568,6 +568,17 @@ action put_into(
     require not paths.is_empty() "Choose a file first"
     require folder_place(folder) "Choose a folder to put them in"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    // The workspace's tree moves and copies as one change of its own, and a path on this device
+    // is none of it: the tree says so. It keeps both of a copy's taken names, and refuses a
+    // move onto one.
+    if workspace_place(folder) or paths.any(p -> workspace_place(p)) {
+        let verb = if moving { "move" } else { "copy-into" }
+        let why = change_tree(f, verb, TreeAsk(to: folder, entries: paths))
+        if why != "" {
+            s.notice = "Couldn’t put them there: {why}"
+        }
+        return
+    }
     if clash == "" {
         let held = names_in(f, folder, s)
         let meeting = paths.filter(p -> held.contains(name_of(p)))
@@ -583,16 +594,6 @@ action put_into(
         "Moving {what} to “{name_of(folder)}”"
     } else {
         "Copying {what} to “{name_of(folder)}”"
-    }
-    // The workspace's tree moves and copies as one change of its own, and a path on this device
-    // is none of it: the tree says so.
-    if workspace_place(folder) or paths.any(p -> workspace_place(p)) {
-        let verb = if moving { "move" } else { "copy-into" }
-        let why = change_tree(f, verb, TreeAsk(to: folder, entries: paths))
-        if why != "" {
-            s.notice = "Couldn’t put them there: {why}"
-        }
-        return
     }
     let t = s.transfers.insert(Transfer(label: label, paths: paths, folder: folder, moving: moving))
     match engine.start(
@@ -1112,7 +1113,7 @@ action forget_recent(f: Files, path: Text) {
 action change_tree(f: Files, verb: Text, ask: TreeAsk) -> Text {
     match json.parse(json.encode(ask)) {
         .err(why) => why,
-        .ok(arguments) => match try_call("files", verb, arguments) {
+        .ok(arguments) => match try_call("files.folder", verb, arguments) {
             .ok(_) => "",
             .err(why) => why,
         },

@@ -572,13 +572,14 @@ fn files_presses_change_the_workspaces_own_folder() {
 }
 
 /// A press of the window is decided as whoever pressed it, never as Files: an agent the
-/// workspace does not let change its files presses New folder, the window says why, and the
-/// tree holds no such folder.
+/// workspace lets read its files but not change them sees the person's folder, presses New
+/// folder, the window says why, and the tree holds no such folder.
 #[test]
 fn a_press_by_a_member_who_may_change_no_files_is_refused_and_changes_nothing() {
     host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
         host.install_app("so.tilo.file-explorer").await;
+        person_keeps_a_folder(&host).await;
         let agent = host.turn_agent("viewer", "Files reader");
         let owner = host.person().to_owned();
         let tree = collab_types::document_node(
@@ -618,7 +619,18 @@ fn a_press_by_a_member_who_may_change_no_files_is_refused_and_changes_nothing() 
         .expect("the person lets their agent open the window");
 
         let session = Session::Agent(&agent);
-        view(&session, &workspace).await;
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let lines = view(&session, &workspace).await;
+            if lines.contains(FOLDER) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the member never sees the folder they may read: {lines}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         runs(
             &session,
             &workspace,
