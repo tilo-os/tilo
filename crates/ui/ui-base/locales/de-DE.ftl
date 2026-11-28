@@ -1385,3 +1385,7 @@ stroke-preview-calligraphy = Kalligrafiefeder
 stroke-preview-eraser = Radierer
 stroke-preview-pixel = Pixelpinsel
 stroke-preview-pixel-eraser = Pixelradierer
+
+## A secret the window hid when it lost the person's focus (ui::widget::Text, PropertyList).
+
+secret-hidden = Verborgen

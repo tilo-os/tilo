@@ -335,11 +335,14 @@ impl App {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;
                 self.input.keyboard_entry_owed = false;
+                // A secret the window showed hides itself now, and the frame that showed it goes
+                // from the cache with it: it is drawn again, masked.
+                self.root_widget.window_focus_changed(false);
+                self.root_widget.release_scene_cache();
                 // The field the person left keeps its text and selection, and gives up the caret
                 // with the keyboard: the frame is drawn again where the caret stood.
-                if self.input.keyboard_held {
-                    self.input.keyboard_held = false;
-                    self.root_widget.release_scene_cache();
+                let caret_gone = std::mem::replace(&mut self.input.keyboard_held, false);
+                if caret_gone || self.root_widget.needs_redraw() {
                     window.request_redraw();
                 }
             }
@@ -348,6 +351,9 @@ impl App {
             // is brought forward, reaches the app.
             WindowEvent::Focused(true) => {
                 self.input.window_focused = true;
+                // What the window hid when it lost the focus stays hidden until the app sends a
+                // new value.
+                self.root_widget.window_focus_changed(true);
                 if !self.input.keyboard_held {
                     self.input.keyboard_held = true;
                     self.root_widget.release_scene_cache();

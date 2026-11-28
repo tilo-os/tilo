@@ -3,6 +3,10 @@
 
 use std::cell::Cell;
 
+/// What a secret shows in place of its value once its window loses focus: a set of dots that
+/// says a value is there without telling it or how long it is.
+pub const SECRET_MASK: &str = "••••••••••••";
+
 thread_local! {
     static PAINTED: Cell<bool> = const { Cell::new(false) };
 }

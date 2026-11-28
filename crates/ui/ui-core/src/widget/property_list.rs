@@ -658,6 +658,12 @@ pub struct Property {
     label: String,
     value: String,
     kind: TextKind,
+    /// The value is a secret the app shows (a revealed password): the window hides it behind
+    /// dots when it loses the person's focus, and shows it again only when the app sends a value
+    /// it has not sent before.
+    secret: bool,
+    /// Whether a secret is hidden now.
+    hidden: bool,
     tone: Tone,
     accessible_value: Option<String>,
     actions: Vec<PropertyAction>,
@@ -712,6 +718,8 @@ impl Property {
             label,
             value,
             kind: TextKind::Prose,
+            secret: false,
+            hidden: false,
             tone: Tone::Neutral,
             accessible_value: None,
             actions: Vec::new(),
@@ -722,6 +730,32 @@ impl Property {
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
         self
+    }
+
+    /// The value is a secret the app shows: the window hides it behind dots when it loses the
+    /// person's focus, and shows it again only when the app sends a value it has not sent before.
+    #[must_use]
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self.kind = TextKind::Secret;
+        self
+    }
+
+    /// The value as the window shows it: dots while it is hidden.
+    fn shown_value(&self) -> &str {
+        if self.hidden {
+            tilo_ui_base::secret_paint::SECRET_MASK
+        } else {
+            &self.value
+        }
+    }
+
+    /// What assistive technology reads for the value: hidden while the secret is.
+    fn spoken_value(&self) -> Option<String> {
+        if self.hidden {
+            return Some(tilo_ui_base::i18n::widget_text("secret-hidden"));
+        }
+        self.accessible_value.clone()
     }
 
     #[must_use]
@@ -786,7 +820,7 @@ impl Property {
     }
 
     fn row(&self) -> PropertyRow<'_> {
-        let mut row = PropertyRow::new(&self.label, &self.value)
+        let mut row = PropertyRow::new(&self.label, self.shown_value())
             .with_kind(self.kind)
             .tone(self.tone);
         for action in &self.actions {
@@ -833,6 +867,9 @@ pub struct PropertyList {
     cursor: Point,
     hovered_action: Option<(usize, usize)>,
     pressed_action: crate::pointer_replay::HeldPress<(usize, usize)>,
+    /// Whether the window has the person's focus: a secret value sent while it has none stays
+    /// hidden.
+    window_focused: bool,
     rect: Rect,
     dirty: bool,
 }
@@ -863,6 +900,7 @@ impl PropertyList {
             cursor: Point::ZERO,
             hovered_action: None,
             pressed_action: crate::pointer_replay::HeldPress::default(),
+            window_focused: true,
             rect: Rect::ZERO,
             dirty: true,
         }
@@ -910,6 +948,30 @@ impl PropertyList {
 
     fn properties(&self) -> impl Iterator<Item = &Property> {
         self.groups.iter().flat_map(|(_, rows)| rows.iter())
+    }
+
+    /// Take the rows the app sent now. A secret the window hid stays hidden while the app sends
+    /// the same value, a value it has not sent before shows, and one sent while the window has no
+    /// focus stays hidden.
+    fn take_rows(&mut self, rows: Vec<Property>) {
+        let hidden: Vec<(String, String)> = self
+            .properties()
+            .filter(|property| property.hidden)
+            .map(|property| (property.label.clone(), property.value.clone()))
+            .collect();
+        let window_focused = self.window_focused;
+        let rows: Vec<Property> = rows
+            .into_iter()
+            .map(|mut property| {
+                property.hidden = property.secret
+                    && (!window_focused
+                        || hidden.iter().any(|(label, value)| {
+                            *label == property.label && *value == property.value
+                        }));
+                property
+            })
+            .collect();
+        self.groups = vec![(None, rows)];
     }
 
     /// What names a row's action across a rebuild: the list, the row's
@@ -1121,6 +1183,25 @@ impl Widget for PropertyList {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
+    /// A secret hides behind dots when the window loses the person's focus, and stays hidden
+    /// after it comes back until the app sends a new value.
+    fn window_focus_changed(&mut self, focused: bool) {
+        self.window_focused = focused;
+        if focused {
+            return;
+        }
+        let mut hid = false;
+        for property in self.groups.iter_mut().flat_map(|(_, rows)| rows.iter_mut()) {
+            if property.secret && !property.hidden {
+                property.hidden = true;
+                hid = true;
+            }
+        }
+        if hid {
+            self.dirty = true;
+        }
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         let ((row, action), rect) = targets(&self.layout)
             .into_iter()
@@ -1160,7 +1241,7 @@ impl Widget for PropertyList {
             .properties()
             .enumerate()
             .map(|(index, property)| {
-                let mut node = row_node(&property.row(), property.accessible_value.as_deref());
+                let mut node = row_node(&property.row(), property.spoken_value().as_deref());
                 node.key = Some(index as u64);
                 for (action, child) in node.children.iter_mut().enumerate() {
                     child.key = Some(action as u64);

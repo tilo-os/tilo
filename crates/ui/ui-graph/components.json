@@ -7642,6 +7642,11 @@
               ]
             }
           }
+        },
+        {
+          "name": "secret",
+          "doc": "The words are a secret the app shows (a revealed one-time code, a revealed password): the window hides them behind dots when it loses the person's focus, and shows them again only when the app sends a value it has not sent before.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -12227,6 +12232,11 @@
         {
           "name": "copyable",
           "doc": "A trailing action that copies the value.",
+          "type": "bool"
+        },
+        {
+          "name": "secret",
+          "doc": "The value is a secret the app shows (a revealed password): the window hides it behind dots when it loses the person's focus, and shows it again only when the app sends a value it has not sent before.",
           "type": "bool"
         }
       ],

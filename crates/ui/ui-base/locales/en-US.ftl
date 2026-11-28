@@ -1416,3 +1416,7 @@ stroke-preview-calligraphy = Calligraphy pen
 stroke-preview-eraser = Eraser
 stroke-preview-pixel = Pixel brush
 stroke-preview-pixel-eraser = Pixel eraser
+
+## A secret the window hid when it lost the person's focus (ui::widget::Text, PropertyList).
+
+secret-hidden = Hidden

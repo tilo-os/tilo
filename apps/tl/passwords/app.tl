@@ -1318,11 +1318,13 @@ view item_page(
                         if let s = said {
                             if s.identity == "" { "Not set" } else { s.identity }
                         } else { "Hidden" },
+                        secret: open,
                     )
                 }
                 ui.Property(
                     secret_label(item.kind),
                     if let s = said { s.secret } else { "••••••••••••" },
+                    secret: open,
                 )
                 if not item.places.is_empty() {
                     ui.Property(
@@ -1334,7 +1336,11 @@ view item_page(
                     ui.Property("Tags", item.tags.map(t -> t).join(", "))
                 }
                 if item.kind != .note and item.noted {
-                    ui.Property("Notes", if let s = said { s.notes } else { "Hidden" })
+                    ui.Property(
+                        "Notes",
+                        if let s = said { s.notes } else { "Hidden" },
+                        secret: open,
+                    )
                 }
                 for label in item.labels {
                     ui.Property(
@@ -1342,6 +1348,7 @@ view item_page(
                         if let s = said {
                             s.fields.find(f -> f.label == label)?.value ?? "••••••"
                         } else { "••••••" },
+                        secret: open,
                     )
                 }
             }

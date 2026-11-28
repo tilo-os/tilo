@@ -615,6 +615,15 @@ pub trait Widget {
     /// Observe this app's ordinary foreground physical input before framework shortcuts consume it.
     fn observe_physical_input(&mut self, _input: PhysicalInput) {}
 
+    /// The window gained or lost the person's focus. A secret the window shows hides itself
+    /// when the window loses it, and shows again only when the app sends a new value; the
+    /// default passes the change to the children it keeps.
+    fn window_focus_changed(&mut self, focused: bool) {
+        for child in self.children_mut() {
+            child.window_focus_changed(focused);
+        }
+    }
+
     /// Handle one input event with the runtime services for this retained node.
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {

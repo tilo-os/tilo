@@ -151,6 +151,14 @@ pub struct Text {
     dimmed: bool,
     /// Read second, in the theme's secondary ink: a count, a placeholder, a line of detail.
     secondary: bool,
+    /// The words are a secret the app shows (a revealed code): the window hides them when it
+    /// loses the person's focus, and assistive technology reads only that they are hidden.
+    secret: bool,
+    /// Whether a secret is hidden now: set when the window loses focus, cleared when the app
+    /// sends a value it has not shown before.
+    hidden: bool,
+    /// Whether the window has the person's focus: a secret sent while it has none stays hidden.
+    window_focused: bool,
     tone: Option<tilo_ui_base::widget::Tone>,
     access: TextAccess,
     /// Whether assistive technology may move focus to these words: what a
@@ -212,6 +220,9 @@ impl Text {
             color: None,
             dimmed: false,
             secondary: false,
+            secret: false,
+            hidden: false,
+            window_focused: true,
             tone: None,
             access: TextAccess::Text,
             focusable: false,
@@ -316,6 +327,11 @@ impl Text {
     }
 
     pub(crate) fn resolved_label(&self) -> String {
+        // A secret the window hid shows dots: the value goes nowhere a frame or a reader reaches
+        // until the app sends a new one.
+        if self.hidden {
+            return tilo_ui_base::secret_paint::SECRET_MASK.to_owned();
+        }
         if self.args.is_empty() {
             widget_text(&self.label)
         } else {
@@ -384,6 +400,43 @@ impl Text {
         self.role = role;
         self.restyle_default();
         self
+    }
+
+    /// The words are a secret the app shows (a revealed code, a revealed password): a window
+    /// that loses the person's focus hides them behind dots, and shows them again only when the
+    /// app sends a value it has not shown before.
+    #[must_use]
+    pub fn with_secret(mut self, secret: bool) -> Self {
+        self.secret = secret;
+        if secret {
+            self.modifiers.kind = Some(TextKind::Secret);
+            self.restyle_default();
+        }
+        self.hidden = secret && !self.window_focused;
+        self
+    }
+
+    /// Take what the app sent now: `value` is its words, `secret` whether they are a secret, and
+    /// `new_value` whether they differ from what it last sent.
+    fn take_secret(&mut self, secret: bool, new_value: bool) {
+        let was_hidden = self.hidden;
+        self.secret = secret;
+        // A lost focus keeps its mask, a value it has not shown shows while the window has the
+        // focus, and one sent while it has none stays hidden.
+        self.hidden = secret && (!self.window_focused || (self.hidden && !new_value));
+        if self.hidden != was_hidden {
+            self.dirty = true;
+            self.layout_dirty = true;
+            self.prepared_input = None;
+        }
+        if secret && self.modifiers.kind != Some(TextKind::Secret) {
+            self.modifiers.kind = Some(TextKind::Secret);
+            self.restyle_default();
+        } else if !secret && self.modifiers.kind == Some(TextKind::Secret) {
+            // The secret face is this prop's: a value the app no longer calls secret reads plainly.
+            self.modifiers.kind = None;
+            self.restyle_default();
+        }
     }
 
     fn renderer_input(&mut self) -> RendererInput {
@@ -885,6 +938,18 @@ impl Widget for Text {
         self.accessible_heading_level() == Some(1)
     }
 
+    /// A secret hides behind dots when the window loses the person's focus, and stays hidden
+    /// after it comes back until the app sends a new value.
+    fn window_focus_changed(&mut self, focused: bool) {
+        self.window_focused = focused;
+        if !focused && self.secret && !self.hidden {
+            self.hidden = true;
+            self.dirty = true;
+            self.layout_dirty = true;
+            self.prepared_input = None;
+        }
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.observe_i18n_revision();
@@ -1231,7 +1296,12 @@ impl Widget for Text {
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         use tilo_ui_base::{a11y::AccessNode, a11y::Role};
-        let label = self.spoken.clone().unwrap_or_else(|| self.resolved_label());
+        // A hidden secret is read as hidden: its words reach neither the frame nor the reader.
+        let label = if self.hidden {
+            tilo_ui_base::i18n::widget_text("secret-hidden")
+        } else {
+            self.spoken.clone().unwrap_or_else(|| self.resolved_label())
+        };
         if label.is_empty() || self.access == TextAccess::Presentational {
             return None;
         }

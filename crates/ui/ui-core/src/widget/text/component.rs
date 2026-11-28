@@ -34,6 +34,10 @@ pub struct TextProps {
     /// Where its lines sit across the width it is given: `start` unless said, `center` for a
     /// short message standing alone in the middle of a page.
     pub align: ParagraphAlign,
+    /// The words are a secret the app shows (a revealed one-time code, a revealed password): the
+    /// window hides them behind dots when it loses the person's focus, and shows them again only
+    /// when the app sends a value it has not sent before.
+    pub secret: bool,
 }
 
 impl Described for Text {
@@ -49,6 +53,7 @@ impl Described for Text {
             truncate,
             live,
             align,
+            secret,
         } = props;
         let mut text = Self::new("").with_role(role).with_id(key);
         if align != ParagraphAlign::Start {
@@ -65,7 +70,8 @@ impl Described for Text {
         }
         text = text
             .with_lines(lines.and_then(|lines| u32::try_from(lines).ok()))
-            .with_truncate(truncate);
+            .with_truncate(truncate)
+            .with_secret(secret);
         text.show_content(value);
         text
     }
@@ -91,7 +97,9 @@ impl Described for Text {
         {
             return false;
         }
+        let new_value = props.value != self.label;
         self.show_content(props.value);
+        self.take_secret(props.secret, new_value);
         true
     }
 }

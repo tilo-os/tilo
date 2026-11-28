@@ -803,7 +803,12 @@ view account_card(
             row(gap: .section, align: .center) {
                 if let generated = made {
                     if unveiled {
-                        ui.Text(group_code(generated.code), role: .display, numeric: true)
+                        ui.Text(
+                            group_code(generated.code),
+                            role: .display,
+                            numeric: true,
+                            secret: true,
+                        )
                     } else {
                         ui.Text("••• •••", role: .display, numeric: true)
                     }
@@ -930,7 +935,7 @@ view account_window(a: Account) {
         row(gap: .section, align: .center) {
             if let generated = made {
                 if unveiled {
-                    ui.Text(group_code(generated.code), role: .display, numeric: true)
+                    ui.Text(group_code(generated.code), role: .display, numeric: true, secret: true)
                 } else {
                     ui.Text("••• •••", role: .display, numeric: true)
                 }

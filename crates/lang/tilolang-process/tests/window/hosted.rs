@@ -62,6 +62,9 @@ mod typing;
 #[path = "hosted/capture.rs"]
 mod capture;
 
+#[path = "hosted/secret_focus.rs"]
+mod secret_focus;
+
 #[path = "hosted/controls.rs"]
 mod controls;
 
@@ -251,6 +254,16 @@ impl Window {
                 Self::live_input(app, ui::synthetic_input::cursor_moved(x, y));
                 Self::live_input(app, ui::synthetic_input::mouse_press());
                 Self::live_input(app, ui::synthetic_input::mouse_release());
+            }
+        }
+    }
+
+    /// The window gained (`true`) or lost (`false`) the person's focus, as its surface reports it.
+    fn focus(&mut self, focused: bool) {
+        match self {
+            Self::Harness(window) => window.send(&ui::winit::event::WindowEvent::Focused(focused)),
+            Self::Live(app) => {
+                Self::live_input(app, ui::winit::event::WindowEvent::Focused(focused));
             }
         }
     }

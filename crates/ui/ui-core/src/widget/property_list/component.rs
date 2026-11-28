@@ -27,16 +27,22 @@ pub struct PropertyProps {
     pub value: String,
     /// A trailing action that copies the value.
     pub copyable: bool,
+    /// The value is a secret the app shows (a revealed password): the window hides it behind
+    /// dots when it loses the person's focus, and shows it again only when the app sends a value
+    /// it has not sent before.
+    pub secret: bool,
 }
 
 impl From<PropertyProps> for Property {
     fn from(props: PropertyProps) -> Self {
-        let property = Self::new(props.label, props.value);
-        if props.copyable {
-            property.copyable()
-        } else {
-            property
+        let mut property = Self::new(props.label, props.value);
+        if props.secret {
+            property = property.secret();
         }
+        if props.copyable {
+            property = property.copyable();
+        }
+        property
     }
 }
 
@@ -50,10 +56,8 @@ impl Described for PropertyList {
     }
 
     fn set_props(&mut self, props: PropertyListProps) -> bool {
-        self.groups = vec![(
-            None,
-            props.properties.into_iter().map(Property::from).collect(),
-        )];
+        let rows = props.properties.into_iter().map(Property::from).collect();
+        self.take_rows(rows);
         self.striped = props.striped;
         self.layout = super::ListLayout::empty();
         self.metrics = None;
