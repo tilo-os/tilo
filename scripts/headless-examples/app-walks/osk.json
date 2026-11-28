@@ -1,0 +1,211 @@
+{
+  "app": "osk",
+  "said": "The keyboard stands, shifts, shows its symbols and emoji, parks and hides",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.osk",
+    "package": "osk"
+  },
+  "steps": [
+    {
+      "id": "stands",
+      "said": "With the person's keyboard always on it stands, its keys ready as controls",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "do": [
+            "so.tilo.settings.sections",
+            "settings/accessibility",
+            "set-on-screen-keyboard",
+            {
+              "value": "always"
+            }
+          ]
+        },
+        {
+          "wait_for": "Space"
+        },
+        {
+          "must": [
+            "Shift",
+            "Backspace",
+            "Return",
+            "Emoji",
+            "Paste",
+            "Put the keys away",
+            "Hide keyboard"
+          ]
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "shift",
+      "said": "Shift latches for one letter, says so, and lets go after it",
+      "ops": [
+        {
+          "press_any": [
+            "Shift"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Shift, on for the next letter"
+          }
+        },
+        {
+          "press_any": [
+            "A"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Shift"
+          }
+        },
+        {
+          "must": [
+            "Shift"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "symbols",
+      "said": "The symbols stand in the keys' place, and Letters goes back to them",
+      "ops": [
+        {
+          "press_any": [
+            "Numbers and symbols"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "1"
+          }
+        },
+        {
+          "must": [
+            "1",
+            "2",
+            "?",
+            "Backspace",
+            "Letters"
+          ]
+        },
+        {
+          "press_any": [
+            "Letters"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Shift"
+          }
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "emoji",
+      "said": "The emoji picker stands in the keys' place, and ABC goes back to them",
+      "ops": [
+        {
+          "press_any": [
+            "Emoji"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Search emoji"
+          }
+        },
+        {
+          "must": [
+            "Search emoji",
+            "Delete",
+            "ABC"
+          ]
+        },
+        {
+          "press_any": [
+            "ABC"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Shift"
+          }
+        }
+      ]
+    },
+    {
+      "id": "parked",
+      "said": "Putting the keys away leaves one strip, and Show keys brings the keys back",
+      "ops": [
+        {
+          "press_any": [
+            "Put the keys away"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Show keys"
+          }
+        },
+        {
+          "must_not": [
+            "Backspace"
+          ]
+        },
+        {
+          "press_any": [
+            "Show keys"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Backspace"
+          }
+        }
+      ]
+    },
+    {
+      "id": "hide",
+      "said": "Hide keyboard puts the whole keyboard away, and the person's choice goes back as the family found it",
+      "ops": [
+        {
+          "press_any": [
+            "Hide keyboard"
+          ]
+        },
+        {
+          "must_not": [
+            "Space"
+          ]
+        },
+        {
+          "do": [
+            "so.tilo.settings.sections",
+            "settings/accessibility",
+            "set-on-screen-keyboard",
+            {
+              "value": "auto"
+            }
+          ]
+        },
+        {
+          "must_not": [
+            "Space"
+          ]
+        }
+      ]
+    }
+  ],
+  "order": 51
+}

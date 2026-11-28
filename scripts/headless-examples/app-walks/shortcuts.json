@@ -1,0 +1,199 @@
+{
+  "app": "shortcuts",
+  "said": "Write a shortcut, review what saving would allow, copy it and put it away",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.shortcuts",
+    "package": "shortcuts"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Shortcuts on an empty workbench",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "New shortcut"
+            }
+          }
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "draft",
+      "said": "New shortcut opens a draft with its steps, its triggers and its review",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "New shortcut"
+            }
+          ]
+        },
+        {
+          "must": [
+            "Add step",
+            {
+              "prefix": "Review and save"
+            },
+            {
+              "prefix": "Duplicate"
+            },
+            "Discard",
+            "Add trigger"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "step",
+      "said": "Add step offers the blocks, and an If stands in the draft with its own controls",
+      "ops": [
+        {
+          "press_any": [
+            "Add step"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "If"
+          }
+        },
+        {
+          "must": [
+            "If",
+            "Repeat with each",
+            "Set variable",
+            "Ask for a value",
+            "Ask the agent once",
+            "Start a task"
+          ]
+        },
+        {
+          "press_any": [
+            "If"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Move up"
+          }
+        },
+        {
+          "must": [
+            {
+              "prefix": "Show its steps"
+            },
+            "Move up",
+            "Move down",
+            "Remove",
+            "Add inside"
+          ]
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "review",
+      "said": "Review and save says what saving would allow, and Cancel closes it",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "Review and save"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "Cancel"
+          }
+        },
+        {
+          "must": [
+            [
+              "Save shortcut",
+              "Close"
+            ],
+            "Cancel"
+          ]
+        },
+        {
+          "press_any": [
+            "Cancel"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "copy",
+      "said": "Duplicate copies the open draft under a name of its own",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "Duplicate"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": "New shortcut copy"
+          }
+        },
+        {
+          "must": [
+            "New shortcut copy"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "discard",
+      "said": "Discard puts the draft away, and the copy beside it, leaving no draft open",
+      "ops": [
+        {
+          "press_any": [
+            "Discard"
+          ]
+        },
+        {
+          "press_any": [
+            "New shortcut copy"
+          ]
+        },
+        {
+          "press_any": [
+            "Discard"
+          ]
+        },
+        {
+          "press_any": [
+            "Overview"
+          ]
+        },
+        {
+          "must_not": [
+            "Discard",
+            "New shortcut copy"
+          ]
+        }
+      ]
+    }
+  ],
+  "order": 51
+}
