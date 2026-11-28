@@ -109,7 +109,6 @@ client_side = [
     "tilo-files",
     "tilo-formats",            # dates and clocks as the person set them
     "tilo-identity-client",
-    "tilo-local-time",          # the person's zone and local time
     "tilo-lock",
     "tilo-member-types",       # who acts: a person, a member, an actor and the app one acts in
     "tilo-mime",               # what a MIME type is, by its parts
