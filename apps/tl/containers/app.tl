@@ -349,7 +349,7 @@ action prompt_run(prompt: Text, typed: Text) {
 }
 
 /// Does what the confirmation named.
-action confirm_run(confirm: Text) {
+action confirm_run(confirm: Text (label: "Run")) {
     if confirm.starts_with("container:") {
         device.remove(device.containers, container: confirm.slice(10, confirm.len()))
     } else if confirm.starts_with("image:") {

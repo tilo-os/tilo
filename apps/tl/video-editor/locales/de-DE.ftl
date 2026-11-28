@@ -2204,7 +2204,7 @@ d-xmmw6vam-cs = Clips
 d-gwopftfd = Clip wiederherstellen
     .doc = Macht den gespeicherten Clip auf der Spur, aus der Quelle, ab der Stelle, mit seinen Schlüsselbildern und Effekten.
 
-d-gwopftfd-saved = Gespeicherter Clip
+d-gwopftfd-saved = Gespeichertes Projekt
 
 d-gwopftfd-track = Spur
 

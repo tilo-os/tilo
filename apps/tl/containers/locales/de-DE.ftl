@@ -184,7 +184,7 @@ d-odguvwgd-typed = Getippt
 d-jghrbzbr = Bestätigung ausführen
     .doc = Tut, was die Bestätigung nannte.
 
-d-jghrbzbr-confirm = Bestätigung
+d-jghrbzbr-confirm = Ausführen
 
 d-lvoxmxjw = Ortsname
     .w-containers = Container

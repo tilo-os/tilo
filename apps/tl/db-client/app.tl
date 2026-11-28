@@ -1114,7 +1114,7 @@ action export_csv(d: Database) -> Option<File> (icon: .download, label: "Export 
 
 /// The CSV's save is over: the window says where it went and how many rows, that the person
 /// closed the chooser, or why it was refused.
-action exported_csv(d: Database, saved: host.Saved) {
+action exported_csv(d: Database, saved: host.Saved (label: "Save result")) {
     let s = ensure_session(d)
     let rows = s.result_rows.len()
     if saved.refused != "" {

@@ -99,7 +99,7 @@ type Place (title: name, untitled: "Place") {
     found: Bool = false
 
     search {
-        filter saved
+        filter saved "Saved places"
         filter category
         sort name a_z
     }
@@ -1295,7 +1295,7 @@ action clear_recents(a: Atlas) (
 }
 
 /// Keeps a place in the person's places, or takes it out.
-action save_place(p: Place, saved: Bool = not p.saved) (
+action save_place(p: Place, saved: Bool (label: "Kept in your places") = not p.saved) (
     icon: .star,
     label: "Save place",
     on: p.saved,

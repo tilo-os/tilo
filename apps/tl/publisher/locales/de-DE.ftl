@@ -155,7 +155,7 @@ d-3f5jfxyj = Exportiert
     .w-kept-at-it-is-the-only = Gespeichert unter { $at }. Es ist die einzige Kopie außerhalb dieses Geräts: bewahre sie sicher auf.
     .w-keep-publisher-key-json-somewhere-safe = Bewahre publisher-key.json sicher auf; es ist die einzige Kopie außerhalb dieses Geräts.
 
-d-3f5jfxyj-saved = Gespeichert
+d-3f5jfxyj-saved = Speicherergebnis
 
 d-uiuxe7rl = Beantragen
     .doc = Bittet die Registry um die Namensräume, die Domain und Forge-Konto des Profils nennen.

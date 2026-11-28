@@ -940,7 +940,7 @@ fn saved_clip(p: Project, c: Clip) -> SavedClip {
 /// Makes the clip `c` keeps on `track`, of `media`, at `start`, with its keys and effects.
 action restore_clip(
     p: Project,
-    saved: Text,
+    saved: Text (label: "Saved project"),
     track: Track,
     media: Media,
     start: Float,

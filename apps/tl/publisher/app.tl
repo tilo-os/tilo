@@ -323,7 +323,7 @@ action export_key(p: Publisher) -> File (icon: .download, label: "Export key…"
 
 /// The key file's save is over: the window says where it went, that the person closed the
 /// chooser, or why it was refused.
-action exported(p: Publisher, saved: host.Saved) {
+action exported(p: Publisher, saved: host.Saved (label: "Save result")) {
     if saved.refused != "" {
         p.notice_kind = "error"
         p.notice_title = std.say("The key could not be saved")

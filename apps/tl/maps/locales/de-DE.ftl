@@ -34,7 +34,7 @@ d-qoo35pg5 = Gespeichert
 d-sewsxq7v = Gefunden
     .doc = Ob die letzte Suche ihn gefunden hat, statt dass die Person ihn behalten hat.
 
-d-cg37pq4z-filter-saved = Gespeichert
+d-cg37pq4z-filter-saved = Gespeicherte Orte
 
 d-cg37pq4z-filter-category = Kategorie
 
@@ -448,7 +448,7 @@ d-bfcmdpfq = Suchverlauf leeren
 d-3tyh3ivg = Ort speichern
     .doc = Behält einen Ort in den Orten der Person oder nimmt ihn heraus.
 
-d-3tyh3ivg-saved = Gespeichert
+d-3tyh3ivg-saved = In deinen Orten
 
 d-gsa5njic = Ort öffnen
     .doc = Zeigt den Ort „place“ auf der Karte: die Karte geht auf ihm auf.
