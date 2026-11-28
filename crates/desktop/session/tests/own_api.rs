@@ -532,7 +532,7 @@ fn launcher_program() {
     for line in std::io::stdin().lines().map_while(Result::ok) {
         let started = program_command(std::path::Path::new(&line), std::path::Path::new(&socket))
             .stdout(std::process::Stdio::inherit())
-            .status();
+            .status_locked();
         assert!(started.is_ok_and(|ran| ran.success()), "{line} ran");
     }
 }
