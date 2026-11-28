@@ -897,6 +897,9 @@ impl Widget for Terminal {
         "Terminal"
     }
 
+    // The window's search finds in the scrollback in place, as it finds in a document.
+    tilo_ui_base::provides!(dyn crate::widget::Findable);
+
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
     }

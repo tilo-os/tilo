@@ -423,6 +423,28 @@ fn control_named(app: &mut super::Session, name: &str) -> Option<String> {
     found
 }
 
+/// A small picture of one colour, magenta, which nothing else in the window is drawn in, as the
+/// base64 of its PNG.
+fn magenta_png() -> String {
+    use base64::Engine as _;
+    let picture = image::RgbaImage::from_pixel(16, 16, image::Rgba([255, 0, 255, 255]));
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(picture)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
+/// How many of the window's pixels are drawn magenta now.
+fn magenta_pixels(app: &mut super::Session) -> usize {
+    pump(app);
+    app.harness()
+        .render_rgba()
+        .chunks_exact(4)
+        .filter(|pixel| pixel[0] > 200 && pixel[1] < 60 && pixel[2] > 200)
+        .count()
+}
+
 /// Type `line` at the window's prompt and press Enter, as the person does.
 fn type_line(app: &mut super::Session, line: &str) {
     let [x, y, width, height] = grid_rect(app);
@@ -434,6 +456,8 @@ fn type_line(app: &mut super::Session, line: &str) {
 
 #[test]
 fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_closes_it() {
+    // Menus open at rest: a row pressed while its menu still animates in takes no press.
+    let _settled = ui::motion::testing::settled();
     settings();
     let dir = tempfile::tempdir().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -477,6 +501,34 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     type_line(&mut app, "echo hi");
     wait_for(&mut app, "the shell's answer is in the window", |app| {
         screen(app).lines().any(|line| line.trim() == "hi")
+    });
+
+    // The window's search (Ctrl+F) finds in the scrollback in place, as in a document: it acts on
+    // the grid, which finds the line they typed and the line the shell printed.
+    assert_eq!(
+        ui::widget::InPlace::of(app.window.root()),
+        ui::widget::InPlace::Document,
+        "the window's search finds in the grid"
+    );
+    let found = ui::widget::with_findable(app.window.root(), &mut |grid| {
+        grid.find("hi", ui::widget::FindOptions::default()).len()
+    });
+    assert!(
+        found.is_some_and(|found| found >= 2),
+        "the typed and the printed line are found: {found:?}"
+    );
+
+    // A program draws a picture with the Kitty graphics protocol, and the window paints it on the
+    // cells it covers.
+    type_line(
+        &mut app,
+        &format!(
+            "printf '\\033_Gf=100,a=T,c=8,r=4;{}\\033\\\\'",
+            magenta_png()
+        ),
+    );
+    wait_for(&mut app, "the picture the program drew is painted", |app| {
+        magenta_pixels(app) > 100
     });
 
     // The person lets programs set the clipboard from the grid's own menu: the shell follows
