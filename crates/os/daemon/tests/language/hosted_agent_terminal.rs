@@ -332,7 +332,9 @@ fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_an
 }
 
 /// Once the person allowed the agent that one action for good, from its Agents settings, the
-/// command is carried out unasked; taken back, the next command asks again.
+/// command is carried out unasked. Taken back, the next command is refused and nobody is asked:
+/// an agent its person answered takes only what their answers name, and is never asked for what
+/// they do not.
 #[test]
 fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_back() {
     host::run_with(&["chat", "terminal"], |host| async move {
@@ -373,7 +375,7 @@ fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_b
             "the allowed command ran in the Terminal"
         );
 
-        // Taken back, the next command asks again.
+        // Taken back, the next command is refused, unasked.
         take_back(host, allowed).await;
         let second = "0f0e0d0c-0000-4000-8000-000000000005";
         scripted.then(Reply::tool_call(
@@ -381,11 +383,16 @@ fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_b
             "tilo_do",
             running(second, "echo again-42"),
         ));
-        scripted.then(Reply::text("I asked you to let me run it again."));
+        scripted.then(Reply::text("I may no longer run it."));
         let (wrote, failed) = write_to_scout(host, &channel, "And again").await;
         assert!(!failed, "the message is written: {wrote}");
         asked(&scripted, 4).await;
-        waits(host, second).await;
+        let answers = tool_answers(&scripted.asked()[3].request);
+        assert!(
+            matches!(answers.last(), Some((answer, true)) if answer.contains("not_permitted")),
+            "the command its person's answers no longer name is refused: {answers:?}"
+        );
+        assert!(nobody_is_asked(host).await, "nobody was asked");
         nothing_ran(host, "again-42").await;
     });
 }
