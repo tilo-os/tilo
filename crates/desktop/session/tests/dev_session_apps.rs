@@ -61,8 +61,8 @@ fn a_dev_sessions_apps_are_installed_packages_it_seeds_from() {
 /// Every app of the development session is a package the session's store holds, built from
 /// `apps/tl` and installed with its signed manifest.
 fn every_dev_session_app_is_an_installed_package(session: &DevSession) {
-    // What is read below is what the install answered: the session's apps and its shell, so the
-    // readings are of six packages and never of none.
+    // What is read below is what the install answered: the session's apps and its shell among
+    // them, so the readings are never of none.
     for app in tilo_session::seeded_apps::APPS
         .into_iter()
         .chain(["so.tilo.shell"])
@@ -73,10 +73,15 @@ fn every_dev_session_app_is_an_installed_package(session: &DevSession) {
             session.installed
         );
     }
+    // One package for each app the session builds, each once: never a test's extra app or a part
+    // an app is made with.
+    let mut unique = session.installed.clone();
+    unique.sort();
+    unique.dedup();
     assert_eq!(
-        session.installed.len(),
-        6,
-        "the install answered the session's apps and nothing besides: {:?}",
+        unique.len(),
+        crate::common::dev_apps::APPS.len(),
+        "the install answered the apps the session builds, each once, and nothing besides: {:?}",
         session.installed
     );
     for app in &session.installed {
