@@ -196,8 +196,9 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
         vec![Box::new(settings_sections::service::SettingsService::new())]
     });
     served(&mut session, &socket);
-    let workspace = held_workspace(&mut session, &socket);
-    let api = crate::common::Api::in_workspace(&socket, workspace);
+    // The program acts in the workspace in front: the one whose questions the shell shows.
+    held_workspace(&mut session, &socket);
+    let api = crate::common::Api::open(&mut session, root.path());
     let power = tilo_app::framework::section_address("power", None);
     let before = crate::common::wait_for(&mut session, "the device's power section", |session| {
         session.settle_services();
@@ -255,12 +256,16 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
             })
             .cloned()
     });
-    let name = waiting["name"].as_str().expect("the record is named");
+    // The record's address, as the listing names it: its name carries the program's path.
+    let record = waiting["path"]
+        .as_str()
+        .expect("the record has its address");
+    let record = tilo_api::v1::routing::encode_path(record);
 
     // The program answering its own question is refused, and nothing runs.
     let answered = api
         .send(
-            &format!("resources/invocations/workspace/{name}/actions/resolve"),
+            &format!("resources/{record}/actions/resolve"),
             Some(json!({"resolution": "approve"})),
         )
         .answer(&mut session);
