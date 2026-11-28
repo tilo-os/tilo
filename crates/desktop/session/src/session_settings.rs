@@ -45,6 +45,9 @@ pub struct SessionSettings {
     /// Where what is left is written: a worker, so no pass of the session's loop reads or writes
     /// the file. `None` when the worker could not start, and the pass writes it itself.
     publisher: Option<mpsc::Sender<Publication>>,
+    /// Why the settings were last not left where the processes outside the session read them,
+    /// until the loop tells the person: a change they made would not reach their other devices.
+    failed: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// What the session leaves for the processes outside it, as the worker writes it.
@@ -66,7 +69,8 @@ impl SessionSettings {
         settings_store::install_source(Some(
             Arc::clone(&settings) as Arc<dyn settings_store::SettingsSource>
         ));
-        let publisher = start_publisher();
+        let failed: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+        let publisher = start_publisher(Arc::clone(&failed));
         if let Err(error) = &publisher {
             tracing::warn!(
                 %error,
@@ -81,6 +85,7 @@ impl SessionSettings {
             reading: Arc::default(),
             published: std::cell::RefCell::new(None),
             publisher: publisher.ok(),
+            failed,
         }
     }
 
@@ -218,26 +223,41 @@ impl SessionSettings {
         // The revision is kept as asked for: were the worker slow and the settings change again,
         // the next pass hands it the newer ones, and the worker writes only the latest.
         *self.published.borrow_mut() = Some((revision, device));
-        leave(self.publisher.as_ref(), publication);
+        leave(self.publisher.as_ref(), publication, &self.failed);
+    }
+
+    /// Why the settings were last not left for the processes outside the session, once: what the
+    /// loop tells the person, since this computer's programs may act on what was set before.
+    pub(crate) fn take_failure(&self) -> Option<String> {
+        self.failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 }
 
 /// Hand `publication` to the worker, or, with none or one that stopped, leave it on this pass, as
 /// before.
-fn leave(publisher: Option<&mpsc::Sender<Publication>>, publication: Publication) {
+fn leave(
+    publisher: Option<&mpsc::Sender<Publication>>,
+    publication: Publication,
+    failed: &std::sync::Mutex<Option<String>>,
+) {
     let Some(jobs) = publisher else {
-        write(&publication);
+        write(&publication, failed);
         return;
     };
     if let Err(error) = jobs.send(publication) {
         // The worker stopped: nothing is left to write it, so this pass does.
-        write(&error.0);
+        write(&error.0, failed);
     }
 }
 
 /// The worker that leaves the settings for the processes outside the session, and the channel to
 /// it: a burst of changes is written once, the latest.
-fn start_publisher() -> std::io::Result<mpsc::Sender<Publication>> {
+fn start_publisher(
+    failed: Arc<std::sync::Mutex<Option<String>>>,
+) -> std::io::Result<mpsc::Sender<Publication>> {
     let (jobs, work) = mpsc::channel::<Publication>();
     std::thread::Builder::new()
         .name("tilo-settings-published".into())
@@ -246,17 +266,31 @@ fn start_publisher() -> std::io::Result<mpsc::Sender<Publication>> {
                 while let Ok(newer) = work.try_recv() {
                     latest = newer;
                 }
-                write(&latest);
+                write(&latest, &failed);
             }
         })?;
     Ok(jobs)
 }
 
-/// Leave `publication` for the processes outside the session.
-fn write(publication: &Publication) {
-    if let Err(error) = settings_store::outside::publish(&publication.device, &publication.settings)
-    {
-        tracing::warn!(%error, "the settings were not left for the processes outside the session");
+/// Leave `publication` for the processes outside the session, keeping why it could not be left
+/// for the person.
+fn write(publication: &Publication, failed: &std::sync::Mutex<Option<String>>) {
+    let Err(error) = settings_store::outside::publish(&publication.device, &publication.settings)
+    else {
+        return;
+    };
+    tracing::warn!(%error, "the settings were not left for the processes outside the session");
+    record(failed, &error.to_string());
+}
+
+/// Keep `error` for the person to be told, unless the first failure since the last telling is
+/// already kept: a burst of failed writes is one thing that went wrong, not one per setting.
+fn record(failed: &std::sync::Mutex<Option<String>>, error: &str) {
+    let mut failed = failed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if failed.is_none() {
+        *failed = Some(error.to_owned());
     }
 }
 
@@ -292,5 +326,28 @@ impl Stores for SessionStores {
 
     fn wake(&self) {
         (self.wake)();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A burst of settings that could not be left is told once, by the first failure: telling the
+    /// person once per setting would bury the last thing that went wrong under the first.
+    #[test]
+    fn the_first_failed_write_is_the_one_the_person_hears_about() {
+        let failed: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        record(&failed, "the disk is full");
+        record(&failed, "the disk is full");
+        record(&failed, "the file was closed");
+        assert_eq!(
+            failed.lock().expect("the failure").take().as_deref(),
+            Some("the disk is full")
+        );
+        assert!(
+            failed.lock().expect("the failure").is_none(),
+            "told once, and taken by the telling"
+        );
     }
 }

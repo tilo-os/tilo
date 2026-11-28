@@ -1298,6 +1298,7 @@ impl Session {
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
                 settings_steps: Some(std::sync::Arc::clone(&settings_steps)),
             },
+            &notifications,
         )?;
         // The person's own line calls through the device's one dispatch, as their own click does,
         // so what it reads and changes is decided where it lands.

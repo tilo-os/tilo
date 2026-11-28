@@ -111,6 +111,20 @@ refused-write-app = Änderungen
 refused-write-title = { $device } nimmt deine Änderung nicht an
 refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
 
+## Eine Einstellung, die die Person geändert hat, wurde nicht dort abgelegt, wo die
+## Programme dieses Rechners sie lesen: sie ist gespeichert, und sie handeln
+## womöglich noch nach dem, was vorher eingestellt war.
+settings-app-name = Einstellungen
+settings-not-saved-title = Einstellung nicht gespeichert
+settings-not-saved-body = Die Änderung ist gespeichert, aber die Programme dieses Rechners konnten sie nicht erfahren, deshalb handeln sie womöglich noch nach dem, was vorher eingestellt war. { $reason }
+
+## Diese Sitzung nimmt an der Zusammenarbeit des Arbeitsbereichs nicht teil: was
+## die Person hier tut, erreicht kein anderes Gerät, und nichts von anderen erreicht
+## sie hier. Der Grund ist der, den die Sitzung genannt bekommen hat.
+collab-app-name = Tilo
+collab-unavailable-title = Zusammenarbeit nicht verfügbar
+collab-unavailable-body = Was du hier tust, bleibt auf diesem Rechner: es erreicht deine anderen Geräte und die Menschen, mit denen du arbeitest, nicht, und nichts von ihnen erreicht dich. { $reason }
+
 ## Warum ein Gerät oder ein Arbeitsbereich eine Änderung nicht angenommen hat,
 ## als Fortsetzung des Satzes davor.
 refusal-reason-revoked = dem Gerät wurde der Zugang entzogen

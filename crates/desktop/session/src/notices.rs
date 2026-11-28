@@ -550,6 +550,29 @@ pub(crate) fn downloaded_apps_notice() -> Notice {
     )
 }
 
+/// The notice that a setting the person changed was not left where this computer's own programs
+/// read it: `reason` says why, and they may still act on what was set before.
+pub(crate) fn settings_not_saved_notice(reason: &str) -> Notice {
+    Notice::new(
+        t("settings-app-name"),
+        2,
+        t("settings-not-saved-title"),
+        t_args("settings-not-saved-body", &[("reason", reason.into())]),
+    )
+}
+
+/// The notice that this session has no collaboration: what the person does here stays on this
+/// computer, and `reason` says why their other devices and the people they work with see none of
+/// it.
+pub(crate) fn collab_unavailable_notice(reason: &str) -> Notice {
+    Notice::new(
+        t("collab-app-name"),
+        2,
+        t("collab-unavailable-title"),
+        t_args("collab-unavailable-body", &[("reason", reason.into())]),
+    )
+}
+
 /// Why a device or a workspace did not take a change, in the person's own words.
 #[must_use]
 pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
@@ -1017,6 +1040,29 @@ mod tests {
                 "removing is the owner's own action"
             );
         }
+    }
+
+    /// What the person is told when a setting they changed could not be left for their other
+    /// devices, and when this session has no collaboration: what happened, and the reason it was
+    /// given.
+    #[test]
+    fn a_failed_setting_and_a_session_without_collaboration_say_what_and_why() {
+        let setting = settings_not_saved_notice("the file is read-only");
+        assert_eq!(setting.title, "Setting not saved");
+        assert!(
+            setting.body.contains("the file is read-only"),
+            "{}",
+            setting.body
+        );
+        assert_eq!(setting.urgency, 2);
+        let collab = collab_unavailable_notice("this desktop was not started by the daemon");
+        assert_eq!(collab.title, "Collaboration unavailable");
+        assert!(
+            collab.body.contains("not started by the daemon"),
+            "{}",
+            collab.body
+        );
+        assert_eq!(collab.urgency, 2);
     }
 
     #[test]

@@ -844,6 +844,14 @@ impl Session {
             &sealing,
             &self.shared.wake_handle,
         );
+        // A setting that could not be left for this computer's own programs is said where the
+        // person changed it, not only logged: they may still act on what was set before.
+        if let Some(reason) = self.shared.settings.take_failure() {
+            self.shared
+                .notifications
+                .borrow()
+                .tell(&crate::notices::settings_not_saved_notice(&reason));
+        }
         // What was handed to an agent, and what was sent since the last look, by a box, an agent
         // or a script.
         self.shared.deliver_hands();

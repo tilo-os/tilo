@@ -194,6 +194,7 @@ pub(crate) fn start_app_wire(
     activity: &activity::Activity,
     services: &Knitted,
     collaboration: Collaboration<'_>,
+    notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
 ) -> Result<Option<AppWire>, Error> {
     let Collaboration {
         sync,
@@ -211,6 +212,11 @@ pub(crate) fn start_app_wire(
         Ok(shell) => shell,
         Err(reason) => {
             tracing::error!(%reason, "this session serves its apps nothing");
+            // What the person does here reaches no other device: the apps' collaboration and
+            // their work with the people in the workspace are gone with the link, so they are
+            // told why rather than finding an empty roster.
+            crate::notifications::RoleNotices::of(notices)
+                .show(&crate::notices::collab_unavailable_notice(&reason));
             return Ok(None);
         }
     };

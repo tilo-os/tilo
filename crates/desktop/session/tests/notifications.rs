@@ -144,3 +144,44 @@ fn do_not_disturb_turned_on_while_the_session_runs_holds_the_next_banner() {
         "Do Not Disturb holds the banner: the session followed the setting the person changed"
     );
 }
+
+/// A session the device's daemon did not start has no shell link, so nothing it does reaches the
+/// person's other devices and nothing of theirs reaches it. The person is told that, and why, as
+/// a notice rather than a desktop that looks normal and quietly collaborates with nobody.
+#[test]
+fn a_session_with_no_shell_link_says_collaboration_is_unavailable_and_why() {
+    use tilo_session::AppSocket;
+
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().expect("a home of this test's own");
+    let mut session = crate::common::headless(Options {
+        // The session serves an app wire, so the failure that leaves it without collaboration is
+        // the one it would report on a real desktop.
+        app_socket: AppSocket::At(home.home().join("collab.sock")),
+        collab: false,
+        ..Options::default()
+    });
+    // The notice reaches the centre through the notifications service, on the passes that take
+    // what it sent.
+    crate::common::until(&mut session, "the collaboration notice", |session| {
+        let notifications = session.notifications();
+        let log = notifications.log.log.borrow();
+        log.active()
+            .iter()
+            .chain(log.history())
+            .any(|banner| banner.title == "Collaboration unavailable")
+    });
+    let notifications = session.notifications();
+    let log = notifications.log.log.borrow();
+    let notice = log
+        .active()
+        .iter()
+        .chain(log.history())
+        .find(|banner| banner.title == "Collaboration unavailable")
+        .expect("the notice the test waited for");
+    assert!(
+        notice.body.contains("not started by the device's daemon"),
+        "the notice names the cause: {}",
+        notice.body
+    );
+}

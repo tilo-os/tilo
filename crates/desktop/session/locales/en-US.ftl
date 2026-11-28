@@ -108,6 +108,19 @@ refused-write-app = Changes
 refused-write-title = { $device } will not take your change
 refused-write-body = Your change stays on the devices that took it: { $reason }.
 
+## A setting the person changed was not left where this computer's own programs
+## read it: it is kept, and they may still act on what was set before.
+settings-app-name = Settings
+settings-not-saved-title = Setting not saved
+settings-not-saved-body = The change is kept, but this computer's programs could not be told about it, so they may still act on what was set before. { $reason }
+
+## This session is not taking part in the workspace's collaboration: what the
+## person does here reaches no other device, and nothing anyone else does
+## reaches here. Why is the reason the session was given.
+collab-app-name = Tilo
+collab-unavailable-title = Collaboration unavailable
+collab-unavailable-body = What you do here stays on this computer: it does not reach your other devices or the people you work with, and nothing they do reaches you. { $reason }
+
 ## Why a device or a workspace did not take a change, as the rest of the
 ## sentence before it.
 refusal-reason-revoked = the device's access was revoked
