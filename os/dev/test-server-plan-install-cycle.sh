@@ -613,6 +613,23 @@ await_owner_unlock_ask() {
 # once it waits. The person has more than one workspace and the owner logged in to no server, so
 # each workspace of theirs is read by its id. The listings, and what refused them, are kept as
 # evidence of what asked.
+# What a live installer that never enrolled says about itself: its recovery console's root shell
+# (tty2, choice 5) writes the installer's runtime files with their labels, the window's process
+# context, the live module list, its setup units and the boot's AVCs to the serial line, each line
+# marked, and only the marked lines are kept. No secret is in any of them.
+installer_diagnosis() {
+  local label=$1 serial="$server_dir/serial.log"
+  [ -f "$serial" ] || return 0
+  server_vm keys ctrl-alt-f2 >/dev/null 2>&1 || return 0
+  sleep 3
+  server_vm type 5 >/dev/null 2>&1 && server_vm keys ret >/dev/null 2>&1 || return 0
+  sleep 3
+  server_vm type "(id greetd; ls -laZ /run/tilo-installer; ps -eZ | grep -E 'installer|cage'; semodule -l | grep tilo; systemctl --no-pager status tilo-installer-setup tilo-staging-handoff; ausearch -m avc,user_avc -ts boot; journalctl -b --no-pager -g 'avc|tilo-installer-setup|staging-handoff' | tail -n 60) 2>&1 | sed 's/.*/TILO-DIAG: &/' > /dev/ttyS0" \
+    >/dev/null 2>&1 && server_vm keys ret >/dev/null 2>&1 || return 0
+  sleep 15
+  tr -d '\000' < "$serial" | grep -a 'TILO-DIAG: ' > "$out/installer-diagnosis-$label.txt" || true
+  cat "$out/installer-diagnosis-$label.txt" >&2
+}
 await_owner_certify_ask() {
   local label=$1 listed="$out/owner-asked-$1" found="" workspace
   local deadline=$((SECONDS + ${TILO_SERVER_CYCLE_ASK_SECONDS:-1200}))
@@ -638,6 +655,7 @@ await_owner_certify_ask() {
   # The installer's second stage says what it is doing on its screen, never on the serial.
   local shot
   shot="$(server_vm shot "unasked-$label" 2>/dev/null)" && cp -f "$shot" "$out/server-screen-$label.png" || true
+  installer_diagnosis "$label"
   die "the owner was never asked to certify the machine's boot key ($label)"
 }
 # The person answers the asked record `invocation` in `workspace`: their yes approves the call
