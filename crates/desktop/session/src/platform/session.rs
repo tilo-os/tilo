@@ -1613,6 +1613,7 @@ impl Session {
                 daemon.clone(),
                 handle.clone(),
                 options.wake.handle(),
+                view.clone(),
             )));
 
         // The person's other devices, and the files the studio and Files hand
