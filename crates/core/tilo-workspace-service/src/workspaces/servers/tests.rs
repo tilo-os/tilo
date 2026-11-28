@@ -770,6 +770,10 @@ fn the_other_open_choices_are_answered_on_the_persons_devices() {
     assert_eq!(entry.label, "attic");
     assert_eq!(entry.plan.unlock, "owner-device");
     assert_eq!(entry.plan.updates, "dev");
+    assert_eq!(
+        entry.updates, "dev",
+        "the answered updates are the server's setting"
+    );
     assert!(entry.plan.open_choices().is_empty(), "{entry:?}");
 
     for (choice, value) in [

@@ -32,6 +32,11 @@ fn entry(device: &crate::keep::common::TestDevice) -> Id {
 /// The plan `nas` installs with, as the action takes it: a server named for it that holds
 /// `workspace` as a key holder, begun with `nonce` and unlocked by the TPM.
 fn plan_holding(workspace: &str, nonce: &str) -> String {
+    plan_following(workspace, nonce, "stable")
+}
+
+/// [`plan_holding`]'s plan, following `updates`.
+fn plan_following(workspace: &str, nonce: &str, updates: &str) -> String {
     let plan = install_plan::Choices {
         destination: "tilo-server".to_owned(),
         name: Some("nas".to_owned()),
@@ -44,7 +49,7 @@ fn plan_holding(workspace: &str, nonce: &str) -> String {
             identity: String::new(),
         }),
         unlock: Some("tpm".to_owned()),
-        updates: Some("stable".to_owned()),
+        updates: Some(updates.to_owned()),
         hosting: Some(vec![install_profile_model::plan::Holding {
             workspace: workspace.to_owned(),
             mode: "key-holder".to_owned(),
@@ -205,6 +210,70 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         1,
         "the workspace names its first host alone"
+    );
+}
+
+/// The updates a person chose when planning a machine are the ones it follows
+/// once it is taken in: the update policy the server asks its root helper to
+/// apply names them, until a setting of the entry says otherwise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_machine_follows_the_updates_its_plan_chose() {
+    let alice = TestUser::fresh("Alice");
+    let nas = alice.enrol("nas", DeviceCapabilities::member());
+    let server = serve_on(&alice, &nas, WorkSetting::own_person()).await;
+    let policy = tempfile::tempdir().unwrap();
+    let path = policy.path().join(servers_policy::POLICY_REQUEST_FILE);
+    let requests = applied::Requests::at(&path);
+    let workspaces = server.host.workspaces();
+    let admin = person_workspace_id(&alice.user_pk);
+    workspaces
+        .create_workspace("Servers", Some(&admin))
+        .await
+        .unwrap();
+    let workspace = workspaces.create("Notes").await.unwrap();
+    let nonce = hex::encode([0x6b_u8; 16]);
+    servers::apply(
+        workspaces,
+        Servers::PLAN_MACHINE.with((
+            plan_following(&workspace.workspace, &nonce, "dev"),
+            "nas".into(),
+        )),
+    )
+    .await
+    .unwrap();
+    servers::apply(
+        workspaces,
+        Servers::BEGIN_INSTALL.with((
+            hex::encode(nas.device_pubkey()),
+            nonce,
+            "[]".into(),
+            String::new(),
+        )),
+    )
+    .await
+    .unwrap();
+    applied::reconcile_into(workspaces, &requests)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "updates=dev\n",
+        "it follows the updates its plan chose"
+    );
+
+    servers::apply(
+        workspaces,
+        Servers::SET_UPDATES.with((entry(&nas), "stable".into())),
+    )
+    .await
+    .unwrap();
+    applied::reconcile_into(workspaces, &requests)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "updates=stable\n",
+        "a later setting wins over the plan"
     );
 }
 

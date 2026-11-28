@@ -388,6 +388,9 @@ impl Servers {
             plan::INSTALLING.clone_into(&mut entry.plan.status);
             entry.plan.drives = drives;
             entry.plan.ask = ask;
+            // The updates its person chose for it are the server's from now on: the entry's
+            // setting is what the server applies, and what a later change sets.
+            entry.updates.clone_from(&entry.plan.updates);
             self.servers.push(device, entry);
             return Ok(());
         }
@@ -463,6 +466,8 @@ impl Servers {
                 if !install_profile_model::plan::UPDATES.contains(&value.as_str()) {
                     return Err(Refusal::new("a machine follows stable or dev updates"));
                 }
+                // Taken in already, the machine follows the answer as its setting.
+                server.updates.clone_from(&value);
                 server.plan.updates = value;
             }
             "network" => {
