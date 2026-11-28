@@ -87,7 +87,8 @@ struct DevBuildsIn {
 struct Rows {
     resource: String,
     root: PathBuf,
-    /// The packages on their way, by app.
+    /// The rows the cache publishes beyond its catalog, by app: a package on its way, or one this
+    /// device could not install, and why.
     fetching: Mutex<BTreeMap<String, PackageRow>>,
     /// Why an app's connection did not come up and this device stopped starting it
     /// ([`crate::apps::Failures`]): what its row says beyond being installed.
@@ -109,6 +110,23 @@ impl Rows {
             .map_or_else(Vec::new, |failures| failures.stopped_rows());
         package_actions::rows::rows(&catalog, fetching, failed)
             .map_err(|reason| ActionCallError::Unavailable { reason })
+    }
+
+    /// `app`'s row says this device could not install it, and why, rather than missing.
+    fn failed(&self, app: &str, reason: String) {
+        self.fetching.lock_recover().insert(
+            app.to_owned(),
+            PackageRow {
+                app: app.to_owned(),
+                version: String::new(),
+                root: String::new(),
+                publisher: String::new(),
+                state: RowState::Failed { reason },
+                about: None,
+                size_bytes: 0,
+            },
+        );
+        self.moved();
     }
 
     /// Read the rows `app`'s connection failures as this device keeps them from now on.
@@ -1236,7 +1254,8 @@ impl PackageCache {
                 .named
                 .lock_recover()
                 .insert(release.app.clone(), release.package.clone());
-            if self.runs(&release.package) {
+            if self.runs(&release.package) || self.cannot_run(&release.package) {
+                // Installed, or refused once and never retried: a newer release is another package.
                 continue;
             }
             // A version from a registry names no file: the registries offer it.
@@ -1595,15 +1614,20 @@ impl PackageCache {
         payload_from: Option<String>,
     ) {
         let _one_at_a_time = self.writer.installing.lock_recover();
-        if self.superseded(release) {
+        if self.superseded(release) || self.cannot_run(&release.package) {
             return;
         }
         if let Err(error) = self.keep_runtimes(release, bytes, lists, registries) {
             self.writer.rows.arrived(&release.app);
-            self.writer
+            // Said once, here: the package is never attempted again, and its row says why.
+            let first = self
+                .writer
                 .cannot_run
                 .send_if_modified(|packages| packages.insert(release.package.to_ascii_lowercase()));
-            tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
+            if first {
+                self.writer.rows.failed(&release.app, error.clone());
+                tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
+            }
             return;
         }
         if self.install_package(release, bytes, lists, payload_from) {
