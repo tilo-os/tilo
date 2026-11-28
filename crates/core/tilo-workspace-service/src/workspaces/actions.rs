@@ -1795,25 +1795,6 @@ impl Workspaces {
             .await
     }
 
-    /// Run `request`, one of the actions [`Self::page_actions`] offered, for
-    /// `caller` on a page of the workspace `workspace_id`: decided as the
-    /// same call from any other caller is.
-    ///
-    /// # Errors
-    ///
-    /// The action refused, or is not one `caller` may run.
-    pub async fn page_invoke(
-        &self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Result<Value, ActionCallError> {
-        if request.target.provider != WORKSPACE_GOVERNANCE_PROVIDER {
-            return Err(ActionCallError::UnknownAction);
-        }
-        Box::pin(self.invoke(Some(workspace_id), caller, None, request)).await
-    }
-
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
     /// the serving device itself): the governance of the workspace it carries, their own
