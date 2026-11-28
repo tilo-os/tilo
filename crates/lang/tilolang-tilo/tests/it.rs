@@ -20,6 +20,7 @@ mod asking_at_press_shot;
 mod asking_effects;
 mod asking_form;
 mod atomic;
+mod backups;
 mod block_search;
 mod board_lists;
 mod bundle;

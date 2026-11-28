@@ -19,6 +19,8 @@ use crate::value::{ResourceRef, Value};
 pub struct FieldChange {
     /// The field's name, as the type declares it.
     pub field: String,
+    /// The id the field is stored and labelled by.
+    pub id: String,
     pub before: Option<Json>,
     pub after: Option<Json>,
     pub secret: bool,
@@ -83,6 +85,7 @@ impl Core {
                 };
                 Some(FieldChange {
                     field: field.name.clone(),
+                    id: field.id.clone(),
                     before: said(before, before_read),
                     after: said(after, after_read),
                     secret: field.secret,

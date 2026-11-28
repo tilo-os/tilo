@@ -45,9 +45,19 @@ pub fn version_entry(
         }
         // What the change did to each field, with the values `reader` may see of it: none for a
         // feed read by several, whose entry says each change to all of them alike.
-        let changes: Vec<Json> = reader
+        let written = reader
             .map(|reader| host.runtime().field_changes(reader, version))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // The message each changed field is labelled by, so history names it in the reader's
+        // language.
+        let labels: serde_json::Map<String, Json> = written
+            .iter()
+            .map(|change| {
+                let key = tilolang::messages::key_of(&change.id);
+                (change.field.clone(), key.into())
+            })
+            .collect();
+        let changes: Vec<Json> = written
             .into_iter()
             .map(|change| {
                 let mut said = serde_json::Map::new();
@@ -66,6 +76,7 @@ pub fn version_entry(
             .collect();
         if !changes.is_empty() {
             entry.insert("changes".to_owned(), Json::Array(changes));
+            entry.insert("field_labels".to_owned(), Json::Object(labels));
         }
         if host.runtime().declares_did(&version.action) {
             entry.insert("declared".to_owned(), true.into());
@@ -163,14 +174,22 @@ pub fn say_versions(
             }
         }
         // An action that declares no words for what it did, which changed one field, says that
-        // field's change ("Changed weekly of Backups to 5"; a secret one only that it changed).
+        // field's change ("Changed Weekly of Policy to 5"; a secret one only that it changed).
         let declared = version["declared"].as_bool().unwrap_or(false);
         let edit = match changes.as_slice() {
             [change] if !declared && step.is_none() && action != "$create" => {
                 let value = |when: &str| tilo_actions::Scalar::from_json(&change[when]);
+                let field = change["field"].as_str().unwrap_or_default();
+                // The field by its label in the reader's language, else by its name.
+                let label = version
+                    .get("field_labels")
+                    .and_then(|labels| labels.get(field))
+                    .and_then(Json::as_str)
+                    .and_then(|key| words.format(key, &tilo_history::FluentArgs::new()))
+                    .unwrap_or_else(|| field.to_owned());
                 Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
                     ty: String::new(),
-                    field: change["field"].as_str().unwrap_or_default().to_owned(),
+                    field: label,
                     path: Vec::new(),
                     op: tilo_actions::EditOp::Set,
                     old: value("before"),
