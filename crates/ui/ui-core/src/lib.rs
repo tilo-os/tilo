@@ -286,7 +286,7 @@ pub mod state;
 pub mod strip_layers;
 /// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
 /// is no surface, and no session places its window.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(all(feature = "native", feature = "model", feature = "local-daemons"))]
 pub mod surface_peer;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

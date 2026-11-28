@@ -593,9 +593,9 @@ impl App {
         let Some(mut client) = self.floating.client.take() else {
             // Only Tilo's model runs a surface app's window, which the session reaches over the
             // surface's own socket.
-            #[cfg(feature = "model")]
+            #[cfg(all(feature = "model", feature = "local-daemons"))]
             let pressed = self.serve_surface_window();
-            #[cfg(not(feature = "model"))]
+            #[cfg(not(all(feature = "model", feature = "local-daemons")))]
             let pressed = false;
             let drained = self.drain_unhosted_floating_requests();
             return pressed || drained;

@@ -132,7 +132,7 @@ pub fn requested_reveal() -> Option<String> {
     }
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(all(feature = "native", feature = "model", feature = "broker-transport"))]
 /// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
 /// thread, and the wake scope the app built after it takes, which the join's manager wakes.
 pub struct Arriving {
@@ -140,7 +140,7 @@ pub struct Arriving {
     pub scope: crate::wake::WakeScope,
 }
 
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(all(feature = "native", feature = "model", feature = "broker-transport"))]
 impl std::fmt::Debug for Arriving {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("Arriving").finish_non_exhaustive()

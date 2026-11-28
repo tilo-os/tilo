@@ -1673,7 +1673,7 @@ fn auto_hello_env() -> (String, Uuid) {
 /// the channel's outbox and the primary route's join sends it, in the
 /// order it was made. Installed only when the manager was built, an early
 /// write went to the sandbox's own settings file and was lost.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", feature = "broker-transport"))]
 pub fn install_channel_settings() {
     if runtime_portal::service_fd("collab").is_none() {
         return;

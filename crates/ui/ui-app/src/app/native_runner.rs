@@ -3258,6 +3258,7 @@ impl AppHandler {
             app.publish_owed_action_surface();
             // A surface app's frame also hands the session what the app offers,
             // as a hosted app hands its host: its resources and their actions.
+            #[cfg(feature = "local-daemons")]
             crate::surface_peer::publish(&app.collect_resources());
         }
 
@@ -4026,7 +4027,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The workspace's join the window showed its loading state for is
         // over: save what it holds and leave the loop, keeping the window, so
         // the launch opens the app in it.
-        #[cfg(feature = "model")]
+        #[cfg(feature = "host")]
         if !self.handing_over && crate::launch::window_gives_place() {
             self.handing_over = true;
             self.app.autosave_flush();
