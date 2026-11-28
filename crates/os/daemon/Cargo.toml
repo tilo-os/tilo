@@ -90,6 +90,8 @@ tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 # The display the apps a language test's daemon starts draw on: a headless compositor, as a
 # nested session's own, publishing its name where the daemon reads it.
 tilo-compositor = { path = "../../desktop/compositor" }
+# ush's shell (Landlock, seccomp) is Linux's alone, so the daemon's shell runs are driven there.
+ush = { path = "../../vm/ush", features = ["quic"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # What a radio says of waking its machine, read as the OS actions read it.
@@ -204,8 +206,6 @@ tilo-seal = { path = "../../core/tilo-seal" }
 # The content store's chunks, which a file's content is read back from.
 tilo-fs = { path = "../../core/fs" }
 launcher = { path = "../../core/launcher" }
-# ush's shell is Linux's, so the daemon's shell runs are driven where it builds.
-ush = { path = "../../vm/ush", features = ["quic"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 getrandom.workspace = true
