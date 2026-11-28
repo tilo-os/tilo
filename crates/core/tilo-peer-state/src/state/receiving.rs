@@ -547,6 +547,11 @@ impl StatePeer {
                 // arrives, and applied only once the workspace lists it. A
                 // holder that is no member never is.
                 if !self.core.certificates.contains_key(&source) {
+                    tracing::debug!(
+                        device = %hex::encode(&source[..4]),
+                        held = self.core.pending.len(),
+                        "a write waits for its author's certificate"
+                    );
                     return self.defer(
                         source,
                         message,

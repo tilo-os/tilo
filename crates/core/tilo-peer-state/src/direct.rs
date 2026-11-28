@@ -1369,6 +1369,9 @@ struct Inner {
     /// The records this device asks the one it dialled to open
     /// ([`DirectSync::open_record`]), while the link runs.
     opening: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<RecordAsk>>>>,
+    /// The records this device opened before the link took the other device's state in and
+    /// could ask for them: asked for the moment it has, in the order they were opened.
+    waiting_opens: Arc<std::sync::Mutex<Vec<RecordAsk>>>,
     /// The frame bytes this device's links carried, each way ([`Traffic`]).
     traffic: Counters,
     /// The apps the workspace runs as this device last told its links ([`DirectSync::tell_apps`]):
@@ -1464,6 +1467,7 @@ impl DirectSync {
             opens: false,
             certificate: None,
             opening: Arc::default(),
+            waiting_opens: Arc::default(),
             traffic: Counters::default(),
             apps_told: Arc::default(),
             #[cfg(feature = "test-support")]
@@ -1502,6 +1506,7 @@ impl DirectSync {
             opens: self.0.opens,
             certificate: self.0.certificate.clone(),
             opening: Arc::clone(&self.0.opening),
+            waiting_opens: Arc::clone(&self.0.waiting_opens),
             traffic: self.0.traffic.clone(),
             apps_told: Arc::clone(&self.0.apps_told),
             #[cfg(feature = "test-support")]
@@ -1585,21 +1590,41 @@ impl DirectSync {
     /// Ask the device this one dialled for the record on `channel`: what its
     /// store keeps of the record reaches this device, and every write of it
     /// from then on. A chain's head (`neighbour_wire::chain_head`) names
-    /// whichever part is the chain's newest.
+    /// whichever part is the chain's newest. An ask made before the link took
+    /// the other device's state in waits for it, and is made once it has.
     ///
     /// # Errors
     ///
     /// This device dialled no link, or the link ended before the record came.
     pub async fn open_record(&self, channel: [u8; 32]) -> Result<(), String> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
         let opening = self.0.opening.lock_recover().clone();
         let Some(opening) = opening else {
-            return Err("this device dialled no link to open a record on".into());
+            // The link is dialled but has not taken in the other device's state, so it has no
+            // opening to ask on yet: the ask waits, and is made as soon as it has. A page opens
+            // a record the moment it joins, and losing that ask to the order the two arrive in
+            // left the record never asked for at all.
+            self.queue_open(channel, answer);
+            return answered.await.map_err(|_| "the link ended".to_owned())?;
         };
-        let (answer, answered) = tokio::sync::oneshot::channel();
         opening
             .send((channel, answer))
             .map_err(|_| "the link ended".to_owned())?;
         answered.await.map_err(|_| "the link ended".to_owned())?
+    }
+
+    /// Keep `channel`'s ask, and where its answer goes, until the link can make it.
+    fn queue_open(
+        &self,
+        channel: [u8; 32],
+        answer: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        self.0.waiting_opens.lock_recover().push((channel, answer));
+    }
+
+    /// The asks kept before the link could make them, in the order they were made.
+    fn take_queued_opens(&self) -> Vec<RecordAsk> {
+        std::mem::take(&mut *self.0.waiting_opens.lock_recover())
     }
 
     /// Whether the workspace names `device` among the devices keeping it: one
@@ -3202,6 +3227,16 @@ impl DirectSync {
             let (opening, mut opens) = tokio::sync::mpsc::unbounded_channel();
             *self.0.opening.lock_recover() = Some(opening);
             self.0.caught_up.send_replace(true);
+            // The records this device opened while the link was still taking the other
+            // device's state in are asked for now, in the order it opened them.
+            for (channel, answer) in self.take_queued_opens() {
+                let opened = self.open_record_here(&mut control, channel).await;
+                let failed = opened.as_ref().err().cloned();
+                let _ = answer.send(opened);
+                if let Some(error) = failed {
+                    return Err(error);
+                }
+            }
             loop {
                 tokio::select! {
                     () = self.0.replay.notified() => {
@@ -4786,7 +4821,9 @@ impl DirectSync {
         }
         tracing::debug!(
             workspace = ?self.workspace().ok(),
+            device = %short(&self.device()),
             author = %short(&heard.author),
+            message = heard.message.kind(),
             retained,
             landed = heard.landed,
             fresh = heard.fresh,

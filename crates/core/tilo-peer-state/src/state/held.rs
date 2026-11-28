@@ -225,6 +225,9 @@ impl StatePeer {
             }
         }
         let mut report = deferred(dropped, lacks_history);
+        if let_go.is_none() && self.asks_state_for_certificate(&prerequisite, source) {
+            report.summary.replay_wanted = true;
+        }
         if let_go.is_some() {
             report.summary.deferred = false;
         } else {
@@ -237,6 +240,19 @@ impl StatePeer {
         report.released = released;
         Ok(report)
     }
+    /// Whether a message waiting for `prerequisite` has this device ask the workspace's host
+    /// for its state, `source`'s certificate being what it waits for: that certificate is in the
+    /// state, and nothing this device holds carries it. Once per device: the host is not asked
+    /// again while the same certificate is missing.
+    fn asks_state_for_certificate(
+        &mut self,
+        prerequisite: &MissingPrerequisite,
+        source: [u8; 32],
+    ) -> bool {
+        matches!(prerequisite, MissingPrerequisite::Certificate)
+            && self.missed.authors.insert(source)
+    }
+
     /// Let go `source`'s `message`, held here before: nothing of it is kept, and no number it was
     /// drafted under is taken by it, so its author's next write takes that number and is the one
     /// kept. A held write is decided here when what it waits for lands, so a local write that its
@@ -291,6 +307,12 @@ impl StatePeer {
             match self.receive_with_context(author, message, now, replayed, strict_report) {
                 Ok(applied) => {
                     if let InputDisposition::RetryLater(waiting_for) = &applied.primary {
+                        tracing::debug!(
+                            author = %hex::encode(&author[..4]),
+                            message = held.kind(),
+                            %waiting_for,
+                            "a held message still waits"
+                        );
                         into.still_held.push(crate::admission::StillHeld {
                             message: held.clone(),
                             waiting_for: waiting_for.clone(),
@@ -304,7 +326,13 @@ impl StatePeer {
                     into.settled.extend(applied.settled);
                     into.summary.dropped.extend(applied.summary.dropped);
                 }
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(
+                        author = %hex::encode(&author[..4]),
+                        message = held.kind(),
+                        %error,
+                        "a message that waited was refused when it was decided again"
+                    );
                     into.rejected = into.rejected.saturating_add(1);
                 }
             }
