@@ -4888,9 +4888,10 @@ fn a_refused_save_stands_in_the_bar_with_try_again_until_one_lands() {
     send(&mut app, &[ToUi::Save(wire::SaveStatus::Saved)]);
     drawn_window(&mut harness).receive();
     harness.relayout();
+    let shown = ui::window_toolbar::notice().expect("the save that ends the failure says so");
     assert_eq!(
-        ui::window_toolbar::notice(),
-        None,
-        "the save that lands takes the failure down"
+        shown.text, "Saved",
+        "the failure and its Try again are gone"
     );
+    assert!(shown.actions.is_empty(), "and nothing asks to try again");
 }
