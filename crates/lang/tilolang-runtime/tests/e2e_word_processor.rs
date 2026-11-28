@@ -989,6 +989,14 @@ view member_row(p: Member) {
                 writer.device.written_back("Note.docx").is_none(),
                 "nothing was written"
             );
+            // The page shows it as a save that failed, over the words, until it is dismissed.
+            let view = writer.window();
+            let shown = dump(view.tree());
+            assert!(
+                shown.contains("The document could not be saved")
+                    && shown.contains("Couldn’t save Note.docx: the disk is full"),
+                "{shown}"
+            );
             // The words are kept, and asking again tries again.
             assert!(writer.body().contains("Written."));
             writer.device.refusing_writes(None);

@@ -79,9 +79,18 @@ view writer(d: Document) {
                 if found.trim() != "" {
                     find_and_replace(d, found, replacement)
                 }
+                if d.view_only {
+                    ui.Banner(
+                        "This document is open to view only",
+                        message: "Save a copy with Save as to write in it.",
+                        kind: .warning,
+                    )
+                }
                 if d.notice != "" {
                     ui.Banner(
-                        "The document could not be opened",
+                        if d.notice.starts_with("Couldn’t save") {
+                            "The document could not be saved"
+                        } else { "The document could not be opened" },
                         message: d.notice,
                         kind: .warning,
                     ) {
@@ -113,6 +122,11 @@ view writer(d: Document) {
                                     margin_bottom: d.margin_bottom,
                                     margin_left: d.margin_left,
                                     zoom: zoom,
+                                    read_only: d.view_only,
+                                    spellcheck: d.spelling,
+                                    spell_language: if d.spell_language == "" {
+                                        .none
+                                    } else { .some(d.spell_language) },
                                     insert: if d.chosen == "" {
                                         .none
                                     } else { .some("{d.chosen}:{d.chosen_count}") },
@@ -284,14 +298,22 @@ template view toolbar(
     }
 }
 
-/// The File menu: a new page from a template, a file opened into the document, and the document
-/// written out as Markdown, plain text or a web page.
+/// The File menu: a new page from a template, a file opened into the document, the document
+/// saved back to the file it was opened from, and what it is written out as — Markdown, plain
+/// text, HTML, Word, OpenDocument, rich text, EPUB or a PDF.
 view file_menu(d: Document) {
     ui.MenuButton("File", icon: .file_plus, role: .bar) {
         ui.MenuItem("Open…", icon: .folder, key: "Ctrl+O") {
-            on choose: file.choose(open_document(d), accept: ["text/markdown", "text/plain"])
+            on choose: file.choose(open_document(d), accept: opened_kinds(), edit: true)
         }
-        ui.MenuItem("Save as Markdown…", icon: .download, key: "Ctrl+S") {
+        // Save writes the document back to the file it was opened from, in that file's format; a
+        // page that has never been a file asks where it goes, as Markdown.
+        ui.MenuItem("Save", icon: .hard_drive, key: "Ctrl+S") {
+            on choose: if d.source == "" {
+                file.save(export_document(d, saved_format(d)), name: saved_name(d))
+            } else { save(d) }
+        }
+        ui.MenuItem("Save as Markdown…", icon: .download) {
             on choose: file.save(export_content(d), name: "{file_name(d)}.md")
         }
         ui.MenuItem("Save as plain text…", icon: .download) {
@@ -459,6 +481,16 @@ template view side_panel(
             } else if panel == "format" {
                 text_format(format_ask, asked)
             } else if panel == "comments" {
+                if not brought_comments(d).is_empty() {
+                    section("From the file") {
+                        for c in brought_comments(d) {
+                            stack(gap: .tight) {
+                                text("{c.author} · {c.date}", role: .caption, secondary: true)
+                                text(c.text, role: .body)
+                            }
+                        }
+                    }
+                }
                 discussion.thread_where(
                     d,
                     comment_draft,
@@ -655,6 +687,17 @@ view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>)
                 ui.NumberInput(bind: d.margin_bottom, label: "Bottom", min: 0.0, max: 288.0)
                 ui.NumberInput(bind: d.margin_left, label: "Left", min: 0.0, max: 288.0)
             }
+        }
+        section("Spelling") {
+            row(gap: .related, align: .center) {
+                text("Check spelling in this document", role: .body)
+                spacer()
+                ui.Toggle(bind: d.spelling)
+            }
+            ui.TextInput(
+                bind: d.spell_language,
+                placeholder: "The dictionary's language, such as de-DE; empty for your own",
+            )
         }
         section("Header and footer") {
             stack(gap: .tight) {

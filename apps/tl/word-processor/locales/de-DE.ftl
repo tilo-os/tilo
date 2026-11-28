@@ -58,6 +58,10 @@ d-swntfsuf-filter-margin_bottom = Unterer Rand
 
 d-swntfsuf-filter-margin_left = Linker Rand
 
+d-swntfsuf-filter-spelling = Rechtschreibung
+
+d-swntfsuf-filter-view_only = Nur Ansicht
+
 d-bzk5q6y4 = Neues Dokument
     .doc = Beginnt das Dokument von vorn: eine leere Seite oder das Markdown, mit dem eine der Vorlagen beginnt.
 
@@ -220,7 +224,8 @@ d-tb4ewbef-start = Anfang
 d-tb4ewbef-end = Ende
 
 d-efbp2k4u = Dokument öffnen
-    .doc = Öffnet eine Datei im Dokument: eine Word-, OpenDocument-, RTF-, EPUB- oder HTML-Datei, die die Codecs des Geräts als das Markdown lesen, das der Editor zeigt, Markdown wie es steht, und reinen Text als einen Absatz je Zeile.
+    .doc = Öffnet eine Datei im Dokument: eine Word-, OpenDocument-, RTF- oder HTML-Datei, die die Codecs des Geräts als die Absätze der Seite lesen, ihre Kommentare und nachverfolgten Änderungen über den Wörtern markiert, um die es geht; Markdown wie es steht, und reinen Text als einen Absatz je Zeile. Die Seite ist danach diese Datei: Speichern schreibt sie dorthin zurück, wo sie gelesen wurde.
+    .w-this-document-is-open-to-view = Dieses Dokument ist nur zum Ansehen geöffnet
 
 d-efbp2k4u-file = Datei
 
@@ -272,12 +277,15 @@ d-acwew27t = Bild löschen~present
 d-6mswb2vv = Kommentieren~present
 
 d-xxexkmsk = Writer
+    .w-check-spelling-in-this-document = Rechtschreibung in diesem Dokument prüfen
     .w-crop = Zuschneiden
     .w-flip-horizontally = Horizontal spiegeln
     .w-flip-vertically = Vertikal spiegeln
     .w-free = Frei
+    .w-from-the-file = Aus der Datei
     .w-in-line = Im Textfluss
     .w-larger = Größer
+    .w-save-a-copy-with-save-as = Speichern Sie eine Kopie mit „Speichern unter“, um darin zu schreiben.
     .w-line-spacing = Zeilenabstand
     .w-none = Keine
     .w-picture = Bild
@@ -290,6 +298,10 @@ d-xxexkmsk = Writer
     .w-text-wraps = Text umfließt
     .w-the-replacement = Der Ersatz
     .w-with-the-caret-in-a-picture = Mit dem Cursor in einem Bild ändern diese es.
+    .w-spelling = Rechtschreibung
+    .w-the-dictionary-s-language-such-as = Die Sprache des Wörterbuchs, etwa de-DE; leer für Ihre eigene
+    .w-the-document-could-not-be-saved = Das Dokument konnte nicht gespeichert werden
+    .w-this-document-is-open-to-view = Dieses Dokument ist nur zum Ansehen geöffnet
     .w-zoom-in = Vergrößern
     .w-zoom-out = Verkleinern
     .w-bold = Fett
@@ -381,6 +393,7 @@ d-xxexkmsk = Writer
 d-qgcdvpjd = Dateimenü
     .w-file = Datei
     .w-open = Öffnen…
+    .w-save = Speichern
     .w-save-as-markdown = Als Markdown speichern…
     .w-save-as-plain-text = Als reinen Text speichern…
     .w-export-as-html = Als HTML exportieren…
@@ -493,3 +506,55 @@ d-tj3dkada = Ausrichtung
     .w-right = Rechts
     .w-justified = Blocksatz
     .w-left = Links
+
+d-hg4umawy = Mitgebrachter Kommentar
+    .doc = Ein Kommentar, den eine Datei beim Öffnen mitbrachte: wer ihn schrieb, wann, was gesagt wurde und der Absatz der Seite, um den es geht.
+    .noun = { $count ->
+        [one] mitgebrachter Kommentar
+       *[other] mitgebrachte Kommentare
+    }
+
+d-y6qckxdn = Autor
+
+d-jnsydxfr = Datum
+
+d-4v5puhdt = Text
+
+d-arbrdfjw = Absatz
+
+d-z5kgqpcl = Herkunft
+    .doc = Wo die Datei, aus der das Dokument geöffnet wurde, auf diesem Gerät steht, wie der Dateiwähler sie nannte: wohin Speichern das Dokument zurückschreibt.
+
+d-42wrjbl7 = Dateiname
+    .doc = Der Name der Datei, aus der es geöffnet wurde, mit Erweiterung: darunter schreibt Speichern es.
+
+d-gd2leoo4 = Format
+    .doc = Das Format, in dem seine Datei geschrieben ist, die Erweiterung ohne Punkt (`docx`, `odt`, `rtf`, `md`, `txt`): als das schreibt Speichern es.
+
+d-gzmkb2rw = Rechtschreibung
+    .doc = Ob die Wörter geprüft werden, während eine Person tippt.
+
+d-vtvmld5y = Rechtschreibsprache
+    .doc = Das Wörterbuch, gegen das die Wörter geprüft werden, ein Sprachkürzel wie `de-DE`: leer für die eigene Sprache der Person.
+
+d-4zwxkyh4 = Mitgebracht
+    .doc = Die Kommentare, die die Datei, aus der es geöffnet wurde, mitbrachte, wie die Datei sie schrieb: wer jeden schrieb, wann, was gesagt wurde und die Wörter der Seite, um die es geht, als JSON.
+
+d-c67ntnfl = Nur Ansicht
+    .doc = Ob die Seite nur zum Ansehen geöffnet ist: die Datei, aus der sie geöffnet wurde, konnte dieses Gerät nicht zum Schreiben öffnen, also werden ihre Wörter gelesen und nie geändert.
+
+d-wlmvgxoq = Rechtschreibung einstellen
+    .doc = Stellt ein, wie die Wörter des Dokuments geprüft werden: ob die Rechtschreibung geprüft wird, während eine Person tippt, und die Sprache des Wörterbuchs, ein Kürzel wie `de-DE` (leer für die eigene Sprache der Person).
+
+d-wlmvgxoq-spelling = Rechtschreibung
+
+d-wlmvgxoq-language = Sprache
+
+d-7tbzuzcl = Speichern
+    .doc = Schreibt das Dokument in die Datei zurück, aus der es geöffnet wurde, in dem Format, in dem sie geschrieben ist: die Änderung, die Strg+S macht.
+    .w-this-document-is-open-to-view = Dieses Dokument ist nur zum Ansehen geöffnet
+    .w-this-document-is-not-a-file = Dieses Dokument ist noch keine Datei auf diesem Gerät: speichern Sie es mit „Speichern unter“.
+
+d-ahdtotpp = Öffnen
+
+d-5u7ootbr = Speichern

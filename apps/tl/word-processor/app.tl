@@ -9,6 +9,15 @@ app so.tilo.word-processor "Writer" (
 use so.tilo.lang.discussion as discussion
 use tilo.workspace as workspace
 
+/// One comment a file brought with it when it was opened: who wrote it, when, what they said,
+/// and the paragraph of the page it is about.
+type BroughtComment {
+    author: Text
+    date: Text
+    text: Text
+    block: Text
+}
+
 /// A document: what a person writes, together with anyone else at it. Its words are its body —
 /// the paragraphs, headings, lists, quotes, code and tables the shared editor edits — and who
 /// wrote what, when, comes from the log rather than from a field.
@@ -47,6 +56,29 @@ type Document (untitled: "Untitled Document") {
     /// they are writing.
     chosen: Text = ""
     chosen_count: Int merge counter = 0
+    /// Where the file it was opened from stands on this device, as the chooser answered: what
+    /// Save writes the document back to. Empty for a document that came from nowhere yet.
+    source: Text = ""
+    /// The name of the file it was opened from, extension and all: what Save writes it under.
+    source_name: Text = ""
+    /// The format its file is written in, its extension without the dot (`docx`, `odt`, `rtf`,
+    /// `md`, `txt`): what Save writes it as. Empty until the document is saved somewhere.
+    format: Text = ""
+    /// Whether the words are checked as a person types. A document set in a language no
+    /// dictionary knows says so for itself.
+    spelling: Bool = true
+    /// The dictionary the words are checked against, a language tag such as `de-DE`: empty for
+    /// the person's own language.
+    spell_language: Text = ""
+    /// The comments the file it was opened from carried, as the file wrote them: who wrote each,
+    /// when, what they said and the words of the page they are about, as JSON. The page lists
+    /// them beside the writing, and the marks in the words are what Save writes back into the
+    /// file.
+    brought: Text = ""
+    /// Whether the page is open to view only: the file it was opened from is one this device
+    /// could not open for writing, so its words are read and never changed. Opening a file into
+    /// it would replace what cannot be saved, so an open is refused while it is.
+    view_only: Bool = false
 }
 
 root document: Document
@@ -63,6 +95,12 @@ primary action new_document(d: Document, template: Text = "blank") -> Document (
     d.title = ""
     d.body = RichText.from_markdown(template_body(template))
     d.started = template
+    // A page started over is not the file it was opened from: Save asks where it goes.
+    d.source = ""
+    d.source_name = ""
+    d.format = ""
+    d.brought = ""
+    d.view_only = false
     d
 }
 
@@ -313,6 +351,16 @@ fn built_in_styles() -> List<Text> {
     ["Body", "Heading 1", "Heading 2", "Heading 3", "Quote", "List item"]
 }
 
+/// Sets how the document's words are proof-read: whether spelling is checked as a person types,
+/// and the dictionary's language, a tag such as `de-DE` (empty for the person's own language).
+action set_proofing(d: Document, spelling: Bool = d.spelling, language: Text = d.spell_language) (
+    icon: .spell_check,
+    label: "Set proofing",
+) {
+    d.spelling = spelling
+    d.spell_language = language
+}
+
 /// Sets the page's margins, in points from the page's edges.
 action set_page_margins(d: Document, top: Float, right: Float, bottom: Float, left: Float) (
     label: "Set page margins",
@@ -452,10 +500,11 @@ action comment_on(
     c
 }
 
-/// Opens a file into the document: a Word, OpenDocument, RTF, EPUB or HTML file read by the
-/// device's codecs as the Markdown the editor shows, Markdown as it stands, and plain text as
-/// one paragraph a line. A file no codec here reads is refused with what it is. Opening a file
-/// is one change, which the person takes back as any other.
+/// Opens a file into the document: a Word, OpenDocument, RTF or HTML file read by the device's
+/// codecs as the page's blocks, its comments and tracked changes marked over the words they are
+/// about; Markdown as it stands, and plain text as one paragraph a line. A file no codec here
+/// reads is refused with what it is. Opening a file is one change, which the person takes back
+/// as any other, and the page is that file from then on: Save writes it back where it was read.
 action open_document(d: Document, file: File) -> Document (
     icon: .file_plus,
     label: "Open document",
@@ -463,14 +512,12 @@ action open_document(d: Document, file: File) -> Document (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.oasis.opendocument.text",
     "application/rtf",
-    "application/epub+zip",
     "text/html",
     "text/markdown",
     "text/plain",
     .docx,
     .odt,
     .rtf,
-    .epub,
     .html,
     .htm,
     .md,
@@ -478,15 +525,26 @@ action open_document(d: Document, file: File) -> Document (
     .txt,
 ],
 ) {
-    // A plain text file is one paragraph a line, as a word processor reads one; every other
-    // format is read by the device's codecs, as the Markdown an editor shows.
-    let read = if format_of(file.name) == "text" { file.text() } else { file.markdown() }
-    match read {
-        .ok(said) => {
-            let markdown = if format_of(file.name) == "text" { plain_markdown(said) } else { said }
-            d.body = RichText.from_markdown(markdown)
+    // A page open to view only is not replaced: what it shows is a file this device cannot
+    // write, and an import into it would be lost.
+    require not d.view_only "This document is open to view only: save a copy with Save as to change it"
+    // The device's codecs read the file into the page's blocks, the comments and tracked changes
+    // it carries marked over the words they are about; plain text is one paragraph a line.
+    match RichText.from_document(file) {
+        .ok(body) => {
+            d.body = body
             d.title = stem_of(file.name)
             d.started = "blank"
+            // The page is the file from now on: Save writes it back where it was read, in the
+            // format it was written in.
+            d.source = file.path
+            d.source_name = file.name
+            d.format = extension_of(file.name)
+            d.brought = brought_of(file)
+            // A file the host opened for writing is the page the person writes in; one it could
+            // only read is a page to view. A file handed over as content names no place on the
+            // device and is written out with Save as.
+            d.view_only = file.path != "" and not file.editable
             d.notice = ""
             d
         }
@@ -497,9 +555,20 @@ action open_document(d: Document, file: File) -> Document (
     }
 }
 
-/// Plain text as Markdown: every line a paragraph of its own, as a word processor reads one.
-fn plain_markdown(text: Text) -> Text {
-    text.split("\n").filter(l -> l.trim() != "").join("\n\n")
+/// The comments the file carries, as JSON: empty when it carries none or nothing reads them.
+fn brought_of(file: File) -> Text {
+    match file.comments() {
+        .ok(said) => said,
+        .err(_) => "",
+    }
+}
+
+/// The comments the page lists beside the writing, read from what the file wrote them as.
+fn brought_comments(d: Document) -> List<BroughtComment> {
+    match json.decode<List<BroughtComment>>(d.brought) {
+        .ok(list) => list,
+        .err(_) => [],
+    }
 }
 
 /// The file's name without its last extension.
@@ -508,16 +577,15 @@ fn stem_of(name: Text) -> Text {
     if parts.len() <= 1 { name } else { parts.take(parts.len() - 1).join(".") }
 }
 
-/// What a file's extension says it is: `markdown`, `text`, or the extension itself.
-fn format_of(name: Text) -> Text {
+/// The extension a file's name ends in, lowercased and without the dot: `docx` for
+/// `Letter.docx`, and `md` for `Letter.MD`.
+fn extension_of(name: Text) -> Text {
     let ext = name.split(".").last() ?? ""
-    if ext.lower() == "md" or ext.lower() == "markdown" {
-        "markdown"
-    } else if ext.lower() == "txt" { "text" } else { ext.lower() }
+    ext.lower()
 }
 
 /// The document as a Markdown file, named by its title.
-action export_content(d: Document) -> File (icon: .download, label: "Export the document") {
+action export_content(d: Document) -> File (icon: .download, label: "Export as Markdown") {
     File.of_text("{file_name(d)}.md", markdown_of(d))
 }
 
@@ -527,12 +595,54 @@ action export_text(d: Document) -> File (icon: .download, label: "Export as plai
 }
 
 /// The document as a Word, OpenDocument, RTF, EPUB or PDF file, named by its title: what a
-/// person sends someone who does not write in Tilo. The bytes are the device's codecs'.
+/// person sends someone who does not write in Tilo. The comments and tracked changes the page
+/// carries are written with it.
 action export_document(d: Document, format: Text) -> File (
     icon: .download,
     label: "Export the document",
 ) {
-    File.of_document("{file_name(d)}.{format}", markdown_of(d), format)
+    File.of_rich_document("{file_name(d)}.{format}", d.body, format)
+}
+
+/// Saves the document back to the file it was opened from, in the format it was written in: the
+/// change Ctrl+S makes. Nothing is asked, because the person already chose the file; a file that
+/// cannot be written says why over the page, and asking again tries again.
+action save(d: Document) uses files (icon: .hard_drive, label: "Save", key: "Ctrl+S") {
+    require not d.view_only "This document is open to view only"
+    require d.source != "" "This document is not a file on this device yet: save it with Save as"
+    let made = File.of_rich_document(saved_name(d), d.body, saved_format(d))
+    match File.overwrite(d.source, made) {
+        .ok => {
+            d.notice = ""
+        }
+        .err(why) => {
+            d.notice = "Couldn’t save {saved_name(d)}: {why}"
+        }
+    }
+}
+
+/// The name the document's file is written under: the name it was opened from, or its title.
+fn saved_name(d: Document) -> Text {
+    if d.source_name != "" { d.source_name } else { "{file_name(d)}.{saved_format(d)}" }
+}
+
+/// The format the document's file is written in: the one it was opened from, or Markdown for a
+/// page that has never been a file.
+fn saved_format(d: Document) -> Text {
+    if d.format != "" { d.format } else { "md" }
+}
+
+/// The kinds of file the page opens, so the person's chooser lists every one of them: what
+/// `open_document` says it opens, as the chooser's filter.
+fn opened_kinds() -> List<Text> {
+    [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.oasis.opendocument.text",
+        "application/rtf",
+        "text/html",
+        "text/markdown",
+        "text/plain",
+    ]
 }
 
 /// The document as one HTML page: its headings, lists and paragraphs, and its words.
