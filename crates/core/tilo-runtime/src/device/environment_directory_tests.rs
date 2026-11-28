@@ -237,9 +237,10 @@ fn an_app_makes_changes_and_lists_environments() {
 
 /// A listing names its actions in the language its caller reads, whichever language the daemon's
 /// own process speaks, and whenever its provider builds the rows: every provider registered on
-/// the daemon, listed in German, shows no word in English that a catalogue has in German. Asked
-/// in English, the environments' rename reads the English, and asked in a language no catalogue
-/// has, the English source.
+/// the daemon, listed in German, shows no word in English that a catalogue has in German, and no
+/// label that reads the same in English and German unless a German catalogue says it so: a label
+/// written in code fails it. Asked in English, the environments' rename reads the English, and
+/// asked in a language no catalogue has, the English source.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -291,7 +292,7 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     assert_eq!(rename("en-US"), "Rename");
     assert_eq!(rename("tlh-QO"), "Rename");
 
-    let english = english_said_otherwise_in_german();
+    let (english, german_words) = catalogue_words();
     let mut in_english = Vec::new();
     let check = |provider: &str, labels: Vec<(String, String)>, in_english: &mut Vec<String>| {
         for (action, label) in labels {
@@ -301,10 +302,27 @@ fn a_listing_names_its_actions_in_the_callers_language() {
             }
         }
     };
+    // A label a catalogue gives reads otherwise in German, or is a German word as it is: one that
+    // reads the same in both and no German catalogue says is written in the code.
+    let read_from_a_catalogue = |provider: &str,
+                                 german: Vec<(String, String)>,
+                                 source: Vec<(String, String)>,
+                                 in_english: &mut Vec<String>| {
+        let source: std::collections::HashMap<String, String> = source.into_iter().collect();
+        for (action, label) in &german {
+            if source.get(action) == Some(label) && !german_words.contains(label) {
+                in_english.push(format!(
+                    "{provider}#{action}: {label:?} is written in its code"
+                ));
+            }
+        }
+        check(provider, german, in_english);
+    };
     for registered in daemon.workspaces().providers().all() {
-        check(
+        read_from_a_catalogue(
             &registered.provider,
             listed(&registered.provider, "de-DE"),
+            listed(&registered.provider, "en-US"),
             &mut in_english,
         );
     }
@@ -317,11 +335,10 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     let asking =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(&workspace);
-    for registered in daemon.workspaces().providers().all() {
-        let provider = registered.provider.clone();
+    let own = |provider: &str, language: &str| {
         let query = tilo_actions::remote::CatalogueQuery {
-            provider: Some(provider.to_string()),
-            language: Some("de-DE".to_owned()),
+            provider: Some(provider.to_owned()),
+            language: Some(language.to_owned()),
             max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
             ..tilo_actions::remote::CatalogueQuery::default()
         };
@@ -333,13 +350,17 @@ fn a_listing_names_its_actions_in_the_callers_language() {
                 .catalogue(Some(id), &asking, Some(&cert), &query)
                 .await
         });
-        check(
-            &provider,
-            page.rows
-                .into_iter()
-                .filter_map(|row| row.action)
-                .map(|action| (action.address.action, action.action_label))
-                .collect(),
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .map(|action| (action.address.action, action.action_label))
+            .collect::<Vec<_>>()
+    };
+    for registered in daemon.workspaces().providers().all() {
+        read_from_a_catalogue(
+            &registered.provider,
+            own(&registered.provider, "de-DE"),
+            own(&registered.provider, "en-US"),
             &mut in_english,
         );
     }
@@ -420,9 +441,12 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     );
 }
 
-/// Every catalogue's English words that its German says otherwise, with the German: a word no
-/// German catalogue uses as it is.
-fn english_said_otherwise_in_german() -> std::collections::HashMap<String, String> {
+/// Every catalogue's English words that its German says otherwise, with the German, where no
+/// German catalogue uses the English as it is; and every word a German catalogue says.
+fn catalogue_words() -> (
+    std::collections::HashMap<String, String>,
+    std::collections::HashSet<String>,
+) {
     fn catalogues(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -476,7 +500,7 @@ fn english_said_otherwise_in_german() -> std::collections::HashMap<String, Strin
         german_words.extend(german.into_values());
     }
     english.retain(|said, _| !german_words.contains(said));
-    english
+    (english, german_words)
 }
 
 /// This device and its person's connection: the daemon whose shell runtime is the supervisor at

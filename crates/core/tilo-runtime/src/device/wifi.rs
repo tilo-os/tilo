@@ -181,14 +181,14 @@ fn lookup(
 
 /// The two actions, as the device's dispatch lists them.
 fn descriptors() -> Vec<ActionDescriptor> {
-    let descriptor = |action: &str, label: &str, kind, params| ActionDescriptor {
+    let descriptor = |action: &str, kind, params| ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(RESOURCE, action),
         resource_kind: "tilo.wifi".to_owned(),
         resource_label: "Wi-Fi".to_owned(),
-        action_label: label.to_owned(),
+        action_label: crate::i18n::t(&format!("wifi-{action}")),
         keywords: Vec::new(),
         icon: None,
         description: None,
@@ -209,7 +209,6 @@ fn descriptors() -> Vec<ActionDescriptor> {
     vec![
         descriptor(
             LOOKUP,
-            "Find a shared Wi-Fi passphrase",
             ActionKind::Read,
             vec![
                 ActionParam::required("ssid", ParamType::Text, "The network's name"),
@@ -218,7 +217,6 @@ fn descriptors() -> Vec<ActionDescriptor> {
         ),
         descriptor(
             SHARE,
-            "Share a Wi-Fi passphrase with your devices",
             ActionKind::Outside,
             vec![
                 ActionParam::required("ssid", ParamType::Text, "The network's name"),

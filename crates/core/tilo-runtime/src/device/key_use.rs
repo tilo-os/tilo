@@ -190,19 +190,16 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
     vec![
         descriptor(
             SEAL_VAULT,
-            "Seal a Secret Service vault",
             "Seal the person's Secret Service vault under their store key on this device.",
             &vault("plain", "The vault, its bytes in hex."),
         ),
         descriptor(
             OPEN_VAULT,
-            "Open a Secret Service vault",
             "Open the person's Secret Service vault sealed under their store key on this device.",
             &vault("sealed", "The sealed vault, its bytes in hex."),
         ),
         descriptor(
             CHECK_CALLER_PROOF,
-            "Check a caller's proof",
             "Whether a process proved to the Secret Service that it has this device's identity.",
             &[
                 ActionParam::required("challenge", ParamType::Text, "The challenge, in hex."),
@@ -213,7 +210,6 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         ),
         descriptor(
             ENDORSE_IMAGE,
-            "Endorse a system image",
             "Sign an image endorsement as this device, under the grant its person gave it.",
             &[ActionParam::required(
                 "endorsement",
@@ -223,7 +219,6 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         ),
         descriptor(
             SIGN,
-            "Sign as this device",
             "Sign a message with this device's key, for a program proving it is this device.",
             &[ActionParam::required(
                 "message",
@@ -233,14 +228,12 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
         ),
         descriptor(
             RENEW_CERTIFICATES,
-            "Renew my certificates here",
             "Renew this computer's certificates for my person that are due, with my root kept \
              here.",
             &[],
         ),
         descriptor(
             SET_UP_UNLOCK,
-            "Enrol this computer's disk unlock",
             "Have the person's identity certify this computer's boot key, asking them at a device \
              of theirs that keeps it, and publish its unlock to their devices.",
             &[

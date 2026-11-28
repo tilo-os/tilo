@@ -66,7 +66,12 @@ impl ActionProvider for Environments {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let mut list = descriptor(LIST, "List the environments", ActionKind::Read, Vec::new());
+        let mut list = descriptor(
+            LIST,
+            &crate::i18n::t("environment-list"),
+            ActionKind::Read,
+            Vec::new(),
+        );
         // What the list answers, as its declaration types it: the environments, each as the
         // reading a view follows publishes them.
         list.contract.result = tilo_actions::ResultSpec::Json {
@@ -75,7 +80,7 @@ impl ActionProvider for Environments {
         let mut actions = vec![
             descriptor(
                 CREATE,
-                "Create an environment",
+                &crate::i18n::t("environment-create"),
                 ActionKind::Undoable,
                 vec![ActionParam::required(
                     "name",

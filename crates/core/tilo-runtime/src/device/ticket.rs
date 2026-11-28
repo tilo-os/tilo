@@ -134,14 +134,12 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         row(None),
         row(Some(descriptor(
             INFO,
-            &crate::i18n::t("device-info"),
             "What this device is: its key, how it is listed, and the people whose \
                  certificates name it.",
             &[],
         ))),
         row(Some(descriptor(
             UPDATE,
-            "Update a device",
             "Update the device's apps and system, as `tilo update` does on it.",
             &[ActionParam::optional(
                 "device",
@@ -151,7 +149,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             PENDING,
-            "Sign a browser in",
             "See the browser a sign-in ticket on another host waits for, and what signing it \
                  in makes it.",
             &[ActionParam::required(
@@ -162,7 +159,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             APPROVE,
-            "Approve a browser's sign-in",
             "Sign the browser's certificate, so it enters the person's workspace.",
             &[ActionParam::required(
                 "ticket",
@@ -172,7 +168,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             REPORTED,
-            "Report a login's step",
             "Tell the browser that showed the ticket what this computer did as it logged in.",
             &[
                 ActionParam::required(
@@ -185,7 +180,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             LOG_IN,
-            &crate::i18n::t("device-log-in"),
             "Become one of the person's devices with a ticket another of their computers printed, \
              or, on a computer that holds the person's identity, log in at a server by its line.",
             &[
@@ -205,7 +199,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             FOUND,
-            "Start as a new person",
             "Make a new person whose first device this computer is, with their own workspace.",
             &[ActionParam::optional(
                 "name",
@@ -215,7 +208,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             DEV_ID,
-            "A development build's id",
             "The id a development build of an app runs under on this device, which a build \
              compiles the app as before the device installs it.",
             &[ActionParam::required(
@@ -226,7 +218,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             RESTORE,
-            "Restore a person",
             "Bring a person back on this computer from their recovery words or a backup.",
             &[
                 ActionParam::optional("words", ParamType::Text, "The 24 recovery words."),
@@ -244,13 +235,11 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             RECOVERY_WORDS,
-            "Show the recovery words",
             "The 24 words that bring the person back on a new computer, from the root kept here.",
             &[],
         ))),
         row(Some(descriptor(
             CERTIFY_KEY,
-            "Certify a key",
             "Certify a key with the root kept here: for one agent in one workspace, for a \
              computer that reaches one workspace alone, for a device's boot key, or, naming \
              nothing, as an agent's key in every workspace of the person's. The key is listed \
@@ -283,7 +272,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             RELEASE_HALF,
-            "Release a boot's unlock half",
             "Open a boot's sealed half and seal it to the boot's key.",
             &[
                 ActionParam::required(
@@ -310,7 +298,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             ANSWER_SIGN_IN,
-            "Answer a sign-in",
             "Sign a site's sign-in challenge and certify the key it asked to sign in with.",
             &[
                 ActionParam::required("audience", ParamType::Text, "The site asking."),
@@ -323,7 +310,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         row(Some(descriptor(
             BACKUP,
-            "Back up the person",
             "A backup of the person's root kept here, sealed with a passphrase.",
             &[ActionParam::required(
                 "passphrase",
@@ -381,7 +367,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         update_row(None),
         update_row(Some(update_descriptor(
             PREPARE,
-            "Take this server's update turn",
             "Take the person's servers' update lease, check every workspace's copies, and drain \
              this server, so it may restart into the staged image alone.",
             &[ActionParam::required(
@@ -392,7 +377,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         update_row(Some(update_descriptor(
             BOOTED,
-            "An update booted",
             "Say which image this server booted and that it passed its health verdict, so the \
              update lease goes to the person's next server.",
             &[ActionParam::required(
@@ -403,7 +387,6 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
         update_row(Some(update_descriptor(
             FLOOR,
-            "Ask the rollback floor to move",
             "Ask the person's other devices for approvals for this server's floor to move past \
              the generation that booted.",
             &[
@@ -480,7 +463,6 @@ fn settings_rows() -> Vec<CatalogueRow> {
     };
     let mut descriptor = descriptor(
         super::records::SET,
-        "Change a setting",
         "Keep a setting of this device: what its greeter and launcher read before anyone \
          claims it, and after.",
         &[
@@ -495,7 +477,7 @@ fn settings_rows() -> Vec<CatalogueRow> {
     let mut remove = descriptor.clone();
     remove.address =
         tilo_actions::ActionAddress::new(super::records::RESOURCE, super::records::REMOVE);
-    "Remove a setting".clone_into(&mut remove.action_label);
+    remove.action_label = crate::i18n::t("device-remove");
     remove.description = Some("Forget a setting this device kept.".to_owned());
     remove.params = vec![ActionParam::required(
         "name",
@@ -532,15 +514,13 @@ fn server_rows() -> Vec<CatalogueRow> {
     let service = |what: &'static str| ActionParam::required("service", ParamType::Text, what);
     let mut rows = vec![row(None)];
     for action in crate::device::keep::operations::ACTIONS {
-        let (label, description, mut params) = match action {
+        let (description, mut params) = match action {
             "status" => (
-                "Ask a server how it is",
                 "Its health, what it holds and how its copies stand, how it unlocks, its \
                  updates and its hardware.",
                 Vec::new(),
             ),
             "journal" => (
-                "Read a server's journal",
                 "A service's recent journal lines.",
                 vec![
                     service("The systemd unit, e.g. tilo-runtime.service."),
@@ -552,46 +532,30 @@ fn server_rows() -> Vec<CatalogueRow> {
                 ],
             ),
             "restart" => (
-                "Restart a service on a server",
                 "Restart one of the machine's systemd units.",
                 vec![service("The systemd unit, e.g. tilo-runtime.service.")],
             ),
-            "reboot" => ("Reboot a server", "Reboot the machine.", Vec::new()),
+            "reboot" => ("Reboot the machine.", Vec::new()),
             "stage-update" => (
-                "Stage an update on a server",
                 "Fetch and stage the newest OS update now, instead of waiting for its timer.",
                 Vec::new(),
             ),
-            "pause-updates" => (
-                "Stop a server taking updates",
-                "Stop taking OS updates until they are resumed.",
-                Vec::new(),
-            ),
-            "resume-updates" => (
-                "Have a server take updates again",
-                "Follow OS updates again.",
-                Vec::new(),
-            ),
-            "rollback" => (
-                "Have a server start the previous system",
-                "Boot the previous system from now on.",
-                Vec::new(),
-            ),
+            "pause-updates" => ("Stop taking OS updates until they are resumed.", Vec::new()),
+            "resume-updates" => ("Follow OS updates again.", Vec::new()),
+            "rollback" => ("Boot the previous system from now on.", Vec::new()),
             "drain" => (
-                "Drain a server",
                 "Suspend its workspaces' Linux machines and hand their work off, before taking \
                  it out of service.",
                 Vec::new(),
             ),
             _ => (
-                "Have Tilo start by default on a server",
                 "Make Tilo the machine's default start, after any network-boot entries; asked \
                  again, it restores the order it wrote.",
                 Vec::new(),
             ),
         };
         params.insert(0, device());
-        let mut described = descriptor(action, label, description, &params);
+        let mut described = descriptor(action, description, &params);
         described.address = tilo_actions::ActionAddress::new(SERVER, action);
         "server".clone_into(&mut described.resource_kind);
         "Server".clone_into(&mut described.resource_label);
@@ -712,10 +676,10 @@ pub(crate) fn with_device_actions(
     page
 }
 
-/// `action` of `devices`, as the catalogue publishes it: the seats' actions start from it too.
+/// `action` of `devices`, as the catalogue publishes it, named by the runtime's catalogue
+/// (`device-<action>`) in the language read now: the seats' actions start from it too.
 pub(crate) fn descriptor(
     action: &str,
-    label: &str,
     description: &str,
     params: &[ActionParam],
 ) -> ActionDescriptor {
@@ -725,7 +689,7 @@ pub(crate) fn descriptor(
         address: tilo_actions::ActionAddress::new(RESOURCE, action),
         resource_kind: "device".to_owned(),
         resource_label: "Devices".to_owned(),
-        action_label: label.to_owned(),
+        action_label: crate::i18n::t(&format!("device-{action}")),
         keywords: Vec::new(),
         state: tilo_actions::ActionState::default(),
         icon: None,
@@ -838,13 +802,8 @@ impl tilo_actions::remote::ActionProvider for Tickets {
 
 /// `action` of [`UPDATES`], as the catalogue publishes it: the same shape as a
 /// device action, on the update resource.
-fn update_descriptor(
-    action: &str,
-    label: &str,
-    description: &str,
-    params: &[ActionParam],
-) -> ActionDescriptor {
-    let mut descriptor = descriptor(action, label, description, params);
+fn update_descriptor(action: &str, description: &str, params: &[ActionParam]) -> ActionDescriptor {
+    let mut descriptor = descriptor(action, description, params);
     descriptor.address = tilo_actions::ActionAddress::new(UPDATES, action);
     "update".clone_into(&mut descriptor.resource_kind);
     "Updates".clone_into(&mut descriptor.resource_label);

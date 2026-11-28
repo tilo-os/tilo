@@ -78,7 +78,6 @@ pub(crate) fn descriptors() -> Vec<ActionDescriptor> {
     vec![
         descriptor(
             TERMINAL_RECORDS,
-            "Read or write Terminal's environments",
             "Read or write the environment records Terminal keeps in a workspace.",
             &[
                 workspace.clone(),
@@ -91,7 +90,6 @@ pub(crate) fn descriptors() -> Vec<ActionDescriptor> {
         ),
         descriptor(
             OPEN_TERMINAL,
-            "Open a hosted Terminal shell",
             "Carry the shell of a Terminal session in a hosted workspace to this device.",
             &[
                 workspace,

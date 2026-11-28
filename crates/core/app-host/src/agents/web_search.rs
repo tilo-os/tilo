@@ -300,6 +300,10 @@ fn fetch_result_schema() -> Value {
     })
 }
 
+tilo_resource::declared_catalogue!(WORDS);
+
+/// Each action, its English label and its description: the label is the catalogue's
+/// `tilo-web-search-<action>` where it holds one.
 const ACTIONS: [(&str, &str, &str); 2] = [
     (
         SEARCH_ACTION,
@@ -357,7 +361,11 @@ pub fn descriptors() -> Vec<tilo_actions::api::ActionDescriptor> {
             address: ActionAddress::new(RESOURCE_ID, *action),
             resource_kind: RESOURCE_KIND.to_string(),
             resource_label: "Web search".to_string(),
-            action_label: (*label).to_string(),
+            action_label: tilo_resource::label::keyed(
+                &WORDS,
+                &format!("tilo-web-search-{action}"),
+                label,
+            ),
             keywords: Vec::new(),
             icon: None,
             description: Some((*description).to_string()),

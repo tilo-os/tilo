@@ -164,7 +164,7 @@ offload-place = Platzieren
 
 # This device and the person's other devices, as their actions list them.
 device-info = Dieses Gerät
-device-log-in = Mit einem Ticket anmelden
+device-logIn = Mit einem Ticket anmelden
 device-issue = Ein Gerät hinzufügen
 device-rename = Ein Gerät umbenennen
 device-revoke = Ein Gerät widerrufen
@@ -172,3 +172,48 @@ device-identities = Die Identitäten auflisten
 device-useIdentity = Eine Identität für neue Apps verwenden
 device-removeIdentity = Eine Identität entfernen
 device-protectIdentity = Den Schlüssel einer Identität schützen
+
+# The device's own actions, its servers', its updates' and its settings', as its listing names them.
+device-answerSignIn = Eine Anmeldung beantworten
+device-approve = Die Anmeldung eines Browsers bestätigen
+device-backup = Die Person sichern
+device-booted = Ein Update ist gestartet
+device-certifyKey = Einen Schlüssel zertifizieren
+device-checkCallerProof = Den Nachweis eines Aufrufers prüfen
+device-dev-id = Die Kennung eines Entwicklungsbuilds
+device-drain = Einen Server leeren
+device-endorseImage = Ein Systemabbild bestätigen
+device-floor = Die Rollback-Grenze verschieben lassen
+device-found = Als neue Person beginnen
+device-journal = Das Journal eines Servers lesen
+device-openTerminal = Eine gehostete Terminal-Shell öffnen
+device-openVault = Einen Secret-Service-Tresor öffnen
+device-pause-updates = Updates auf einem Server anhalten
+device-pending = Einen Browser anmelden
+device-prepare = Die Update-Runde dieses Servers übernehmen
+device-reboot = Einen Server neu starten
+device-recoveryWords = Die Wiederherstellungswörter zeigen
+device-releaseHalf = Die Entsperrhälfte eines Starts freigeben
+device-remove = Eine Einstellung entfernen
+device-renewCertificates = Meine Zertifikate hier erneuern
+device-reported = Einen Schritt einer Anmeldung melden
+device-restart = Einen Dienst auf einem Server neu starten
+device-restore = Eine Person wiederherstellen
+device-resume-updates = Updates auf einem Server wieder aufnehmen
+device-rollback = Einen Server das vorherige System starten lassen
+device-sealVault = Einen Secret-Service-Tresor versiegeln
+device-set = Eine Einstellung ändern
+device-set-default-start = Tilo auf einem Server standardmäßig starten lassen
+device-setUpUnlock = Das Entsperren der Festplatte dieses Computers einrichten
+device-sign = Als dieses Gerät signieren
+device-stage-update = Ein Update auf einem Server bereitstellen
+device-status = Einen Server fragen, wie es ihm geht
+device-terminalRecords = Die Umgebungen von Terminal lesen oder schreiben
+device-update = Ein Gerät aktualisieren
+
+# The workspace's environments, Wi-Fi passphrases and approved checks, as their listings name them.
+environment-create = Eine Umgebung anlegen
+environment-list = Die Umgebungen auflisten
+wifi-lookup = Eine geteilte WLAN-Passphrase finden
+wifi-share = Eine WLAN-Passphrase mit deinen Geräten teilen
+approved-checks-run = Eine freigegebene Prüfung ausführen

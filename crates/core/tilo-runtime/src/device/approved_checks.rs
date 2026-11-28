@@ -547,7 +547,7 @@ fn check_rows() -> Vec<PlacedAction> {
         address: ActionAddress::new(checks::RESOURCE, checks::RUN),
         resource_kind: checks::PROVIDER.to_owned(),
         resource_label: "Approved checks".to_owned(),
-        action_label: "Run an approved check".to_owned(),
+        action_label: crate::i18n::t("approved-checks-run"),
         keywords: Vec::new(),
         icon: None,
         description: None,

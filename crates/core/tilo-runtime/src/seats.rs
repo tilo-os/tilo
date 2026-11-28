@@ -120,7 +120,8 @@ fn rows() -> Vec<CatalogueRow> {
     };
     let uid = || ActionParam::required("uid", ParamType::Integer, "The account's uid.");
     let action = |name: &str, label: &str, description: &str, params: &[ActionParam]| {
-        let mut descriptor = crate::device::ticket::descriptor(name, label, description, params);
+        let mut descriptor = crate::device::ticket::descriptor(name, description, params);
+        label.clone_into(&mut descriptor.action_label);
         descriptor.address = ActionAddress::new(SEATS, name);
         "seat".clone_into(&mut descriptor.resource_kind);
         "Seats".clone_into(&mut descriptor.resource_label);

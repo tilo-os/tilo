@@ -292,6 +292,10 @@ fn result_schema_of(action: &str) -> Value {
     }
 }
 
+ui::tilo_resource::declared_catalogue!(WORDS);
+
+/// Each transform, its English label and its description: the label is the catalogue's
+/// `tilo-agent-transforms-<action>` where it holds one.
 const ACTIONS: [(&str, &str, &str); 6] = [
     (
         AGENT_SUMMARISE_ACTION,
@@ -393,7 +397,11 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
             address: ActionAddress::new(RESOURCE_ID, *action),
             resource_kind: AGENT_TRANSFORM_KIND.to_string(),
             resource_label: "AI transforms".to_string(),
-            action_label: (*label).to_string(),
+            action_label: ui::tilo_resource::label::keyed(
+                &WORDS,
+                &format!("tilo-agent-transforms-{action}"),
+                label,
+            ),
             keywords: Vec::new(),
             icon: None,
             description: Some((*description).to_string()),

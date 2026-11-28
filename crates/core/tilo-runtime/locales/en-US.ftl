@@ -164,7 +164,7 @@ offload-place = Place
 
 # This device and the person's other devices, as their actions list them.
 device-info = This device
-device-log-in = Log in with a ticket
+device-logIn = Log in with a ticket
 device-issue = Add a device
 device-rename = Rename a device
 device-revoke = Revoke a device
@@ -172,3 +172,48 @@ device-identities = List the identities
 device-useIdentity = Use an identity for new apps
 device-removeIdentity = Remove an identity
 device-protectIdentity = Protect an identity's key
+
+# The device's own actions, its servers', its updates' and its settings', as its listing names them.
+device-answerSignIn = Answer a sign-in
+device-approve = Approve a browser's sign-in
+device-backup = Back up the person
+device-booted = An update booted
+device-certifyKey = Certify a key
+device-checkCallerProof = Check a caller's proof
+device-dev-id = A development build's id
+device-drain = Drain a server
+device-endorseImage = Endorse a system image
+device-floor = Ask the rollback floor to move
+device-found = Start as a new person
+device-journal = Read a server's journal
+device-openTerminal = Open a hosted Terminal shell
+device-openVault = Open a Secret Service vault
+device-pause-updates = Stop a server taking updates
+device-pending = Sign a browser in
+device-prepare = Take this server's update turn
+device-reboot = Reboot a server
+device-recoveryWords = Show the recovery words
+device-releaseHalf = Release a boot's unlock half
+device-remove = Remove a setting
+device-renewCertificates = Renew my certificates here
+device-reported = Report a login's step
+device-restart = Restart a service on a server
+device-restore = Restore a person
+device-resume-updates = Have a server take updates again
+device-rollback = Have a server start the previous system
+device-sealVault = Seal a Secret Service vault
+device-set = Change a setting
+device-set-default-start = Have Tilo start by default on a server
+device-setUpUnlock = Enrol this computer's disk unlock
+device-sign = Sign as this device
+device-stage-update = Stage an update on a server
+device-status = Ask a server how it is
+device-terminalRecords = Read or write Terminal's environments
+device-update = Update a device
+
+# The workspace's environments, Wi-Fi passphrases and approved checks, as their listings name them.
+environment-create = Create an environment
+environment-list = List the environments
+wifi-lookup = Find a shared Wi-Fi passphrase
+wifi-share = Share a Wi-Fi passphrase with your devices
+approved-checks-run = Run an approved check

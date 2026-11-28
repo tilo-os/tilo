@@ -15,3 +15,7 @@ so-tilo-vault-forget = Einen Seed vergessen
 store-catalog = Store-Katalog
 store-report-create = Bericht erstellen
 store-catalog-record-moderation-case = Moderationsfall festhalten
+
+## Web search, as its listing names its actions
+tilo-web-search-search = Im Web suchen
+tilo-web-search-fetch = Eine Webseite lesen
