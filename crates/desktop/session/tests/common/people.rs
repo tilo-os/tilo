@@ -1028,8 +1028,8 @@ impl Person {
             && !refused.message.contains(ALREADY_A_PERSONS)
         {
             panic!(
-                "{name}'s first device made them: {refused}\n{}",
-                first.warnings()
+                "{name}'s first device made them: {refused:#}\n{}",
+                first.diagnostic()
             );
         }
         first.call_until_answered("info", &json!({}));
@@ -1449,11 +1449,13 @@ impl Device {
             });
             match answered {
                 Ok(answered) => return answered,
+                // Given up on: the daemon took every attempt and answered none, so what it shows
+                // and where its threads are is what says why.
                 Err(error) => assert!(
                     Instant::now() < until,
                     "{} did not answer {action}: {error:#}\n{}",
                     self.label,
-                    self.warnings()
+                    self.diagnostic()
                 ),
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -1486,10 +1488,10 @@ impl Device {
             json!({"ticket": ticket, "agent": "tilo", "label": self.label}),
         ) {
             panic!(
-                "{} logged in with {}'s ticket: {refused}\n{}",
+                "{} logged in with {}'s ticket: {refused:#}\n{}",
                 self.label,
                 issuer.label,
-                self.warnings()
+                self.diagnostic()
             );
         }
         if was_off {
@@ -1508,7 +1510,13 @@ impl Device {
     pub fn people(&self) -> Vec<String> {
         let info = self
             .device_action("info", json!({}))
-            .unwrap_or_else(|refused| panic!("{} says what it is: {refused}", self.label));
+            .unwrap_or_else(|refused| {
+                panic!(
+                    "{} says what it is: {refused:#}\n{}",
+                    self.label,
+                    self.diagnostic()
+                )
+            });
         serde_json::from_value(info["people"].clone()).unwrap_or_default()
     }
 }
@@ -1844,10 +1852,12 @@ impl Device {
             .join("\n");
         format!(
             "windows: {}\nwhat it told: {}\nwhat its session warned:\n{}\n\
-             last lines of its log:\n{tail}\nwhat its apps said:\n{apps}",
+             last lines of its log:\n{tail}\nwhat its apps said:\n{apps}\n\
+             what its daemon's threads are in:\n{}",
             self.ask(&json!({"op": "windows"})),
             self.state()["state"]["notifications"],
             self.warnings(),
+            threads_of(&self.native_socket()),
         )
     }
 
