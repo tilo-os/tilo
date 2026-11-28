@@ -56,6 +56,9 @@ pub(super) struct MountServices {
     pub(super) availability: Option<Arc<Mutex<tilo_fs::AvailabilityRegistry>>>,
     pub(super) eviction_queue: Option<Arc<tokio::sync::Mutex<tilo_fs::eviction::EvictionQueue>>>,
     pub(super) actor: Option<fs_protocol::FileActor>,
+    /// Told each version written through the mount: the session, which pushes it to the device
+    /// serving the workspace.
+    pub(super) written: Option<Arc<tilo_fs::WrittenContent>>,
 }
 
 #[allow(
@@ -84,6 +87,7 @@ pub(super) async fn run_mount(
         availability,
         eviction_queue,
         actor,
+        written,
     } = services;
     let content = Arc::clone(&hydrator.store);
     // Before anything is served: from here on a stop signal ends the mount through the final save
@@ -140,6 +144,10 @@ pub(super) async fn run_mount(
     };
     let fs = match actor {
         Some(actor) => fs.with_actor(actor),
+        None => fs,
+    };
+    let fs = match written {
+        Some(written) => fs.with_written_content(written),
         None => fs,
     };
     // Who writes, from the process each request comes from: an agent session, an app, another

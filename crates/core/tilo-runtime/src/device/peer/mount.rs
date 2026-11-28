@@ -97,11 +97,11 @@ pub(crate) fn pushed_to_host(
     workspace: tilo_server_protocol::WorkspaceId,
     store: &Arc<tilo_fs::ContentStore>,
 ) -> Arc<tilo_fs::WrittenContent> {
-    let pushes = tilo_workspace_service::files::WrittenPushes::start(
-        workspaces.clone(),
-        workspace,
-        Arc::clone(store),
-    );
+    let pushes =
+        tilo_workspace_service::files::WrittenPushes::start(workspaces.clone(), workspace, {
+            let store = Arc::clone(store);
+            Arc::new(move |version| store.local_now(version).map(|bytes| bytes.to_vec()))
+        });
     Arc::new(move |file, version| pushes.wrote(file, version))
 }
 

@@ -9,8 +9,10 @@
 //! The connection carries the rest of what the mount needs of the workspace too: the bytes its
 //! files are made of, asked of the workspace on the tree's route ([`super::WorkspaceSource`]);
 //! the keys of the tree's group; who may read and write the tree's folders, told again the moment
-//! the workspace's member list changes; and this device's one store of file bytes, which the
-//! service's record content reads and keeps through the connected daemon ([`Daemons`]).
+//! the workspace's member list changes; this device's one store of file bytes, which the
+//! service's record content reads and keeps through the connected daemon ([`Daemons`]); and each
+//! version written through the mount, pushed from that store to the device serving the workspace
+//! as a folder of this process pushes its own ([`super::WrittenPushes`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -281,6 +283,16 @@ async fn serve_one(
         wakes,
     } = Backend::of(&workspaces, workspace, Some(content), hosted);
     offers.daemons.connected(&workspace.to_string(), &lender);
+    // A version the mount wrote is in its store alone: its manifest is lent by the mount, and
+    // its bytes are read through the record content, which reads them from the mount too.
+    let written = {
+        let lender = Arc::downgrade(&lender);
+        super::WrittenPushes::start(
+            workspaces.clone(),
+            workspace,
+            Arc::new(move |hash: iroh_blobs::Hash| lender.upgrade()?.lend(*hash.as_bytes())),
+        )
+    };
     let name = copy.name.clone();
     let served = Connection {
         copy,
@@ -294,6 +306,7 @@ async fn serve_one(
         keys: offers.keys,
         folders: folders.clone(),
         shown: offers.shown,
+        written,
     }
     .run(asks, wakes, offers.access)
     .await;
@@ -381,6 +394,8 @@ struct Connection {
     folders: super::Folders,
     /// The workspace this device's session shows, told to the mount as it changes.
     shown: watch::Receiver<Option<String>>,
+    /// The versions written through the mount, pushed to the device serving the workspace.
+    written: super::WrittenPushes,
 }
 
 impl Connection {
@@ -556,6 +571,9 @@ impl Connection {
             }
             // Handed to the lend waiting for it where it is read ([`carry`]).
             Ask::Lent { .. } => {}
+            Ask::Wrote { file, version } => self
+                .written
+                .wrote(file, iroh_blobs::Hash::from_bytes(version)),
             Ask::Served { id, chunks } => {
                 for chunk in &chunks {
                     self.name(*chunk);

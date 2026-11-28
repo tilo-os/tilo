@@ -18,6 +18,10 @@ use tokio::sync::Notify;
 
 use crate::workspaces::Workspaces;
 
+/// The bytes this device keeps under a hash, waited for on the calling thread: a version's
+/// manifest, read from the store the folder wrote it to.
+pub type Kept = Arc<dyn Fn(Hash) -> Option<Vec<u8>> + Send + Sync>;
+
 /// How often what goes is looked at even when nothing said it moved: a host that dropped its
 /// link answers nothing until it is back.
 const LOOK_EVERY: Duration = Duration::from_secs(5);
@@ -74,21 +78,18 @@ impl Files {
 }
 
 impl WrittenPushes {
-    /// Push what is written into `workspace`'s files, read from `store`, through `workspaces`.
+    /// Push what is written into `workspace`'s files, whose manifests `kept` reads, through
+    /// `workspaces`.
     /// The pushing runs on the process's app runtime, which lives as long as the process: a
     /// runtime a caller drives only while it sets the folder up would leave it waiting.
     #[must_use]
-    pub fn start(
-        workspaces: Workspaces,
-        workspace: WorkspaceId,
-        store: Arc<tilo_fs::ContentStore>,
-    ) -> Self {
+    pub fn start(workspaces: Workspaces, workspace: WorkspaceId, kept: Kept) -> Self {
         let shared = Arc::new(Shared::default());
         drop(tilo_rt::app().handle().spawn(push(
             Arc::downgrade(&shared),
             workspaces,
             workspace,
-            store,
+            kept,
         )));
         Self { shared }
     }
@@ -101,12 +102,7 @@ impl WrittenPushes {
 }
 
 /// Push each file's newest version once its last push is kept, for as long as `shared` lives.
-async fn push(
-    shared: Weak<Shared>,
-    workspaces: Workspaces,
-    workspace: WorkspaceId,
-    store: Arc<tilo_fs::ContentStore>,
-) {
+async fn push(shared: Weak<Shared>, workspaces: Workspaces, workspace: WorkspaceId, kept: Kept) {
     let name = workspace.to_string();
     loop {
         let Some(held) = shared.upgrade() else {
@@ -126,11 +122,12 @@ async fn push(
             continue;
         }
         drop(moved);
-        let (copies, store, at) = (workspaces.clone(), Arc::clone(&store), name.clone());
-        // A version's manifest is read from the disk: on a thread of its own.
+        let (copies, kept, at) = (workspaces.clone(), Arc::clone(&kept), name.clone());
+        // A version's manifest is read from the disk, or from the Files daemon that wrote it: on
+        // a thread of its own.
         let pushed = tokio::task::spawn_blocking(move || {
             due.into_iter()
-                .map(|(file, version)| (file, push_version(&copies, &at, &store, version)))
+                .map(|(file, version)| (file, push_version(&copies, &at, &*kept, version)))
                 .collect::<Vec<_>>()
         })
         .await
@@ -148,13 +145,13 @@ async fn push(
 fn push_version(
     workspaces: &Workspaces,
     workspace: &str,
-    store: &tilo_fs::ContentStore,
+    kept: &(dyn Fn(Hash) -> Option<Vec<u8>> + Send + Sync),
     version: Hash,
 ) -> Vec<String> {
     let manifest_hash = version.to_hex();
     workspaces.push_content(workspace, FILES_APP, &manifest_hash);
     let mut pushed = vec![manifest_hash];
-    let Some(manifest) = store.local_now(version) else {
+    let Some(manifest) = kept(version) else {
         return pushed;
     };
     let manifest = match tilo_fs::content::Manifest::decode(&manifest) {

@@ -153,10 +153,8 @@ async fn daemon(
 /// every open decided by the mount's own check.
 struct Mount {
     tree: tilo_fs::tree_sync::TreeSync,
-    /// The store the files daemon keeps the mount's file bytes in.
-    content: Arc<tilo_fs::ContentStore>,
     _service: tilo_fs::tree_sync::remote::Service,
-    fs: tilo_fs::QuickFS,
+    fs: Arc<tilo_fs::QuickFS>,
     /// The list in force, as the files daemon keeps it.
     caps: Arc<tilo_fs::CapabilityFile>,
     _follow: tokio::task::JoinHandle<()>,
@@ -203,26 +201,41 @@ async fn mount(laptop: &Laptop, dir: &Path, workspace: &str) -> Mount {
     let hydrator = Arc::new(tilo_fs::Hydrator::new(Arc::clone(&content)));
     let heuristics = Arc::new(tilo_fs::Heuristics::new(Arc::clone(&hydrator)));
     let fs = tilo_fs::QuickFS::new(Arc::clone(&tree.namespace), hydrator, heuristics)
-        .with_acl(caps.handle(), laptop.person);
+        .with_acl(caps.handle(), laptop.person)
+        .with_written_content(service.written());
     Mount {
         tree,
-        content,
         _service: service,
-        fs,
+        fs: Arc::new(fs),
         caps,
         _follow: follow,
     }
 }
 
 impl Mount {
-    /// The file at `path` (folders by `/`), made with the folders it is in.
-    fn file(&self, path: &str) -> u64 {
-        self.file_holding(path, None)
+    /// Write `bytes` as the whole file at `path`, as a program writing into the folder does: the
+    /// mount keeps them, and its tree names them. The address the tree names them by.
+    async fn write(&self, path: &str, bytes: &[u8], scratch: &Path) -> iroh_blobs::Hash {
+        let snapshot = scratch.join("written");
+        std::fs::write(&snapshot, bytes).unwrap();
+        // The mount writes on a thread that is no runtime's, as a FUSE worker does.
+        let (fs, rel) = (Arc::clone(&self.fs), PathBuf::from(path));
+        let (done, written) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(fs.write_path(&rel, &snapshot, 1_000));
+        });
+        written.await.unwrap().expect("the mount writes the file");
+        let mut namespace = self.tree.namespace.lock().unwrap();
+        let ino = namespace
+            .resolve_path_ino(path)
+            .expect("the file is in the tree");
+        namespace
+            .hash_for(ino)
+            .expect("a file with bytes has content")
     }
 
-    /// The file at `path` holding the bytes the mount keeps under `content` (their address and
-    /// length), made with the folders it is in.
-    fn file_holding(&self, path: &str, content: Option<(iroh_blobs::Hash, u64)>) -> u64 {
+    /// The empty file at `path` (folders by `/`), made with the folders it is in.
+    fn file(&self, path: &str) -> u64 {
         let mut namespace = self.tree.namespace.lock().unwrap();
         let (folders, name) = path.rsplit_once('/').unwrap_or(("", path));
         let mut parent = tilo_fs::ROOT_INO;
@@ -239,9 +252,8 @@ impl Mount {
                     .expect("a folder"),
             };
         }
-        let (hash, len) = content.map_or((None, 0), |(hash, len)| (Some(hash), len));
         namespace
-            .create_file(parent, name, hash.as_ref(), len, 1_000)
+            .create_file(parent, name, None, 0, 1_000)
             .expect("a file")
     }
 
@@ -809,9 +821,9 @@ fn released_under(dir: &Path) -> bool {
     })
 }
 
-/// A file whose bytes only a mount keeps reaches the workspace's server: the server asks the
-/// mount's daemon for them, and the daemon reads them from the mount, whose files daemon answers
-/// over the trees' socket. The test runs on one thread, as a device's daemon does, so a read that
+/// A file whose bytes only a mount keeps reaches the workspace's server: the mount tells the
+/// device's daemon it wrote them, and the daemon pushes them to the server, reading them from the
+/// mount, whose files daemon answers over the trees' socket. The test runs on one thread, as a device's daemon does, so a read that
 /// waited on that thread for the mount's answer would never hear it. The device's own read of
 /// those bytes is answered too when it waits on the app runtime's one thread, which serves the
 /// device's workspaces.
@@ -858,16 +870,13 @@ async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
         .take(300_000)
         .collect();
     let hash = mount
-        .content
-        .write_content(&bytes)
-        .await
-        .expect("the mount keeps the file")
-        .expect("a file with bytes has content");
+        .write(
+            &format!("{}/plan.md", tree_of(&workspace)),
+            &bytes,
+            state.path(),
+        )
+        .await;
     let address = hash.to_hex().clone();
-    mount.file_holding(
-        &format!("{}/plan.md", tree_of(&workspace)),
-        Some((hash, bytes.len() as u64)),
-    );
 
     let kept = site
         .server

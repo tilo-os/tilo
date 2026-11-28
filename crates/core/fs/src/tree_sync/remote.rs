@@ -13,6 +13,8 @@
 //! - the bytes of files this device lacks, asked of the workspace by the session's record
 //!   content ([`Service::source`]), and the bytes the session's content asks of this device's
 //!   store, which is the one store a device keeps file bytes in;
+//! - each version written through the mount ([`Service::written`]), which the session pushes to
+//!   the device serving the workspace;
 //! - the tree's content keys, as the session's identity hands them to the Files endpoint
 //!   ([`Service::keys`]);
 //! - who may read and write which of the tree's folders, as the session decides it from the
@@ -80,6 +82,10 @@ pub enum Ask {
     /// Which workspace this device's session shows: the one whose files its mount serves. Asked
     /// before the first [`Ask::Hello`], and told again whenever the session shows another.
     Shown,
+    /// File `file` (its inode in the mount) now holds `version`, written through the mount: the
+    /// session pushes it to the device serving the workspace, reading its bytes from this
+    /// mount's store, which is the only place they are until that device keeps them.
+    Wrote { file: u64, version: [u8; 32] },
 }
 
 /// What the session tells the daemon.
@@ -167,18 +173,7 @@ pub fn link(
     (device, person): ([u8; 32], [u8; 32]),
     content: Arc<crate::ContentStore>,
 ) -> Service {
-    let link = Arc::new(Link {
-        workspace: Mutex::new(None),
-        chosen: tokio::sync::Notify::new(),
-        out: Mutex::new(None),
-        waiting: Mutex::new(BTreeMap::new()),
-        next: AtomicU64::new(0),
-        state: Mutex::new(PeerState::default()),
-        store: Arc::clone(&content),
-        access: tokio::sync::watch::channel(None).0,
-        shown: Mutex::new(None),
-        shown_workspace: tokio::sync::watch::channel(None).0,
-    });
+    let link = Arc::new(Link::new(None, Arc::clone(&content)));
     let (wakes, wake_events) = mpsc::unbounded_channel();
     tokio::spawn(keep_linked(Arc::clone(&link), socket, wakes));
     Service {
@@ -310,6 +305,15 @@ impl Service {
         }
     }
 
+    /// What is told each version written through the mount ([`crate::QuickFS::with_written_content`]):
+    /// the session, which pushes it to the device serving the workspace. A version written while
+    /// the session is away is said once it is back, only each file's newest.
+    #[must_use]
+    pub fn written(&self) -> Arc<crate::WrittenContent> {
+        let link = Arc::clone(&self.link);
+        Arc::new(move |file, version| link.wrote(file, *version.as_bytes()))
+    }
+
     /// The capability list (JSON) the session last said the mount enforces: `None` until it said
     /// one on this run.
     #[must_use]
@@ -350,12 +354,33 @@ struct Link {
     shown: Mutex<Option<Status>>,
     /// The workspace this device's session shows, as its daemon said last.
     shown_workspace: tokio::sync::watch::Sender<Option<String>>,
+    /// The newest version of each file written while there was no connection to say it on: said
+    /// as the next one starts.
+    unsaid: Mutex<BTreeMap<u64, [u8; 32]>>,
 }
 
 /// What a sync is told when the session is not reachable.
 const UNREACHABLE: &str = "the session serving this device's workspaces is not reachable";
 
 impl Link {
+    /// A link not connected yet, for `workspace`'s tree once one is named, keeping file bytes in
+    /// `store`.
+    fn new(workspace: Option<String>, store: Arc<crate::ContentStore>) -> Self {
+        Self {
+            workspace: Mutex::new(workspace),
+            chosen: tokio::sync::Notify::new(),
+            out: Mutex::new(None),
+            waiting: Mutex::new(BTreeMap::new()),
+            next: AtomicU64::new(0),
+            state: Mutex::new(PeerState::default()),
+            store,
+            access: tokio::sync::watch::channel(None).0,
+            shown: Mutex::new(None),
+            shown_workspace: tokio::sync::watch::channel(None).0,
+            unsaid: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     /// The workspace this connection syncs, for a log line: the one named once the session's
     /// is known.
     fn named(&self) -> String {
@@ -370,6 +395,27 @@ impl Link {
             .lock_recover()
             .as_ref()
             .is_some_and(|out| out.send(ask).is_ok())
+    }
+
+    /// Say that `file` now holds `version`, or keep it to say on the next connection.
+    fn wrote(&self, file: u64, version: [u8; 32]) {
+        let mut unsaid = self.unsaid.lock_recover();
+        if !self.send(Ask::Wrote { file, version }) {
+            unsaid.insert(file, version);
+        }
+    }
+
+    /// Say on `out` from now on, first what was written while there was no connection.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the unsaid versions stay locked until `out` is the connection, or a version written meanwhile would be kept for a connection that already started"
+    )]
+    fn connected(&self, out: mpsc::UnboundedSender<Ask>) {
+        let mut unsaid = self.unsaid.lock_recover();
+        for (file, version) in std::mem::take(&mut *unsaid) {
+            let _ = out.send(Ask::Wrote { file, version });
+        }
+        *self.out.lock_recover() = Some(out);
     }
 
     /// Send the ask `make` builds and the answer it waits for; `None` while there is no
@@ -595,7 +641,7 @@ async fn linked_once(
     if let Some(shown) = shown {
         let _ = out.send(Ask::Status(shown));
     }
-    *link.out.lock_recover() = Some(out);
+    link.connected(out);
     // Whatever was opened before is opened again on this connection.
     let _ = wakes.send(Wake::HostReady);
     let sending = async {
@@ -796,18 +842,7 @@ mod tests {
         let store = runtime
             .block_on(crate::ContentStore::open(dir.path().join("content")))
             .unwrap();
-        let link = Arc::new(Link {
-            workspace: Mutex::new(Some("studio".to_owned())),
-            chosen: tokio::sync::Notify::new(),
-            out: Mutex::new(None),
-            waiting: Mutex::new(BTreeMap::new()),
-            next: AtomicU64::new(0),
-            state: Mutex::new(PeerState::default()),
-            store: Arc::new(store),
-            access: tokio::sync::watch::channel(None).0,
-            shown: Mutex::new(None),
-            shown_workspace: tokio::sync::watch::channel(None).0,
-        });
+        let link = Arc::new(Link::new(Some("studio".to_owned()), Arc::new(store)));
         let (wakes, _wake_events) = mpsc::unbounded_channel();
         // Started before the daemon serves: nothing to dial yet.
         runtime.spawn(keep_linked(Arc::clone(&link), socket.clone(), wakes));
@@ -862,18 +897,7 @@ mod tests {
         let store = runtime
             .block_on(crate::ContentStore::open(dir.path().join("content")))
             .unwrap();
-        let link = Arc::new(Link {
-            workspace: Mutex::new(Some("studio".to_owned())),
-            chosen: tokio::sync::Notify::new(),
-            out: Mutex::new(None),
-            waiting: Mutex::new(BTreeMap::new()),
-            next: AtomicU64::new(0),
-            state: Mutex::new(PeerState::default()),
-            store: Arc::new(store),
-            access: tokio::sync::watch::channel(None).0,
-            shown: Mutex::new(None),
-            shown_workspace: tokio::sync::watch::channel(None).0,
-        });
+        let link = Arc::new(Link::new(Some("studio".to_owned()), Arc::new(store)));
         let (wakes, _wake_events) = mpsc::unbounded_channel();
         runtime.spawn(keep_linked(Arc::clone(&link), socket, wakes));
         let started = std::time::Instant::now();

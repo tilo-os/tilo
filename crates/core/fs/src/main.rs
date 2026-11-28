@@ -848,6 +848,9 @@ async fn serve(
             availability,
             eviction_queue,
             actor: mount_actor,
+            written: service
+                .as_ref()
+                .map(tilo_fs::tree_sync::remote::Service::written),
         },
     )
     .await?;
