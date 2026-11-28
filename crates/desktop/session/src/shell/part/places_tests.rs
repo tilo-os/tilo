@@ -437,6 +437,9 @@ struct Room {
     /// The apps whose packages a view read a type of before it was loaded, kept for the rest of
     /// the session: what the session publishes with the packages the places show.
     needed: std::collections::BTreeSet<String>,
+    /// The apps whose package the session withholds yet, as one no connection served so far: a
+    /// place waits for it, and draws it when a later turn serves it.
+    withheld: std::collections::BTreeSet<String>,
 }
 
 fn room() -> Room {
@@ -502,6 +505,7 @@ fn room() -> Room {
         task: target(&made),
         following: BTreeMap::new(),
         needed: std::collections::BTreeSet::new(),
+        withheld: std::collections::BTreeSet::new(),
     }
 }
 
@@ -562,7 +566,8 @@ fn rows(view: &mut tilolang_tilo::runtime::ViewInstance) -> Vec<tilolang_tilo::r
 
 /// The rows the canvas draws of the task `of`, wherever they stand: the task's own row view as
 /// the message's reference to it draws it, its checkbox bound to a field of the reading the
-/// session publishes. The rows of a list are built as they show.
+/// session publishes. The rows of a list are built as they show. A row's binding names the task
+/// as its app's reading published it, or as its own store keeps it: both are the one resource.
 fn task_rows(
     view: &mut tilolang_tilo::runtime::ViewInstance,
     of: &ResourceRef,
@@ -583,7 +588,7 @@ fn task_rows(
                             matches!(
                                 &binding.target,
                                 tilolang_tilo::runtime::view::BindTarget::Field { target, .. }
-                                    if target.id_string() == of.id_string()
+                                    if names_record(&target.id_string(), of)
                             )
                         })
                 })
@@ -591,6 +596,16 @@ fn task_rows(
         );
     }
     found
+}
+
+/// Whether `named`, a resource's id or the address its app publishes it under (`tl:<app>:<id>`),
+/// names the resource `of`.
+fn names_record(named: &str, of: &ResourceRef) -> bool {
+    let inside = named
+        .strip_prefix("tl:")
+        .and_then(|rest| rest.split_once(':'))
+        .map_or(named, |(_, id)| id);
+    inside == of.id_string()
 }
 
 /// One turn of the session over the shell's asks, as the session runs it: the package of each
@@ -614,6 +629,9 @@ fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> 
     }
     let mut packages = BTreeMap::new();
     for app in apps {
+        if room.withheld.contains(&app) {
+            continue;
+        }
         if let Some(module) = room.service.module(&app) {
             packages.insert(app, module);
         }
@@ -764,5 +782,45 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
         view.bound_value(&row.key),
         Some(Value::Bool(true)),
         "the row shows the task done"
+    );
+}
+
+/// A place whose views read a type of an app whose package the session does not serve yet waits,
+/// and draws what it names on the frame after the package arrives: nothing else moved, so the
+/// package's arrival alone runs the views that waited for it.
+#[test]
+fn a_place_draws_a_package_that_arrives_after_its_first_frame() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut room = room();
+    room.withheld.insert(TASKS_APP.to_owned());
+    let (mut part, link, mut room, layout) = chat_place(room);
+    // The frames after the place first drew ask for the package, and the session takes the ask.
+    for _ in 0..2 {
+        session_turn(&link, &layout, &mut room);
+        part.prepare_frame();
+    }
+    assert!(
+        room.needed.contains(TASKS_APP),
+        "the views ask for the package they read a type of: {:?}",
+        room.needed
+    );
+    let mut view = canvas(&part);
+    assert!(
+        !skeletons(&mut view).is_empty(),
+        "the place waits for the package: {:#?}",
+        view.tree()
+    );
+    assert!(
+        task_rows(&mut view, &room.task).is_empty(),
+        "no row of the task stands before the package is served"
+    );
+    drop(view);
+    // The session serves the package on its next turn: the frame after draws the task's row.
+    room.withheld.clear();
+    let row = row_once_loaded(&mut part, &link, &layout, &mut room);
+    assert_eq!(
+        row.props.get("title"),
+        Some(&Value::text(SAID)),
+        "the row the package draws names the task's words"
     );
 }

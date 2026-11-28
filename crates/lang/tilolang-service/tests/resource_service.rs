@@ -601,3 +601,28 @@ fn a_read_that_answers_a_list_gives_its_value() {
         "a found paragraph is written by its fields' names: {found}"
     );
 }
+
+/// A view's read is asked of the service by the address it publishes the resource under, however
+/// the view named it: as its app's store keeps it, or as the address another app's reading hands
+/// it — a reference to a record is published, and is not an app's id inside its own address.
+#[test]
+fn a_reads_address_is_the_published_address_whichever_form_the_view_named() {
+    let serves = |_: &str| true;
+    let ty = "so.tilo.chat#Message";
+    let inside = resource_id("so.tilo.chat", "root-abc/i1");
+    assert_eq!(
+        tilolang_service::reading_address(ty, "root-abc/i1", serves),
+        inside,
+        "an id the app's store keeps is read by the address it publishes"
+    );
+    assert_eq!(
+        tilolang_service::reading_address(ty, &inside, serves),
+        inside,
+        "an address read from another app's reading is read by itself"
+    );
+    assert_eq!(
+        tilolang_service::reading_address("so.tilo.device#Battery", "power:battery", |_| false),
+        "power:battery",
+        "a device's resource is read as the session named it"
+    );
+}

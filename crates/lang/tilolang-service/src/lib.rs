@@ -1679,10 +1679,15 @@ pub fn reading_type_of(spec: &ResourceSpec) -> Option<String> {
 /// the session publishes it under (`tl:<app>:<id>`) for a resource of an app `serves` says a
 /// service serves, and the id as the view named it otherwise (a device's resource, the
 /// session's own). A view names another app's resource as that app's store does
-/// (`chat.workspace/<item>`), and the address parses back to the same resource, so a reading is
-/// followed — and published — by the one id the service reads it by.
+/// (`chat.workspace/<item>`), or by the address another app's reading hands it — a reference to
+/// its record is published (`tl:<app>:<id>`) — and the address parses back to the same resource,
+/// so a reading is followed — and published — by the one id the service reads it by. An id that
+/// is that address already is kept whole: the app in it is the address's, never the resource's.
 #[must_use]
 pub fn reading_address(ty: &str, id: &str, serves: impl Fn(&str) -> bool) -> String {
+    if id.starts_with("tl:") {
+        return id.to_owned();
+    }
     match tilolang_tilo::readings::app_of(ty) {
         Some(app) if serves(app) => tilolang_tilo::naming::resource_id(app, id),
         _ => id.to_owned(),
