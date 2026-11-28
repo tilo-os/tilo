@@ -146,6 +146,15 @@ impl NestedResource {
     where
         C: Resource + crate::Operations<Op = <C as Resource>::Action>,
     {
+        // A nested tree is published without its field's state, so an availability answered from
+        // state would read as always available there and an unavailable action would be taken.
+        const {
+            assert!(
+                !C::AVAILABILITY_READS_STATE,
+                "a nested resource cannot answer availability from state: its tree is published \
+                 without the field's state"
+            );
+        }
         Self {
             kind: C::KIND,
             publish: publish_nested::<C>,
