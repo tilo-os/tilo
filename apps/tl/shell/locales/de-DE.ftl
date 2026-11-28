@@ -1732,6 +1732,8 @@ d-y6cjt65t = Das Fenster wählen, um das es in einer Meldung geht
 
 d-y6cjt65t-area = Bereich
 
+d-y6cjt65t-room = Raum
+
 d-zek2dnmp = Abbrechen
     .doc = Verlässt die Auswahl ohne etwas: kein Fenster, keine Meldung.
 
