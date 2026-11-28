@@ -766,6 +766,32 @@ fn the_firewalls_controls_are_in_the_window_header() {
 }
 
 #[test]
+fn the_switches_say_what_they_turn() {
+    let app = installed(READING);
+    let window = app.window();
+    let mut toggles = Vec::new();
+    of_kind(window.tree(), "ui.Toggle", &mut toggles);
+    let names: Vec<String> = toggles
+        .iter()
+        .filter_map(|toggle| match toggle.props.get("accessible_name") {
+            Some(Value::Text(name)) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    for wanted in [
+        "Enable the HTTPS rule",
+        "Enable the Port 3389 rule",
+        "Allow SSH",
+        "Allow HTTPS",
+    ] {
+        assert!(
+            names.iter().any(|name| name == wanted),
+            "{wanted} is spoken by its switch: {names:?}"
+        );
+    }
+}
+
+#[test]
 fn the_window_says_what_it_did_with_a_rule_and_the_active_zone() {
     let app = installed(READING);
     app.try_call("import_device", vec![app.root_value()])

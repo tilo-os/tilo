@@ -1039,7 +1039,11 @@ view rules_page(
                         ui.Text("{protocol} · {source}", role: .caption, secondary: true)
                     }
                     spacer
-                    ui.Toggle(shown: rule.enabled, label: if rule.enabled { "On" } else { "Off" }) {
+                    ui.Toggle(
+                        shown: rule.enabled,
+                        label: if rule.enabled { "On" } else { "Off" },
+                        accessible_name: "Enable the {name} rule",
+                    ) {
                         on check(on): toggle_rule(f, zone.kind, rule.id(), on)
                     }
                     ui.Button("Edit {name}", icon: .pencil, icon_only: true) {
@@ -1101,6 +1105,7 @@ view services_page(f: Firewall, zone: Zone) {
                     label: if zone.services.contains(service.key) {
                         "Allowed"
                     } else { "Blocked" },
+                    accessible_name: "Allow {service.name}",
                 ) {
                     on check(on): allow_service(f, zone.kind, service.key, on)
                 }

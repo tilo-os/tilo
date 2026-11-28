@@ -304,6 +304,7 @@ d-4r3hrblj = Panik einschalten~present
 d-vxibtymz = Regel hinzufügen~present
 
 d-okktoj56 = Fenster
+    .w-enable-the-rule = Die Regel { $name } einschalten
     .w-firewall = Firewall
     .w-zones = Zonen
     .w-active = Aktiv
@@ -372,6 +373,7 @@ d-vc4u4tnw = Nicht verfügbar
     .w-try-again = Erneut versuchen
 
 d-jydyulkn = Diensteseite
+    .w-allow = { $name } erlauben
     .w-allowed = Erlaubt
     .w-blocked = Blockiert
 
