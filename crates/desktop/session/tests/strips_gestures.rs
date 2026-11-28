@@ -529,6 +529,87 @@ fn a_tab_let_go_in_a_gap_stands_alone_there() {
     let _ = second;
 }
 
+/// A session with two displays side by side and the notes a test places.
+fn two_displays() -> (Session, Vec<String>) {
+    let (notebook, notes) = notes(&TITLES);
+    let session = crate::common::headless_on(
+        &[
+            OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT),
+            OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT).at(WIDTH, 0),
+        ],
+        Options {
+            person: PERSON.to_owned(),
+            collab: false,
+            services: vec![Box::new(notebook)],
+            ..Options::default()
+        },
+    );
+    (session, notes)
+}
+
+/// A window's bar carried from one display's shell onto a window of another display tabs it in
+/// there: the drag belongs to the desktop, not to the part it was lifted from, so the part under
+/// the pointer shows where it would land and takes the drop, and the place moves to that display.
+#[test]
+fn a_window_dragged_onto_a_window_of_another_display_lands_there() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = two_displays();
+    crate::common::wait_for(&mut session, "a shell on each display", |session| {
+        (session.shell_parts().len() == 2).then_some(())
+    });
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let (first, source) = place(&mut session, &notes[0]);
+    let (second, _own) = place(&mut session, &notes[1]);
+    // The second window is sent to the display on the right, as the window menu's Display row
+    // does.
+    let right = session
+        .handle()
+        .read(|tree| {
+            tree.outputs
+                .displays
+                .iter()
+                .find(|display| display.x > 0.0)
+                .map(|display| display.id)
+        })
+        .expect("a display stands right of the first");
+    let arguments: Map<String, Value> =
+        json!({ "tab": second.to_string(), "to": { "display": right.to_string() } })
+            .as_object()
+            .expect("arguments")
+            .clone();
+    session
+        .invoke("desktop:chrome", "move-tab", &arguments)
+        .expect("the window goes to the right display");
+    let first_name = shown_as(&session, TITLES[0]);
+    let second_name = shown_as(&session, TITLES[1]);
+    let from = settled_bar(&mut session, &first_name);
+    let to = settled_bar(&mut session, &second_name);
+    assert!(
+        to.0 >= f64::from(WIDTH),
+        "the second window stands on the right display: {to:?}"
+    );
+    // The first window's bar is carried out of its display and let go over the second window's.
+    drag(
+        &mut session,
+        (from.0 + from.2 / 2.0, from.1 + 14.0),
+        (to.0 + to.2 / 2.0, to.1 + 14.0),
+    );
+    until(
+        &mut session,
+        "the tab landed on the other display",
+        |session| strip_of(session, first) == strip_of(session, second),
+    );
+    let held = crate::common::strip_of(&session, first).expect("the place stands in a strip");
+    assert_eq!(
+        held.display,
+        i64::from(right),
+        "the place moved to the second display with the window it joined"
+    );
+    let _ = source;
+}
+
 /// A tab in flight shows where it would land: carried over a window, the floating tab follows
 /// the pointer and that window says it takes it; carried into the gap between two windows, the
 /// gap says the place it would stand in. The captures stand beside the checks that prove the

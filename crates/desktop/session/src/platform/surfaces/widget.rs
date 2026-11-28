@@ -1039,6 +1039,9 @@ impl ShellSurface for WidgetSurface {
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
+        // A drag in flight belongs to the desktop, not to the tree it was lifted from: this tree,
+        // under the pointer now, reads where it is and shows where it would land.
+        ui::widget::drag_bus::carried_to(vello::kurbo::Point::new(x, y));
         let (lx, ly) = self.local(x, y);
         self.input(&WindowEvent::CursorMoved {
             device_id: DeviceId::dummy(),
@@ -1054,6 +1057,11 @@ impl ShellSurface for WidgetSurface {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input(&mouse_input(button, pressed));
+        if !pressed {
+            // A drag let go over a tree its source is not in is no widget of this tree's to end:
+            // it is let go here, so whatever target of this tree holds the pointer takes it.
+            ui::widget::drag_bus::let_go_here();
+        }
     }
 
     fn takes_fingers(&self, x: f64, y: f64) -> bool {

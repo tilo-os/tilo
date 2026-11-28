@@ -175,6 +175,49 @@ pub fn end(landed: Option<Landed>) {
     changed();
 }
 
+/// The pointer moved to `pointer` while something is in flight, as the tree under the pointer
+/// reads it in the coordinates the trees share: a tree the drag did not start in shows where it
+/// would land, though none of its own widgets heard the motion.
+pub fn carried_to(pointer: Point) {
+    let moved = IN_FLIGHT.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.as_mut() {
+            Some(in_flight) => {
+                in_flight.pointer = pointer;
+                true
+            }
+            None => false,
+        }
+    });
+    if moved {
+        changed();
+    }
+}
+
+/// The button came up with a drag still in flight, in a tree that did not end it: it is let go
+/// where it last stood, in the coordinates the trees share, for whatever target of the tree under
+/// the pointer takes it. Whether one was in flight to let go.
+pub fn let_go_here() -> bool {
+    if CARRIED_AWAY.with(std::cell::Cell::take) {
+        IN_FLIGHT.with(|slot| *slot.borrow_mut() = None);
+        changed();
+        return false;
+    }
+    let landed = IN_FLIGHT.with(|slot| {
+        slot.borrow_mut().take().map(|in_flight| Landed {
+            source: in_flight.source,
+            payload: in_flight.payload,
+            pointer: in_flight.pointer,
+        })
+    });
+    let Some(landed) = landed else {
+        return false;
+    };
+    LANDED.with(|slot| *slot.borrow_mut() = Some(landed));
+    changed();
+    true
+}
+
 /// What is in flight went on somewhere else (to another of the person's devices): nothing here
 /// shows it any more, and the release that ends it here drops nothing.
 pub fn carry_away() {
@@ -306,6 +349,28 @@ mod tests {
             pointer,
             runs: Vec::new(),
         }
+    }
+
+    /// A tree under the pointer that the drag did not start in moves the flight to itself, and a
+    /// release it hears with the drag still in flight lets the drag go there: what a desktop's
+    /// host does so a tab carried onto another display shows and lands on it.
+    #[test]
+    fn a_tree_the_drag_is_not_in_moves_the_flight_and_lets_it_go_there() {
+        publish(flight(Point::new(10.0, 10.0)));
+        carried_to(Point::new(1100.0, 30.0));
+        assert_eq!(
+            current().map(|in_flight| in_flight.pointer),
+            Some(Point::new(1100.0, 30.0)),
+            "the flight moved to the pointer the tree under it read"
+        );
+        assert!(let_go_here(), "the drag was in flight to let go");
+        assert!(current().is_none(), "it is no longer in flight");
+        assert_eq!(
+            landed().map(|landed| landed.pointer),
+            Some(Point::new(1100.0, 30.0)),
+            "it landed where it last stood, for this tree's targets"
+        );
+        assert!(!let_go_here(), "a second release lands nothing");
     }
 
     /// Two trees on two displays side by side, the second one 1000 pixels to the right: a drag
