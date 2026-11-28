@@ -3610,6 +3610,9 @@ view window(w: Workbench) {
         if w.sheet == "save" {
             save_sheet(w, d)
         }
+        if w.picker_for != .none {
+            picker(w, d)
+        }
     }
 }
 
@@ -3719,11 +3722,6 @@ view editor(w: Workbench, d: Draft) {
         }
         output_section(w, d)
         grant_section(w, d)
-    }
-    if let picking = w.picker_for {
-        if picking == d {
-            picker(w, d)
-        }
     }
 }
 
@@ -4171,45 +4169,55 @@ view slot_row(w: Workbench, d: Draft, s: Step, name: Text, label: Text, options:
     }
 }
 
+/// The picker over the draft: a sheet, so what a press of Add step offers stands on screen and
+/// reads whole, and it closes as the step is added or as the person dismisses it.
 view picker(w: Workbench, d: Draft) {
-    ui.Section(title: "Add a step") {
-        row(gap: .related, align: .center) {
+    ui.ModalDialog(
+        title: "Add a step",
+        description: "An action one of your apps offers, or a block that holds steps.",
+        open: true,
+        primary: "Close",
+    ) {
+        on act_primary: close_picker(w)
+        on dismiss: close_picker(w)
+        body: {
             ui.TextInput(bind: w.picker_query, placeholder: "Narrow by action, app or resource")
-            ui.Button("Close", role: .plain) {
-                on press: close_picker(w)
-            }
-        }
-        for head in [Head.branch, Head.each, Head.set, Head.ask, Head.ai, Head.task] {
-            ui.ListRow(
-                title: block_offer_label(head),
-                secondary: block_offer_detail(head),
-                icon: .puzzle,
-            ) {
-                on activate: add_block(w, d, head)
-            }
-        }
-        if w.picker_loading {
-            // The catalogue is read a moment after the sheet opens: say so, and read it then.
-            ui.Timer(after: 0.01, restart: w.picker_block + d.shortcut_id) {
-                on tick: read_picker(w)
-            }
-            text("Reading the actions your apps offer…", role: .caption, secondary: true)
-        } else if w.picker_failure != "" {
-            text("The actions your apps offer could not be read", role: .caption, secondary: true)
-            text(w.picker_failure, role: .caption, secondary: true)
-        } else if w.picker.is_empty() {
-            text("No app offers actions here yet.", role: .caption, secondary: true)
-        } else if w.picker.filter(offer -> offer_matches(w.picker_query, offer)).is_empty() {
-            text("No actions match this filter", role: .caption, secondary: true)
-        }
-        for offer in w.picker {
-            if offer_matches(w.picker_query, offer) {
+            for head in [Head.branch, Head.each, Head.set, Head.ask, Head.ai, Head.task] {
                 ui.ListRow(
-                    title: offer.label,
-                    secondary: offer_detail(offer),
-                    icon: if offer.reads { .eye } else { .zap },
+                    title: block_offer_label(head),
+                    secondary: block_offer_detail(head),
+                    icon: .puzzle,
                 ) {
-                    on activate: add_offer(w, d, offer)
+                    on activate: add_block(w, d, head)
+                }
+            }
+            if w.picker_loading {
+                // The catalogue is read a moment after the sheet opens: say so, and read it then.
+                ui.Timer(after: 0.01, restart: w.picker_block + d.shortcut_id) {
+                    on tick: read_picker(w)
+                }
+                text("Reading the actions your apps offer…", role: .caption, secondary: true)
+            } else if w.picker_failure != "" {
+                text(
+                    "The actions your apps offer could not be read",
+                    role: .caption,
+                    secondary: true,
+                )
+                text(w.picker_failure, role: .caption, secondary: true)
+            } else if w.picker.is_empty() {
+                text("No app offers actions here yet.", role: .caption, secondary: true)
+            } else if w.picker.filter(offer -> offer_matches(w.picker_query, offer)).is_empty() {
+                text("No actions match this filter", role: .caption, secondary: true)
+            }
+            for offer in w.picker {
+                if offer_matches(w.picker_query, offer) {
+                    ui.ListRow(
+                        title: offer.label,
+                        secondary: offer_detail(offer),
+                        icon: if offer.reads { .eye } else { .zap },
+                    ) {
+                        on activate: add_offer(w, d, offer)
+                    }
                 }
             }
         }

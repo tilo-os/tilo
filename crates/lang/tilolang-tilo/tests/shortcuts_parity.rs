@@ -30,6 +30,34 @@ struct Answers {
     failure: String,
 }
 
+/// The invocation record `actions.call` answers: a call that ended, its output the checker's
+/// answer for a draft with neither a problem nor a grant.
+fn answered_call() -> Value {
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert("Invocation.id".to_owned(), Value::text("call-1"));
+    fields.insert(
+        "Invocation.status".to_owned(),
+        Value::Enum(tilolang_runtime::EnumValue {
+            ty: "tilo.invocations#Status".to_owned(),
+            variant: "Status.ended".to_owned(),
+            fields: std::collections::BTreeMap::new(),
+        }),
+    );
+    fields.insert(
+        "Invocation.output".to_owned(),
+        Value::some(Value::Json(Box::new(json!({
+            "grant": "[]",
+            "problems": [],
+            "permissions": [],
+        })))),
+    );
+    fields.insert("Invocation.started_ms".to_owned(), Value::Int(1));
+    Value::Rec(tilolang_runtime::value::RecordInit {
+        ty: "tilo.invocations#Invocation".to_owned(),
+        fields,
+    })
+}
+
 /// The `Catalogue` record the action registry answers with, the offers and the failure beside them.
 fn catalogue(failure: &str) -> Value {
     let mut fields = std::collections::BTreeMap::new();
@@ -52,6 +80,9 @@ impl Invoker for Answers {
         if app == tilolang::ACTIONS_APP {
             return match name.as_str() {
                 "catalogue" => Invoked::Done(catalogue(&self.failure)),
+                // The checker's calls: the inspect and choices addresses answer the invocation
+                // record whose output is a clean draft.
+                "call" => Invoked::Done(answered_call()),
                 _ => Invoked::Refused("this test calls no action by address".to_owned()),
             };
         }
@@ -618,6 +649,36 @@ fn the_picker_says_when_no_app_offers_actions() {
             "the picker offers the block {head}: {lines:?}"
         );
     }
+}
+
+/// Review and save opens the sheet that says what saving would allow, with its answers on it.
+#[test]
+fn the_draft_offers_its_save_review() {
+    let (_host, mut view) = window();
+    for _ in 0..8 {
+        view.poll_patches().expect("the window draws");
+    }
+    let new = labelled(view.tree(), "ui.Button", "New shortcut");
+    view.press(&new).expect("a draft starts");
+    for _ in 0..8 {
+        view.poll_patches().expect("the window draws");
+    }
+    let review = labelled(view.tree(), "ui.Button", "Review and save…");
+    view.press(&review).expect("the review opens");
+    wait_until(&mut view, |view| {
+        shown(view).iter().any(|line| line == "Save this shortcut?")
+    });
+    let lines = shown(&view);
+    assert!(
+        lines.iter().any(|line| line == "Cancel"),
+        "the review can be put away: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Save shortcut" || line == "Close"),
+        "the review says how it ends: {lines:?}"
+    );
 }
 
 /// A catalogue that could not be read says so where its actions would stand, with the dispatch's

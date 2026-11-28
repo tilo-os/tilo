@@ -112,9 +112,7 @@
       "ops": [
         {
           "press_any": [
-            {
-              "prefix": "Review and save"
-            }
+            "Review and save…"
           ]
         },
         {
@@ -144,9 +142,7 @@
       "ops": [
         {
           "press_any": [
-            {
-              "prefix": "Duplicate"
-            }
+            "Duplicate"
           ]
         },
         {
