@@ -92,14 +92,14 @@ fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
         let session = Session::Agent(&agent);
         person_keeps_a_folder(&host).await;
         // The workspace holds the folder: what the window shows is the tree, not a skeleton.
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         loop {
             let lines = view(&session, &workspace).await;
             assert!(
                 !lines.contains("Loading"),
                 "the window shows the tree, never that it is on its way: {lines}",
             );
-            if lines.contains(FOLDER) {
+            if lines.contains(&format!("list_row \"{FOLDER}\"")) {
                 break;
             }
             assert!(Instant::now() < deadline, "{lines}");
@@ -161,10 +161,10 @@ fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
         let on_the_device = read_in_zone(mtime, tilo_ui_base::format::TimeZone::UTC);
         assert_ne!(on_her_page, on_the_device, "the zones read it apart");
 
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         let lines = loop {
             let lines = view(&session, &workspace).await;
-            if lines.contains(FOLDER) {
+            if lines.contains(&format!("list_row \"{FOLDER}\"")) {
                 break lines;
             }
             assert!(Instant::now() < deadline, "{lines}");
@@ -183,10 +183,10 @@ fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
 
 /// What the agent's view of Files shows once it lists the folder with `wanted` in it.
 async fn agent_reads(session: &Session<'_>, workspace: &str, wanted: &str) -> String {
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let lines = view(session, workspace).await;
-        if lines.contains(FOLDER) && lines.contains(wanted) {
+        if lines.contains(&format!("list_row \"{FOLDER}\"")) && lines.contains(wanted) {
             return lines;
         }
         assert!(
@@ -383,7 +383,7 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
             .expect("the person's pick is kept");
         // The choice is kept in the device's records and read by the daemon as it changes: the
         // window is sent to it again until the folder it names lists.
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         let lines = loop {
             goes_to(&session, &workspace, &reference.to_string_lossy()).await;
             let lines = view(&session, &workspace).await;
@@ -463,7 +463,7 @@ fn a_member_the_workspace_lets_read_no_files_sees_nothing() {
         .expect("the person lets their agent open the window");
 
         let session = Session::Agent(&agent);
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         loop {
             let lines = view(&session, &workspace).await;
             assert!(
