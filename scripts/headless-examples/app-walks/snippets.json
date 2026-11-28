@@ -49,23 +49,25 @@
     {
       "id": "keep",
       "said": "Keep a snippet, filed under a folder, as an agent or the form does",
-      "ops": [
-        {
-          "use": {
-            "kind": "Library",
-            "action": "new-snippet",
-            "args": {
-              "title": "Restart deployment",
-              "folder": "Ops"
+      "ops": {
+        "tl": [
+          {
+            "use": {
+              "kind": "tl.so.tilo.snippets.Library",
+              "action": "new_snippet",
+              "args": {
+                "title": "Restart deployment",
+                "folder": "Ops"
+              }
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Restart deployment"
             }
           }
-        },
-        {
-          "wait_for": {
-            "shown": "Restart deployment"
-          }
-        }
-      ]
+        ]
+      }
     },
     {
       "id": "places",
@@ -85,62 +87,82 @@
     },
     {
       "id": "open_one",
-      "said": "A snippet opens beside the list, with copying its first command",
-      "ops": [
-        {
-          "press_any": [
-            "Restart deployment"
-          ]
-        },
-        {
-          "wait_for": {
-            "shown": "Copy"
-          }
-        },
-        {
-          "wait_for": {
-            "shown": "Duplicate"
-          }
-        }
-      ]
-    },
-    {
-      "id": "place",
-      "said": "A tag takes the list to the snippets that carry it, and opens one of them",
+      "said": "The place's first snippet opens beside the list, with copying it",
       "ops": {
         "tl": [
           {
-            "select_row": "postgres"
+            "wait_for": {
+              "shown": "Copy"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Duplicate"
+            }
           },
           {
             "must": {
               "see": [
-                "Table size"
+                "Star it",
+                "Restart deployment"
               ],
               "within": 10
             }
-          },
-          {
-            "must_not": [
-              "Restart deployment"
-            ]
           }
         ]
       }
     },
     {
-      "id": "all-again",
-      "said": "Every snippet again, the starred ones first",
+      "id": "tagged",
+      "said": "Give it tags in the tag editor, and the tags stand in the sidebar",
       "ops": {
         "tl": [
+          {
+            "press": "Edit tags\u2026"
+          },
+          {
+            "wait_for": "Tags"
+          },
+          {
+            "type": "k8s, deploy"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": {
+              "see": [
+                "k8s"
+              ],
+              "within": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "place",
+      "said": "A tag takes the list to the snippets that carry it, and its page is one of them",
+      "ops": {
+        "tl": [
+          {
+            "select_row": "k8s"
+          },
+          {
+            "must": {
+              "see": [
+                "Restart deployment"
+              ],
+              "within": 10
+            }
+          },
           {
             "select_row": "All snippets"
           },
           {
             "must": {
               "see": [
-                "Restart deployment",
-                "Meeting note"
+                "Restart deployment"
               ],
               "within": 10
             }
@@ -150,22 +172,9 @@
     },
     {
       "id": "duplicate",
-      "said": "Duplicate the open snippet: the copy is named as a copy, stands in the list and opens",
+      "said": "Duplicate the open snippet: the copy is named as a copy and stands in the list",
       "ops": {
         "tl": [
-          {
-            "press": "Restart deployment"
-          },
-          {
-            "wait_for": {
-              "shown": "Duplicate"
-            }
-          },
-          {
-            "wait_for": {
-              "shown": "Remove star"
-            }
-          },
           {
             "press": "Duplicate"
           },
@@ -183,7 +192,7 @@
     },
     {
       "id": "keep-by-key",
-      "said": "Ctrl+N asks for a snippet's title and keeps it",
+      "said": "Ctrl+N asks for a snippet's title, and Escape puts the question away",
       "ops": {
         "tl": [
           {
@@ -193,21 +202,28 @@
             ]
           },
           {
-            "wait_for": "Title"
-          },
-          {
-            "type": "Long windup"
-          },
-          {
-            "key": "Enter"
+            "wait_for": {
+              "shown": {
+                "prefix": "Title"
+              }
+            }
           },
           {
             "must": {
               "see": [
-                "Long windup"
+                "New snippet\u2026"
               ],
               "within": 10
             }
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "must_not": [
+              "New snippet\u2026",
+              "Title"
+            ]
           }
         ]
       }

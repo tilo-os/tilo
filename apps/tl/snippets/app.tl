@@ -751,8 +751,11 @@ view snippets_window(lib: Library) {
                     on act: new_snippet(lib)
                 }
             } else if let snippet = open_now {
-                filed_under(snippet, place, opened)
-                snippet_page(snippet)
+                // One view in the column: where it is filed, above its page.
+                stack(gap: .group) {
+                    filed_under(snippet, place, opened)
+                    snippet_page(snippet)
+                }
             } else {
                 ui.EmptyState("Choose a snippet", icon: .square_pen)
             }
