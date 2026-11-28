@@ -432,6 +432,11 @@ impl Emoji {
             name,
             image: EmojiImage(png.clone()).to_base64(),
         }));
+        if let Err(error) = &added {
+            // The tab says it to the person in its notice; a test waiting for the record to
+            // change reads why it never did here.
+            tracing::warn!(file = %file, %error, "the emoji the person added was refused");
+        }
         added.map_err(|error| emoji_pane::EmojiNotice::not_added(file, error))
     }
 

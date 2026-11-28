@@ -2762,10 +2762,37 @@ impl Session {
     }
 
     /// `record` of `app` in `workspace` as the workspace holds it: what a test reads back of
-    /// Chat's resources the session changes (its agents, its emoji).
-    #[must_use]
-    pub fn stored_record(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
-        self.read_resource(workspace, app, record).ok().flatten()
+    /// Chat's resources the session changes (its agents, its emoji). `None` when this device
+    /// holds nothing of the record, and the reason it is not whole yet otherwise: a test that
+    /// waits for a write says which of the three it met.
+    ///
+    /// # Errors
+    /// The workspace is not held here, this computer may not read it, or the record is not whole
+    /// here yet.
+    pub fn stored_record(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use tilo_peer_state::workspace_documents::DocumentRead;
+        match self
+            .shared
+            .document_reads
+            .read(workspace, app, record, None)?
+        {
+            DocumentRead::Whole { bytes, .. } => Ok(Some(bytes)),
+            DocumentRead::Absent => Ok(None),
+            // A read without a revision to complete asks for the document whole, so these are the
+            // record standing where a reader already read it, or still on its way.
+            DocumentRead::Unchanged(_) | DocumentRead::Changes { .. } => Err(format!(
+                "{record} of {app} stands at another revision than the one read"
+            )),
+            DocumentRead::Pending => Err(format!(
+                "{record} of {app} is not here whole yet: a checkpoint of it or its keys are on \
+                 their way"
+            )),
+        }
     }
 
     /// What the windows ask of the workspace's activity and follow, as this session serves it: the

@@ -987,30 +987,34 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
 /// Read on a thread of its own: the session's loop never waits on storage and is told "not yet"
 /// instead, while this asks the disk itself, as the session's own reader of other apps' records
 /// does.
-fn chat_emoji(session: &Session, workspace: &str) -> Option<Vec<String>> {
-    let stored = session.stored_record(
+fn chat_emoji(session: &Session, workspace: &str) -> Result<Option<Vec<String>>, String> {
+    let Some(stored) = session.stored_record(
         tilo_app::tilo_workspace_emoji::OWNER,
         workspace,
         &collab_types::workspace_document_id(tilo_app::tilo_workspace_emoji::KIND),
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
     // A window appends to the record as it changes it, and this read may land on a tail it has not
     // finished writing: what came before it is the record as the last finished write left it, which
     // is what Chat loads.
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored, options).ok()?;
+    let doc = automerge::AutoCommit::load_with_options(&stored, options)
+        .map_err(|error| format!("Chat's emoji record does not open: {error}"))?;
     let state =
         tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_emoji::WorkspaceEmoji>::read(
             &doc,
         )
-        .ok()?;
-    Some(
+        .map_err(|error| format!("Chat's emoji record does not read: {error}"))?;
+    Ok(Some(
         state
             .state()
             .names()
             .into_iter()
             .map(str::to_owned)
             .collect(),
-    )
+    ))
 }
 
 /// The Emoji tab adds a picture the person chooses to the workspace's emoji,
@@ -1018,10 +1022,10 @@ fn chat_emoji(session: &Session, workspace: &str) -> Option<Vec<String>> {
 #[test]
 fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    // The device store every app's records are kept in, here a home of the test's own: what the tab
-    // adds reaches no other test's workspace.
-    let home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let picture = home.home().join("wave.png");
+    // The picture the person picks, in a directory of the test's own: the record the tab writes
+    // is Chat's, in the workspace kept by the device's daemon, here one of the test's own.
+    let pictures = tempfile::tempdir().expect("a directory of its own");
+    let picture = pictures.path().join("wave.png");
     image::save_buffer(
         picture.as_path(),
         &[
@@ -1032,11 +1036,20 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         image::ColorType::Rgba8,
     )
     .expect("a picture to add");
-    let mut session = crate::common::headless(Options {
-        collab: false,
-        asks: Some(crate::common::person_asked()),
-        ..Options::default()
-    });
+    // The session is the device's daemon's person's, on the link the daemon made for it: the
+    // person's workspaces, and Chat's records in them, are the daemon's to read and write.
+    let mut session = crate::common::on_its_daemon_with(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            crate::common::WIDTH,
+            crate::common::HEIGHT,
+        )],
+        |_device| Options {
+            collab: false,
+            asks: Some(crate::common::person_asked()),
+            ..Options::default()
+        },
+    );
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = session.handle().read(|tree| {
@@ -1074,36 +1087,35 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         },
     );
 
-    // The tab shows the emoji, and Chat's emoji document holds it: the store commits what a window changed
-    // after a debounce, so what the device holds is read again until the emoji is in it.
-    pump(&mut session, &mut [], |_, _| {
-        app.settle();
-        app.harness().a11y_node_named(":wave:").is_some()
-    });
+    // Chat's emoji document holds it before the tab shows it: what the device holds is read
+    // again until the emoji is in it, and a give-up says what the record was instead.
     let held = held_by_chat(&mut session, &workspace, |held| {
         held.is_some_and(|names| names.iter().any(|name| name == "wave"))
     });
     assert!(
-        held.as_deref()
-            .is_some_and(|names| names.iter().any(|name| name == "wave")),
+        matches!(&held, Ok(Some(names)) if names.iter().any(|name| name == "wave")),
         "Chat's record holds the emoji the tab added: {held:?}"
     );
+    // The tab shows the emoji.
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named(":wave:").is_some()
+    });
 
     // Remove takes it out of the tab and out of Chat's record.
     press(&mut app, "ws-emoji-remove-wave");
     session.step(Duration::from_millis(1)).unwrap();
-    pump(&mut session, &mut [], |_, _| {
-        app.settle();
-        app.harness().a11y_node_named(":wave:").is_none()
-    });
     let held = held_by_chat(&mut session, &workspace, |held| {
         held.is_some_and(|names| !names.iter().any(|name| name == "wave"))
     });
     assert!(
-        held.as_deref()
-            .is_some_and(|names| !names.iter().any(|name| name == "wave")),
+        matches!(&held, Ok(Some(names)) if !names.iter().any(|name| name == "wave")),
         "removing the emoji in the tab takes it out of Chat's record: {held:?}"
     );
+    pump(&mut session, &mut [], |_, _| {
+        app.settle();
+        app.harness().a11y_node_named(":wave:").is_none()
+    });
 }
 
 /// What Chat's record of `workspace` holds once `done` says it does, stepping the session
@@ -1112,11 +1124,13 @@ fn held_by_chat(
     session: &mut Session,
     workspace: &str,
     mut done: impl FnMut(Option<&[String]>) -> bool,
-) -> Option<Vec<String>> {
+) -> Result<Option<Vec<String>>, String> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let held = chat_emoji(session, workspace);
-        if done(held.as_deref()) || std::time::Instant::now() >= deadline {
+        if done(held.as_ref().ok().and_then(Option::as_deref))
+            || std::time::Instant::now() >= deadline
+        {
             return held;
         }
         session.step(Duration::from_millis(100)).expect("step");
@@ -1231,20 +1245,24 @@ type StoredAgent = (
 /// What Chat's record of `workspace` 's agents holds, as the device's store keeps it: read without
 /// taking its writer (Chat owns the record), the changes a window made committed as the store
 /// writes them.
-fn chat_agents(session: &Session, workspace: &str) -> Option<Vec<StoredAgent>> {
-    let stored = session.stored_record(
+fn chat_agents(session: &Session, workspace: &str) -> Result<Option<Vec<StoredAgent>>, String> {
+    let Some(stored) = session.stored_record(
         tilo_app::tilo_workspace_agent::OWNER,
         workspace,
         &collab_types::workspace_document_id(tilo_app::tilo_workspace_agent::KIND),
-    )?;
+    )?
+    else {
+        return Ok(None);
+    };
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored, options).ok()?;
+    let doc = automerge::AutoCommit::load_with_options(&stored, options)
+        .map_err(|error| format!("Chat's agents record does not open: {error}"))?;
     let state =
         tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(
             &doc,
         )
-        .ok()?;
-    Some(
+        .map_err(|error| format!("Chat's agents record does not read: {error}"))?;
+    Ok(Some(
         state
             .state()
             .agents
@@ -1263,7 +1281,7 @@ fn chat_agents(session: &Session, workspace: &str) -> Option<Vec<StoredAgent>> {
                 )
             })
             .collect(),
-    )
+    ))
 }
 
 /// What Chat's record of `workspace` holds once `done` says it does, stepping the session
@@ -1272,11 +1290,13 @@ fn held_agents(
     session: &mut Session,
     workspace: &str,
     mut done: impl FnMut(Option<&[StoredAgent]>) -> bool,
-) -> Option<Vec<StoredAgent>> {
+) -> Result<Option<Vec<StoredAgent>>, String> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let held = chat_agents(session, workspace);
-        if done(held.as_deref()) || std::time::Instant::now() >= deadline {
+        if done(held.as_ref().ok().and_then(Option::as_deref))
+            || std::time::Instant::now() >= deadline
+        {
             return held;
         }
         session.step(Duration::from_millis(100)).expect("step");
@@ -1371,7 +1391,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
         })
     });
     assert!(
-        held.as_deref().is_some_and(|agents| agents
+        matches!(&held, Ok(Some(agents)) if agents
             .iter()
             .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && *active)),
         "Chat's record holds the agent the tab made: {held:?}"
@@ -1406,7 +1426,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
         })
     });
     assert!(
-        held.as_deref().is_some_and(|agents| agents
+        matches!(&held, Ok(Some(agents)) if agents
             .iter()
             .any(|(id, name, _, active, ..)| id == "analyst" && name == "Analyst" && !active)),
         "Chat's record keeps the retired agent and its name: {held:?}"
@@ -1490,7 +1510,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
         })
     });
     assert!(
-        held.as_deref().is_some_and(|agents| agents
+        matches!(&held, Ok(Some(agents)) if agents
             .iter()
             .any(|(id, _, _, _, limit, _)| id == "analyst" && *limit == Some(5_000_000))),
         "Chat's record keeps the day's limit: {held:?}"
@@ -1539,7 +1559,9 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| agents.len() == 2)
     });
-    let held = held.expect("Chat's agents in the workspace");
+    let held = held
+        .expect("Chat's agents in the workspace")
+        .expect("Chat's record of them");
     let mut ids: Vec<&str> = held.iter().map(|(id, ..)| id.as_str()).collect();
     ids.sort_unstable();
     assert_eq!(
