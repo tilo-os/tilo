@@ -4,7 +4,8 @@
 #
 #   tilo-update-channel list          the channels this device can follow, one per line
 #   tilo-update-channel current       the one it follows: the update policy's choice, else its
-#                                     image's own (dev for a dev image, stable otherwise)
+#                                     image's own (dev for a dev image or a development server,
+#                                     stable otherwise)
 #   tilo-update-channel ref [NAME]    the reference channel NAME (default: current) follows here;
 #                                     nothing when the image follows the origin it was installed
 #                                     with (a release image on stable)
@@ -23,7 +24,10 @@
 # image for this device, registry.tilo.so/tilo/tilo-vm:<target>-ci, signed with the development
 # key, which only a dev image's own policy accepts (os/scripts/finalize-dev-image.py), so a
 # release image follows stable only. <target> is the board of a board image (its hardware
-# profile), else the architecture.
+# profile), else the architecture. A development server (the server image with the device's
+# steps, os/Containerfile.host-dev, marked by /usr/share/tilo-vm/base.json) follows main's
+# development server image, registry.tilo.so/tilo/tilo-vm:server-<target>-ci, signed with the
+# same key, and its stable is the server's releases, registry.tilo.so/tilo/tilo-host:latest.
 #
 # A deployment installed from a local medium (oci-archive, docker-archive, dir, oci or
 # containers-storage: a developer's own image, verified where it was made) keeps the image it
@@ -45,6 +49,15 @@ policy() {  # $1 = key
   sed -n "s/^$1=//p" "$POLICY" | tail -n 1
 }
 flavour() { cat "$ROOT/usr/lib/tilo/image-flavour" 2>/dev/null || echo release; }
+# A dev image, or a development server: the server image keeps its flavour, and its development
+# build is told by the base its device's steps check layers against.
+development() {
+  case "$(flavour)" in
+    dev) return 0 ;;
+    server) [ -e "$ROOT/usr/share/tilo-vm/base.json" ] ;;
+    *) return 1 ;;
+  esac
+}
 board() {
   local profile="$ROOT/usr/lib/tilo/hardware-profile.json"
   [ -r "$profile" ] || return 0
@@ -56,7 +69,7 @@ target() {
   printf '%s' "${id:-${TILO_UPDATE_CHANNEL_ARCH:-$(uname -m)}}"
 }
 list() {
-  [ "$(flavour)" = dev ] && echo dev
+  if development; then echo dev; fi
   echo stable
 }
 # Whether this device can follow channel $1. Not `list | grep -q`: under pipefail, grep leaving at
@@ -69,7 +82,7 @@ current() {
   chosen="$(policy channel)"
   if [ -n "$chosen" ] && follows "$chosen"; then
     printf '%s\n' "$chosen"
-  elif [ "$(flavour)" = dev ]; then
+  elif development; then
     echo dev
   else
     echo stable
@@ -78,11 +91,15 @@ current() {
 ref() {  # $1 = channel
   follows "$1" || die "this device cannot follow $1"
   case "$1:$(flavour)" in
+    dev:server) printf '%s:server-%s-ci\n' "$DEV_REPOSITORY" "$(target)" ;;
     dev:*) printf '%s:%s-ci\n' "$DEV_REPOSITORY" "$(target)" ;;
     # A release image keeps the origin it was installed with; a board's successor is chosen by
-    # tilo-board-successor from there. So does a server: its image is the server's own
-    # repository's, and the desktop's release series below is not a server.
-    stable:release | stable:server) ;;
+    # tilo-board-successor from there. So does a release server: its image is the server's own
+    # repository's, and the desktop's release series below is not a server. A development
+    # server's stable is the server's releases; the release image it installs follows its own
+    # origin from then on.
+    stable:release) ;;
+    stable:server) if development; then echo registry.tilo.so/tilo/tilo-host:latest; fi ;;
     # From a dev image, the release series of the same device; the release image it installs
     # follows its own origin from then on.
     stable:*)

@@ -26,9 +26,12 @@ Run by os/Containerfile.dev as its last content step:
   deployment from a production one, and a dev image cannot be a dev base.
 
 With --base-only (os/Containerfile.host-dev, the development server image) it
-writes base.json alone: the server stays a server, flavour and update policy
-included. Its binaries were compiled outside the image, by t's check image
-(tools/ci/publish/server-binaries.sh), which carries no toolchain into it, so
+writes base.json and the same container policy: the server stays a server, its
+flavour included, and follows main's development server image, which t's
+publish-host-dev check publishes into the dev repository signed with the
+development key (tilo-update-channel). Its binaries were compiled outside the
+image, by t's check image (tools/ci/publish/server-binaries.sh), which carries
+no toolchain into it, so
 `toolchain` and `target` are read off the built binaries the way
 `tilo-vm layer-pack` reads them off a layer's (the ELF machine and the
 `.comment` section rustc writes), and `builder_image_digest` names that check
@@ -159,6 +162,16 @@ def dev_policy(policy: dict) -> dict:
     return policy
 
 
+def write_dev_policy(root: Path) -> None:
+    if not (root / DEV_KEY.lstrip("/")).is_file():
+        fail(f"{DEV_KEY} is missing; the dev image must install keys/cosign-dev.pub there")
+    policy_path = root / "etc/containers/policy.json"
+    if not policy_path.is_file():
+        fail(f"{policy_path} is missing; the base is not a Tilo image")
+    policy = dev_policy(json.loads(policy_path.read_text()))
+    policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=Path("/"))
@@ -189,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
             fail("--base-only needs the base image's digest")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(info, indent=2) + "\n")
+        write_dev_policy(root)
         print(json.dumps(info, indent=2))
         return 0
 
@@ -200,13 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(info, indent=2) + "\n")
 
-    if not (root / DEV_KEY.lstrip("/")).is_file():
-        fail(f"{DEV_KEY} is missing; the dev image must install keys/cosign-dev.pub there")
-    policy_path = root / "etc/containers/policy.json"
-    if not policy_path.is_file():
-        fail(f"{policy_path} is missing; the base is not a Tilo image")
-    policy = dev_policy(json.loads(policy_path.read_text()))
-    policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+    write_dev_policy(root)
 
     flavour.parent.mkdir(parents=True, exist_ok=True)
     flavour.write_text("dev\n")

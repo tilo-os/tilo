@@ -147,6 +147,7 @@ if (( dev )); then
   cp os/usr/lib/tilo/node-server.toml "$context/os/usr/lib/tilo/"
   cp os/scripts/install-components.py os/scripts/finalize-dev-image.py "$context/os/scripts/"
   cp Cargo.lock "$context/"
+  cp keys/cosign-dev.pub "$context/keys/"
   builder=$(awk '/^\[/ { exit } /^image = "/ { gsub(/^image = "|"$/, ""); print; exit }' t.toml)
   [[ $builder =~ ^registry\.tilo\.so/tilo/tilo-builder@sha256:[0-9a-f]{64}$ ]] \
     || die "t.toml names no default check image pinned by digest: '$builder'"

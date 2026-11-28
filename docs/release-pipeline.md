@@ -309,6 +309,13 @@ steps, the dev-VM CLI, their units, base.json). Its programs come from `host-bin
 compiled, so the compiler cache keeps a one-crate change to that crate's compile and the links
 instead of the release image's whole-program ones. `test-image-host-dev` proves the sealed image
 in a container, and `server-installer-medium-dev-x86_64` builds the medium that installs it.
+When t is idle, `sign-dev-host` signs main's sealed image with the development key and
+`publish-host-dev` publishes it as `registry.tilo.so/tilo/tilo-vm:server-sha-<commit>`, moving
+`server-x86_64-ci` to it only forward along main. That tag is the development server's channel:
+the medium names it as the installed server's origin, the image's own policy accepts the
+development key for that repository, and `tilo-update-channel` offers `dev` (the default) and
+`stable`, the server's releases, to a development server, while a release server follows stable
+alone.
 
 ## Dev VM disks
 

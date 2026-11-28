@@ -30,6 +30,9 @@
 #     the target and toolchain read off the server's own programs, the check
 #     image that compiled them and the Cargo.lock they were built from
 #     (os/scripts/finalize-dev-image.py --base-only);
+#   * the container policy of a dev image: it updates from main's development
+#     server image, registry.tilo.so/tilo/tilo-vm:server-<arch>-ci, signed with
+#     the development key (t's publish-host-dev; tilo-update-channel);
 #   * systemd-sysext.service, unmasked and enabled.
 #
 # Build context: what tools/ci/publish/host-build.sh stages, nothing else.
@@ -80,6 +83,8 @@ RUN test "$(readlink /usr/bin/tilo-vm)" = tilo \
 COPY vm-units/ /usr/lib/systemd/system/
 COPY device-steps/49-tilo-device-steps.rules /etc/polkit-1/rules.d/49-tilo-device-steps.rules
 COPY device-steps/tilo-device-control.conf /usr/lib/tmpfiles.d/tilo-device-control.conf
+# The development key, which its container policy holds main's development server image to.
+COPY keys/cosign-dev.pub /usr/share/tilo/cosign-dev.pub
 
 # The base the development image is built on: the server image's own base, in
 # the store as host-build.sh loaded it, and the builder image t's check

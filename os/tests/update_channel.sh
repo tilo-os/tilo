@@ -82,6 +82,29 @@ echo server >"$work/root/usr/lib/tilo/image-flavour"
 expect stable list
 expect stable current
 expect '' ref
+if run ref dev 2>/dev/null; then
+  echo 'a release server named a dev channel' >&2
+  exit 1
+fi
+printf 'schedule=system\nchannel=dev\n' >"$work/policy"
+expect stable current
+expect '' next
+rm "$work/policy"
+
+# A development server (the server image with the device's steps, marked by the base they check
+# layers against) follows main's development server image by default, and the server's releases
+# on stable; never the desktop's dev image or release series.
+mkdir -p "$work/root/usr/share/tilo-vm"
+echo '{}' >"$work/root/usr/share/tilo-vm/base.json"
+expect $'dev\nstable' list
+expect dev current
+expect registry.tilo.so/tilo/tilo-vm:server-x86_64-ci ref
+expect registry.tilo.so/tilo/tilo-host:latest ref stable
+expect registry.tilo.so/tilo/tilo-vm:server-x86_64-ci next
+printf 'schedule=system\nchannel=stable\n' >"$work/policy"
+expect stable current
+expect registry.tilo.so/tilo/tilo-host:latest next
+rm -r "$work/policy" "$work/root/usr/share/tilo-vm"
 
 # A dev image follows dev by default, main's dev image of its architecture or board.
 echo dev >"$work/root/usr/lib/tilo/image-flavour"

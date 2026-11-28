@@ -28,12 +28,12 @@ os/Containerfile.host-dev, the development server image, is held to the same
 rule: its stages build on the server image's own last stage (host-build.sh
 appends it to os/Containerfile.host and os/image/boot.Containerfile, so it adds
 to those, it does not copy them), it labels itself
-sh.tilo.image.development, writes base.json alone (the server's flavour and
-update policy stay), builds no UKI of its own (its seal is seal-host-dev's), and
-no t check that signs, attests or publishes, or that a release tag runs,
-depends on it; the one publication allowed downstream is an unsigned
-development push into the dev repository, which production policy refuses by
-name.
+sh.tilo.image.development, writes base.json with --base-only (the server's
+flavour stays), builds no UKI of its own (its seal is seal-host-dev's), and no t
+check that signs, attests or publishes, or that a release tag runs, depends on
+it; the ones allowed downstream are main's development channel: a signature with
+the development key and a development push, both for the dev repository, which
+production policy refuses by name.
 
 Every finding names file:line, why it matters, and the fix.
 """
@@ -57,9 +57,11 @@ DEV_SERVER_CHECK = "image-host-dev"
 # What signs, attests or publishes an image: none of it may ever see the development server.
 RELEASE_STEPS = re.compile(r"oci-sign\.sh|oci-attest\.sh|oci-publish\.sh|os-release\.sh|host-seal\.sh apply")
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
-# The one publication downstream of the development server image may make: unsigned, on main's
-# development channel, into the dev repository.
+# What downstream of the development server image may sign and publish: on main's development
+# channel, into the dev repository, signed with the development key alone.
 DEV_PUBLISH = re.compile(r"oci-publish\.sh dev " + re.escape(DEV_REPOSITORY) + r"(?=[\s\"'])")
+DEV_SIGN = re.compile(r"oci-sign\.sh " + re.escape(DEV_REPOSITORY) + r"(?=[\s\"'])")
+DEV_SIGNING_KEY = "alias/tilo-dev-signing"
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"
 RERUN = "python3 tools/policy/check_dev_image_contract.py   (or tools/policy/run.sh)"
@@ -239,7 +241,7 @@ def check_dev_server_containerfile(repo: Path) -> list[Finding]:
     if not re.search(r"finalize-dev-image\.py\s+--base-only\b", final_text):
         findings.append(Finding(f"{shown}:{last_line}", "the final stage never writes base.json with "
                                 "os/scripts/finalize-dev-image.py --base-only", WHY_SERVER,
-                                "run it in the last stage; --base-only keeps the server's flavour and policy."))
+                                "run it in the last stage; --base-only keeps the server's flavour."))
     for number, text in lines:
         if re.search(r"\bbootc\s+container\s+ukify\b|/boot/EFI/Linux|unseal-rootfs\.py", text):
             findings.append(Finding(f"{shown}:{number}", "builds, installs or removes a UKI", WHY_SERVER,
@@ -274,10 +276,19 @@ def check_dev_server_never_released(repo: Path) -> list[Finding]:
             continue
         why = []
         run = check.get("run", "")
-        # A development build pushed unsigned to the dev repository, which production policy
-        # refuses by name (check_production_policy): no machine can install or update from it.
-        dev_only = DEV_PUBLISH.search(run) and not RELEASE_STEPS.search(DEV_PUBLISH.sub("", run))
-        if check.get("id_token") and not dev_only:
+        # A development build pushed to the dev repository, or signed for it with the development
+        # key, which production policy refuses by name (check_production_policy): only a
+        # development machine installs or updates from it.
+        tokens = set(check.get("id_token", []))
+        env = check.get("env", {})
+        published = bool(DEV_PUBLISH.search(run)) and not RELEASE_STEPS.search(DEV_PUBLISH.sub("", run)) \
+            and tokens <= {"registry.tilo.so"}
+        signed = bool(DEV_SIGN.search(run)) and not RELEASE_STEPS.search(DEV_SIGN.sub("", run)) \
+            and env.get("TILO_DEV_SIGNING") == "1" \
+            and str(env.get("COSIGN_KEY_REF", "")).endswith(DEV_SIGNING_KEY) \
+            and tokens <= {"tilo-dev-signing"}
+        dev_only = published or signed
+        if tokens and not dev_only:
             why.append("takes an identity token")
         if any(str(trigger).startswith("tag:") for trigger in check.get("on", [])):
             why.append("runs on a release tag")

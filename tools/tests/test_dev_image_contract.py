@@ -128,6 +128,24 @@ class DevImageContractTests(unittest.TestCase):
             errors = "\n".join(self.findings(root))
             self.assertIn("t.toml: check sign-host-dev: depends on image-host-dev and takes an identity "
                           "token, runs on a release tag, signs, attests or publishes", errors)
+        with self.subTest(phase='only the development key signs it, for the dev repository'):
+            dev_key = 'awskms:///arn:aws:kms:us-east-1:1:alias/tilo-dev-signing'
+            for repository, key, token, refused in (
+                ("registry.tilo.so/tilo/tilo-vm", dev_key, "tilo-dev-signing", False),
+                ("registry.tilo.so/tilo/tilo-host", dev_key, "tilo-dev-signing", True),
+                ("registry.tilo.so/tilo/tilo-vm", "awskms:///x/alias/tilo-release-signing",
+                 "sts.amazonaws.com", True),
+            ):
+                root = self.fixture()
+                (root / "t.toml").write_text(
+                    (root / "t.toml").read_text(encoding="utf-8")
+                    + f'\n[[check]]\nname = "sign-host-dev-candidate"\n'
+                    f'run = "bash tools/ci/publish/oci-sign.sh {repository} /target/x"\n'
+                    'needs = ["seal-host-dev"]\n'
+                    f'env = {{ COSIGN_KEY_REF = "{key}", TILO_DEV_SIGNING = "1" }}\n'
+                    f'id_token = ["{token}"]\n', encoding="utf-8")
+                errors = "\n".join(self.findings(root))
+                self.assertEqual("check sign-host-dev-candidate" in errors, refused, (repository, key, errors))
         with self.subTest(phase='a production recipe may not build it'):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "FROM scratch AS public-trust\n",

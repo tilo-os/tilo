@@ -321,9 +321,16 @@ done
 # Nothing of a desktop's session is in it.
 [[ ! -e $root/usr/bin/greetd && ! -e $root/usr/libexec/tilo/tilo-greeter ]] \
   || die 'the server image carries a sign-in stack'
+# The container policy's scope for one repository, as JSON.
+scope() { inside python3 -c 'import json, sys; print(json.dumps(json.load(open("/etc/containers/policy.json"))["transports"]["docker"].get(sys.argv[1]), sort_keys=True))' "$1"; }
 if (( ! dev )); then
   [[ ! -e $root/usr/libexec/tilo/tilo-vm && ! -e $root/usr/share/tilo-vm/base.json ]] \
     || die 'the server image carries the dev-VM tools'
+  # A release server follows the server's releases alone: development images are refused.
+  [[ $(scope registry.tilo.so/tilo/tilo-vm) == '[{"type": "reject"}]' ]] \
+    || die "the server image takes development images: $(scope registry.tilo.so/tilo/tilo-vm)"
+  [[ $(inside /usr/libexec/tilo-update-channel list) == stable ]] \
+    || die "the server image offers channels besides stable: $(inside /usr/libexec/tilo-update-channel list)"
   echo 'the server image holds what a server runs'
   exit 0
 fi
@@ -365,4 +372,13 @@ grep -aqF "rustc version ${toolchain#rustc }" "$root/usr/libexec/tilo/tilo-runti
 [[ $(field cargo_lock_hash) == "$(sha256sum "$repo_root/Cargo.lock" | cut -d' ' -f1)" ]] \
   || die "base.json names another Cargo.lock than this tree's"
 [[ $(field image_digest) =~ ^sha256:[0-9a-f]{64}$ ]] || die 'base.json names no base image digest'
+# It updates from main's development server image, signed with the development key, and holds
+# the server's releases to the release key as before.
+[[ $(scope registry.tilo.so/tilo/tilo-vm) == '[{"keyPath": "/usr/share/tilo/cosign-dev.pub", "signedIdentity": {"type": "matchRepository"}, "type": "sigstoreSigned"}]' ]] \
+  || die "the development server does not take main's development images signed with the development key: $(scope registry.tilo.so/tilo/tilo-vm)"
+cmp -s "$root/usr/share/tilo/cosign-dev.pub" "$repo_root/keys/cosign-dev.pub" || die 'the development key is not keys/cosign-dev.pub'
+grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' <<<"$(scope registry.tilo.so/tilo/tilo-host)" \
+  || die 'the server releases are not held to the release key'
+[[ $(inside /usr/libexec/tilo-update-channel ref) == registry.tilo.so/tilo/tilo-vm:server-x86_64-ci ]] \
+  || die "the development server follows $(inside /usr/libexec/tilo-update-channel ref), not main's development server image"
 echo 'the development server image holds what a server runs, and takes layers at boot'
