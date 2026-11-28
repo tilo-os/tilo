@@ -1068,6 +1068,41 @@ pub fn enable_bundle_verity(root: &Path, manifest: &BundleManifest) -> std::io::
     Ok(enabled)
 }
 
+/// Make the programs of the bundle at `root` executable: its dynamic loaders, which the launcher
+/// binds at the interpreter path every sandboxed binary execs through, and the programs under
+/// `bin/`, which a bundle only takes in executable. A package's payload carries no file modes, so a
+/// bundle unpacked from one would otherwise hold a loader the kernel refuses to run.
+///
+/// # Errors
+///
+/// The first file whose mode cannot be read or set, or `InvalidInput` for a manifest path that
+/// leaves the bundle.
+pub fn restore_program_modes(root: &Path, manifest: &BundleManifest) -> std::io::Result<()> {
+    for file in &manifest.files {
+        let name = file.path.rsplit('/').next().unwrap_or(&file.path);
+        if !(file.path.starts_with("bin/") || is_loader(name)) {
+            continue;
+        }
+        if !valid_payload_path(&file.path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("payload path {} leaves the bundle", file.path),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = root.join(&file.path);
+            let mut mode = fs::metadata(&path)?.permissions();
+            if mode.mode() & 0o111 != 0o111 {
+                mode.set_mode(mode.mode() | 0o111);
+                fs::set_permissions(&path, mode)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Verify a bundle's signed manifest, file set and sizes without reading every
 /// payload byte. This is appropriate only when the caller independently proves
 /// the payload is immutable (the launcher uses it for root-owned system

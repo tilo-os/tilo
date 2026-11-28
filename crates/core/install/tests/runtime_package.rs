@@ -631,6 +631,26 @@ tilo_test_env::scenario! {
             },
         )
         .unwrap();
+        // The loader every sandboxed binary execs through runs, though the payload carries no
+        // modes and the package names another entrypoint.
+        let loaders: Vec<_> = ["lib", "lib/lib64"]
+            .iter()
+            .flat_map(|dir| std::fs::read_dir(installed.join(dir)).unwrap())
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("ld-linux"))
+            })
+            .collect();
+        assert!(!loaders.is_empty(), "the bundle holds no loader");
+        for loader in loaders {
+            assert_eq!(
+                std::fs::metadata(&loader).unwrap().permissions().mode() & 0o111,
+                0o111,
+                "{} is not executable",
+                loader.display()
+            );
+        }
         let host = installed.join("lib/chromium/tilo-chromium-host");
         assert_ne!(
             std::fs::metadata(&host).unwrap().permissions().mode() & 0o111,

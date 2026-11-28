@@ -168,6 +168,7 @@ pub(super) fn install(
     }
     let result = stage(candidate, &staging, payload, report).and_then(|tree| {
         let manifest = check_bundle(&tree, version)?;
+        runtime_bundle::restore_program_modes(&tree, &manifest)?;
         seal(&tree, &manifest, report);
         if dest.exists()
             && existing.is_some()
