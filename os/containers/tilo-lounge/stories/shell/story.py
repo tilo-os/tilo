@@ -112,7 +112,7 @@ class Person:
     def built(self, tilolang: tuple[str, ...]) -> list[Path]:
         """The signed package of each tilolang app in `tilolang`, built against the runtime this
         person's state holds."""
-        runtime = (self.state / "runtimes/.version").read_text().strip()
+        runtime = (self.state / "apps/runtimes/.version").read_text().strip()
         tool = next((p for p in (self.state / "bin/tilolang", BUILD / "bin/tilolang")
                      if p.exists()), None)
         if tool is None:
