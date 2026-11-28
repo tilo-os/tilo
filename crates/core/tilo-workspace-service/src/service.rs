@@ -375,11 +375,13 @@ impl ServiceSessions {
         if governance.is_none() {
             crate::workspaces::ServiceWorkspaceActions::new().serve(workspaces);
         }
+        // The workspaces this service holds, as its pages read them: a page is shown where the
+        // service hosts its workspace, founds it or keeps it (and a copy it holds unsealed), and
+        // a service that founds nothing still holds the copies of a device that joined. The lock
+        // is set before the endpoint routes any session to the service.
+        let _ = self.handler.admin.set(Arc::new(workspaces.clone()));
         if let Some(governance) = governance {
             governance.attach(workspaces);
-            // Sessions ask its workspaces what a device may do; the lock is set
-            // before the endpoint routes any session to the service.
-            let _ = self.handler.admin.set(Arc::new(workspaces.clone()));
             // The host's own operations answer on its action service for the requests that name
             // no workspace: a page's whole administration, asked by a device of its person.
             if let Some(server) = own_server {
