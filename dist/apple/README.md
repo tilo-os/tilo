@@ -145,6 +145,9 @@ up to `Notification.maxActions`): each is a button in the system's notification,
 one a field, and the `click` event then carries `action` and `reply`. On the Mac the page answers
 such a button without coming forward.
 
+**A turn of the person's own, on the lock screen.** While a turn of their own agent runs, the
+iPhone shows a live activity from start to answer, pushed by the server and sealed like notices.
+
 **The menu-bar item** (Mac). Closing the window leaves the app in the menu bar, and the page goes
 on running behind it. The item shows the count the page writes into its title, with the line the
 page wrote, and offers the window, dictation, settings and "Open at login". Opening at login is the

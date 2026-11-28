@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The notice extension of Tilo Shell on the iPhone. build.sh writes the signing team for
+<!-- The notice extension of the app on the iPhone. build.sh writes the signing team for
      __TEAM__ and the app's identifier for __ID__, and adds what a development build carries
      (get-task-allow). The first keychain group is its own; the second is the one place it
      shares with the app, where the device's key for what a push says is kept. -->

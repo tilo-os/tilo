@@ -880,7 +880,7 @@ async fn a_turns_start_progress_and_end_reach_the_live_activity() {
     // In the open it says nothing of what it works on: no word of the ask, of
     // the agent, of the workspace, nor of where a press leads.
     let readable = began.in_the_open();
-    for kept_back in ["Summarise", "lease", "scout", WORKSPACE, "tilo-shell"] {
+    for kept_back in ["Summarise", "lease", "scout", WORKSPACE, "tilo-phone"] {
         assert!(!readable.contains(kept_back), "{kept_back} in {readable}");
     }
     // The device alone reads who works, what on, and where a press leads.
@@ -890,7 +890,7 @@ async fn a_turns_start_progress_and_end_reach_the_live_activity() {
             "from": "scout",
             "asked": "Summarise the lease.",
             "words": "",
-            "opens": format!("tilo-shell://turn?workspace={WORKSPACE}&app={APP}&record=r-1"),
+            "opens": format!("tilo-phone://turn?workspace={WORKSPACE}&app={APP}&record=r-1"),
         })
     );
 

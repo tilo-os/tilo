@@ -1,4 +1,7 @@
 import Foundation
+#if os(iOS)
+import ActivityKit
+#endif
 #if canImport(WidgetKit)
 import WidgetKit
 #endif
@@ -93,4 +96,52 @@ public enum WidgetLink {
         else { return nil }
         return parts.queryItems?.first { $0.name == "link" }?.value
     }
+
+    public static func turn(in url: URL, origin: String) -> URL? {
+        guard url.scheme?.lowercased() == scheme, url.host == "turn",
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let workspace = value("workspace", in: parts), let app = value("app", in: parts)
+        else { return nil }
+        let record = value("record", in: parts).map { "/\($0)" } ?? ""
+        return URL(string: "\(origin)/#/w/\(workspace)/\(app)\(record)")
+    }
+    private static func value(_ name: String, in parts: URLComponents) -> String? {
+        parts.queryItems?.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 }
+    }
 }
+
+public struct LiveTurnWords: Codable, Hashable, Sendable {
+    public var from: String
+    public var asked: String
+    public var words: String
+    public var opens: String
+    public init(from: String, asked: String, words: String = "", opens: String = "") {
+        (self.from, self.asked, self.words, self.opens) = (from, asked, words, opens)
+    }
+}
+
+#if os(iOS)
+public struct TiloLiveTurn: ActivityAttributes {
+    public typealias ContentState = LiveTurnState
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
+public struct LiveTurnState: Codable, Hashable, Sendable {
+    public enum Phase: String, Codable, Hashable, Sendable {
+        case working, asking, answered, stopped, failed, cancelled
+        public var isOver: Bool { self != .working && self != .asking }
+    }
+
+    public var phase: Phase
+    public var step: Int
+    public var steps: Int
+    public var name: String
+    public var enc: String?
+    public init(phase: Phase = .working, step: Int = 0, steps: Int = 0, name: String, enc: String? = nil) {
+        (self.phase, self.step, self.steps, self.name, self.enc) = (phase, step, steps, name, enc)
+    }
+    public var progress: Double? { steps > 0 ? min(max(Double(step) / Double(steps), 0), 1) : nil }
+}
+#endif
+

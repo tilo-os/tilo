@@ -349,7 +349,7 @@ fn live_opens(turn: &LiveTurn) -> String {
         })
     };
     format!(
-        "tilo-shell://turn?workspace={}&app={}&record={}",
+        "tilo-phone://turn?workspace={}&app={}&record={}",
         escaped(&turn.workspace),
         escaped(app),
         escaped(record)

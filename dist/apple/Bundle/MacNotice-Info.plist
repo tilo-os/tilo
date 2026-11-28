@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The notice extension of Tilo Shell on the Mac: it opens what a push says for this
+<!-- The notice extension of the app on the Mac: it opens what a push says for this
      device alone. Only a build that is told while it is closed carries it (TILO_APPLE_PUSH).
      build.sh writes its app's name and identifier for __NAME__ and __ID__. TiloTold names the
      one place it shares with the app, where the device's key is kept. -->

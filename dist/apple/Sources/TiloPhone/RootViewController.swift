@@ -18,6 +18,8 @@ final class RootViewController: UIViewController {
     private var permission = NoticePermission.notAsked
     /// Where this iPhone is reached while the app is closed, once Apple's service gave it one.
     private var push: String?
+    private var deviceToken: Data?
+    private var pendingPage: URL?
     /// What a push answered before the page was there to hear it.
     private var toldAnswer: (name: String, action: String?, reply: String?)?
     private var problem: UIView?
@@ -38,6 +40,11 @@ final class RootViewController: UIViewController {
         notices.answered = { [weak self] id, answer in self?.answered(id, answer) }
         notices.toldAnswered = { [weak self] name, action, reply in self?.told(name, action, reply) }
         self.notices = notices
+        LiveActivities.shared.changed = { [weak self] _ in
+            guard let self else { return }
+            handPush()
+        }
+        LiveActivities.shared.watch()
         Task {
             permission = await notices.permission()
             registerPush()
@@ -70,7 +77,14 @@ final class RootViewController: UIViewController {
 
     /// Apple's address for this iPhone goes to the person's host through the page's session.
     func registered(_ deviceToken: Data) {
-        guard let address = PushAddress.handedOver(token: deviceToken, info: Bundle.main.infoDictionary) else { return }
+        self.deviceToken = deviceToken
+        handPush()
+    }
+    private func handPush() {
+        guard let deviceToken,
+              let address = PushAddress.handedOver(token: deviceToken, info: Bundle.main.infoDictionary,
+                                                   live: LiveActivities.shared.push)
+        else { return }
         push = address
         host?.setPush(address)
     }
@@ -309,6 +323,9 @@ final class RootViewController: UIViewController {
     /// A link the system handed the app: a tap on the home screen's card says where its page would
     /// have gone. Open that notice now, or when the page next shows it.
     func route(_ url: URL) {
+        if url.scheme?.lowercased() == WidgetLink.scheme, url.host == "turn" {
+            pendingPage = url; openPendingPage(); return
+        }
         guard let activation = WidgetLink.activation(in: url), let notices else { return }
         if host != nil, let id = notices.notice(at: activation) {
             answered(id, .opened)
@@ -317,6 +334,12 @@ final class RootViewController: UIViewController {
         }
     }
 
+    private func openPendingPage() {
+        guard let pendingPage, let host, arrived,
+              let page = WidgetLink.turn(in: pendingPage, origin: host.settings.origin)
+        else { return }
+        self.pendingPage = nil; host.open(page)
+    }
     private func answered(_ id: String, _ answer: NoticeAnswer) {
         guard let host else { return }
         switch answer {
@@ -409,6 +432,7 @@ extension RootViewController: PageHostDelegate {
     func pageArrived(_ host: PageHost) {
         arrived = true
         show(nil)
+        openPendingPage()
         if let asked {
             self.asked = nil
             perform(asked)

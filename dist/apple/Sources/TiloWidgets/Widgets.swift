@@ -49,7 +49,7 @@ struct ToldCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            heading("Waiting for you")
+            WidgetHeading(words: "Waiting for you")
             if entry.snapshot.items.isEmpty {
                 Text("Nothing waits for you").font(.caption).foregroundStyle(.secondary)
             }
@@ -66,7 +66,13 @@ struct ToldCard: View {
         .containerBackground(for: .widget) { Rectangle().fill(.background) }
     }
 
-    private func heading(_ words: String) -> some View {
+}
+
+/// A small uppercase heading, shared by the cards.
+struct WidgetHeading: View {
+    let words: String
+
+    var body: some View {
         Text(words)
             .font(.caption2.weight(.semibold))
             .tracking(1.2)
@@ -93,6 +99,9 @@ private struct Line: View {
 struct TiloWidgets: WidgetBundle {
     var body: some Widget {
         ToldWidget()
+        #if os(iOS)
+        TiloLiveActivity()
+        #endif
     }
 }
 #else

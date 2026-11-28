@@ -30,6 +30,7 @@
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
   <key>UIFileSharingEnabled</key><true/>
   <key>LSRequiresIPhoneOS</key><true/>
+  <key>NSSupportsLiveActivities</key><true/>
   <key>MinimumOSVersion</key><string>26.4</string>
   <key>NSAppTransportSecurity</key><dict>
     <!-- A Tilo stack on this computer is plain http on loopback addresses and on names under

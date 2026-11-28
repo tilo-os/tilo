@@ -462,7 +462,7 @@ final class WordsTests: XCTestCase {
             .appendingPathComponent("Bundle")
         let files = try XCTUnwrap(FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil))
             .compactMap { $0 as? URL }.filter { ["plist", "entitlements", "strings"].contains($0.pathExtension) }
-        XCTAssertEqual(files.count, 11)
+        XCTAssertEqual(files.count, 17)
         for file in files {
             let text = try String(contentsOf: file, encoding: .utf8)
             for named in Self.apps + ["so.tilo."] {

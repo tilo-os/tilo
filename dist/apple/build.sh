@@ -396,6 +396,8 @@ phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" 
   local hint=""
   if [ "$2" = "$id.notice" ]; then
     hint=": name the profile of the notice extension in TILO_APPLE_NOTICE_PROFILE"
+  elif [ "$2" = "$id.widgets" ]; then
+    hint=": name the profile of the widget extension in TILO_APPLE_WIDGETS_PROFILE"
   elif [ "${6:-}" != app ]; then
     hint=": name the profile of the share extension in TILO_APPLE_SHARE_PROFILE"
   fi
@@ -407,6 +409,10 @@ phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" 
   cp -R "$bundle/en.lproj" "$dir/"
   cp "$profile" "$dir/embedded.mobileprovision"
   fill "$4" "$rights"
+  # The widget opens the key a push is sealed for, where the build is told while it is closed.
+  if [ "$2" = "$id.widgets" ] && [ -n "$push" ]; then
+    plist -c "Add :keychain-access-groups array"       -c "Add :keychain-access-groups:0 string $team.$id.widgets"       -c "Add :keychain-access-groups:1 string $team.$id.told" "$rights"
+  fi
   # A development profile lets a debugger attach, and the signature has to say the same.
   if [ "$(plist -c 'Print :Entitlements:get-task-allow' "$decoded" 2>/dev/null)" = true ]; then
     plist -c "Add :get-task-allow bool true" "$rights"
@@ -467,7 +473,7 @@ build_iphone() {
   if [ -n "$widget" ]; then
     mkdir -p "$widgets"
     cp "$bin/TiloWidgets" "$widgets/TiloWidgets"
-    phone_part "$widgets" "$id.widgets" "$bundle/Widgets-Info.plist" "$bundle/Widgets.entitlements" "$widgets_profile"
+    phone_part "$widgets" "$id.widgets" "$bundle/Widgets-Info.plist" "$bundle/Widgets.entitlements" "$widgets_profile" "" "$told"
   fi
   cp "$bin/TiloPhone" "$app/$program"
   cp -R "$bundle/Settings.bundle" "$app/"

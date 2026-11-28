@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The home screen's card of what waits for the person: a widget extension of Tilo Shell on
+<!-- The home screen's card of what waits for the person: a widget extension of the app on
      the Mac and the iPhone. build.sh writes its app's name and identifier for __NAME__ and
      __ID__, and the platform it was built for. -->
 <plist version="1.0"><dict>
@@ -21,4 +21,5 @@
   </dict>
   <key>TiloGroup</key><string>group.__ID__.shared</string>
   <key>TiloTeam</key><string></string>
+  <key>TiloTold</key><string>__ID__.told</string>
 </dict></plist>

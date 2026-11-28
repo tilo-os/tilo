@@ -29,4 +29,11 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(WidgetLink.url(for: ""), "")
         XCTAssertNil(WidgetLink.activation(in: try XCTUnwrap(URL(string: "https://tilo.sh"))))
     }
+
+    /// A tap on a live activity opens the conversation its turn answered in, at the app's site.
+    func testALiveActivityOpensTheConversationAtTheSite() throws {
+        let turn = try XCTUnwrap(URL(string: "tilo-phone://turn?workspace=w&app=so.tilo.chat&record=r-1"))
+        XCTAssertEqual(WidgetLink.turn(in: turn, origin: "https://tilo.sh")?.absoluteString, "https://tilo.sh/#/w/w/so.tilo.chat/r-1")
+        XCTAssertNil(WidgetLink.turn(try XCTUnwrap(URL(string: "https://tilo.sh")), origin: "https://tilo.sh"))
+    }
 }

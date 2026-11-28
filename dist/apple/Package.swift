@@ -40,15 +40,9 @@ let package = Package(
             dependencies: ["ShellCore"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
-        // The retired Swift assistant's window values, which its tests still read; the shell
-        // carries what a person needs of it.
-        .target(name: "AssistantCore"),
-        // The content of the retired window's drawing, for its tests only.
-        .target(name: "AssistantDrawing", dependencies: ["AssistantCore"]),
         // The fixture is read from the source tree by `#filePath`, not copied into a bundle.
         .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"], exclude: ["Fixtures"]),
         .testTarget(name: "ShellWebTests", dependencies: ["ShellCore", "ShellWeb"]),
-        .testTarget(name: "AssistantCoreTests", dependencies: ["AssistantCore", "AssistantDrawing"]),
     ],
     swiftLanguageModes: [.v6]
 )
