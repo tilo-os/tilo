@@ -1153,14 +1153,54 @@ view queue(p: playback.Playback) {
             } else {
                 ui.VirtualList(selection_follows_focus: true, in_column: false) {
                     on reorder(ids: List<Text>): queue_moved(p, ids)
-                    on activate(x: Track): play_song(x)
+                    on activate(x: Track): play_queued(lib, x)
                     for song in songs {
                         ui.ListItem(item: song) {
-                            ui.ListRow(
-                                title: song.title,
-                                secondary: song.artist,
-                                icon: if p.track == song.id { .speaker } else { .music },
-                            )
+                            row(gap: .tight, align: .center) {
+                                ui.ListRow(
+                                    title: song.title,
+                                    secondary: song.artist,
+                                    icon: if p.track == song.id { .speaker } else { .music },
+                                )
+                                ui.Button(
+                                    "Move up in the queue",
+                                    icon: .arrow_up,
+                                    icon_only: true,
+                                    role: .plain,
+                                    enabled: (p.queue.index_of(item_of(song)) ?? 0) > 0,
+                                    description: "This item is already first in the queue",
+                                ) {
+                                    on press: playback.queue_up(
+                                        p,
+                                        p.queue.index_of(item_of(song)) ?? 0,
+                                    )
+                                }
+                                ui.Button(
+                                    "Move down in the queue",
+                                    icon: .arrow_down,
+                                    icon_only: true,
+                                    role: .plain,
+                                    enabled: (p.queue.index_of(item_of(song)) ?? 0)
+                                        < p.queue.len() - 1,
+                                    description: "This item is already last in the queue",
+                                ) {
+                                    on press: playback.queue_down(
+                                        p,
+                                        p.queue.index_of(item_of(song)) ?? 0,
+                                    )
+                                }
+                                ui.Button(
+                                    "Remove from queue",
+                                    icon: .x,
+                                    icon_only: true,
+                                    role: .plain,
+                                ) {
+                                    on press: playback.queue_remove(
+                                        p,
+                                        p.queue.index_of(item_of(song)) ?? 0,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1194,6 +1234,12 @@ view lyrics(p: playback.Playback) {
             }
         }
     }
+}
+
+/// Plays a song from its place in the queue, keeping the rest of the queue as it stands.
+action play_queued(lib: Library, t: Track) (icon: .play, label: "Play queued song") {
+    let p = session(lib)
+    if let at = p.queue.index_of(item_of(t)) { playback.select(p, at) }
 }
 
 /// Adds a song to what follows.

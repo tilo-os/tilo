@@ -248,6 +248,16 @@ d-tcakivo7-from = Von
 
 d-tcakivo7-to = Nach
 
+d-c7hvp5cw = In der Warteschlange nach oben
+    .doc = Bewegt den Eintrag bei `index` um eine Stelle nach vorn in der Warteschlange; was läuft, läuft weiter, damit sich die gehörte Stelle nicht ändert.
+
+d-c7hvp5cw-index = Index
+
+d-cqn6ylml = In der Warteschlange nach unten
+    .doc = Bewegt den Eintrag bei `index` um eine Stelle nach hinten in der Warteschlange.
+
+d-cqn6ylml-index = Index
+
 d-qbjrwcgo = Ausgabe hinzufügen
     .doc = Legt den Ton auf einen weiteren Ort: einen Lautsprecher in einem Raum oder ein Cast-Ziel.
 

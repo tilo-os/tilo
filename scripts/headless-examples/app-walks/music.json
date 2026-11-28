@@ -141,6 +141,81 @@
       ]
     },
     {
+      "id": "queue",
+      "said": "A second song joins the queue, and its own controls move a song in it",
+      "ops": [
+        {
+          "tone": {
+            "name": "Evening Light.wav",
+            "seconds": 4,
+            "hz": 330
+          }
+        },
+        {
+          "press_any": [
+            "Open audio file"
+          ]
+        },
+        {
+          "choose": {
+            "name": "Evening Light.wav"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "Pause"
+          }
+        },
+        {
+          "select_row": "Songs"
+        },
+        {
+          "press_any": [
+            {
+              "prefix": "First Light"
+            }
+          ]
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "press_any": [
+            "Add to queue"
+          ]
+        },
+        {
+          "press_any": [
+            "Queue"
+          ]
+        },
+        {
+          "must": [
+            "First Light.wav",
+            "Evening Light.wav",
+            "Move up in the queue",
+            "Move down in the queue"
+          ]
+        },
+        {
+          "press_any": [
+            "Move down in the queue"
+          ]
+        },
+        {
+          "press_any": [
+            "Move up in the queue"
+          ]
+        },
+        {
+          "must": [
+            "First Light.wav",
+            "Evening Light.wav"
+          ]
+        }
+      ]
+    },
+    {
       "id": "find",
       "said": "Find a song: search YouTube Music from inside the app",
       "ops": [

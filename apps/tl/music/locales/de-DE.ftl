@@ -303,6 +303,11 @@ d-akdhwldp = Zur Warteschlange
 
 d-akdhwldp-t = Titel
 
+d-iqfljhwb = Wartenden Titel abspielen
+    .doc = Spielt einen Titel von seiner Stelle in der Warteschlange ab und lässt den Rest der Warteschlange, wie er steht.
+
+d-iqfljhwb-t = Titel
+
 d-uwlrca54 = Als Nächstes
     .doc = Stellt einen Titel direkt nach der Wiedergabe in die Warteschlange.
 
@@ -577,8 +582,13 @@ d-6tpcfsjw = Empfehlungen
     .w-play-here = Hier abspielen
 
 d-osqkr7ab = Warteschlange
-    .w-queue = Queue
-    .w-nothing-queued = Nothing queued
+    .w-queue = Warteschlange
+    .w-nothing-queued = Nichts in der Warteschlange
+    .w-move-up-in-the-queue = In der Warteschlange nach oben
+    .w-this-item-is-already-first-in = Dieser Eintrag steht schon am Anfang der Warteschlange
+    .w-move-down-in-the-queue = In der Warteschlange nach unten
+    .w-this-item-is-already-last-in = Dieser Eintrag steht schon am Ende der Warteschlange
+    .w-remove-from-queue = Aus der Warteschlange entfernen
 
 d-pf6yvngz = Songtext
     .w-no-lyrics-yet = No lyrics yet

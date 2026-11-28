@@ -383,6 +383,33 @@ action queue_move(p: Playback, from: Text, to: Text) {
     }
 }
 
+/// Moves the item at `index` one place earlier in the queue; the one that plays keeps playing,
+/// so the place a person hears does not change.
+action queue_up(p: Playback, index: Int) (icon: .arrow_up, label: "Move up in the queue") {
+    if index <= 0 or index >= p.queue.len() {
+        return
+    }
+    if let item = p.queue.at(index) {
+        p.queue.move(item, to: index - 1)
+        if let current = p.queue.find(i -> i.ref == p.track) {
+            p.queue_at = p.queue.index_of(current) ?? 0
+        }
+    }
+}
+
+/// Moves the item at `index` one place later in the queue.
+action queue_down(p: Playback, index: Int) (icon: .arrow_down, label: "Move down in the queue") {
+    if index < 0 or index + 1 >= p.queue.len() {
+        return
+    }
+    if let item = p.queue.at(index) {
+        p.queue.move(item, to: index + 1)
+        if let current = p.queue.find(i -> i.ref == p.track) {
+            p.queue_at = p.queue.index_of(current) ?? 0
+        }
+    }
+}
+
 /// Puts the sound on one more place: a speaker in a room, or a cast target.
 action add_output(p: Playback, output: Output) (icon: .speaker) {
     p.outputs.insert(output)
