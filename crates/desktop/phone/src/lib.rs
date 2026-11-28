@@ -137,10 +137,16 @@ fn hand_window_connection(worker: &worker::Worker) {
             if !devices.signed_in {
                 return Ok(None);
             }
-            // Before the person picks a workspace, the phone's window is in their own.
+            // Before the person picks a workspace, the phone's window is in their own, once the
+            // phone holds it: until then the window opens on the phone, and joins it when it
+            // arrives (`PhoneView::follow_workspace`).
             let workspace = devices
                 .own
+                .clone()
                 .ok_or("this phone holds no certificate of yours yet")?;
+            if !holds(&devices, &workspace) {
+                return Ok(None);
+            }
             window_connection(device, &workspace).map(|handed| Some((handed, workspace)))
         })
         .and_then(|made| made);
@@ -157,6 +163,11 @@ fn hand_window_connection(worker: &worker::Worker) {
     // windows opens again.
     carry_kept(worker, &workspace);
     ui::launch::hand_connection(Ok(handed));
+}
+
+/// Whether the phone holds `workspace`, so a window can join it: one it lists.
+pub(crate) fn holds(devices: &tilo_runtime::in_process::Devices, workspace: &str) -> bool {
+    devices.workspaces.iter().any(|held| held.key == workspace)
 }
 
 /// The connection the phone's window joins `workspace` over, made by the phone's `device`.

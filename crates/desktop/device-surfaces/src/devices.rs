@@ -129,6 +129,13 @@ pub struct DevicesView {
     /// being their own for want of a pick.
     #[serde(default)]
     pub picked: bool,
+    /// Whether this device does not hold that workspace yet: its window waits for it.
+    #[serde(default)]
+    pub waiting: bool,
+    /// Why that workspace's host did not let this device in, while it waits; empty when it
+    /// did not refuse.
+    #[serde(default)]
+    pub held_back: String,
     /// Why the last login or revocation failed, in the words of whoever refused it; empty when it
     /// did not.
     #[serde(default)]

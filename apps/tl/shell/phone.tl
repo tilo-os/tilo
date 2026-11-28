@@ -39,6 +39,15 @@ view phone() {
                     }
                 }
             } else if listing or not mine.picked {
+                if mine.held_back != "" {
+                    ui.Banner(
+                        "Your workspace didn't let this phone in",
+                        message: mine.held_back,
+                        kind: .error,
+                    )
+                } else if mine.waiting {
+                    ui.Banner("Waiting for your workspace…", kind: .info)
+                }
                 ui.Text("Workspaces", role: .title)
                 if mine.workspaces.is_empty() {
                     ui.EmptyState("No workspaces here yet", icon: .layers, inline: true)

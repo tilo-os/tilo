@@ -143,7 +143,7 @@ impl PhoneView {
         any
     }
 
-    /// Join the workspace the phone is in: once the person picked another, or signed in, the device
+    /// Join the workspace the phone is in, once it holds it: when the person picked another, or signed in, the device
     /// makes the window's connection to it and the window is built again, joined there
     /// ([`ui::launch::rejoin`]), so what it keeps and the history it shows are that workspace's.
     fn follow_workspace(&mut self) {
@@ -156,7 +156,10 @@ impl PhoneView {
         let Some(workspace) = workspace.filter(|_| devices.signed_in) else {
             return;
         };
-        if self.joined.as_deref() == Some(workspace.as_str()) {
+        // A workspace the phone does not hold yet is joined once it arrives: its join would be
+        // refused now.
+        if self.joined.as_deref() == Some(workspace.as_str()) || !crate::holds(&devices, &workspace)
+        {
             return;
         }
         self.rejoining = true;
@@ -413,11 +416,23 @@ impl Origin for PhoneOrigin {
         if self.written == Some(seen.generation) {
             return Polled::default();
         }
+        // The workspace the phone is in, while it does not hold it yet: the window waits for it,
+        // or says why its host did not let the phone in.
+        let waiting = seen
+            .workspace
+            .as_deref()
+            .filter(|workspace| seen.devices.signed_in && !crate::holds(&seen.devices, workspace));
+        let held_back = waiting
+            .filter(|workspace| seen.devices.own.as_deref() == Some(*workspace))
+            .and_then(|_| seen.devices.own_refused.clone())
+            .unwrap_or_default();
         let devices = serde_json::json!({
             "signed_in": seen.devices.signed_in,
             "workspaces": seen.devices.workspaces,
             "workspace": seen.workspace.clone().unwrap_or_default(),
             "picked": seen.picked,
+            "waiting": waiting.is_some(),
+            "held_back": held_back,
             "refused": seen.refused.unwrap_or_default(),
         });
         let apps = serde_json::json!({

@@ -276,6 +276,13 @@ pub struct DevicesReading {
     /// front always is.
     #[serde(default)]
     pub picked: bool,
+    /// Whether this device does not hold that workspace yet: a desktop is
+    /// always in one it holds.
+    #[serde(default)]
+    pub waiting: bool,
+    /// Why that workspace's host did not let this device in, while it waits.
+    #[serde(default)]
+    pub held_back: String,
     /// Why the last login or revocation failed, in the words of whoever
     /// refused it; empty when it did not.
     #[serde(default)]

@@ -43,6 +43,9 @@ pub struct Devices {
     /// The person's own workspace, by its key: where a window is before the person picks
     /// another. `None` before anyone signed in.
     pub own: Option<String>,
+    /// Why the person's own workspace did not take this device in the last time it was asked,
+    /// while it has not.
+    pub own_refused: Option<String>,
 }
 
 /// One of the person's workspaces, keyed as the shell's layout keys its workspaces.
@@ -146,10 +149,12 @@ impl Device {
                 Workspace { key, name }
             })
             .collect();
+        let own = Self::own_workspace()?;
         Ok(Devices {
             signed_in: true,
             workspaces,
-            own: Some(Self::own_workspace()?),
+            own_refused: crate::device::home::refusal(&own),
+            own: Some(own),
         })
     }
 

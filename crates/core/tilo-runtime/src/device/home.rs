@@ -335,6 +335,25 @@ async fn list_the_persons_workspaces(
     copies.list_known_for(&person).await;
 }
 
+/// Why the person's own workspace, by its key, did not take this device in, the last time it was
+/// asked: what a device's view shows while it waits for that workspace. Gone once it is taken in.
+static REFUSED: Mutex<std::collections::BTreeMap<String, String>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Why the person's own workspace `own` did not take this device in the last time it was asked,
+/// when it did not.
+pub(crate) fn refusal(own: &str) -> Option<String> {
+    REFUSED.lock_recover().get(own).cloned()
+}
+
+fn refused(own: &str, why: Option<String>) {
+    let mut refused = REFUSED.lock_recover();
+    match why {
+        Some(why) => refused.insert(own.to_owned(), why),
+        None => refused.remove(own),
+    };
+}
+
 /// Take the person's own workspace `own` in from the server `device` names, where this device
 /// holds no copy of it: the one that keeps their root writes their list there, and a server that
 /// keeps the workspace without that root writes none of it itself. The copy is a member copy,
@@ -352,6 +371,7 @@ async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &st
                 workspace = %own,
                 "the person's own workspace is not taken in from their server"
             );
+            refused(own, Some(format!("{why:#}")));
             return (false, false);
         }
     };
@@ -360,13 +380,17 @@ async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &st
     // own answer is an admission: a connection that came up without it leaves the workspace to be
     // entered again.
     let admitted = match entered.join(own).await {
-        Ok(_) => true,
+        Ok(_) => {
+            refused(own, None);
+            true
+        }
         Err(error) => {
             tracing::warn!(
                 %error,
                 workspace = %own,
                 "the person's own workspace did not let this device in"
             );
+            refused(own, Some(format!("{error:#}")));
             false
         }
     };

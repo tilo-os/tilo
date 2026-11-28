@@ -691,6 +691,8 @@ impl From<&DevicesReading> for DevicesView {
             workspaces: reading.workspaces.clone(),
             workspace: reading.workspace.clone(),
             picked: reading.picked,
+            waiting: reading.waiting,
+            held_back: reading.held_back.clone(),
             refused: reading.refused.clone(),
         }
     }
@@ -756,12 +758,14 @@ mod surface_tests {
                 "asks",
                 "chosen",
                 "devices",
+                "held_back",
                 "picked",
                 "playing",
                 "refused",
                 "routes",
                 "signed_in",
                 "sounds",
+                "waiting",
                 "workspace",
                 "workspaces",
             ]),
@@ -835,6 +839,8 @@ mod surface_tests {
                 "workspaces",
                 "workspace",
                 "picked",
+                "waiting",
+                "held_back",
                 "refused"
             ]
         );
