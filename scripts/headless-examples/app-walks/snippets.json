@@ -103,6 +103,114 @@
           }
         }
       ]
+    },
+    {
+      "id": "place",
+      "said": "A tag takes the list to the snippets that carry it, and opens one of them",
+      "ops": {
+        "tl": [
+          {
+            "select_row": "postgres"
+          },
+          {
+            "must": {
+              "see": [
+                "Table size"
+              ],
+              "within": 10
+            }
+          },
+          {
+            "must_not": [
+              "Restart deployment"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "all-again",
+      "said": "Every snippet again, the starred ones first",
+      "ops": {
+        "tl": [
+          {
+            "select_row": "All snippets"
+          },
+          {
+            "must": {
+              "see": [
+                "Restart deployment",
+                "Meeting note"
+              ],
+              "within": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "duplicate",
+      "said": "Duplicate the open snippet: the copy is named as a copy, stands in the list and opens",
+      "ops": {
+        "tl": [
+          {
+            "press": "Restart deployment"
+          },
+          {
+            "wait_for": {
+              "shown": "Duplicate"
+            }
+          },
+          {
+            "wait_for": {
+              "shown": "Remove star"
+            }
+          },
+          {
+            "press": "Duplicate"
+          },
+          {
+            "must": {
+              "see": [
+                "Restart deployment (copy)"
+              ],
+              "within": 10
+            }
+          }
+        ]
+      },
+      "dark": true
+    },
+    {
+      "id": "keep-by-key",
+      "said": "Ctrl+N asks for a snippet's title and keeps it",
+      "ops": {
+        "tl": [
+          {
+            "chord": [
+              "Control",
+              "n"
+            ]
+          },
+          {
+            "wait_for": "Title"
+          },
+          {
+            "type": "Long windup"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "must": {
+              "see": [
+                "Long windup"
+              ],
+              "within": 10
+            }
+          }
+        ]
+      }
     }
   ]
 }

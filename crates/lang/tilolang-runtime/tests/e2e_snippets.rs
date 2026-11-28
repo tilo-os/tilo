@@ -479,7 +479,11 @@ mod cases {
                     ("snippet", Value::resource(&one)),
                 ],
             ));
-            assert_eq!(snippets.field(&copy, "title"), json!("Restart deployment"));
+            assert_eq!(
+                snippets.field(&copy, "title"),
+                json!("Restart deployment (copy)"),
+                "a copy is named as a copy of what it copies"
+            );
             assert_eq!(
                 snippets.field(&copy, "uses"),
                 json!(0),

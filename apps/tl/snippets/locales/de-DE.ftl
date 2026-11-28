@@ -120,8 +120,9 @@ d-7dpulqjh-title = Titel
 d-7dpulqjh-folder = Ordner
 
 d-of3vdpk2 = Duplizieren
-    .doc = Macht eine zweite Kopie eines Textbausteins, direkt danach; seine Nutzungszahl beginnt wieder bei null.
+    .doc = Macht eine zweite Kopie eines Textbausteins, direkt danach, benannt als Kopie; seine Nutzungszahl beginnt wieder bei null.
     .did = duplizierte einen Textbaustein
+    .w-copy = { $title } (Kopie)
 
 d-of3vdpk2-snippet = Textbaustein
 
@@ -245,6 +246,7 @@ d-xqxtrmmb = Textbausteinseite
     .w-what-it-is-for = Wofür er gedacht ist
     .w-fill-in-and-copy = Ausfüllen und kopieren
     .w-copy = Kopieren
+    .w-snippet-body = Snippet-Inhalt
     .w-it-looks-like-a-credential-so = Es sieht wie ein Zugangsdatum aus, daher verlässt die Kopie die Zwischenablage in unter einer Minute
 
 d-lqt75wck = Füllblatt
@@ -260,7 +262,7 @@ d-aaruymww = Textbausteinfenster
     .w-most-used = Meistgenutzt
     .w-folders = Ordner
     .w-tags = Schlagwörter
-    .w-keep-the-text-and-code-you = Behalte den Text und Code, den du oft einfügst, mit eigenen Ordnern und Schlagwörtern.
+    .w-keep-the-text-and-code-you = Behalte den Text und Code, den du oft einfügst: Befehle, Antworten, Code. Ein Textbaustein mit Variablen fragt sie beim Kopieren ab.
     .w-nothing-here-yet = Hier ist noch nichts.
     .w-new-snippet = Neuer Textbaustein
     .w-no-snippets-yet = Noch keine Textbausteine

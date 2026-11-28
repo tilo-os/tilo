@@ -2,7 +2,7 @@ app so.tilo.snippets "Snippets" (
     icon: .square_pen,
     category: .development,
     tagline: "Text and code to paste again",
-    keywords: ["snippets", "snippet", "textbausteine", "vorlagen", "templates", "code", "clipboard", "zwischenablage", "boilerplate", "schnipsel"],
+    keywords: ["snippets", "snippet", "textbausteine", "vorlagen", "templates", "code", "clipboard", "zwischenablage", "boilerplate", "schnipsel", "text expander", "canned responses", "abbreviations"],
     splash_budget: 250,
 )
 
@@ -84,21 +84,24 @@ default view snippet_page for Snippet
 primary action new_snippet(lib: Library, title: Text, folder: Text = "") -> Snippet (
     icon: .plus,
     label: "New snippet",
+    key: "Ctrl+N",
     did: "made a snippet",
 ) {
     require title.trim() != "" "A snippet needs a title"
     lib.snippets.insert(Snippet(title: title.trim(), folder: folder.trim()))
 }
 
-/// Makes a second copy of a snippet, right after it; its word count starts again from nothing.
+/// Makes a second copy of a snippet, right after it, named as a copy of it; its use count starts
+/// again from nothing.
 action duplicate(lib: Library, snippet: Snippet, title: Text = "") -> Snippet (
     icon: .copy,
     label: "Duplicate",
     did: "duplicated a snippet",
 ) {
+    let named = if title.trim() == "" { std.say("{snippet.title} (copy)") } else { title.trim() }
     let copy = lib.snippets.insert(
         Snippet(
-            title: if title.trim() == "" { snippet.title } else { title.trim() },
+            title: named,
             body: snippet.body,
             description: snippet.description,
             folder: snippet.folder,
@@ -498,10 +501,10 @@ view snippet_row(snippet: Snippet) {
 
 /// The sidebar's places: the whole library, the starred snippets and the most copied, then the
 /// folders and the tags, each with how many snippets it holds.
-view places(lib: Library, place: Text, chosen: State<Text>) {
+view places(lib: Library, place: Text, chosen: State<Text>, opened: State<Option<Snippet>>) {
     ui.NavList(selected: place, title: "Snippets") {
         ui.NavItem("all", "All snippets", icon: .layers, count: lib.snippets.len()) {
-            on select: set(chosen, "all")
+            on select: set(chosen, "all").then(set(opened, .none))
         }
         ui.NavItem(
             "favorites",
@@ -509,7 +512,7 @@ view places(lib: Library, place: Text, chosen: State<Text>) {
             icon: .star,
             count: lib.snippets.count(s -> s.favorite),
         ) {
-            on select: set(chosen, "favorites")
+            on select: set(chosen, "favorites").then(set(opened, .none))
         }
         ui.NavItem(
             "most-used",
@@ -517,7 +520,7 @@ view places(lib: Library, place: Text, chosen: State<Text>) {
             icon: .trending_up,
             count: lib.snippets.count(s -> s.uses > 0),
         ) {
-            on select: set(chosen, "most-used")
+            on select: set(chosen, "most-used").then(set(opened, .none))
         }
         if not folders(lib).is_empty() {
             ui.NavSection("Folders", add: new_snippet(lib)) {
@@ -528,7 +531,7 @@ view places(lib: Library, place: Text, chosen: State<Text>) {
                         icon: .folder,
                         count: in_folder(lib, folder),
                     ) {
-                        on select: set(chosen, "folder:{folder}")
+                        on select: set(chosen, "folder:{folder}").then(set(opened, .none))
                     }
                 }
             }
@@ -537,7 +540,7 @@ view places(lib: Library, place: Text, chosen: State<Text>) {
             ui.NavSection("Tags") {
                 for tag in tags(lib) {
                     ui.NavItem("tag:{tag}", tag, icon: .tag, count: in_tag(lib, tag)) {
-                        on select: set(chosen, "tag:{tag}")
+                        on select: set(chosen, "tag:{tag}").then(set(opened, .none))
                     }
                 }
             }
@@ -551,7 +554,7 @@ view snippet_list(lib: Library, place: Text, shown: List<Snippet>, opened: State
         ui.EmptyState(
             empty_words(place),
             message: if lib.snippets.is_empty() {
-                "Keep the text and code you paste often, with its own folders and tags."
+                "Keep the text and code you paste often: commands, replies, code. A snippet with variables asks for them when you copy it."
             } else { "Nothing here yet." },
             icon: .square_pen,
             action: if lib.snippets.is_empty() { "New snippet" },
@@ -566,6 +569,18 @@ view snippet_list(lib: Library, place: Text, shown: List<Snippet>, opened: State
                 ui.ListItem(item: snippet) {
                     snippet_row(snippet)
                 }
+            }
+        }
+    }
+}
+
+/// Where the open snippet is filed: its folder, which a press takes the window to. Its tags are
+/// rows of the sidebar and chips on its page; the folder has no other way back to its place.
+view filed_under(snippet: Snippet, place: State<Text>, opened: State<Option<Snippet>>) {
+    if snippet.folder != "" {
+        row(gap: .tight, wrap: true, align: .center) {
+            ui.Chip(snippet.folder, icon: .folder) {
+                on press: set(place, "folder:{snippet.folder}").then(set(opened, .none))
             }
         }
     }
@@ -639,6 +654,7 @@ view snippet_page(snippet: Snippet) {
                 gutter: true,
                 min_lines: 8,
                 max_lines: 24,
+                placeholder: "Snippet body",
                 language: if snippet.language == .shell {
                     // Each language a snippet is written in is coloured as itself: the editor knows
                     // every one of them, so no body reads as plain text.
@@ -719,7 +735,7 @@ view snippets_window(lib: Library) {
     ) {
         on search(q: Text): set(found, q)
         sidebar: {
-            places(lib, place, place)
+            places(lib, place, place, opened)
         }
         overview: {
             snippet_list(lib, place, shown, opened)
@@ -728,13 +744,14 @@ view snippets_window(lib: Library) {
             if lib.snippets.is_empty() {
                 ui.EmptyState(
                     "No snippets yet",
-                    message: "Keep the text and code you paste often, with its own folders and tags.",
+                    message: "Keep the text and code you paste often: commands, replies, code. A snippet with variables asks for them when you copy it.",
                     icon: .square_pen,
                     action: "New snippet",
                 ) {
                     on act: new_snippet(lib)
                 }
             } else if let snippet = open_now {
+                filed_under(snippet, place, opened)
                 snippet_page(snippet)
             } else {
                 ui.EmptyState("Choose a snippet", icon: .square_pen)
