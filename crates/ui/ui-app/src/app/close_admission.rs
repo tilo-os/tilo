@@ -55,6 +55,11 @@ impl App {
         self.layout.node_map.clear();
         self.layout.request_rebuild();
         self.layout.layout_dirty = true;
+        // The dialog laid itself out in an arena of its own: once it goes, the app's tree is
+        // built again before the next input names a node of it.
+        if self.close_admission.dialog.is_none() {
+            self.rebuild_structure();
+        }
     }
     /// Refusal keeps every live owner and wake scope available for editing.
     pub fn request_close(&mut self) -> bool {
@@ -1338,11 +1343,18 @@ mod tests {
             );
         }
         assert!(app.close_admission.dialog.is_some(), "the refusal asks");
+        // The dialog is shown: laid out in an arena of its own.
+        app.rebuild_structure();
 
         {
             let _loop = forbid_strictly_on_this_thread();
             close_choice(&mut app, Choice::KeepEditing);
         }
+        assert!(
+            app.live_app_node()
+                .is_some_and(|node| app.layout.node_map.contains_key(&node)),
+            "the input that follows the dialog reaches the app's own tree"
+        );
         assert!(resumed.load(SeqCst), "Keep Editing takes invocations again");
         assert!(
             !app.collaboration.manager.invocations_stopped(),
