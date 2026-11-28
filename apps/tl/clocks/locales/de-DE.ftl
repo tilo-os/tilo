@@ -378,6 +378,7 @@ d-inqk2nou = Weckerseite
 
 d-g2agvnl7 = Timerseite
     .w-no-timers-yet = Noch keine Timer
+    .w-running = Läuft
     .w-quick-starts = Schnellstart
     .w-tea-5-min = Tee (5 Min.)
     .w-break-10-min = Pause (10 Min.)

@@ -836,6 +836,7 @@ view timers_place(c: Clocks) {
                     stack(gap: .related) {
                         if let ends = t.ends_at {
                             ui.Countdown(at: ends, total: t.seconds.to_float(), label: t.label)
+                            text("Running", secondary: true)
                         } else {
                             text(left_text(t.left), role: .display)
                             text(if done(t) { "Done" } else { "Paused" }, secondary: true)

@@ -220,8 +220,15 @@ mod cases {
             ]));
             assert_eq!(t.rt.read(&timer, "label").unwrap(), Value::text("Tea"));
             assert!(matches!(t.rt.read(&timer, "ends_at").unwrap(), Value::Opt(Some(_))));
+            // The card says where the timer stands: running, then paused.
+            let mut view = t.view();
+            view.poll_patches().unwrap();
+            assert!(any_prop_text(view.tree(), "Running"), "a counting timer runs");
             t.call("pause_timer", vec![Value::resource(&timer)]);
             assert_eq!(t.rt.read(&timer, "ends_at").unwrap(), Value::Opt(None));
+            view.poll_patches().unwrap();
+            assert!(any_prop_text(view.tree(), "Paused"), "a stopped one is paused");
+            assert!(!any_prop_text(view.tree(), "Running"));
             assert!(
                 matches!(t.rt.read(&timer, "left").unwrap(), Value::Opt(Some(_))),
                 "a paused timer names what it has left"
