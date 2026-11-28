@@ -71,6 +71,15 @@ export interface Daemon {
     frames: { speaker: string; opus: Buffer; skipped: number }[];
     asked?: { call?: string | null; status?: string | null } | null;
   };
+  /** Say one presence word of the app's own person (`{key, payload}`): `{answer: {}}`, or the
+   * refusal. */
+  sayPresence(said: object): Promise<CallAnswer>;
+  /**
+   * Who is composing a message in `resource` (its id, or its published address `tl:<app>:<id>`)
+   * now, each member as JSON (`{person}`), as a window drawing it shows "… is typing". Throws the
+   * refusal's body, as JSON, on a connection that is no app's.
+   */
+  composingAt(resource: string): object[];
 }
 
 /**

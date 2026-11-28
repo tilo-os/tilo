@@ -48,6 +48,12 @@ class AppConnection implements DaemonConnection {
   saidCall() {
     return this.pending.shift() ?? { frames: [], asked: null };
   }
+  async sayPresence(): Promise<never> {
+    throw new Error("the call lane said presence");
+  }
+  composingAt(): never {
+    throw new Error("the call lane read presence");
+  }
 }
 
 describe("a call lane", () => {

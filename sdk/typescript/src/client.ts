@@ -20,7 +20,7 @@ import {
   type Operation,
   WorkspaceOperations,
 } from "./types/api-v1.ts";
-import { CallLane, Vault } from "./vault.ts";
+import { CallLane, PresenceLane, Vault } from "./vault.ts";
 
 /** The server a key reaches when none is named. */
 export const DEFAULT_URL = "https://api.tilo.sh";
@@ -229,6 +229,8 @@ export class Workspace extends WorkspaceOperations {
   readonly vault: Vault;
   /** The call lane of an app's own connection. */
   readonly callLane: CallLane;
+  /** The presence lane of an app's own connection. */
+  readonly presenceLane: PresenceLane;
   #id: Promise<string> | null = null;
 
   constructor(client: Tilo, ref: string | null) {
@@ -237,6 +239,7 @@ export class Workspace extends WorkspaceOperations {
     this.ref = ref;
     this.vault = new Vault(this);
     this.callLane = new CallLane(this);
+    this.presenceLane = new PresenceLane(this);
   }
 
   /** Its id: the one it was named by, the daemon's own, or the one the account lists by its name. */

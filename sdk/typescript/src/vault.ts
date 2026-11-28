@@ -1,6 +1,6 @@
 /**
  * What only a daemon's connection carries besides the API: the vault's lane, which uses a secret
- * without handing it over, and an app's call lane.
+ * without handing it over, and an app's call and presence lanes.
  */
 
 import { run, type Workspace } from "./client.ts";
@@ -12,6 +12,8 @@ import {
   type CallReport,
   type CarriedCall,
   type DaemonConnection,
+  type PresenceMember,
+  type PresenceSaid,
 } from "./transport.ts";
 
 /** Content the workspace keeps, named by the address of its bytes. */
@@ -95,6 +97,21 @@ function daemonOf(workspace: Workspace, what: string): Daemon {
     });
   }
   return daemon;
+}
+
+/** What `read` answers on the addon, which throws a refusal's body, as JSON, as its message. */
+async function answered<T>(read: () => T | Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    let body: { error?: unknown };
+    try {
+      body = JSON.parse(error instanceof Error ? error.message : String(error)) as { error?: unknown };
+    } catch {
+      throw error;
+    }
+    throw refusalOf(body.error === undefined ? { error: body } : body);
+  }
 }
 
 /**
@@ -234,22 +251,43 @@ export class CallLane {
   async #take(): Promise<void> {
     const daemon = daemonOf(this.workspace, "a call is carried by");
     const connection = await daemon.opened();
-    let said: ReturnType<DaemonConnection["saidCall"]>;
-    try {
-      said = connection.saidCall();
-    } catch (error) {
-      // The addon throws a refusal's body, as JSON, as its message.
-      let body: { error?: unknown };
-      try {
-        body = JSON.parse(error instanceof Error ? error.message : String(error)) as { error?: unknown };
-      } catch {
-        throw error;
-      }
-      throw refusalOf(body.error === undefined ? { error: body } : body);
-    }
+    const said = await answered(() => connection.saidCall());
     this.#frames.push(...said.frames.map((frame) => ({ ...frame, skipped: frame.skipped ?? 0 })));
     if (said.asked !== undefined && said.asked !== null) {
       this.#asked = { call: said.asked.call ?? null, status: said.asked.status ?? null };
     }
+  }
+}
+
+/**
+ * The presence lane of an app's own connection: the app's person says where they are and what
+ * they do in its workspace (`say`), and the app reads who is composing a message in a resource
+ * (`composing`), folded from the words the workspace's live session hands it exactly as a window
+ * drawing that resource folds them for its "… is typing". The app's own words are never handed
+ * back. Any other connection's calls throw `Refused`.
+ */
+export class PresenceLane {
+  /** The workspace whose presence it says and reads. */
+  readonly workspace: Workspace;
+
+  constructor(workspace: Workspace) {
+    this.workspace = workspace;
+  }
+
+  /** Say one word of the app's person: what they say under a presence key. */
+  async say(said: PresenceSaid): Promise<void> {
+    const daemon = daemonOf(this.workspace, "presence is said by");
+    Daemon.answer(await (await daemon.opened()).sayPresence(said));
+  }
+
+  /**
+   * Who is composing a message in `resource` now, whichever app they said it in: its id, or the
+   * published address an action names it by (`tl:<app>:<id>`). Someone who stops, or goes quiet
+   * for the system's linger, is not.
+   */
+  async composing(resource: string): Promise<PresenceMember[]> {
+    const daemon = daemonOf(this.workspace, "presence is read by");
+    const connection = await daemon.opened();
+    return await answered(() => connection.composingAt(resource));
   }
 }

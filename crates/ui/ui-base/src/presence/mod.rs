@@ -91,7 +91,7 @@ pub fn local_surface_pointer() -> PresenceKey {
 /// How long a person stays shown as composing after their last word: a draft under way is
 /// said again as they type ([`DraftSaid`]), so one who stops drops out shortly after, with no
 /// message.
-pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
+pub use collab_types::presence::COMPOSING_LINGER;
 
 /// Longest forward caret jump still read as "this peer just wrote that" (the `Caret` arm of
 /// [`PresenceCtx::apply_remote_presence`]). Generous on purpose: a caret key is per *block*, so a
@@ -434,7 +434,7 @@ pub struct PresenceCtx {
     /// person, and the instant they last said so. A composer that stops, or a window that
     /// closes, says `composing: false`; one gone quiet without a word drops out after
     /// [`COMPOSING_LINGER`].
-    composing: HashMap<(PresenceKey, MemberId), Instant>,
+    composing: collab_types::presence::Composers<Instant>,
     /// The members of the workspace's last member list ([`Self::apply_members`]): a list that
     /// replaces it retires whoever is no longer on it.
     #[cfg(feature = "model")]
@@ -1567,10 +1567,7 @@ impl PresenceCtx {
     /// with nothing else happening. `None` while nobody composes.
     #[must_use]
     pub fn composing_ends(&self) -> Option<Instant> {
-        self.composing
-            .values()
-            .min()
-            .and_then(|since| since.checked_add(COMPOSING_LINGER))
+        self.composing.ends()
     }
 
     /// Who is composing a message in `key` now, the person looking excluded: a channel's
@@ -1578,16 +1575,7 @@ impl PresenceCtx {
     /// stopped drops out, so a crashed window leaves no one typing forever.
     #[must_use]
     pub fn composing_at(&self, key: &PresenceKey, now: Instant) -> Vec<MemberId> {
-        let mut found: Vec<MemberId> = self
-            .composing
-            .iter()
-            .filter(|((at, _), since)| {
-                at == key && now.saturating_duration_since(**since) < COMPOSING_LINGER
-            })
-            .map(|((_, who), _)| who.clone())
-            .collect();
-        found.sort();
-        found
+        self.composing.at(key, now)
     }
 
     /// Who is composing a message in the resource `id` now, the person looking excluded, whoever
@@ -1597,24 +1585,13 @@ impl PresenceCtx {
     /// window leaves no one typing forever.
     #[must_use]
     pub fn composing_at_resource(&self, id: &str, now: Instant) -> Vec<MemberId> {
-        let mut found: Vec<MemberId> = self
-            .composing
-            .iter()
-            .filter(|((at, _), since)| {
-                matches!(at, PresenceKey::Resource { id: at, .. } if at == id)
-                    && now.saturating_duration_since(**since) < COMPOSING_LINGER
-            })
-            .map(|((_, who), _)| who.clone())
-            .collect();
-        found.sort();
-        found
+        self.composing.at_resource(id, now)
     }
 
     /// Drop composers gone quiet for [`COMPOSING_LINGER`]: what a frame does before it asks
     /// [`Self::composing_at`], so the answer does not depend on when it was last asked.
     pub fn prune_composing(&mut self, now: Instant) {
-        self.composing
-            .retain(|_, since| now.saturating_duration_since(*since) < COMPOSING_LINGER);
+        self.composing.prune(now);
     }
 
     /// Fold one inbound presence frame into this context — the whole decode of a
@@ -1740,12 +1717,7 @@ impl PresenceCtx {
             Composing { composing } => {
                 // A draft under way in the resource the key names: nothing of what it says,
                 // only that someone is writing it. A stop clears it at once.
-                let uid = member;
-                if composing {
-                    self.composing.insert((key, uid), now);
-                } else {
-                    self.composing.remove(&(key, uid));
-                }
+                self.composing.heard(key, member, composing, now);
             }
             Interaction(update) => {
                 // Semantic action presence has its own resource/anchor model.
@@ -1842,7 +1814,7 @@ impl PresenceCtx {
                 }
                 self.spots.retain(|_, list| !list.is_empty());
                 self.typing.retain(|(u, at), _| !(u == &uid && at == &key));
-                self.composing.remove(&(key, member));
+                self.composing.left(&key, &member);
             }
         }
         RemotePresenceEffect::None

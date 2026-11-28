@@ -192,6 +192,9 @@ pub struct Calls {
     /// one connection it acts on. An app reaches `vault#web-call` on that connection, as the
     /// process whose held connection it is.
     app: bool,
+    /// Who composes a message where, as the workspace's live session told this app's connection
+    /// ([`Self::composing_at`]).
+    composers: std::sync::Mutex<collab_types::presence::Composers<Instant>>,
 }
 
 enum At {
@@ -255,6 +258,7 @@ impl Calls {
             return Ok(Self {
                 at: At::Key(direct, tokio::sync::Mutex::default()),
                 app: false,
+                composers: std::sync::Mutex::default(),
             });
         }
         let stream = daemon().map_err(anyhow::Error::msg)?;
@@ -301,6 +305,7 @@ impl Calls {
                 elsewhere: Elsewhere::default(),
             },
             app: false,
+            composers: std::sync::Mutex::default(),
         })
     }
 
@@ -361,6 +366,7 @@ impl Calls {
                 elsewhere: Elsewhere::default(),
             },
             app: false,
+            composers: std::sync::Mutex::default(),
         }
     }
 
@@ -631,6 +637,79 @@ impl Calls {
             frames: line.said_call(),
             asked: line.asked_call().map(|asked| (asked.call, asked.status)),
         })
+    }
+
+    /// Say one presence word of the app's own person in its workspace (`said`, a
+    /// `collab_types::presence::Said` as JSON), as its windows say theirs: `{}`, or the
+    /// refusal's body.
+    ///
+    /// # Errors
+    /// The device refused the word, or this is no app's connection: the refusal's body.
+    pub async fn say_presence(&self, said: Value) -> Result<Value, Value> {
+        let line = Arc::clone(self.lane()?);
+        let said: collab_types::presence::Said = serde_json::from_value(said).map_err(|error| {
+            ApiError::new(
+                "invalid_request",
+                format!("a presence word is {{key, payload}}: {error}"),
+            )
+            .json()
+        })?;
+        let said = serde_json::to_value(&said)
+            .map_err(|error| ApiError::new("invalid_request", error.to_string()).json())?;
+        tokio::task::spawn_blocking(move || line.say_presence(&said))
+            .await
+            .map_err(|error| ApiError::new("unavailable", error.to_string()).json())?
+            .map(|()| Value::Object(serde_json::Map::new()))
+            .map_err(|error| lane_refusal(&error))
+    }
+
+    /// Who is composing a message in `resource` now, whichever app they said it in, sorted:
+    /// what a window drawing the conversation shows as "… is typing", folded the same way from
+    /// the words the workspace's live session hands this app
+    /// ([`collab_types::presence::Composers`]). `resource` is its id, or the published address
+    /// an action names it by (`tl:<app>:<id>`). The app's own words are never handed back.
+    ///
+    /// # Errors
+    /// This is no app's connection.
+    pub fn composing_at(
+        &self,
+        resource: String,
+    ) -> Result<Vec<tilo_member_types::MemberId>, Value> {
+        use collab_types::presence::{Heard, Payload};
+        let line = self.lane()?;
+        // A published address names the id inside it, which is what a window says it under.
+        let id = match resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+        {
+            Some((app, id)) if !app.is_empty() && !id.is_empty() => id.to_owned(),
+            _ => resource,
+        };
+        let now = Instant::now();
+        let mut composers = self
+            .composers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for heard in line.presence_heard() {
+            let Heard {
+                member,
+                key,
+                payload,
+            } = match serde_json::from_str(&heard) {
+                Ok(heard) => heard,
+                Err(error) => {
+                    tracing::warn!(%error, "a presence word the device handed does not read");
+                    continue;
+                }
+            };
+            match payload {
+                Payload::Composing { composing } => composers.heard(key, member, composing, now),
+                Payload::Left => composers.left(&key, &member),
+                _ => {}
+            }
+        }
+        composers.prune(now);
+        Ok(composers.at_resource(&id, now))
     }
 
     /// Have this computer's daemon answer `method` on `target` (a `/v1` path with its query) with

@@ -96,6 +96,19 @@ export interface CallAsk {
   status: string | null;
 }
 
+/**
+ * One presence word of an app's person: what they say (`payload`, such as
+ * `{ composing: { composing: true } }`) under a presence key (`key`, such as
+ * `{ resource: { app, id, kind } }`), in the shapes the workspace's live session carries.
+ */
+export interface PresenceSaid {
+  key: Record<string, unknown>;
+  payload: Record<string, unknown> | string;
+}
+
+/** A member of the workspace, as presence names them: `{ person }`, `{ agent: { id, person } }`. */
+export type PresenceMember = Record<string, unknown>;
+
 /** One answer of the daemon's connection: what it answered, or the refusal it was. */
 type Answered = { answer?: unknown; refused?: unknown };
 
@@ -124,6 +137,9 @@ export interface DaemonConnection {
     frames: { speaker: string; opus: Uint8Array; skipped?: number }[];
     asked?: { call?: string | null; status?: string | null } | null;
   };
+  sayPresence(said: PresenceSaid): Promise<Answered>;
+  /** Who composes in `resource` now; throws a refusal's body, as JSON, as its message. */
+  composingAt(resource: string): PresenceMember[];
 }
 
 /** The addon's connection, made the first time a request needs it and again after one failed. */

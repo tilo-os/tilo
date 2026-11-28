@@ -56,10 +56,13 @@ export {
   type CarriedCall,
   type DaemonConnection,
   type FetchLike,
+  type PresenceMember,
+  type PresenceSaid,
   type Send,
 } from "./transport.ts";
 export {
   CallLane,
+  PresenceLane,
   Vault,
   type VaultAsk,
   type VaultFind,

@@ -198,6 +198,33 @@ impl Daemon {
             asked: said.asked.map(|(call, status)| CallAsk { call, status }),
         })
     }
+
+    /// Say one presence word of the app's own person (`{key, payload}`): `{answer}`, or
+    /// `{refused}`.
+    #[napi]
+    pub async fn say_presence(&self, said: serde_json::Value) -> serde_json::Value {
+        let calls = Arc::clone(&self.calls);
+        match calls.say_presence(said).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
+
+    /// Who is composing a message in `resource` (its id, or its published address) now, each
+    /// member as JSON (`{"person": …}`), as a window drawing it shows "… is typing". Throws the
+    /// refusal's body, as JSON, on a connection that is no app's.
+    #[napi]
+    pub fn composing_at(&self, resource: String) -> napi::Result<Vec<serde_json::Value>> {
+        let members = self
+            .calls
+            .composing_at(resource)
+            .map_err(|refused| napi::Error::from_reason(refused.to_string()))?;
+        members
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<_, _>>()
+            .map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
 }
 
 /// What the daemon's API answered: its status and headers, and its body as it comes.
