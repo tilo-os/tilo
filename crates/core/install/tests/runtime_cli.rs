@@ -104,7 +104,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         assert!(stdout.contains("root-hash: blake3:"));
         assert!(
             xdg.path()
-                .join("tilo-runtime/test-1.0.0/bundle.toml")
+                .join("tilo-apps/runtimes/test-1.0.0/bundle.toml")
                 .exists()
         );
 
@@ -125,14 +125,14 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         // path
         let out = cli(xdg.path(), &["runtime", "path", "--version", "test-1.0.0"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.trim().ends_with("tilo-runtime/test-1.0.0"));
+        assert!(stdout.trim().ends_with("tilo-apps/runtimes/test-1.0.0"));
 
         // remove
         let out = cli(xdg.path(), &["runtime", "remove", "test-1.0.0"]);
         assert!(out.status.success());
         assert!(
             !xdg.path()
-                .join("tilo-runtime/test-1.0.0/bundle.toml")
+                .join("tilo-apps/runtimes/test-1.0.0/bundle.toml")
                 .exists()
         );
     }
@@ -148,7 +148,7 @@ fn runtime_bundles_install_verify_and_refuse_overwrites_or_tampering() {
         );
         assert!(out.status.success());
 
-        let libc = xdg.path().join("tilo-runtime/vv/lib/lib64/libc.so.6");
+        let libc = xdg.path().join("tilo-apps/runtimes/vv/lib/lib64/libc.so.6");
         let mut bytes = fs::read(&libc).unwrap();
         bytes[0] ^= 0x5a;
         fs::write(&libc, bytes).unwrap();

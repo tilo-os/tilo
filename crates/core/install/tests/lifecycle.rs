@@ -256,8 +256,9 @@ tilo_test_env::scenario! {
 
             let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
             assert!(!ok, "a tampered payload must fail verification: {out}{err}");
-            assert!(out.contains("FAILED   so.tilo.lifecycle"), "{out}");
-            assert!(out.contains("modified: bin/app"), "{out}");
+            // A failed verify is the change failing: its report is the error's, on stderr.
+            assert!(err.contains("FAILED   so.tilo.lifecycle"), "{out}{err}");
+            assert!(err.contains("modified: bin/app"), "{out}{err}");
         }
         {
             let env = Env::new();
@@ -817,7 +818,7 @@ tilo_test_env::scenario! {
             serde_json::json!({"secret_key_hex":"11".repeat(32)}).to_string(),
         )
         .unwrap();
-        let runtime = env.xdg_data().join("tilo-runtime/2026.07");
+        let runtime = env.xdg_data().join("tilo-apps/runtimes/2026.07");
         runtime_bundle::build_bundle_with(
             &runtime,
             "2026.07",
