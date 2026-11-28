@@ -69,10 +69,9 @@ struct Writer {
     /// Where a development build this device installs is installed too: the workspace its
     /// person's services serve, once they run ([`PackageCache::install_dev_builds_in`]).
     dev_builds: Arc<Mutex<DevBuildsIn>>,
-    /// The packages (their roots, hex) a workspace named that this device cannot run: the
-    /// runtime each runs on is offered by no repository the workspace reads. Moves when one is
-    /// found, so what moves a workspace's apps on to a release that runs looks again.
-    cannot_run: Arc<tokio::sync::watch::Sender<std::collections::BTreeSet<String>>>,
+    /// The packages (their roots, hex) a workspace named that this device cannot run, each with the
+    /// repositories it was tried against: it is not tried again until those change.
+    cannot_run: Arc<tokio::sync::watch::Sender<BTreeMap<String, String>>>,
 }
 
 /// Where the device's development builds are installed beside it: the workspace its person's
@@ -503,9 +502,7 @@ impl PackageCache {
                 named: Arc::default(),
                 installing: Arc::default(),
                 dev_builds: Arc::default(),
-                cannot_run: Arc::new(tokio::sync::watch::Sender::new(
-                    std::collections::BTreeSet::new(),
-                )),
+                cannot_run: Arc::new(tokio::sync::watch::Sender::new(BTreeMap::new())),
             },
             log: Mutex::default(),
         }
@@ -575,13 +572,22 @@ impl PackageCache {
         self.writer
             .cannot_run
             .borrow()
-            .contains(&package.to_ascii_lowercase())
+            .contains_key(&package.to_ascii_lowercase())
+    }
+
+    /// Whether this device found it cannot run `package` with the repositories `listed`.
+    fn cannot_run_under(&self, package: &str, listed: &str) -> bool {
+        self.writer
+            .cannot_run
+            .borrow()
+            .get(&package.to_ascii_lowercase())
+            .is_some_and(|tried| tried == listed)
     }
 
     /// A watch that moves when this device finds a package a workspace named that it cannot run.
     pub(crate) fn watch_cannot_run(
         &self,
-    ) -> tokio::sync::watch::Receiver<std::collections::BTreeSet<String>> {
+    ) -> tokio::sync::watch::Receiver<std::collections::BTreeMap<String, String>> {
         self.writer.cannot_run.subscribe()
     }
 
@@ -1227,6 +1233,7 @@ impl PackageCache {
             }))
             .unwrap_or_default(),
         );
+        let listed = serde_json::to_string(&registries).unwrap_or_default();
         // Whose packages this workspace trusts, read once for its apps.
         let lists = trust_lists(
             workspaces
@@ -1254,8 +1261,8 @@ impl PackageCache {
                 .named
                 .lock_recover()
                 .insert(release.app.clone(), release.package.clone());
-            if self.runs(&release.package) || self.cannot_run(&release.package) {
-                // Installed, or refused once and never retried: a newer release is another package.
+            if self.runs(&release.package) || self.cannot_run_under(&release.package, &listed) {
+                // Installed, or refused under these repositories and not retried.
                 continue;
             }
             // A version from a registry names no file: the registries offer it.
@@ -1614,23 +1621,26 @@ impl PackageCache {
         payload_from: Option<String>,
     ) {
         let _one_at_a_time = self.writer.installing.lock_recover();
-        if self.superseded(release) || self.cannot_run(&release.package) {
+        let listed = serde_json::to_string(registries).unwrap_or_default();
+        if self.superseded(release) || self.cannot_run_under(&release.package, &listed) {
             return;
         }
         if let Err(error) = self.keep_runtimes(release, bytes, lists, registries) {
             self.writer.rows.arrived(&release.app);
-            // Said once, here: the package is never attempted again, and its row says why.
-            let first = self
-                .writer
-                .cannot_run
-                .send_if_modified(|packages| packages.insert(release.package.to_ascii_lowercase()));
-            if first {
-                self.writer.rows.failed(&release.app, error.clone());
-                tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
-            }
+            // Said once under these repositories: only their change tries the package again.
+            self.writer.cannot_run.send_modify(|packages| {
+                packages.insert(release.package.to_ascii_lowercase(), listed.clone());
+            });
+            self.writer.rows.failed(&release.app, error.clone());
+            tracing::warn!(app = %release.app, %error, "what the version a workspace runs runs on is not here");
             return;
         }
         if self.install_package(release, bytes, lists, payload_from) {
+            self.writer.cannot_run.send_if_modified(|packages| {
+                packages
+                    .remove(&release.package.to_ascii_lowercase())
+                    .is_some()
+            });
             self.mark_followed(&release.app);
         }
     }

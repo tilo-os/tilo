@@ -1037,16 +1037,17 @@ fn an_app_whose_runtime_a_registry_offers_is_installed_with_it() {
     );
 }
 
-// USER REQUIREMENT: an app whose runtime no repository offers is refused once, its row says why, and it is not retried.
+// USER REQUIREMENT: an app whose runtime no repository offers is refused once, its row says why, and it is not retried until the repositories change.
 #[test]
-fn an_app_no_repository_has_a_runtime_for_is_refused_once_and_not_retried() {
+fn an_app_no_repository_has_a_runtime_for_is_refused_once_and_tried_again_when_one_offers_it() {
     const APP: &str = "so.tilo.follower-without-runtime";
     const RUNTIME: &str = "tilo-runtime/2026.05";
     let (dir, cache, _env) = device();
     let app = author_bound_to(APP, "1.0.0", None, Some(RUNTIME), &[]);
     let mut old = release_of(APP, "1.0.0", &app);
     old.file = Some(blake3::hash(&app).to_hex().to_string());
-    let registries = app_cli::config::RegistriesFile::default();
+    let registry = Registry::start(APP, "1.0.0", &app, app.clone());
+    let registries = registry.listed();
     cache.install_named(&old, &app, &TrustLists::default(), &registries);
     assert!(!cache.runs(&old.package));
     let rows = cache.rows_for_test().unwrap();
@@ -1057,7 +1058,18 @@ fn an_app_no_repository_has_a_runtime_for_is_refused_once_and_not_retried() {
     std::fs::create_dir_all(&bundle).unwrap();
     std::fs::write(bundle.join("bundle.toml"), "").unwrap();
     cache.install_named(&old, &app, &TrustLists::default(), &registries);
-    assert!(!cache.runs(&old.package), "nothing is retried once refused");
+    assert!(
+        !cache.runs(&old.package),
+        "nothing is retried on the same repositories"
+    );
+    // A changed repository is the event that can offer the runtime: the package is tried again.
+    let mut grown = registries;
+    grown.registries[0].name = "another".into();
+    cache.install_named(&old, &app, &TrustLists::default(), &grown);
+    assert!(
+        cache.runs(&old.package),
+        "the repositories changed, so it installed"
+    );
 }
 
 /// The workspace's governance action `verb`, asked as its device's person: it completes.
