@@ -417,6 +417,10 @@ struct ColumnFit {
     /// The one control the row stands alone, every button waiting in its menu: `None` unless
     /// the column had no room for a button beside it.
     control_only: Option<usize>,
+    /// The app's own primary action, which keeps its words longest.
+    words: Option<usize>,
+    /// Whether that action keeps its words while the row's secondary actions show their icons.
+    words_labelled: bool,
     header: Option<HeaderRowFacts>,
 }
 
@@ -1555,6 +1559,8 @@ impl NavShell {
                     controls: fitted.controls,
                     shown: None,
                     control_only: None,
+                    words: None,
+                    words_labelled: false,
                     header: None,
                 };
             }
@@ -2623,6 +2629,7 @@ impl NavShell {
                 capable,
                 compact_now,
                 menu_from,
+                words,
                 primary,
                 controls,
             } = fitted;
@@ -2634,10 +2641,12 @@ impl NavShell {
                 part.compact = false;
                 part.shown = None;
                 part.control_only = None;
+                part.words_labelled = false;
             }
             part.capable = capable;
             part.compact_now = compact_now;
             part.menu_from = menu_from;
+            part.words = words;
             part.primary = primary;
             part.controls = controls;
             let count = header.actions.len();
@@ -2651,7 +2660,7 @@ impl NavShell {
                 if !part.capable.get(i).copied().unwrap_or(false) {
                     continue;
                 }
-                let want = part.compact;
+                let want = part.compact && !(part.words_labelled && Some(i) == part.words);
                 if part.compact_now.get(i).copied() == Some(want) {
                     continue;
                 }
@@ -3707,6 +3716,8 @@ struct HeaderFit {
     capable: Vec<bool>,
     compact_now: Vec<bool>,
     menu_from: Option<usize>,
+    /// The app's own primary action, which keeps its words longest.
+    words: Option<usize>,
     primary: Option<usize>,
     controls: Vec<usize>,
 }
@@ -3753,6 +3764,12 @@ fn fit_of(header: &Header) -> HeaderFit {
                 .iter()
                 .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
         });
+    // The action the app itself marks primary: the one that keeps its words while the row's
+    // secondary actions give theirs.
+    let words = header.actions.iter().position(|action| {
+        button_of(&**action)
+            .is_some_and(|button| button.role_of() == ButtonRole::Primary && !button.is_menu_only())
+    });
     let controls: Vec<usize> = header
         .actions
         .iter()
@@ -3770,6 +3787,7 @@ fn fit_of(header: &Header) -> HeaderFit {
         capable,
         compact_now,
         menu_from,
+        words,
         primary,
         controls,
     }
