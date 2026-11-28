@@ -51,18 +51,26 @@ impl Session {
 
     /// What this pass's services did: an agent's turns fed, the services polled, so the surfaces
     /// below show what they published.
-    pub(super) fn serve_agent_runs_and_services(&self) {
+    pub(super) fn serve_agent_runs_and_services(
+        &self,
+        steps: &mut tilo_frame_metrics::SlowestStep,
+    ) {
         // What the session's own resources read, before the services poll the readings this pass
         // hands them.
         self.read_controls();
+        steps.step("controls");
         self.shared.feed_agents();
+        steps.step("agents");
         self.shared.follow_recipients();
+        steps.step("recipients");
         // What the apps' hosts said they play since the last pass, as the desktop's media
         // controls show it.
         self.shared.table.follow_media();
+        steps.step("media");
         // The apps' resources the services run over are the workspace's, once the session holds it.
         self.shared
             .keep_app_stores(self.automation_runtime.handle());
+        steps.step("app stores");
         let mut services = self.shared.services.borrow_mut();
         // What the records the services keep themselves reference: each record's content, kept in
         // the store of the workspace it stands in and offered on its route, so a device of the
@@ -72,11 +80,13 @@ impl Session {
         // Where the workspace's resources open on the web, as the session lends it to a tilolang
         // window's host: the session's own services mint their `share-link` under the same page.
         self.lend_link_home(&mut services);
+        steps.step("lent content");
         // What the packages the session runs itself (the shell) wrote into the records their parts
         // share, published with every app's before the API answers this pass.
         if let Err(error) = services.follow_shared() {
             tracing::error!(%error, "a package's records are not followed");
         }
+        steps.step("shared records");
         // What moved in the records since the last pass, as the services read them again: a
         // replay of what this device already held is no news.
         #[cfg(target_os = "linux")]
@@ -89,10 +99,13 @@ impl Session {
                 .map(|changed| changed.record)
                 .collect(),
         );
+        steps.step("records moved");
         services.poll();
+        steps.step("services poll");
         // What the device's dispatch asked of the services since the last pass: a press of one
         // of their actions, and the person's answer to the question it asked.
         self.shared.served_services.serve(&mut services);
+        steps.step("served services");
         // A press the dispatch refused, where it was held for the services to be offered, is the
         // person's to see: what it said, as a notice on the shell rather than a log line.
         for reason in self.shared.served_services.take_refused() {
@@ -104,11 +117,13 @@ impl Session {
         if let Some(app_wire) = &self.app_wire {
             app_wire.link.serve(&mut services);
         }
+        steps.step("app wire");
         // A follow of a reading reads again once what the services publish moved.
         #[cfg(target_os = "linux")]
         self.shared
             .session_services
             .readings_moved(services.revision());
+        steps.step("readings");
     }
 
     /// Lend the session's own services the page the active workspace's resources open on the
@@ -202,6 +217,98 @@ impl Session {
     }
 
     /// One pass, with the loop's marker already set by [`Self::step`].
+    /// What the session itself does before the frame: the session, the apps and the overlays
+    /// this pass lays out, timed for the frame trace.
+    fn pump(&mut self) -> Result<(), Error> {
+        let pass = Instant::now();
+        // Which part of it took longest, for the frame trace.
+        let mut steps = tilo_frame_metrics::SlowestStep::starting_at(pass);
+        // The person's language, before this pass resolves any of its words.
+        self.follow_language();
+        // The dates, clocks and weeks they write, as their region now says them.
+        self.follow_formats();
+        steps.step("formats");
+        // What the person is in the middle of, as the session may not move under it (shell.md §1).
+        let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
+        let underway = tilo_session_core::layout::Busy { gesture, typing };
+        self.shared.underway.set(underway);
+        self.shared.typed_at.set(self.compositor.typed_at());
+        // What each window shows, as its app holds the record: the note this pass's session, layout
+        // and layout are read from.
+        self.read_window_notes();
+        steps.step("window notes");
+        self.shared.follow_layout(underway);
+        steps.step("layout");
+        self.follow_controllers()?;
+        steps.step("controllers");
+        self.follow_displays()?;
+        steps.step("displays");
+        self.follow_overlays();
+        steps.step("overlays");
+        self.follow_setup();
+        steps.step("setup");
+        self.serve_agent_runs_and_services(&mut steps);
+        // The staged system update, finished on its own clock: the desktop restarts onto it once
+        // the person is away, which ends this process and comes back on the new interface.
+        self.follow_update();
+        // What the services published this pass is what every surface of the machine shows.
+        self.shared.follow_status();
+        steps.step("status");
+        // A control pressed on the player's live row goes to the player.
+        crate::live_list::press_player(&self.shared.live, &mut self.shared.services.borrow_mut());
+        // A due event the apps published is announced once, on the pass it arrived in.
+        self.shared.activities.announce(&*self.shared.telling());
+        self.follow_readout();
+        self.shared.show_answered_readouts();
+        steps.step("readouts");
+        // The daemon is reached again after a restart: the shell says so while it asks, over the
+        // desktop it keeps showing.
+        #[cfg(unix)]
+        self.shared.follow_daemon_link();
+        steps.step("daemon link");
+        // The surface apps are answered after the services took in what their devices did, so a
+        // panel is sent the reading of this pass.
+        self.surfaces.poll();
+        self.surfaces.serve(&mut self.shared.published);
+        self.surfaces.place(&self.compositor);
+        steps.step("surface apps");
+        // The windows shared with the workspaces: what the person asked,
+        // what the live session brought, and the frames of the ones on screen.
+        self.follow_window_shares();
+        steps.step("window shares");
+        self.follow_text_inputs();
+        steps.step("text inputs");
+        self.follow_notifications();
+        self.shared.open_notifications();
+        steps.step("notifications");
+        // What Super alone asked for: the search of a tap, and the keys a hold shows or takes
+        // away, before the pass that runs the chord ending them.
+        self.shared.follow_super_tap(self.compositor.locked());
+        self.settle()?;
+        steps.step("settle");
+        self.follow_switcher();
+        steps.step("switcher");
+        self.follow_shell()?;
+        steps.step("shell");
+        self.follow_part_views()?;
+        steps.step("part views");
+        // The toolkit's clock, which a capture pins the frame's instant on.
+        let now = ui::time::now();
+        self.windows.step(&mut self.compositor, now);
+        steps.step("windows");
+        // The session this pass laid out is published before it is drawn: whoever reads the session's
+        // state reads the session the frame about to be presented shows, not the one before it.
+        self.control.publish(&session(
+            &self.shared,
+            &self.compositor,
+            self.shell.as_ref(),
+        ));
+        steps.step("publish");
+        self.compositor.mark_pump_step(steps);
+        self.compositor.mark_pump(pass.elapsed());
+        Ok(())
+    }
+
     fn pass(&mut self, timeout: Option<Duration>) -> Result<(), Error> {
         self.compositor.begin_tick();
         let timeout = self.wait(timeout);
@@ -226,71 +333,7 @@ impl Session {
             .shell_seat
             .set(!self.compositor.locked() && !self.compositor.keyboard_client());
         self.follow_logout_request();
-        // What the session itself does before the frame: the session, the apps and the overlays this
-        // pass lays out.
-        let pass = Instant::now();
-        // The person's language, before this pass resolves any of its words.
-        self.follow_language();
-        // The dates, clocks and weeks they write, as their region now says them.
-        self.follow_formats();
-        // What the person is in the middle of, as the session may not move under it (shell.md §1).
-        let tilo_compositor::Underway { gesture, typing } = self.compositor.underway();
-        let underway = tilo_session_core::layout::Busy { gesture, typing };
-        self.shared.underway.set(underway);
-        self.shared.typed_at.set(self.compositor.typed_at());
-        // What each window shows, as its app holds the record: the note this pass's session, layout
-        // and layout are read from.
-        self.read_window_notes();
-        self.shared.follow_layout(underway);
-        self.follow_controllers()?;
-        self.follow_displays()?;
-        self.follow_overlays();
-        self.follow_setup();
-        self.serve_agent_runs_and_services();
-        // The staged system update, finished on its own clock: the desktop restarts onto it once
-        // the person is away, which ends this process and comes back on the new interface.
-        self.follow_update();
-        // What the services published this pass is what every surface of the machine shows.
-        self.shared.follow_status();
-        // A control pressed on the player's live row goes to the player.
-        crate::live_list::press_player(&self.shared.live, &mut self.shared.services.borrow_mut());
-        // A due event the apps published is announced once, on the pass it arrived in.
-        self.shared.activities.announce(&*self.shared.telling());
-        self.follow_readout();
-        self.shared.show_answered_readouts();
-        // The daemon is reached again after a restart: the shell says so while it asks, over the
-        // desktop it keeps showing.
-        #[cfg(unix)]
-        self.shared.follow_daemon_link();
-        // The surface apps are answered after the services took in what their devices did, so a
-        // panel is sent the reading of this pass.
-        self.surfaces.poll();
-        self.surfaces.serve(&mut self.shared.published);
-        self.surfaces.place(&self.compositor);
-        // The windows shared with the workspaces: what the person asked,
-        // what the live session brought, and the frames of the ones on screen.
-        self.follow_window_shares();
-        self.follow_text_inputs();
-        self.follow_notifications();
-        self.shared.open_notifications();
-        // What Super alone asked for: the search of a tap, and the keys a hold shows or takes
-        // away, before the pass that runs the chord ending them.
-        self.shared.follow_super_tap(self.compositor.locked());
-        self.settle()?;
-        self.follow_switcher();
-        self.follow_shell()?;
-        self.follow_part_views()?;
-        // The toolkit's clock, which a capture pins the frame's instant on.
-        let now = ui::time::now();
-        self.windows.step(&mut self.compositor, now);
-        // The session this pass laid out is published before it is drawn: whoever reads the session's
-        // state reads the session the frame about to be presented shows, not the one before it.
-        self.control.publish(&session(
-            &self.shared,
-            &self.compositor,
-            self.shell.as_ref(),
-        ));
-        self.compositor.mark_pump(pass.elapsed());
+        self.pump()?;
         // The session's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
         self.compositor.set_switch_holding(self.windows.animating());

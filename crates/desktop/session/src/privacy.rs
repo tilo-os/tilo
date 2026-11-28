@@ -239,6 +239,16 @@ impl Service for Privacy {
         if now.duration_since(asked) > KEEP_WARM {
             return false;
         }
+        // A reading younger than the refresh stands: asking the machine takes the session's turn
+        // for as long as `pw-dump` runs, and the loop polls on every pass, a key's included.
+        if self
+            .last
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|(at, _)| now.duration_since(*at) < REFRESH)
+        {
+            return false;
+        }
         let reading = self.read_now();
         let mut last = self.last.lock_recover();
         let changed = last.as_ref().is_none_or(|(_, was)| &reading != was);

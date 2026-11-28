@@ -141,8 +141,15 @@ def loop_turns(frames_csv: Path, keys: int) -> dict:
         for reason in (turn.get("paint_reasons") or "").split("+"):
             if reason:
                 reasons[reason] = reasons.get(reason, 0) + 1
+    # The step that took longest of each painted turn's pump phase, and how long it took.
+    slowest: dict[str, list[int]] = {}
+    for turn in painted:
+        if turn.get("pump_step"):
+            slowest.setdefault(turn["pump_step"], []).append(number(turn, "pump_step_us"))
     return {
         "turns": len(turns), "painted": len(painted),
+        "slowest_pump_step": {step: distribution(took) for step, took in
+                              sorted(slowest.items(), key=lambda item: -len(item[1]))},
         "painted_turn_ms": {phase: distribution([number(turn, phase) for turn in painted])
                             for phase in LOOP_PHASES if painted},
         "per_key_ms": {phase: round(sum(number(turn, phase) for turn in turns) / 1000
@@ -398,7 +405,10 @@ def measure(args: argparse.Namespace) -> dict:
                       for phase, spread in loop["painted_turn_ms"].items())
                   + "; per key ms: " + ", ".join(
                       f"{phase[:-3]} {ms:.1f}" for phase, ms in loop["per_key_ms"].items())
-                  + f"; painted for: {loop['paint_reasons']}", flush=True)
+                  + f"; painted for: {loop['paint_reasons']}; slowest pump step: "
+                  + ", ".join(f"{step} in {spread['n']} turns, p50 {spread['p50_ms']:.1f} ms"
+                              for step, spread in loop["slowest_pump_step"].items()),
+                  flush=True)
         except OSError as error:
             print(f"[key-latency] the session's profile is not readable: {error}", flush=True)
     (out / f"{args.label}.json").write_text(json.dumps(result, indent=2))

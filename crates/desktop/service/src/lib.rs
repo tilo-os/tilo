@@ -438,6 +438,10 @@ pub fn reading<T: serde::Serialize>(state: &T) -> Value {
     })
 }
 
+/// How long one service may take in what landed on the session's turn before it is said: past it,
+/// the frame a person is waiting for waits on the service.
+const SLOW_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Every service the session started: one catalogue, reader and api.
 #[derive(Default)]
 pub struct Services {
@@ -905,7 +909,20 @@ impl Services {
             .zip(&mut self.stirred)
             .zip(listed.iter_mut())
         {
+            let began = std::time::Instant::now();
             let moved = service.poll();
+            // A service polls on the session's turn: one that holds it holds every frame, and
+            // a person typing feels each millisecond of it.
+            let took = began.elapsed();
+            if took > SLOW_POLL {
+                let published = service.resources();
+                let kind = published.first().map_or("", |spec| spec.kind.as_str());
+                tracing::warn!(
+                    service = kind,
+                    took_ms = took.as_millis(),
+                    "a service held the session's turn taking in what landed"
+                );
+            }
             if moved {
                 *kept = None;
             }

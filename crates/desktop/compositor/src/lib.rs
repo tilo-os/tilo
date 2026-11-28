@@ -576,6 +576,11 @@ impl Compositor {
         self.recorder.begin_tick(Instant::now());
     }
 
+    /// The slowest named step of the session's share of the turn ([`Self::mark_pump`]).
+    pub fn mark_pump_step(&mut self, step: tilo_frame_metrics::SlowestStep) {
+        self.recorder.mark_pump_step(step);
+    }
+
     /// The session's own share of the turn before the frame: the shell, the apps and the overlays it
     /// laid out.
     pub fn mark_pump(&mut self, took: Duration) {

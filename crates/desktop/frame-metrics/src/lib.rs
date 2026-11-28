@@ -108,6 +108,10 @@ pub struct FrameSample {
     /// technology reads of it, the shell and its views read back over it, and the session's
     /// observations of what it published.
     pub after_us: u32,
+    /// The longest named step of the pump phase and how long it took, so a tick whose
+    /// `pump_us` stalls names what it stalled in. Empty when the phase had no steps.
+    pub pump_step: &'static str,
+    pub pump_step_us: u32,
 }
 
 /// [`FrameSample::paint_reasons`] bits: why the compositor decided a tick had
@@ -284,7 +288,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -318,6 +322,8 @@ impl FrameSample {
             self.paint_animations,
             self.surfaces_us,
             self.after_us,
+            self.pump_step,
+            self.pump_step_us,
         )
     }
 }
@@ -326,7 +332,8 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients,testctl_cpu_us,paint_animations,surfaces_us,after_us";
+paint_reasons,paint_clients,testctl_cpu_us,paint_animations,surfaces_us,after_us,pump_step,\
+pump_step_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -811,6 +818,11 @@ impl FrameRecorder {
         let (name, took) = step.slowest();
         self.cur.input_step = name;
         self.cur.input_step_us = us(took);
+    }
+    pub fn mark_pump_step(&mut self, step: SlowestStep) {
+        let (name, took) = step.slowest();
+        self.cur.pump_step = name;
+        self.cur.pump_step_us = us(took);
     }
     pub fn mark_pump(&mut self, d: Duration) {
         self.cur.pump_us = us(d);
@@ -1628,6 +1640,8 @@ mod tests {
                 paint_animations: "notification+content/DesktopSurface/TileHost",
                 surfaces_us: 18,
                 after_us: 19,
+                pump_step: "shell",
+                pump_step_us: 20,
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");
