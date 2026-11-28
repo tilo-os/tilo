@@ -18,13 +18,12 @@
 use crate::daemon::Sockets;
 
 use app_catalogue::apps::InstalledApp;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tilo_app_host::{
@@ -103,6 +102,10 @@ struct Runs {
     joined: Option<capture::Joined>,
     /// The tab the shell holds for the launch's window: the app's window takes it
     /// (`TILO_CONTINUITY_INSTANCE`), as the session's own launch of it does.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only a Linux seat's shell starts a window here")
+    )]
     window: Option<u64>,
 }
 
@@ -2316,6 +2319,7 @@ impl Launched {
 
     /// Forget the record of `pid`, once the process started at `started` has ended: a record a
     /// launch made since for a process that took the pid is another launch's, and stays.
+    #[cfg(target_os = "linux")]
     pub(crate) fn forget_at(&self, pid: u32, started: u64) {
         let mut launches = self.0.lock_recover();
         if launches

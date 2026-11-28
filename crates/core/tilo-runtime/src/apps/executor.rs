@@ -423,6 +423,10 @@ impl super::Apps {
 
     /// No seat orders a package here: only a Linux daemon runs as the device's own account.
     #[cfg(not(target_os = "linux"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "the same call keeps its receiver on every platform"
+    )]
     fn package_command(
         &self,
         ask: &LaunchAsk,

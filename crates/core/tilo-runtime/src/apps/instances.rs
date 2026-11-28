@@ -717,6 +717,7 @@ impl Instances {
     }
 
     /// [`Self::content`] for a capture's instance, refused where the device serves none.
+    #[cfg(target_os = "linux")]
     pub(crate) fn capture_content(&self, app: &str, workspace: &str) -> Result<Descriptor, String> {
         self.content(app, workspace)
             .ok_or_else(|| format!("{app} has no media here"))
