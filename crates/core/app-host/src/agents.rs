@@ -1510,7 +1510,8 @@ impl ServerAgents {
                 TurnUsage::default(),
             ),
             (Err(why), _) => (Outcome::Failed(why), 0, TurnUsage::default()),
-            (Ok(model), _) => {
+            (Ok((model, planning)), _) => {
+                say_planning(&reply, workspace, &planning).await;
                 // The day's limit and the task's own budget both bound the turn: the smaller.
                 let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
                 let task_left = task.as_ref().and_then(|task| task.task.work.money_left());
@@ -1627,7 +1628,7 @@ impl ServerAgents {
         turn: &Turn,
         day: &str,
         stop: Arc<AtomicBool>,
-    ) -> Result<Model, String> {
+    ) -> Result<(Model, String), String> {
         let theirs = {
             // Every call is counted on the agent's day as it is answered, so turns of
             // one agent going at once cannot each spend the day's whole limit.
@@ -1658,22 +1659,27 @@ impl ServerAgents {
             .map_err(|error| error.to_string())?
             .map(|linked| {
                 let context_chars = linked.model.context_chars();
-                (theirs, linked.model.id, context_chars)
+                let planning = planning_line(language.as_deref(), &linked);
+                (theirs, linked.model.id, context_chars, planning)
             });
         match linked {
-            Ok((theirs, name, context_chars)) => Ok(Arc::new(move || {
-                Some(Box::new(WorkspaceTurns {
-                    model: theirs.clone(),
-                    name: name.clone(),
-                    stop: Arc::clone(&stop),
-                    answered: None,
-                    context_chars,
-                    language: language.clone(),
-                }) as Box<dyn PlanTurns>)
-            })),
+            Ok((theirs, name, context_chars, planning)) => Ok((
+                Arc::new(move || {
+                    Some(Box::new(WorkspaceTurns {
+                        model: theirs.clone(),
+                        name: name.clone(),
+                        stop: Arc::clone(&stop),
+                        answered: None,
+                        context_chars,
+                        language: language.clone(),
+                    }) as Box<dyn PlanTurns>)
+                }),
+                planning,
+            )),
             Err(refused @ ModelRefusal::NoModelLinked { .. }) => self
                 .model
                 .clone()
+                .map(|model| (model, String::new()))
                 .ok_or_else(|| refused.words(language.as_deref())),
             Err(refused) => Err(refused.words(language.as_deref())),
         }
@@ -1684,6 +1690,61 @@ impl ServerAgents {
         if let Err(error) = count_spend(&self.workspaces, workspace, agent, day, cost).await {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's spend is not counted");
         }
+    }
+}
+
+/// Say a turn's first line in its reply before the model is asked: the person reads which model
+/// plans their run, and the model's own words stand in its place once it begins to write. A
+/// reply that cannot take it is not the turn's failure.
+async fn say_planning(reply: &Reply, workspace: &str, planning: &str) {
+    if planning.is_empty() {
+        return;
+    }
+    if let Err(error) = reply.say(planning).await {
+        tracing::warn!(%workspace, %error, "a turn's first line was not said");
+    }
+}
+
+/// The first line of a turn: the model that will plan it and the provider it answers from, as
+/// the person named them, in their language.
+fn planning_line(
+    language: Option<&str>,
+    linked: &tilo_person_services::model_answers::Linked,
+) -> String {
+    let mut args = tilo_history::FluentArgs::new();
+    args.set("model", linked.model.label.as_str());
+    args.set("provider", linked.provider.as_str());
+    tilo_workspace_service::i18n::message(language, "agent-plan-model", &args)
+}
+
+#[cfg(test)]
+mod planning_line_tests {
+    use super::planning_line;
+    use tilo_person_services::model_answers::{Linked, ModelDescriptor, ProviderProtocol};
+
+    fn linked() -> Linked {
+        let mut linked = Linked {
+            provider: "Anthropic".to_owned(),
+            provider_id: "anthropic".to_owned(),
+            protocol: ProviderProtocol::default(),
+            model: ModelDescriptor::default(),
+        };
+        linked.model.label = "Claude".to_owned();
+        linked
+    }
+
+    /// What plans a turn is said before it does, naming the model and the provider as the person
+    /// named them, in the language their agent speaks.
+    #[test]
+    fn a_turn_says_which_model_plans_it() {
+        assert_eq!(
+            planning_line(None, &linked()),
+            "Planning with Claude from Anthropic."
+        );
+        assert_eq!(
+            planning_line(Some("de-DE"), &linked()),
+            "Claude von Anthropic plant diesen Lauf."
+        );
     }
 }
 

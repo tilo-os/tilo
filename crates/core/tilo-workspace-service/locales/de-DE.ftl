@@ -113,8 +113,9 @@ tilo-device-answers = Deine Antworten zu deinen Geräten
 tilo-device-answers-answer = Behalten, was eine App auf einem Gerät nutzen darf
 tilo-device-answers-take-back = Zurücknehmen, was eine App auf einem Gerät nutzen darf
 
-# What a turn says it is doing, as the person reads it on its reply: one line per step, what is
-# being done and what app it is about.
+# What a turn says it is doing, as the person reads it on its reply: the model that plans it
+# before anything is done, then one line per step, what is being done and what app it is about.
+agent-plan-model = { $model } von { $provider } plant diesen Lauf.
 agent-step-searching = Sucht im Netz nach „{ $what }“…
 agent-step-reading = Liest { $what }…
 agent-step-editing = Ändert { $what }…

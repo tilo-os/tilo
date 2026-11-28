@@ -113,8 +113,9 @@ tilo-device-answers = Your answers about your devices
 tilo-device-answers-answer = Keep what an app may use on a device
 tilo-device-answers-take-back = Take back what an app may use on a device
 
-# What a turn says it is doing, as the person reads it on its reply: one line per step, what is
-# being done and what app it is about.
+# What a turn says it is doing, as the person reads it on its reply: the model that plans it
+# before anything is done, then one line per step, what is being done and what app it is about.
+agent-plan-model = Planning with { $model } from { $provider }.
 agent-step-searching = Searching the web for “{ $what }”…
 agent-step-reading = Reading { $what }…
 agent-step-editing = Editing { $what }…
