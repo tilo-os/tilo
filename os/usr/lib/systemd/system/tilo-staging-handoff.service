@@ -17,9 +17,14 @@ RemainAfterExit=yes
 # writes to a disk or a firmware variable. A malformed handoff is reported to
 # the UI through handoff.error and never blocks the installer.
 ExecStart=/usr/libexec/tilo-staging-handoff detect --out /run/tilo-installer/handoff.json --error /run/tilo-installer/handoff.error
-ExecStartPost=-/usr/sbin/restorecon -RF /run/tilo-installer
+# Labels the copy for the installer UI (the greeter's xdm_t reads only the
+# installer's own type, never var_run_t): without it the UI cannot read the
+# staged plan and asks a person for every choice the plan already made.
+# restorecon must enter its SELinux domain, which NoNewPrivileges=yes forbids,
+# so a failed relabel fails this unit instead of passing unseen.
+ExecStartPost=/usr/bin/bash -ec 'if /usr/sbin/selinuxenabled; then /usr/sbin/restorecon -RF /run/tilo-installer; fi'
 UMask=0022
-NoNewPrivileges=yes
+NoNewPrivileges=no
 PrivateTmp=yes
 PrivateNetwork=yes
 PrivateIPC=yes

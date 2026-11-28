@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "os/usr/share/tilo/selinux/tilo-installer.cil"
 SETUP = ROOT / "os/usr/lib/systemd/system/tilo-installer-setup.service"
+DETECT = ROOT / "os/usr/lib/systemd/system/tilo-staging-handoff.service"
 BACKEND = ROOT / "os/usr/libexec/tilo-install"
 
 
@@ -105,6 +106,19 @@ class BridgeContract(unittest.TestCase):
                 self.assertNotIn("ExecStart=-" + command[len("ExecStart="):], setup)
             self.assertLess(setup.index(policy), setup.index(bridge))
             self.assertLess(setup.index(bridge), setup.index(label))
+        with self.subTest(phase="staged_install_is_labelled_for_the_greeter"):
+            # The detect unit writes its copy after the setup unit's relabel,
+            # so it labels that copy itself. Under NoNewPrivileges=yes
+            # restorecon cannot enter its domain; with a `-` prefix that went
+            # unseen and the UI got EACCES on a var_run_t file.
+            detect = DETECT.read_text().splitlines()
+            label = "ExecStartPost=/usr/bin/bash -ec 'if /usr/sbin/selinuxenabled; then /usr/sbin/restorecon -RF /run/tilo-installer; fi'"
+            self.assertIn(label, detect)
+            self.assertEqual(
+                [line for line in detect if line.startswith("NoNewPrivileges=")],
+                ["NoNewPrivileges=no"],
+            )
+            self.assertFalse([line for line in detect if line.startswith("ExecStartPost=-")])
         with self.subTest(phase="greeter_cannot_create_or_relabel_secret_files"):
             backend = BACKEND.read_text()
             prepare = backend.index('tilo-bridge-prepare-$$')
