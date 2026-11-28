@@ -584,8 +584,7 @@ fn a_created_workspace_restores_with_its_governance_and_publication() {
 fn kept_peer_state(path: &std::path::Path) -> (document_format::StoredResource, Vec<u8>) {
     let bytes = std::fs::read(path).unwrap();
     let stored: document_format::StoredResource = postcard::from_bytes(&bytes).unwrap();
-    let peer = peer_parts::PeerParts::open(path)
-        .unwrap()
+    let peer = peer_parts::PeerParts::reading(path)
         .load(&stored.peer)
         .unwrap();
     (stored, peer)

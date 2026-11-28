@@ -148,6 +148,8 @@ russh = { version = "0.65.1", default-features = false, features = ["ring"] }
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 # A host's workspaces keep their files on a disk.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# Whole writes of a workspace file and its openings take turns on the file counting the openings.
+tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # The broker's local socket: a Unix socket, or a named pipe on Windows.
 tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 # The journal of the calls a host admits, whose evidence it signs as this device.

@@ -24,6 +24,11 @@
 //! file, takes the changes of every segment after the last one marked with that file's hash,
 //! checks each stored part against its hash, and restores the peer from the parts'
 //! concatenation: the same bytes [`StatePeer::durable`] makes, validated the same way.
+//!
+//! Every opening counts itself in `<workspace>.opened`, under that file's lock, and a whole
+//! write replaces the file and takes the log's segments under the same lock, only while the
+//! count is the one its own opening made: a copy opened earlier, whose whole write is still
+//! on its way, never replaces what a later opening reads and writes.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write as _;
@@ -105,6 +110,9 @@ pub(super) struct PartFiles {
     /// Held while the workspace file is written, with the order of the newest written: an older
     /// one, written late, would name parts its successor no longer holds.
     writing: Arc<Mutex<u64>>,
+    /// The file counting the parts that opened the workspace (`<workspace>.opened`), and the
+    /// count this part's opening made: none for a reader, which writes nothing.
+    opened: Option<(PathBuf, u64)>,
 }
 
 struct OnDisk {
@@ -256,10 +264,41 @@ fn apply(list: Vec<PeerPart>, change: Vec<Step>) -> Result<Vec<PeerPart>, String
     Ok(after)
 }
 
-/// The segments in the log directory `dir`, and the hash each marked one names.
+/// The count of the parts that opened the workspace, in the file at `path`, and the file,
+/// locked against every other part's opening and whole write until it is dropped.
+fn opened_count(path: &Path) -> Result<(advisory_lock::FileLock, u64), String> {
+    use std::io::Read as _;
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    let mut file =
+        advisory_lock::FileLock::open(path, advisory_lock::LockMode::Exclusive).map_err(failed)?;
+    let mut count = [0u8; 8];
+    // A file not written yet counts none.
+    let read = file.read(&mut count).map_err(failed)?;
+    let count = if read == count.len() {
+        u64::from_le_bytes(count)
+    } else {
+        0
+    };
+    Ok((file, count))
+}
+
+/// Count this part's opening of the workspace whose count is in the file at `path`, once a
+/// whole write an earlier part started is done: from now on, that part's whole writes are
+/// refused ([`PartFiles::still_opened`]).
+fn opening(path: &Path) -> Result<(PathBuf, u64), String> {
+    use std::io::{Seek as _, Write as _};
+    let (mut file, count) = opened_count(path)?;
+    let count = count.wrapping_add(1);
+    file.seek(std::io::SeekFrom::Start(0))
+        .and_then(|_| file.write_all(&count.to_le_bytes()))
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    Ok((path.to_owned(), count))
+}
+
 /// The segments of a change log, and the hash each marked one names.
 type Segments = (BTreeSet<u64>, BTreeMap<u64, Vec<u8>>);
 
+/// The segments in the log directory `dir`, and the hash each marked one names.
 fn segments(dir: &Path) -> Result<Segments, String> {
     let (mut found, mut marked) = (BTreeSet::new(), BTreeMap::new());
     let entries = match std::fs::read_dir(dir) {
@@ -326,7 +365,9 @@ impl PeerParts {
         }
         let log = workspace_path.with_extension("changes");
         let (found, _) = segments(&log)?;
-        Ok(Self::over(dir, on_disk, log, found))
+        let mut parts = Self::over(dir, on_disk, log, found);
+        parts.files.opened = Some(opening(&workspace_path.with_extension("opened"))?);
+        Ok(parts)
     }
 
     /// The parts directory and change log of the workspace file at `workspace_path`, for a
@@ -363,6 +404,7 @@ impl PeerParts {
                 })),
                 syncing: Arc::new(Mutex::new(())),
                 writing: Arc::new(Mutex::new(0)),
+                opened: None,
             },
             staged: HashMap::new(),
             last: Vec::new(),
@@ -811,22 +853,14 @@ impl PartFiles {
             return Ok(false);
         }
         self.write_parts(&mut self.held(), &write.stored)?;
+        // Held until the segments and parts this write replaces are gone: a part that opens the
+        // workspace meanwhile waits for it, and one that opened it since has the file to itself.
+        let opened = self.still_opened()?;
         let (dir, held): (PathBuf, Vec<u64>) = {
             let log = self.log();
             let held = log.segments.range(..=write.holds).copied().collect();
             (log.dir.clone(), held)
         };
-        // A segment this process appended to that is gone was taken by a part that opened the
-        // workspace since, and wrote its file whole: this older copy must not replace it.
-        if let Some(gone) = held
-            .iter()
-            .find(|segment| !dir.join(segment.to_string()).exists())
-        {
-            return Err(format!(
-                "{}: segment {gone} of the change log was taken by another part",
-                dir.display()
-            ));
-        }
         let marker = dir.join(format!("{}.done", write.holds));
         if !held.is_empty() {
             tilo_files::native::atomic::write(&marker, blake3::hash(&write.bytes).as_bytes())
@@ -865,8 +899,27 @@ impl PartFiles {
         }
         self.collect(&mut parts, &named);
         drop(parts);
+        drop(opened);
         drop(written);
         Ok(true)
+    }
+
+    /// The opened count's file, locked, while no part opened the workspace since this one did:
+    /// a part that opened it later read the file and log this one left, and may have written the
+    /// file whole and taken the log's segments, which an older copy must not replace.
+    fn still_opened(&self) -> Result<advisory_lock::FileLock, String> {
+        let (path, count) = self
+            .opened
+            .as_ref()
+            .ok_or("a reader of the workspace writes nothing")?;
+        let (file, now) = opened_count(path)?;
+        if now != *count {
+            return Err(format!(
+                "{}: another part opened the workspace since this one did",
+                path.display()
+            ));
+        }
+        Ok(file)
     }
 
     /// Remove every part file `parts`, the workspace file as written, does not

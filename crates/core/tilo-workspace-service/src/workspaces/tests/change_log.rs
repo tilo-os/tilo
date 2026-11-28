@@ -148,6 +148,33 @@ fn a_part_ending_inside_a_whole_write_loses_nothing() {
     opened(&path, &["first", "second", "third", "fourth"]);
 }
 
+/// A whole write of a copy opened before the workspace was opened again is refused: the later
+/// opening read the file and log as they were, and the older copy's file would replace what
+/// it writes from then on.
+#[test]
+fn a_copy_opened_earlier_does_not_replace_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut workspace, key) = made(dir.path());
+    let path = workspace.path.clone();
+    write(&mut workspace, &key, "first", false);
+    let late = workspace.file_write().unwrap();
+
+    let mut reopened = opened(&path, &["first"]);
+    write(&mut reopened, &key, "second", false);
+    let file = std::fs::read(&path).unwrap();
+    assert!(
+        workspace.parts.files().write(&late).is_err(),
+        "the earlier copy's whole write is refused"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        file,
+        "the file is the later opening's"
+    );
+    drop((workspace, reopened));
+    opened(&path, &["first", "second"]);
+}
+
 /// A change cut short as the part ended was never answered: the start reads every change before
 /// it.
 #[test]
