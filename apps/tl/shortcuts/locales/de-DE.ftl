@@ -559,7 +559,7 @@ d-w4uftw6l = Werkbank
 
 d-rwdjyqtz = Entwürfe
 
-d-daxqqmym = Gespeichert
+d-daxqqmym = Gespeicherte Kurzbefehle
 
 d-fbadmr47 = Vorschlag
 
