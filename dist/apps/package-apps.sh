@@ -312,7 +312,7 @@ done < <(jq -r '.catalog[] | select(.kind == "native") | [.name,.package,.binary
 if (( tilolang_apps > 0 )); then
     # shellcheck source=/dev/null
     . "$repo_root/tools/apps/tilolang_packages.sh"
-    tilolang_version=$(tilolang_runtime_version "$repo_root")
+    tilolang_version=$(tilolang_runtime_version "$repo_root" "$runtime_id")
     tilolang_bin="$thin_app_dir/tilolang-process"
     [[ -f $tilolang_bin ]] || { printf 'missing tilolang runtime binary: %s\n' "$tilolang_bin" >&2; exit 1; }
     tilolang_bundle="$out/runtime/tilolang/$tilolang_version"

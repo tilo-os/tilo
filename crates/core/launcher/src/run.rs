@@ -86,6 +86,10 @@ pub enum LaunchError {
     },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    /// A tilolang runtime and the Tilo runtime whose libraries its binary links are not the pair
+    /// it was built as ([`runtime_bundle::link_refusal`]).
+    #[error("refusing to start `{package}`: {reason}")]
+    RuntimeLinkMismatch { package: String, reason: String },
     #[error(
         "`{package}` needs the runtime `{runtime}`, which is not installed (looked in \
          {searched}). Installing or updating the app brings it; reinstall it with \
@@ -684,6 +688,52 @@ pub fn resolve_runtime(
     })
 }
 
+/// Refuse `package`'s tilolang runtime `language` on the Tilo runtime `tilo` unless it was built
+/// against that build ([`runtime_bundle::link_refusal`]).
+fn linked_pair(package: &str, language: &str, tilo: &str) -> Result<(), LaunchError> {
+    match runtime_bundle::link_refusal(language, tilo) {
+        None => Ok(()),
+        Some(reason) => Err(LaunchError::RuntimeLinkMismatch {
+            package: package.to_owned(),
+            reason,
+        }),
+    }
+}
+
+/// The tilolang runtime `runtime` and the Tilo runtime `app_runtime` its binary runs on, found
+/// and verified where runtime bundles are installed, for a process of `what` (a host, a window):
+/// each bundle's root and version. Refused when either is missing, when they are one runtime, or
+/// when they are not the pair the tilolang runtime was built as.
+#[allow(clippy::type_complexity, reason = "the two bundles travel together")]
+fn find_linked_runtimes(
+    what: &str,
+    runtime: &str,
+    app_runtime: &str,
+    opts: &LaunchOptions,
+) -> Result<((PathBuf, String), (PathBuf, String)), LaunchError> {
+    linked_pair(what, runtime, app_runtime)?;
+    let (found, searched) = find_runtime_bundle(runtime, opts)?;
+    let Some(tilolang) = found else {
+        return Err(LaunchError::RuntimeBundleMissing {
+            runtime: runtime.to_owned(),
+            paths: searched,
+        });
+    };
+    let (found, app_searched) = find_runtime_bundle(app_runtime, opts)?;
+    let Some(tilo) = found else {
+        return Err(LaunchError::RuntimeBundleMissing {
+            runtime: app_runtime.to_owned(),
+            paths: app_searched,
+        });
+    };
+    if tilo.1 == tilolang.1 {
+        return Err(LaunchError::RuntimeReferenceMalformed(
+            app_runtime.to_owned(),
+        ));
+    }
+    Ok((tilolang, tilo))
+}
+
 /// Look `raw` (`<name>/<version>`) up where runtime bundles are installed and verify the first one
 /// found.
 #[allow(
@@ -818,6 +868,17 @@ fn resolve_required_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &LaunchOptions,
 ) -> Result<Vec<(PathBuf, String)>, LaunchError> {
+    // A tilolang runtime's binary links the Tilo runtime's libraries: it starts on the build it
+    // was linked against, never on another, where it would fail to load them.
+    if let Some(tilo) = manifest.runtime.as_deref() {
+        for language in manifest
+            .required_runtimes
+            .iter()
+            .filter(|raw| crate::manifest::is_tilolang(raw))
+        {
+            linked_pair(&manifest.package_id, language, tilo)?;
+        }
+    }
     manifest
         .required_runtimes
         .iter()
@@ -4863,5 +4924,30 @@ collab = "required@1"
         {
             assert_runtime_refusal_precedes_handoff(true);
         }
+    }
+}
+
+#[cfg(test)]
+mod linked_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn a_tilolang_runtime_starts_only_on_the_tilo_build_it_links() {
+        let tilo = "tilo-runtime/2026.07+native.8ac1f1e89129ad41f063dc02933bbb79";
+        let linked = runtime_bundle::linked_for("tilolang/0.1.0+tilolang.71e1bfd177f20945", tilo);
+        let other = "tilo-runtime/2026.07+native.d27279a4000000000000000000000000";
+        let opts = LaunchOptions::default();
+        let refused = find_linked_runtimes("tilolang-window", &linked, other, &opts)
+            .expect_err("another build's libraries are refused before anything is looked up");
+        assert!(
+            matches!(&refused, LaunchError::RuntimeLinkMismatch { reason, .. } if reason.contains("another Tilo runtime build")),
+            "{refused}"
+        );
+        let matched = find_linked_runtimes("tilolang-window", &linked, tilo, &opts)
+            .expect_err("no bundle is installed here");
+        assert!(
+            matches!(matched, LaunchError::RuntimeBundleMissing { .. }),
+            "the pair it was built as is looked up: {matched}"
+        );
     }
 }

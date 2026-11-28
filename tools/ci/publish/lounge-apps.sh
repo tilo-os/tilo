@@ -90,7 +90,7 @@ mv "$out/work/runtime/tilo-runtime/$runtime" "$out/runtimes/$runtime"
 # key and running on the Tilo runtime above.
 # shellcheck source=/dev/null
 . tools/apps/tilolang_packages.sh
-tilolang=$(tilolang_runtime_version "$repo_root")
+tilolang=$(tilolang_runtime_version "$repo_root" "tilo-runtime/$runtime")
 tilolang_bake_runtime "$built/tilo-runtime-bundle" "$thin/tilolang-process" "$built/tilolang-std" \
   "$repo_root" "$identity" "$out/work/tilolang" "$tilolang"
 mv "$out/work/tilolang" "$out/runtimes/$tilolang"

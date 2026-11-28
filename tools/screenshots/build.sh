@@ -97,7 +97,7 @@ runtime_id=tilo-runtime/$runtime_version
 # entrypoint from, baked from the thin binary against the runtime above.
 # shellcheck source=/dev/null
 . "$repo_root/tools/apps/tilolang_packages.sh"
-tilolang_version=$(tilolang_runtime_version "$repo_root")
+tilolang_version=$(tilolang_runtime_version "$repo_root" "$runtime_id")
 tilolang_bake_runtime "$out/bin/tilo-runtime-bundle" "$target/thin-app/tilolang-process" \
     "$out/bin/tilolang-std" "$repo_root" "$identity" "$runtimes/$tilolang_version" \
     "$tilolang_version"

@@ -9,7 +9,7 @@
 //! session hands it with its release, over which it is sent its Wayland connection and bound.
 
 use super::{
-    LaunchError, LaunchOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob,
+    LaunchError, LaunchOptions, compile_app_baseline, find_linked_runtimes, stage_seccomp_blob,
 };
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::path::Path;
@@ -154,25 +154,8 @@ pub fn launch_tilolang_window(
     link: OwnedFd,
     opts: &LaunchOptions,
 ) -> Result<std::process::ExitStatus, LaunchError> {
-    let (found, searched) = find_runtime_bundle(&launch.runtime, opts)?;
-    let Some((runtime_root, version)) = found else {
-        return Err(LaunchError::RuntimeBundleMissing {
-            runtime: launch.runtime.clone(),
-            paths: searched,
-        });
-    };
-    let (found, app_searched) = find_runtime_bundle(&launch.app_runtime, opts)?;
-    let Some((app_root, app_version)) = found else {
-        return Err(LaunchError::RuntimeBundleMissing {
-            runtime: launch.app_runtime.clone(),
-            paths: app_searched,
-        });
-    };
-    if app_version == version {
-        return Err(LaunchError::RuntimeReferenceMalformed(
-            launch.app_runtime.clone(),
-        ));
-    }
+    let ((runtime_root, version), (app_root, app_version)) =
+        find_linked_runtimes(SUBCOMMAND, &launch.runtime, &launch.app_runtime, opts)?;
     let bin = crate::manifest::TILOLANG_BIN;
     if !runtime_root.join(bin).is_file() {
         return Err(LaunchError::Io(std::io::Error::new(

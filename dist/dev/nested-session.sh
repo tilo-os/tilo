@@ -432,7 +432,7 @@ tilolang_bin=$thin/tilolang-process
 if [[ -f $tilolang_bin ]]; then
     # shellcheck source=/dev/null
     . "$repo_root/tools/apps/tilolang_packages.sh"
-    tilolang_version=$(tilolang_runtime_version "$repo_root") \
+    tilolang_version=$(tilolang_runtime_version "$repo_root" "tilo-runtime/$runtime_version") \
         || die "cannot read the tilolang runtime version"
     tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \

@@ -76,6 +76,70 @@ pub fn split_abi_version(version: &str) -> Option<(&str, &str)> {
     version.split_once(NATIVE_ABI_MARKER)
 }
 
+/// How many hex digits of a Tilo runtime build's ABI digest a language runtime linked against it
+/// names ([`linked_for`]): enough to tell builds apart, short enough that the version stays one
+/// path component of the length a runtime version may be.
+pub const LINKED_BUILD_HEX_LEN: usize = 16;
+
+/// The language runtime `language` (`<name>/<release>+<flavor>.<key>`, the tilolang runtime
+/// `tilolang/0.1.0+tilolang.<std digest>`) as built against the Tilo runtime `tilo`. Its binary is
+/// thin: it links the Tilo runtime's Rust dylibs, which have no stable ABI, so it runs on that
+/// exact build alone, and its version names the build (`<…>.<first 16 of tilo's ABI digest>`).
+/// Built against no exact build (`tilo` names a release), it is `language` as it is.
+#[must_use]
+pub fn linked_for(language: &str, tilo: &str) -> String {
+    match tilo
+        .split_once('/')
+        .and_then(|(_, version)| split_abi_version(version))
+    {
+        Some((_, digest)) => match digest.get(..LINKED_BUILD_HEX_LEN) {
+            Some(build) => format!("{language}.{build}"),
+            None => language.to_owned(),
+        },
+        None => language.to_owned(),
+    }
+}
+
+/// The Tilo runtime build the language runtime `runtime` was linked against, by the start of its
+/// ABI digest ([`linked_for`]); `None` for one that names no build.
+#[must_use]
+pub fn linked_build(runtime: &str) -> Option<&str> {
+    let (_, flavor) = runtime.split_once('/')?.1.split_once('+')?;
+    let mut parts = flavor.split('.');
+    let (_name, _key, build) = (parts.next()?, parts.next()?, parts.next()?);
+    (parts.next().is_none()
+        && build.len() == LINKED_BUILD_HEX_LEN
+        && build
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some(build)
+}
+
+/// Why the language runtime `language`, whose binary links the Tilo runtime's libraries, cannot
+/// run on the Tilo runtime `tilo`: it was linked against another build, or names none while `tilo`
+/// is an exact build. Its binary would fail to load the libraries, or load ones whose symbols are
+/// not the ones it was linked against. `None` when they pair, or when `tilo` names a release only
+/// (a development runtime).
+#[must_use]
+pub fn link_refusal(language: &str, tilo: &str) -> Option<String> {
+    let (_, digest) = tilo
+        .split_once('/')
+        .and_then(|(_, version)| split_abi_version(version))?;
+    match linked_build(language) {
+        Some(build) if digest.starts_with(build) => None,
+        Some(build) => Some(format!(
+            "the runtime {language} was built against another Tilo runtime build ({build}…) \
+             than {tilo}, whose libraries it links: update the app, which brings the pair it was \
+             built with"
+        )),
+        None => Some(format!(
+            "the runtime {language} names no Tilo runtime build it was linked against, so it \
+             cannot be known to load {tilo}'s libraries: update the app, which brings the pair it \
+             was built with"
+        )),
+    }
+}
+
 /// Bundle metadata written into `bundle.toml`; fields are stable so `verify` roundtrips across tool versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
@@ -512,6 +576,16 @@ pub fn carried(wanted: &str) -> Option<&'static str> {
 /// that release, since its exact build is what the host's manifest pins.
 fn satisfies(build: &str, wanted: &str) -> bool {
     if build == wanted {
+        return true;
+    }
+    // A language runtime a host carries runs in or beside the host that carries it, against that
+    // host's own libraries: it is the build an app linked against one Tilo runtime build names
+    // ([`linked_for`]), whichever build that was.
+    if linked_build(wanted)
+        .and_then(|linked| wanted.strip_suffix(linked))
+        .and_then(|language| language.strip_suffix('.'))
+        == Some(build)
+    {
         return true;
     }
     let Some((wanted_name, wanted_version)) = wanted.split_once('/') else {
@@ -3026,5 +3100,58 @@ mod tests {
             );
         }
         assert_eq!(carry_in_host([]), Err(CarriedError::AlreadyDeclared));
+    }
+
+    // A thin language runtime names the Tilo runtime build it links, pairs with that build alone,
+    // and a host that carries the language runtime itself runs it whichever build it names.
+    #[test]
+    fn a_linked_language_runtime_names_and_pairs_with_its_tilo_build() {
+        let digest = "8ac1f1e89129ad41f063dc02933bbb79";
+        let tilo = format!("tilo-runtime/2026.07+native.{digest}");
+        let language = "tilolang/0.1.0+tilolang.71e1bfd177f20945";
+        let linked = linked_for(language, &tilo);
+        assert_eq!(linked, format!("{language}.8ac1f1e89129ad41"));
+        assert!(
+            linked.split_once('/').unwrap().1.len() <= 64,
+            "the version stays a runtime version's length"
+        );
+        assert_eq!(linked_build(&linked), Some("8ac1f1e89129ad41"));
+        assert_eq!(
+            linked_build(language),
+            None,
+            "a language runtime keyed by its library alone"
+        );
+        assert_eq!(
+            linked_for(language, "tilo-runtime/2026.07"),
+            language,
+            "built against a release, it names no build"
+        );
+
+        assert_eq!(link_refusal(&linked, &tilo), None);
+        let other = "tilo-runtime/2026.07+native.d27279a4000000000000000000000000";
+        assert!(
+            link_refusal(&linked, other)
+                .is_some_and(|why| why.contains("another Tilo runtime build")),
+            "a build linked against another is refused by name"
+        );
+        assert!(
+            link_refusal(language, &tilo)
+                .is_some_and(|why| why.contains("names no Tilo runtime build")),
+            "one that names no build cannot be known to load an exact build's libraries"
+        );
+        assert_eq!(
+            link_refusal(language, "tilo-runtime/2026.07"),
+            None,
+            "a development runtime names a release"
+        );
+
+        assert!(
+            satisfies(language, &linked),
+            "a carried build runs where it is carried"
+        );
+        assert!(!satisfies(
+            "tilolang/0.1.0+tilolang.ffffffffffffffff",
+            &linked
+        ));
     }
 }

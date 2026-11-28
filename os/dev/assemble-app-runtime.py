@@ -358,7 +358,7 @@ def source_membership(destination, digest, apps):
     return destination
 
 
-def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
+def bake_tilolang_runtime(repo, target, profile, identity, runtime_root, tilo_runtime=''):
     """Bake the tilolang runtime bundle beside the Tilo runtime, as the image bakes it.
 
     The bundle is its one binary and the standard library its apps run beside
@@ -367,12 +367,14 @@ def bake_tilolang_runtime(repo, target, profile, identity, runtime_root):
     come from. It is signed
     by the identity that signed the Tilo runtime, so one publisher pin trusts both,
     and it lands at `/<version>`, where the launcher resolves the
-    `tilolang/<version>` every package names. Returns the version baked."""
+    `tilolang/<version>` every package names. Baked against the exact Tilo
+    runtime `tilo_runtime` (`tilo-runtime/<version>`), its version names that
+    build, the one its binary links. Returns the version baked."""
     packer = shlex.quote(str(repo / 'tools/apps/tilolang_packages.sh'))
     script = '\n'.join([
         'set -euo pipefail',
         f'. {packer}',
-        f'version="$(tilolang_runtime_version {shlex.quote(str(repo))})"',
+        f'version="$(tilolang_runtime_version {shlex.quote(str(repo))} {shlex.quote(tilo_runtime)})"',
         'tilolang_bake_runtime '
         f'{shlex.quote(str(target / "release/tilo-runtime-bundle"))} '
         f'{shlex.quote(str(target / profile_directory(profile) / "tilolang-process"))} '
@@ -431,7 +433,8 @@ def assemble_inside(args):
         # whose runtime is absent, so it is in place before packing runs.
         if tilolang:
             tilolang_version = bake_tilolang_runtime(
-                repo, target, args.profile, identity, Path('/usr/lib/tilo-runtime'))
+                repo, target, args.profile, identity, Path('/usr/lib/tilo-runtime'),
+                f'tilo-runtime/{version_file.read_text().strip()}')
             run([str(bundle), 'verify', str(Path('/usr/lib/tilo-runtime') / tilolang_version),
                  '--require-publisher', publisher, '--require-signature',
                  '--require-arch', platform.machine()])

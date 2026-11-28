@@ -524,8 +524,13 @@ fn build(args: &[String]) -> Result<(), String> {
         out: out.unwrap_or_else(|| common.dir.join("target")),
         dir: common.dir,
         search: common.search,
+        // The tilolang runtime built against the Tilo runtime the apps name: its binary links
+        // that build's libraries, so a package names the pair it runs on.
+        tilolang_runtime: runtime_bundle::linked_for(
+            &package::default_tilolang_runtime(),
+            &tilo_runtime,
+        ),
         tilo_runtime,
-        tilolang_runtime: package::default_tilolang_runtime(),
         version,
         locked,
     };

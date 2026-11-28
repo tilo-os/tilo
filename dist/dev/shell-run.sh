@@ -318,7 +318,7 @@ say "the apps run on $app_runtime"
 # The two steps below are the ones the release's and the image's packing take
 # (tools/apps/tilolang_packages.sh), so what a session installs is built the same way.
 . "$repo_root/tools/apps/tilolang_packages.sh"
-tilolang_version=$(tilolang_runtime_version "$repo_root") \
+tilolang_version=$(tilolang_runtime_version "$repo_root" "$app_runtime") \
     || die "cannot read the tilolang runtime version"
 say "baking the tilolang runtime bundle $tilolang_version"
 tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" \

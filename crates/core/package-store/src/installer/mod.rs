@@ -250,6 +250,8 @@ pub enum Error {
     },
     #[error("manifest declares runtime `{0}`, which is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
+    #[error("refusing to install {package}: {reason}")]
+    RuntimesNotLinked { package: String, reason: String },
     #[error(
         "{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)"
     )]
@@ -783,6 +785,29 @@ fn fits_os(checked: &Checked) -> Result<(), Error> {
     })
 }
 
+/// Refuse a package whose tilolang runtime was not built against the Tilo runtime it names: on
+/// Linux that runtime's binary links the Tilo runtime's libraries, which have no stable ABI, so
+/// the pair would fail as the app starts. Elsewhere the tilolang runtime carries what it loads.
+fn linked_runtimes(checked: &Checked) -> Result<(), Error> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let Some(tilo) = checked.runtime_ref() else {
+        return Ok(());
+    };
+    match tilo_app_package::desktop::required_runtime_dependencies(&checked.manifest)
+        .iter()
+        .filter(|raw| raw.starts_with("tilolang/"))
+        .find_map(|language| runtime_bundle::link_refusal(language, tilo))
+    {
+        None => Ok(()),
+        Some(reason) => Err(Error::RuntimesNotLinked {
+            package: checked.id().to_string(),
+            reason,
+        }),
+    }
+}
+
 /// Make sure the declared runtime is available, or refuse the install: catching a missing
 /// `tilo-runtime/<v>` bundle here, with a fix command, beats discovering it at first launch.
 fn satisfy_runtime(
@@ -800,6 +825,7 @@ fn satisfy_runtime(
             runtime,
         });
     }
+    linked_runtimes(checked)?;
     let Some((version, present)) = runtime_status(checked)? else {
         return Ok(());
     };

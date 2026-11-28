@@ -22,11 +22,16 @@
 #       the first 16 hex digits of the SHA-256 of its app.tl followed by its
 #       app.ids, as `tilolang::stdlib::digest` takes it.
 #
-#   tilolang_runtime_version REPO
+#   tilolang_runtime_version REPO [TILO_RUNTIME]
 #       The version the tilolang runtime bundle provides: the build its
 #       manifest declares, keyed by the standard library it carries
-#       (`<version>+tilolang.<std digest>`, the `tilolang/<version>` every
-#       package built from REPO names in `optional-runtimes`).
+#       (`<version>+tilolang.<std digest>`), and, baked against the exact Tilo
+#       runtime build TILO_RUNTIME (`tilo-runtime/<release>+native.<digest>`),
+#       by that build too (`<…>.<first 16 of its digest>`,
+#       `runtime_bundle::linked_for`): the thin binary links that build's
+#       libraries and runs on it alone. It is the `tilolang/<version>` every
+#       package `tilolang build --tilo-runtime TILO_RUNTIME` makes from REPO
+#       names, so a package always names the pair it was built with.
 #
 #   tilolang_bake_runtime BUNDLE_BIN BIN STD_TOOL REPO IDENTITY OUT VERSION [ARCH [LIBRARIES]]
 #       Build the signed bundle of the thin `tilolang-process` binary BIN into
@@ -69,13 +74,18 @@ tilolang_std_digest() {
 }
 
 tilolang_runtime_version() {
-    local repo=$1 manifest version digest
+    local repo=$1 tilo_runtime=${2:-} manifest version digest abi
     manifest="$repo/crates/lang/tilolang-process/tilo-runtime.toml"
     [ -f "$manifest" ] || { tilolang_die "no $manifest"; return 1; }
     version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' "$manifest" | head -1)
     [ -n "$version" ] || { tilolang_die "$manifest provides no tilolang version"; return 1; }
     digest=$(tilolang_std_digest "$repo") || return 1
-    printf '%s.%s\n' "$version" "$digest"
+    abi=${tilo_runtime##*+native.}
+    if [ "$abi" != "$tilo_runtime" ] && [ ${#abi} -ge 16 ]; then
+        printf '%s.%s.%s\n' "$version" "$digest" "${abi:0:16}"
+    else
+        printf '%s.%s\n' "$version" "$digest"
+    fi
 }
 
 tilolang_bake_runtime() {
@@ -94,7 +104,8 @@ tilolang_bake_runtime() {
     work=$(mktemp -d) || return 1
     digest=$("$std_tool" "$repo/crates/lang/tilolang/std" --out "$work/tilo.std.wasm") \
         || { rm -rf -- "$work"; tilolang_die "the standard library in $repo does not compile"; return 1; }
-    if [ "${version##*+tilolang.}" != "$digest" ]; then
+    local keyed=${version##*+tilolang.}
+    if [ "${keyed%%.*}" != "$digest" ]; then
         rm -rf -- "$work"
         tilolang_die "the runtime $version is keyed by another standard library than $repo's ($digest)"
         return 1
