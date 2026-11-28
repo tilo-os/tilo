@@ -64,6 +64,31 @@ pub(crate) fn line_client(socket: &Path, uid: u32) -> Arc<tilo_action_line::Line
     client
 }
 
+/// A client of the daemon's frames from process `pid`, once it redeemed its shell's link as
+/// the person's session does: their own connection, where every other process is a program.
+fn session_client(daemon: &Daemon, socket: &Path, pid: u32) -> Arc<tilo_action_line::LineClient> {
+    use std::io::Write as _;
+    PEER.store(OWN, Ordering::SeqCst);
+    PEER_PID.store(pid, Ordering::SeqCst);
+    let person = daemon.serving().device_cert().user_public_key;
+    let token = daemon
+        .shell_token_for(person, crate::seats::seat_id(OWN, pid))
+        .unwrap();
+    let link = UnixStream::connect(socket).unwrap();
+    writeln!(
+        &link,
+        "{}",
+        serde_json::json!({"native": "shells#link", "token": hex::encode(token)})
+    )
+    .unwrap();
+    let (answer, _shell) = runtime_portal::fd_transport::recv_with_fd(&link).unwrap();
+    assert!(serde_json::from_slice::<Value>(&answer).unwrap()["error"].is_null());
+    let stream = UnixStream::connect(socket).unwrap();
+    let client = Arc::new(tilo_action_line::LineClient::of_stream(stream).unwrap());
+    let _ = listed_to(&client);
+    client
+}
+
 /// The providers the catalogue lists to `client`.
 fn listed_to(client: &tilo_action_line::LineClient) -> Vec<String> {
     client
@@ -638,6 +663,7 @@ pub(crate) fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending
 )]
 fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
     use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
+    use tilo_device_identity::login::CERTIFY_KEY;
     let Some(root) = isolated_root(WORKSPACES_TEST) else {
         return;
     };
@@ -706,8 +732,20 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         "the device's own workspace lists none of the second one's questions"
     );
 
-    // The connection is the person's own, so it answers the question there as their shell does:
-    // their yes runs the call it answers, once it is admitted again for its caller.
+    // The connection is a program of theirs, which never answers its own question: their
+    // session's own connection answers it there, and their yes runs the call it answers, once it
+    // is admitted again for its caller.
+    let own = tilo_rt::app()
+        .block_on(async {
+            let calls = tilo_api::calls::Calls::over(Arc::clone(&person)).await?;
+            let record = format!("{studio}/{}", question.record.record);
+            calls.answer_asked(&record, true).await
+        })
+        .expect("the app runtime")
+        .expect_err("a program answers no question of its own");
+    let confirmed = tilo_actions::remote::asked::CONFIRMED_BY_THE_SYSTEM;
+    assert!(own.to_string().contains(confirmed), "{own:#}");
+    let session = session_client(&daemon, &socket, 4100);
     let resolve = || {
         let mut approve = serde_json::Map::new();
         approve.insert("resolution".into(), serde_json::json!("approve"));
@@ -722,7 +760,7 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
             approve,
         )
     };
-    let resolved = answered(person.invoke(&in_studio, resolve())).expect("the answer is admitted");
+    let resolved = answered(session.invoke(&in_studio, resolve())).expect("the answer is admitted");
     assert!(
         matches!(resolved.status, ReceiptStatus::Completed { .. }),
         "the answer goes through: {resolved:?}"
@@ -732,6 +770,14 @@ fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(probe.asked().len(), 1, "their yes runs the call it answers");
+    // Their session certifies a key with the root kept here, as it does its agent's.
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+        .verifying_key()
+        .to_bytes();
+    let certified = tilo_device_identity::login::daemon::DeviceActions::at(&socket)
+        .ask_followed(CERTIFY_KEY, serde_json::json!({"key": hex::encode(key)}))
+        .unwrap_or_else(|refused| panic!("{}", refused.message));
+    assert!(certified["cert"].is_string(), "{certified}");
     assert!(
         tilo_rt::app()
             .block_on(steps(&studio).questions())

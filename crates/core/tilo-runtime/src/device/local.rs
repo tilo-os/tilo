@@ -77,6 +77,9 @@ pub(crate) struct Frames {
     carrying: super::carry::Carrying,
     /// Whose API answers the connection's requests of `/v1` ([`super::api_lane`]).
     api: super::api_lane::Answering,
+    /// The daemon a program that dialled its socket itself is answered by instead, for the
+    /// person's own frames ([`Self::for_a_program`]).
+    programs: Option<std::sync::Weak<Daemon>>,
 }
 
 impl Frames {
@@ -95,7 +98,24 @@ impl Frames {
             shells: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
             api: super::api_lane::Answering::None,
+            programs: None,
         }
+    }
+
+    /// What answers the frames of process `pid` instead of the person's own frames, when it is
+    /// none of the daemon's known paths: a program, which acts as the person but is never their
+    /// own act ([`Caller::from_program`]). `None` for frames that are not the person's own.
+    pub(crate) fn for_a_program(&self, pid: Option<u32>) -> Option<Self> {
+        let daemon = self.programs.clone()?;
+        let program = pid
+            .and_then(|pid| std::fs::read_link(format!("/proc/{pid}/exe")).ok())
+            .map_or_else(|| "a program".to_owned(), |exe| exe.display().to_string());
+        Some(Self::new(move |workspace| {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            daemon.program_tree_from(workspace, &program)
+        }))
     }
 
     /// These frames, their connection's requests of `/v1` answered by an API of its own over
@@ -122,6 +142,7 @@ impl Frames {
         let carrying = super::carry::Carrying::of(daemon);
         let login = super::api_lane::Answering::Person(Arc::downgrade(daemon));
         let daemon = Arc::downgrade(daemon);
+        let programs = daemon.clone();
         let mut frames = Self::new(move |workspace| {
             let daemon = daemon
                 .upgrade()
@@ -130,6 +151,7 @@ impl Frames {
         });
         frames.carrying = carrying;
         frames.api = login;
+        frames.programs = Some(programs);
         frames
     }
 

@@ -310,6 +310,9 @@ pub(crate) struct Seat {
     /// Whether this process is the session the daemon answered a founding link: it asks this
     /// device's own actions about the person it made or joined, and nothing of a person's.
     pub(crate) founding: bool,
+    /// Whether this process redeemed a shell link here: the person's session, the one
+    /// connection of their account that is their own act. Any other is a program of theirs.
+    pub(crate) linked: bool,
 }
 
 /// What the daemon does for the person its seats admit, once their services run.
@@ -639,6 +642,7 @@ impl Seats {
                     account: Admitted::Stranger,
                     app: None,
                     founding: false,
+                    linked: false,
                 };
             }
         };
@@ -725,6 +729,7 @@ impl Seats {
             account,
             app,
             founding,
+            linked,
         }
     }
 

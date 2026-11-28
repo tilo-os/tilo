@@ -1437,7 +1437,7 @@ impl Device {
             let answered = tilo_rt::app().handle().block_on(async {
                 let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
                 calls.founded_workspace().await?;
-                calls
+                let started = calls
                     .start(
                         None,
                         tilo_device_identity::login::RESOURCE,
@@ -1445,6 +1445,14 @@ impl Device {
                         args,
                         "A device action",
                     )
+                    .await?;
+                // What waits for the person's yes (a ticket does) they approve on their session:
+                // this connection is a program of theirs, which never answers its own question.
+                calls
+                    .follow_asked(None, started, async |record: &str| {
+                        self.approve(record);
+                        Ok(())
+                    })
                     .await
             });
             match answered {
@@ -1469,8 +1477,12 @@ impl Device {
     /// any device newly added. Each daemon is left as it was: stopped, or running.
     pub fn redeem(&mut self, issuer: &mut Device) {
         let issuer_was_off = UnixStream::connect(issuer.native_socket()).is_err();
-        if issuer_was_off {
-            issuer.restart_daemon();
+        // The person says yes to the ticket on their session there, which the issuer starts
+        // for it when it runs none.
+        let issuer_seatless = UnixStream::connect(&issuer.control).is_err();
+        if issuer_seatless {
+            issuer.stop();
+            issuer.start();
         }
         let answer =
             issuer.call_until_answered(tilo_device_identity::login::ISSUE, &json!({"wait": false}));
@@ -1497,8 +1509,11 @@ impl Device {
         if was_off {
             self.stop();
         }
-        if issuer_was_off {
+        if issuer_seatless {
             issuer.stop();
+            if !issuer_was_off {
+                issuer.restart_daemon();
+            }
         }
         self.cert = tilo_device_identity::persist::read_owner_cert(&self.identity())
             .expect("the certificate the ticket's redemption filed")

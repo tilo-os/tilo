@@ -2034,6 +2034,20 @@ impl Daemon {
         }
     }
 
+    /// [`Self::program_tree`] for `program`, which dialled this daemon's socket itself
+    /// ([`Caller::from_program`]): what its calls are recorded and asked as.
+    pub(crate) fn program_tree_from(
+        self: &Arc<Self>,
+        workspace: Option<&str>,
+        program: &str,
+    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
+        let caller = Caller::local_person(&self.actor).from_program(program);
+        match workspace {
+            Some(workspace) => self.tree_in(workspace, caller.in_workspace(workspace)),
+            None => self.account_tree_for(caller),
+        }
+    }
+
     /// The tree `account` reaches alone: the person's own list, and nothing of a workspace. It is
     /// never admitted into one: a device that holds none yet still lists them.
     fn account_tree(self: &Arc<Self>) -> io::Result<(tilo_api::session::Provider, Caller)> {
@@ -6319,10 +6333,16 @@ pub(crate) fn device_action(
     // asking card, whatever caller its connection carries.
     let confirmed =
         Tickets::listed(&request).is_some_and(|action| action.contract.requires_confirmation());
-    let judged = if confirmed { asked_by } else { caller };
-    let person = judged
-        .acting()
-        .person_id()
+    let program = caller.handed_program().is_some();
+    let judged = if confirmed && !program {
+        asked_by
+    } else {
+        caller
+    };
+    // A program acts as the person and is never them: what they confirm waits for their yes.
+    let person = (!confirmed || !program)
+        .then(|| judged.acting().person_id())
+        .flatten()
         .and_then(|person| hex::decode(person).ok())
         .and_then(|person| <[u8; 32]>::try_from(person).ok());
     if judged.is_system() || person.is_some_and(holds_root_for_person) {
@@ -6387,7 +6407,7 @@ fn hand_on_to_root(
     };
     let listed = Tickets::listed(request);
     // A boot key's certificate names the computer that asks and the key, as the person reads it.
-    let facts = tilo_actions::remote::asked::AskedFacts {
+    let mut facts = tilo_actions::remote::asked::AskedFacts {
         verb: listed
             .as_ref()
             .map(|action| action.action_label.clone())
@@ -6395,6 +6415,13 @@ fn hand_on_to_root(
         on: listed.map(|action| action.resource_label),
         ..super::boot_unlock::asked_facts(request).unwrap_or_default()
     };
+    // A program's card names the program that asks.
+    if let Some(program) = judged.handed_program() {
+        facts.by = tilo_actions::remote::asked::AskedBy::Program {
+            name: program.to_owned(),
+            app_id: None,
+        };
+    }
     // An agent asking for the person's root answers as the agent it is, so the card says who
     // wants it; the person's own call is theirs.
     let run = match (judged.acting().agent_id(), judged.agent_called()) {

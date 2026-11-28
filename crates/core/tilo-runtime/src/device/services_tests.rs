@@ -2607,6 +2607,47 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         "a withdrawn call ends cancelled: {:?}",
         ended(invocation)
     );
+
+    // A program of theirs that dialled this daemon itself is asked the same way, and their yes
+    // on another device of theirs issues it the ticket.
+    let (program, as_program) = daemon.program_tree_from(Some(&workspace), "probe").unwrap();
+    let request = issue();
+    let invocation = request.invocation;
+    let answer = program
+        .invoke(&as_program, request)
+        .wait_timeout(tilo_test_env::hang_bound());
+    answer
+        .ok()
+        .flatten()
+        .expect("the daemon answers")
+        .expect("the call is admitted");
+    wait_until("its person is asked", Box::new(|| requested(invocation)));
+    let at = store
+        .record(&invocation.0.to_string())
+        .expect("the record waits");
+    let yes = Resolve {
+        resolution: Offer::Approve,
+        ..Resolve::default()
+    };
+    let answer = tilo_rt::app()
+        .handle()
+        .block_on(store.resolve(&at, &person, &yes));
+    answer.expect("decided at once").expect("the yes is taken");
+    let program_ended = || {
+        daemon
+            .asked
+            .observe(&as_program, &invocation)
+            .map(|state| state.update)
+    };
+    wait_until(
+        "its ticket comes back",
+        Box::new(|| program_ended().is_some_and(|update| update.is_terminal())),
+    );
+    assert!(
+        matches!(program_ended(), Some(InvocationUpdate::Succeeded { .. })),
+        "{:?}",
+        program_ended()
+    );
 }
 
 const FOUND_ON_A_PERSONS_TEST: &str =

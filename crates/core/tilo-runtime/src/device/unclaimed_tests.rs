@@ -221,6 +221,7 @@ async fn the_device_key_signs_only_for_its_own_system_and_its_person() {
                 account: admitted,
                 app: None,
                 founding: false,
+                linked: false,
             },
             Arc::clone(&seats),
         );

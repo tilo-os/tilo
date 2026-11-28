@@ -392,8 +392,16 @@ impl Caller {
         self
     }
 
-    /// The program a seat's shell handed over that this caller's calls come from
-    /// ([`Self::handed_by_seat`]), by what the kernel said it runs.
+    /// The same caller, calling from `program`, which dialled the daemon's socket itself: it acts
+    /// as the person and is never their own act. Only the daemon that took the connection sets it.
+    #[must_use]
+    pub fn from_program(mut self, program: impl Into<String>) -> Self {
+        self.program = Some(program.into());
+        self
+    }
+
+    /// The program this caller's calls come from ([`Self::handed_by_seat`],
+    /// [`Self::from_program`]), by what the kernel said it runs.
     #[must_use]
     pub fn handed_program(&self) -> Option<&str> {
         self.program.as_deref()

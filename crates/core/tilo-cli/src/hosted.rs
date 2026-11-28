@@ -171,15 +171,10 @@ pub fn act(reach: Reach<'_>, workspace: Option<&str>, path: &str, args: &[String
         let started = client
             .start(workspace.as_deref(), resource, action, &arguments, path)
             .await?;
-        // A key the person asks for on a computer that holds their identity is their own call:
-        // the question it waits in is answered yes here, on their own connection, as Tilo's own
-        // prompt answers one. Anywhere else it waits for their answer on a device of theirs.
-        let theirs_here = path == "account/keys#create" && crate::identity::held()?.is_some();
+        // This command is a program of the person's, never their own act: what it asks waits for
+        // their answer on their session or another device of theirs.
         let mut answer = client
             .follow_asked(workspace.as_deref(), started, async |record: &str| {
-                if theirs_here {
-                    return client.answer_asked(record, true).await;
-                }
                 eprintln!(
                     "tilo: waiting for your answer on a device of yours: it waits in {record}"
                 );

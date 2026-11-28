@@ -2456,7 +2456,18 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                 .connections
                 .as_deref()
                 .map(|connections| connections as &dyn tilo_action_line_serve::Ending);
-            return self.frames.serve(stream, line, input, ending);
+            // Only the session's own connection, the seat that redeemed its shell link, is the
+            // person's own act: any other process that dialled the socket is a program of theirs.
+            let program = match seated {
+                Some(seated) if seated.seat.linked => None,
+                _ => self
+                    .frames
+                    .for_a_program(seated.and_then(|seated| seated.seat.pid)),
+            };
+            return program
+                .as_ref()
+                .unwrap_or(&self.frames)
+                .serve(stream, line, input, ending);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
             if let Some(agents) = &self.to_agents {
