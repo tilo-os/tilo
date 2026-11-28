@@ -4057,7 +4057,9 @@ impl NavShell {
                     .with_bounds(header.more.rect())
                     .with_position(index.saturating_add(1), count)
                     .with_state(AccessState {
-                        focusable: !node.state.disabled,
+                        // It is drawn nowhere until the menu opens, so it takes the keyboard
+                        // nowhere; a reader, an agent and a press by name reach it all the same.
+                        focusable: false,
                         disabled: node.state.disabled,
                         checked: node.state.checked,
                         ..Default::default()

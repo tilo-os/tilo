@@ -371,7 +371,7 @@ impl ToolbarRow {
                         .with_bounds(rect)
                         .with_position(position.saturating_add(1), count)
                         .with_state(AccessState {
-                            focusable: enabled,
+                            focusable: enabled && open,
                             disabled: !enabled,
                             checked,
                             hidden,

@@ -5454,6 +5454,16 @@ fn a_bar_action_behind_more_is_named_and_runs() {
     let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 800));
     harness.relayout();
     // Nothing of it stands in the row: it is behind the bar's own "…".
+    let offered: Vec<String> = harness
+        .controls()
+        .into_iter()
+        .filter(|control| control.verbs.iter().any(|verb| verb == "activate"))
+        .filter_map(|control| control.name)
+        .collect();
+    assert!(
+        offered.iter().any(|name| name == "Help"),
+        "a walk names the row behind More: {offered:?}"
+    );
     let help = node_named(&harness, "Help");
     harness
         .perform_a11y_action(help, &tilo_ui_base::a11y::Action::Activate)
@@ -5487,6 +5497,16 @@ fn a_bar_search_is_named_behind_more() {
     window.receive();
     let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (900, 800));
     harness.relayout();
+    let offered: Vec<String> = harness
+        .controls()
+        .into_iter()
+        .filter(|control| control.verbs.iter().any(|verb| verb == "activate"))
+        .filter_map(|control| control.name)
+        .collect();
+    assert!(
+        offered.iter().any(|name| name == "Search"),
+        "a walk names the window's search: {offered:?}"
+    );
     let name = node_named(&harness, "Search");
     harness
         .perform_a11y_action(name, &tilo_ui_base::a11y::Action::Activate)
