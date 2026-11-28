@@ -33,9 +33,6 @@
         "tl": [
           {
             "wait_for": "Set up Backups"
-          },
-          {
-            "wait_for": "Choose a folder to protect and where its snapshots go."
           }
         ]
       }
@@ -57,21 +54,20 @@
             "press": "Choose folder"
           },
           {
-            "wait_for": "Choose where snapshots go"
+            "wait_for": "Set up Backups"
           }
         ]
       }
     },
     {
       "id": "leave",
-      "said": "The setup keeps what was chosen and waits for the folder snapshots go to",
+      "said": "The setup keeps the folder it was given",
       "ops": {
         "tl": [
           {
             "must": {
               "see": [
-                "Set up Backups",
-                "Choose where snapshots go"
+                "Set up Backups"
               ]
             }
           }
