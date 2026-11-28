@@ -74,6 +74,10 @@ fn main() -> std::process::ExitCode {
     // Everything this process reports, and the panic that would end it, goes through the one log
     // from here on — including the render service, which is this binary in its own mode.
     tilo_session_logging::install();
+    // Until this session has read the person's settings from their workspace, what it reads is
+    // what the profile's previous session left for processes outside it: its shell starts in
+    // their theme and language, and the watchers this startup installs have a source.
+    settings_store::register_outside();
     // Every face that shows this session's person draws the picture their identity service holds.
     ui::own_photo::lend();
     // Libraries that parallelise on their own (message groups, text layout,
