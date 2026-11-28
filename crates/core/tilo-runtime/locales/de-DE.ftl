@@ -217,3 +217,8 @@ environment-list = Die Umgebungen auflisten
 wifi-lookup = Eine geteilte WLAN-Passphrase finden
 wifi-share = Eine WLAN-Passphrase mit deinen Geräten teilen
 approved-checks-run = Eine freigegebene Prüfung ausführen
+
+# The seats' actions, as a computer's root listing names them.
+seats-signed-in = Ein Konto hat sich angemeldet
+seats-left = Ein Konto ist gegangen
+seats-certified = Meinen Schlüssel hier zertifizieren

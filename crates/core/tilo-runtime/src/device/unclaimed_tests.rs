@@ -293,3 +293,57 @@ async fn the_device_key_signs_only_for_its_own_system_and_its_person() {
         );
     }
 }
+
+/// A computer nobody claimed lists its own actions and its seats' to root in the language root
+/// asks in: every label is its catalogue's, none written in the code.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_computer_nobody_claimed_names_its_actions_in_the_callers_language() {
+    use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery, MAX_CATALOGUE_PAGE};
+
+    // What the daemon does before its endpoint answers anyone.
+    ui::i18n::install_resource_words();
+    let dir = tempfile::tempdir().unwrap();
+    let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+    let device = crate::device::unclaimed::DeviceOnly::new(
+        SigningKey::from_bytes(&[0x3c; 32]),
+        Place::at(dir.path().join("login"), keys),
+    );
+    let listed = |provider: &str, language: &str| -> Vec<(String, String)> {
+        let query = CatalogueQuery {
+            provider: Some(provider.to_owned()),
+            language: Some(language.to_owned()),
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        };
+        device
+            .query(&Caller::local_system(), query)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the computer answers")
+            .expect("root reads its listing")
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .map(|action| (action.address.action, action.action_label))
+            .collect()
+    };
+    let mut in_code = Vec::new();
+    for provider in [
+        tilo_device_identity::login::PROVIDER,
+        crate::seats::PROVIDER,
+    ] {
+        let german = listed(provider, "de-DE");
+        assert!(!german.is_empty(), "{provider} lists its actions");
+        let source = listed(provider, "en-US");
+        in_code.extend(
+            super::environment_directory_tests::not_read_from_a_catalogue(
+                provider,
+                &german,
+                Some(&source),
+            ),
+        );
+    }
+    assert!(in_code.is_empty(), "listed in English: {in_code:#?}");
+}

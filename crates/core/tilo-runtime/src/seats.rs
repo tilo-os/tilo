@@ -119,9 +119,10 @@ fn rows() -> Vec<CatalogueRow> {
         ..CatalogueRow::default()
     };
     let uid = || ActionParam::required("uid", ParamType::Integer, "The account's uid.");
-    let action = |name: &str, label: &str, description: &str, params: &[ActionParam]| {
+    // Each named by the runtime's catalogue as `seats-<action>`.
+    let action = |name: &str, description: &str, params: &[ActionParam]| {
         let mut descriptor = crate::device::ticket::descriptor(name, description, params);
-        label.clone_into(&mut descriptor.action_label);
+        descriptor.action_label = crate::i18n::t(&format!("seats-{name}"));
         descriptor.address = ActionAddress::new(SEATS, name);
         "seat".clone_into(&mut descriptor.resource_kind);
         "Seats".clone_into(&mut descriptor.resource_label);
@@ -131,7 +132,6 @@ fn rows() -> Vec<CatalogueRow> {
         row(None),
         row(action(
             SIGNED_IN,
-            "An account signed in",
             "Serve the account as its person until it leaves. Root's alone to say.",
             &[
                 uid(),
@@ -149,13 +149,11 @@ fn rows() -> Vec<CatalogueRow> {
         )),
         row(action(
             LEFT,
-            "An account left",
             "Serve the account the device's own actions alone again. Root's alone to say.",
             &[uid()],
         )),
         row(action(
             CERTIFIED,
-            "Certify my key here",
             "Act on this computer as the key it made for me, which my root certified.",
             &[ActionParam::required(
                 "cert",

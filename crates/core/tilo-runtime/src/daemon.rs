@@ -529,6 +529,9 @@ impl Running {
             // Every account reaches it; the admission decides what each is answered.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666))?;
         }
+        // Every listing it answers, root's before anyone claims the computer among them, names its
+        // actions in the language its caller reads.
+        ui::i18n::install_resource_words();
         let native = Arc::new(Native::new(
             device.answers(),
             crate::seats::peer_of,

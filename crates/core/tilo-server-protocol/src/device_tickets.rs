@@ -67,10 +67,11 @@ pub const HANDED_ON: [&str; 7] = [
     PROTECT_IDENTITY,
 ];
 
-/// How each of [`HANDED_ON`] is listed, wherever it is: the one description of each.
+/// How each of [`HANDED_ON`] is listed, wherever it is, named `label` in the lister's language:
+/// the one description of each.
 #[must_use]
-pub fn descriptor(action: &str) -> Option<tilo_actions::ActionDescriptor> {
-    let (label, description, kind, mut contract, params) = listed(action)?;
+pub fn descriptor(action: &str, label: String) -> Option<tilo_actions::ActionDescriptor> {
+    let (description, kind, mut contract, params) = listed(action)?;
     // Only the person's root signs a revocation, and issues the ticket that lets a computer
     // in: a device that keeps none hands it on, and an agent that asks for one waits for
     // their yes.
@@ -83,7 +84,7 @@ pub fn descriptor(action: &str) -> Option<tilo_actions::ActionDescriptor> {
         address: ActionAddress::new(RESOURCE, action),
         resource_kind: "device".to_owned(),
         resource_label: "Devices".to_owned(),
-        action_label: label.to_owned(),
+        action_label: label,
         keywords: Vec::new(),
         state: tilo_actions::ActionState::default(),
         icon: None,
@@ -97,10 +98,9 @@ pub fn descriptor(action: &str) -> Option<tilo_actions::ActionDescriptor> {
     })
 }
 
-/// What one of [`HANDED_ON`] says of itself: its label, its description, its kind, its
-/// contract and its parameters.
+/// What one of [`HANDED_ON`] says of itself: its description, its kind, its contract and its
+/// parameters.
 type Listed = (
-    &'static str,
     &'static str,
     OperationKind,
     ActionContract,
@@ -134,9 +134,8 @@ fn confirmed(result: ResultSpec) -> ActionContract {
     }
 }
 
-fn identity(label: &'static str, description: &'static str) -> Listed {
+fn identity(description: &'static str) -> Listed {
     (
-        label,
         description,
         OperationKind::Effect,
         confirmed(object(&["id"])),
@@ -150,7 +149,6 @@ fn identity(label: &'static str, description: &'static str) -> Listed {
 fn listed(action: &str) -> Option<Listed> {
     Some(match action {
         ISSUE => (
-            "Add a device",
             "Print a one-use ticket another computer logs in with as one of the person's \
              devices.",
             OperationKind::Effect,
@@ -178,7 +176,6 @@ fn listed(action: &str) -> Option<Listed> {
             ],
         ),
         RENAME => (
-            "Rename a device",
             "Name one of the person's devices in every list of them.",
             OperationKind::Effect,
             effect(object(&["device", "name"])),
@@ -188,7 +185,6 @@ fn listed(action: &str) -> Option<Listed> {
             ],
         ),
         REVOKE => (
-            "Revoke a device",
             "Take one of the person's devices back for good: every device of theirs refuses \
              it from now on.",
             OperationKind::Effect,
@@ -203,7 +199,6 @@ fn listed(action: &str) -> Option<Listed> {
             ],
         ),
         IDENTITIES => (
-            "List the identities",
             "The person's identities this device keeps, without secrets, and which one new \
              apps sign in as.",
             OperationKind::View,
@@ -215,18 +210,11 @@ fn listed(action: &str) -> Option<Listed> {
             },
             Vec::new(),
         ),
-        USE_IDENTITY => identity(
-            "Use an identity for new apps",
-            "Sign apps opened from now on in as this identity.",
-        ),
-        REMOVE_IDENTITY => identity(
-            "Remove an identity",
-            "Delete an identity, with its key, from this device.",
-        ),
-        PROTECT_IDENTITY => identity(
-            "Protect an identity's key",
-            "Move an identity's key from a plain file into protected storage.",
-        ),
+        USE_IDENTITY => identity("Sign apps opened from now on in as this identity."),
+        REMOVE_IDENTITY => identity("Delete an identity, with its key, from this device."),
+        PROTECT_IDENTITY => {
+            identity("Move an identity's key from a plain file into protected storage.")
+        }
         _ => return None,
     })
 }

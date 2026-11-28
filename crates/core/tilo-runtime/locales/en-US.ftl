@@ -217,3 +217,8 @@ environment-list = List the environments
 wifi-lookup = Find a shared Wi-Fi passphrase
 wifi-share = Share a Wi-Fi passphrase with your devices
 approved-checks-run = Run an approved check
+
+# The seats' actions, as a computer's root listing names them.
+seats-signed-in = An account signed in
+seats-left = An account left
+seats-certified = Certify my key here

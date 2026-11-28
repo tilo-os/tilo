@@ -1360,28 +1360,33 @@ impl ActionProvider for DeviceOnly {
         {
             return cache.query(caller, query);
         }
-        Pending::ready(match query.provider.as_deref() {
-            // Listed as the running providers, in no workspace, as a person's daemon lists the
-            // device's beside their workspace's apps.
-            None => {
-                let mut page = device_only_catalogue(&query);
-                page.providers.extend(providers(""));
-                page.providers.push(crate::seats::provider());
-                if self.packages().is_some() {
-                    page.providers.push(CatalogueProvider {
-                        provider: super::packages::PROVIDER.to_owned(),
-                        app_id: super::packages::PROVIDER.to_owned(),
-                        workspace: String::new(),
-                        browsable: true,
-                        ..CatalogueProvider::default()
-                    });
+        // Its rows are named in the language the query asks in.
+        let language = query.language.clone();
+        Pending::ready(tilo_resource::label::reading_in(
+            language.as_deref(),
+            || match query.provider.as_deref() {
+                // Listed as the running providers, in no workspace, as a person's daemon lists the
+                // device's beside their workspace's apps.
+                None => {
+                    let mut page = device_only_catalogue(&query);
+                    page.providers.extend(providers(""));
+                    page.providers.push(crate::seats::provider());
+                    if self.packages().is_some() {
+                        page.providers.push(CatalogueProvider {
+                            provider: super::packages::PROVIDER.to_owned(),
+                            app_id: super::packages::PROVIDER.to_owned(),
+                            workspace: String::new(),
+                            browsable: true,
+                            ..CatalogueProvider::default()
+                        });
+                    }
+                    Ok(page)
                 }
-                Ok(page)
-            }
-            Some(PROVIDER) => Ok(device_only_catalogue(&query)),
-            Some(crate::seats::PROVIDER) => Ok(crate::seats::catalogue(&query)),
-            Some(_) => Err(self.needs_a_person()),
-        })
+                Some(PROVIDER) => Ok(device_only_catalogue(&query)),
+                Some(crate::seats::PROVIDER) => Ok(crate::seats::catalogue(&query)),
+                Some(_) => Err(self.needs_a_person()),
+            },
+        ))
     }
 
     fn invoke(

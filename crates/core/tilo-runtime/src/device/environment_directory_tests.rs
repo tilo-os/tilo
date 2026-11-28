@@ -294,31 +294,15 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     assert_eq!(rename("en-US"), "Rename");
     assert_eq!(rename("tlh-QO"), "Rename");
 
-    let (english, german_words) = catalogue_words();
     let mut in_english = Vec::new();
     let check = |provider: &str, labels: Vec<(String, String)>, in_english: &mut Vec<String>| {
-        for (action, label) in labels {
-            let at = format!("{provider}#{action}");
-            if let Some(german) = english.get(&label) {
-                in_english.push(format!("{at}: {label:?}, not {german:?}"));
-            }
-        }
+        in_english.extend(not_read_from_a_catalogue(provider, &labels, None));
     };
-    // A label a catalogue gives reads otherwise in German, or is a German word as it is: one that
-    // reads the same in both and no German catalogue says is written in the code.
     let read_from_a_catalogue = |provider: &str,
                                  german: Vec<(String, String)>,
                                  source: Vec<(String, String)>,
                                  in_english: &mut Vec<String>| {
-        let source: std::collections::HashMap<String, String> = source.into_iter().collect();
-        for (action, label) in &german {
-            if source.get(action) == Some(label) && !german_words.contains(label) {
-                in_english.push(format!(
-                    "{provider}#{action}: {label:?} is written in its code"
-                ));
-            }
-        }
-        check(provider, german, in_english);
+        in_english.extend(not_read_from_a_catalogue(provider, &german, Some(&source)));
     };
     for registered in daemon.workspaces().providers().all() {
         read_from_a_catalogue(
@@ -443,12 +427,42 @@ fn a_listing_names_its_actions_in_the_callers_language() {
     );
 }
 
-/// Every catalogue's English words that its German says otherwise, with the German, where no
-/// German catalogue uses the English as it is; and every word a German catalogue says.
-fn catalogue_words() -> (
+/// The labels of `german`, `provider`'s actions listed in German, that no catalogue gave: each
+/// English a catalogue has in German, and, beside `source`, the same actions listed in English,
+/// each that reads the same in both and that no German catalogue says.
+pub(super) fn not_read_from_a_catalogue(
+    provider: &str,
+    german: &[(String, String)],
+    source: Option<&[(String, String)]>,
+) -> Vec<String> {
+    static WORDS: std::sync::OnceLock<CatalogueWords> = std::sync::OnceLock::new();
+    let (english, german_words) = WORDS.get_or_init(catalogue_words);
+    let source: std::collections::HashMap<&String, &String> = source
+        .unwrap_or_default()
+        .iter()
+        .map(|(a, l)| (a, l))
+        .collect();
+    let mut found = Vec::new();
+    for (action, label) in german {
+        if let Some(german) = english.get(label) {
+            found.push(format!("{provider}#{action}: {label:?}, not {german:?}"));
+        } else if source.get(action) == Some(&label) && !german_words.contains(label) {
+            found.push(format!(
+                "{provider}#{action}: {label:?} is written in its code"
+            ));
+        }
+    }
+    found
+}
+
+type CatalogueWords = (
     std::collections::HashMap<String, String>,
     std::collections::HashSet<String>,
-) {
+);
+
+/// Every catalogue's English words that its German says otherwise, with the German, where no
+/// German catalogue uses the English as it is; and every word a German catalogue says.
+fn catalogue_words() -> CatalogueWords {
     fn catalogues(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;

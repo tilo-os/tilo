@@ -323,11 +323,10 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         tilo_server_protocol::device_tickets::HANDED_ON
             .into_iter()
             .map(|action| {
-                let mut descriptor = tilo_server_protocol::device_tickets::descriptor(action);
-                if let Some(descriptor) = &mut descriptor {
-                    descriptor.action_label = crate::i18n::t(&format!("device-{action}"));
-                }
-                row(descriptor)
+                let label = crate::i18n::t(&format!("device-{action}"));
+                row(tilo_server_protocol::device_tickets::descriptor(
+                    action, label,
+                ))
             }),
     );
     // What the daemon does with the device key for the other programs of this computer.
