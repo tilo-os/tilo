@@ -92,43 +92,6 @@
       ]
     },
     {
-      "id": "places",
-      "said": "See the same work on the board, and the tasks that said something in their own view",
-      "ops": [
-        {
-          "press_any": [
-            "Board"
-          ]
-        },
-        {
-          "must_not": [
-            "New task for today"
-          ]
-        },
-        {
-          "press_any": [
-            "Threads"
-          ]
-        },
-        {
-          "must": [
-            "Nothing said yet"
-          ]
-        },
-        {
-          "press_any": [
-            "Home"
-          ]
-        },
-        {
-          "must": [
-            "New task for today"
-          ]
-        }
-      ],
-      "dark": true
-    },
-    {
       "id": "complete",
       "said": "Complete the milk, and find it where finished work goes",
       "ops": [
@@ -480,6 +443,51 @@
           "theme": true
         }
       ]
+    },
+    {
+      "id": "threads",
+      "said": "See the tasks that said something in their own view",
+      "ops": [
+        {
+          "press_any": [
+            "Threads"
+          ]
+        },
+        {
+          "must": [
+            "Nothing said yet"
+          ]
+        },
+        {
+          "press": "Close"
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        }
+      ]
+    },
+    {
+      "id": "board",
+      "said": "See the same work on its board",
+      "ops": [
+        {
+          "press_any": [
+            "Board"
+          ]
+        },
+        {
+          "must_not": [
+            "New task for today"
+          ]
+        }
+      ],
+      "dark": true
     }
   ]
 }
