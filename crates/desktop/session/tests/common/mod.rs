@@ -1568,9 +1568,11 @@ pub fn api_request_typed(
         let error = answered.get("error");
         let field = |name: &str| error.and_then(|error| error.get(name));
         let code = field("code").and_then(Value::as_str).unwrap_or("failed");
-        let message = field("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the API refused the call");
+        // A refusal without a message is shown whole, with its status, so it still says why.
+        let message = field("message").and_then(Value::as_str).map_or_else(
+            || format!("the API refused the call with {status}: {answered}"),
+            str::to_owned,
+        );
         Err(format!("{message} ({code})"))
     }
 }
