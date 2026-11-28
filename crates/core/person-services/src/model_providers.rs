@@ -158,21 +158,34 @@ impl crate::PersonServices {
             // Listing the providers changes nothing, so the person's settings are not said to
             // have changed by it, and neither does a sign-in until it is granted.
             ModelsAction::List => answer(&Ok(providers(&root))),
-            ModelsAction::BeginSignIn { using } => answer(
-                &self
-                    .begin_openai_sign_in(
-                        (person, &here),
-                        using.unwrap_or_default(),
-                        reach,
-                        Some(request.clone()),
-                    )
-                    .await,
-            ),
+            ModelsAction::BeginSignIn {
+                using,
+                service,
+                project,
+                model,
+            } => {
+                let service =
+                    match sign_in::Service::from_slug(service.as_deref().unwrap_or_default()) {
+                        Ok(service) => service,
+                        Err(reason) => return Err(ActionCallError::Refused { reason }),
+                    };
+                let asked = sign_in::Asked {
+                    service,
+                    using: using.unwrap_or_default(),
+                    project: project.unwrap_or_default(),
+                    model: model.unwrap_or_default(),
+                };
+                answer(
+                    &self
+                        .begin_model_sign_in((person, &here), asked, reach, Some(request.clone()))
+                        .await,
+                )
+            }
             ModelsAction::WaitSignIn { sign_in } => {
-                answer(&self.wait_openai_sign_in(person, &sign_in).await)
+                answer(&self.wait_model_sign_in(person, &sign_in).await)
             }
             ModelsAction::CancelSignIn { sign_in } => {
-                self.cancel_openai_sign_in(person, &sign_in);
+                self.cancel_model_sign_in(person, &sign_in);
                 answer(&Ok(()))
             }
             changing => {
@@ -432,8 +445,10 @@ fn not_kept() -> String {
 
 mod local_hub;
 mod openai;
+mod sign_in;
+pub(super) use openai::Grant;
 pub use openai::OpenAiSignIn;
-pub(super) use openai::{Grant, SignIns};
+pub(super) use sign_in::SignIns;
 
 /// Where a provider at `endpoint` is, when this host keeps one there: an
 /// https address on the internet, or with [`Destinations::Any`] one on the
@@ -1825,3 +1840,7 @@ mod tests {
 #[cfg(all(test, feature = "agents"))]
 #[path = "openai_sign_in_tests.rs"]
 pub(crate) mod openai_sign_in_tests;
+
+#[cfg(all(test, feature = "agents"))]
+#[path = "sign_in_flows_tests.rs"]
+pub(crate) mod sign_in_flows_tests;

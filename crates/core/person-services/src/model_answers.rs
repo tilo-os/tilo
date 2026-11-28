@@ -461,6 +461,11 @@ pub(super) struct Models {
     pub(super) openai: std::sync::RwLock<crate::model_providers::OpenAiSignIn>,
     /// The sign-ins people are in the middle of.
     pub(super) sign_ins: crate::model_providers::SignIns,
+    /// The stores model sign-ins are driven through, where a test or an
+    /// operator names its own instead of the committed registrations.
+    pub(super) oauth: std::sync::RwLock<Option<account_credentials::CredentialStore>>,
+    /// The pages `OpenRouter` signs in at, where a test names its own.
+    pub(super) openrouter: std::sync::RwLock<Option<(String, String)>>,
     private_addresses: AtomicBool,
     /// Whether this service runs on a person's own computer, whose Agent models pane links its
     /// choice into the workspaces it keeps ([`Workspaces::on_a_computer`]).
@@ -499,6 +504,8 @@ impl Models {
             provider: std::sync::RwLock::new(host_provider()),
             openai: std::sync::RwLock::default(),
             sign_ins: crate::model_providers::SignIns::default(),
+            oauth: std::sync::RwLock::new(None),
+            openrouter: std::sync::RwLock::new(None),
             private_addresses: AtomicBool::new(false),
             on_a_computer: AtomicBool::new(false),
             spend: spend::Log::default(),
@@ -1085,12 +1092,10 @@ fn resolve(
     if !public && !private_addresses {
         return Err(ModelRefusal::AddressRefused { provider: named() });
     }
-    // A `ChatGPT` plan is asked with the access token of the grant the
-    // vault keeps, refreshed before the call ([`Models::fresh_access`]).
-    // Other sign-ins are made on the person's own computer, and this server
-    // holds nothing to ask them with.
+    // A signed-in provider is asked with an access token minted from the grant
+    // the vault keeps, refreshed before the call ([`Models::fresh_access`]).
     if profile.sign_in.is_some() {
-        if profile.sign_in_issuer() != Some(agent_provider_config::SignInIssuer::ChatGpt) {
+        if profile.sign_in_issuer().is_none() {
             return Err(ModelRefusal::NoKey { provider: named() });
         }
         if !key_kept(profile) {

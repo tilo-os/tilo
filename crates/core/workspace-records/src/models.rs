@@ -210,15 +210,24 @@ pub enum ModelsAction {
     },
     /// Begin signing in to a provider
     ///
-    /// Signs in with the person's `OpenAI` account, the way `OpenAI`'s own Codex signs in where
-    /// it has no browser: the server asks `OpenAI` for a one-time code, and the person enters it
-    /// on `OpenAI`'s page ([`SignInStarted`]). The server waits for `OpenAI` to grant it, keeps
-    /// the grant in the person's vault and refreshes it there; no window ever holds a token.
-    /// Only the person themselves may sign in.
+    /// Signs in with the person's account at `service`, and answers where they finish it
+    /// ([`SignInStarted`]): `ChatGPT` by `OpenAI`'s one-time code, GitHub Copilot and Hugging
+    /// Face by a code entered on their pages, Google Vertex AI and the Gemini API on Google's
+    /// own page, and `OpenRouter` on its page, which hands back an API key. The server waits
+    /// for the account to grant it, keeps the grant (or the key) in the workspace's vault and
+    /// renews it there; no window ever holds a token. Only the person themselves may sign in.
     #[effect(kind = "undoable", returns = SignInStarted)]
     BeginSignIn {
         #[param("What the account is used for: `subscription` when left out, or `api-usage`.")]
         using: Option<AccountUse>,
+        #[param(
+            "The service to sign in to: `chatgpt` when left out, `github-copilot`, `hugging-face`, `google-vertex`, `google-gemini` or `openrouter`."
+        )]
+        service: Option<String>,
+        #[param("The Google Cloud project billed for a Vertex AI or Gemini sign-in.")]
+        project: Option<String>,
+        #[param("The Gemini or Vertex AI model to answer with.")]
+        model: Option<String>,
     },
     /// Wait for a provider sign-in
     #[effect(kind = "read", returns = SignInState)]

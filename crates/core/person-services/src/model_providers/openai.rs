@@ -19,15 +19,13 @@
 //! the account's API organisation instead, as Codex does, and keeps that as
 //! an ordinary `OpenAI` provider key.
 
-use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_provider_config::presets::{CHATGPT_ENDPOINT, Preset};
 use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, transform};
 use serde::{Deserialize, Serialize};
-use tilo_lock::MutexRecover as _;
 use tilo_net::proxy::host::guarded_client;
 use tilo_workspace_records::models::{AccountUse, ProviderView, SignInStarted, SignInState};
 use zeroize::Zeroizing;
@@ -44,8 +42,6 @@ const CODEX_CLIENT: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_ISSUER: &str = "https://auth.openai.com";
 /// How long a person has to enter their code, as Codex gives them.
 const SIGN_IN_LIFETIME: Duration = Duration::from_secs(15 * 60);
-/// How long one wait for a sign-in is answered after at the latest.
-const WAIT_ANSWER: Duration = Duration::from_secs(20);
 /// How long one request to `OpenAI`'s sign-in may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long before it expires an access token is refreshed.
@@ -180,34 +176,16 @@ impl Drop for Tokens {
     }
 }
 
-/// One sign-in a person began and has not finished.
-struct Pending {
-    person: [u8; 32],
-    state: tokio::sync::watch::Receiver<SignInState>,
-    task: tokio::task::AbortHandle,
-}
-
-/// The sign-ins people are in the middle of, and the one refresh of a grant
-/// at a time.
-#[derive(Default)]
-pub(crate) struct SignIns {
-    pending: Mutex<HashMap<String, Pending>>,
-    /// `OpenAI` replaces a refresh token at each use and refuses the old
-    /// one: two calls that both found a grant stale refresh it one after
-    /// the other, and the second finds it fresh.
-    refreshing: tokio::sync::Mutex<()>,
-}
-
-impl Drop for SignIns {
-    fn drop(&mut self) {
-        for pending in self.pending.lock_recover().values() {
-            pending.task.abort();
-        }
-    }
-}
-
 fn now_secs() -> u64 {
     tilo_clock::unix_now()
+}
+
+/// A `ChatGPT` sign-in begun: what the person enters, how its wait goes, and
+/// the task that waits.
+pub(super) struct Started {
+    pub(super) begun: SignInStarted,
+    pub(super) state: tokio::sync::watch::Receiver<SignInState>,
+    pub(super) task: tokio::task::AbortHandle,
 }
 
 impl crate::PersonServices {
@@ -226,19 +204,19 @@ impl crate::PersonServices {
         self.inner.models.openai()
     }
 
-    /// Begin `person`'s sign-in for `workspace` ([`BEGIN_SIGN_IN`]): ask
-    /// `OpenAI` for a code, then wait for the person on a task of its own,
-    /// and keep the grant in the workspace's vault. A person signs in once
-    /// at a time: one begun before is let go.
+    /// Begin `person`'s sign-in with `OpenAI` for `workspace`
+    /// ([`BEGIN_SIGN_IN`]): ask `OpenAI` for a code, and answer where it is
+    /// entered with the task that waits for the person and keeps the grant.
+    /// Whoever keeps the begun sign-ins registers the task.
     ///
     /// [`BEGIN_SIGN_IN`]: tilo_workspace_records::models::BEGIN_SIGN_IN
-    pub(super) async fn begin_openai_sign_in(
+    pub(super) async fn start_chatgpt_sign_in(
         &self,
         (person, workspace): ([u8; 32], &str),
         using: AccountUse,
         reach: Reach,
         call: Option<tilo_actions::remote::InvokeRequest>,
-    ) -> Result<SignInStarted, String> {
+    ) -> Result<Started, String> {
         let openai = self.openai();
         let code: UserCode = post_json(
             &reach,
@@ -258,6 +236,7 @@ impl crate::PersonServices {
         let workspaces = self.clone();
         let device = code.clone();
         let workspace = workspace.to_owned();
+        let page = openai.page();
         let task = tokio::spawn(async move {
             let outcome = workspaces
                 .signed_in(
@@ -280,78 +259,15 @@ impl crate::PersonServices {
         })
         .abort_handle();
         let started = SignInStarted {
-            sign_in: id.clone(),
+            sign_in: id,
             code: code.user_code,
-            page: self.openai().page(),
+            page,
         };
-        {
-            let mut pending = self.inner.models.sign_ins.pending.lock_recover();
-            pending.retain(|_, other| {
-                let theirs = other.person == person;
-                if theirs {
-                    other.task.abort();
-                }
-                !theirs
-            });
-            pending.insert(
-                id,
-                Pending {
-                    person,
-                    state,
-                    task,
-                },
-            );
-        }
-        Ok(started)
-    }
-
-    /// How `person`'s sign-in goes ([`WAIT_SIGN_IN`]): answered as soon as
-    /// it changed, or after a while as still waiting. A sign-in that ended
-    /// is answered once and then forgotten.
-    ///
-    /// [`WAIT_SIGN_IN`]: tilo_workspace_records::models::WAIT_SIGN_IN
-    pub(super) async fn wait_openai_sign_in(
-        &self,
-        person: [u8; 32],
-        sign_in: &str,
-    ) -> Result<SignInState, String> {
-        let mut state = self
-            .inner
-            .models
-            .sign_ins
-            .pending
-            .lock_recover()
-            .get(sign_in)
-            .filter(|pending| pending.person == person)
-            .map(|pending| pending.state.clone())
-            .ok_or_else(|| "That sign-in has ended. Begin it again.".to_owned())?;
-        if *state.borrow_and_update() == SignInState::Waiting {
-            let _ = tokio::time::timeout(WAIT_ANSWER, state.changed()).await;
-        }
-        let now = state.borrow().clone();
-        if now != SignInState::Waiting {
-            self.inner
-                .models
-                .sign_ins
-                .pending
-                .lock_recover()
-                .remove(sign_in);
-        }
-        Ok(now)
-    }
-
-    /// Let go of `person`'s sign-in ([`CANCEL_SIGN_IN`]).
-    ///
-    /// [`CANCEL_SIGN_IN`]: tilo_workspace_records::models::CANCEL_SIGN_IN
-    pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], sign_in: &str) {
-        let mut pending = self.inner.models.sign_ins.pending.lock_recover();
-        if pending
-            .get(sign_in)
-            .is_some_and(|pending| pending.person == person)
-            && let Some(pending) = pending.remove(sign_in)
-        {
-            pending.task.abort();
-        }
+        Ok(Started {
+            begun: started,
+            state,
+            task,
+        })
     }
 
     /// Wait for the person to enter `code`, take the account's grant, and
@@ -432,7 +348,7 @@ impl Models {
     /// The access token of the grant the workspace's vault (`keys`) keeps for
     /// `profile`, refreshed first when it expires soon, or with `force`
     /// when the backend just turned it away.
-    pub(crate) async fn fresh_access(
+    pub(crate) async fn chatgpt_access(
         &self,
         (keys, root): (ProviderKeys<'_>, &Path),
         profile: &ProviderProfile,

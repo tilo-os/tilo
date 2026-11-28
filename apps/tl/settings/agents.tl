@@ -17,6 +17,8 @@ view agent_models_pane() {
     state sign_in_page: Text = ""
     state sign_in_note: Text = ""
     state providers_before: Int = 0
+    state vertex_project: Text = ""
+    state vertex_model: Text = ""
     let m = settings.agent_models
     let p = models.models
     ui.Section("Agents answer with") {
@@ -47,17 +49,19 @@ view agent_models_pane() {
         )
         if sign_in != "" and p.providers.len() <= providers_before {
             if sign_in_page != "" {
-                ui.Link(sign_in_page, label: "Open OpenAI's page")
+                ui.Link(sign_in_page, label: "Open the page to finish signing in")
             }
-            row(gap: .related, align: .center, wrap: true) {
-                ui.Text("Enter the code there:", role: .caption)
-                ui.Text(sign_in_code, role: .code)
+            if sign_in_code != "" {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Text("Enter the code there:", role: .caption)
+                    ui.Text(sign_in_code, role: .code)
+                }
             }
             ui.Text(
                 if sign_in_note != "" {
                     sign_in_note
                 } else {
-                    "Waiting for you to enter the code. This page finishes the sign-in on its own when you do."
+                    "Waiting for you to finish signing in. Check it once you have."
                 },
                 role: .caption,
                 secondary: true,
@@ -66,7 +70,21 @@ view agent_models_pane() {
                 ui.Button("Check the sign-in", size: .small) {
                     on press: {
                         let state = models.wait_sign_in(models.models, signIn: sign_in)
-                        set(sign_in_note, sign_in_words(state))
+                        match state {
+                            .done(provider) => set(
+                                    sign_in_note,
+                                    "Signed in: {provider.name} is ready to answer.",
+                                )
+                                .then(set(sign_in, "")),
+                            .waiting => set(
+                                sign_in_note,
+                                "Still waiting for you to finish signing in.",
+                            ),
+                            .failed(reason) => set(
+                                sign_in_note,
+                                "The sign-in did not finish: {reason}",
+                            ),
+                        }
                     }
                 }
                 ui.Button("Cancel the sign-in", size: .small) {
@@ -77,12 +95,102 @@ view agent_models_pane() {
                 }
             }
         }
-        let known = signed_in.any(x -> x.configured) or sign_in != ""
-        if not known {
+        if sign_in == "" {
+            if not signed_in.any(x -> x.configured) {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.Button("Sign in with ChatGPT", icon: .fingerprint) {
+                        on press: {
+                            let step = models.begin_sign_in(models.models, using: .subscription)
+                            set(providers_before, models.models.providers.len())
+                                .then(set(sign_in, step.sign_in))
+                                .then(set(sign_in_code, step.code))
+                                .then(set(sign_in_page, step.page))
+                                .then(set(sign_in_note, ""))
+                        }
+                    }
+                    ui.Button("Sign in with API usage instead", size: .small) {
+                        on press: {
+                            let step = models.begin_sign_in(models.models, using: .api-usage)
+                            set(providers_before, models.models.providers.len())
+                                .then(set(sign_in, step.sign_in))
+                                .then(set(sign_in_code, step.code))
+                                .then(set(sign_in_page, step.page))
+                                .then(set(sign_in_note, ""))
+                        }
+                    }
+                }
+                ui.Text(
+                    "A ChatGPT plan answers on the subscription you pay for. API usage bills your OpenAI organization per token.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
             row(gap: .related, align: .center, wrap: true) {
-                ui.Button("Sign in with ChatGPT", icon: .fingerprint) {
+                ui.MenuButton("Sign in to another provider", icon: .fingerprint) {
+                    ui.MenuItem("GitHub Copilot", icon: .fingerprint) {
+                        on choose: {
+                            let step = models.begin_sign_in(
+                                models.models,
+                                service: "github-copilot",
+                            )
+                            set(providers_before, models.models.providers.len())
+                                .then(set(sign_in, step.sign_in))
+                                .then(set(sign_in_code, step.code))
+                                .then(set(sign_in_page, step.page))
+                                .then(set(sign_in_note, ""))
+                        }
+                    }
+                    ui.MenuItem("OpenRouter", icon: .key) {
+                        on choose: {
+                            let step = models.begin_sign_in(models.models, service: "openrouter")
+                            set(providers_before, models.models.providers.len())
+                                .then(set(sign_in, step.sign_in))
+                                .then(set(sign_in_code, step.code))
+                                .then(set(sign_in_page, step.page))
+                                .then(set(sign_in_note, ""))
+                        }
+                    }
+                    ui.MenuItem(
+                        "Hugging Face, for this computer's model downloads",
+                        icon: .download,
+                    ) {
+                        on choose: {
+                            let step = models.begin_sign_in(models.models, service: "hugging-face")
+                            set(providers_before, models.models.providers.len())
+                                .then(set(sign_in, step.sign_in))
+                                .then(set(sign_in_code, step.code))
+                                .then(set(sign_in_page, step.page))
+                                .then(set(sign_in_note, ""))
+                        }
+                    }
+                }
+            }
+            ui.Text(
+                "Vertex AI and the Gemini API sign in with your Google account, billed to a Cloud project.",
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(
+                    bind: vertex_project,
+                    placeholder: "Your Google Cloud project id",
+                    fill,
+                )
+                ui.TextInput(
+                    bind: vertex_model,
+                    placeholder: "The model, such as gemini-4-argon",
+                    fill,
+                )
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Sign in to Vertex AI", size: .small) {
                     on press: {
-                        let step = models.begin_sign_in(models.models, using: .subscription)
+                        let step = models.begin_sign_in(
+                            models.models,
+                            service: "google-vertex",
+                            project: vertex_project,
+                            model: vertex_model,
+                        )
                         set(providers_before, models.models.providers.len())
                             .then(set(sign_in, step.sign_in))
                             .then(set(sign_in_code, step.code))
@@ -90,9 +198,14 @@ view agent_models_pane() {
                             .then(set(sign_in_note, ""))
                     }
                 }
-                ui.Button("Sign in with API usage instead", size: .small) {
+                ui.Button("Sign in to Gemini", size: .small) {
                     on press: {
-                        let step = models.begin_sign_in(models.models, using: .api-usage)
+                        let step = models.begin_sign_in(
+                            models.models,
+                            service: "google-gemini",
+                            project: vertex_project,
+                            model: vertex_model,
+                        )
                         set(providers_before, models.models.providers.len())
                             .then(set(sign_in, step.sign_in))
                             .then(set(sign_in_code, step.code))
@@ -101,11 +214,6 @@ view agent_models_pane() {
                     }
                 }
             }
-            ui.Text(
-                "A ChatGPT plan answers on the subscription you pay for. API usage bills your OpenAI organization per token.",
-                role: .caption,
-                secondary: true,
-            )
         }
     }
     ui.Section("The model each kind of work runs on") {
