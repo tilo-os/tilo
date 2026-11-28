@@ -7021,7 +7021,6 @@ impl RuntimeActionProvider {
     /// answers, as an app and an agent are.
     fn resolve_asked(
         &self,
-        caller: &Caller,
         request: &InvokeRequest,
         session: &AdmittedRuntimeSession,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
@@ -7071,7 +7070,7 @@ impl RuntimeActionProvider {
             return tree.answers.invoke(&device, request);
         }
         if tilo_actions::remote::asked::is_resolve(&request.target) {
-            return self.resolve_asked(caller, &request, session);
+            return self.resolve_asked(&request, session);
         }
         // What an agent asks shown goes on its person's layout, where their devices show it.
         if session.agent.is_some()
