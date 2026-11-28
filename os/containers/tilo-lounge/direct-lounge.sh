@@ -58,7 +58,6 @@ run_lounge() {
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \
     ${LOUNGE_LOG:+TILO_SERVER_LOG="$LOUNGE_LOG"} \
     ${lounge_apps:+TILO_APPS_DATA_DIR="$lounge_volume/apps"} \
-    ${lounge_apps:+TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$lounge_apps/runtime-publishers.txt"} \
     ${lounge_apps:+TILO_LAUNCHER_PATH="$lounge_bin/tilo-launcher"} \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$lounge_volume/secrets" \
@@ -218,11 +217,12 @@ start_lounge() {
       sh "$lounge_here/install-apps.sh" "$lounge_apps/packages" "$volume/apps" >&2 \
       || lounge_fail 'could not install the apps the workspace runs'
     # The runtimes the apps execute, where a device keeps the ones it fetched:
-    # the data directory of the server's runtime profile, which the image's
-    # entry point makes its volume and the daemon names its data directory
-    # itself, under the names a Tilo program resolves without being told.
-    mkdir -p -m 0700 "$volume" "$volume/data"
-    ln -sfn "$lounge_apps/runtimes" "$volume/data/tilo-runtime"
+    # its store's runtimes/<version>, each one the apps' own.
+    local version
+    mkdir -p "$volume/apps/runtimes"
+    for version in "$lounge_apps"/runtimes/*/; do
+      ln -sfn "${version%/}" "$volume/apps/runtimes/$(basename "$version")"
+    done
   fi
 
   # This Lounge's server configuration: its web UI and packet relay on this

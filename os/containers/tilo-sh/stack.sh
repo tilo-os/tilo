@@ -1190,6 +1190,27 @@ system_bwrap() {
   printf '%s\0' --overlay-src /usr/bin --tmp-overlay /usr/bin --ro-bind "$(command -v bwrap)" /usr/bin/bwrap
 }
 
+# image_trust: the bwrap arguments that add the publisher this stack's apps and runtimes are
+# signed with to the runtime publishers this machine trusts, for the program they start, as the
+# image lists it in its /etc/tilo. A release build reads that trust from the system's paths
+# alone, so on a Tilo machine, whose list names only Tilo's publishers, the stack's runtimes
+# would otherwise be refused while the registry's still run. A machine with no list trusts any
+# signed runtime already, and is given nothing; nor is any before the apps are laid out.
+image_trust() {
+  local list=${lounge:-$native/lounge}/runtime-publishers.txt
+  local system=/etc/tilo/runtime-bundle-trusted-publishers.txt merged=$state/runtime-publishers.txt
+  [[ -f $list ]] || return 0
+  if [[ -f $system ]]; then
+    cat "$system" "$list" > "$merged"
+    printf '%s\0' --ro-bind "$merged" "$system"
+  elif compgen -G '/usr/share/tilo/*-publisher.hex' >/dev/null; then
+    # Its pins alone (/usr/share/tilo) trust only Tilo's: the list is the stack's, beside them.
+    [[ -d /etc/tilo ]] || die 'this machine pins its runtime publishers but has no /etc/tilo to list the stack'"'"'s beside them'
+    cp "$list" "$merged"
+    printf '%s\0' --tmpfs /etc/tilo --ro-bind "$merged" "$system"
+  fi
+}
+
 # owner_run COMMAND…: COMMAND as the stack's own person (as_owner), with their home and
 # runtime directory, seeing bwrap where the image has it (system_bwrap): the device holder it
 # starts launches the person's apps.
@@ -1200,7 +1221,7 @@ owner_run() {
   # private and short (stack_runtime).
   run=$(stack_runtime owner) || exit 1
   local placed=()
-  mapfile -d '' -t placed < <(system_bwrap)
+  mapfile -d '' -t placed < <(image_trust; system_bwrap)
   [[ ${#placed[@]} == 0 ]] || set -- "$(command -v bwrap)" --dev-bind / / "${placed[@]}" -- "$@"
   # No session bus of this login's: every stack's person here would take the same name on it.
   env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=$run \
@@ -2147,14 +2168,16 @@ run_native() {
   local name=$1 dir=$2
   shift 2
   stop_native "$name"
-  local envs=() placed=()
+  local envs=() trust=() placed=()
   mapfile -t envs < "$runs/$name.env"
-  # The server's apps start in bwrap as the image places it (system_bwrap).
+  # The runtime trust the image carries (image_trust), under the stack's CA bundle, and the
+  # server's apps start in bwrap as the image places it (system_bwrap).
+  mapfile -d '' -t trust < <(image_trust)
   mapfile -d '' -t placed < <(system_bwrap)
   # bwrap as the caller's PATH finds it (the preflight's check), since the service's own
   # environment, which env -i starts it with, need not name where it is.
   setsid env -i "${envs[@]}" \
-    "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" "${placed[@]}" \
+    "$(command -v bwrap)" --dev-bind / / "${trust[@]}" --ro-bind "$state/trust-bundle.pem" "$ca_path" "${placed[@]}" \
     --chdir "$dir" -- "$@" \
     >> "$state/logs/$name.log" 2>&1 < /dev/null 9>&- &
   echo $! > "$runs/$name.pid"
@@ -2228,25 +2251,21 @@ start_native_server() {
     # and the product font catalog its components lay text out from.
     printf '%s\n' "TILO_SURFACES=$lounge/surfaces"
     printf '%s\n' "TILO_FONT_CATALOG=${font_catalog:-$lounge/fonts}"
-    # The store the apps were installed into, and the key they and the
-    # packages are trusted by. The image keeps both where a Tilo program looks
-    # by itself (the store a device's own, the list in /etc/tilo); outside it
-    # they are this context's, and the launcher — a `lounge-check` build, which
-    # honours where the trust list is — is told.
+    # The store the apps were installed into, and the launcher they start through. The key
+    # they are trusted by is where the image keeps it, in /etc/tilo (image_trust).
     printf '%s\n' "TILO_APPS_DATA_DIR=$state/$name/apps" \
-      "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$lounge/runtime-publishers.txt" \
       "TILO_LAUNCHER_PATH=$lounge/bin/tilo-launcher"
     [[ ${#ticket[@]} == 0 ]] || printf '%s\n' "${ticket[@]}"
     server_env "$name"
   } > "$runs/$name.env"
-  # The runtimes the apps execute, where a device keeps the ones it fetched:
-  # the data directory of the server's runtime profile, which the image's entry
-  # point makes its state and the daemon names its data directory itself
-  # (whatever XDG_DATA_HOME it was started with), under the names a Tilo
-  # program resolves without being told. (`TILO_RUNTIME_BUNDLE_DIR` names
-  # another root, and a released program honours it in a developer build alone.)
-  mkdir -p -m 0700 "$state/$name" "$state/$name/data"
-  ln -sfn "$lounge/runtimes" "$state/$name/data/tilo-runtime"
+  # The runtimes the apps execute, where a device keeps the ones it fetched: its
+  # store's runtimes/<version>, each one this context's (the image's are in
+  # /usr/lib/tilo-runtime, which a Tilo program resolves as well).
+  local version
+  mkdir -p "$state/$name/apps/runtimes"
+  for version in "$lounge"/runtimes/*/; do
+    ln -sfn "${version%/}" "$state/$name/apps/runtimes/$(basename "$version")"
+  done
   run_native "$name" "$state/$name" sh "$lounge/entrypoint.sh"
 }
 
