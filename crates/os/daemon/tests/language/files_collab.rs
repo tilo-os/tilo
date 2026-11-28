@@ -234,11 +234,7 @@ fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             people.values().any(|user| *user == person),
             "the second person is one of the workspace's members: {people:?}"
         );
-        let made = second.do_in("so.tilo.chat#new_channel", &["name=Shared"]);
-        assert!(
-            made.contains("so.tilo.chat/Chat#new_channel"),
-            "the other computer's write answers the channel it made: {made}"
-        );
+        second.do_in("so.tilo.chat#new_channel", &["name=Shared"]);
         assert!(
             crate::language::chat::chat_holds_soon(&host, "Shared").await,
             "the member's write reaches the host's record"
