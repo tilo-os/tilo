@@ -30,9 +30,9 @@ pub(crate) struct Devices {
     pub(crate) pressed: Rc<RefCell<Vec<devices::Press>>>,
     /// The accessories the person asked to move to another device, carried out by the loop.
     pub(crate) handed: Rc<RefCell<Vec<devices::HandOff>>>,
-    /// The connections the person asked to use (the device's id) or stop using (`None`), carried
-    /// out by the loop.
-    pub(crate) connections: Rc<RefCell<Vec<Option<String>>>>,
+    /// What the person asked of their other devices that needs the record and their answer
+    /// there, carried out by the loop.
+    pub(crate) errands: Rc<RefCell<Vec<devices::Errand>>>,
 }
 
 impl Shared {
@@ -48,11 +48,15 @@ impl Shared {
         for asked in handed {
             self.bluetooth.ask(&asked.address, &asked.device);
         }
-        let connections = std::mem::take(&mut *self.devices.connections.borrow_mut());
-        for asked in connections {
-            match asked {
-                Some(device) => self.tethering.use_connection(&device),
-                None => self.tethering.stop(),
+        let errands = std::mem::take(&mut *self.devices.errands.borrow_mut());
+        for errand in errands {
+            match errand {
+                devices::Errand::UseConnection(device) => self.tethering.use_connection(&device),
+                devices::Errand::StopConnection => self.tethering.stop(),
+                devices::Errand::UseRemote { device, kind } => {
+                    self.remote_uses.start(&device, kind);
+                }
+                devices::Errand::StopRemote(id) => self.remote_uses.stop(&id),
             }
         }
     }

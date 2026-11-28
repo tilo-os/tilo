@@ -1,5 +1,6 @@
 //! What one of the person's devices sends another of theirs alone, over the live link: their
-//! keyboard and pointer, driving it.
+//! keyboard and pointer, driving it, and what a camera, microphone, scanner or game controller of
+//! one is used for on the other ([`Lane`]).
 //!
 //! Each device's daemon relays a scope of its own in the person's own workspace
 //! ([`collab_types::scope::Scope::device`]). This session holds no key, so it opens a link on its
@@ -36,14 +37,50 @@ impl std::fmt::Debug for OwnDevices {
     }
 }
 
+/// What a message is for: each lane is heard apart from the others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Lane {
+    /// The keyboard and pointer of a device driving another.
+    Input,
+    /// A remote use of a camera, microphone, scanner or game controller
+    /// ([`crate::remote_use`]).
+    RemoteUse,
+}
+
+impl Lane {
+    const fn tag(self) -> u8 {
+        match self {
+            Self::Input => 0,
+            Self::RemoteUse => 1,
+        }
+    }
+
+    const fn of(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(Self::Input),
+            1 => Some(Self::RemoteUse),
+            _ => None,
+        }
+    }
+}
+
+/// What was heard on one lane, each with its sender.
+type Heard = VecDeque<([u8; 32], Vec<u8>)>;
+
+/// The most messages a lane keeps for the pass that reads it: a lane nobody reads drops the
+/// oldest rather than grow.
+const KEPT_PER_LANE: usize = 4_096;
+
 #[derive(Default)]
 struct State {
     /// The links this device publishes to each device it sends to, by that device.
     to: BTreeMap<[u8; 32], Sending>,
     /// The link into this device's own scope: what the devices driving it send.
     here: Receiving,
-    /// The devices this device's own scope is read for, as last told.
-    heard_from: BTreeSet<[u8; 32]>,
+    /// The devices this device's own scope is read for on each lane, as last told.
+    heard_from: BTreeMap<Lane, BTreeSet<[u8; 32]>>,
+    /// What was heard on each lane and not yet read, with its sender.
+    inbox: BTreeMap<Lane, Heard>,
 }
 
 enum Sending {
@@ -78,13 +115,18 @@ impl OwnDevices {
         }
     }
 
-    /// Send `body` to the person's device `to`, after what was sent to it before: `false` when it
-    /// cannot go, because this session has no link to its daemon yet or the link toward the
-    /// other device ended. The first message to a device opens the link, and goes once it opens.
-    pub(crate) fn send(&self, to: [u8; 32], body: Vec<u8>) -> bool {
+    /// Send `body` on `lane` to the person's device `to`, after what was sent to it before:
+    /// `false` when it cannot go, because this session has no link to its daemon yet or the link
+    /// toward the other device ended. The first message to a device opens the link, and goes
+    /// once it opens.
+    pub(crate) fn send(&self, to: [u8; 32], lane: Lane, body: Vec<u8>) -> bool {
         if to == self.shared.device {
             return false;
         }
+        let mut tagged = Vec::with_capacity(body.len().saturating_add(1));
+        tagged.push(lane.tag());
+        tagged.extend(body);
+        let body = tagged;
         let mut state = self.state.lock_recover();
         match state.to.get_mut(&to) {
             Some(Sending::Opening(waiting)) => {
@@ -131,15 +173,15 @@ impl OwnDevices {
         true
     }
 
-    /// What the person's devices `from` sent this one since it was last asked, in the order each
-    /// sent it, with the device that sealed it. This device's own scope is joined on the first
-    /// ask; its daemon hears every device of the person there, and what a device not in `from`
-    /// sent is left out here.
-    pub(crate) fn heard(&self, from: &BTreeSet<[u8; 32]>) -> Vec<([u8; 32], Vec<u8>)> {
+    /// What the person's devices `from` sent this one on `lane` since it was last asked, in the
+    /// order each sent it, with the device that sealed it. This device's own scope is joined on
+    /// the first ask; its daemon hears every device of the person there, and what a device not in
+    /// `from` sent is left out here.
+    pub(crate) fn heard(&self, lane: Lane, from: &BTreeSet<[u8; 32]>) -> Vec<([u8; 32], Vec<u8>)> {
         let mut state = self.state.lock_recover();
-        let heard_moved = state.heard_from != *from;
+        let heard_moved = state.heard_from.get(&lane) != Some(from);
         if heard_moved {
-            state.heard_from.clone_from(from);
+            state.heard_from.insert(lane, from.clone());
         }
         let call = match &state.here {
             Receiving::Open(call) if !call.ended() => Arc::clone(call),
@@ -174,10 +216,25 @@ impl OwnDevices {
                 return Vec::new();
             }
         };
-        drop(state);
-        std::iter::from_fn(|| call.try_recv())
-            .filter(|heard| heard.track == Track::Input && from.contains(&heard.sender))
-            .map(|heard| (heard.sender, heard.body))
+        for heard in std::iter::from_fn(|| call.try_recv()) {
+            let Some((&tag, body)) = heard.body.split_first() else {
+                continue;
+            };
+            let (Some(other), Track::Input) = (Lane::of(tag), heard.track) else {
+                continue;
+            };
+            let kept = state.inbox.entry(other).or_default();
+            if kept.len() == KEPT_PER_LANE {
+                kept.pop_front();
+            }
+            kept.push_back((heard.sender, body.to_vec()));
+        }
+        state
+            .inbox
+            .remove(&lane)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(sender, _)| from.contains(sender))
             .collect()
     }
 }
@@ -224,14 +281,14 @@ mod tests {
         let own = live.own_devices();
         let missed = || matches!(own.state.lock_recover().here, Receiving::Missed { .. });
         let one = BTreeSet::from([[1_u8; 32]]);
-        assert!(own.heard(&one).is_empty());
+        assert!(own.heard(Lane::Input, &one).is_empty());
         let deadline = Instant::now() + Duration::from_secs(10);
         while !missed() {
             assert!(Instant::now() < deadline, "the join never ended");
             std::thread::yield_now();
         }
         for _ in 0..100 {
-            assert!(own.heard(&one).is_empty());
+            assert!(own.heard(Lane::Input, &one).is_empty());
             assert!(missed(), "a pass joined the scope again");
         }
         assert_eq!(
@@ -241,7 +298,7 @@ mod tests {
         );
         // Another device to hear joins it again.
         assert!(
-            own.heard(&BTreeSet::from([[1_u8; 32], [2_u8; 32]]))
+            own.heard(Lane::Input, &BTreeSet::from([[1_u8; 32], [2_u8; 32]]))
                 .is_empty()
         );
         assert!(!missed(), "another device to hear did not join again");

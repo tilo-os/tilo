@@ -291,6 +291,10 @@ pub struct DevicesReading {
     /// or shares with one, while it does.
     #[serde(default)]
     pub connection: Option<tilo_device_surfaces::devices::ConnectionView>,
+    /// The cameras, microphones, scanners and game controllers this device uses of another of
+    /// the person's, or lends one, while it does.
+    #[serde(default)]
+    pub remote: Vec<tilo_device_surfaces::devices::RemoteUseView>,
 }
 
 impl DevicesReading {

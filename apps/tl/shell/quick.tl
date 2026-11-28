@@ -891,6 +891,7 @@ view devices_section() {
     let send = device.nearby_send
     if not mine.devices.is_empty()
         or mine.connection != .none
+        or not mine.remote.is_empty()
         or not mine.sounds.is_empty()
         or not mine.routes.is_empty()
         or not mine.asks.is_empty()
@@ -934,6 +935,25 @@ view devices_section() {
                     trailing: {
                         ui.Button("Stop", size: .small, role: .plain) {
                             on press: device.stop_connection(device.devices)
+                        }
+                    }
+                }
+            }
+            // The cameras, microphones, scanners and game controllers this device uses of
+            // another of the person's, or lends one.
+            for r in mine.remote {
+                ui.ListRow(
+                    remote_title(r),
+                    secondary: remote_line(r),
+                    icon: if r.kind == "camera" {
+                        .camera
+                    } else if r.kind == "microphone" {
+                        .mic
+                    } else if r.kind == "scanner" { .scan_line } else { .gamepad_2 },
+                ) {
+                    trailing: {
+                        ui.Button("Stop", size: .small, role: .plain) {
+                            on press: device.stop_remote(device.devices, id: r.id)
                         }
                     }
                 }
@@ -999,6 +1019,47 @@ view devices_section() {
                                             device.devices,
                                             device: d.id,
                                         )
+                                    }
+                                }
+                                if d.online {
+                                    ui.MenuButton(
+                                        "Use {d.label}'s camera, microphone or scanner",
+                                        icon: .camera,
+                                        icon_only: true,
+                                        size: .small,
+                                        role: .plain,
+                                    ) {
+                                        ui.MenuItem("Use its camera here", icon: .camera) {
+                                            on choose: device.use_remote(
+                                                device.devices,
+                                                device: d.id,
+                                                kind: "camera",
+                                            )
+                                        }
+                                        ui.MenuItem("Use its microphone here", icon: .mic) {
+                                            on choose: device.use_remote(
+                                                device.devices,
+                                                device: d.id,
+                                                kind: "microphone",
+                                            )
+                                        }
+                                        ui.MenuItem("Use its scanner here", icon: .scan_line) {
+                                            on choose: device.use_remote(
+                                                device.devices,
+                                                device: d.id,
+                                                kind: "scanner",
+                                            )
+                                        }
+                                        ui.MenuItem(
+                                            "Play on it with this game controller",
+                                            icon: .gamepad_2,
+                                        ) {
+                                            on choose: device.use_remote(
+                                                device.devices,
+                                                device: d.id,
+                                                kind: "controller",
+                                            )
+                                        }
                                     }
                                 }
                                 if d.online {
@@ -1161,6 +1222,25 @@ fn connection_line(c: device.ConnectionView) -> Text {
     } else if c.network != "" {
         "Joining the hotspot {c.network}"
     } else if c.sharing { "Waiting for your answer" } else { "Waiting for an answer there" }
+}
+
+/// What a camera, microphone, scanner or game controller used between this device and another of
+/// the person's is, in a row.
+fn remote_title(r: device.RemoteUseView) -> Text {
+    if r.kind == "controller" {
+        if r.asking {
+            "This game controller plays on {r.label}"
+        } else { "{r.label}'s game controller plays here" }
+    } else if r.asking {
+        "Using {r.label}'s {r.kind} in {r.app}"
+    } else { "{r.label} uses this device's {r.kind}" }
+}
+
+/// How far a remote use got: waiting for a yes, or running.
+fn remote_line(r: device.RemoteUseView) -> Text {
+    if not r.granted {
+        if r.asking { "Waiting for an answer there" } else { "Waiting for your answer" }
+    } else if r.kind == "controller" { "In {r.app}" } else { "Stops when {r.app} leaves the front" }
 }
 
 /// Where a device of the person's stands in the Nearby Send list.

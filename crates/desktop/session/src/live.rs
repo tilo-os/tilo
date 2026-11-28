@@ -34,7 +34,7 @@ use tilo_lock::MutexRecover as _;
 use crate::followed_resource::FollowedReading;
 
 mod own_devices;
-pub(crate) use own_devices::OwnDevices;
+pub(crate) use own_devices::{Lane, OwnDevices};
 
 /// How a live session is read by the capture loops: the one session surface, whether it is the
 /// daemon's (over the link) or a local one in a test.

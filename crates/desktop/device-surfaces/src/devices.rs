@@ -3,6 +3,9 @@
 
 use tilo_resource::Effect;
 
+/// What one of the person's devices can use of another, as a remote use names it.
+pub const REMOTE_KINDS: [&str; 4] = ["camera", "microphone", "scanner", "controller"];
+
 /// The reasons a key's access ends, as the record's revocations keep them.
 pub const REASONS: [&str; 4] = ["retired", "lost", "stolen", "compromised"];
 
@@ -85,6 +88,32 @@ pub enum DevicesAction {
     #[effect(kind = "outside")]
     #[effect(own_device)]
     StopConnection,
+    /// Use another of the person's devices' camera, microphone, scanner or game controller
+    ///
+    /// Its camera, microphone or scanner serves the app in front here; this device's game
+    /// controller plays the app in front there. The device whose camera, microphone or scanner it is asks its person, naming the app; a
+    /// controller's goes to the app the other device has in front, as its person says yes there.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        keywords = "remote camera, webcam, microphone, scanner, gamepad, game controller"
+    )]
+    UseRemote {
+        /// The other device, as the reading lists its id.
+        #[param("The other device")]
+        device: String,
+        /// What to use: `camera`, `microphone`, `scanner`, or `controller` to send this device's.
+        #[param("What to use", choices = REMOTE_KINDS)]
+        kind: String,
+    },
+    /// Stop using another device's camera, microphone, scanner or game controller
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    StopRemote {
+        /// The use, as the reading lists it.
+        #[param("The use, as the reading lists it")]
+        id: String,
+    },
     /// Start a new person on this device, when no person's certificate names it yet
     #[effect(kind = "outside")]
     #[effect(own_device)]
@@ -162,6 +191,41 @@ pub struct DevicesView {
     /// while it does.
     #[serde(default)]
     pub connection: Option<ConnectionView>,
+    /// The cameras, microphones, scanners and game controllers this device uses of another of
+    /// the person's, or lends one, while it does.
+    #[serde(default)]
+    pub remote: Vec<RemoteUseView>,
+}
+
+/// A camera, microphone, scanner or game controller one of the person's devices uses of another.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+pub struct RemoteUseView {
+    /// The use, which stopping it names.
+    pub id: String,
+    /// The other device, by its id.
+    pub device: String,
+    /// What the person calls it.
+    pub label: String,
+    /// `camera`, `microphone`, `scanner` or `controller`.
+    pub kind: String,
+    /// The app it is for: the one it is used in, or, for a controller, its name until it is
+    /// granted.
+    pub app: String,
+    /// This device asked for it, rather than deciding.
+    pub asking: bool,
+    /// Its person said yes: it runs until `until_ms`.
+    pub granted: bool,
+    /// When it stops unless renewed, in Unix milliseconds; 0 while it waits for a yes.
+    pub until_ms: i64,
 }
 
 /// A connection one of the person's devices shares with another for a while.

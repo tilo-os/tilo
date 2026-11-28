@@ -867,6 +867,7 @@ impl Session {
                 .borrow()
                 .attach_record(record, devices.cert(), continuity.clone());
         }
+        let continuity_switches = continuity.clone();
         // What app each of the person's devices has in front is offered to the others through the
         // record of them too: this device's own front, and what the bar's chip offers to continue.
         let continuity_offers = Rc::new(RefCell::new(crate::continuity::Across::default()));
@@ -1950,6 +1951,10 @@ impl Session {
             continuity: continuity_offers,
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),
             tethering: crate::tethering::Tethering::new(options.wifi_sharing.clone()),
+            remote_uses: crate::remote_use::RemoteUses::new(
+                sync.as_ref().and_then(|sync| sync.own_devices()),
+                continuity_switches,
+            ),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: crate::wake::Wake::new(),
             keyboard_and_pointer: shared_input,
@@ -2164,7 +2169,7 @@ impl Session {
                         handoff: Rc::clone(&shared.handoff),
                         pressed: Rc::clone(&shared.devices.pressed),
                         handed: Rc::clone(&shared.devices.handed),
-                        connections: Rc::clone(&shared.devices.connections),
+                        errands: Rc::clone(&shared.devices.errands),
                         refused: std::sync::Arc::clone(&shared.devices.refused),
                         tools: backup_tools,
                     },

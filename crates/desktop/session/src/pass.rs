@@ -1024,6 +1024,9 @@ impl Session {
             // A connection one of the person's devices shares with another, and the shares under
             // way.
             self.shared.tethering.pump(&self.shared, fabric);
+            // A camera, microphone, scanner or game controller one of the person's devices uses
+            // of another, and the uses under way.
+            self.shared.remote_uses.pump(&self.shared, fabric);
             // How the wakes of the person's sleeping devices this device asked ended.
             self.shared.waking.follow(&self.shared);
             self.shared.follow_device_vpn(fabric);

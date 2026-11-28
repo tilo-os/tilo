@@ -44,6 +44,8 @@ pub struct Continuity {
     notifications: Arc<AtomicBool>,
     apps: Arc<AtomicBool>,
     display_input: Arc<AtomicBool>,
+    realtime_sessions: Arc<AtomicBool>,
+    typed_gamepad: Arc<AtomicBool>,
 }
 
 impl Continuity {
@@ -54,6 +56,11 @@ impl Continuity {
             (&self.file_transfer, ContinuityCapability::FileTransfer),
             (&self.notifications, ContinuityCapability::Notifications),
             (&self.apps, ContinuityCapability::AppContinuations),
+            (
+                &self.realtime_sessions,
+                ContinuityCapability::RealtimeSessions,
+            ),
+            (&self.typed_gamepad, ContinuityCapability::TypedGamepad),
         ] {
             switch.store(facet.allowed_in(document), Ordering::Relaxed);
         }
@@ -92,6 +99,22 @@ impl Continuity {
     /// Whether the person's other devices may drive this one's keyboard and pointer.
     pub(crate) fn display_input_permitted(&self) -> bool {
         self.display_input.load(Ordering::Relaxed)
+    }
+
+    /// Whether the person lets `kind` cross between this device and their others: a camera,
+    /// microphone or scanner with realtime sessions on, a game controller with game controllers
+    /// on.
+    pub(crate) fn remote_use_permitted(
+        &self,
+        kind: tilo_workspace_service::workspaces::person_workspace::devices::RemoteKind,
+    ) -> bool {
+        use tilo_workspace_service::workspaces::person_workspace::devices::RemoteKind;
+        match kind {
+            RemoteKind::Controller => self.typed_gamepad.load(Ordering::Relaxed),
+            RemoteKind::Camera | RemoteKind::Microphone | RemoteKind::Scanner => {
+                self.realtime_sessions.load(Ordering::Relaxed)
+            }
+        }
     }
 
     /// Whether the person lets files they send move to their other devices.

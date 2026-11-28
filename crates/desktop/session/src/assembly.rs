@@ -236,6 +236,11 @@ pub(crate) struct Shared {
     /// this device's person answers, and the hotspot work each share needs.
     #[cfg(target_os = "linux")]
     pub(crate) tethering: crate::tethering::Tethering,
+    /// Using another of the person's devices' camera, microphone or scanner here, and sending this
+    /// device's game controller to one: the questions this device's person answers, and the
+    /// hardware and virtual devices each use needs.
+    #[cfg(target_os = "linux")]
+    pub(crate) remote_uses: crate::remote_use::RemoteUses,
     /// The session another of the person's devices handed this one, as the
     /// now-playing card shows it, until they continue it here: published
     /// beside the person's devices.

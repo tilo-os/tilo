@@ -432,14 +432,7 @@ impl crate::Shared {
     /// them, when the front window or the resource it shows moved: the app, the resource and the
     /// view it shows it through.
     pub(crate) fn offer_front(&self) {
-        // The window in front is the one the keyboard is in, when a window holds it: a shell that
-        // draws its windows itself (the tilolang shell) holds the keyboard, and the window in
-        // front there is the one the layout's own record says the person brought forward
-        // ([`tilo_session_core::layout::Layout::tab_in_front`]).
-        let tab = self
-            .desktop
-            .with_policy(|policy| policy.focused_tab())
-            .or_else(|| self.layout.borrow().tab_in_front());
+        let tab = self.tab_in_front();
         let resources = self.layout.borrow().window_resources();
         let resource = tab
             .and_then(|tab| resources.get(&tab).cloned())
@@ -464,6 +457,35 @@ impl crate::Shared {
             .flatten()
             .filter(|front| !front.app_id.is_empty());
         across.offer(front, now_ms());
+    }
+
+    /// The window in front: the one the keyboard is in, when a window holds it. A shell that
+    /// draws its windows itself (the tilolang shell) holds the keyboard, and the window in front
+    /// there is the one the layout's own record says the person brought forward
+    /// ([`tilo_session_core::layout::Layout::tab_in_front`]).
+    fn tab_in_front(&self) -> Option<u64> {
+        self.desktop
+            .with_policy(|policy| policy.focused_tab())
+            .or_else(|| self.layout.borrow().tab_in_front())
+    }
+
+    /// The app this device has in front, as a remote use names it: the app, the workspace its
+    /// window is in, the window, and the app's name.
+    pub(crate) fn remote_front(&self) -> Option<crate::remote_use::Front> {
+        let key = self.tab_in_front()?.to_string();
+        let reading = self.layout.borrow().reading();
+        let place = reading.places.into_iter().find(|place| place.key == key)?;
+        let workspace = reading
+            .strips
+            .into_iter()
+            .find(|strip| strip.key == place.strip)?
+            .workspace;
+        (!place.shows.is_empty()).then(|| crate::remote_use::Front {
+            name: crate::app_names::app_name(&place.shows),
+            app: place.shows,
+            workspace,
+            session: place.key,
+        })
     }
 
     /// Open here what the person took from another of their devices: the app at the resource it

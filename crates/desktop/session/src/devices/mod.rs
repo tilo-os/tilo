@@ -310,8 +310,8 @@ pub(crate) struct Served {
     pressed: Rc<RefCell<Vec<Press>>>,
     /// The accessories the person asked to move to another device.
     handed: Rc<RefCell<Vec<HandOff>>>,
-    /// The connections the person asked to use (the device's id) or stop using (`None`).
-    connections: Rc<RefCell<Vec<Option<String>>>>,
+    /// What the person asked of their other devices that the loop carries out.
+    errands: Rc<RefCell<Vec<Errand>>>,
     /// Why the last login from here failed, as the daemon said it: written by the login's own
     /// thread, read on every pass.
     refused: Arc<Mutex<String>>,
@@ -327,6 +327,24 @@ pub(crate) struct Served {
 pub(crate) struct Press {
     pub(crate) row: String,
     pub(crate) part: RowPart,
+}
+
+/// What the person asked of their other devices that needs the record and the answer of the
+/// person there, carried out by the loop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Errand {
+    /// Use the connection of the device by this id.
+    UseConnection(String),
+    /// Stop using another device's connection, or stop sharing this one's.
+    StopConnection,
+    /// Use the device `device`'s camera, microphone or scanner here, or send it this device's
+    /// game controller.
+    UseRemote {
+        device: String,
+        kind: tilo_workspace_service::workspaces::person_workspace::devices::RemoteKind,
+    },
+    /// Stop the remote use by this id.
+    StopRemote(String),
 }
 
 /// One accessory asked to move to another device: its address, and the device it goes to.
@@ -349,7 +367,7 @@ pub(crate) struct Parts {
     pub(crate) handoff: Rc<RefCell<Option<MediaOffer>>>,
     pub(crate) pressed: Rc<RefCell<Vec<Press>>>,
     pub(crate) handed: Rc<RefCell<Vec<HandOff>>>,
-    pub(crate) connections: Rc<RefCell<Vec<Option<String>>>>,
+    pub(crate) errands: Rc<RefCell<Vec<Errand>>>,
     pub(crate) refused: Arc<Mutex<String>>,
     pub(crate) tools: crate::tools::Handle,
 }
@@ -368,7 +386,7 @@ impl Served {
             handoff,
             pressed,
             handed,
-            connections,
+            errands,
             refused,
             tools,
         } = parts;
@@ -381,7 +399,7 @@ impl Served {
             handoff,
             pressed,
             handed,
-            connections,
+            errands,
             refused,
             tools,
             published: RefCell::new(None),
@@ -423,7 +441,9 @@ impl Served {
         if let (Some((record, _)), Some((local, _))) =
             (&self.record, self.fabric.local_device_fabric_identity())
         {
-            reading.connection = crate::tethering::connection(&record.get(), local.as_str());
+            let record = record.get();
+            reading.connection = crate::tethering::connection(&record, local.as_str());
+            reading.remote = crate::remote_use::uses(&record, local.as_str());
         }
         reading
     }
@@ -472,9 +492,28 @@ impl Service for Served {
             // Sharing a connection needs the record, the radios and the person's answer on the
             // other device, so the loop carries it out.
             DevicesAction::UseConnection { device } => {
-                self.connections.borrow_mut().push(Some(device));
+                self.errands
+                    .borrow_mut()
+                    .push(Errand::UseConnection(device));
             }
-            DevicesAction::StopConnection => self.connections.borrow_mut().push(None),
+            DevicesAction::StopConnection => {
+                self.errands.borrow_mut().push(Errand::StopConnection);
+            }
+            // So does a remote use: the record, the other device's person and the hardware at
+            // both ends.
+            DevicesAction::UseRemote { device, kind } => {
+                let kind =
+                    crate::remote_use::kind_named(&kind).ok_or_else(|| ApiError::Refused {
+                        code: "remote-kind".to_owned(),
+                        reason: "kind is camera, microphone, scanner or controller".to_owned(),
+                    })?;
+                self.errands
+                    .borrow_mut()
+                    .push(Errand::UseRemote { device, kind });
+            }
+            DevicesAction::StopRemote { id } => {
+                self.errands.borrow_mut().push(Errand::StopRemote(id));
+            }
             // A login is this computer's daemon's to run, and can take a while: it answers the
             // caller when it lands, refusing in the daemon's own words.
             DevicesAction::LogIn { ticket } => {
@@ -711,6 +750,7 @@ impl From<&DevicesReading> for DevicesView {
             held_back: reading.held_back.clone(),
             refused: reading.refused.clone(),
             connection: reading.connection.clone(),
+            remote: reading.remote.clone(),
         }
     }
 }

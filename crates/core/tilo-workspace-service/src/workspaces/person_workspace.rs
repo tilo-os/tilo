@@ -27,6 +27,7 @@ pub mod accessory;
 pub mod connected;
 pub mod device_answers;
 pub mod devices;
+pub mod remote_use;
 pub mod speaker;
 pub mod tethering;
 pub mod wake;

@@ -62,12 +62,12 @@ pub(crate) trait Carrier: Send + Sync {
 
 impl Carrier for crate::live::OwnDevices {
     fn send(&self, to: &DeviceId, body: Vec<u8>) -> bool {
-        key_of(to).is_some_and(|to| Self::send(self, to, body))
+        key_of(to).is_some_and(|to| Self::send(self, to, crate::live::Lane::Input, body))
     }
 
     fn heard(&self, from: &BTreeSet<DeviceId>) -> Vec<(DeviceId, Vec<u8>)> {
         let from: BTreeSet<[u8; 32]> = from.iter().filter_map(key_of).collect();
-        Self::heard(self, &from)
+        Self::heard(self, crate::live::Lane::Input, &from)
             .into_iter()
             .filter_map(|(sender, body)| Some((DeviceId::new(hex::encode(sender)).ok()?, body)))
             .collect()

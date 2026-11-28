@@ -371,6 +371,8 @@ pub(crate) fn put(
         #[cfg(target_os = "linux")]
         crate::tethering::KIND => share_connection(details)?,
         #[cfg(target_os = "linux")]
+        crate::remote_use::KIND => remote_use(details)?,
+        #[cfg(target_os = "linux")]
         crate::app_sheets::ADD_KIND => add_app(details)?,
         #[cfg(target_os = "linux")]
         crate::app_sheets::UNINSTALL_KIND => uninstall(details)?,
@@ -582,6 +584,39 @@ fn share_connection(details: Value) -> Kind {
     );
     facts.verb = crate::i18n::t("session-tether-ask-share");
     facts.decline = Some(crate::i18n::t("session-tether-ask-decline"));
+    facts.by = desktop();
+    Some((facts, Reply::Confirm))
+}
+
+/// "Let Ada's laptop use this device's camera for Calls?": another of the person's devices asks to
+/// use this one's camera, microphone or scanner for the app it has in front, or to play the app in
+/// front here with its game controller.
+#[cfg(target_os = "linux")]
+fn remote_use(details: Value) -> Kind {
+    use tilo_ui_base::i18n::ArgValue;
+    let asked: crate::remote_use::UseQuestion = serde_json::from_value(details).ok()?;
+    let kind = crate::remote_use::kind_named(&asked.kind)?;
+    let args = [
+        ("device", ArgValue::Text(asked.device)),
+        ("what", ArgValue::Text(crate::remote_use::what(kind))),
+        ("app", ArgValue::Text(asked.app)),
+    ];
+    let controller = kind
+        == tilo_workspace_service::workspaces::person_workspace::devices::RemoteKind::Controller;
+    let (title, body) = if controller {
+        (
+            "session-remote-ask-controller-title",
+            "session-remote-ask-controller-body",
+        )
+    } else {
+        ("session-remote-ask-title", "session-remote-ask-body")
+    };
+    let mut facts = asking(
+        crate::i18n::t_args(title, &args),
+        Some(crate::i18n::t_args(body, &args)),
+    );
+    facts.verb = crate::i18n::t("session-remote-ask-allow");
+    facts.decline = Some(crate::i18n::t("session-remote-ask-decline"));
     facts.by = desktop();
     Some((facts, Reply::Confirm))
 }

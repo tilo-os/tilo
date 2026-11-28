@@ -35,6 +35,10 @@
 //! there too ([`Tether`], [`super::tethering`]): the device that needs it asks, the phone says
 //! whether its person let it and over which hotspot, the other says it joined, and either ends it.
 //!
+//! One device's camera, microphone, scanner or game controller used on another of theirs is asked
+//! there as well ([`RemoteUse`], [`super::remote_use`]): one device asks, the other's person decides,
+//! the device that has it sends over the live link between the two, and either ends it.
+//!
 //! The person's one keyboard and pointer across their devices is handed over in the record too
 //! ([`InputHand`]): the device whose pointer pushes past its screen's edge asks the one beyond for
 //! it ([`Devices::ask_input`]), that device lets it in for a while when the person lets their
@@ -140,6 +144,9 @@ pub struct Devices {
     /// The connection one of the person's phones shares with another of their devices, by the key
     /// of the device it is shared with ([`super::tethering`]).
     pub tethers: Collection<Tether>,
+    /// One device's camera, microphone, scanner or game controller used on another for a while,
+    /// by the id the asking device drew ([`super::remote_use`]).
+    pub uses: Collection<RemoteUse>,
 }
 
 /// The longest a notification is shown on the person's other devices, ms.
@@ -354,6 +361,64 @@ pub enum TetherStage {
     /// The device asking could not join the phone's hotspot.
     NotJoined,
     /// Either device stopped it, or its time ran out.
+    Ended,
+    /// Nobody answered in time, or one of the two devices left.
+    GivenUp,
+}
+
+/// One of the person's devices' camera, microphone, scanner or game controller, used on another of
+/// theirs for a while ([`super::remote_use`]): which device's it is (`from`, the one that sends),
+/// where it is used (`to`, where a virtual device stands in for it), for which app there, and how
+/// far it got. The device that did not ask decides: the device with the camera, microphone or
+/// scanner, or, for a game controller, the device it is sent to, as the exact app session it has
+/// in front then (`session`). Kept by an id of 16 bytes in hex the asking device draws; times are
+/// ms since the epoch.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct RemoteUse {
+    /// The device whose hardware it is, by key (lowercase hex).
+    pub from: String,
+    /// The device it is used on, by key (lowercase hex).
+    pub to: String,
+    pub kind: RemoteKind,
+    /// The app on `to` that uses it, and the workspace it runs in.
+    pub app: String,
+    pub workspace: String,
+    /// For a game controller, the app's session on `to` its person let it reach; empty otherwise
+    /// and until they answered.
+    pub session: String,
+    /// What the person sees it called: the app's name, or the controller's.
+    pub label: String,
+    /// What it carries ([`super::remote_use::Profile`]), as JSON.
+    pub profile: String,
+    pub asked_ms: i64,
+    pub stage: RemoteStage,
+    /// When it reached its stage.
+    pub at_ms: i64,
+    /// When the grant runs out; `0` until it was granted.
+    pub until_ms: i64,
+}
+
+/// What of one device another of the person's devices uses.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RemoteKind {
+    #[default]
+    Camera,
+    Microphone,
+    Scanner,
+    Controller,
+}
+
+/// How far one remote use got.
+#[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RemoteStage {
+    /// Asked: the deciding device asks its person.
+    #[default]
+    Asked,
+    /// Its person let it: the device that has it sends, the other stands a virtual device in.
+    Granted,
+    /// Its person said no, or the deciding device could not let it.
+    Declined,
+    /// Either device stopped it, its grant ran out, or what it was for went away.
     Ended,
     /// Nobody answered in time, or one of the two devices left.
     GivenUp,
@@ -900,6 +965,30 @@ impl Devices {
 pub struct Network {
     /// The credential, postcard in hex.
     pub credential: String,
+}
+
+/// An ask for a remote use of one of the person's devices' camera, microphone, scanner or game
+/// controller on another of theirs.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct RemoteAsk {
+    /// The use, a fresh id (32 lowercase hex digits).
+    pub id: String,
+    /// The device whose hardware it is, by key (lowercase hex).
+    pub from: String,
+    /// The device it is used on, by key (lowercase hex).
+    pub to: String,
+    /// The app it is for, by id; empty for a controller, which is bound as it is granted.
+    pub app: String,
+    /// The workspace that app is open in; empty for a controller.
+    pub workspace: String,
+    /// What the person reads it as: the app's name, or the controller's.
+    pub label: String,
+    /// What it carries ([`super::remote_use::Profile`], JSON).
+    pub profile: String,
+    /// When it was asked, in milliseconds since the epoch.
+    pub asked_ms: i64,
 }
 
 /// A notification one device of the person's shows on the others.
@@ -2388,6 +2477,90 @@ impl Devices {
                 TetherStage::Ended
             } else {
                 TetherStage::GivenUp
+            };
+            kept.at_ms = at_ms;
+        }
+        Ok(())
+    }
+
+    /// Ask, as one of the two devices, for the remote use `ask.id` of `ask.from`'s camera,
+    /// microphone, scanner or game controller on `ask.to`. Refused when either device is not one
+    /// of the person's, the profile is out of bounds, or `ask.to` uses as many as it takes.
+    #[action]
+    pub fn ask_remote_use(&mut self, #[param(flatten)] ask: RemoteAsk) -> Result<(), Refusal> {
+        let RemoteAsk {
+            id,
+            from,
+            to,
+            app,
+            workspace,
+            label,
+            profile,
+            asked_ms,
+        } = ask;
+        let asked = super::remote_use::asked(
+            self,
+            &id,
+            (from, to),
+            (app, workspace, label),
+            &profile,
+            asked_ms,
+        )?;
+        let key = Id::from_raw(id);
+        if self.uses.contains(&key) {
+            return Err(Refusal::new("that remote use was asked already"));
+        }
+        // What ended is let go as the next is asked: the record keeps the uses under way and the
+        // last few ended, never every one ever asked.
+        super::remote_use::forget_ended(&mut self.uses, asked_ms);
+        self.uses.push(key, asked);
+        Ok(())
+    }
+
+    /// Say, as the deciding device, whether its person let the remote use `id` go ahead, at
+    /// `at_ms`. For a game controller, `app` in `workspace` and its `session` are what it reaches:
+    /// the app session the person had in front as they said yes. A use no longer asked is left as
+    /// it is.
+    #[action(housekeeping)]
+    pub fn answer_remote_use(
+        &mut self,
+        id: String,
+        granted: bool,
+        app: String,
+        workspace: String,
+        session: String,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        let Some(kept) = self.uses.get_mut(&Id::from_raw(id)) else {
+            return Ok(());
+        };
+        super::remote_use::answer(kept, granted, (app, workspace, session), at_ms)
+    }
+
+    /// Keep the remote use `id` going, as the device that sends while it does, for another grant
+    /// from `at_ms`. A controller's lease is not renewed: it is asked again.
+    #[action(housekeeping)]
+    pub fn renew_remote_use(&mut self, id: String, at_ms: i64) -> Result<(), Refusal> {
+        if let Some(kept) = self.uses.get_mut(&Id::from_raw(id)) {
+            super::remote_use::renew(kept, at_ms);
+        }
+        Ok(())
+    }
+
+    /// End the remote use `id` at `at_ms`: stopped by either device, run out or gone with what it
+    /// was for (`ended`), or given up, because nobody answered in time or a device left.
+    #[action]
+    pub fn end_remote_use(&mut self, id: String, ended: bool, at_ms: i64) -> Result<(), Refusal> {
+        if at_ms <= 0 {
+            return Err(Refusal::new("a remote use ends at a time since the epoch"));
+        }
+        if let Some(kept) = self.uses.get_mut(&Id::from_raw(id))
+            && !kept.stage.ended()
+        {
+            kept.stage = if ended {
+                RemoteStage::Ended
+            } else {
+                RemoteStage::GivenUp
             };
             kept.at_ms = at_ms;
         }
