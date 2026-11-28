@@ -102,6 +102,27 @@ view accessibility_pane() {
         ) {
             ui.TextInput(bind: a.dictation_language, placeholder: "The workspace's language")
         }
+        setting(
+            "Its language, by name",
+            "The language the person speaks, as this desktop names it",
+        ) {
+            ui.MenuButton("Automatic detection", icon: .globe) {
+                ui.MenuItem("Automatic detection", checked: a.dictation_language == "auto") {
+                    on choose: settings.set_dictation_language(
+                        settings.accessibility,
+                        value: "auto",
+                    )
+                }
+                for language in settings.languages.languages {
+                    ui.MenuItem(language.name, checked: a.dictation_language == language.tag) {
+                        on choose: settings.set_dictation_language(
+                            settings.accessibility,
+                            value: language.tag,
+                        )
+                    }
+                }
+            }
+        }
     }
     ui.Section("Key feedback") {
         setting("Bounce keys", "A key pressed again too soon is ignored") {

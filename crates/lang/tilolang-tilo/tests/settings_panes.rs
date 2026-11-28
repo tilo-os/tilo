@@ -465,7 +465,7 @@ fn the_region_pane_offers_the_languages_the_desktop_speaks() {
     );
     assert_eq!(
         args.iter()
-            .find(|(named, _)| named == "language")
+            .find(|(named, _)| named == "value")
             .map(|(_, value)| value.clone()),
         Some(Value::Opt(Some(Box::new(Value::text("de"))))),
         "the language by the tag a setting holds"
@@ -1245,4 +1245,57 @@ fn the_apps_cache_preview_names_each_app_before_clearing_it() {
             "{words} shows in the cache preview: {shown:?}"
         );
     }
+}
+
+/// Dictation's language is chosen by name from the languages this desktop speaks, through the
+/// accessibility section's own verb.
+#[test]
+fn dictation_language_is_chosen_by_name() {
+    let (host, _) = settings();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    crate::fixtures::set_reading(
+        &host,
+        "settings/accessibility",
+        &serde_json::json!({"dictation_language": "auto"}),
+    );
+    crate::fixtures::set_reading(
+        &host,
+        "settings/languages",
+        &serde_json::json!({
+            "languages": [
+                {"tag": "en", "name": "English"},
+                {"tag": "de", "name": "Deutsch"},
+            ],
+        }),
+    );
+    invoke(&host, "open_pane", vec![Value::text("accessibility")]);
+    let view = open_window(&host);
+    // The menu draws its choices in the tree; choosing one is the item's own event.
+    view.fire_answering(
+        &host,
+        &me(),
+        &labelled(view.tree(), "ui.MenuItem", "Deutsch"),
+        "choose",
+    )
+    .expect("German is chosen");
+    let sent = sent.borrow();
+    let (name, language) = sent
+        .iter()
+        .find_map(|invocation| match invocation {
+            Invocation::Action { name, args, .. } if name == "set-dictation-language" => Some((
+                name.clone(),
+                args.iter()
+                    .find(|(named, _)| named == "value")
+                    .map(|(_, value)| value.clone()),
+            )),
+            _ => None,
+        })
+        .expect("the section's own verb is asked");
+    assert_eq!(name, "set-dictation-language");
+    assert_eq!(
+        language,
+        Some(Value::Opt(Some(Box::new(Value::text("de"))))),
+        "the setter takes the optional the field holds"
+    );
 }
