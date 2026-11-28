@@ -3,7 +3,7 @@
 
 d-so-tilo-hex-editor = Hex-Editor
 
-d-so-tilo-hex-editor-keywords = hex-editor, hex, bytes, binär, binär-editor, editor, datenträger, byte, hexadezimal, binär
+d-so-tilo-hex-editor-keywords = hex-editor, hex, bytes, binär, binär-editor, editor, datenträger, byte, hexdump, ghex, okteta, hexadezimal, binär
 
 d-cjs7wfwl = Änderung
     .doc = Eine Änderung der Bytes: bei `at` stehen `remove` Bytes als die hexadezimalen von `insert`.
@@ -472,6 +472,8 @@ d-vojndsoo-len = Länge
 
 d-vojndsoo-bytes = Bytes
 
+d-vojndsoo-kind = Art
+
 d-topfzl2k = Pfad öffnen
     .doc = Öffnet die Datei bei `path` auf diesem Gerät als eigenen Puffer.
 
@@ -606,13 +608,15 @@ d-t63az7ij = Einfügen
     .doc = Fügt die Zwischenablage bei der Auswahl oder beim Cursor ein, im Fokusmodus.
 
 d-bvziotqd = Ersetzt
-    .doc = Ersetzt jeden Bereich durch dieselben Bytes, in einem Schritt.
+    .doc = Ersetzt jeden Bereich durch dieselben Bytes, in einem Schritt, und sagt, wie viele Bytes dorthin gingen.
 
 d-bvziotqd-desk = Platz
 
 d-bvziotqd-spans = Bereiche
 
 d-bvziotqd-bytes = Bytes
+
+d-bvziotqd-kind = Art
 
 d-lcexraol = Bytes suchen
     .doc = Öffnet die Suchleiste.
@@ -645,12 +649,15 @@ d-elqaxiiv = Alle ersetzen
 d-elqaxiiv-with = Damit
 
 d-pq6chsex = Bereiche ersetzen
+    .doc = Ersetzt `spans` durch `with`, so gelesen, wie die Suche die Bytes las: Hexpaare oder Text.
 
 d-pq6chsex-desk = Platz
 
 d-pq6chsex-spans = Bereiche
 
 d-pq6chsex-with = Damit
+
+d-pq6chsex-kind = Art
 
 d-5ri4qufq = Art der Suche
     .doc = Liest die Wahl der Suchleiste: Text oder Hexadezimal, Groß- und Kleinschreibung und ganze Wörter.
@@ -750,10 +757,15 @@ d-hecirnqi = Dokument
     .w-whole-word = Ganzes Wort
     .w-close = Schließen
     .w-what-to-put-there = Was dort stehen soll
+    .w-replace = Ersetzen
     .w-replace-all = Alle ersetzen
+    .w-previous-match = Vorheriger Treffer
+    .w-next-match = Nächster Treffer
     .w-first-matches = Erste { $len } Treffer
-    .w-matches = { $len } Treffer
+    .w-of = { $value } von { $len }
     .w-0x1f-or-31 = 0x1F oder 31
+    .w-cursor-at-mode-endian = { $name }, { $byte_count }, Cursor bei { $cursor_hex }, Modus { $mode }, { $endian }
+    .w-ctrl-f-find-ctrl-h-replace = Strg+F suchen, Strg+H ersetzen, Strg+G zum Offset springen, Strg+C kopieren, Strg+X ausschneiden, Strg+V einfügen, Strg+A alles auswählen, Strg+I Inspektor. Tab wechselt zwischen Hex und Text, Einfg zwischen Überschreiben und Einfügen, und Umschalt mit den Pfeilen wählt aus.
     .w-reading-the-file = Datei wird gelesen…
 
 d-c3gyftot = Werkzeugleiste
@@ -785,3 +797,22 @@ d-jdsqkjn7 = Status
     .w-offset-0x = Offset 0x{ $cursor_hex }
     .w-selected = { $byte_count } ausgewählt
     .w-edited = { $byte_count } geändert
+
+d-t2gagart = Art
+    .doc = `hex`, wenn `bytes` als Hexpaare geschrieben ist, `text`, wenn die Bytes sein UTF-8 sind.
+
+d-ediqweya = Art
+    .doc = `hex`, wenn `bytes` als Hexpaare geschrieben ist, `text`, wenn die Bytes sein UTF-8 sind.
+
+d-bzarrbmd = Nächster Treffer
+    .doc = Springt zum nächsten Treffer oder zurück zum vorherigen; `back` sagt, wohin.
+
+d-bzarrbmd-back = Rückwärts
+
+d-nv4apwly = Ersetzen
+    .doc = Ersetzt den Treffer am Cursor durch `with`.
+
+d-nv4apwly-with = Wodurch
+
+d-x6mlfw4g = Treffer neu lesen
+    .doc = Liest, was die Abfrage der Leiste in den Bytes findet, wie sie jetzt stehen, damit ein Ersetzen von dort aus arbeitet, wo die Treffer stehen, nicht wo sie standen.

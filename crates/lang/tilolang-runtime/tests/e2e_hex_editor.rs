@@ -20,6 +20,7 @@ mod cases {
         app: App,
         root: ResourceRef,
         device: Files,
+        clipboard: Clipboard,
         directory: tempfile::TempDir,
     }
 
@@ -31,7 +32,8 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Files::default();
             rt.set_blobs(device.clone());
-            rt.set_clipboard(Clipboard::default());
+            let clipboard = Clipboard::default();
+            rt.set_clipboard(clipboard.clone());
             rt.set_engine(DeviceEngine::new(hex_engine::HexEngine::new(), &device));
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -48,6 +50,7 @@ mod cases {
                 app,
                 root,
                 device,
+                clipboard,
                 directory: tempfile::tempdir().unwrap(),
             }
         }
@@ -361,6 +364,42 @@ mod cases {
             assert_eq!(s.cursor(&d), 10, "the third match is where it stands");
         }
 
+        phase cut_takes_the_selection_and_keeps_it_on_the_clipboard;
+        {
+            let s = Desk::new();
+            let path = s.file("cut.bin", &[0x50, 0x4E, 0x47, 0x44]);
+            let d = s.open(&path);
+            s.press(&d, "Ctrl+a");
+            s.press(&d, "Ctrl+x");
+            assert!(s.bytes(&d).is_empty(), "cut removed the bytes");
+            assert_eq!(s.clipboard.text(), "50 4e 47 44");
+            let desk = s.desk(&d);
+            assert_eq!(s.text(&desk, "notice"), "Cut 4 bytes");
+        }
+
+        phase a_replacement_of_another_length_is_refused_in_overwrite_mode;
+        {
+            let s = Desk::new();
+            let path = s.file("length.bin", &[0xDE, 0xAD, 0x00]);
+            let d = s.open(&path);
+            s.call("search", vec![Value::resource(&d), Value::text("de ad")]);
+            s.call("replace_all", vec![Value::resource(&d), Value::text("be")]);
+            assert_eq!(
+                s.bytes(&d),
+                [0xDE, 0xAD, 0x00],
+                "the file keeps its length"
+            );
+            let desk = s.desk(&d);
+            let said = s.text(&desk, "notice");
+            assert!(
+                said.contains("another length than the match"),
+                "the refusal says why: {said}"
+            );
+            s.call("set_mode", vec![Value::resource(&d), Value::Int(1)]);
+            s.call("replace_all", vec![Value::resource(&d), Value::text("be")]);
+            assert_eq!(s.bytes(&d), [0xBE, 0x00], "insert mode grows and shrinks");
+        }
+
         phase every_match_is_replaced_at_once;
         {
             let s = Desk::new();
@@ -371,6 +410,83 @@ mod cases {
             assert_eq!(s.bytes(&d), b"bb bb bb");
             let desk = s.desk(&d);
             assert_eq!(s.text(&desk, "notice"), "Replaced 3 matches");
+        }
+
+        phase one_match_is_replaced_and_a_text_replacement_is_its_own_utf8;
+        {
+            let s = Desk::new();
+            let path = s.file("one.bin", b"cat, cat; cat");
+            let d = s.open(&path);
+            s.call("search_kind", vec![Value::resource(&d), Value::Int(1)]);
+            s.call("search", vec![Value::resource(&d), Value::text("cat")]);
+            s.call("set_mode", vec![Value::resource(&d), Value::Int(1)]);
+            // A text search replaces as text: `lynxä` is its letters' UTF-8, not hex digits.
+            s.call("replace_one", vec![Value::resource(&d), Value::text("lynxä")]);
+            assert_eq!(s.bytes(&d), "lynxä, cat; cat".as_bytes());
+            let desk = s.desk(&d);
+            assert_eq!(s.text(&desk, "notice"), "Replaced 1 match");
+            s.call("replace_all", vec![Value::resource(&d), Value::text("lynxä")]);
+            assert_eq!(s.bytes(&d), "lynxä, lynxä; lynxä".as_bytes());
+            // A hex search still reads the replacement as hexadecimal pairs.
+            s.call("search_kind", vec![Value::resource(&d), Value::Int(0)]);
+            s.call("search", vec![Value::resource(&d), Value::text("6c 79")]);
+            s.call("replace_all", vec![Value::resource(&d), Value::text("78 78")]);
+            assert_eq!(s.bytes(&d), "xxnxä, xxnxä; xxnxä".as_bytes());
+        }
+
+        phase the_matches_are_stepped_through_both_ways_and_wrap;
+        {
+            let s = Desk::new();
+            let path = s.file("steps.bin", b"aa-bb-aa-aa");
+            let d = s.open(&path);
+            s.call("search", vec![Value::resource(&d), Value::text("61 61")]);
+            let desk = s.desk(&d);
+            let at = |s: &Desk| match s.rt.read(&desk, "at_match").unwrap() {
+                Value::Int(n) => usize::try_from(n).unwrap_or(0),
+                other => panic!("at_match reads {other:?}"),
+            };
+            assert_eq!(at(&s), 0);
+            s.call("step_match", vec![Value::resource(&d), Value::Bool(false)]);
+            assert_eq!((at(&s), s.cursor(&d)), (1, 6));
+            s.call("step_match", vec![Value::resource(&d), Value::Bool(false)]);
+            assert_eq!((at(&s), s.cursor(&d)), (2, 9));
+            s.call("step_match", vec![Value::resource(&d), Value::Bool(false)]);
+            assert_eq!((at(&s), s.cursor(&d)), (0, 0), "past the last is the first");
+            s.call("step_match", vec![Value::resource(&d), Value::Bool(true)]);
+            assert_eq!((at(&s), s.cursor(&d)), (2, 9), "back from the first is the last");
+        }
+
+        phase the_end_keys_reach_the_first_and_last_byte;
+        {
+            let s = Desk::new();
+            let path = s.file("ends.bin", &[0u8; 40]);
+            let d = s.open(&path);
+            s.press(&d, "Ctrl+End");
+            assert_eq!(s.cursor(&d), 39);
+            s.press(&d, "Ctrl+Home");
+            assert_eq!(s.cursor(&d), 0);
+        }
+
+        phase a_paste_in_the_text_column_keeps_a_letters_utf8_bytes;
+        {
+            let s = Desk::new();
+            let path = s.file("paste-text.bin", b"ab");
+            let d = s.open(&path);
+            s.clipboard.put("text/plain", "ä!".as_bytes());
+            s.call("set_column", vec![Value::resource(&d), Value::Int(1)]);
+            s.press(&d, "Insert");
+            s.press(&d, "Ctrl+v");
+            assert_eq!(s.bytes(&d), "ä!ab".as_bytes());
+            let desk = s.desk(&d);
+            assert_eq!(s.text(&desk, "notice"), "Pasted 3 bytes");
+            // The same clipboard in the byte column is hexadecimal pairs or nothing.
+            s.call("set_column", vec![Value::resource(&d), Value::Int(0)]);
+            s.press(&d, "Ctrl+v");
+            assert_eq!(
+                s.bytes(&d),
+                "ä!ab".as_bytes(),
+                "a text that is no hexadecimal bytes leaves the file as it was"
+            );
         }
 
         phase go_to_takes_hexadecimal_and_decimal_offsets;

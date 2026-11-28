@@ -2,7 +2,7 @@ app so.tilo.hex-editor "Hex Editor" (
     icon: .file_code,
     category: .development,
     tagline: "Reads and changes a file's bytes",
-    keywords: ["hex editor", "hex", "bytes", "binary", "binary editor", "editor", "disk", "byte", "hexadezimal", "binär"],
+    keywords: ["hex editor", "hex", "bytes", "binary", "binary editor", "editor", "disk", "byte", "hexdump", "ghex", "okteta", "hexadezimal", "binär"],
     document: library.documents,
 )
 
@@ -179,6 +179,8 @@ type ApplyAsk {
     at: Int = 0
     len: Int = 0
     bytes: Text = ""
+    /// `hex` when `bytes` is written as hexadecimal pairs, `text` when the bytes are its UTF-8.
+    kind: Text = "hex"
 }
 
 type AppliedAnswer {
@@ -192,6 +194,8 @@ type ReplaceAsk {
     spans: List<Text>
     bytes: Text = ""
     mode: Text = "overwrite"
+    /// `hex` when `bytes` is written as hexadecimal pairs, `text` when the bytes are its UTF-8.
+    kind: Text = "hex"
 }
 
 type ReplacedAnswer {
@@ -512,9 +516,18 @@ action show(d: Document) {
     }
 }
 
-/// Apply one edit of the bytes: the device checks it and answers the change to keep.
-action edit(d: Document, op: Text, at: Int, len: Int, bytes: Text) -> Bool {
-    let ask = ApplyAsk(address: d.base, changes: d.changes, op: op, at: at, len: len, bytes: bytes)
+/// Apply one edit of the bytes: the device checks it and answers the change to keep. `kind` says
+/// whether `bytes` is hexadecimal pairs or the text's own UTF-8.
+action edit(d: Document, op: Text, at: Int, len: Int, bytes: Text, kind: Text = "hex") -> Bool {
+    let ask = ApplyAsk(
+        address: d.base,
+        changes: d.changes,
+        op: op,
+        at: at,
+        len: len,
+        bytes: bytes,
+        kind: kind,
+    )
     match engine.call("apply", json.encode(ask)) {
         .ok(answer) => match json.decode<AppliedAnswer>(answer) {
             .ok(applied) => {
@@ -760,6 +773,10 @@ action chord(d: Document, desk: Desk, key: Text) {
         desk.panel = "goto"
     } else if lower == "i" {
         desk.panel = if desk.panel == "inspector" { "" } else { "inspector" }
+    } else if key == "Home" {
+        moved(d, desk, 0, false)
+    } else if key == "End" {
+        moved(d, desk, if d.length > 0 { d.length - 1 } else { 0 }, false)
     }
 }
 
@@ -907,37 +924,66 @@ action cut(d: Document) uses clipboard (icon: .scissors, label: "Cut", key: "Ctr
     }
 }
 
-/// Pastes the clipboard at the selection, or at the cursor, in the focus mode.
+/// Pastes the clipboard at the selection, or at the cursor, in the focus mode: hexadecimal pairs
+/// in the byte column, and text as its own UTF-8 bytes in the text column.
 action paste(d: Document) uses clipboard (icon: .clipboard_paste, label: "Paste", key: "Ctrl+V") {
     if let desk = d.desks.first() {
         if let text = clipboard.paste() {
-            let bytes = if desk.column == "hex" { hex_bytes(text) } else { text_bytes(text) }
-            if let xs = bytes {
-                if xs.is_empty() {
-                    say(desk, "The clipboard holds no bytes", "info")
-                } else if let span = selection(desk) {
-                    replaced(d, desk, [span_text(span.start, span.end + 1)], hex_text(xs))
-                } else if desk.mode == "insert" {
-                    if edit(d, "insert", desk.cursor, 0, hex_text(xs)) {
-                        if move_cursor(d, desk, desk.cursor + xs.len(), false) { show(d) }
-                        say(desk, "Pasted {byte_count(xs.len())}", "success")
+            if text == "" {
+                say(desk, "The clipboard holds no bytes", "info")
+            } else if desk.column == "hex" {
+                if let xs = hex_bytes(text) {
+                    if xs.is_empty() {
+                        say(desk, "The clipboard holds no bytes", "info")
+                    } else if let span = selection(desk) {
+                        replaced(
+                            d,
+                            desk,
+                            [span_text(span.start, span.end + 1)],
+                            hex_text(xs),
+                            "hex",
+                        )
+                    } else if desk.mode == "insert" {
+                        if edit(d, "insert", desk.cursor, 0, hex_text(xs)) {
+                            if move_cursor(d, desk, desk.cursor + xs.len(), false) { show(d) }
+                            say(desk, "Pasted {byte_count(xs.len())}", "success")
+                        }
+                    } else if desk.cursor + xs.len() > d.length {
+                        say(
+                            desk,
+                            "What you pasted is longer than the file has left. Switch to Insert to make the file longer.",
+                            "warning",
+                        )
+                    } else {
+                        replaced(
+                            d,
+                            desk,
+                            [span_text(desk.cursor, desk.cursor + xs.len())],
+                            hex_text(xs),
+                            "hex",
+                        )
                     }
-                } else if desk.cursor + xs.len() > d.length {
+                } else {
+                    say(desk, "Couldn’t paste here as bytes", "warning")
+                }
+            } else {
+                let len = Bytes.from_text(text).len()
+                if let span = selection(desk) {
+                    replaced(d, desk, [span_text(span.start, span.end + 1)], text, "text")
+                } else if desk.mode == "insert" {
+                    if edit(d, "insert", desk.cursor, 0, text, "text") {
+                        if move_cursor(d, desk, desk.cursor + len, false) { show(d) }
+                        say(desk, "Pasted {byte_count(len)}", "success")
+                    }
+                } else if desk.cursor + len > d.length {
                     say(
                         desk,
                         "What you pasted is longer than the file has left. Switch to Insert to make the file longer.",
                         "warning",
                     )
                 } else {
-                    replaced(
-                        d,
-                        desk,
-                        [span_text(desk.cursor, desk.cursor + xs.len())],
-                        hex_text(xs),
-                    )
+                    replaced(d, desk, [span_text(desk.cursor, desk.cursor + len)], text, "text")
                 }
-            } else {
-                say(desk, "Couldn’t paste here as bytes", "warning")
             }
         } else {
             say(desk, "The clipboard holds no text", "info")
@@ -945,31 +991,15 @@ action paste(d: Document) uses clipboard (icon: .clipboard_paste, label: "Paste"
     }
 }
 
-/// The bytes `text` writes, a character each; nothing when one has no printable code.
-fn text_bytes(text: Text) -> Option<List<Int>> {
-    if text.len() == 0 {
-        return .none
-    }
-    chars_bytes(text, 0, [])
-}
-
-fn chars_bytes(text: Text, at: Int, out: List<Int>) -> Option<List<Int>> {
-    if at >= text.len() {
-        return .some(out)
-    }
-    if let byte = code_of(text.slice(at, at + 1)) {
-        chars_bytes(text, at + 1, out + [byte])
-    } else { .none }
-}
-
-/// Replaces each span with the same bytes, as one step.
-action replaced(d: Document, desk: Desk, spans: List<Text>, bytes: Text) {
+/// Replaces each span with the same bytes, as one step, and says how many bytes went there.
+action replaced(d: Document, desk: Desk, spans: List<Text>, bytes: Text, kind: Text) {
     let ask = ReplaceAsk(
         address: d.base,
         changes: d.changes,
         spans: spans,
         bytes: bytes,
         mode: desk.mode,
+        kind: kind,
     )
     match engine.call("replace", json.encode(ask)) {
         .ok(answer) => match json.decode<ReplacedAnswer>(answer) {
@@ -986,7 +1016,11 @@ action replaced(d: Document, desk: Desk, spans: List<Text>, bytes: Text) {
                         desk.cursor = change_at(first)
                     }
                     show(d)
-                    say(desk, "Pasted {byte_count(bytes.len() / 2)}", "success")
+                    let count = if kind == "text" {
+                        Bytes.from_text(bytes).len()
+                    } else { bytes.len() / 2 }
+                    say(desk, "Pasted {byte_count(count)}", "success")
+                    if desk.query != "" { refresh_matches(d) }
                 }
             }
             .err(why) => { say(desk, why, "warning") }
@@ -1077,22 +1111,94 @@ action reveal(d: Document, index: Int) {
     }
 }
 
-/// Replaces every match the search found with `with`.
-action replace_all(d: Document, with: Text) {
+/// Steps to the next match, or back to the one before; `back` says which way.
+action step_match(d: Document, back: Bool = false) (
+    icon: .arrow_right,
+    label: "Next match",
+    key: "F3",
+) {
     if let desk = d.desks.first() {
-        if desk.hits.len() == 0 {
+        let count = desk.hits.len()
+        if count == 0 {
             say(desk, "Search for something first", "info")
-        } else { replace_spans(d, desk, desk.hits, with) }
+        } else {
+            reveal(d, forward(desk.at_match, count, back))
+        }
     }
 }
 
-action replace_spans(d: Document, desk: Desk, spans: List<Text>, with: Text) {
+fn forward(at: Int, count: Int, back: Bool) -> Int {
+    if back { (at + count - 1) % count } else { (at + 1) % count }
+}
+
+/// Finds what the strip's query finds in the bytes as they stand now, so a replacement works
+/// from where the matches are rather than where they were.
+action refresh_matches(d: Document) -> List<Text> {
+    if let desk = d.desks.first() {
+        if desk.query == "" {
+            return []
+        }
+        let ask = FindAsk(
+            address: d.base,
+            changes: d.changes,
+            query: desk.query,
+            kind: desk.kind,
+            case: desk.match_case,
+            word: desk.whole_word,
+            limit: 10000,
+        )
+        match engine.call("find", json.encode(ask)) {
+            .ok(answer) => match json.decode<FoundAnswer>(answer) {
+                .ok(found) => {
+                    desk.hits = found.hits
+                    desk.truncated = found.truncated
+                    if desk.at_match >= desk.hits.len() {
+                        desk.at_match = 0
+                    }
+                    desk.hits
+                }
+                .err(_) => [],
+            },
+            .err(_) => [],
+        }
+    } else { [] }
+}
+
+/// Replaces the match the cursor is on with `with`.
+action replace_one(d: Document, with: Text) (icon: .arrow_up_down, label: "Replace") {
+    if let desk = d.desks.first() {
+        let hits = refresh_matches(d)
+        if let hit = hits.at(desk.at_match) {
+            replace_spans(d, desk, [hit], with, desk.kind)
+            refresh_matches(d)
+        } else {
+            say(desk, "Search for something first", "info")
+        }
+    }
+}
+
+/// Replaces every match the search finds with `with`, in the bytes as they stand now.
+action replace_all(d: Document, with: Text) (icon: .arrow_up_down, label: "Replace all") {
+    if let desk = d.desks.first() {
+        let hits = refresh_matches(d)
+        if hits.is_empty() {
+            say(desk, "Search for something first", "info")
+        } else {
+            replace_spans(d, desk, hits, with, desk.kind)
+            refresh_matches(d)
+        }
+    }
+}
+
+/// Replaces `spans` with `with`, read as the search read the bytes: hexadecimal pairs or text.
+action replace_spans(d: Document, desk: Desk, spans: List<Text>, with: Text, kind: Text) {
     let ask = ReplaceAsk(
         address: d.base,
         changes: d.changes,
         spans: spans,
         bytes: with,
         mode: desk.mode,
+        kind: kind,
     )
     match engine.call("replace", json.encode(ask)) {
         .ok(answer) => match json.decode<ReplacedAnswer>(answer) {
@@ -1106,7 +1212,11 @@ action replace_spans(d: Document, desk: Desk, spans: List<Text>, with: Text) {
                     d.length = done.length
                     desk.anchor = .none
                     show(d)
-                    say(desk, "Replaced {done.count} matches", "success")
+                    if done.count == 1 {
+                        say(desk, "Replaced 1 match", "success")
+                    } else {
+                        say(desk, "Replaced {done.count} matches", "success")
+                    }
                 }
             }
             .err(why) => { say(desk, why, "warning") }
@@ -1312,7 +1422,8 @@ view document(d: Document) {
                         column: if desk.column == "hex" { .hex } else { .ascii },
                         matches: desk.hits,
                         at_match: .some(desk.at_match),
-                        label: "{d.name}, {byte_count(d.length)}",
+                        label: "{d.name}, {byte_count(d.length)}, cursor at {cursor_hex(desk.cursor)}, {desk.mode} mode, {desk.endian} endian",
+                        description: "Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+A select all, Ctrl+I inspector. Tab switches hex and text, Insert switches overwrite and insert, and Shift with the arrows selects.",
                         fill,
                     ) {
                         on press(at: List<Text>): pressed(d, at)
@@ -1423,20 +1534,31 @@ view search_row(d: Document, desk: Desk, query: State<Text>, with: State<Text>) 
                 ui.TextInput(bind: with, placeholder: "What to put there", entry: true, fill) {
                     on submit(w): replace_all(d, w)
                 }
+                ui.Button("Replace", icon: .arrow_up_down) {
+                    on press: replace_one(d, with)
+                }
                 ui.Button("Replace all", icon: .arrow_up_down) {
                     on press: replace_all(d, with)
                 }
             }
         }
         if desk.hits.len() > 0 {
-            ui.Button(
+            row(gap: .related, align: .center) {
+                ui.Button("Previous match", icon: .chevron_up, icon_only: true, role: .plain) {
+                    on press: step_match(d, true)
+                }
+                ui.Button("Next match", icon: .chevron_down, icon_only: true, role: .plain) {
+                    on press: step_match(d, false)
+                }
                 if desk.truncated {
-                    "First {desk.hits.len()} matches"
-                } else { "{desk.hits.len()} matches" },
-                icon: .arrow_right,
-                role: .plain,
-            ) {
-                on press: reveal(d, desk.at_match)
+                    text("First {desk.hits.len()} matches", role: .caption, secondary: true)
+                } else {
+                    text(
+                        "{desk.at_match + 1} of {desk.hits.len()}",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
             }
         }
     }
@@ -1476,7 +1598,7 @@ view inspector(d: Document, desk: Desk) {
 view status(d: Document, desk: Desk) {
     let chosen = if let span = selection(desk) { span.end - span.start + 1 } else { 0 }
     row(gap: .related, align: .center) {
-        text("Offset 0x{cursor_hex(desk.cursor)}", role: .caption, secondary: true)
+        text("Offset 0x{cursor_hex(desk.cursor)} ({desk.cursor})", role: .caption, secondary: true)
         if chosen > 0 {
             text("{byte_count(chosen)} selected", role: .caption, secondary: true)
         }

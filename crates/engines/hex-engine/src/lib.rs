@@ -307,13 +307,17 @@ impl HexEngine {
             len: usize,
             #[serde(default)]
             bytes: String,
+            /// `hex` for hexadecimal pairs, `text` for the text's own UTF-8 bytes.
+            #[serde(default)]
+            kind: String,
         }
         let ask: Ask = read_ask(input)?;
         let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
-        let change = checked(&ask.op, bytes.len(), ask.at, ask.len, &ask.bytes)?;
+        let insert = payload(&ask.bytes, &ask.kind)?;
+        let change = checked(&ask.op, bytes.len(), ask.at, ask.len, &insert)?;
         let length = apply_length(bytes.len(), &change);
         Ok(json!({ "change": change.text(), "length": length }).to_string())
     }
@@ -330,15 +334,16 @@ impl HexEngine {
             bytes: String,
             #[serde(default)]
             mode: String,
+            /// `hex` for hexadecimal pairs, `text` for the text's own UTF-8 bytes.
+            #[serde(default)]
+            kind: String,
         }
         let ask: Ask = read_ask(input)?;
         let (bytes, _, read) = self.derive(&ask.address, &ask.changes);
         if !read {
             return Err("The bytes are not on this device.".to_owned());
         }
-        let insert = parse_bytes(&ask.bytes).ok_or_else(|| {
-            "Write the replacement as hexadecimal bytes, like `de ad be ef`.".to_owned()
-        })?;
+        let insert = payload(&ask.bytes, &ask.kind)?;
         let want = insert.len();
         let mut kept: Vec<(usize, usize)> = Vec::new();
         for span in &ask.spans {
@@ -552,10 +557,24 @@ fn apply_length(length: usize, change: &Change) -> usize {
         .saturating_add(change.inserted().len())
 }
 
+/// The bytes an edit is written as: hexadecimal pairs, or the text's own UTF-8 bytes.
+fn payload(bytes: &str, kind: &str) -> Result<Vec<u8>, String> {
+    if kind == "text" {
+        Ok(bytes.as_bytes().to_vec())
+    } else {
+        parse_bytes(bytes)
+            .ok_or_else(|| "Write the bytes as hexadecimal, like `de ad be ef`.".to_owned())
+    }
+}
+
 /// The change `op` asks for, refused where it cannot stand.
-fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Result<Change, String> {
-    let insert = parse_bytes(bytes)
-        .ok_or_else(|| "Write the bytes as hexadecimal, like `de ad be ef`.".to_owned())?;
+fn checked(
+    op: &str,
+    length: usize,
+    at: usize,
+    len: usize,
+    insert: &[u8],
+) -> Result<Change, String> {
     match op {
         "insert" => {
             if at > length {
@@ -564,7 +583,7 @@ fn checked(op: &str, length: usize, at: usize, len: usize, bytes: &str) -> Resul
             Ok(Change {
                 at,
                 remove: 0,
-                insert: hex_text(&insert),
+                insert: hex_text(insert),
             })
         }
         "overwrite" => {
@@ -893,13 +912,43 @@ mod tests {
         {
             assert_eq!(parse_bytes("de ad be ef").unwrap(), [0xDE, 0xAD, 0xBE, 0xEF]);
             assert!(parse_bytes("abc").is_none());
-            assert_eq!(checked("insert", 3, 3, 0, "FF").unwrap().insert, "FF");
-            assert!(checked("insert", 3, 4, 0, "FF").is_err());
-            assert!(checked("overwrite", 3, 3, 0, "FF").is_err());
-            assert_eq!(checked("overwrite", 3, 2, 0, "0809").unwrap().insert, "08");
-            assert!(checked("delete", 3, 3, 1, "").is_err());
-            assert_eq!(checked("delete", 3, 1, 9, "").unwrap().remove, 2);
+            assert_eq!(checked("insert", 3, 3, 0, &[0xFF]).unwrap().insert, "FF");
+            assert!(checked("insert", 3, 4, 0, &[0xFF]).is_err());
+            assert!(checked("overwrite", 3, 3, 0, &[0xFF]).is_err());
+            assert_eq!(checked("overwrite", 3, 2, 0, &[0x08, 0x09]).unwrap().insert, "08");
+            assert!(checked("delete", 3, 3, 1, &[]).is_err());
+            assert_eq!(checked("delete", 3, 1, 9, &[]).unwrap().remove, 2);
             assert_eq!(apply_length(5, &Change { at: 2, remove: 2, insert: "AABBCC".to_owned() }), 6);
+        }
+
+        phase a_file_past_the_limit_is_refused_by_its_size_before_it_is_read;
+        {
+            let directory = std::env::temp_dir().join(format!(
+                "hex-engine-limit-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("disk.img");
+            let file = std::fs::File::create(&path).unwrap();
+            file.set_len(MAX_FILE_BYTES + 1).unwrap();
+            let refused = HexEngine::op_open(&json!({ "path": path.to_string_lossy() }).to_string())
+                .expect_err("a file past the limit does not open");
+            assert!(refused.contains("larger than"), "{refused}");
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
+
+        phase a_text_edit_is_the_texts_own_utf8_bytes;
+        {
+            assert_eq!(payload("de ad", "hex").unwrap(), [0xDE, 0xAD]);
+            assert!(payload("de ad", "text").unwrap() == b"de ad");
+            let text = payload("lynxä", "text").unwrap();
+            assert_eq!(text, "lynxä".as_bytes(), "a letter past ASCII is its UTF-8 bytes");
+            assert_eq!(text.len(), 6);
+            assert_eq!(
+                checked("overwrite", 8, 1, 0, &payload("ä", "text").unwrap()).unwrap().insert,
+                "C3A4"
+            );
+            assert!(payload("abc", "hex").is_err(), "an odd digit count is no bytes");
         }
 
         phase a_search_finds_hex_and_text_under_its_rules;
