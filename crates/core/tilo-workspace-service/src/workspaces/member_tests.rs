@@ -175,6 +175,81 @@ async fn a_member_copy_reads_the_governance_the_serving_device_publishes() {
     .await;
 }
 
+/// A governance frame the device serving a workspace sends its member copy is that copy's
+/// governance moving: its followers are told, so the reading every surface draws from — the
+/// member list, whose each device is, what its calls allow — is read again rather than standing
+/// as it did when the copy was taken in.
+#[tokio::test]
+async fn a_device_keeping_a_workspace_tells_its_followers_when_its_members_move() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (_serving, (key, cert), created, invitation) =
+        shared(serving_state.path(), "Told later", 33).await;
+    let member = member_service(member_state.path(), (key.clone(), cert.clone())).await;
+    member
+        .workspaces()
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    let workspace = created.workspace.clone();
+    let workspaces = member.workspaces().clone();
+    let mut moved = workspaces.governance_changes();
+    let frame = collab_types::MlsGovernanceFrame::signed(
+        collab_types::WorkspaceId::parse(&workspace).expect("a workspace id"),
+        [0; 32],
+        1,
+        collab_types::MlsGovernanceAction::Genesis,
+        &key,
+    )
+    .expect("a governance frame is signed");
+    let message = NeighbourMsg::MlsGovernance {
+        workspace: workspace.clone(),
+        frame: Box::new(frame),
+        delivery: 0,
+    };
+    let body = postcard::to_allocvec(&message).expect("a governance frame encodes");
+    workspaces
+        .keep_member_write(
+            &workspace,
+            key.verifying_key().to_bytes(),
+            &message,
+            &body,
+            false,
+            false,
+        )
+        .await
+        .expect("the member copy keeps the governance frame");
+    // Its followers are told the workspace moved, so the reading is read again.
+    let told = workspace.clone();
+    tilo_test_env::within("the member's followers are told", async move {
+        loop {
+            match moved.recv().await {
+                Ok(moved) if moved == told => return,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("the member's workspaces stopped")
+                }
+            }
+        }
+    })
+    .await;
+    // What the reading is made of names this device in the call gate: the part every surface
+    // draws a member's face from reads the copy's governance as it now stands.
+    let state = workspaces
+        .workspace(&workspace)
+        .await
+        .expect("the member holds its copy");
+    let peer = state.lock().await.peer().clone();
+    let (_, persons) = peer
+        .governance()
+        .call_gate(tilo_clock::wall())
+        .expect("the copy reads its governance");
+    assert!(
+        persons.contains_key(&cert.device_public_key),
+        "the call gate names the member copy's device: {persons:?}"
+    );
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

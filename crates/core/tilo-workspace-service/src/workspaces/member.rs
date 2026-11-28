@@ -2594,6 +2594,14 @@ impl Workspaces {
             {
                 sink.take(vec![message.clone()]);
             }
+            // The copy's governance moved, as a host's does when its own settles: whoever reads
+            // how the workspace stands here — its member list, whose each device is, what its
+            // calls allow — reads it again, and reads the device the workspace admitted. A
+            // member copy has no settle of its own to tell them, so it tells them here.
+            if let Ok(state) = self.workspace(workspace).await {
+                let hosted = state.lock().await;
+                self.governance_moved(&hosted);
+            }
             return Ok(());
         }
         let NeighbourMsg::AppDocument {
