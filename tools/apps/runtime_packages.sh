@@ -98,6 +98,8 @@ runtime_package_asset() {
             printf 'cpython-3.13.18-20261123-x86_64_v3-unknown-linux-gnu-install_only.tar.gz\n' ;;
         python:aarch64)
             printf 'cpython-3.13.18-20261123-aarch64-unknown-linux-gnu-install_only.tar.gz\n' ;;
+        uv:x86_64 | uv:aarch64)
+            printf 'uv-%s-unknown-linux-gnu.tar.gz\n' "$arch" ;;
         *) runtime_package_die "no pinned $name release for $arch" ;;
     esac
 }
@@ -124,6 +126,16 @@ runtime_package_extract() {
         *.tar.gz) tar --no-same-owner --no-same-permissions -xzf "$archive" -C "$dest" ;;
         *) runtime_package_die "no way to extract ${archive##*/}" ;;
     esac
+}
+
+# The pinned uv that installs a Python runtime's dependencies from the SDK's
+# lock, the same tool the SDK image carries (os/Containerfile.ci-sdk): fetched
+# from the asset table, so no image needs it and no version floats.
+runtime_package_uv() {
+    local repo=$1 arch=$2 work=$3 asset
+    asset=$(runtime_package_asset uv "$arch")
+    runtime_package_extract "$(runtime_package_fetch "$repo" "$asset")" "$work/uv"
+    printf '%s/uv/%s/uv\n' "$work" "${asset%.tar.gz}"
 }
 
 # The interpreter, as a regular file at the name the package's entrypoint will
@@ -218,6 +230,19 @@ runtime_package_sdk() {
             install -D -m 0755 "$bin_dir/lib_native.so" "$pkg/_native.abi3.so"
             install -D -m 0755 "$bin_dir/tilo-automerge-worker" "$pkg/tilo-automerge-worker"
             runtime_package_strip_debug "$pkg/_native.abi3.so" "$pkg/tilo-automerge-worker"
+            # The SDK's dependencies, pinned by sdk/python's lock: a script app
+            # imports `tilo`, which imports them. The pinned uv reads the lock
+            # and the wheels land in the same site-packages, so the bundle
+            # carries them and the app needs no environment of its own.
+            local uv requirements
+            uv=$(runtime_package_uv "$repo" "$(uname -m)" "$work")
+            requirements="$work/sdk-requirements.txt"
+            UV_CACHE_DIR="$work/uv-cache" "$uv" export --project "$repo/sdk/python" \
+                --frozen --no-dev --no-emit-project --format requirements-txt >"$requirements"
+            UV_CACHE_DIR="$work/uv-cache" "$uv" pip install \
+                --python "$tree/python/bin/python3" --target "$libdir/site-packages" \
+                --require-hashes --no-build -r "$requirements" >/dev/null
+            rm -rf "$libdir/site-packages/bin"
             printf '%s\n' "$libdir"
             ;;
         *) runtime_package_die "no SDK native part for $name" ;;
