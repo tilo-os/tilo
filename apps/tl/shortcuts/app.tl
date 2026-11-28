@@ -2911,11 +2911,10 @@ action catalogue_summary() -> Text {
 
 /// Ask the agent to draft a shortcut doing what the description says.
 action describe(w: Workbench, description: Text) (icon: .wand_sparkles, label: "Draft it") {
+    // Nothing described drafts nothing: the action waits, saying what is missing, rather than
+    // running and leaving an error in the window for a press the person did nothing wrong for.
+    require description.trim() != "" "Describe what the shortcut should do"
     let asked = description.trim()
-    if asked == "" {
-        w.failure = "Describe what the shortcut should do"
-        return
-    }
     let address = agent_address()
     if address != "" {
         let arguments = brace_open()
@@ -3638,6 +3637,8 @@ view overview(w: Workbench) {
     }
     ui.Section(title: "Describe a shortcut") {
         ui.TextInput(bind: w.description, placeholder: "Tidy my inbox every morning", lines: 3)
+        // Draft it waits on what `describe` requires: with the field empty it stands dimmed,
+        // saying what to write, rather than answering the press with an error.
         ui.Button("Draft it", icon: .wand_sparkles, role: .primary) {
             on press: describe(w, w.description)
         }

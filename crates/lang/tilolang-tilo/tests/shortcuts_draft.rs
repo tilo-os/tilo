@@ -74,6 +74,19 @@ fn new_shortcut_opens_the_draft_it_makes() {
     for _ in 0..4 {
         view.poll_patches().expect("the window draws");
     }
+    // Draft it waits for something to be described: an empty press is answered with what is
+    // missing, not with an error in the window.
+    let _ = view.press(&labelled(view.tree(), "ui.Button", "Draft it"));
+    for _ in 0..4 {
+        view.poll_patches().expect("the window draws");
+    }
+    assert!(
+        !texts(&view)
+            .iter()
+            .any(|line| line == "That could not be done"),
+        "an empty Draft it leaves no error: {:?}",
+        texts(&view)
+    );
     let new = labelled(view.tree(), "ui.Button", "New shortcut");
     view.press(&new).expect("a draft starts");
     for _ in 0..8 {
