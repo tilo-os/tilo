@@ -694,7 +694,11 @@ action choose_printer(p: PrintCentre, queue: Text) {
 }
 
 /// Prints on both sides of the paper, or one.
-action set_two_sided(p: PrintCentre, two_sided: Bool) {
+action set_two_sided(p: PrintCentre, two_sided: Bool) (
+    did: if two_sided {
+    "set printing to both sides from now on"
+} else { "set printing to one side from now on" },
+) {
     let doc = document_of(p)
     doc.two_sided = two_sided
     p.defaults.two_sided = two_sided
@@ -715,28 +719,52 @@ action set_print_option(p: PrintCentre, option: Text, value: Text) {
 }
 
 /// How finely to scan.
-action set_resolution(p: PrintCentre, dpi: Int) {
+action set_resolution(p: PrintCentre, dpi: Int) (did: "set scanning to {dpi} dpi from now on") {
     if dpi == 150 or dpi == 300 or dpi == 600 {
         p.defaults.scan_resolution = dpi
     }
 }
 
 /// How to scan: in colour, grayscale or line art.
-action set_scan_colour(p: PrintCentre, colour: Text) {
+action set_scan_colour(p: PrintCentre, colour: Text) (
+    did: if colour == "grayscale" {
+    "set scanning to grayscale from now on"
+} else if colour == "line-art" {
+    "set scanning to line art from now on"
+} else { "set scanning to color from now on" },
+) {
     if colour == "color" or colour == "grayscale" or colour == "line-art" {
         p.defaults.scan_colour = colour
     }
 }
 
 /// Where to scan from.
-action set_scan_source(p: PrintCentre, source: Text) {
+action set_scan_source(p: PrintCentre, source: Text) (
+    did: if source == "feeder" {
+    "set scanning from the feeder from now on"
+} else if source == "feeder-duplex" {
+    "set scanning both sides from the feeder from now on"
+} else {
+    "set scanning from the flatbed from now on"
+},
+) {
     if source == "flatbed" or source == "feeder" or source == "feeder-duplex" {
         p.defaults.scan_source = source
     }
 }
 
 /// The language text is recognized in.
-action set_ocr_language(p: PrintCentre, language: Text) {
+action set_ocr_language(p: PrintCentre, language: Text) (
+    did: if language == "deu" {
+    "set text recognition to German from now on"
+} else if language == "fra" {
+    "set text recognition to French from now on"
+} else if language == "spa" {
+    "set text recognition to Spanish from now on"
+} else {
+    "set text recognition to English from now on"
+},
+) {
     if language == "eng" or language == "deu" or language == "fra" or language == "spa" {
         p.defaults.ocr_language = language
     }

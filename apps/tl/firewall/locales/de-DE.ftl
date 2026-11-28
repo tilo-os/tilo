@@ -165,30 +165,40 @@ d-dguxp5s2 = Beschreibung
 
 d-rmbzih5s = Die firewalld dieses Geräts lesen
     .doc = Übernimmt, was die firewalld dieses Geräts hält: die Zonen, ihre Dienste und Regeln und die Schalter.
+    .did = übernahm die Firewall-Konfiguration dieses Geräts
     .w-connected-to-firewalld = Mit firewalld verbunden
 
 d-wvp77mci = Firewall starten
     .doc = Startet firewalld.
+    .did = startete die Firewall
     .w-there-is-no-firewall-configuration-yet = Es gibt noch keine Firewall-Konfiguration
 
 d-2jbc472l = Firewall stoppen
     .doc = Stoppt firewalld.
+    .did = stoppte die Firewall
 
 d-7fjzxy2n = Panikmodus einschalten
     .doc = Wechselt in den Panikmodus: der gesamte Datenverkehr ein- und ausgehend wird verworfen.
+    .did = verwarf mit dem Panikmodus allen Datenverkehr
     .w-there-is-no-firewall-configuration-yet = Es gibt noch keine Firewall-Konfiguration
 
 d-t5pt7a72 = Panikmodus ausschalten
     .doc = Verlässt den Panikmodus.
+    .did = verließ den Panikmodus
 
 d-fas2qr4c = Zur aktiven Zone machen
     .doc = Macht eine Zone zur aktiven.
+    .did = machte { $zone } zur aktiven Zone
     .w-made-the-active-zone = { $zone_title } zur aktiven Zone gemacht
 
 d-fas2qr4c-zone = Zone
 
 d-t5sxzg6g = Eine Regel ein- oder ausschalten
     .doc = Schaltet eine Regel in einer Zone ein oder aus.
+    .did = { $on ->
+        [true] schaltete die Regel ein
+       *[other] schaltete die Regel aus
+    }
 
 d-t5sxzg6g-zone = Zone
 
@@ -198,6 +208,10 @@ d-t5sxzg6g-on = An
 
 d-3hwynxa2 = Einen Dienst erlauben
     .doc = Erlaubt einen Dienst in einer Zone oder erlaubt ihn nicht mehr.
+    .did = { $on ->
+        [true] erlaubte { $service }
+       *[other] erlaubte einen Dienst nicht mehr
+    }
 
 d-3hwynxa2-zone = Zone
 
@@ -207,6 +221,10 @@ d-3hwynxa2-on = An
 
 d-ipsf2opk = Regel hinzufügen
     .doc = Fügt einer Zone eine Regel hinzu oder speichert die bearbeitete.
+    .did = { $verdict ->
+        [deny] speicherte eine Regel, die ihren Datenverkehr verweigert
+       *[other] speicherte eine Regel, die ihren Datenverkehr erlaubt
+    }
     .w-choose-a-service = Wähle einen Dienst
     .w-that-is-not-a-port-or = Das ist kein Port und kein Portbereich, den diese Firewall annimmt
     .w-that-is-not-an-ipv4-address = Das ist keine IPv4-Adresse und kein Netz
@@ -231,6 +249,7 @@ d-ipsf2opk-source = Quelle
 
 d-qf5szroz = Regel löschen
     .doc = Löscht eine Regel aus einer Zone.
+    .did = löschte eine Regel
     .w-deleted-a-rule-from-the-zone = Eine Regel aus der Zone { $zone_title } gelöscht
 
 d-qf5szroz-zone = Zone

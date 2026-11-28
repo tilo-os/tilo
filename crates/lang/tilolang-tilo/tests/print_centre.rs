@@ -1199,3 +1199,58 @@ fn a_printer_is_checked_and_the_search_is_said_while_it_runs() {
         shown(&window)
     );
 }
+
+/// What the system's History says each change of the print and scan defaults did, in English and
+/// in German: the choice each made, never the action's name alone.
+#[test]
+fn history_says_which_default_each_change_chose_in_the_readers_language() {
+    let app = crate::fixtures::Pane::install_with_ids(
+        &me(),
+        SOURCE,
+        include_str!("../../../../apps/tl/print-centre/app.ids"),
+    )
+    .reading(&printers(), PRINTERS)
+    .reading(&scanners(), SCANNERS)
+    .rooted("PrintCentre");
+    let root = app.root_value();
+    app.call("set_two_sided", vec![root.clone(), Value::Bool(true)]);
+    app.call("set_two_sided", vec![root.clone(), Value::Bool(false)]);
+    app.call("set_resolution", vec![root.clone(), Value::Int(600)]);
+    app.call(
+        "set_scan_colour",
+        vec![root.clone(), Value::text("grayscale")],
+    );
+    app.call(
+        "set_scan_source",
+        vec![root.clone(), Value::text("feeder-duplex")],
+    );
+    app.call("set_ocr_language", vec![root, Value::text("deu")]);
+    let Ok(Value::Ref(defaults)) = app.host.runtime().read(app.root(), "defaults") else {
+        panic!("the defaults are a record of their own");
+    };
+    let german = include_str!("../../../../apps/tl/print-centre/locales/de-DE.ftl");
+    let english = [
+        "Set printing to both sides from now on",
+        "Set printing to one side from now on",
+        "Set scanning to 600 dpi from now on",
+        "Set scanning to grayscale from now on",
+        "Set scanning both sides from the feeder from now on",
+        "Set text recognition to German from now on",
+    ];
+    let in_german = [
+        "Stellte den Druck ab jetzt auf beidseitig um",
+        "Stellte den Druck ab jetzt auf einseitig um",
+        "Stellte das Scannen ab jetzt auf 600 dpi um",
+        "Stellte das Scannen ab jetzt auf Graustufen um",
+        "Stellte das Scannen ab jetzt auf beidseitig aus dem Einzug um",
+        "Stellte die Texterkennung ab jetzt auf Deutsch um",
+    ];
+    for (locale, words, wanted) in [("en-US", "", english), ("de-DE", german, in_german)] {
+        let mut said = app.history(&defaults.target, locale, words);
+        let said = said.split_off(said.len().saturating_sub(wanted.len()));
+        assert_eq!(said.len(), wanted.len(), "{said:?}");
+        for (said, wanted) in said.iter().zip(wanted) {
+            assert!(said.starts_with(wanted), "{wanted:?} in {locale}: {said:?}");
+        }
+    }
+}

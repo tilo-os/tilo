@@ -582,7 +582,11 @@ fn sources_label(sources: Int) -> Text {
 
 /// Brings in what this device's firewalld holds: the zones, their services and rules, and the
 /// switches. A device whose firewalld does not answer keeps the configuration it has.
-action import_device(f: Firewall) (icon: .rotate_cw, label: "Read this device's firewalld") {
+action import_device(f: Firewall) (
+    icon: .rotate_cw,
+    label: "Read this device's firewalld",
+    did: "took in this device's firewall configuration for",
+) {
     let now = device.firewall
     if not now.serving or now.zones.is_empty() {
         return
@@ -617,7 +621,7 @@ action import_device(f: Firewall) (icon: .rotate_cw, label: "Read this device's 
 }
 
 /// Starts firewalld.
-action start(f: Firewall) (icon: .power, label: "Start firewall") {
+action start(f: Firewall) (icon: .power, label: "Start firewall", did: "started") {
     require not f.zones.is_empty() "There is no firewall configuration yet"
     f.enabled = true
     device.apply(device.firewall, config: payload(f))
@@ -627,7 +631,7 @@ action start(f: Firewall) (icon: .power, label: "Start firewall") {
 ///
 /// Undo starts it again but cannot take back what reached the machine while it was open, so
 /// this is asked first.
-destructive action stop(f: Firewall) (icon: .power, label: "Stop firewall") {
+destructive action stop(f: Firewall) (icon: .power, label: "Stop firewall", did: "stopped") {
     f.enabled = false
     device.apply(device.firewall, config: payload(f))
 }
@@ -635,20 +639,32 @@ destructive action stop(f: Firewall) (icon: .power, label: "Stop firewall") {
 /// Enters panic mode: all traffic in and out is dropped.
 ///
 /// Undo lifts it but cannot restore the connections it cut, so this is asked first.
-destructive action enter_panic(f: Firewall) (icon: .shield_alert, label: "Enter panic mode") {
+destructive action enter_panic(f: Firewall) (
+    icon: .shield_alert,
+    label: "Enter panic mode",
+    did: "dropped all traffic with panic mode in",
+) {
     require not f.zones.is_empty() "There is no firewall configuration yet"
     f.panic_mode = true
     device.apply(device.firewall, config: payload(f))
 }
 
 /// Leaves panic mode.
-action exit_panic(f: Firewall) (icon: .shield, label: "Exit panic mode") {
+action exit_panic(f: Firewall) (
+    icon: .shield,
+    label: "Exit panic mode",
+    did: "left panic mode in",
+) {
     f.panic_mode = false
     device.apply(device.firewall, config: payload(f))
 }
 
 /// Makes a zone the active one.
-action make_active(f: Firewall, zone: Text) (icon: .circle_check, label: "Make active zone") {
+action make_active(f: Firewall, zone: Text) (
+    icon: .circle_check,
+    label: "Make active zone",
+    did: "made {zone} the active zone of",
+) {
     f.default_zone = zone
     device.apply(device.firewall, config: payload(f))
     notice("Made {zone_title(zone)} the active zone", kind: .success)
@@ -658,6 +674,7 @@ action make_active(f: Firewall, zone: Text) (icon: .circle_check, label: "Make a
 action toggle_rule(f: Firewall, zone: Text, rule: Text, on: Bool) (
     icon: .power,
     label: "Turn a rule on or off",
+    did: if on { "turned on the rule" } else { "turned off the rule" },
 ) {
     if let held = f.zones.find(x -> x.kind == zone) {
         if let found = rule_at(held, rule) {
@@ -671,7 +688,10 @@ action toggle_rule(f: Firewall, zone: Text, rule: Text, on: Bool) (
 action allow_service(f: Firewall, zone: Text, service: Text, on: Bool) (
     icon: .power,
     label: "Allow a service",
+    did: if on { "allowed {service} in" } else { "stopped allowing a service in" },
 ) {
+    // A change keeps only the arguments its zone still holds: a service no longer allowed is
+    // gone from it, so that sentence cannot name it.
     if let held = f.zones.find(x -> x.kind == zone) {
         if on { held.services.add(service) } else { held.services.remove(service) }
         device.apply(device.firewall, config: payload(f))
@@ -691,7 +711,15 @@ action add_rule(
     proto: Text,
     verdict: Text,
     source: Text,
-) (icon: .plus, label: "Add rule") {
+) (
+    icon: .plus,
+    label: "Add rule",
+    did: if verdict == "deny" {
+    "saved a rule that denies its traffic in"
+} else {
+    "saved a rule that allows its traffic in"
+},
+) {
     require not as_service or service != "" "Choose a service"
     require as_service or port_ok(port) "That is not a port or a port range this firewall accepts"
     require source_ok(source) "That is not an IPv4 address or network"
@@ -728,6 +756,7 @@ action add_rule(
 destructive action delete_rule(f: Firewall, zone: Text, rule: Text) (
     icon: .trash,
     label: "Delete rule",
+    did: "deleted a rule from",
 ) {
     if let held = f.zones.find(x -> x.kind == zone) {
         if let found = rule_at(held, rule) {

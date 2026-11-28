@@ -25,6 +25,11 @@ d-y76crbne = Windows-VM
 
 d-iwyrwi7q = Weg setzen
     .doc = Wählen, wie ein Programm ab jetzt öffnet, und die Wahl an diesen Computer übergeben.
+    .did = { $route ->
+        [wine] ließ eine App ab jetzt mit Wine öffnen
+        [proton] ließ eine App ab jetzt mit Proton öffnen
+       *[other] ließ eine App ab jetzt in der Windows-VM öffnen
+    }
     .w-this-app-opens-this-way-from = Diese App öffnet ab dem nächsten Start so.
 
 d-iwyrwi7q-program = Programm
@@ -33,6 +38,7 @@ d-iwyrwi7q-route = Weg
 
 d-eixkuayr = Empfehlung verwenden
     .doc = Ein Programm so öffnen lassen, wie es der Katalog empfiehlt, und das an diesen Computer übergeben.
+    .did = ließ eine App so öffnen, wie der Katalog es empfiehlt
     .w-this-app-opens-the-recommended-way = Diese App öffnet wieder wie empfohlen.
 
 d-eixkuayr-program = Programm

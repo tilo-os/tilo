@@ -287,14 +287,22 @@ fn shared_grant_words(grant: Text) -> Text {
 }
 
 /// Choose how a program opens from now on, and carry the choice to this computer.
-action set_route(w: Windows, program: Text, route: OpenWith) {
+action set_route(w: Windows, program: Text, route: OpenWith) (
+    did: match route {
+    .wine => "set an app to open with Wine",
+    .proton => "set an app to open with Proton",
+    .vm => "set an app to open in the Windows VM",
+},
+) {
     w.routes.put(program, route)
     device.set_route(device.windows_apps, program: program, route: .some(device_route(route)))
     notice("This app opens this way from its next start.", kind: .success)
 }
 
 /// Let a program open the way the catalogue recommends, and carry that to this computer.
-action use_recommendation(w: Windows, program: Text) {
+action use_recommendation(w: Windows, program: Text) (
+    did: "let an app open the way the catalogue recommends",
+) {
     w.routes.remove(program)
     device.set_route(device.windows_apps, program: program, route: .none)
     notice("This app opens the recommended way again.", kind: .success)

@@ -361,6 +361,10 @@ d-k3uw4ylu-queue = Warteschlange
 
 d-mkb4zsvl = Beidseitig setzen
     .doc = Druckt auf beiden Seiten des Papiers oder auf einer.
+    .did = { $two_sided ->
+        [true] stellte den Druck ab jetzt auf beidseitig um
+       *[other] stellte den Druck ab jetzt auf einseitig um
+    }
 
 d-mkb4zsvl-two_sided = Beidseitig
 
@@ -373,21 +377,38 @@ d-gypszybb-value = Wert
 
 d-b67znnp4 = Auflösung setzen
     .doc = Wie fein gescannt wird.
+    .did = stellte das Scannen ab jetzt auf { $dpi } dpi um
 
 d-b67znnp4-dpi = Dpi
 
 d-vevabeyv = Scanfarbe setzen
     .doc = Wie gescannt wird: in Farbe, Graustufen oder Strichzeichnung.
+    .did = { $colour ->
+        [grayscale] stellte das Scannen ab jetzt auf Graustufen um
+        [line-art] stellte das Scannen ab jetzt auf Strichzeichnung um
+       *[other] stellte das Scannen ab jetzt auf Farbe um
+    }
 
 d-vevabeyv-colour = Farbe
 
 d-hlgewmm6 = Scanquelle setzen
     .doc = Woher gescannt wird.
+    .did = { $source ->
+        [feeder] stellte das Scannen ab jetzt auf den Einzug um
+        [feeder-duplex] stellte das Scannen ab jetzt auf beidseitig aus dem Einzug um
+       *[other] stellte das Scannen ab jetzt auf das Vorlagenglas um
+    }
 
 d-hlgewmm6-source = Source
 
 d-zsi6rne6 = OCR-Sprache setzen
     .doc = Die Sprache, in der Text erkannt wird.
+    .did = { $language ->
+        [deu] stellte die Texterkennung ab jetzt auf Deutsch um
+        [fra] stellte die Texterkennung ab jetzt auf Französisch um
+        [spa] stellte die Texterkennung ab jetzt auf Spanisch um
+       *[other] stellte die Texterkennung ab jetzt auf Englisch um
+    }
 
 d-zsi6rne6-language = Sprache
 

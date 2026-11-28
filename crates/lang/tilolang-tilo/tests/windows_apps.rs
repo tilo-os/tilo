@@ -1082,3 +1082,52 @@ fn windows_support_arriving_is_said_once() {
     keys_of_kind(window.tree(), "ui.Timer", &mut timers);
     assert!(timers.is_empty(), "nothing more waits once it has arrived");
 }
+
+/// What the system's History says each choice of how a program opens did, in English and in
+/// German: the way it chose, read from the case it was given.
+#[test]
+fn history_says_how_each_program_was_set_to_open_in_the_readers_language() {
+    let app = Pane::install_with_ids(
+        &me(),
+        SOURCE,
+        include_str!("../../../../apps/tl/windows/app.ids"),
+    )
+    .delegating()
+    .reading(&windows(), &full())
+    .rooted("so.tilo.windows.Windows");
+    for case in ["wine", "proton", "vm"] {
+        app.call(
+            "set_route",
+            vec![
+                app.root_value(),
+                Value::text("adobe-reader"),
+                open_with(&app, case),
+            ],
+        );
+    }
+    app.call(
+        "use_recommendation",
+        vec![app.root_value(), Value::text("adobe-reader")],
+    );
+    let german = include_str!("../../../../apps/tl/windows/locales/de-DE.ftl");
+    let english = [
+        "Set an app to open with Wine",
+        "Set an app to open with Proton",
+        "Set an app to open in the Windows VM",
+        "Let an app open the way the catalogue recommends",
+    ];
+    let in_german = [
+        "Ließ eine App ab jetzt mit Wine öffnen",
+        "Ließ eine App ab jetzt mit Proton öffnen",
+        "Ließ eine App ab jetzt in der Windows-VM öffnen",
+        "Ließ eine App so öffnen, wie der Katalog es empfiehlt",
+    ];
+    for (locale, words, wanted) in [("en-US", "", english), ("de-DE", german, in_german)] {
+        let mut said = app.history(app.root(), locale, words);
+        let said = said.split_off(said.len().saturating_sub(wanted.len()));
+        assert_eq!(said.len(), wanted.len(), "{said:?}");
+        for (said, wanted) in said.iter().zip(wanted) {
+            assert!(said.starts_with(wanted), "{wanted:?} in {locale}: {said:?}");
+        }
+    }
+}

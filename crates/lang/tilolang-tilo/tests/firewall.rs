@@ -671,6 +671,11 @@ fn choosing_a_zone_in_the_list_opens_its_page() {
 
 /// The rule in `zone` that matches `port`, by its id.
 fn rule_of(app: &Pane, zone: &str, port: &str) -> String {
+    rule_at(app, zone, port).id_string()
+}
+
+/// The zone `zone` of the firewall.
+fn zone_at(app: &Pane, zone: &str) -> ResourceRef {
     let zones = app
         .host
         .runtime()
@@ -679,7 +684,7 @@ fn rule_of(app: &Pane, zone: &str, port: &str) -> String {
     let Value::List(zones) = zones else {
         panic!("zones are a list: {zones:?}")
     };
-    let held = zones
+    zones
         .iter()
         .find_map(|entry| {
             let Value::Ref(entry) = entry else {
@@ -689,7 +694,12 @@ fn rule_of(app: &Pane, zone: &str, port: &str) -> String {
             let kind = app.host.runtime().read(&held, "kind").expect("kind");
             (kind == Value::text(zone)).then_some(held)
         })
-        .unwrap_or_else(|| panic!("the {zone} zone"));
+        .unwrap_or_else(|| panic!("the {zone} zone"))
+}
+
+/// The rule in `zone` that matches `port`.
+fn rule_at(app: &Pane, zone: &str, port: &str) -> ResourceRef {
+    let held = zone_at(app, zone);
     let rules = app
         .host
         .runtime()
@@ -704,9 +714,146 @@ fn rule_of(app: &Pane, zone: &str, port: &str) -> String {
             let Value::Ref(rule) = rule else { return None };
             let rule = std::rc::Rc::unwrap_or_clone(rule.target.clone());
             let matched = app.host.runtime().read(&rule, "port").expect("port");
-            (matched == Value::text(port)).then_some(rule.id_string())
+            (matched == Value::text(port)).then_some(rule)
         })
         .unwrap_or_else(|| panic!("the rule for port {port}"))
+}
+
+/// Every change a person makes to the firewall, once each: a rule turned on and off, ssh
+/// allowed no more and again, a rule saved and deleted in `work`, the firewall stopped and
+/// started, `work` made active, panic mode entered and left.
+fn change_everything(app: &Pane) {
+    let rule = rule_of(app, "public", "3389");
+    for on in [true, false] {
+        app.call(
+            "toggle_rule",
+            vec![
+                app.root_value(),
+                Value::text("public"),
+                Value::text(rule.clone()),
+                Value::Bool(on),
+            ],
+        );
+    }
+    for on in [false, true] {
+        app.call(
+            "allow_service",
+            vec![
+                app.root_value(),
+                Value::text("public"),
+                Value::text("ssh"),
+                Value::Bool(on),
+            ],
+        );
+    }
+    app.call(
+        "add_rule",
+        vec![
+            app.root_value(),
+            Value::text("work"),
+            Value::text(""),
+            Value::Bool(false),
+            Value::text(""),
+            Value::text("5900"),
+            Value::text("tcp"),
+            Value::text("deny"),
+            Value::text(""),
+        ],
+    );
+    let added = rule_of(app, "work", "5900");
+    app.call(
+        "delete_rule",
+        vec![app.root_value(), Value::text("work"), Value::text(added)],
+    );
+    for action in ["stop", "start"] {
+        app.call(action, vec![app.root_value()]);
+    }
+    app.call("make_active", vec![app.root_value(), Value::text("work")]);
+    for action in ["enter_panic", "exit_panic"] {
+        app.call(action, vec![app.root_value()]);
+    }
+}
+
+/// What the system's History says each change of the firewall did, in English and in German.
+#[test]
+fn history_says_what_each_firewall_change_did_in_the_readers_language() {
+    let app = Pane::install_with_ids(
+        &me(),
+        SOURCE,
+        include_str!("../../../../apps/tl/firewall/app.ids"),
+    )
+    .delegating()
+    .reading(&reading(), READING)
+    .rooted("Firewall");
+    app.call("import_device", vec![app.root_value()]);
+    change_everything(&app);
+    let german = include_str!("../../../../apps/tl/firewall/locales/de-DE.ftl");
+    let last = |at: &ResourceRef, locale: &str, words: &str, n: usize| {
+        let mut said = app.history(at, locale, words);
+        said.split_off(said.len().saturating_sub(n))
+    };
+    let cases: [(ResourceRef, &[&str], &[&str]); 3] = [
+        (
+            rule_at(&app, "public", "3389"),
+            &["Turned on the rule", "Turned off the rule"],
+            &["Schaltete die Regel ein", "Schaltete die Regel aus"],
+        ),
+        (
+            zone_at(&app, "work"),
+            &[
+                "Saved a rule that denies its traffic in",
+                "Deleted a rule from",
+            ],
+            &[
+                "Speicherte eine Regel, die ihren Datenverkehr verweigert",
+                "Löschte eine Regel",
+            ],
+        ),
+        (
+            app.root().clone(),
+            &[
+                "Stopped",
+                "Started",
+                "Made work the active zone of",
+                "Dropped all traffic with panic mode in",
+                "Left panic mode in",
+            ],
+            &[
+                "Stoppte die Firewall",
+                "Startete die Firewall",
+                "Machte work zur aktiven Zone",
+                "Verwarf mit dem Panikmodus allen Datenverkehr",
+                "Verließ den Panikmodus",
+            ],
+        ),
+    ];
+    for (at, english, in_german) in cases {
+        let said = last(&at, "en-US", "", english.len());
+        let gesagt = last(&at, "de-DE", german, in_german.len());
+        assert_eq!(said.len(), english.len(), "{said:?}");
+        for ((said, wanted), (gesagt, gewollt)) in
+            said.iter().zip(english).zip(gesagt.iter().zip(in_german))
+        {
+            assert!(said.starts_with(wanted), "{wanted:?}: {said:?}");
+            assert!(gesagt.starts_with(gewollt), "{gewollt:?}: {gesagt:?}");
+        }
+    }
+    // A change keeps only the arguments its zone holds once written. A service it stopped
+    // allowing is gone from the zone, so that sentence names none. A zone that does not
+    // masquerade holds no `true`, so allowing one keeps no `on` to choose the words by: it reads
+    // by the action's label, never by an id.
+    let public = last(&zone_at(&app, "public"), "en-US", "", 2);
+    assert!(
+        public[0].starts_with("Stopped allowing a service in")
+            && public[1].starts_with("Ran “Allow a service”"),
+        "the services it stopped and started allowing: {public:?}"
+    );
+    let public = last(&zone_at(&app, "public"), "de-DE", german, 2);
+    assert!(
+        public[0].starts_with("Erlaubte einen Dienst nicht mehr")
+            && public[1].contains("Einen Dienst erlauben"),
+        "in German: {public:?}"
+    );
 }
 
 #[test]
