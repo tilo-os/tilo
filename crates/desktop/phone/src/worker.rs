@@ -329,7 +329,13 @@ fn serve(
         let mut refused = told.clone();
         let devices = device.devices().unwrap_or_else(|error| {
             refused.get_or_insert_with(|| format!("{error:#}"));
-            Devices::default()
+            // A phone someone signed in to stays theirs while its workspaces are not listed: it
+            // shows what it showed last and why, never the sign-in page.
+            let shown = seen.lock().unwrap_or_else(PoisonError::into_inner);
+            Devices {
+                signed_in: Device::signed_in(),
+                ..shown.devices.clone()
+            }
         });
         // Before the person picks one, the phone is in their own workspace.
         let workspace = picked.clone().or_else(|| devices.own.clone());

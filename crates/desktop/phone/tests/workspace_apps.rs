@@ -36,7 +36,7 @@ use ui::widget::Widget as _;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
-    let (_home, mut server) = Server::for_phone();
+    let (_home, server) = Server::for_phone();
     // The person's server runs the language its program links, as a computer's daemon does: what
     // reads the workspace's Notes record there, as their other devices read it.
     server.serving_tilolang();
@@ -126,16 +126,29 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         },
     );
 
-    // Started again while the server is away, the phone opens Notes on the copy it keeps, not
-    // after the 30 s a wait on the server costs.
+    // Started again while the server does not answer (a host that hangs, or a network that loses
+    // its packets), the phone lists the workspaces it holds at once, signed in, and opens Notes on
+    // the copy it keeps, not after the 30 s a wait on the server costs.
     phone.stop().expect("the phone's daemon stops");
-    server.host.stop();
+    let paused = server.host.pause();
     let started = std::time::Instant::now();
     let phone = tilo_runtime::in_process::Device::start(&support::profile()).unwrap();
+    let devices = phone.devices().expect("the phone lists what it holds");
+    let took = started.elapsed();
+    assert!(
+        devices.signed_in
+            && devices
+                .workspaces
+                .iter()
+                .any(|held| held.key == server.workspace),
+        "the phone lists the workspace it holds: {devices:?}"
+    );
+    assert!(took.as_secs() < 5, "the list waited {took:?} on the server");
     drop(server::notes_opened(&phone, &server.workspace));
     let took = started.elapsed();
     assert!(took.as_secs() < 15, "Notes waited {took:?} on the server");
     phone.stop().expect("the phone's daemon stops");
+    drop(paused);
     drop(laptop);
 }
 

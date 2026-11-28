@@ -28,7 +28,7 @@ pub use daemon::ServerDaemon;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, Barrier, OnceLock, mpsc};
 
 use ed25519_dalek::SigningKey;
 use tilo_endpoint_reachability::EndpointRelays;
@@ -382,6 +382,15 @@ pub async fn endpoint(key: iroh::SecretKey) -> iroh::Endpoint {
         .expect("an endpoint on this machine's loopback")
 }
 
+/// A host that does not answer ([`Host::pause`]) until this drops.
+pub struct Paused(Arc<Barrier>);
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        self.0.wait();
+    }
+}
+
 /// A person's host on this machine's loopback, serving one workspace: what its devices relay
 /// through, and where they are told it is.
 pub struct Host(Running);
@@ -494,6 +503,23 @@ impl Host {
     /// Stop this host, as a machine that goes away does: nothing answers at its address.
     pub fn stop(&mut self) {
         self.0.halt();
+    }
+
+    /// Stop answering until what this returns drops, as a host that hangs or a network that loses
+    /// its packets does: what reaches the host's address waits unanswered rather than refused.
+    /// Each of its runtime's two workers is held, so nothing it serves runs meanwhile.
+    #[must_use]
+    pub fn pause(&self) -> Paused {
+        let (held, resume) = (Arc::new(Barrier::new(3)), Arc::new(Barrier::new(3)));
+        for _ in 0..2 {
+            let (held, resume) = (Arc::clone(&held), Arc::clone(&resume));
+            self.0.runtime.spawn(async move {
+                held.wait();
+                resume.wait();
+            });
+        }
+        held.wait();
+        Paused(resume)
     }
 
     /// Where this host is reached for its workspace, as it signed it: what a device of the person

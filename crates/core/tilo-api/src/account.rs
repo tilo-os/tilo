@@ -2380,6 +2380,9 @@ fn server_operation(asked: &Asked) -> Result<(&'static str, Map<String, Value>),
     Ok((action, arguments))
 }
 
+/// How long a device that holds workspaces waits on its server's list of the person's others.
+const SERVER_LIST_BESIDE_HELD: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The workspaces a desktop keeps, and those of the person's its server lists that it does
 /// not keep, labelled with every one of the `labels` `args` names, with the hosts it may create on.
 async fn listed_here(
@@ -2393,8 +2396,22 @@ async fn listed_here(
         Err(refused) => return refused,
     };
     let mut workspaces = here.workspaces(key);
-    if let Some(account) = here.account().await {
-        match account.listed(&key.user_public_key, &labels, None).await {
+    // The server's list adds the person's workspaces this device does not hold. A device that
+    // holds some lists them at once whether or not its server answers: a host that hangs or a
+    // network that loses its packets costs it a moment, never its list.
+    let server_list = async {
+        let account = here.account().await?;
+        Some(account.listed(&key.user_public_key, &labels, None).await)
+    };
+    let server_list = if workspaces.is_empty() {
+        server_list.await
+    } else {
+        tokio::time::timeout(SERVER_LIST_BESIDE_HELD, server_list)
+            .await
+            .unwrap_or_else(|_| Some(Err("the server did not answer in time".to_owned())))
+    };
+    if let Some(listed) = server_list {
+        match listed {
             Ok(listed) => {
                 for row in listed
                     .workspaces

@@ -478,6 +478,12 @@ impl Device {
     }
 
     /// Whether this device's identity names a person its daemon serves.
+    /// Whether a person's identity has this device, whether or not anything answers now.
+    #[must_use]
+    pub fn signed_in() -> bool {
+        Self::claimed().unwrap_or(false)
+    }
+
     fn claimed() -> Result<bool> {
         let key = Self::device_key()?;
         Ok(tilo_device_identity::login::claimed(
