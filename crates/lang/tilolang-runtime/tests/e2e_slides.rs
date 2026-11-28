@@ -12,6 +12,18 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../../../apps/tl/slides/app.tl");
 
+    /// A 4 × 4 picture, each pixel its own: a chosen picture the device can read.
+    const LOGO: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xa9,
+        0xf1, 0x9e, 0x7e, 0x00, 0x00, 0x00, 0x36, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x0d, 0xc8,
+        0x41, 0x01, 0x00, 0x30, 0x0c, 0x02, 0x31, 0x94, 0x54, 0x09, 0x4a, 0xaa, 0x04, 0x25, 0x53,
+        0x82, 0xbf, 0x5b, 0xf3, 0x8c, 0x24, 0x61, 0x0d, 0x91, 0xa9, 0x16, 0xc9, 0x83, 0x6d, 0xe2,
+        0xa5, 0xce, 0x45, 0x8c, 0xb3, 0x24, 0xa1, 0x79, 0x17, 0x5d, 0xdc, 0x90, 0x3e, 0xda, 0xf2,
+        0x01, 0xb8, 0xf1, 0x20, 0xd1, 0xca, 0x93, 0x82, 0x32, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
     struct Slides {
         rt: Runtime,
         app: App,
@@ -655,18 +667,17 @@ mod cases {
 
         phase a_picture_the_workspace_holds_goes_onto_a_slide;
         {
-            use tilolang_runtime::FileValue;
-
             let s = Slides::new();
-            s.rt.set_blobs(Files::default());
+            let device = Files::default();
+            s.rt.set_blobs(device.clone());
             let slide = s.slide(0);
-            let picture = FileValue::new("logo.png", "image/png", 4, "h4");
+            let picture = device.keeping("logo.png", "image/png", LOGO);
             let url = picture.url();
             s.call_with(
                 "add_picture",
                 &[
                     ("s", Value::resource(&slide)),
-                    ("file", Value::File(std::rc::Rc::new(picture))),
+                    ("file", Value::file(picture)),
                 ],
             );
             let made = s.elements(&slide).pop().expect("the picture landed");
@@ -1496,6 +1507,96 @@ mod cases {
             let mut banners = Vec::new();
             of_kind(view.tree(), "ui.Banner", &mut banners);
             assert!(banners.is_empty(), "the window says nothing now");
+        }
+
+        phase an_export_refuses_a_deck_too_large_to_carry;
+        {
+            let s = Slides::new();
+            let slide = s.slide(0);
+            // A deck is inside the bounds a presentation file carries until its words pass two
+            // million characters.
+            let huge = "x".repeat(2_000_001);
+            let args = s.app.args(
+                &s.rt,
+                "set_notes",
+                &[
+                    ("s", Value::resource(&slide)),
+                    (
+                        "notes",
+                        Value::Rich(tilolang_runtime::rich::RichValue::from_text(&huge)),
+                    ),
+                ],
+            );
+            s.call("set_notes", args);
+            for action in ["export_pptx", "export_odp"] {
+                let refused = s.refused(action, &[("d", Value::resource(&s.deck))]);
+                assert!(
+                    refused.contains("too large to export"),
+                    "{action} says the deck is too large: {refused}"
+                );
+            }
+            // The deck inside the bounds writes its file.
+            let small = Slides::new();
+            small.rt.set_blobs(Files::default());
+            match small.call("export_pptx", vec![Value::resource(&small.deck)]) {
+                InvokeOutcome::Done(Value::File(file)) => assert_eq!(file.name, "Untitled.pptx"),
+                other => panic!("a deck inside the bounds exports: {other:?}"),
+            }
+        }
+
+        phase a_file_that_is_not_a_picture_is_refused;
+        {
+            let s = Slides::new();
+            let device = Files::default();
+            s.rt.set_blobs(device.clone());
+            let slide = s.slide(0);
+            let elements = s.elements(&slide).len();
+            let words = Value::file(device.keeping("notes.txt", "text/plain", b"just words"));
+            let refused = s.refused(
+                "add_picture",
+                &[("s", Value::resource(&slide)), ("file", words)],
+            );
+            assert!(
+                refused.contains("not a picture"),
+                "a file that is no picture says so: {refused}"
+            );
+            assert_eq!(
+                s.elements(&slide).len(),
+                elements,
+                "nothing stands on the slide"
+            );
+        }
+
+        phase an_open_says_what_went_wrong_in_its_own_words;
+        {
+            let s = Slides::new();
+            let device = Files::default();
+            s.rt.set_blobs(device.clone());
+            let broken = Value::file(device.keeping(
+                "notes.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                b"not a presentation at all",
+            ));
+            s.call("adopt", vec![Value::resource(&s.deck), broken]);
+            let notice = match s.rt.read(&s.deck, "notice").unwrap() {
+                Value::Text(notice) => notice,
+                other => panic!("the notice reads as {other:?}"),
+            };
+            assert!(
+                notice.contains("notes.pptx") && notice.contains("is not a presentation"),
+                "a file that does not read as a presentation names itself: {notice}"
+            );
+            // A file that opens leaves nothing to say.
+            let good = match s.call("export_pptx", vec![Value::resource(&s.deck)]) {
+                InvokeOutcome::Done(Value::File(file)) => file,
+                other => panic!("the deck exports: {other:?}"),
+            };
+            s.call("adopt", vec![Value::resource(&s.deck), Value::File(good)]);
+            assert_eq!(
+                s.rt.read(&s.deck, "notice").unwrap(),
+                Value::text(""),
+                "a presentation that opened says nothing"
+            );
         }
 
         phase a_rails_row_carries_its_commands;

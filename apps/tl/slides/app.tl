@@ -747,18 +747,43 @@ action read_presentation(file: File) -> Result<Text, Text> (
     file.presentation()
 }
 
+/// Whether the deck is inside the bounds a presentation file and the engine carry: the slides,
+/// the elements, the words and the pictures a file and a device's memory hold. A deck past them
+/// is refused before a file is written rather than written broken.
+fn deck_within_limits(d: Deck) -> Bool {
+    let elements = 0
+    let words = d.title.len()
+    let pictures = 0
+    for s in d.slides {
+        elements = elements + s.elements.len()
+        words = words + s.notes.markdown.len()
+        for e in s.elements {
+            words = words + e.body.markdown.len()
+            if e.kind == .image {
+                pictures = pictures + 1
+            }
+        }
+    }
+    d.slides.len() <= 1000 and elements <= 20000 and words <= 2000000 and pictures <= 2048
+}
+
 /// The deck as an OpenDocument presentation.
 action export_odp(d: Deck) -> File (icon: .download, label: "Export as OpenDocument") {
+    require deck_within_limits(d) "This presentation is too large to export"
     File.of_presentation(export_name(d, "odp"), deck_text(d), "odp")
 }
 
 /// The deck as a PowerPoint presentation.
 action export_pptx(d: Deck) -> File (icon: .download, label: "Export as PowerPoint") {
+    require deck_within_limits(d) "This presentation is too large to export"
     File.of_presentation(export_name(d, "pptx"), deck_text(d), "pptx")
 }
 
-/// Reads a deck file into this deck: its slides replace what the deck holds.
+/// Reads a deck file into this deck: its slides replace what the deck holds. Reading a
+/// presentation takes a moment, so the deck says what it is opening until it has, and what went
+/// wrong when it could not.
 action adopt(d: Deck, file: File) (label: "Open the presentation", did: "opened a presentation") {
+    d.notice = "Opening {file.name}"
     match file.presentation() {
         .ok(text) => match json.decode<DeckFile>(text) {
             .ok(held) => {
@@ -774,11 +799,11 @@ action adopt(d: Deck, file: File) (label: "Open the presentation", did: "opened 
                 d.notice = ""
             }
             .err(why) => {
-                d.notice = why
+                d.notice = "The presentation could not be read: {why}"
             }
         },
         .err(why) => {
-            d.notice = why
+            d.notice = "{file.name} is not a presentation: {why}"
         }
     }
 }
@@ -788,8 +813,13 @@ action clear_notice(d: Deck) (icon: .x, label: "Close the message", did: "closed
     d.notice = ""
 }
 
-/// Puts a chosen picture on the slide.
-action add_picture(s: Slide, file: File) (label: "Insert picture", did: "inserted a picture") {
+/// Puts a chosen picture on the slide. A file the device cannot read as a picture is refused,
+/// saying so, rather than standing on the slide as something that cannot be shown.
+action add_picture(s: Slide, file: File) uses image (
+    label: "Insert picture",
+    did: "inserted a picture",
+) {
+    require file.image_info() != .none "That file is not a picture, or is too large to show"
     s.elements.insert(
         Element(
             kind: .image,

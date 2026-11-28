@@ -604,9 +604,15 @@ d-flti52c5-file = File
 
 d-hhgf7tl7 = Als OpenDocument exportieren
     .doc = The deck as an OpenDocument presentation.
+    .w-this-presentation-is-too-large-to = Diese Präsentation ist zu groß zum Exportieren
+
+d-lyoqhtk7 = Als OpenDocument exportieren~present
 
 d-bhx54qvo = Als PowerPoint exportieren
     .doc = The deck as a PowerPoint presentation.
+    .w-this-presentation-is-too-large-to = Diese Präsentation ist zu groß zum Exportieren
+
+d-rgrqgbux = Als PowerPoint exportieren~present
 
 d-sidrg2nq = Open the presentation
     .doc = Reads a deck file into this deck: its slides replace what the deck holds.
@@ -617,6 +623,9 @@ d-sidrg2nq-file = File
 d-zvlzo24x = Bild einfügen
     .doc = Puts a chosen picture on the slide.
     .did = hat ein Bild eingefügt
+    .w-that-file-is-not-a-picture = Diese Datei ist kein Bild oder zu groß zum Anzeigen
+
+d-bqou6syt = Bild einfügen~present
 
 d-zvlzo24x-file = File
 
