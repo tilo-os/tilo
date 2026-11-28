@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn a_development_build_is_the_app_it_is_a_build_of() {
         assert_eq!(
-            build_of("so.tilo.store.dev.2f8a8fd7d925ddd2d"),
+            build_of("so.tilo.store.dev.2f8a8fd7d925ddd2"),
             "so.tilo.store"
         );
         assert_eq!(
@@ -57,6 +57,7 @@ mod tests {
             "so.tilo.dev.guide",
             "so.tilo.store.dev.nothex0123456",
             "so.tilo.store.dev.0123456789ABCDEF",
+            "so.tilo.store.dev.2f8a8fd7d925ddd2d",
         ] {
             assert_eq!(build_of(app), app, "{app} is an app's own id");
         }
