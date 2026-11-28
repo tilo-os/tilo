@@ -435,8 +435,25 @@ impl WorkspaceActivityPane {
                 })
                 .collect(),
             mutations: self.host.mutations_available(),
+            unread: self.unread_records(),
+            capped: self.feed_coverage.capped_records,
             ..wire::Feed::default()
         }
+    }
+
+    /// What this device could not read of the workspace's history, one line per record, named by
+    /// its app and record: the changes it holds are not here, so the history says so rather than
+    /// reading as complete.
+    fn unread_records(&self) -> Vec<String> {
+        let mut unread: Vec<String> = self
+            .feed_coverage
+            .unavailable_resources
+            .iter()
+            .map(crate::desktop::activity::index::HistoryOrigin::label)
+            .collect();
+        unread.sort_unstable();
+        unread.dedup();
+        unread
     }
 
     /// Whether `entry` changed one of the resources `window` names, and the item it names if it

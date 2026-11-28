@@ -304,6 +304,25 @@ view changes(
         if not f.mutations {
             ui.Text("This device cannot change the history here.", role: .caption, secondary: true)
         }
+        // The history is only as complete as this device could read it: what it could not read,
+        // and what it left out because it holds a bounded number of records, is said here rather
+        // than reading as if nothing were missing.
+        if not f.unread.is_empty() {
+            let unread = f.unread.join(", ")
+            ui.Text(
+                std.say("Not here: {unread} could not be read"),
+                role: .caption,
+                secondary: true,
+            )
+        }
+        if f.capped > 0 {
+            let capped = f.capped
+            ui.Text(
+                std.say("The oldest changes are left out: {capped} records are not read"),
+                role: .caption,
+                secondary: true,
+            )
+        }
         let changes = matched(f.entries, writer, found)
         let kept = changes.count()
         let held = f.entries.count()

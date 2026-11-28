@@ -640,6 +640,17 @@ mod tests {
                 !pane.feed_coverage.is_complete(),
                 "a record it could not read leaves the history incomplete"
             );
+            // What a window reads says the same: the record that could not be read is named, and
+            // a record the history left out is counted, so the feed never reads as complete.
+            pane.mark_desktop_history_capped();
+            let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
+            assert_eq!(feed.unread.len(), 1, "{:?}", feed.unread);
+            assert!(
+                feed.unread[0].contains("missing"),
+                "the app and record that could not be read are named: {:?}",
+                feed.unread
+            );
+            assert_eq!(feed.capped, 1, "the record left out because of the cap is counted");
         }
     }
 

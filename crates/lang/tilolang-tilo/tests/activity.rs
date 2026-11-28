@@ -139,6 +139,8 @@ fn page(entries: Vec<Json>, total: i64) -> String {
             "lenses": [],
             "pending": false,
             "mutations": true,
+            "unread": [],
+            "capped": 0,
         }
     })
     .to_string()
@@ -228,6 +230,53 @@ fn shown(view: &ViewInstance) -> Vec<String> {
         &["value", "title", "label", "text", "message", "action"],
         true,
     )
+}
+
+#[test]
+fn a_history_it_could_not_read_says_which_records_and_how_many_it_left_out() {
+    let app = installed("{}");
+    let listing = json!({
+        "feed": {
+            "workspace": "Home",
+            "scope": "this-workspace",
+            "total": 3,
+            "entries": changes(3),
+            "groups": [],
+            "people": ["Ada"],
+            "lenses": [],
+            "pending": false,
+            "mutations": true,
+            "unread": ["so.tilo.notes: note-1", "so.tilo.tasks: list-2"],
+            "capped": 2,
+        }
+    })
+    .to_string();
+    app.device_says(&feed(0), &listing);
+    let window = open_history(&app);
+    assert!(
+        contains(&window, "so.tilo.notes: note-1, so.tilo.tasks: list-2"),
+        "the records that could not be read are named: {:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "2 records are not read"),
+        "what the cap left out is counted: {:?}",
+        shown(&window)
+    );
+
+    // A history this device read whole says nothing of either.
+    app.device_says(&feed(0), &page(changes(3), 3));
+    let window = open_history(&app);
+    assert!(
+        !contains(&window, "could not be read"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        !contains(&window, "records are not read"),
+        "{:?}",
+        shown(&window)
+    );
 }
 
 #[test]

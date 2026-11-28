@@ -368,6 +368,13 @@ pub struct Feed {
     /// Whether this device can change the history here: name, undo,
     /// restore.
     pub mutations: bool,
+    /// What this device could not read of the workspace's history, one
+    /// entry per record that is not here, named by its app and record.
+    /// Empty when it read every one.
+    pub unread: Vec<String>,
+    /// How many records the history left out because it holds a bounded
+    /// number of them: their changes are not here either.
+    pub capped: usize,
 }
 
 /// Where in the app a [`Focus`] opens.
