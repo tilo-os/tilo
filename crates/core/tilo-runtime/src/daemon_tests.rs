@@ -3328,6 +3328,8 @@ fn the_accounts_person_answers_the_token_and_the_seat_that_made_them_links() {
             "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in", "args": {"uid": founded.uid}}}}));
         said["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned()
     };
+    // A start that failed is replaced by the part that runs now.
+    founded.native.seats.did_not_start("the first start failed".to_owned());
     let other = Arc::new(Linked::default()); other.person([0x52; 32]);
     founded.native.seats.serve(Arc::clone(&other) as _);
     assert!(!sign_in().contains("\"token\":\""), "another person's part names a secret");
@@ -3337,13 +3339,14 @@ fn the_accounts_person_answers_the_token_and_the_seat_that_made_them_links() {
     let linked = founding_ask(founded.uid, &founded.socket, &json!({"native": "shells#link"}));
     assert!(linked["error"].is_null(), "the seat that made the person: {linked}");
     // Another process of her account, with no seat record, is refused:
-    // a_founding_link_is_never_an_apps_or_another_programs, daemon_tests.rs:3551.
+    // a_founding_link_is_never_an_apps_or_another_programs, daemon_tests.rs:3554.
     let refused = founding_ask(1001, &founded.socket, &json!({"native": "shells#link", "token": token}));
     assert!(refused["error"].as_str().is_some_and(|w| w.contains("does not act")), "{refused}");
-    let record = founded._home.root().join("seats").join(format!("1001-{}.json", std::process::id()));
-    std::fs::write(&record, format!("{{\"uid\":1001,\"pid\":{},\"start\":0,\"person\":\"{}\"}}", std::process::id(), hex::encode(founded.person))).unwrap();
-    let reused = founding_ask(1001, &founded.socket, &json!({"native": "shells#link"}));
-    assert!(reused["error"].as_str().is_some_and(|w| w.contains("no seat")), "{reused}");
+    let (pid, person) = (std::process::id(), hex::encode(founded.person));
+    let record = founded.home.root().join("seats").join(format!("1001-{pid}.json"));
+    std::fs::write(&record, format!("{{\"uid\":1001,\"pid\":{pid},\"start\":0,\"person\":\"{person}\"}}")).unwrap();
+    let stale = founding_ask(1001, &founded.socket, &json!({"native": "shells#link"}));
+    assert!(stale["error"].as_str().is_some_and(|w| w.contains("no seat")), "{stale}");
 }
 
 /// An action the device does not answer itself is answered by its person's part, not refused as
@@ -3562,7 +3565,7 @@ struct Founded {
     socket: std::path::PathBuf,
     uid: u32,
     person: [u8; 32],
-    _home: tilo_test_env::TestHome,
+    home: tilo_test_env::TestHome,
     _key: tilo_device_identity::persist::DeviceKeyLock,
 }
 
@@ -3679,7 +3682,7 @@ fn founded_daemon(certified: bool) -> Founded {
         socket,
         uid: ADA,
         person,
-        _home: home,
+        home,
         _key: key_taken,
     }
 }

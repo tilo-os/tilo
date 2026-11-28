@@ -605,14 +605,10 @@ impl Seats {
     }
 
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
-    /// A part that starts again serves the person it starts as, and the links made from here are
-    /// that part's: a request waiting for them hears the one that runs now.
+    /// The part that runs now is the one served, whichever it replaces — a start that failed, or
+    /// a part that started again as another person — so the links made from here are its own.
     pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
         self.shells.send_if_modified(|served| {
-            // A part that ran once keeps serving after a later start fails.
-            if matches!(served, Services::Failed(_)) {
-                return false;
-            }
             *served = Services::Running(shells);
             true
         });
