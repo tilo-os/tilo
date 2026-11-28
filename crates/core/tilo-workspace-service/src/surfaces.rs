@@ -30,7 +30,7 @@ struct Surfaces {
     bytes: Mutex<HashMap<[u8; 32], Vec<u8>>>,
 }
 
-/// This process's surfaces, once [`decide_receipt`] installed them.
+/// This process's surfaces, once [`keep_in`] made them.
 static SURFACES: Mutex<Option<Arc<Surfaces>>> = Mutex::new(None);
 
 fn installed() -> Option<Arc<Surfaces>> {
@@ -67,7 +67,7 @@ pub(crate) fn kept(app: &str, hash: &str) -> Option<Vec<u8>> {
 
 /// The bytes of the surface `hash` this host keeps, checked against the
 /// address they are kept under.
-pub(crate) fn read(hash: &str) -> Option<Vec<u8>> {
+pub fn read(hash: &str) -> Option<Vec<u8>> {
     let hash = address(hash)?;
     let surfaces = installed()?;
     if let Some(bytes) = surfaces.bytes.lock_recover().get(&hash) {
@@ -138,19 +138,6 @@ pub(crate) fn address(hash: &str) -> Option<[u8; 32]> {
     )
 }
 
-/// The surface the changes this host signs for `app` name: the one it runs
-/// the app with, for its own writes and its bots' alike.
-#[cfg(feature = "agents")]
-fn signed_surface(app: &str) -> Option<[u8; 32]> {
-    collab_types::app_surface::hash_of(app)
-}
-
-/// A server running no app in its own process signs no app's changes.
-#[cfg(not(feature = "agents"))]
-const fn signed_surface(_: &str) -> Option<[u8; 32]> {
-    None
-}
-
 /// The surfaces this build publishes for the versions of the built-in apps it
 /// does not run itself: one compiled surface per version of an app, laid out by
 /// the image's build beside its programs (`TILO_SURFACES` names another).
@@ -205,11 +192,10 @@ fn publish_from(built: &Path, dir: &Path) {
     }
 }
 
-/// Decide every change this process receives against the surfaces of the apps
-/// this host runs in its own process, or keeps under `dir`, its content store
-/// for them. Call it once, on the runtime the server runs on, before the server
-/// starts.
-pub fn decide_receipt(dir: &Path) {
+/// Keep the surfaces this host meets under `dir`, its content store for them: the ones this build
+/// carries and each one a member answers with, which decide the writes that name them ([`read`]).
+/// Called as the workspace service opens; a host that keeps none refuses what it does not run.
+pub fn keep_in(dir: &Path) {
     publish_built(dir);
     let known = std::fs::read_dir(dir)
         .map(|entries| entries.flatten().collect::<Vec<_>>())
@@ -226,12 +212,6 @@ pub fn decide_receipt(dir: &Path) {
         dir: dir.to_path_buf(),
         bytes: Mutex::new(known),
     }));
-    tilo_peer_state::decide_with_surfaces(
-        collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
-            |record: &collab_types::WrittenDocument<'_>, hash: &str| kept(record.app, hash),
-        ))),
-        signed_surface,
-    );
 }
 
 /// How many app surfaces arrived here since the process started.

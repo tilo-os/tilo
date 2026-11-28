@@ -3032,8 +3032,8 @@ mod tests {
         );
     }
 
-    /// A holder that lacks an app's surface refuses its writes; a surface that arrives, declared,
-    /// lets a write of that app through — no registry is asked.
+    /// A host lacking an app's surface refuses its writes; the surface of the version the workspace
+    /// runs, sent by a member, lets one through; any other surface a member sends declares nothing.
     #[tokio::test(flavor = "current_thread")]
     async fn a_surface_that_arrives_is_declared_before_the_write_it_was_asked_for_is_judged() {
         if !tilo_test_env::in_own_process_here(
@@ -3044,7 +3044,6 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         // Nothing in this process has named the notes app's surface yet.
-        crate::surfaces::decide_receipt(&dir.path().join("surfaces"));
         let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
         let host = test_host_holding(dir.path(), &key, &cert, std::sync::Arc::default()).await;
         let workspaces = host.workspaces().clone();
@@ -3056,6 +3055,18 @@ mod tests {
             signer: std::sync::Arc::new(key),
         }));
         let workspace = room(&workspaces, "Kitchen").await;
+        let hash = blake3::hash(SURFACE.as_bytes());
+        // The workspace runs the version of notes whose surface is `SURFACE`.
+        let surface = hash.to_hex();
+        let release = serde_json::json!({"app": NOTES, "version": "1", "package": "",
+            "publisher": "", "surface": surface.as_str()});
+        let installed =
+            serde_json::json!({"installed_by": "", "installed_at_ns": 1, "release": release});
+        let installed = serde_json::from_value(installed).unwrap();
+        workspaces
+            .write_app_records(&workspace, vec![(NOTES.to_owned(), Some(installed))])
+            .await
+            .unwrap();
         let mut note = automerge::AutoCommit::new();
         note.put(automerge::ROOT, "title", "Before").unwrap();
         commit(
@@ -3069,12 +3080,27 @@ mod tests {
                 .is_err(),
             "the holder admits no write of an app whose types it lacks"
         );
-        // The member that has the app answers with the surface the workspace's version names.
-        let hash = blake3::hash(SURFACE.as_bytes());
-        assert!(crate::surfaces::keep(&hash.to_hex(), SURFACE.as_bytes()));
-        let named = hash.as_bytes();
+        // A member sends a surface of its own making, which the workspace never ran.
+        let loose = SURFACE.replace("\"version\":1}]", "\"version\":2}]");
+        let other = blake3::hash(loose.as_bytes());
+        assert!(crate::surfaces::keep(&other.to_hex(), loose.as_bytes()));
         let state = workspaces.workspace(&workspace).await.unwrap();
-        state.lock().await.ensure_surface(NOTES, Some(named));
+        state
+            .lock()
+            .await
+            .ensure_surface(NOTES, Some(other.as_bytes()));
+        assert!(
+            write(&workspaces, &workspace, "plan", changes.clone())
+                .await
+                .is_err(),
+            "a surface the workspace does not run declares nothing"
+        );
+        // The member that has the app answers with the surface the workspace's version names.
+        assert!(crate::surfaces::keep(&hash.to_hex(), SURFACE.as_bytes()));
+        state
+            .lock()
+            .await
+            .ensure_surface(NOTES, Some(hash.as_bytes()));
         assert!(
             matches!(
                 write(&workspaces, &workspace, "plan", changes).await,

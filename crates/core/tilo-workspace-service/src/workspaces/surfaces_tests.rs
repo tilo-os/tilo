@@ -104,7 +104,6 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     }
     let scratch = tempfile::tempdir().unwrap();
     let content_store = scratch.path().join("surfaces");
-    crate::surfaces::decide_receipt(&content_store);
     let (key, cert) = hosting_device();
     let host = test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
@@ -150,7 +149,7 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // Kept beside the workspace's state: a start after this one has it without
     // asking anybody.
     assert_eq!(std::fs::read(content_store.join(&hash)).unwrap(), surface);
-    crate::surfaces::decide_receipt(&content_store);
+    crate::surfaces::keep_in(&content_store);
     assert_eq!(
         gathered(
             &workspaces.content_answer(&workspace, &asker, &want(&workspace, &asker, &hash)),

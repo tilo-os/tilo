@@ -38,7 +38,7 @@ const SCOUT: &str = "scout";
 async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, String) {
     let (key, cert) = tilo_workspace_service::workspaces::fixtures::hosting_device();
     // The native apps name their surfaces as the host first runs them.
-    tilo_workspace_service::surfaces::decide_receipt(&scratch.join("surfaces"));
+    crate::decide_receipt_against_surfaces(|_, hash| tilo_workspace_service::surfaces::read(hash));
     let server =
         tilo_workspace_service::workspaces::fixtures::test_host(scratch, &key, &cert).await;
     let workspaces = server.workspaces().clone();

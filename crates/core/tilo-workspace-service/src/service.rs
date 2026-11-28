@@ -240,6 +240,7 @@ impl ServiceSessions {
     ) -> Result<(Self, Option<Listed>), ServiceError> {
         validate_service_device_identity(&identity)?;
         std::fs::create_dir_all(&cfg.state_root)?;
+        crate::surfaces::keep_in(&cfg.state_root.join("surfaces"));
         let workspaces = empty_registry();
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));

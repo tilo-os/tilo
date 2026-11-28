@@ -60,8 +60,8 @@ fn keep_content(content: &tilo_content::ContentStore, bytes: &[u8]) {
     }
 }
 
-/// Decide changes against the app surfaces that live in the content store the apps this runtime
-/// hosts keep their content in, and in the store of the apps this device installed: an app
+/// Decide changes against the app surfaces in the content store this runtime's apps keep their
+/// content in, the store of the apps this device installed, and those members sent: an app
 /// another process of this device installed after the daemon started is one whose signed surface
 /// this process was never handed, and its changes are decided by it. The program does this
 /// before anything else; a test that runs the daemon as the program does too.
@@ -71,6 +71,7 @@ pub fn decide_against_installed_surfaces() {
         content
             .read(hash)
             .or_else(|| installed_surface(hash).inspect(|bytes| keep_content(&content, bytes)))
+            .or_else(|| tilo_workspace_service::surfaces::read(hash))
     });
 }
 
@@ -196,5 +197,33 @@ pub fn host(program: &str) -> std::process::ExitCode {
             eprintln!("{program}: {error}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A change naming a surface a member sent is decided by it, as the workspace service keeps it.
+    #[test]
+    fn a_surface_a_member_sent_decides_the_changes_that_name_it() {
+        let name = "a_surface_a_member_sent_decides_the_changes_that_name_it";
+        if !tilo_test_env::in_own_process_here(module_path!(), name) {
+            return;
+        }
+        let surface = br#"{"format":2,"resources":[{"fields":[{"path":"title","type":"string"}],"kind":"tilo.notes.note","label":"Note","verbs":[{"id":"type","kind":"undoable"}],"version":1}]}"#;
+        let (kept, hash) = (tempfile::tempdir().unwrap(), blake3::hash(surface));
+        std::fs::write(kept.path().join(hash.to_hex().as_str()), surface).unwrap();
+        tilo_workspace_service::surfaces::keep_in(kept.path());
+        super::decide_against_installed_surfaces();
+        let (workspace, app, document) = ("w", "tilo.notes", "*/tilo.notes.note#0");
+        let written = collab_types::WrittenDocument {
+            workspace,
+            app,
+            document,
+        };
+        let surfaces = tilo_peer_state::default_surfaces();
+        let found = surfaces
+            .source()
+            .and_then(|it| it.surface(&written, None, Some(hash.as_bytes())));
+        assert!(found.is_some(), "decided by the surface a member sent");
     }
 }

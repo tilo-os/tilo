@@ -876,12 +876,15 @@ impl HostedWorkspace {
         self.resources.store_mut()
     }
 
-    /// Declare the surface `named` when this process keeps it, so the write is decided by it.
+    /// Declare the surface `named` when this process keeps it and the workspace runs it, so the
+    /// write is decided by it: a member's surface of another version widens nothing.
     fn ensure_surface(&mut self, app: &str, named: Option<&[u8; 32]>) {
         let Some(named) = named else {
             return;
         };
-        if collab_types::app_surface::hash_of(app).is_some() {
+        if collab_types::app_surface::hash_of(app).is_some()
+            || self.peer().running_surface(app) != Some(*named)
+        {
             return;
         }
         let Some(bytes) = crate::surfaces::read(&hex::encode(named)) else {

@@ -98,8 +98,7 @@ async fn ask_agents(
 /// workspace's own app.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_agent_is_made_in_the_record_the_first_founded() {
-    let content = tempfile::tempdir().unwrap();
-    tilo_workspace_service::surfaces::decide_receipt(&content.path().join("surfaces"));
+    tilo_runtime::cli::decide_against_installed_surfaces();
     let state = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let host = test_host_holding(

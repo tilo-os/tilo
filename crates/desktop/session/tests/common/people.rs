@@ -173,8 +173,9 @@ impl Site {
     /// `owner`'s site: a server of this machine hosting the workspace `name`,
     /// listening on loopback with its directory and entry served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
-        // The site runs in this process: its log is this test's stderr.
+        // The site runs in this process: its log is this test's stderr; it decides as a daemon.
         install_log();
+        tilo_runtime::cli::decide_against_installed_surfaces();
         // The site keeps the keys of the channels it seals in the platform secret store, which this
         // process keeps in memory: a site without one can host no sealed record, and its people's
         // devices reach no app wire.
