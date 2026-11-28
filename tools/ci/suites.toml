@@ -716,8 +716,14 @@ readers = [
   "crates/ui/ui-core/src/widget/color_picker.rs",
   "crates/ui/ui-core/src/widget/floating_window.rs",
   "crates/ui/ui-core/src/widget/tabs_new_tab_tests.rs",
-  "crates/ui/ui-core/src/widget/video_player/tests.rs",
 ]
+
+
+[[cargo]]
+package = "tilo-ui-video"
+# The transport's German test reads the base's catalogue.
+inputs = ["crates/ui/ui-base/locales/"]
+readers = ["crates/ui/ui-video/src/tests.rs"]
 
 
 [[cargo]]
