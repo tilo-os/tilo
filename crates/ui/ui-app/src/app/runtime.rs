@@ -145,6 +145,9 @@ pub(super) struct LayoutRuntime {
     pub(super) walks: TreeWalks,
     /// What the last layout pass did with the tree ([`LayoutPass`]).
     pub(super) last_pass: LayoutPass,
+    /// How many passes built, remounted or solved the tree: what a control's place comes from
+    /// is the pass that placed it, so a window tells its controls again after one.
+    pub(super) layouts: u64,
     /// What the app's hosted frames did since it was made ([`FrameCounts`]).
     pub(super) frames: FrameCounts,
 }
@@ -220,6 +223,7 @@ impl LayoutRuntime {
             cull: tilo_ui_base::draw_cull::Culling::default(),
             walks: TreeWalks::default(),
             last_pass: LayoutPass::default(),
+            layouts: 0,
             frames: FrameCounts::default(),
         }
     }

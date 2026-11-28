@@ -314,12 +314,17 @@ impl App {
             self.refresh_semantic_tree();
         }
         let revision = self.accessibility.semantic_tree_revision;
-        if self.floating.window_targets_told == Some(revision) {
+        // What the window shows is its tree as the last layout pass placed it: a control stands
+        // where that pass put it. A pass that laid the tree out again is read again, though the
+        // tree says the same words: the shell is told what the window shows, never what it
+        // showed before the paint.
+        let at = (revision, self.layout.layouts);
+        if self.floating.window_targets_told == Some(at) {
             return None;
         }
-        // What this window's own controls are, as they stand at `revision`.
+        // What this window's own controls are, as they stand at `at`.
         let targets = self.window_targets();
-        self.floating.window_targets_told = Some(revision);
+        self.floating.window_targets_told = Some(at);
         if self.floating.window_targets_sent.was(&targets) {
             return None;
         }

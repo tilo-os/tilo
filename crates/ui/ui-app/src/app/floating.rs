@@ -124,9 +124,10 @@ pub(super) struct FloatingRuntime {
     /// connection ([`crate::window_targets`]), so a pass whose tree changed
     /// nothing tells it nothing.
     pub window_targets_sent: Told<Vec<crate::window_targets::WindowTarget>>,
-    /// The [`crate::a11y_tree`] revision the window's controls were last read
-    /// at, so a pass over the same tree reads nothing.
-    pub window_targets_told: Option<u64>,
+    /// What the window's controls were last read of: the [`crate::a11y_tree`] revision, and the
+    /// layout pass whose placements they were read from ([`super::LayoutRuntime::layouts`]). A
+    /// pass over the same tree, laid out the same way, reads nothing.
+    pub window_targets_told: Option<(u64, u64)>,
     /// The window bar's search and History control for this app
     /// ([`window_bar`]).
     pub window_bar: window_bar::WindowBarRuntime,

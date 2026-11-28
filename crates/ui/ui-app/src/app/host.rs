@@ -733,6 +733,7 @@ fn lay_out_window(
     app.layout.content_origin = content_origin;
     if app.close_admission.dialog.is_some() {
         app.layout_close_dialog(logical);
+        app.layout.layouts = app.layout.layouts.wrapping_add(1);
         app.layout.last_pass = runtime::LayoutPass {
             measured: true,
             ..runtime::LayoutPass::default()
@@ -1041,7 +1042,7 @@ fn lay_out_window(
         return None;
     }
     let marked = tilo_ui_base::widget::counts::read();
-    app.layout.last_pass = runtime::LayoutPass {
+    let pass = runtime::LayoutPass {
         rebuilt: structure_rebuilt || recomposed,
         remounted: remounted && !(structure_rebuilt || recomposed),
         measured: solved,
@@ -1051,6 +1052,10 @@ fn lay_out_window(
         ),
         placed_partly: app.layout.placed_partly,
     };
+    if pass.rebuilt || pass.remounted || pass.measured {
+        app.layout.layouts = app.layout.layouts.wrapping_add(1);
+    }
+    app.layout.last_pass = pass;
     if recomposed && viewport_changed {
         // Composition settled against a new allocation: what moved is not
         // a change any widget described.
