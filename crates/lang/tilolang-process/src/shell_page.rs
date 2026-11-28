@@ -69,6 +69,12 @@ const MOST_APPS: u32 = 200;
 /// within [`READ_LOST`], so a follow that waits is never taken for one that was lost.
 const STYLES_WAIT_MS: u32 = 5_000;
 
+/// The first correlation the shell asks a read of its own under. The window's own reader counts
+/// its reads of invocations and jobs up from one on the same connection, so the shell's start
+/// well above it keeps the two apart: a reading is taken by the reader whose number it carries.
+/// It is a number every reader of the wire holds exactly, as a whole number below 2^53 is.
+const FIRST_CORRELATION: u64 = 1 << 32;
+
 /// What the shell's views asked that the page carries out, as they asked it.
 type Asked = Rc<RefCell<Vec<Invocation>>>;
 
@@ -173,7 +179,7 @@ impl ShellPage {
             answering: None,
             listing: None,
             styles_reading: None,
-            next_correlation: 1,
+            next_correlation: FIRST_CORRELATION,
             queued: Vec::new(),
         }
     }

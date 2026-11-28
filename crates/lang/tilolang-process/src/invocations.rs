@@ -390,9 +390,15 @@ impl Invocations {
             result,
         } = message
         {
-            if !self.read_job(*correlation, result.as_ref().ok()) {
-                self.read(*correlation, result.as_ref().ok());
+            // Only a reading this instance asked for: the window's other readers ask theirs on
+            // the same connection, and a reading none of these names is theirs to take.
+            if self.read_job(*correlation, result.as_ref().ok()) {
+                return true;
             }
+            if !self.reads.contains_key(correlation) {
+                return false;
+            }
+            self.read(*correlation, result.as_ref().ok());
             return true;
         }
         let receipt = match message {
