@@ -67,7 +67,7 @@ fn browser_data_came_over(workspace: &Recorded) {
         history.len() == 1 && history[0].contains("https://example.org/visited"),
         "{history:?}"
     );
-    assert!(workspace.of("passwords#save_login").is_empty());
+    assert!(workspace.of("workspace/vault#add").is_empty());
 }
 
 #[test]

@@ -517,12 +517,15 @@ fn login_field(key: &[u8], plaintext: &str) -> String {
 }
 
 /// `logins.json` holding `logins` (origin, user name, password) under a key
-/// `key4.db` keeps with no primary password, as Thunderbird writes them.
+/// `key4.db` keeps with no primary password, as Thunderbird and Firefox write them.
+///
+/// # Panics
+/// When the profile cannot be written.
 #[expect(
     clippy::expect_used,
     reason = "a fixture that cannot write its files panics with the path"
 )]
-fn write_logins(profile: &Path, logins: &[(String, &str, &str)]) {
+pub fn write_logins(profile: &Path, logins: &[(String, &str, &str)]) {
     let global_salt = [0x11_u8; 20];
     let key = [0x5a_u8; 24];
     let entry = |plaintext: &[u8], salt: u8| key4_entry(&global_salt, plaintext, salt);

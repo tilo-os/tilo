@@ -46,3 +46,33 @@ pub fn write_windows_disk(root: &Path) {
     // Chrome on Windows seals what it saved with the account's own key.
     write(&format!("{chrome}/Login Data"), b"sealed by Windows");
 }
+
+/// The site whose sign-in Firefox kept on the disk.
+pub const SAVED_SITE: &str = "https://shop.example.org";
+/// The user name it kept for it.
+pub const SAVED_USER: &str = "ada@example.org";
+
+/// Firefox's default profile in the home of the disk at `root`, as Windows' Firefox keeps it,
+/// holding one saved sign-in ([`SAVED_SITE`], [`SAVED_USER`]) under a key no primary password
+/// guards: what a disk carries that the offline import can read.
+///
+/// # Panics
+/// When the profile cannot be written.
+#[expect(
+    clippy::unwrap_used,
+    reason = "a fixture that cannot be written is a broken test setup"
+)]
+pub fn write_firefox_profile(root: &Path) {
+    let firefox = root.join("Users/ada/AppData/Roaming/Mozilla/Firefox");
+    let profile = firefox.join("Profiles/ab12.default-release");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(
+        firefox.join("profiles.ini"),
+        "[Profile0]\nName=default-release\nIsRelative=1\nPath=Profiles/ab12.default-release\n",
+    )
+    .unwrap();
+    crate::thunderbird::fixture::write_logins(
+        &profile,
+        &[(SAVED_SITE.to_owned(), SAVED_USER, "correct horse")],
+    );
+}

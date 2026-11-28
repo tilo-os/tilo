@@ -2,8 +2,9 @@
 //! passwords, read by the installer's readers ([`crate::browsers`],
 //! [`browser_continuity`]) and landed through the apps' own actions: bookmarks into the person's
 //! library in Browser (`import_bookmarks`), history into their history there
-//! (`import_history`), each password into their vault in Passwords (`save_login`, whose
-//! password is a secret parameter that is never printed), and the sites each profile is signed
+//! (`import_history`), each password into the workspace's vault, where Passwords lists it
+//! (`workspace/vault#add`, whose secret is a parameter that is never kept or printed; Passwords'
+//! own `save_login` asks the person to type it), and the sites each profile is signed
 //! in to as the workspace's website sign-ins (`workspace/mail-accounts#add-website-session`,
 //! whose cookies are a secret parameter too): the person's own Browser window takes them, so
 //! they are signed in to those sites in Tilo, and Slack and Discord open signed in, each in a
@@ -57,7 +58,7 @@ impl Source for Browsers {
 
 const IMPORT_BOOKMARKS: &str = "browser#import_bookmarks";
 const IMPORT_HISTORY: &str = "browser#import_history";
-const SAVE_LOGIN: &str = "passwords#save_login";
+const SAVE_LOGIN: &str = "workspace/vault#add";
 /// The workspace's accounts' action that keeps a website sign-in.
 const ADD_WEBSITE_SESSION: &str = "add-website-session";
 /// The most rows one import carries, so its arguments stay well under what one call takes.
@@ -499,10 +500,11 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
                             invocation,
                             SAVE_LOGIN,
                             json!({
-                                "name": name,
-                                "origin": login.origin,
+                                "kind": "login",
+                                "title": name,
+                                "belongsTo": [login.origin],
                                 "username": login.username,
-                                "password": login.password.as_str(),
+                                "secret": login.password.as_str(),
                             }),
                         )?;
                         Ok(Landed::One)
