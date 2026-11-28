@@ -363,6 +363,8 @@ d-6o6vmpkz = Adressbuchfenster
     .w-no-contacts-yet = Noch keine Kontakte
     .w-nobody-here = Niemand hier
     .w-other = Sonstige
+    .w-no-contact-chosen = Kein Kontakt ausgewählt
+    .w-choose-a-contact-from-the-list = Wählen Sie einen Kontakt aus der Liste, um seine Karte zu sehen
 
 d-dfmc6gmk = Kontaktzeile
 

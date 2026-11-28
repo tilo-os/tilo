@@ -1664,6 +1664,15 @@ view book_window(book: Book) {
                 }
             }
         }
+        // What stands beside the list once a contact is chosen: their card's page. A chosen
+        // card's page would have nowhere to stand without it.
+        content: {
+            ui.EmptyState(
+                "No contact chosen",
+                message: "Choose a contact from the list to see their card.",
+                icon: .users,
+            )
+        }
     }
 }
 
