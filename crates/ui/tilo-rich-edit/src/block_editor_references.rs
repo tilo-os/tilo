@@ -153,6 +153,16 @@ pub struct BlockEditorProps {
     /// How much larger the document reads than its own size, as a page's zoom field sets it:
     /// 1 shows it as it is, 2 twice as large. The pages break again at the zoom.
     pub zoom: Option<f64>,
+    /// Whether the document is shown to read and not to write: a page open to view only. Its
+    /// words cannot be typed in, and its controls that would change it are not answered.
+    pub read_only: Option<bool>,
+    /// Whether the document's spelling is checked as a person types: a document may turn checking
+    /// off for itself (a letter in a language no dictionary knows), the person's preference when
+    /// nothing is said.
+    pub spellcheck: Option<bool>,
+    /// The dictionary the document is checked against: a language tag such as `de-DE`, for a
+    /// document written in another language than the person's. Their own when nothing is said.
+    pub spell_language: Option<String>,
     /// A picture to write in at the caret, as a view asks after the person chose a file: the
     /// address of its content, then a count the view changes every time it asks
     /// (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from
@@ -506,6 +516,9 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             zoom,
+            read_only,
+            spellcheck,
+            spell_language,
             size,
             align,
             colour,
@@ -569,6 +582,10 @@ impl Described for BlockEditor {
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
         editor.set_zoom(zoom.map_or(1.0, tilo_ui_base::num::f32_of_f64));
+        if read_only == Some(true) {
+            editor.set_read_only(true);
+        }
+        editor.set_spelling(spellcheck, spell_language.as_deref());
         editor.publish_headings();
         editor.publish_changes();
         // A view opened with a heading asked for, of the note shown before, is just opened; a
@@ -608,6 +625,9 @@ impl Described for BlockEditor {
             margin_bottom,
             margin_left,
             zoom,
+            read_only,
+            spellcheck,
+            spell_language,
             size,
             align,
             colour,
@@ -664,13 +684,19 @@ impl Described for BlockEditor {
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
         self.set_zoom(zoom.map_or(1.0, tilo_ui_base::num::f32_of_f64));
+        let read_only = read_only.unwrap_or(false);
+        let view_only = read_only != self.read_only;
+        if view_only {
+            self.set_read_only(read_only);
+        }
+        self.set_spelling(spellcheck, spell_language.as_deref());
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);
         let linked = self.link_asked(link, link_to);
         self.publish_headings();
         self.publish_changes();
-        rebound || formatted || inserted || linked
+        rebound || formatted || inserted || linked || view_only
     }
 }
 

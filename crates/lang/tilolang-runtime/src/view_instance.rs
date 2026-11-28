@@ -15,9 +15,9 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, BLUR_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_CASE_ACTION, CHOOSE_FOLDER_ACTION, CLOSE_ACTION, COPY_LINK_ACTION, EXPORT_ACTION,
-    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION,
-    SET_ACTION, SHORTCUT_ACTION, UNDO_ACTION,
+    CHOOSE_CASE_ACTION, CHOOSE_EDITING_ACTION, CHOOSE_FOLDER_ACTION, CLOSE_ACTION,
+    COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -1110,8 +1110,9 @@ impl ViewInstance {
             {
                 self.copy_link_of(aref)
             }
-            CHOOSE_ACTION => self.platform_choose(aref, false),
-            CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
+            CHOOSE_ACTION => self.platform_choose(aref, false, false),
+            CHOOSE_EDITING_ACTION => self.platform_choose(aref, false, true),
+            CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true, false),
             SAVE_ACTION => self.platform_save(aref),
             BLUR_ACTION => {
                 self.events.borrow_mut().push(ViewEvent::EndEdit);
@@ -1463,6 +1464,7 @@ impl ViewInstance {
         &self,
         aref: &ActionRef,
         folder: bool,
+        edit: bool,
     ) -> Result<InvokeOutcome, RuntimeError> {
         /// What the parameter the action leaves out takes.
         enum Filled {
@@ -1521,6 +1523,7 @@ impl ViewInstance {
             accept: accept.clone(),
             multiple: many && !folder,
             folder,
+            edit: edit && !folder && !many,
         };
         let filled_value = {
             let blobs = self.core.blobs.borrow();

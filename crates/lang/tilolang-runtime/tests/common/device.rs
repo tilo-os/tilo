@@ -38,6 +38,14 @@ pub struct Files {
     /// What this device kept, and of it what is on another device for now.
     kept: Rc<RefCell<std::collections::HashSet<String>>>,
     away: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// Why the chooser refuses to open, when it does: a host with none says so.
+    chooser_refusal: Rc<RefCell<Option<String>>>,
+    /// Why a file cannot be written back, when it cannot: a disk gone read-only, a file taken
+    /// away.
+    write_refusal: Rc<RefCell<Option<String>>>,
+    /// The bytes written back over a file the person chose, by the name it has there: what a
+    /// save did, as against what an export kept.
+    written_back: Rc<RefCell<HashMap<String, Vec<u8>>>>,
 }
 
 impl Default for Files {
@@ -58,6 +66,9 @@ impl Default for Files {
             previews: Rc::default(),
             kept: Rc::default(),
             away: Rc::default(),
+            chooser_refusal: Rc::default(),
+            write_refusal: Rc::default(),
+            written_back: Rc::default(),
         }
     }
 }
@@ -125,6 +136,18 @@ impl Files {
         self.keeping(name, "application/zip", &bytes)
     }
 
+    /// The chooser refuses every ask with `why`, as a host that serves none does; `None` serves
+    /// the person's choice again.
+    pub fn refusing_chooser(&self, why: Option<&str>) {
+        *self.chooser_refusal.borrow_mut() = why.map(str::to_owned);
+    }
+
+    /// A chosen file cannot be written back for `why`, as a disk gone read-only; `None` writes
+    /// again.
+    pub fn refusing_writes(&self, why: Option<&str>) {
+        *self.write_refusal.borrow_mut() = why.map(str::to_owned);
+    }
+
     /// What the next chooser answers.
     pub fn pick(&self, files: Vec<FileValue>) {
         *self.picked.borrow_mut() = files;
@@ -160,6 +183,11 @@ impl Files {
         self.save_asks.borrow().clone()
     }
 
+    /// The bytes written back over the file `name`, as a save writes one.
+    pub fn written_back(&self, name: &str) -> Option<Vec<u8>> {
+        self.written_back.borrow().get(name).cloned()
+    }
+
     /// The text saved under `name`.
     pub fn said(&self, name: &str) -> String {
         let saved = self
@@ -185,11 +213,27 @@ impl BlobHost for Files {
 
     fn choose(&self, request: &FileRequest) -> Result<Vec<FileValue>, String> {
         self.asked.borrow_mut().push(request.clone());
+        if let Some(why) = self.chooser_refusal.borrow().as_ref() {
+            return Err(why.clone());
+        }
         Ok(self.picked.borrow().clone())
+    }
+
+    fn write_back(&self, file: &FileValue, _reference: &str, content: &[u8]) -> Result<(), String> {
+        if let Some(why) = self.write_refusal.borrow().as_ref() {
+            return Err(why.clone());
+        }
+        self.written_back
+            .borrow_mut()
+            .insert(file.name.clone(), content.to_vec());
+        Ok(())
     }
 
     fn choose_folder(&self, request: &FileRequest) -> Result<Option<String>, String> {
         self.asked.borrow_mut().push(request.clone());
+        if let Some(why) = self.chooser_refusal.borrow().as_ref() {
+            return Err(why.clone());
+        }
         Ok(self.picked_folder.borrow().clone())
     }
 
@@ -199,6 +243,9 @@ impl BlobHost for Files {
             .push((request.name.clone(), content.to_vec()));
         if let Some(why) = self.refuse_save.borrow_mut().take() {
             return Err(why);
+        }
+        if let Some(why) = self.chooser_refusal.borrow().as_ref() {
+            return Err(why.clone());
         }
         if self.cancel_save.take() {
             return Ok(Saved::Cancelled);

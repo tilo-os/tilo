@@ -498,10 +498,25 @@ imports! {
     // A document file read as the Markdown an editor shows, and Markdown written as a document
     // file of the format named, each a `Result` of its text or of the file.
     FileMarkdown = "file_markdown" ([H] -> [H]);
+    // The comments the file carries, as JSON: each one's author, when, what it says and the words
+    // it is about.
+    FileComments = "file_comments" ([H] -> [H]);
     FileOfDocument = "file_of_document" ([H, H, H] -> [H]);
+    // A rich text written as a document file of the format named: what a document opened into an
+    // editor and changed is saved as, its comments and tracked changes with it.
+    FileOfRichDocument = "file_of_rich_document" ([H, H, H] -> [H]);
+    // A document file read into the editor's blocks, its comments and tracked changes carried in
+    // the marks over the words they are about.
+    RichFromDocument = "rich_from_document" ([H] -> [H]);
+    // Write a file the person chose back over itself: the bytes of the file given, saved where
+    // the chosen file stands, as a document saved back where it was opened.
+    FileOverwrite = "file_overwrite" ([H, H] -> [H]);
     // Whether the content store on this device holds the file's bytes at all: a picture from
     // another device is here before its bytes are.
     FileHere = "file_here" ([H] -> [I32]);
+    // Whether the host opened the file for writing as well as reading: what says a document can
+    // be saved back where it was read.
+    FileEditable = "file_editable" ([H] -> [I32]);
     // A file's pixels: what its container says (an `Option` of the host's `ImageInfo`), and the
     // crop, turn, resize and encode a program applies, each a `Result` of the new file.
     FileImageInfo = "file_image_info" ([H] -> [H]);
@@ -575,6 +590,9 @@ imports! {
     FileOpenPath = "file_open_path" ([H] -> [H]);
     FileOpen = "file_open" ([H] -> [H]);
     ActChoose = "act_choose" ([H, H] -> [H]);
+    // `file.choose(a, edit: true)`: the file the person chooses is opened for writing too, so the
+    // action that saves its words back writes over it.
+    ActChooseEditing = "act_choose_editing" ([H, H] -> [H]);
     ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
     ActSave = "act_save" ([H, H, H] -> [H]);
     // `blur()`: the field the keyboard is in ends its edit, as closing its editor does.

@@ -211,6 +211,19 @@ impl OpenedFile {
         self.into_held()
     }
 
+    /// Write `bytes` over the file this choice opened, whole, and finish the save: what saving a
+    /// document back where it was opened does.
+    ///
+    /// # Errors
+    ///
+    /// Why the bytes could not be written.
+    pub fn write_back(self, bytes: &[u8]) -> std::io::Result<()> {
+        let mut held = self.into_file();
+        held.write_whole(bytes)?;
+        drop(held);
+        Ok(())
+    }
+
     /// The opened file and what names it again.
     #[must_use]
     pub fn into_parts(self) -> (PickedFile, Option<PathBuf>) {
@@ -253,6 +266,27 @@ impl PickedFile {
         self.file
             .as_ref()
             .expect("a native host opens a file; a page holds its bytes")
+    }
+
+    /// Replace what the file holds with `bytes`, whole: a save writes this way, and the choice's
+    /// commit renames the new bytes over the file the person sees when this goes.
+    ///
+    /// # Errors
+    ///
+    /// Why the bytes could not be written.
+    pub fn write_whole(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(file) = self.file.as_mut() {
+            file.set_len(0)?;
+            std::io::Write::write_all(file, bytes)?;
+            file.sync_all()?;
+            return Ok(());
+        }
+        if let Some(held) = self.bytes.as_mut() {
+            held.get_mut().clear();
+            held.get_mut().extend_from_slice(bytes);
+            return Ok(());
+        }
+        Err(no_file())
     }
 
     /// The file itself, without finishing a save when it goes.
@@ -477,6 +511,8 @@ pub struct PickRequest {
     pub(crate) max_contents_bytes: Option<usize>,
     pub(crate) initial_directory: Option<PathBuf>,
     writable_directory: bool,
+    /// Whether the chosen file is opened for writing too, as a document app's Open asks.
+    editable: bool,
 }
 
 impl PickRequest {
@@ -503,6 +539,19 @@ impl PickRequest {
         self.writable_directory
     }
 
+    /// Open the chosen file for writing as well as reading: what a document app asks, so a save
+    /// writes the document back where it was opened.
+    #[must_use]
+    pub fn edit(mut self, on: bool) -> Self {
+        self.editable = on;
+        self
+    }
+
+    #[must_use]
+    pub fn edits(&self) -> bool {
+        self.editable
+    }
+
     pub fn save(title: &str, accept_label: &str, suggested_name: &str) -> Self {
         Self::new(
             title,
@@ -523,6 +572,7 @@ impl PickRequest {
             max_contents_bytes: None,
             initial_directory: None,
             writable_directory: false,
+            editable: false,
         }
     }
 

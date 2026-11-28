@@ -1017,9 +1017,20 @@ impl TextInput {
 
     #[must_use]
     pub fn with_spellcheck(mut self, on: bool) -> Self {
-        self.spellcheck = Some(on);
-        self.spell_cache_key = None;
+        self.set_spellcheck(Some(on));
         self
+    }
+
+    /// Check this field's spelling or not, as its owner says: `None` follows the kind and the
+    /// person's preference, as a field left alone does.
+    pub fn set_spellcheck(&mut self, on: Option<bool>) {
+        if self.spellcheck == on {
+            return;
+        }
+        self.spellcheck = on;
+        self.spell_cache_key = None;
+        self.spell_spans.clear();
+        self.repaint = true;
     }
 
     pub fn spellcheck_enabled(&self) -> bool {

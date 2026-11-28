@@ -63,7 +63,7 @@ pub fn choose(
         }
         pick
     };
-    let chosen: Vec<(String, Vec<u8>)> = if request.folder {
+    let chosen: Vec<(String, Option<std::path::PathBuf>, Vec<u8>)> = if request.folder {
         let pick =
             named(PickRequest::directory(&request.title, "")).thread_name("tilolang-choose-folder");
         match wait(&chooser.open_handle(pick))? {
@@ -72,6 +72,9 @@ pub fn choose(
             OpenFileOutcome::Opened(opened) => {
                 let folder = opened.into_file().into_std();
                 tilo_dialogs::portal::walk_chosen_folder(&folder, MAX_CHOSEN)?
+                    .into_iter()
+                    .map(|(path, bytes)| (path, None, bytes))
+                    .collect()
             }
         }
     } else if request.multiple {
@@ -92,7 +95,11 @@ pub fn choose(
         }
         chosen
     } else {
-        let pick = named(PickRequest::open(&request.title, "")).thread_name("tilolang-choose-file");
+        let mut pick =
+            named(PickRequest::open(&request.title, "")).thread_name("tilolang-choose-file");
+        if request.edit {
+            pick = pick.edit(true);
+        }
         match wait(&chooser.open_handle(pick))? {
             OpenFileOutcome::Cancelled => return Ok(Vec::new()),
             OpenFileOutcome::Failed(why) => return Err(why),
@@ -100,7 +107,7 @@ pub fn choose(
         }
     };
     let mut kept = Vec::with_capacity(chosen.len());
-    for (path, bytes) in chosen {
+    for (path, reference, bytes) in chosen {
         // Where the file stands in what the person chose: a path inside a folder they chose, or
         // a file they chose itself. Never a host path, which a sandboxed app has no way to use.
         let name = std::path::Path::new(&path)
@@ -116,6 +123,11 @@ pub fn choose(
         let hash = store
             .put(&bytes)
             .map_err(|error| format!("`{name}` could not be kept: {error}"))?;
+        // What reopens the file: the reference the chooser answered for a file the person chose
+        // alone, or where it stands inside the folder they chose. A file the chooser opened for
+        // writing is one the app saves back to; one it could only read is not.
+        let editable = request.edit && reference.is_some();
+        let place = reference.map_or(path, |reference| reference.to_string_lossy().into_owned());
         kept.push(
             FileValue::new(
                 name,
@@ -123,20 +135,25 @@ pub fn choose(
                 i64::try_from(bytes.len()).unwrap_or(i64::MAX),
                 hash,
             )
-            .with_path(path),
+            .with_path(place)
+            .with_editable(editable),
         );
     }
     Ok(kept)
 }
 
-/// The bytes of the file the chooser answered, read through the descriptor it opened.
-fn read_opened(opened: OpenedFile) -> Result<(String, Vec<u8>), String> {
+/// The bytes of the file the chooser answered, read through the descriptor it opened, with what
+/// reopens the file and with its name.
+fn read_opened(
+    opened: OpenedFile,
+) -> Result<(String, Option<std::path::PathBuf>, Vec<u8>), String> {
     let name = opened.display_name().to_owned();
+    let reference = opened.reference().map(std::path::Path::to_path_buf);
     let mut file = opened.into_file();
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut file, &mut bytes)
         .map_err(|error| format!("`{name}` could not be read: {error}"))?;
-    Ok((name, bytes))
+    Ok((name, reference, bytes))
 }
 
 /// Keep `bytes` in the content store as a file called `name`: what a program that holds bytes
@@ -307,6 +324,44 @@ pub fn save(
         SaveOutcome::Saved { to } => Ok(Saved::At(to)),
         SaveOutcome::Cancelled => Ok(Saved::Cancelled),
         SaveOutcome::Failed(why) => Err(why),
+    }
+}
+
+/// Write `bytes` over the file the person chose at `reference`, as saving a document back where it
+/// was opened: the file is opened again for writing with the grant the choice made, written whole
+/// and, where a host renames a save's file over it, replaced by it.
+///
+/// # Errors
+///
+/// Why it was not written: the reference is not a file this app was given to edit, it is gone, or
+/// the write failed.
+pub fn write_back(
+    chooser: &dyn FilePicker,
+    file: &FileValue,
+    reference: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if reference.trim().is_empty() {
+        return Err(format!(
+            "{} is not a file on this device: save it as a new file",
+            file.name
+        ));
+    }
+    let path = std::path::Path::new(reference);
+    match wait(&chooser.reopen(path, true))? {
+        OpenFileOutcome::Opened(opened) => {
+            let mut held = opened.into_file();
+            held.write_whole(bytes)
+                .map_err(|error| format!("{} could not be saved: {error}", file.name))?;
+            drop(held);
+            wait(&chooser.commit_saved(path))?
+                .map_err(|why| format!("{} could not be saved: {why}", file.name))
+        }
+        OpenFileOutcome::Cancelled => Err(format!(
+            "{} could not be opened again to save it",
+            file.name
+        )),
+        OpenFileOutcome::Failed(why) => Err(why),
     }
 }
 

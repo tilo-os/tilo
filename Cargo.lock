@@ -17196,6 +17196,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "quick-xml 0.41.0",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tilo-automerge",

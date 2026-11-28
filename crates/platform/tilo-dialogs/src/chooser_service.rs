@@ -75,6 +75,9 @@ pub struct Question {
     pub save: bool,
     pub directory: bool,
     pub writable_directory: bool,
+    /// The chosen file is opened for writing as well as reading: what a document app's Open
+    /// asks, so the document saves back where it was opened.
+    pub edit: bool,
     pub multiple: bool,
     pub accept_label: Option<String>,
     pub current_name: Option<String>,
@@ -91,18 +94,24 @@ impl Question {
             Choice::Folder {
                 write: self.writable_directory,
             }
+        } else if self.edit {
+            Choice::Edit
         } else {
             Choice::Read
         }
     }
 }
 
-/// What a choice allows the app: one file to read, one file to replace when a save ends, or a
-/// folder and everything under it.
+/// What a choice allows the app: one file to read, one file to read and replace when a save
+/// ends, or a folder and everything under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
     Read,
-    Folder { write: bool },
+    /// A file with a document's words: read as it stands, and replaced by a save.
+    Edit,
+    Folder {
+        write: bool,
+    },
     Save,
 }
 
@@ -110,7 +119,7 @@ impl Choice {
     /// Whether the choice lets the app change what it names.
     #[must_use]
     pub const fn writes(self) -> bool {
-        matches!(self, Self::Save | Self::Folder { write: true })
+        matches!(self, Self::Save | Self::Edit | Self::Folder { write: true })
     }
 }
 
@@ -314,6 +323,7 @@ fn pick_question(request: Request) -> Option<(u64, Question)> {
             id,
             mode,
             multiple,
+            edit,
             title,
             accept_label,
             suggested_name,
@@ -325,6 +335,7 @@ fn pick_question(request: Request) -> Option<(u64, Question)> {
                 save: mode == PickMode::Save,
                 directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
                 writable_directory: mode == PickMode::WritableDirectory,
+                edit,
                 multiple,
                 accept_label: Some(accept_label).filter(|label| !label.is_empty()),
                 current_name: suggested_name.filter(|name| !name.is_empty()),
@@ -509,8 +520,13 @@ impl Connection {
                     Choice::Folder { write: may } => Choice::Folder {
                         write: write && may,
                     },
-                    _ if write => granted.choice,
-                    _ => Choice::Read,
+                    // A document given to be edited is written back beside itself and renamed
+                    // over it, as a save writes: read when it is opened again to read.
+                    Choice::Edit | Choice::Save if write => Choice::Save,
+                    Choice::Edit | Choice::Read if !write => Choice::Read,
+                    // A file given to read is never opened for writing, and a save's place is
+                    // never opened to read.
+                    _ => return Err(NOT_CHOSEN),
                 };
                 File::from(open_document(&granted, choice).map_err(|_| NOT_CHOSEN)?)
             } else {
@@ -556,7 +572,9 @@ impl Connection {
                 .grants
                 .document(&caller, reference)
                 .ok_or(NOT_CHOSEN)?;
-            if granted.choice != Choice::Save || granted.reference != reference {
+            if !matches!(granted.choice, Choice::Save | Choice::Edit)
+                || granted.reference != reference
+            {
                 return Err(NOT_CHOSEN);
             }
             let beside = granted.save_sibling.ok_or(NOT_CHOSEN)?;
@@ -638,7 +656,7 @@ impl Connection {
 /// folder.
 fn open_document(granted: &Granted, choice: Choice) -> Result<OwnedFd, std::io::Error> {
     let file = match choice {
-        Choice::Read => crate::portal::open_regular_file(&granted.host)?,
+        Choice::Read | Choice::Edit => crate::portal::open_regular_file(&granted.host)?,
         Choice::Folder { .. } => crate::portal::open_directory_handle(&granted.host)?,
         Choice::Save => open_for_save(granted)?,
     };
@@ -760,7 +778,7 @@ mod tests {
             let reference = Path::new("/run/tilo/chosen/records")
                 .join("test")
                 .join(&name);
-            let save_sibling = (choice == Choice::Save).then(|| {
+            let save_sibling = matches!(choice, Choice::Save | Choice::Edit).then(|| {
                 let mut sibling = std::ffi::OsString::from(".");
                 sibling.push(&name);
                 sibling.push(".tilo-save");
@@ -906,6 +924,87 @@ mod tests {
             left,
             ["report.txt"],
             "the bytes are written beside the file and the file is the only thing left"
+        );
+    }
+
+    #[test]
+    fn a_file_opened_for_editing_is_written_back_over_itself() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory.path().join("Letter.docx");
+        std::fs::write(&document, "first draft").unwrap();
+        let serving = Serving {
+            person: Some(Arc::new(Chosen(document.clone()))),
+            grants: Arc::new(Kept::default()),
+            opens: Arc::new(NoOpen),
+        };
+        let stream = pair(
+            serving,
+            "so.tilo.word-processor",
+            "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        )
+        .unwrap();
+        let picker = crate::shell::picker(stream, crate::unavailable_picker()).unwrap();
+
+        // A document app's Open asks for the file opened for writing too.
+        let opened = picker
+            .open_handle(PickRequest::open("Open a document", "Open").edit(true))
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        let OpenFileOutcome::Opened(opened) = opened else {
+            panic!("the chosen document was not handed over");
+        };
+        let reference = opened
+            .reference()
+            .expect("a reference names it")
+            .to_path_buf();
+        drop(opened.into_file());
+
+        // Saving writes the document back over the file the person chose, whole, and leaves
+        // nothing beside it.
+        let reopened = picker
+            .reopen(&reference, true)
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        let OpenFileOutcome::Opened(opened) = reopened else {
+            panic!("a document opened for editing reopens for writing");
+        };
+        let mut held = opened.into_file();
+        held.write_whole(b"second draft")
+            .expect("the document is written back");
+        drop(held);
+        picker
+            .commit_saved(&reference)
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap()
+            .expect("the save is committed");
+        assert_eq!(std::fs::read(&document).unwrap(), b"second draft");
+        let mut left: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["Letter.docx"], "the save leaves nothing beside it");
+
+        // A file the person chose to read alone is not written back over.
+        let read = picker
+            .open_handle(PickRequest::open("Read a document", "Open"))
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        let OpenFileOutcome::Opened(read) = read else {
+            panic!("the chosen document was not handed over");
+        };
+        let read_reference = read
+            .reference()
+            .expect("a reference names it")
+            .to_path_buf();
+        drop(read.into_file());
+        let refused = picker
+            .reopen(&read_reference, true)
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
+        assert!(
+            matches!(refused, OpenFileOutcome::Failed(_)),
+            "a file given to read is not written over"
         );
     }
 }

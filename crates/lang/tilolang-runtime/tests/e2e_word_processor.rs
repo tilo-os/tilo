@@ -748,4 +748,386 @@ view member_row(p: Member) {
             }
         }
     }
+
+    /// A Word file as one a colleague sends: two paragraphs, a comment over the first and a
+    /// tracked insertion and deletion in the second.
+    fn a_word_file() -> Vec<u8> {
+        let mut document = tilo_doc::Document::new();
+        {
+            let mut dm = document.as_mut();
+            let first = dm.insert_block(None, "paragraph");
+            dm.splice_text(&first, 0, 0, "The plan holds. We ship on Monday.");
+            let comment = dm.insert_comment("Ada Lovelace", "2026-03-02T10:00:00Z");
+            if let Some(words) = dm.insert_comment_block(&comment, None, "paragraph") {
+                dm.splice_comment_text(&comment, &words, 0, 0, "Which Monday?");
+            }
+            dm.add_comment_mark(&first, 4, 8, &comment);
+            let second = dm.insert_block(Some(&first), "paragraph");
+            dm.splice_text(&second, 0, 0, "We ship on Tuesday.");
+            let inserted = dm.insert_change(
+                tilo_doc::snapshot::ChangeKind::Ins,
+                "Grace Hopper",
+                "2026-03-02T11:00:00Z",
+            );
+            dm.add_change_mark(
+                tilo_doc::snapshot::ChangeKind::Ins,
+                &second,
+                3,
+                7,
+                &inserted,
+            );
+            let deleted = dm.insert_change(
+                tilo_doc::snapshot::ChangeKind::Del,
+                "Grace Hopper",
+                "2026-03-02T11:00:00Z",
+            );
+            dm.add_change_mark(
+                tilo_doc::snapshot::ChangeKind::Del,
+                &second,
+                11,
+                18,
+                &deleted,
+            );
+        }
+        tilo_doc_codecs::convert::export(&document, &tilo_content::NoContent, "docx")
+            .expect("a Word file")
+    }
+
+    const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    /// A file the chooser answered as the person chose it: where it stands, and whether the host
+    /// opened it for writing.
+    fn chosen(device: &Files, name: &str, media: &str, bytes: &[u8], editable: bool) -> FileValue {
+        device
+            .keeping(name, media, bytes)
+            .with_path(format!("/run/tilo/chosen/records/{name}"))
+            .with_editable(editable)
+    }
+
+    /// The key of the one `ui.MenuItem` reading `label` in the menu of the `ui.MenuButton`
+    /// reading `menu`: the view's own File menu, not the window's items menu.
+    fn menu_item(view: &tilolang_runtime::ViewInstance, menu: &str, label: &str) -> String {
+        fn walk(
+            node: &tilolang_runtime::UiNode,
+            menu: &str,
+            inside: bool,
+            label: &str,
+            found: &mut Vec<String>,
+        ) {
+            let inside = inside
+                || (node.kind == "ui.MenuButton"
+                    && node.props.get("label") == Some(&Value::text(menu)));
+            if inside
+                && node.kind == "ui.MenuItem"
+                && node.props.get("label") == Some(&Value::text(label))
+            {
+                found.push(node.key.clone());
+            }
+            for child in &node.children {
+                walk(child, menu, inside, label, found);
+            }
+        }
+        let mut found = Vec::new();
+        walk(view.tree(), menu, false, label, &mut found);
+        assert_eq!(
+            found.len(),
+            1,
+            "one {label:?} in the {menu} menu:\n{}",
+            dump(view.tree())
+        );
+        found[0].clone()
+    }
+
+    fn flag(writer: &Writer, field: &str) -> bool {
+        match writer.rt.read(&writer.doc, field).unwrap() {
+            Value::Bool(flag) => flag,
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    /// An option-valued prop of the one `kind` node in `view` whose `label` reads `label`.
+    fn opt_bool_prop(
+        view: &tilolang_runtime::ViewInstance,
+        kind: &str,
+        prop: &str,
+    ) -> Option<bool> {
+        let node = of_kind(view.tree(), kind)[0].clone();
+        match node.props.get(prop) {
+            Some(Value::Bool(flag)) => Some(*flag),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Bool(flag) => Some(*flag),
+                other => panic!("{prop} reads {other:?}"),
+            },
+            Some(Value::Opt(None)) | None => None,
+            other => panic!("{prop} reads {other:?}"),
+        }
+    }
+
+    fn opt_text_prop(
+        view: &tilolang_runtime::ViewInstance,
+        kind: &str,
+        prop: &str,
+    ) -> Option<String> {
+        let node = of_kind(view.tree(), kind)[0].clone();
+        match node.props.get(prop) {
+            Some(Value::Text(text)) => Some(text.clone()),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(text) => Some(text.clone()),
+                other => panic!("{prop} reads {other:?}"),
+            },
+            Some(Value::Opt(None)) | None => None,
+            other => panic!("{prop} reads {other:?}"),
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn e2e_word_processor_3;
+
+        phase a_word_file_opens_its_comments_and_changes_and_saves_back_where_it_was_read;
+        {
+            let writer = Writer::new();
+            let file = chosen(
+                &writer.device,
+                "Note.docx",
+                DOCX,
+                &a_word_file(),
+                true,
+            );
+            writer.one(
+                "open_document",
+                vec![Value::resource(&writer.doc), Value::file(file)],
+            );
+            assert_eq!(writer.text("title"), "Note");
+            assert_eq!(writer.text("source_name"), "Note.docx");
+            assert_eq!(writer.text("format"), "docx");
+            assert_eq!(
+                writer.text("source"),
+                "/run/tilo/chosen/records/Note.docx",
+                "the page saves back where it was read"
+            );
+            assert!(!flag(&writer, "view_only"));
+            assert!(
+                writer.body().contains("We ship on Tuesday."),
+                "{}",
+                writer.body()
+            );
+            assert!(
+                writer.text("brought").contains("Ada Lovelace")
+                    && writer.text("brought").contains("Which Monday?"),
+                "the page lists the comments the file brought: {}",
+                writer.text("brought")
+            );
+            let body = format!("{:?}", rich_body(&writer));
+            assert!(
+                body.contains("Ada Lovelace") && body.contains("Grace Hopper"),
+                "the comments and changes ride in the marks: {body}"
+            );
+
+            // A person writes, and Ctrl+S writes the file back: still a Word file, with its
+            // comment and both tracked changes.
+            writer.one(
+                "append_paragraph",
+                vec![
+                    Value::resource(&writer.doc),
+                    Value::text("A line written in Tilo."),
+                ],
+            );
+            writer.one("save", vec![Value::resource(&writer.doc)]);
+            assert_eq!(writer.text("notice"), "", "a save that worked says nothing");
+            let saved = writer
+                .device
+                .written_back("Note.docx")
+                .expect("the file was written back where it was read");
+            let blocks = tilo_doc_codecs::rich::blocks_of_document("docx", &saved)
+                .expect("the saved file is a Word file");
+            let comments: Vec<String> = blocks
+                .iter()
+                .flat_map(|block| block.marks.iter())
+                .filter(|mark| mark.name == tilo_doc::schema::MARK_COMMENT)
+                .filter_map(|mark| mark.value.as_str())
+                .filter_map(tilo_doc_codecs::rich::comment_stamp)
+                .map(|stamp| format!("{}: {}", stamp.author, stamp.blocks.first().map_or("", |b| b.text.as_str())))
+                .collect();
+            assert_eq!(comments, ["Ada Lovelace: Which Monday?"], "{comments:?}");
+            let changes: Vec<String> = blocks
+                .iter()
+                .flat_map(|block| block.marks.iter())
+                .filter(|mark| mark.name == "ins" || mark.name == "del")
+                .filter_map(|mark| mark.value.as_str())
+                .filter_map(tilo_doc_codecs::rich::change_stamp)
+                .map(|stamp| stamp.author)
+                .collect();
+            assert_eq!(changes, ["Grace Hopper", "Grace Hopper"], "{changes:?}");
+            assert!(
+                blocks
+                    .iter()
+                    .any(|block| block.text.contains("A line written in Tilo.")),
+                "the words written here are in the file: {blocks:?}"
+            );
+        }
+
+        phase a_save_that_fails_says_why_and_a_second_try_saves;
+        {
+            let writer = Writer::new();
+            let file = chosen(&writer.device, "Note.docx", DOCX, &a_word_file(), true);
+            writer.one(
+                "open_document",
+                vec![Value::resource(&writer.doc), Value::file(file)],
+            );
+            writer.one(
+                "append_paragraph",
+                vec![Value::resource(&writer.doc), Value::text("Written.")],
+            );
+            writer.device.refusing_writes(Some("the disk is full"));
+            writer.one("save", vec![Value::resource(&writer.doc)]);
+            assert_eq!(
+                writer.text("notice"),
+                "Couldn’t save Note.docx: the disk is full",
+                "the page says why it could not be saved"
+            );
+            assert!(
+                writer.device.written_back("Note.docx").is_none(),
+                "nothing was written"
+            );
+            // The words are kept, and asking again tries again.
+            assert!(writer.body().contains("Written."));
+            writer.device.refusing_writes(None);
+            writer.one("save", vec![Value::resource(&writer.doc)]);
+            assert_eq!(writer.text("notice"), "");
+            assert!(
+                writer.device.written_back("Note.docx").is_some(),
+                "the second try wrote the file"
+            );
+        }
+
+        phase a_page_open_to_view_only_is_not_replaced_and_cannot_be_saved;
+        {
+            let writer = Writer::new();
+            let file = chosen(&writer.device, "Read only.docx", DOCX, &a_word_file(), false);
+            writer.one(
+                "open_document",
+                vec![Value::resource(&writer.doc), Value::file(file)],
+            );
+            assert!(flag(&writer, "view_only"), "a file not opened for writing is viewed");
+            assert!(writer.body().contains("The plan holds"));
+            let other = chosen(
+                &writer.device,
+                "Other.md",
+                "text/markdown",
+                b"# Other\n\nWords.\n",
+                true,
+            );
+            assert!(
+                writer.refused(
+                    "open_document",
+                    vec![Value::resource(&writer.doc), Value::file(other)],
+                ),
+                "opening a file into a page open to view only does not import it"
+            );
+            assert_eq!(writer.text("title"), "Read only");
+            assert!(
+                writer.refused("save", vec![Value::resource(&writer.doc)]),
+                "a page open to view only is not saved over its file"
+            );
+            // The window says why, and its editor takes no words.
+            let view = writer.window();
+            assert!(
+                dump(view.tree()).contains("This document is open to view only"),
+                "{}",
+                dump(view.tree())
+            );
+            assert_eq!(
+                opt_bool_prop(&view, "ui.BlockEditor", "read_only"),
+                Some(true)
+            );
+        }
+
+        phase the_window_opens_every_kind_the_writer_reads_and_a_writable_file;
+        {
+            let writer = Writer::new();
+            let file = chosen(&writer.device, "Note.docx", DOCX, &a_word_file(), true);
+            writer.device.pick(vec![file]);
+            let mut view = writer.window();
+            let open = menu_item(&view, "File", "Open…");
+            view.fire(&open, "choose").unwrap();
+            view.poll_patches().unwrap();
+            let asked = writer.device.asked();
+            assert_eq!(asked.len(), 1, "{asked:?}");
+            assert!(asked[0].edit, "the chooser opens the file for writing too");
+            for media in [
+                DOCX,
+                "application/vnd.oasis.opendocument.text",
+                "application/rtf",
+                "text/html",
+                "text/markdown",
+                "text/plain",
+            ] {
+                assert!(
+                    asked[0].accept.iter().any(|one| one == media),
+                    "the chooser lists {media}: {:?}",
+                    asked[0].accept
+                );
+            }
+            assert_eq!(writer.text("title"), "Note");
+            assert!(!flag(&writer, "view_only"));
+        }
+
+        phase a_chooser_that_answers_nothing_says_why;
+        {
+            let writer = Writer::new();
+            writer
+                .device
+                .refusing_chooser(Some("nobody is at this computer to choose a file"));
+            let view = writer.window();
+            let open = menu_item(&view, "File", "Open…");
+            let refused = view.fire(&open, "choose").unwrap_err();
+            assert!(
+                format!("{refused}").contains("nobody is at this computer to choose a file"),
+                "the chooser's reason reaches the window: {refused:?}"
+            );
+            // Save on a page that is no file yet asks with the same chooser, and says the same.
+            writer.device.pick(Vec::new());
+            let save = menu_item(&view, "File", "Save");
+            let refused = view.fire(&save, "choose").unwrap_err();
+            assert!(
+                format!("{refused}").contains("nobody is at this computer to choose a file"),
+                "{refused:?}"
+            );
+        }
+
+        phase the_pages_own_spelling_is_on_or_off_and_in_its_language;
+        {
+            let writer = Writer::new();
+            let mut view = writer.window();
+            assert_eq!(
+                opt_bool_prop(&view, "ui.BlockEditor", "spellcheck"),
+                Some(true),
+                "a document checks spelling as the person types"
+            );
+            assert_eq!(
+                opt_text_prop(&view, "ui.BlockEditor", "spell_language"),
+                None,
+                "in the person's own language"
+            );
+            writer.one(
+                "set_proofing",
+                vec![
+                    Value::resource(&writer.doc),
+                    Value::Bool(false),
+                    Value::text("de-DE"),
+                ],
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(
+                opt_bool_prop(&view, "ui.BlockEditor", "spellcheck"),
+                Some(false),
+                "the document turns checking off for itself"
+            );
+            assert_eq!(
+                opt_text_prop(&view, "ui.BlockEditor", "spell_language").as_deref(),
+                Some("de-DE"),
+                "and says which dictionary it is written in"
+            );
+        }
+    }
 }

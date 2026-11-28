@@ -8655,6 +8655,27 @@
           }
         },
         {
+          "name": "read_only",
+          "doc": "Whether the document is shown to read and not to write: a page open to view only. Its words cannot be typed in, and its controls that would change it are not answered.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "spellcheck",
+          "doc": "Whether the document's spelling is checked as a person types: a document may turn checking off for itself (a letter in a language no dictionary knows), the person's preference when nothing is said.",
+          "type": {
+            "option": "bool"
+          }
+        },
+        {
+          "name": "spell_language",
+          "doc": "The dictionary the document is checked against: a language tag such as `de-DE`, for a document written in another language than the person's. Their own when nothing is said.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "link_to",
           "doc": "The record the block named by `link` becomes a link to: the page a view made from it.",
           "type": {

@@ -113,6 +113,10 @@ pub enum Request {
         mode: PickMode,
         #[serde(default)]
         multiple: bool,
+        /// Whether the file is opened for writing as well as reading, as a document app's Open
+        /// asks: what lets a save write the document back without asking again.
+        #[serde(default)]
+        edit: bool,
         title: String,
         #[serde(default)]
         accept_label: String,
@@ -947,10 +951,12 @@ fn pick_request(request: &PickRequest) -> impl FnOnce(u64) -> Request + use<> {
     let title = request.title.clone();
     let accept_label = request.accept_label.clone();
     let filters = request.filters.iter().map(Filter::from_portal).collect();
+    let edit = request.edits();
     move |id| Request::Pick {
         id,
         mode,
         multiple,
+        edit,
         title,
         accept_label,
         suggested_name,
@@ -1138,6 +1144,17 @@ impl FilePicker for ShellChooser {
 
     /// Open the file or folder a reference names again: the window a choice made, or one inside
     /// the folder the person chose.
+    fn commit_saved(
+        &self,
+        reference: &std::path::Path,
+    ) -> std::sync::mpsc::Receiver<Result<(), String>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.link.saved(reference, move |outcome| {
+            let _ = tx.send(outcome);
+        });
+        rx
+    }
+
     fn reopen(&self, reference: &std::path::Path, write: bool) -> OpenFileChannel {
         let (deliver, rx) = channel();
         self.link.reopen(reference, write, move |answer| {

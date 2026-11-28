@@ -67,6 +67,11 @@ pub const SHORTCUT_ACTION: &str = "$shortcut";
 /// `List<File>` takes every file the person chose.
 pub const CHOOSE_ACTION: &str = "$choose";
 
+/// The action of `file.choose(a, edit: true)`: ask the person for a file, opened for writing as
+/// well as reading, and run `a` with it — a document app's Open, so the document saves back where
+/// it was read. Its arguments are `a` and the media types of the files kept.
+pub const CHOOSE_EDITING_ACTION: &str = "$choose-editing";
+
 /// The action of `file.choose_folder(a)`: ask the person for a folder, and run `a` with the
 /// files it holds, each with its path inside the folder, as the argument it still needs. Its
 /// arguments are `a` and the media types of the files kept.
@@ -925,6 +930,7 @@ impl Core {
             Imp::ActThen => self.act_then(a),
             Imp::ActAnswer => self.act_answer(a),
             Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),
+            Imp::ActChooseEditing => self.act_choose(a, CHOOSE_EDITING_ACTION),
             Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),
             Imp::ActBlur => self.act_blur(),

@@ -84,7 +84,9 @@ impl Core {
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
             Imp::RichAppended => self.rich_appended(a),
             Imp::RichRelinked => self.rich_relinked(a),
-            Imp::RichFromMarkdown | Imp::RichFromHtml => self.rich_from_text(imp, a),
+            Imp::RichFromMarkdown | Imp::RichFromHtml | Imp::RichFromDocument => {
+                self.rich_from_text(imp, a)
+            }
             Imp::RichMarked | Imp::RichTableEdited | Imp::RichCellWritten | Imp::RichReplaced => {
                 self.rich_edit(imp, a)
             }
@@ -140,6 +142,34 @@ impl Core {
         }
     }
 
+    /// `RichText.from_document(file)`: a Word, `OpenDocument`, RTF, HTML, Markdown or plain text
+    /// file as the blocks an editor shows, with the comments and tracked changes the file carries
+    /// marked over the words they are about.
+    fn rich_from_document(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let file = self.file_arg(a.h(0)?)?;
+        let ext = file
+            .name
+            .rsplit_once('.')
+            .map_or_else(String::new, |(_, ext)| ext.to_ascii_lowercase());
+        let answer = match self.file_bytes(&file) {
+            Ok(bytes) if bytes.len() > tilo_doc_codecs::convert::MAX_DOCUMENT_BYTES => {
+                Err(format!(
+                    "{} is larger than {}",
+                    file.name,
+                    tilo_doc_codecs::convert::MAX_DOCUMENT_BYTES
+                ))
+            }
+            Ok(bytes) => tilo_doc_codecs::rich::blocks_of_document(&ext, &bytes)
+                .map(|blocks| RichValue {
+                    blocks,
+                    styles: None,
+                })
+                .map_err(|why| format!("{} is not a document: {why}", file.name)),
+            Err(why) => Err(why),
+        };
+        self.result(answer.map(Value::Rich))
+    }
+
     /// `RichText.from_markdown(text, links: pages, from: folder)` and `RichText.from_html(text)`:
     /// the document a text says, read the one way every app reads one
     /// (`tilo_doc_codecs::rich`).
@@ -149,6 +179,7 @@ impl Core {
             // Markdown text says, a picture kept as the Markdown it is written as, and a link to
             // a page of the bundle the reference to that page — a note whose file the export
             // wrote, which a reader opens by the reference and what links to it lists.
+            Imp::RichFromDocument => self.rich_from_document(a),
             Imp::RichFromMarkdown => {
                 let markdown = self.text(a.h(0)?)?;
                 let pages = self.text_map(a.h(1)?)?;
@@ -331,7 +362,7 @@ impl Core {
         self.word_args(id, &[], tilo_reference::embed::UNSHARED)
     }
 
-    fn rich_arg(&self, h: i32) -> HResult<RichValue> {
+    pub(crate) fn rich_arg(&self, h: i32) -> HResult<RichValue> {
         self.with_val(h, |v| match v {
             Value::Rich(r) => Ok(r.clone()),
             other => trap(format!("expected rich text, got {}", other.kind_name())),

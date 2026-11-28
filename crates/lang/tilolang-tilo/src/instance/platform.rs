@@ -360,6 +360,24 @@ pub trait Platform {
         Err("this host saves no files".to_owned())
     }
 
+    /// Write `content` over the file the person chose at `reference` — what [`FileValue::path`]
+    /// answers for a chosen file — as saving a document back where it was opened. The person is
+    /// asked nothing more: choosing the file for this app to edit is what allows it. A platform
+    /// without a chooser answers the error saying so.
+    ///
+    /// # Errors
+    ///
+    /// Why the content was not written.
+    fn write_back_file(
+        &self,
+        file: &FileValue,
+        reference: &str,
+        content: &[u8],
+    ) -> Result<(), String> {
+        let _ = (file, reference, content);
+        Err("this host writes no file back".to_owned())
+    }
+
     /// Keep `bytes` in the device's content store as a file called `name` of media type
     /// `media`: what a program that holds bytes makes of them (the files an archive holds,
     /// `.files()`). A platform that holds no store answers the error saying so.
@@ -825,6 +843,10 @@ impl BlobHost for PlatformBlobs {
 
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String> {
         self.0.save_file(request, content)
+    }
+
+    fn write_back(&self, file: &FileValue, reference: &str, content: &[u8]) -> Result<(), String> {
+        self.0.write_back_file(file, reference, content)
     }
 
     fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {

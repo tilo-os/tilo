@@ -102,6 +102,19 @@ pub trait FilePicker: Send + Sync {
         }
         portal::DestinationChannel::from_path(self.pick(request))
     }
+    /// The bytes written to the file a [`Self::reopen`] opened for writing are there: replace
+    /// the file the person chose with them, whole. A host that writes in place has nothing to
+    /// replace and answers at once.
+    fn commit_saved(
+        &self,
+        reference: &std::path::Path,
+    ) -> std::sync::mpsc::Receiver<Result<(), String>> {
+        let _ = reference;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(Ok(()));
+        rx
+    }
+
     fn save_contents(&self, request: PickRequest, bytes: Vec<u8>) -> SaveChannel {
         let destination = request
             .suggested_name()

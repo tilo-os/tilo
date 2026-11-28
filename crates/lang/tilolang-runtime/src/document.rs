@@ -36,6 +36,57 @@ impl Core {
                     Err(why) => trap(why),
                 }
             }
+            // `File.of_rich_document(name, rich, format)`: the editor's text written as a document
+            // of that format, its comments and tracked changes with it.
+            Imp::FileOfRichDocument => {
+                let name = self.text(a.h(0)?)?;
+                let rich = self.rich_arg(a.h(1)?)?;
+                let format = self.text(a.h(2)?)?;
+                let format = format.trim().trim_start_matches('.').to_ascii_lowercase();
+                let bytes = if format == "pdf" {
+                    tilo_doc_codecs::rich::document_from_blocks(&rich.blocks)
+                        .map_err(|why| why.to_string())
+                        .and_then(|document| {
+                            tilo_doc_pdf::render_pdf(
+                                &document.as_ref().materialize(),
+                                &tilo_content::NoContent,
+                            )
+                            .map_err(|why| format!("{why:?}"))
+                        })
+                } else {
+                    tilo_doc_codecs::rich::document_of_blocks(&rich.blocks, &format)
+                        .map_err(|why| why.to_string())
+                };
+                match bytes {
+                    Ok(bytes) => match self.keep_bytes(&name, media_of(&format), &bytes) {
+                        Ok(file) => self.ret_h(Value::file(file)),
+                        Err(why) => trap(why),
+                    },
+                    Err(why) => trap(format!("a document cannot be written as .{format}: {why}")),
+                }
+            }
+            // `File.overwrite(path, file)`: the bytes of `file` written over the file the person
+            // chose at `path`, as saving a document back where it was opened. A file that was not
+            // chosen cannot be written back to: it names no place on this device.
+            Imp::FileOverwrite => {
+                let path = self.text(a.h(0)?)?;
+                let file = self.file_arg(a.h(1)?)?;
+                let answer = if path.trim().is_empty() {
+                    Err(
+                        "this document is not a file on this device: save it as a new file"
+                            .to_owned(),
+                    )
+                } else {
+                    match self.file_bytes(&file) {
+                        Ok(bytes) => match self.blobs.borrow().as_ref() {
+                            Some(blobs) => blobs.write_back(&file, &path, &bytes),
+                            None => Err("this host writes no files".to_owned()),
+                        },
+                        Err(why) => Err(why),
+                    }
+                };
+                self.result(answer.map(|()| Value::Unit))
+            }
             _ => trap("not a document import"),
         }
     }

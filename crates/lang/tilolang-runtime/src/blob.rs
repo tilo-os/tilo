@@ -78,6 +78,11 @@ pub struct FileValue {
     /// no way to use.
     #[serde(default)]
     pub path: String,
+    /// Whether the host opened it for writing as well as reading: a document app's Open asks,
+    /// so the file saves back where it was read. False for a file a host handed over as content
+    /// and for one it could only read.
+    #[serde(default)]
+    pub editable: bool,
 }
 
 impl FileValue {
@@ -95,6 +100,7 @@ impl FileValue {
             size,
             hash: hash.into(),
             path: String::new(),
+            editable: false,
         }
     }
 
@@ -102,6 +108,13 @@ impl FileValue {
     #[must_use]
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = path.into();
+        self
+    }
+
+    /// [`Self::new`] with whether the host opened the file for writing too.
+    #[must_use]
+    pub fn with_editable(mut self, editable: bool) -> Self {
+        self.editable = editable;
         self
     }
 
@@ -181,7 +194,13 @@ pub fn file_from_json(json: &serde_json::Value) -> Result<FileValue, String> {
                 format!("a file's `size` is how many bytes it is, and {size} is none")
             })?,
     };
-    Ok(FileValue::new(name, media, size, hash).with_path(path))
+    let editable = fields
+        .get("editable")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok(FileValue::new(name, media, size, hash)
+        .with_path(path)
+        .with_editable(editable))
 }
 
 /// What a person is asked for when they choose a file: what it is for (the chooser's title, in
@@ -201,6 +220,10 @@ pub struct FileRequest {
     /// Whether the person chooses a folder: its files come as a list, each with its path inside
     /// it.
     pub folder: bool,
+    /// Whether the file is opened for writing too: what a word processor's Open asks, so the
+    /// document's words save back where they were read rather than asking where to put them.
+    /// Only a file, never a folder or a list of them.
+    pub edit: bool,
 }
 
 /// What a person is asked for when they save a file: what it is called and what it holds, so
@@ -266,6 +289,20 @@ pub trait BlobHost {
     ///
     /// Why it was not written (no chooser, a refused path, a failed write).
     fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<Saved, String>;
+
+    /// Write `content` over the file the person chose at `reference` — what [`FileValue::path`]
+    /// answers for a file a chooser answered — as saving a document back to the file it was
+    /// opened from. The file is replaced whole, and the person is asked nothing more: their
+    /// choice of the file is what allows it.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be written: the file is not one the person chose for this app to change,
+    /// it is gone, or the write failed.
+    fn write_back(&self, file: &FileValue, reference: &str, content: &[u8]) -> Result<(), String> {
+        let _ = (file, reference, content);
+        Err("this host writes no file back".to_owned())
+    }
 
     /// Keep `bytes` as a file called `name` of media type `media`, answering the file whose
     /// content they now are: what a program that holds bytes makes of them, such as the files
@@ -336,6 +373,14 @@ mod tests {
             assert_eq!(media_of("plan.png"), "image/png");
             assert_eq!(media_of("notes.MD"), "text/markdown");
             assert_eq!(media_of("thing"), "application/octet-stream");
+            assert_eq!(
+                media_of("Letter.docx"),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            );
+            assert_eq!(media_of("Letter.odt"), "application/vnd.oasis.opendocument.text");
+            assert_eq!(media_of("Letter.rtf"), "application/rtf");
+            assert_eq!(media_of("Page.htm"), "text/html");
+            assert_eq!(media_of("Book.epub"), "application/epub+zip");
         }
 
         phase a_chooser_takes_the_types_it_names;

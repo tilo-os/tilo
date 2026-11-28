@@ -1287,6 +1287,18 @@ impl Platform for HostPlatform {
         crate::files::save(chooser, request, content)
     }
 
+    fn write_back_file(
+        &self,
+        file: &tilolang_tilo::runtime::blob::FileValue,
+        reference: &str,
+        content: &[u8],
+    ) -> Result<(), String> {
+        let Some(chooser) = self.chooser.as_deref() else {
+            return Err(self.no_chooser.clone());
+        };
+        crate::files::write_back(chooser, file, reference, content)
+    }
+
     fn keep_content(
         &self,
         name: &str,

@@ -924,6 +924,9 @@ impl Checker<'_> {
         if name.name == "size" {
             return Ex::host(Imp::FileSize, vec![v], Ty::Int);
         }
+        if name.name == "editable" {
+            return Ex::host(Imp::FileEditable, vec![v], Ty::Bool);
+        }
         let part = match name.name.as_str() {
             "name" => 0,
             "media" => 1,
@@ -934,7 +937,7 @@ impl Checker<'_> {
                     "E021",
                     name.span,
                     format!(
-                        "a `File` has the fields `name`, `media`, `size`, `url` and `path`, not \
+                        "a `File` has the fields `name`, `media`, `size`, `url`, `path` and `editable`, not \
                          `{other}`; `.text()` reads its content, `.files()` the files an archive \
                          holds, and `.book()` the chapters of an EPUB book"
                     ),

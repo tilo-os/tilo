@@ -861,6 +861,12 @@ pub struct BlockEditor {
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
     pub(super) body: Option<crate::block_editor_body::BodyBinding>,
+    /// Whether the document's spelling is checked as a person types, as its view says; the kind's
+    /// and the person's preference when nothing is said.
+    spellcheck: Option<bool>,
+    /// The dictionary the document is checked against, as its view says; the person's own when
+    /// nothing is said.
+    spell_language: Option<String>,
 }
 
 /// What a `reveal` that names a block by its place in the document starts with (`¶5:1`, counted
@@ -1072,6 +1078,8 @@ impl BlockEditor {
             published_page_shown: None,
             presence_key: None,
             body: None,
+            spellcheck: None,
+            spell_language: None,
         };
         s.blocks.push(Block::paragraph(""));
         s
@@ -1534,6 +1542,41 @@ impl BlockEditor {
     pub(super) fn restack(&mut self) {
         self.restack = true;
         self.dirty = true;
+        self.apply_spelling();
+    }
+
+    /// Check the document's spelling as its view says, or against the dictionary it names: each
+    /// of its lines is checked so, and a line made later is too.
+    pub fn set_spelling(&mut self, on: Option<bool>, language: Option<&str>) {
+        self.spellcheck = on;
+        let changed = match (self.spell_language.as_deref(), language) {
+            (_, None) => false,
+            (Some(now), Some(wanted)) => now != wanted,
+            (None, Some(_)) => true,
+        };
+        if let Some(language) = language {
+            if changed {
+                self.spell_language = Some(language.to_owned());
+            }
+        } else {
+            self.spell_language = None;
+        }
+        self.apply_spelling();
+    }
+
+    /// The spelling setting every line of the document takes.
+    fn apply_spelling(&mut self) {
+        for block in &mut self.blocks {
+            let line = block.line.inner_mut();
+            if let Some(on) = self.spellcheck {
+                line.set_spellcheck(Some(on));
+            }
+            if let Some(language) = self.spell_language.as_deref() {
+                if line.spell_language() != language {
+                    line.set_spell_language(language);
+                }
+            }
+        }
     }
 
     pub fn set_blocks(&mut self, blocks: Vec<Block>) {
@@ -1542,6 +1585,7 @@ impl BlockEditor {
         if self.blocks.is_empty() {
             self.blocks.push(Block::paragraph(""));
         }
+        self.apply_spelling();
         self.focused = None;
         self.is_focused = false;
         self.retained_block_selection = None;

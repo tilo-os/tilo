@@ -63,6 +63,12 @@ impl Core {
                 };
                 ret_i64(size)
             }
+            // `file.editable`: whether the host opened the file for writing too, so it can be
+            // saved back where it was read.
+            Imp::FileEditable => {
+                let file = self.file_arg(a.h(0)?)?;
+                ret_i32(i32::from(file.editable))
+            }
             Imp::FileHere => {
                 let file = self.file_arg(a.h(0)?)?;
                 let here = self
@@ -79,6 +85,20 @@ impl Core {
                     Some(blobs) => read_text(blobs.as_ref(), &file),
                     None => Err("this host holds no content store".to_owned()),
                 };
+                self.result(answer.map(Value::text))
+            }
+            // `file.comments()`: the comments a document file carries, as JSON, for a view to list
+            // beside it.
+            Imp::FileComments => {
+                let file = self.file_arg(a.h(0)?)?;
+                let ext = file
+                    .name
+                    .rsplit_once('.')
+                    .map_or_else(String::new, |(_, ext)| ext.to_ascii_lowercase());
+                let answer = self.file_bytes(&file).and_then(|bytes| {
+                    tilo_doc_codecs::rich::comments_json(&ext, &bytes)
+                        .map_err(|why| why.to_string())
+                });
                 self.result(answer.map(Value::text))
             }
             Imp::FileData => {

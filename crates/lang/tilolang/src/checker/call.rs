@@ -2011,6 +2011,7 @@ impl Checker<'_> {
         let mut accept = None;
         let mut called = None;
         let mut then = None;
+        let mut edit = false;
         for a in args {
             match a.name.as_ref().map(|n| n.name.as_str()) {
                 None if action.is_none() => {
@@ -2039,6 +2040,10 @@ impl Checker<'_> {
                         ),
                     );
                 }
+                Some("edit") if choosing && !folder => {
+                    edit = true;
+                    self.expr_as(&a.value, &Ty::Bool);
+                }
                 Some(kind @ ("accept" | "name")) if (kind == "accept") == choosing => {
                     if choosing {
                         accept = Some(self.expr_as(&a.value, &Ty::List(Box::new(Ty::Text))));
@@ -2057,7 +2062,7 @@ impl Checker<'_> {
                             "`file.{}` takes {}; not `{other}:`",
                             name.name,
                             if choosing {
-                                "`accept:`"
+                                "`accept:` and `edit:`"
                             } else {
                                 "`name:` and `then:`"
                             }
@@ -2089,6 +2094,10 @@ impl Checker<'_> {
             });
             let imp = if folder {
                 Imp::ActChooseFolder
+            } else if edit {
+                // The file is opened for writing too, so the document the action opens saves
+                // back where it was read rather than asking where to put it.
+                Imp::ActChooseEditing
             } else {
                 Imp::ActChoose
             };
@@ -3078,6 +3087,35 @@ impl Checker<'_> {
             };
             return Ex::host(Imp::RichEmbed, vec![r], Ty::RichText);
         }
+        // `RichText.from_document(file)`: a Word, OpenDocument, RTF, HTML, Markdown or plain text
+        // file as the document an editor shows, comments and tracked changes with it. A file is
+        // a read of its content, so it needs no `uses`.
+        if name.name == "from_document" {
+            let [file] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`.from_document` takes the file to read: `RichText.from_document(file)`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            if let Some(named) = &file.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    "`.from_document` takes the file by position: `RichText.from_document(file)`",
+                );
+            }
+            let file = self.expr_as(&file.value, &Ty::File);
+            return Ex::host(
+                Imp::RichFromDocument,
+                vec![file],
+                Ty::Result(Box::new(Ty::RichText), Box::new(Ty::Text)),
+            );
+        }
         if name.name == "from_html" {
             let mut text = None;
             for a in args {
@@ -3113,7 +3151,7 @@ impl Checker<'_> {
             self.err(
                 "E027",
                 name.span,
-                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, `.from_html(text)`, the document an HTML text says, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
+                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, `.from_html(text)`, the document an HTML text says, `.from_document(file)`, a document file as that text, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
             );
             for a in args {
                 let _ = self.expr(&a.value, None);
@@ -4093,6 +4131,25 @@ impl Checker<'_> {
             let format = self.expr_as(&format.value, &Ty::Text);
             return Ex::host(Imp::FileOfDocument, vec![named, markdown, format], Ty::File);
         }
+        // `File.of_rich_document(name, rich, format)`: the editor's text — comments and tracked
+        // changes and all — written as a document of that format, what a document saves back as.
+        if name.name == "of_rich_document" {
+            let [named, rich, format] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`File.of_rich_document` takes the file's name, the text to write and the format: `File.of_rich_document(\"Notes.docx\", d.body, \"docx\")`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            let named = self.expr_as(&named.value, &Ty::Text);
+            let rich = self.expr_as(&rich.value, &Ty::RichText);
+            let format = self.expr_as(&format.value, &Ty::Text);
+            return Ex::host(Imp::FileOfRichDocument, vec![named, rich, format], Ty::File);
+        }
         if name.name == "of_presentation" {
             let [named, deck, format] = args else {
                 self.err(
@@ -4126,6 +4183,29 @@ impl Checker<'_> {
             let workbook = self.expr_as(&workbook.value, &Ty::Text);
             let format = self.expr_as(&format.value, &Ty::Text);
             return Ex::host(Imp::SheetOfFile, vec![named, workbook, format], Ty::File);
+        }
+        // A file the person chose, written over itself: the document saved back where it was
+        // opened. It writes the disk, so an action declares `uses files`.
+        if name.name == "overwrite" {
+            let [reference, file] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`File.overwrite` takes the place the person chose and the file holding what goes there: `File.overwrite(d.source, made)`",
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            };
+            let reference = self.expr_as(&reference.value, &Ty::Text);
+            let file = self.expr_as(&file.value, &Ty::File);
+            self.reads(crate::effects::Effect::Files, span, "`File.overwrite`");
+            return Ex::host(
+                Imp::FileOverwrite,
+                vec![reference, file],
+                Ty::Result(Box::new(Ty::Unit), Box::new(Ty::Text)),
+            );
         }
         // A folder on this device, within what the app was granted: its entries, one entry, the
         // bytes a path holds, a watch that runs an action when the folder changes, the open of a
@@ -4174,7 +4254,7 @@ impl Checker<'_> {
                     "E027",
                     name.span,
                     format!(
-                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_presentation`, `of_document`, `at`, `zip`, `open`, `compress` and `extract`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
+                        "`File` has `of_text`, `of_bytes`, `of_sheets`, `of_presentation`, `of_document`, `of_rich_document`, `at`, `zip`, `open`, `compress` and `extract`, not `{other}`: a file is made of what an action holds, as `File.of_text(\"Notes.md\", text)`"
                     ),
                 );
                 for a in args {
@@ -4756,6 +4836,13 @@ impl Checker<'_> {
             // a Word, OpenDocument, RTF, EPUB, HTML or Markdown file; plain text as itself.
             (Ty::File, "markdown") if args.is_empty() => Ex::host(
                 Imp::FileMarkdown,
+                vec![r],
+                Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
+            ),
+            // The comments a document file carries, as JSON: each one's author, when it was
+            // written, what it says and the words it is about.
+            (Ty::File, "comments") if args.is_empty() => Ex::host(
+                Imp::FileComments,
                 vec![r],
                 Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text)),
             ),

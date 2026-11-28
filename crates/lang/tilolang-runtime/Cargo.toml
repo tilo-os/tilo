@@ -43,6 +43,9 @@ tilo-doc-codecs = { version = "0.1.0", path = "../../engines/tilo-doc-codecs", d
 ] }
 # A document written as a PDF, through the pages every PDF export draws.
 tilo-doc-pdf = { version = "0.1.0", path = "../../engines/tilo-doc-pdf" }
+# The content a document's pictures are read from as it is written: none, where the bytes are
+# named by their address and a write reaches nothing outside what it was given.
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 bounded-zip = { package = "tilo-bounded-zip", version = "0.1.0", path = "../../engines/bounded-zip" }
 # Spreadsheet files and their values, for the sheet bindings: an engine with no toolkit.
 tilo-sheet = { version = "0.1.0", path = "../../engines/tilo-sheet" }
