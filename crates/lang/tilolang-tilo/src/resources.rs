@@ -981,6 +981,21 @@ impl ResourceStore {
         self.inner.refused.borrow_mut().take()
     }
 
+    /// Whether the store refused a write it has not been asked why about yet
+    /// ([`Self::take_refusal`]).
+    #[must_use]
+    pub fn refused(&self) -> bool {
+        self.inner.refused.borrow().is_some()
+    }
+
+    /// Whether a change of the person's is held here and not sent yet: a run open on a call that
+    /// waits wrote it, and it reaches the store when the run ends. What a window's save status
+    /// says is under way.
+    #[must_use]
+    pub fn writing(&self) -> bool {
+        !self.inner.unsent.borrow().is_empty()
+    }
+
     /// Takes back the invocation `invocation`, everywhere it wrote, as an undo by `invoker`.
     /// Returns the undo's own invocation, which a redo takes back in turn: the invocation the
     /// store serves, as every write made while serving it carries, so history shows which call
@@ -2560,7 +2575,12 @@ impl ResourceStore {
                 for id in local.keys() {
                     cache.remove(id);
                 }
-                *self.inner.refused.borrow_mut() = Some(error.to_string());
+                // What the workspace said, in its own words: the store's own name for a refusal
+                // is plumbing, and the window's bar says this to the person.
+                *self.inner.refused.borrow_mut() = Some(match &error {
+                    StoreError::Backend(why) => why.clone(),
+                    other => other.to_string(),
+                });
                 Err(error)
             }
         }

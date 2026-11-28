@@ -21,7 +21,7 @@ use tilo_ui_graph::component::{Catalogue, Description, Type, companion};
 
 use super::{
     Binding, Event, MAX_CALL_PICTURE_BYTES, MAX_CALL_PICTURES, Node, Patch, ResourceRef, RowChange,
-    ToApp, ToUi, Value, Words,
+    SaveStatus, ToApp, ToUi, Value, Words,
 };
 
 /// Why a batch was refused: what was wrong, and where.
@@ -211,10 +211,12 @@ impl<'a> Validator<'a> {
             | ToUi::Ask(None)
             | ToUi::Form(None)
             | ToUi::Activate
-            | ToUi::Kept(_)
+            | ToUi::RetiredKept(_)
+            | ToUi::Save(SaveStatus::Saving | SaveStatus::Saved)
             | ToUi::History(_)
             | ToUi::Took { .. }
             | ToUi::CloseWindow => Ok(()),
+            ToUi::Save(SaveStatus::Failed(why)) => self.string(why),
             ToUi::Focus { key } => match key {
                 Some(key) => self.key(key),
                 None => Ok(()),

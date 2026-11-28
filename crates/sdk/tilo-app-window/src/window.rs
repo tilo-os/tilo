@@ -269,7 +269,8 @@ fn shows_a_view(message: &ToUi) -> bool {
         | ToUi::ShowRun { .. }
         | ToUi::Desktop { .. }
         | ToUi::Speak(_)
-        | ToUi::Kept(_)
+        | ToUi::RetiredKept(_)
+        | ToUi::Save(_)
         | ToUi::Heard(_)
         | ToUi::Notice { .. }
         | ToUi::Actions(_)
@@ -1040,7 +1041,8 @@ impl AppWindow {
                 ToUi::ShowRun { run } => self.shown_runs.push(run),
                 ToUi::Desktop { action, argument } => self.desktop.asks.push((action, argument)),
                 ToUi::Speak(language) => tilo_ui_base::i18n::I18nManager::set_locale(&language),
-                ToUi::Kept(kept) => self.kept(kept),
+                ToUi::RetiredKept(kept) => self.kept(kept),
+                ToUi::Save(status) => self.saved(status),
                 // The window's page does what the app asked, and its answer goes back as the
                 // engine gave it. An operation the page answers at once is done here; one the
                 // page thinks about waits with the window's next frames.
@@ -1467,6 +1469,7 @@ impl AppWindow {
 
     /// Say in the window's bar whether the person's changes are saved: changes the workspace has
     /// not taken yet are marked unsaved, with "Try again", until it has; then the mark goes.
+    /// What an app of an earlier build says, one bit of it ([`wire::SaveStatus`] says the rest).
     fn kept(&mut self, kept: bool) {
         let state = if kept {
             ui::SaveState::Failed(t("tilolang-change-kept"))
@@ -1474,6 +1477,22 @@ impl AppWindow {
             ui::SaveState::Idle
         };
         self.save.set(state, ui::time::now());
+        self.save.publish();
+        ui::window_toolbar::show_edited(self.save.shows_unsaved());
+    }
+
+    /// Say in the window's bar how the save of the person's changes stands: one under way says
+    /// nothing until it stalls, one the store took says nothing a person waited for, and one it
+    /// refused stands with "Try again" until a save lands.
+    fn saved(&mut self, status: wire::SaveStatus) {
+        let now = ui::time::now();
+        let state = match status {
+            wire::SaveStatus::Saving => ui::SaveState::Saving,
+            wire::SaveStatus::Saved => ui::SaveState::Saved,
+            wire::SaveStatus::Failed(why) => ui::SaveState::Failed(why),
+        };
+        self.save.set(state, now);
+        self.save.advance(now);
         self.save.publish();
         ui::window_toolbar::show_edited(self.save.shows_unsaved());
     }
@@ -2033,6 +2052,11 @@ impl AppWindow {
             || crate::page_runner::choosers_waiting(&self.page)
             || crate::page_runner::notes_waiting(&self.page)
             || !self.events.is_empty()
+            || self.save.needs_publish()
+            || self
+                .save
+                .next_wake_deadline()
+                .is_some_and(|due| due <= ui::time::now())
             || self
                 .rows
                 .borrow()
@@ -2054,6 +2078,16 @@ impl AppWindow {
         // its controls raised. What they lead to changes the window, as what goes out does.
         let input = std::mem::take(&mut self.keys.input);
         let mut took = input || !self.events.is_empty();
+        // A save under way that stalled, and a notice whose time ran: the bar says it as this
+        // frame goes out, and a save that gave up asks the app for its changes again.
+        let now = ui::time::now();
+        took |= self.save.advance(now);
+        self.save.publish();
+        ui::window_toolbar::show_edited(self.save.shows_unsaved());
+        if self.save.take_retry() {
+            took = true;
+            self.out.push(ToApp::SaveAgain);
+        }
         // A file input the person clicked in the page waits on their choice: the host's picker
         // asks, in its own time, and answers the page with what they picked.
         for chooser in crate::page_runner::choosers(&self.page) {
@@ -2101,6 +2135,7 @@ impl AppWindow {
         }
         if self.save.take_bar_action().is_some() {
             self.out.push(ToApp::SaveAgain);
+            self.save.publish();
         }
         if self.try_again.take() && self.failed.is_some() {
             self.ask_resend();

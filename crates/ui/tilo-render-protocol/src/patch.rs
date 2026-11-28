@@ -658,9 +658,11 @@ pub enum ToUi {
     /// The language the window reads in now (`de-DE`): the person chose another in Settings while
     /// it is open. Its own chrome relabels in it, as the app's words the app sends do.
     Speak(String),
-    /// Whether the app holds changes of the person's that the workspace has not taken yet: the
-    /// window marks them unsaved and offers to try again ([`ToApp::SaveAgain`]) until it has.
-    Kept(bool),
+    /// Retired: a save status in one bit, which an app of an earlier build sends. Whether it
+    /// holds changes of the person's that the workspace has not taken yet, which the window
+    /// marks unsaved and offers to try again ([`ToApp::SaveAgain`]) until it has. A build sends
+    /// [`ToUi::Save`] instead, which says a save under way apart from one refused.
+    RetiredKept(bool),
     /// What the app's connection heard of the people at the app, which the window shows as a
     /// window with a connection of its own does: the member list, a step of an agent's action.
     /// Carried as the JSON the window's toolkit reads it as.
@@ -701,6 +703,22 @@ pub enum ToUi {
     /// shell's Close of a window, its launcher's Open, a drag that moves or sizes one. The device
     /// runs it as that person, as their own session would, never as the app.
     Desktop { action: String, argument: String },
+    /// How the save of the person's changes stands: the window's bar says one still under way,
+    /// one the store took, and one it refused, which offers to try again
+    /// ([`ToApp::SaveAgain`]) until it lands.
+    Save(SaveStatus),
+}
+
+/// How a save of the person's changes stands ([`ToUi::Save`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaveStatus {
+    /// A change of the person's is being written, and the store has not taken it yet.
+    Saving,
+    /// The store took the last change; nothing of the person's is unsaved.
+    Saved,
+    /// The store refused the last change, and the app keeps the act that made it for their
+    /// Retry. The text says why, in the person's words.
+    Failed(String),
 }
 
 /// Which of a person's pictures a call tile shows.
@@ -897,7 +915,7 @@ pub enum ToApp {
         argument: Option<String>,
     },
     /// The person asked to save the changes the workspace has not taken yet again
-    /// ([`ToUi::Kept`]).
+    /// ([`ToUi::Save`]): the app runs once more the change the store refused.
     SaveAgain,
     /// The window bar's History control was pressed: show the system's history of the resource
     /// the window shows (`open`), or close it and show the resource again.

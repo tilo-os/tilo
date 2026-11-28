@@ -113,6 +113,7 @@ mod relatives;
 mod removed;
 mod resource_store;
 mod rich_text;
+mod save_status;
 mod scenarios;
 mod set_search;
 mod settings_about;

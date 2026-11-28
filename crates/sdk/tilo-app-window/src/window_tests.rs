@@ -4837,3 +4837,60 @@ fn a_pages_button_answers_a_pointer_press() {
         "the pointer press at the page's button reaches the app, at {x},{y}"
     );
 }
+
+/// A save the store refused stands in the bar with "Try again", whose press is the app's
+/// `SaveAgain`; one still under way says nothing, and the save that lands takes the failure down.
+#[test]
+fn a_refused_save_stands_in_the_bar_with_try_again_until_one_lands() {
+    tilo_ui_base::i18n::I18nManager::init("en-US");
+    let (mut app, mut saved_window) = window();
+    saved_window.receive();
+    let mut harness =
+        ui::headless::Driver::new(ui::State::new(), Box::new(saved_window), (900, 700));
+    harness.present_in_window_bar();
+
+    send(&mut app, &[ToUi::Save(wire::SaveStatus::Saving)]);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    assert_eq!(
+        ui::window_toolbar::notice(),
+        None,
+        "a save under way is no news: it may land at once"
+    );
+
+    send(
+        &mut app,
+        &[ToUi::Save(wire::SaveStatus::Failed(
+            "The disk is full".to_owned(),
+        ))],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    let shown = ui::window_toolbar::notice().expect("the bar says the save failed");
+    assert_eq!(shown.text, "Save failed: The disk is full");
+    assert_eq!(
+        shown.actions.first().map(|action| action.name.as_str()),
+        Some("Try again")
+    );
+
+    // The press is the app's own retry: the same `SaveAgain` a stalled save asks for.
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+        id: ui::SAVE_RETRY_ACTION.to_owned(),
+    });
+    drawn_window(&mut harness).flush();
+    assert!(
+        sent(&mut app)
+            .iter()
+            .any(|message| matches!(message, ToApp::SaveAgain)),
+        "Try again reaches the app"
+    );
+
+    send(&mut app, &[ToUi::Save(wire::SaveStatus::Saved)]);
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    assert_eq!(
+        ui::window_toolbar::notice(),
+        None,
+        "the save that lands takes the failure down"
+    );
+}

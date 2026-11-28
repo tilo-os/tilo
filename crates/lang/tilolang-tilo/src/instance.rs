@@ -96,6 +96,12 @@ pub enum HistoryAsk {
     UndoRun(String),
 }
 
+/// An act under way that may write, and the save status it found: what the status goes back to
+/// when the act wrote nothing ([`Instance::follow_save`]).
+struct SavingAct {
+    before: Option<ui::SaveStatus>,
+}
+
 /// A later build of the package, in a development session.
 #[derive(Clone)]
 pub struct Update {
@@ -552,6 +558,20 @@ pub struct Instance {
     form: Option<form::Pending>,
     /// How many forms the window was sent: the next one's id.
     forms: u64,
+    /// The save status last told the window ([`ToUi::Save`]): what is said only when it changes.
+    told_save: Option<ui::SaveStatus>,
+    /// A refusal that stands, with why: the status said until a save lands.
+    save_failed: Option<String>,
+    /// An act under way that may write, and the status it found: what the status goes back to
+    /// when the act wrote nothing.
+    save_live: Option<SavingAct>,
+    /// The invocation of the store's last write the window was told of.
+    save_written: Option<String>,
+    /// The act whose write the store refused, kept for the person's Retry
+    /// ([`ToApp::SaveAgain`]): the same act runs once per press, and a second refusal stands.
+    refused: Option<ToApp>,
+    /// The act of the message being carried out, which a refusal keeps in [`Self::refused`].
+    retry_act: Option<ToApp>,
 }
 
 impl Instance {
@@ -654,6 +674,12 @@ impl Instance {
             rows_asked: 0,
             form: None,
             forms: 0,
+            told_save: None,
+            save_failed: None,
+            save_live: None,
+            save_written: None,
+            refused: None,
+            retry_act: None,
         }
     }
 
@@ -1980,29 +2006,74 @@ impl Instance {
         }
     }
 
-    /// What follows the runtime's writes: a write the store refused is said, and the outside
-    /// effects they queued are settled.
+    /// What follows the runtime's writes: how the save of the person's changes stands, and the
+    /// outside effects they queued are settled. A write the store refused keeps the act that made
+    /// it, so the person's Retry runs it once more, and the window's bar says so with "Try again".
     pub fn commit_planned(&mut self) {
         if self.mode == Mode::Past {
             return;
         }
-        if let Some(why) = self.store.take_refusal() {
-            self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        match self.store.take_refusal() {
+            Some(why) => {
+                self.refused = self.retry_act.take();
+                self.save_live = None;
+                self.tell_save(ui::SaveStatus::Failed(why.clone()));
+                self.save_failed = Some(why);
+            }
+            None => self.follow_save(),
         }
         self.settle_due = true;
     }
 
-    /// The API refused an action the window asked it to run: say why. Whether it was one of
-    /// this window's.
-    pub fn answered(&mut self, address: &ActionAddress, error: Option<String>) -> bool {
-        if let Some(error) = error
-            && address.resource.starts_with("tl:")
-        {
-            self.notice(Words::Plain(error), ui::NoticeKind::Error);
-            self.flush();
-            return true;
+    /// Say how a save that was not refused stands: one the store still holds is under way, one
+    /// that landed is saved, and an act that wrote nothing leaves the status as it found it.
+    fn follow_save(&mut self) {
+        if self.store.writing() {
+            self.tell_save(ui::SaveStatus::Saving);
+            return;
         }
-        false
+        let written = self.store.last_written();
+        if written != self.save_written {
+            self.save_written = written;
+            self.save_failed = None;
+            self.save_live = None;
+            self.refused = None;
+            self.tell_save(ui::SaveStatus::Saved);
+        } else if let Some(act) = self.save_live.take() {
+            // The act wrote nothing: what the status said before it stands, a refusal among it.
+            let status = match &self.save_failed {
+                Some(why) => ui::SaveStatus::Failed(why.clone()),
+                None => act.before.unwrap_or(ui::SaveStatus::Saved),
+            };
+            self.tell_save(status);
+        }
+    }
+
+    /// An act that may write is under way: the window hears the save begin, and one that waits on
+    /// a call keeps saying it until the store takes it.
+    fn begin_save(&mut self) {
+        self.save_live = Some(SavingAct {
+            before: self.told_save.clone(),
+        });
+        self.tell_save(ui::SaveStatus::Saving);
+    }
+
+    /// Tell the window the save status, when it changed.
+    fn tell_save(&mut self, status: ui::SaveStatus) {
+        if self.told_save.as_ref() == Some(&status) {
+            return;
+        }
+        self.told_save = Some(status.clone());
+        self.out.push(ToUi::Save(status));
+    }
+
+    /// The person pressed "Try again" on a save the store refused: the act that wrote it runs
+    /// once more. A second refusal stands as it did.
+    fn try_again(&mut self) {
+        let Some(act) = self.refused.take() else {
+            return;
+        };
+        self.event(act);
     }
 
     // ----- what the person did -------------------------------------------------------------
@@ -2105,8 +2176,9 @@ impl Instance {
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
             ToApp::Held(held) => self.held = held,
-            // Every write is sent as it is made; one the store refused is said, not kept.
-            ToApp::SaveAgain => {}
+            // The person asked for a write the store refused to be tried again: the act that
+            // made it runs once more, and a second refusal stands.
+            ToApp::SaveAgain => self.try_again(),
             // What the person does next serves the call they signed for it: the writes it makes
             // are stamped with it, as the member it names, until the window ends it.
             ToApp::Serving { call, invoker } => {
@@ -2151,14 +2223,48 @@ impl Instance {
     /// Carry out `message`, one thing the window told of the person at it, as a step of theirs,
     /// and send what followed it: what a press made, and what the window hears after a press.
     fn event(&mut self, message: ToApp) {
-        let mut ran: Option<Ran> = None;
+        // The person pressed "Try again": what the store refused runs once more, as the act it
+        // was, and never as a press of the window's.
+        if matches!(message, ToApp::SaveAgain) {
+            self.try_again();
+            return;
+        }
         let pressed = matches!(message, ToApp::Fire { .. });
+        self.carried(message);
+        if pressed {
+            let _phase = tilo_resource::profiling::Phase::start("instance.event.pressed");
+            // What the press made opens now, and the window hears right after it that the press
+            // ran: what the person typed after it goes to what it opened, never to what a later
+            // press of the same batch opens.
+            // What it opened is drawn before what the person did after the press reaches the
+            // view: the page beside the list shows the item the press opened, and what they
+            // type into it is that item's.
+            self.take_open_requests();
+            self.poll_views();
+            self.press_ran(self.last_fire);
+            self.tell_took();
+        }
+    }
+
+    /// Carry out one of the person's acts and say what followed it: its refusal in the bar
+    /// (unless the store refused its write, which the save status says with its Retry), the save
+    /// it made, and what an action it ran made.
+    fn carried(&mut self, message: ToApp) {
+        let mut ran: Option<Ran> = None;
+        self.retry_act = retryable(&message);
+        if announces_saving(&message) {
+            self.begin_save();
+        }
         let outcome = {
             let _phase = tilo_resource::profiling::Phase::start("instance.event.carry_out");
             self.carry_out(message, &mut ran)
         };
         if let Err(words) = outcome {
-            self.notice(words, ui::NoticeKind::Error);
+            // A write the store refused is said by the save status, which keeps the act for the
+            // person's Retry; any other refusal is the bar's to say.
+            if !self.store.refused() {
+                self.notice(words, ui::NoticeKind::Error);
+            }
             // What the controls show goes back to what they are bound to.
             for level in [Level::Root, Level::Detail] {
                 if let Some(view) = self.level_mut(level) {
@@ -2176,19 +2282,7 @@ impl Instance {
             self.after_action(ran);
         }
         self.follow_opens();
-        if pressed {
-            let _phase = tilo_resource::profiling::Phase::start("instance.event.pressed");
-            // What the press made opens now, and the window hears right after it that the press
-            // ran: what the person typed after it goes to what it opened, never to what a later
-            // press of the same batch opens.
-            // What it opened is drawn before what the person did after the press reaches the
-            // view: the page beside the list shows the item the press opened, and what they
-            // type into it is that item's.
-            self.take_open_requests();
-            self.poll_views();
-            self.press_ran(self.last_fire);
-            self.tell_took();
-        }
+        self.retry_act = None;
     }
 
     /// Carry out what the window told `self` of, answering what it could not do in words; `ran`
@@ -3499,6 +3593,33 @@ pub fn cases(host: &Host, id: &str) -> Vec<wire::Case> {
 
 #[cfg(test)]
 mod tests;
+
+/// The act whose write a refusal would belong to, kept so the person's Retry runs it once more:
+/// what writes the document, and the calls that write through it. What only reads, or changes
+/// the window or a view's own state, keeps nothing.
+fn retryable(message: &ToApp) -> Option<ToApp> {
+    match message {
+        ToApp::Fire { .. }
+        | ToApp::Toggle { .. }
+        | ToApp::Splice { .. }
+        | ToApp::Edit { .. }
+        | ToApp::EditRich { .. }
+        | ToApp::FormSubmit { .. }
+        | ToApp::Undo
+        | ToApp::Redo => Some(message.clone()),
+        _ => None,
+    }
+}
+
+/// Whether the act may wait before its write reaches the store (an action that calls out, a
+/// form's submit): the window hears the save begin. A splice is written as it is made, and one
+/// under way says nothing.
+fn announces_saving(message: &ToApp) -> bool {
+    matches!(
+        message,
+        ToApp::Fire { .. } | ToApp::FormSubmit { .. } | ToApp::Undo | ToApp::Redo
+    )
+}
 
 /// The resource an action returned, as itself or inside an optional: an action that may make
 /// nothing (`-> Option<Book>`) still opens what it made when it made one.
