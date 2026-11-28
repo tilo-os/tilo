@@ -450,6 +450,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
+    /// `password: Text (secret)`: a value history never shows.
+    pub secret: bool,
     pub default: Option<Expr>,
     pub span: Span,
 }

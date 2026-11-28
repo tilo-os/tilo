@@ -961,7 +961,7 @@ pub fn history(
     let listed: Vec<Json> = versions
         .into_iter()
         .skip(total.saturating_sub(last))
-        .map(|(app, version)| version_entry(host, &app, &version))
+        .map(|(app, version)| version_entry(host, &app, &version, Some(reader)))
         .collect();
     Ok(serde_json::json!({ "versions": listed, "total": total }))
 }

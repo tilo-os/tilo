@@ -67,6 +67,7 @@ mod foreign;
 mod gallery;
 mod headings;
 mod held_records;
+mod history_values;
 mod history_words;
 mod inline_views;
 mod job_handlers;

@@ -1,6 +1,8 @@
 //! The values the language makes from a literal: a `Date` or a `Time` written as its ISO text, and the
 //! standard library's text-held type (`std.Identifier`), whose value is the text it is written with.
 
+use std::fmt::Write as _;
+
 use crate::ast::{self, Expr, ExprKind};
 use crate::types::Ty;
 
@@ -66,7 +68,7 @@ pub fn counted_text(e: &Expr) -> Option<String> {
 
 /// How `did:` is written: `"turned it on"`, words naming a parameter (`"scanned at {dpi} dpi"`),
 /// or words a parameter's value picks.
-const DID_FORMS: &str = "`did:` takes words in quotes, which may name a parameter (`did: \"scanned at {dpi} dpi\"`), or words a parameter's value picks: `did: if on { \"turned it on\" } else { \"turned it off\" }`, `did: if mode == \"gray\" { … } else { … }`, `did: match route { .wine => \"…\", .vm => \"…\" }`";
+const DID_FORMS: &str = "`did:` takes words in quotes, which may name a parameter (`did: \"scanned at {dpi} dpi\"`) or a field of the changed record as it was and became (`did: \"set the limit from {limit.before} to {limit.after}\"`), or words a parameter's value picks: `did: if on { \"turned it on\" } else { \"turned it off\" }`, `did: if mode == \"gray\" { … } else { … }`, `did: match route { .wine => \"…\", .vm => \"…\" }`";
 
 /// An action's `did:` words, with `{name}` where they read a parameter of `params`, and the
 /// choice a parameter's value makes among them when they are an `if` over it or a `match` on it.
@@ -217,8 +219,30 @@ fn did_case(cond: &Expr, params: &[super::ParamInfo]) -> Option<(String, String)
     }
 }
 
-/// The words `e` is written as, with `{name}` where it interpolates a parameter of `params`.
-/// `None` for text that is not a literal, or that interpolates anything else.
+/// The fields `did:` words read as the change found or left them: `limit` for `{limit_before}`
+/// or `{limit_after}`, as [`said_text`] writes `{limit.before}`.
+pub(crate) fn field_reads(words: &str) -> Vec<String> {
+    let mut reads = Vec::new();
+    let mut rest = words;
+    while let Some((_, after)) = rest.split_once('{') {
+        let Some((read, next)) = after.split_once('}') else {
+            break;
+        };
+        if let Some(field) = read
+            .strip_suffix("_before")
+            .or_else(|| read.strip_suffix("_after"))
+            && !reads.iter().any(|held| held == field)
+        {
+            reads.push(field.to_owned());
+        }
+        rest = next;
+    }
+    reads
+}
+
+/// The words `e` is written as, with `{name}` where it interpolates a parameter of `params`, and
+/// `{field_before}` or `{field_after}` where it reads a field of the changed record
+/// (`{field.before}`). `None` for text that is not a literal, or that interpolates anything else.
 fn said_text(e: &Expr, params: &[super::ParamInfo]) -> Option<String> {
     let ExprKind::Str(parts) = &e.kind else {
         return None;
@@ -232,6 +256,19 @@ fn said_text(e: &Expr, params: &[super::ParamInfo]) -> Option<String> {
                     out.push('{');
                     out.push_str(name);
                     out.push('}');
+                }
+                // `{enabled.after}`: a field of the changed record as the change left it, and
+                // `{enabled.before}` as it found it, read by history from the record itself.
+                ExprKind::Field { base, name: when }
+                    if matches!(when.name.as_str(), "before" | "after") =>
+                {
+                    let ExprKind::Ident(field) = &base.kind else {
+                        return None;
+                    };
+                    if params.iter().any(|p| p.name == *field) {
+                        return None;
+                    }
+                    let _ = write!(out, "{{{field}_{}}}", when.name);
                 }
                 _ => return None,
             },

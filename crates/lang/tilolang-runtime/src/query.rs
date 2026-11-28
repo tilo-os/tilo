@@ -984,6 +984,7 @@ mod tests {
                     name: "title".into(),
                     ty: "Text".into(),
                     merge: tilolang::types::MergeKind::Register,
+                    secret: false,
                     doc: String::new(),
                     default: None,
                 }],

@@ -14,9 +14,14 @@ use crate::publish::split_published;
 
 /// `version`, of a resource of `app` that `host` reads, as its history lists it: the version,
 /// its resource by the id it is published under, the label the app's history calls it by, and
-/// what it did to the resource.
+/// what it did to the resource, and to each of its fields, with the values `reader` may see.
 #[must_use]
-pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
+pub fn version_entry(
+    host: &Host,
+    app: &str,
+    version: &Version,
+    reader: Option<&tilolang_runtime::Actor>,
+) -> Json {
     let published = resource_id(app, &version.resource);
     let label = history_label(host, &version.resource);
     let mut entry = serde_json::to_value(version).unwrap_or_default();
@@ -37,6 +42,33 @@ pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
             entry.remove("args");
         } else {
             entry.insert("args".to_owned(), Json::Object(said.into_iter().collect()));
+        }
+        // What the change did to each field, with the values `reader` may see of it: none for a
+        // feed read by several, whose entry says each change to all of them alike.
+        let changes: Vec<Json> = reader
+            .map(|reader| host.runtime().field_changes(reader, version))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|change| {
+                let mut said = serde_json::Map::new();
+                said.insert("field".to_owned(), change.field.into());
+                if let Some(before) = change.before {
+                    said.insert("before".to_owned(), before);
+                }
+                if let Some(after) = change.after {
+                    said.insert("after".to_owned(), after);
+                }
+                if change.secret {
+                    said.insert("secret".to_owned(), true.into());
+                }
+                Json::Object(said)
+            })
+            .collect();
+        if !changes.is_empty() {
+            entry.insert("changes".to_owned(), Json::Array(changes));
+        }
+        if host.runtime().declares_did(&version.action) {
+            entry.insert("declared".to_owned(), true.into());
         }
     }
     entry
@@ -111,7 +143,7 @@ pub fn say_versions(
             _ => None,
         };
         // The arguments the action's words read, as the entry names them.
-        let args = version["args"]
+        let mut args: std::collections::BTreeMap<String, tilo_actions::Scalar> = version["args"]
             .as_object()
             .into_iter()
             .flatten()
@@ -119,6 +151,35 @@ pub fn say_versions(
                 Some((name.clone(), tilo_actions::Scalar::from_json(value)?))
             })
             .collect();
+        // Each field as the change found and left it, where the reader may see it: what
+        // `{limit.before}` and `{limit.after}` read.
+        let changes = version["changes"].as_array().cloned().unwrap_or_default();
+        for change in &changes {
+            let field = change["field"].as_str().unwrap_or_default();
+            for when in ["before", "after"] {
+                if let Some(value) = tilo_actions::Scalar::from_json(&change[when]) {
+                    args.insert(format!("{field}_{when}"), value);
+                }
+            }
+        }
+        // An action that declares no words for what it did, which changed one field, says that
+        // field's change ("Changed weekly of Backups to 5"; a secret one only that it changed).
+        let declared = version["declared"].as_bool().unwrap_or(false);
+        let edit = match changes.as_slice() {
+            [change] if !declared && step.is_none() && action != "$create" => {
+                let value = |when: &str| tilo_actions::Scalar::from_json(&change[when]);
+                Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+                    ty: String::new(),
+                    field: change["field"].as_str().unwrap_or_default().to_owned(),
+                    path: Vec::new(),
+                    op: tilo_actions::EditOp::Set,
+                    old: value("before"),
+                    new: value("after"),
+                    args: std::collections::BTreeMap::new(),
+                }))
+            }
+            _ => None,
+        };
         let entry = tilo_actions::ActionContext {
             app: Some(tilo_actions::ActionApp {
                 id: app.clone(),
@@ -130,6 +191,9 @@ pub fn say_versions(
             }),
             what: Some(step.map_or_else(
                 || {
+                    if let Some(edit) = edit {
+                        return edit;
+                    }
                     tilo_actions::Did::Verb(tilo_actions::VerbCall {
                         action: tilo_actions::ActionKey {
                             app,

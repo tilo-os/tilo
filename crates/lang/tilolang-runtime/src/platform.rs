@@ -999,6 +999,7 @@ impl Core {
                 ty: ty.clone(),
                 kind: crate::meta::FieldKind::Register,
                 default: None,
+                secret: false,
             };
             let named = field_of_sentence(&param.name);
             // A suggestion is read against nothing: as a change that sets the value.

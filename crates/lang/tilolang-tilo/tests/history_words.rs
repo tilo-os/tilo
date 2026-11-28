@@ -53,9 +53,10 @@ action tint(l: Lamp, tint: Tint) (
     l.tint = .some(tint)
 }
 
-/// Dims the lamp.
+/// Turns the lamp on, dimmed.
 action dim(l: Lamp) (label: "Dim the lamp") {
     l.mode = "dim"
+    l.on = true
 }
 "#;
 
@@ -194,7 +195,7 @@ fn an_entry_keeps_only_the_arguments_its_words_read() {
         .expect("the versions read")
         .iter()
         .map(|version| {
-            tilolang_tilo::versions::version_entry(&app.host, "so.tilo.lang.lamp", version)
+            tilolang_tilo::versions::version_entry(&app.host, "so.tilo.lang.lamp", version, None)
         })
         .collect();
     let args: Vec<&serde_json::Value> = entries.iter().map(|entry| &entry["args"]).collect();

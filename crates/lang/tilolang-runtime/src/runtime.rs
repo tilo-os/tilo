@@ -2063,6 +2063,27 @@ impl Runtime {
             .unwrap_or_default()
     }
 
+    /// Whether the action `action` (an id) declares words for what it did (`did:`).
+    #[must_use]
+    pub fn declares_did(&self, action: &str) -> bool {
+        let registry = self.core.registry.borrow();
+        registry
+            .action_package(action)
+            .and_then(|pkg| pkg.action(action).map(|meta| meta.did.is_some()))
+            .unwrap_or(false)
+    }
+
+    /// The fields the version `v` changed, with what `reader` may see of each one's value before
+    /// and after it ([`crate::changes::FieldChange`]).
+    #[must_use]
+    pub fn field_changes(
+        &self,
+        reader: &Actor,
+        v: &crate::store::Version,
+    ) -> Vec<crate::changes::FieldChange> {
+        self.core.field_changes(reader, v)
+    }
+
     /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
     pub fn set_seen_runs(&self, person: &Actor, runs: &[String]) {

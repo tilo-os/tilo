@@ -20,6 +20,8 @@ pub struct FieldInfo {
     pub ty: Ty,
     pub kind: FieldKind,
     pub default: Option<Json>,
+    /// Declared `(secret)`: history never shows its value, only that it changed.
+    pub secret: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +251,7 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
                 ty,
                 kind,
                 default: f.default.clone(),
+                secret: f.secret,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

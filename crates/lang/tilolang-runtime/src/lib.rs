@@ -17,6 +17,7 @@ pub mod authority;
 pub mod blob;
 pub mod canvas;
 pub mod catalogue;
+pub mod changes;
 pub mod clipboard;
 mod colls;
 mod core;

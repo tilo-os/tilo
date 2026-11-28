@@ -1825,13 +1825,22 @@ impl<'a> Parser<'a> {
             None
         };
         let marker_at = self.span();
+        let mut secret = false;
         if self.eat(&Tok::LParen) {
-            let _: PResult<()> = self.fail(
-                marker_at,
-                "a field is its name, its type and its default; what the platform shows comes from the type's `row view` and the app's own views",
-            );
-            while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+            // `password: Text (secret)`: the one thing a field says of itself.
+            if matches!(self.peek(), Tok::Ident(name) if name == "secret")
+                && matches!(self.peek_at(1), Tok::RParen)
+            {
                 self.bump();
+                secret = true;
+            } else {
+                let _: PResult<()> = self.fail(
+                    marker_at,
+                    "a field is its name, its type, `(secret)` when history must never show its value, and its default; what the platform shows comes from the type's `row view` and the app's own views",
+                );
+                while !matches!(self.peek(), Tok::RParen | Tok::Eof) {
+                    self.bump();
+                }
             }
             self.eat(&Tok::RParen);
         }
@@ -1846,6 +1855,7 @@ impl<'a> Parser<'a> {
             name,
             ty,
             merge,
+            secret,
             default,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })

@@ -633,6 +633,10 @@ pub struct FieldMeta {
     pub doc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
+    /// `password: Text (secret)`: a value no one reads back, which history never shows: a
+    /// change of it says only that it changed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 impl FieldMeta {

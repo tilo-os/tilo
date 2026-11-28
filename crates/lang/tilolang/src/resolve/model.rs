@@ -15,6 +15,8 @@ pub struct FieldInfo {
     pub merge: MergeKind,
     pub doc: String,
     pub default: Option<serde_json::Value>,
+    /// Declared `(secret)`: history never shows its value.
+    pub secret: bool,
 }
 
 #[derive(Clone, Debug)]

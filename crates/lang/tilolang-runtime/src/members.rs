@@ -361,10 +361,16 @@ impl Core {
     /// grants say. The fields are noted as read by the running view, so it runs again when they
     /// change.
     pub(crate) fn readers_of(&self, target: &ResourceRef) -> Vec<Vec<Actor>> {
+        self.readers_around(target, None)
+    }
+
+    /// [`Self::readers_of`] as they stood just before the change `around` names, or just after
+    /// it: the records of the change's document read at that point, the others as they are.
+    fn readers_around(&self, target: &ResourceRef, around: Option<Around<'_>>) -> Vec<Vec<Actor>> {
         let mut out = Vec::new();
         let mut at = Some(target.clone());
         while let Some(here) = at {
-            if let Some(people) = self.readers_here(&here) {
+            if let Some(people) = self.readers_here(&here, around) {
                 out.push(people);
             }
             at = self
@@ -381,7 +387,7 @@ impl Core {
     /// The people the resource `at` says read it, when its type names its readers. A record whose
     /// type names its author among its readers and that has no version yet has no author known
     /// here, and nobody reads it, never everybody.
-    fn readers_here(&self, at: &ResourceRef) -> Option<Vec<Actor>> {
+    fn readers_here(&self, at: &ResourceRef, around: Option<Around<'_>>) -> Option<Vec<Actor>> {
         let ty = if at.ty.is_empty() {
             self.stored_type(at)
         } else {
@@ -395,7 +401,7 @@ impl Core {
                     vs.reads.push((at.id_string(), field.id.clone()));
                 }
                 // A record whose readers cannot be read is read by nobody: never by everyone.
-                let Ok(Value::List(people)) = self.read_value(at, &field, None) else {
+                let Ok(Value::List(people)) = self.read_around(at, &field, around) else {
                     return Some(Vec::new());
                 };
                 Some(
@@ -417,7 +423,7 @@ impl Core {
                     if let Some(vs) = self.frames.borrow_mut().view_mut() {
                         vs.reads.push((at.id_string(), field.id.clone()));
                     }
-                    if self.read_value(at, &field, None) == Ok(Value::Bool(true)) {
+                    if self.read_around(at, &field, around) == Ok(Value::Bool(true)) {
                         return None;
                     }
                 }
@@ -439,6 +445,63 @@ impl Core {
                 Some(readers)
             }
         }
+    }
+
+    /// The field `field` of `at`, as it stood at `around` when `at` is in the document the
+    /// change was made to, and as it is otherwise.
+    fn read_around(
+        &self,
+        at: &ResourceRef,
+        field: &crate::registry::FieldInfo,
+        around: Option<Around<'_>>,
+    ) -> Result<Value, String> {
+        let Some(around) = around.filter(|around| around.doc == at.doc) else {
+            return self.read_value(at, field, None);
+        };
+        let spec = crate::store::FieldSpec {
+            id: field.id.clone(),
+            kind: field.kind,
+        };
+        let held = {
+            let store = self.store.borrow();
+            if around.after {
+                store.read_at(at, &spec, around.change)
+            } else {
+                store.read_before(at, &spec, around.change)
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        self.field_value(at, field, held, None)
+    }
+
+    /// Whether `who` read `target` just before the change `change` of its document, or just
+    /// after it (`after`): [`Self::may_read`] with the records the change wrote read as they
+    /// stood then. The workspace's grants are those it has now.
+    pub(crate) fn read_around_change(
+        &self,
+        who: &Actor,
+        target: &ResourceRef,
+        change: &str,
+        after: bool,
+    ) -> bool {
+        let target = &self.typed(target);
+        let around = Around {
+            doc: &target.doc,
+            change,
+            after,
+        };
+        let readers = self.readers_around(target, Some(around));
+        // Where no members are given, the caller reads what the API admitted it to, and the
+        // records' own readers alone decide.
+        if !self.knows_policy() {
+            return readers.iter().all(|people| people.contains(who));
+        }
+        let list = self.read_members();
+        let reads = self.members.borrow().reads.clone();
+        list.iter().any(|member| {
+            who.member_id() == Some(&member.id)
+                && member_reads(reads.as_deref(), &readers, member, target)
+        })
     }
 
     /// Who made the record `at`: whoever its first version names. `None` where none does.
@@ -522,6 +585,14 @@ impl Core {
 /// Whether `member` reads `target`: every one of `readers`, the records holding it that say who
 /// reads them ([`Core::readers_of`]), names them, and `reads`, the host's grants, let them (none
 /// given: every member reads every resource of the workspace).
+/// A point in a document's history: just before the change `change`, or just after it.
+#[derive(Clone, Copy)]
+struct Around<'a> {
+    doc: &'a str,
+    change: &'a str,
+    after: bool,
+}
+
 fn member_reads(
     reads: Option<&Reads>,
     readers: &[Vec<Actor>],

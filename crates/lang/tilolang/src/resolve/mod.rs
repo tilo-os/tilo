@@ -502,6 +502,7 @@ impl Env {
             id: f.id.clone(),
             ty: Ty::parse_meta(&f.ty, &app).unwrap_or(Ty::Error),
             merge: f.merge,
+            secret: f.secret,
             doc: f.doc.clone(),
             default: f.default.clone(),
         };
@@ -1243,6 +1244,7 @@ impl Resolver<'_> {
                     id: id_of(lock, &format!("{name}.{}.{}", v.name.name, p.name.name)),
                     ty,
                     merge: MergeKind::Register,
+                    secret: false,
                     doc: String::new(),
                     default: None,
                 });
@@ -1349,6 +1351,7 @@ impl Resolver<'_> {
             id: id_of(lock, &format!("{owner}.{}", f.name.name)),
             ty,
             merge,
+            secret: f.secret,
             doc: f.doc.join("\n"),
             default,
         }
@@ -2609,6 +2612,24 @@ impl Resolver<'_> {
                         "`did:` says what the action did, after who did it: `did: \"moved this\"`",
                     ),
                     Ok((said, choice)) => {
+                        let mut all = vec![said.as_str()];
+                        all.extend(choice.iter().flat_map(|c| c.cases.iter().map(|(_, w)| w.as_str())));
+                        let reads: Vec<String> =
+                            all.iter().flat_map(|words| text::field_reads(words)).collect();
+                        for read in reads {
+                            let (declared, secret) = self
+                                .env
+                                .types
+                                .iter()
+                                .flat_map(|t| t.fields.iter())
+                                .filter(|f| f.name == read)
+                                .fold((false, false), |(_, secret), f| (true, secret || f.secret));
+                            if !declared {
+                                self.err("E090", opt.value.span, format!("`did:` reads `{read}.before` or `{read}.after`, a field of the record the action changes, and no type declares a field `{read}`"));
+                            } else if secret {
+                                self.err("E090", opt.value.span, format!("`{read}` is secret: history says that it changed and never its value, so `did:` cannot read it"));
+                            }
+                        }
                         out.did = Some(said);
                         out.did_by = choice;
                     }

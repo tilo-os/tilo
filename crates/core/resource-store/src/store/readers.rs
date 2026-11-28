@@ -100,10 +100,14 @@ impl Store {
     }
 
     /// The people the reader set `readers` (as the store names a document's) is, sorted, when it
-    /// is not every member: those it names, and the holders of the role it names.
+    /// is not every member: those it names, the holders of the role it names, or the one person
+    /// a set kept on its device names.
     fn people_reading(&self, readers: &str) -> Option<Vec<String>> {
         if readers == collab_types::EVERY_MEMBER {
             return None;
+        }
+        if let Some(person) = readers.strip_prefix(collab_types::DEVICE_READERS) {
+            return Some(vec![person.to_owned()]);
         }
         let (role, people) = match readers.strip_prefix(collab_types::ROLE_READERS) {
             Some(rest) => rest

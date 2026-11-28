@@ -1289,6 +1289,17 @@ impl Pane {
     /// app's own words, with `translation` (a `locales/<language>.ftl`) over its source words,
     /// read by the one reader History says every app's versions with.
     pub fn history(&self, at: &ResourceRef, locale: &str, translation: &str) -> Vec<String> {
+        self.history_as(&self.me, at, locale, translation)
+    }
+
+    /// [`Self::history`] as `reader` reads it: the values of each change they may see.
+    pub fn history_as(
+        &self,
+        reader: &Actor,
+        at: &ResourceRef,
+        locale: &str,
+        translation: &str,
+    ) -> Vec<String> {
         let (app, source) = &self.app;
         let words =
             tilolang_tilo::versions::Catalogue::new(locale, &[translation, source.as_str()]);
@@ -1300,7 +1311,9 @@ impl Pane {
         let mut history = serde_json::json!({
             "versions": versions
                 .iter()
-                .map(|version| tilolang_tilo::versions::version_entry(&self.host, app, version))
+                .map(|version| {
+                    tilolang_tilo::versions::version_entry(&self.host, app, version, Some(reader))
+                })
                 .collect::<Vec<_>>(),
         });
         tilolang_tilo::versions::say_versions(&mut history, &[], &words, locale);

@@ -477,7 +477,8 @@ impl Opened {
         Ok(versions
             .into_iter()
             .map(|(app, version)| {
-                let mut entry = tilolang_tilo::versions::version_entry(&self.host, &app, &version);
+                let mut entry =
+                    tilolang_tilo::versions::version_entry(&self.host, &app, &version, None);
                 let readers = store
                     .type_of_id(&version.resource)
                     .and_then(|ty| ResourceRef::parse_id(&version.resource, ty))

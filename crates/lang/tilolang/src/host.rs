@@ -1012,6 +1012,7 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         name: name.to_string(),
         ty: ty.to_string(),
         merge: MergeKind::Register,
+        secret: false,
         doc: doc.to_string(),
         default: None,
     }
@@ -1023,6 +1024,7 @@ fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> 
         name: name.to_string(),
         ty: ty.to_string(),
         merge,
+        secret: false,
         doc: doc.to_string(),
         default: None,
     }
@@ -1200,6 +1202,7 @@ pub fn host_meta() -> PackageMeta {
                         name: (*name).to_string(),
                         ty: (*ty).to_string(),
                         merge: MergeKind::Register,
+                        secret: false,
                         doc: (*doc).to_string(),
                         default: None,
                     })
