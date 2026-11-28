@@ -36,6 +36,8 @@ type ScannedPage {
     text: Text = ""
     /// Where it stands in the document.
     order: Int = 0
+    /// The text is being read off the page now, and the page says so while it is.
+    reading: Bool = false
 }
 
 /// The scanned document in progress: the person's own, so it never reaches anyone else.
@@ -69,6 +71,9 @@ type PrintDocument (readers: author) {
     /// The page of the document the form previews, counted from 1, and how many the file holds.
     preview_page: Int = 1
     preview_pages: Int = 1
+    /// Where the form's picture of the document stands: `preparing` while the device draws its
+    /// first page, `unavailable` when it cannot, and empty once it is there.
+    preview_state: Text = ""
     /// Another app handed it over to print: the person's own windows show the print form until
     /// they choose a place themselves. Their document, so no one else's window moves.
     handed: Bool = false
@@ -385,7 +390,8 @@ action absorb_document(p: PrintCentre, file: File) {
     doc.file = .some(file)
     doc.name = file.name
     doc.trouble = ""
-    doc.preview = preview_of_file(file)
+    doc.preview = .none
+    doc.preview_state = "preparing"
     doc.preview_page = 1
     doc.preview_pages = page_count(file)
     if doc.queue == "" {
@@ -395,6 +401,25 @@ action absorb_document(p: PrintCentre, file: File) {
         }
     }
     ask_options(p)
+}
+
+/// Draws the first page of the chosen document for the form: the device takes a moment, and the
+/// form says what it is doing while it waits.
+action prepare_preview(p: PrintCentre) uses image {
+    let doc = document_of(p)
+    if doc.preview_state != "preparing" {
+        return
+    }
+    if let file = doc.file {
+        if let picture = preview_of_file(file) {
+            doc.preview = .some(picture)
+            doc.preview_state = ""
+        } else {
+            doc.preview_state = "unavailable"
+        }
+    } else {
+        doc.preview_state = ""
+    }
 }
 
 /// Takes a document another app hands over as what this window prints, and shows the print
@@ -606,10 +631,17 @@ action move_page(p: PrintCentre, page: ScannedPage, order: Int, swapped: Int = p
     }
 }
 
-/// Reads the text off a scanned page, in the person's language.
+/// Starts reading the text off a scanned page in the person's language: the page says it is
+/// reading until it has it.
+action start_read(page: ScannedPage) {
+    page.reading = true
+}
+
+/// Reads the text off a scanned page in the person's language.
 action recognize(page: ScannedPage) {
     let p = root PrintCentre
     let language = p.defaults.ocr_language
+    page.reading = false
     match engine.call("ocr", json.encode(OcrAsk(url: page.file.url, language: language))) {
         .ok(text) => match json.decode<OcrAnswer>(text) {
             .ok(answer) => {
@@ -1032,9 +1064,17 @@ view history_pane(printers: device.Printers, cancel: State<Text>) {
     }
 }
 
+/// How many of this computer's printers answered the latest check.
+fn responding(printers: device.Printers) -> Int {
+    printers.queues.count(queue -> queue.reachable)
+}
+
 /// What each printer says about itself: whether it answers, why it stands as it does, its paper
 /// sizes and its supplies.
 view diagnostics_pane(printers: device.Printers, scanners: device.Scanners) {
+    ui.StatGroup {
+        ui.StatTile("Printers responding", "{responding(printers)} of {printers.queues.len()}")
+    }
     for queue in printers.queues {
         ui.Section(queue.name) {
             ui.PropertyList {
@@ -1048,6 +1088,29 @@ view diagnostics_pane(printers: device.Printers, scanners: device.Scanners) {
                     ui.Property("Paper", media)
                 }
                 ui.Property("Paper sizes", queue.media.join(", "))
+            }
+            if not queue.accepting {
+                ui.Text("Not accepting new documents", role: .caption, secondary: true)
+            }
+            if queue.reachable {
+                ui.Text(
+                    "The printer answered the latest status check.",
+                    role: .caption,
+                    secondary: true,
+                )
+            } else {
+                ui.Text(
+                    "Live details are unavailable. The printer may be asleep or disconnected.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            if queue.supplies.is_empty() {
+                ui.Text(
+                    "This printer does not report supply levels.",
+                    role: .caption,
+                    secondary: true,
+                )
             }
             if not queue.supplies.is_empty() {
                 ui.PropertyList {
@@ -1166,7 +1229,10 @@ view print_pane(p: PrintCentre, doc: PrintDocument, printers: device.Printers) {
             )
         }
     }
-    if let preview = doc.preview {
+    if doc.preview_state == "preparing" {
+        ui.StatusLine("Preparing document preview", status: .active)
+        every 1s: prepare_preview(p)
+    } else if let preview = doc.preview {
         ui.Image(src: preview.url, alt: doc.name, fit: .contain, aspect: 0.7727)
         ui.Text("The original document is unchanged.", role: .caption, secondary: true)
         if doc.preview_pages > 1 {
@@ -1184,7 +1250,7 @@ view print_pane(p: PrintCentre, doc: PrintDocument, printers: device.Printers) {
                 )
             }
         }
-    } else if doc.file != .none {
+    } else if doc.preview_state == "unavailable" {
         ui.Text("Preview unavailable", role: .caption, secondary: true)
     }
     let failed = doc.failed
@@ -1492,7 +1558,11 @@ view scanned_page(
                 on press: move_page(p, page, page.order + 1)
             }
             ui.Button("Read its text", icon: .file_text) {
-                on press: recognize(page)
+                on press: start_read(page)
+            }
+            if page.reading {
+                ui.StatusLine("Updating recognized text…", status: .active)
+                every 1s: recognize(page)
             }
             if page.text != "" {
                 ui.Button("Copy the text", icon: .copy) {

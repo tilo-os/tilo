@@ -465,6 +465,7 @@ d-ekbl57nl-filter-preview_page = Vorschaueseite
 d-ekbl57nl-filter-preview_pages = Vorschaueseiten
 
 d-m2njqkkd = Fenster
+    .w-updating-recognized-text = Erkannter Text wird aktualisiert…
     .w-the-printer-service-refused-that = Der Druckdienst hat das abgelehnt
     .w-looking-for-printers-on-your-network = Drucker werden in deinem Netzwerk gesucht.
     .w-printers = Drucker
@@ -561,6 +562,12 @@ d-homrycev = Druckerkarte
     .w-remove = Entfernen
 
 d-j5jydnqh = Diagnosebereich
+    .w-printers-responding = Antwortende Drucker
+    .w-of = { $responding } von { $len }
+    .w-not-accepting-new-documents = Nimmt keine neuen Dokumente an
+    .w-the-printer-answered-the-latest-status = Der Drucker hat die letzte Statusprüfung beantwortet.
+    .w-this-printer-does-not-report-supply = Dieser Drucker meldet keine Füllstände.
+    .w-live-details-are-unavailable-the-printer = Live-Details sind nicht verfügbar. Der Drucker schläft vielleicht oder ist getrennt.
     .w-state = Stand
     .w-accepting-jobs = Nimmt Aufträge an
     .w-yes = Yes
@@ -589,6 +596,7 @@ d-dxj763u4 = Druckformular
     .w-printer = Drucker
 
 d-lua6ahaf = Druckbereich
+    .w-preparing-document-preview = Dokumentvorschau wird vorbereitet
     .w-print-a-document = Ein Dokument drucken
     .w-choose-a-document = Ein Dokument wählen
     .w-the-original-document-is-unchanged = Das Originaldokument bleibt unverändert.
@@ -622,11 +630,16 @@ d-4xkzxgsi = Neues gescanntes Dokument
     .w-wait-for-the-page-to-finish = Warten Sie, bis die Seite gescannt ist, bevor Sie ein neues Dokument beginnen
 
 d-jpc2hzw6 = Seite zuschneiden
-    .doc = Schneidet eine gescannte Seite auf den Teil zu, den die Person behalten hat, in Bruchteilen des Bildes, das ein Betrachter zeigt.
+    .doc = Schneidet eine gescannte Seite auf den Teil zu, den die Person behalten hat, in Bruchteilen des Bildes, das ein Betrachter zeigt.    .w-updating-recognized-text = Erkannter Text wird aktualisiert…
+
 d-jpc2hzw6-left = Links
+
 d-jpc2hzw6-top = Oben
+
 d-jpc2hzw6-right = Rechts
+
 d-jpc2hzw6-bottom = Unten
+
 d-jpc2hzw6-page = Seite
 
 d-mpdrfthh = Neues gescanntes Dokument~present
@@ -634,3 +647,17 @@ d-mpdrfthh = Neues gescanntes Dokument~present
 d-uoenfw2s = Vorherige Seite~present
 
 d-lckc6ixw = Nächste Seite~present
+
+d-wbpo7pjv = Liest
+    .doc = Der Text wird jetzt von der Seite gelesen, und die Seite sagt es, solange es dauert.
+
+d-7u3c3eun-filter-reading = Liest
+
+d-a4iiyvfq = Vorschaustand
+    .doc = Wo das Bild des Dokuments im Formular steht: `preparing`, während das Gerät die erste Seite zeichnet, `unavailable`, wenn es sie nicht zeichnen kann, und leer, sobald sie da ist.
+
+d-ztplqc5x = Vorschau vorbereiten
+    .doc = Zeichnet die erste Seite des gewählten Dokuments für das Formular: Das Gerät braucht einen Moment, und das Formular sagt, was es tut, solange es wartet.
+
+d-st6yqac6 = Lesen beginnen
+    .doc = Beginnt, den Text einer gescannten Seite in der Sprache der Person zu lesen: Die Seite sagt, dass sie liest, bis sie ihn hat.

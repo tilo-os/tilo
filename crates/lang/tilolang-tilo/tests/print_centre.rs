@@ -380,6 +380,25 @@ fn contains(view: &ViewInstance, wanted: &str) -> bool {
     shown(view).iter().any(|text| text.contains(wanted))
 }
 
+/// The window's clock strikes once, as its timer does when the work it waits on is done.
+fn tick(window: &mut ViewInstance) {
+    let keys: Vec<String> = window
+        .tree()
+        .of_kind("ui.Timer")
+        .into_iter()
+        .map(|timer| timer.key.clone())
+        .collect();
+    assert!(
+        !keys.is_empty(),
+        "the window holds a timer: {:?}",
+        shown(window)
+    );
+    for key in keys {
+        window.fire(&key, "tick").expect("the clock strikes");
+    }
+    window.poll_patches().expect("the window runs again");
+}
+
 /// Every word the page shows.
 fn shown(view: &ViewInstance) -> Vec<String> {
     crate::fixtures::texts_props(
@@ -434,6 +453,11 @@ fn diagnostics_names_how_each_printer_stands_and_its_scanners() {
         "Reachable",
         "Paused by a person",
         "Epson Perfection",
+        "Printers responding",
+        "2 of 2",
+        "The printer answered the latest status check.",
+        "Not accepting new documents",
+        "This printer does not report supply levels.",
     ] {
         assert!(
             contains(&window, wanted),
@@ -628,6 +652,27 @@ fn a_page_is_turned_read_copied_and_removed() {
     for wanted in ["Turn", "Read its text", "Remove", "Save this page"] {
         assert!(has(&window, wanted), "{wanted} shows: {:?}", shown(&window));
     }
+    // Reading the page's text is a step the page says it is doing until the text is there.
+    let read = buttons(&window, "Read its text").first().map_or_else(
+        || panic!("the page's read: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window
+        .fire(&read, "press")
+        .expect("the press starts reading");
+    window.poll_patches().expect("the window runs again");
+    assert!(
+        contains(&window, "Updating recognized text…"),
+        "the page says it is reading: {:?}",
+        shown(&window)
+    );
+    tick(&mut window);
+    let window = app.window();
+    assert!(
+        contains(&window, "Hello from the page"),
+        "the text the engine read is shown: {:?}",
+        shown(&window)
+    );
 }
 
 #[test]
@@ -944,6 +989,13 @@ fn a_long_documents_pages_are_stepped_through_in_the_form() {
     );
     let mut window = app.window();
     pick(&mut window, "place", Value::text("print"));
+    assert!(
+        contains(&window, "Preparing document preview"),
+        "the form says the preview is being drawn: {:?}",
+        shown(&window)
+    );
+    tick(&mut window);
+    let mut window = app.window();
     assert!(contains(&window, "Page 1 of 3"), "{:?}", shown(&window));
     assert!(
         contains(&window, "The original document is unchanged."),
