@@ -16,6 +16,7 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+use tilo_peer_state::fixture::member_cert_with;
 #[path = "directory/sheet.rs"]
 mod sheet;
 
@@ -47,6 +48,7 @@ use crate::common::directory::{
 use crate::common::held::{certified, this_computer_with_an_identity};
 use crate::common::publisher;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
+use tilo_user_identity::DeviceCapabilities;
 
 /// The app the lounge's workspace talks in, and the record its people wrote there before this
 /// computer joined: the chat's own workspace record.
@@ -212,12 +214,7 @@ fn joining_site(entries: Vec<DirectoryEntry>) -> Responder {
     let host = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
     let page = serde_json::to_string(&DirectoryPage {
         host: Some(tilo_server_protocol::web::PageHost {
-            server_cert: certified(
-                &host,
-                &host,
-                "The site",
-                tilo_user_identity::DeviceCapabilities::member(),
-            ),
+            server_cert: certified(&host, &host, "The site", DeviceCapabilities::member()),
             address: None,
             origin: None,
         }),
@@ -264,17 +261,7 @@ fn a_device(
         .expect("this computer's identity directories");
     tilo_device_identity::persist::write_device_key(&paths.device_privkey, device)
         .expect("this computer's device key");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, person).expect("a certified device");
+    let cert = member_cert_with(person, device, label, tilo_clock::unix_now_ns(), None);
     tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &person.verifying_key().to_bytes(),
@@ -847,14 +834,14 @@ impl LoungeHost {
             &owner_key,
             &host_key,
             "The lounge's host",
-            tilo_user_identity::DeviceCapabilities::member(),
+            DeviceCapabilities::member(),
         );
         let page_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let page_device = certified(
             &owner_key,
             &page_key,
             "The lounge's page",
-            tilo_user_identity::DeviceCapabilities::member(),
+            DeviceCapabilities::member(),
         );
         let (server, workspaces, workspace) =
             block_on_within(runtime, "the lounge's host to start", async {

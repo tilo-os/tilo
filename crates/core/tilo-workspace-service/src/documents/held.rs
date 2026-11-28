@@ -315,11 +315,12 @@ mod tests {
         DeviceDocuments as _, DeviceWrites as _, DocumentRead,
     };
     use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+    use tilo_user_identity::{DeviceCert, RevocationList};
     use web_time::{Duration, SystemTime};
 
     use super::HeldDocuments;
 
+    use tilo_peer_state::fixture::member_cert;
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
     fn now() -> SystemTime {
@@ -331,17 +332,7 @@ mod tests {
     /// The `n`th device of the person whose root key is `root`, certified by it.
     fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
         let key = SigningKey::from_bytes(&[n; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("device-{n}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, root).expect("the root certifies its device");
+        let cert = member_cert(root, &key, &format!("device-{n}"));
         (key, cert)
     }
 

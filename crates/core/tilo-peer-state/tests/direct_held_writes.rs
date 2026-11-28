@@ -5,8 +5,7 @@
 //! for it on the link.
 
 use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened, opened_heads, sealed_write,
-    write_sealed,
+    addr, localhost_endpoint, members_keys, opened, opened_heads, sealed_write, write_sealed,
 };
 use key_group::ContentKeys;
 
@@ -27,6 +26,7 @@ use tilo_peer_state::store::{Appetite, Frame, Store};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::{certify, person};
 const WORKSPACE: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -46,8 +46,6 @@ fn write(
     })
     .unwrap()
 }
-
-use tilo_peer_state::fixture::person;
 
 fn value(peer: &StatePeer, keys: &ContentKeys, key: &str) -> Option<String> {
     let record = AutoCommit::load(&opened(peer, keys, (APP, RECORD))?).ok()?;
@@ -130,9 +128,9 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     let root = SigningKey::from_bytes(&[1; 32]);
     let (host_key, server_cert) =
         crate::common::device_with(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3);
+    let (b_key, b_cert) = certify(&root, 3, DeviceCapabilities::member());
     // A third member, whose writes the host passes on to the second.
-    let (c_key, c_cert) = device(&root, 4);
+    let (c_key, c_cert) = certify(&root, 4, DeviceCapabilities::member());
     let now = SystemTime::now();
     let devices = vec![server_cert.clone(), b_cert.clone(), c_cert.clone()];
     let mut govern = StatePeer::new(
@@ -287,7 +285,7 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let (host_key, server_cert) =
         crate::common::device_with(&root, 2, DeviceCapabilities::member());
-    let (b_key, b_cert) = device(&root, 3);
+    let (b_key, b_cert) = certify(&root, 3, DeviceCapabilities::member());
     let now = SystemTime::now();
     let devices = vec![server_cert.clone(), b_cert.clone()];
     let mut govern = StatePeer::new(

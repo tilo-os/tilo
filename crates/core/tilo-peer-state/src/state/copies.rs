@@ -485,7 +485,6 @@ impl PeerWorkspaceMut<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::owner::testing::now;
     use crate::state::test_desktops::{cert_of, desktops, sync};
 
     /// The owners take a holder out: its row says where its copy stood no
@@ -504,7 +503,7 @@ mod tests {
                 tilo_workspace_join::sign_transport_hint("iroh", at, cert.clone(), [1; 32], key)
                     .unwrap();
             left.governance_mut()
-                .author_keeping_device(&hint, &left_key, now())
+                .author_keeping_device(&hint, &left_key, crate::fixture::at())
                 .unwrap();
         }
         let away = HeldCopy {
@@ -512,12 +511,12 @@ mod tests {
             ..HeldCopy::default()
         };
         left.workspace_mut()
-            .report_copy(&left_cert, &away, now())
+            .report_copy(&left_cert, &away, crate::fixture::at())
             .unwrap();
         sync(&left, &mut right);
         right
             .workspace_mut()
-            .report_copy(&right_cert, &HeldCopy::default(), now())
+            .report_copy(&right_cert, &HeldCopy::default(), crate::fixture::at())
             .unwrap();
         sync(&right, &mut left);
         let status = left.workspace().copies();
@@ -525,7 +524,7 @@ mod tests {
 
         assert!(
             left.governance_mut()
-                .author_keeping_device_removed(&right_device, &left_key, now())
+                .author_keeping_device_removed(&right_device, &left_key, crate::fixture::at())
                 .unwrap()
         );
         sync(&left, &mut right);
@@ -574,7 +573,7 @@ mod tests {
                 tilo_workspace_join::sign_transport_hint("iroh", at, cert.clone(), [1; 32], key)
                     .unwrap();
             left.governance_mut()
-                .author_keeping_device(&hint, &left_key, now())
+                .author_keeping_device(&hint, &left_key, crate::fixture::at())
                 .unwrap();
         }
         // The address each fixture signs names a store, and the workspace
@@ -585,7 +584,7 @@ mod tests {
         };
         assert!(
             left.governance_mut()
-                .author_copy_policy(Some(wanted), &left_key, now())
+                .author_copy_policy(Some(wanted), &left_key, crate::fixture::at())
                 .unwrap()
         );
 
@@ -606,7 +605,7 @@ mod tests {
         );
 
         left.workspace_mut()
-            .report_copy(&left_cert, &HeldCopy::default(), now())
+            .report_copy(&left_cert, &HeldCopy::default(), crate::fixture::at())
             .unwrap();
         let status = left.workspace().copies();
         assert!(
@@ -636,7 +635,7 @@ mod tests {
         sync(&left, &mut right);
         right
             .workspace_mut()
-            .report_copy(&right_cert, &HeldCopy::default(), now())
+            .report_copy(&right_cert, &HeldCopy::default(), crate::fixture::at())
             .unwrap();
         sync(&right, &mut left);
         let status = left.workspace().copies();
@@ -666,7 +665,7 @@ mod tests {
         };
         assert!(
             left.governance_mut()
-                .author_copy_policy(Some(wanted), &left_key, now())
+                .author_copy_policy(Some(wanted), &left_key, crate::fixture::at())
                 .unwrap()
         );
         let went_away = 7;
@@ -676,13 +675,13 @@ mod tests {
         };
         assert!(
             left.workspace_mut()
-                .report_copy(&left_cert, &away, now())
+                .report_copy(&left_cert, &away, crate::fixture::at())
                 .unwrap()
         );
         assert!(
             !left
                 .workspace_mut()
-                .report_copy(&left_cert, &away, now())
+                .report_copy(&left_cert, &away, crate::fixture::at())
                 .unwrap(),
             "saying the same again changes nothing"
         );
@@ -693,7 +692,7 @@ mod tests {
         };
         right
             .workspace_mut()
-            .report_copy(&right_cert, &catching_up, now())
+            .report_copy(&right_cert, &catching_up, crate::fixture::at())
             .unwrap();
         sync(&right, &mut left);
 
@@ -725,7 +724,7 @@ mod tests {
 
         for (peer, cert) in [(&mut left, &left_cert), (&mut right, &right_cert)] {
             peer.workspace_mut()
-                .report_copy(cert, &HeldCopy::default(), now())
+                .report_copy(cert, &HeldCopy::default(), crate::fixture::at())
                 .unwrap();
         }
         sync(&left, &mut right);

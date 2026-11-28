@@ -15,8 +15,9 @@ use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_automation::Shortcut;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
+use crate::fixture::primary_cert;
 pub mod workspace;
 
 /// The record at `path` as the disk holds it: the index and one file per
@@ -177,7 +178,7 @@ pub fn enroll_into(
     );
     let hint = fixture.hint(endpoint);
     let now = tilo_clock::wall();
-    let now_ns = ns(now).unwrap();
+    let now_ns = crate::fixture::ns(now);
     // One workspace admits more than one device: each asks with an id of its own.
     let mut request_id = [0_u8; 32];
     request_id[..8].copy_from_slice(&certificate.device_public_key[..8]);
@@ -251,25 +252,6 @@ pub fn enroll_into(
         .map_err(|error| error.to_string())?;
     Ok(fixture)
 }
-pub fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    certificate_with(root, key, label, DeviceCapabilities::primary())
-}
-
-/// `key`'s ordinary member certificate for `root`'s person.
-pub fn member_certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    certificate_with(root, key, label, DeviceCapabilities::member())
-}
-
-/// `key`'s certificate for `root`'s person, with `capabilities` and no expiry.
-pub fn certificate_with(
-    root: &SigningKey,
-    key: &SigningKey,
-    label: &str,
-    capabilities: DeviceCapabilities,
-) -> DeviceCert {
-    crate::fixture::labelled(root, key, label, capabilities)
-}
-
 pub fn raw_fixture() -> RawFixture {
     raw_fixture_at(tilo_clock::wall())
 }
@@ -313,9 +295,9 @@ fn seeded(now: SystemTime) -> Seeded {
     )
     .unwrap();
     let owner_copy_key = SigningKey::from_bytes(&[61; 32]);
-    let owner_copy = certificate(&SigningKey::from_bytes(&[62; 32]), &owner_copy_key, "Host");
+    let owner_copy = primary_cert(&SigningKey::from_bytes(&[62; 32]), &owner_copy_key, "Host");
     let device_key = member_key();
-    let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
+    let device = primary_cert(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
     let workspace_id = WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
@@ -585,11 +567,6 @@ pub fn pending_id(
 ) -> crate::owner::PendingEnrollmentId {
     crate::owner::PendingEnrollmentId::new(workspace, generation, [0; 32])
 }
-/// # Errors
-/// `now` is before the epoch or beyond `u64` nanoseconds.
-pub fn ns(now: SystemTime) -> Result<u64, String> {
-    crate::owner::enrollment::ns(now)
-}
 /// What a record keeps of one workspace.
 pub struct Stored {
     pub peer: Vec<u8>,
@@ -604,15 +581,6 @@ pub fn stored(storage: &NativeAuthorityStorage, workspace: WorkspaceId) -> Optio
     })
 }
 
-/// The instant these fixtures write at, so every message two peers exchange
-/// carries the same clock.
-#[must_use]
-pub fn now() -> SystemTime {
-    SystemTime::UNIX_EPOCH
-        .checked_add(std::time::Duration::from_secs(2000))
-        .unwrap()
-}
-
 /// `message` arriving from `guest` as a server delta at [`now`].
 pub fn receive(
     peer: &mut StatePeer,
@@ -622,7 +590,7 @@ pub fn receive(
     peer.receive_from(
         TransportOrigin::ServerDelta(guest.device_public_key),
         message,
-        now(),
+        crate::fixture::at(),
     )
     .map(|_| ())
     .map_err(|error| error.to_string())

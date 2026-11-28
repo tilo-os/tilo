@@ -4,7 +4,9 @@ use super::*;
 use crate::join::{Role, verify_connection_redemption};
 use crate::state::DeviceRow;
 use std::collections::BTreeSet;
+use tilo_user_identity::DeviceCapabilities;
 
+use crate::fixture::labelled_with;
 /// `peer`, the owner's copy, with `holder` named among the workspace's
 /// holders by its own signed address: another person's server keeping it.
 fn holding(peer: &mut StatePeer, authority: &SigningKey, holder: (&SigningKey, &DeviceCert)) {
@@ -163,17 +165,14 @@ fn a_further_device_signs_its_own_row_through_a_holder() {
     assert_ne!(member.device_public_key, further.device_public_key);
     let member_root = SigningKey::from_bytes(&[5; 32]);
     let backend_key = SigningKey::from_bytes(&[8; 32]);
-    let mut backend = DeviceCert {
-        user_public_key: member_root.verifying_key().to_bytes(),
-        device_public_key: backend_key.verifying_key().to_bytes(),
-        device_label: "backend".into(),
-        capabilities: DeviceCapabilities::server_key_grant(),
-        issued_at_ns: now_ns.saturating_sub(1),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut backend, &member_root).unwrap();
+    let backend = labelled_with(
+        &member_root,
+        &backend_key,
+        "backend",
+        DeviceCapabilities::server_key_grant(),
+        now_ns.saturating_sub(1),
+        None,
+    );
     let api_key_key = SigningKey::from_bytes(&[9; 32]);
     let mut api_key = tilo_user_identity::prepare_minted_grant(
         &backend,
@@ -448,11 +447,7 @@ fn many_entry_admissions_replay_by_the_entry_their_place_held() {
         let mut device_seed = [0x5a; 32];
         device_seed[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
         let key = SigningKey::from_bytes(&device_seed);
-        let cert = crate::fixture::cert(
-            &root,
-            &key,
-            tilo_user_identity::DeviceCapabilities::member(),
-        );
+        let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
         let op = SignedMembershipOp::signed(
             &cert,
             &key,

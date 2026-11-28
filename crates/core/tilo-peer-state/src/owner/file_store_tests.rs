@@ -19,6 +19,7 @@ use std::{
 use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth, with_observer};
 use tilo_user_identity::DeviceCert;
 
+use crate::fixture::primary_cert;
 fn directory() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
@@ -74,7 +75,7 @@ fn files_ending(path: &Path, suffix: &str) -> BTreeMap<String, Vec<u8>> {
 
 fn device() -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[12; 32]);
-    let certificate = testing::certificate(&SigningKey::from_bytes(&[11; 32]), &key, "A's desktop");
+    let certificate = primary_cert(&SigningKey::from_bytes(&[11; 32]), &key, "A's desktop");
     (key, certificate)
 }
 

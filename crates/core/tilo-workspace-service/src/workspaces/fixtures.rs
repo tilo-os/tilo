@@ -21,6 +21,7 @@ use key_group::{KeyGroup, MemberKey};
 pub use key_group::ContentKeys;
 use tilo_action_policy::Change;
 use tilo_actions::remote::ActionProvider as _;
+use tilo_peer_state::fixture::labelled_with;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -112,17 +113,7 @@ pub fn device_cert(
     } else {
         (1, None)
     };
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns,
-        expires_at_ns,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).expect("a fixture certificate signs");
+    let cert = labelled_with(root, &key, label, capabilities, issued_at_ns, expires_at_ns);
     (key, cert)
 }
 

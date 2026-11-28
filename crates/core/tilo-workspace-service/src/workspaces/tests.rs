@@ -12,6 +12,7 @@ pub(crate) use super::fixtures::{
     device_cert, entry_join, hosting_device, hosting_device_with, restricted_until, restriction,
     signed_pre_admission, test_host,
 };
+use tilo_peer_state::fixture::member_cert;
 
 pub(crate) mod admission_cost;
 mod declared_kinds;
@@ -225,18 +226,7 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
     let page_key = SigningKey::from_bytes(&[9; 32]);
     let page = {
         let root = SigningKey::from_bytes(&[1; 32]);
-        let mut page = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: page_key.verifying_key().to_bytes(),
-            device_label: "browser".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut page, &root).unwrap();
-        page
+        member_cert(&root, &page_key, "browser")
     };
     // The first entry commits the admission and stops there.
     {
@@ -2255,17 +2245,7 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_hosts() {
     // part in that.
     let other_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
     let other_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-    let mut other_cert = tilo_user_identity::DeviceCert {
-        user_public_key: other_root.verifying_key().to_bytes(),
-        device_public_key: other_key.verifying_key().to_bytes(),
-        device_label: "another host".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
+    let other_cert = member_cert(&other_root, &other_key, "another host");
     let other = test_host(dir.path(), &other_key, &other_cert).await;
     let summary = other
         .workspaces()

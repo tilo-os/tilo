@@ -22,9 +22,10 @@ use std::{
 use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::{mpsc, oneshot};
 
+use tilo_peer_state::fixture::{member_cert, primary_cert};
 const STATE: &str = "session.bin";
 /// The seeded document record.
 pub const WRITER: (&str, &str) = (test_document_app::APP_ID, "tab:0000000000000001");
@@ -114,17 +115,7 @@ impl SessionOwner {
             .collect();
         let person = SigningKey::from_bytes(seed[..32].try_into().unwrap());
         let key = SigningKey::from_bytes(seed[32..].try_into().unwrap());
-        let mut authority = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Governing device".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut authority, &person).map_err(|e| e.to_string())?;
+        let authority = primary_cert(&person, &key, "Governing device");
         let workspace = workspace.to_owned();
         let now = tilo_clock::wall();
         let mut peer = StatePeer::new(
@@ -178,18 +169,7 @@ impl SessionOwner {
     /// A second device of this owner's person, certified by them: the same
     /// root and workspace, a different device.
     pub fn second_device(&self) -> DeviceCert {
-        let mut certificate = DeviceCert {
-            user_public_key: self.person.verifying_key().to_bytes(),
-            device_public_key: Self::second_device_key().verifying_key().to_bytes(),
-            device_label: "Second device".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut certificate, &self.person).unwrap();
-        certificate
+        member_cert(&self.person, &Self::second_device_key(), "Second device")
     }
 
     /// The owner `root` last committed.

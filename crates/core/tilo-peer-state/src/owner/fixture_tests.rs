@@ -5,8 +5,9 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_identity::policy_change::epoch;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
+use crate::fixture::labelled;
 pub(crate) struct Fixture {
     pub(crate) directory: tempfile::TempDir,
     pub(crate) owner: DeviceWorkspaces,
@@ -28,6 +29,16 @@ pub(crate) fn member_device_fixture() -> Fixture {
     )
 }
 
+/// `workspace` lets the person `person` govern it.
+fn allows_the_grant(workspace: &mut testing::workspace::TestWorkspace, person: [u8; 32]) {
+    workspace
+        .allow_governance(
+            &hex::encode(person),
+            tilo_action_policy::roles::governance::GRANT,
+        )
+        .unwrap();
+}
+
 /// A device of `root` at `key`, enrolled into the workspace `owner_copy_key`'s
 /// device of the workspace owner's root hosts.
 fn fixture_with(
@@ -40,26 +51,20 @@ fn fixture_with(
     let owner_root = SigningKey::from_bytes(&[91; 32]);
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
-    let certificate = testing::certificate(root, &key, "Host");
+    let primary = DeviceCapabilities::primary();
+    let certificate = labelled(root, &key, "Host", primary.clone());
     let mut owner_copy = testing::workspace::TestWorkspace::empty_interactive(
-        testing::certificate(&owner_root, &owner_copy_key, "Host"),
+        labelled(&owner_root, &owner_copy_key, "Host", primary),
         owner_copy_key,
         testing::WORKSPACE,
     )
     .unwrap();
+    let endpoint_key = SigningKey::from_bytes(&[93; 32]);
     let endpoint = iroh_base::EndpointAddr::new(
-        iroh_base::EndpointId::from_bytes(
-            &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
-        )
-        .unwrap(),
+        iroh_base::EndpointId::from_bytes(&endpoint_key.verifying_key().to_bytes()).unwrap(),
     );
     if administers {
-        owner_copy
-            .allow_governance(
-                &hex::encode(certificate.user_public_key),
-                tilo_action_policy::roles::governance::GRANT,
-            )
-            .unwrap();
+        allows_the_grant(&mut owner_copy, certificate.user_public_key);
     }
     let hint = owner_copy.hint(endpoint);
     let now = SystemTime::now();
@@ -67,7 +72,7 @@ fn fixture_with(
     // same instant so invitations and challenges never lapse mid-test on a
     // slow machine.
     owner_copy.pin_clock(now);
-    let now_ns = testing::ns(now).unwrap();
+    let now_ns = crate::fixture::ns(now);
     let invitation = owner_copy.issue(
         vec![hint.clone()],
         role,

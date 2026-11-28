@@ -13,11 +13,11 @@ use web_time::{Duration, SystemTime};
 use crate::state::{DelegateInactive, MembershipError};
 use crate::{StatePeer, TransportOrigin};
 
+use crate::fixture::ns;
+use crate::fixture::{labelled, labelled_with};
 const ROOT_SEED: [u8; 32] = [1; 32];
 /// The agent every delegation here names.
 const AGENT: &str = "scribe";
-
-use crate::fixture::ns;
 
 const fn no_capabilities() -> DeviceCapabilities {
     DeviceCapabilities::nothing()
@@ -27,7 +27,7 @@ const fn no_capabilities() -> DeviceCapabilities {
 /// issues them (no capabilities).
 fn agent(person: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let cert = crate::fixture::labelled(
+    let cert = labelled(
         person,
         &key,
         &format!("Agent: Scribe {seed}"),
@@ -585,19 +585,14 @@ fn agent_key(
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
     let id = *WorkspaceId::parse(workspace).unwrap().as_uuid().as_bytes();
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("Scribe on device {seed}"),
-        capabilities: DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
-            id, AGENT,
-        )),
-        issued_at_ns: ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
-        expires_at_ns: Some(ns(now.checked_add(Duration::from_secs(3600)).unwrap())),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, person).unwrap();
+    let cert = labelled_with(
+        person,
+        &key,
+        &format!("Scribe on device {seed}"),
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(id, AGENT)),
+        ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
+        Some(ns(now.checked_add(Duration::from_secs(3600)).unwrap())),
+    );
     (key, cert)
 }
 

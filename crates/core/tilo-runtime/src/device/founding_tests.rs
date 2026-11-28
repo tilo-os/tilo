@@ -10,7 +10,9 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 
 use crate::device::services::tests::isolated_root;
+use tilo_user_identity::DeviceCapabilities;
 
+use tilo_peer_state::fixture::member_cert_with;
 /// The person a half-made computer's certificate names.
 const PERSON: [u8; 32] = [0x5a; 32];
 
@@ -33,17 +35,7 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     reset_identity(&keys);
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
     let person = SigningKey::from_bytes(&PERSON);
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Half made".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+    let cert = member_cert_with(&person, &key, "Half made", tilo_clock::unix_now_ns(), None);
     let place = tilo_device_identity::login::Place::here(keys.clone()).unwrap();
     // Filed as the login files it, in the process holding the key; the daemon takes it after.
     crate::device::services::tests::as_the_daemon(|| {
@@ -907,7 +899,7 @@ fn person_server() -> PersonServer {
         user_public_key: root.group_public_key(),
         device_public_key: server_key.verifying_key().to_bytes(),
         device_label: "home-server".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],
@@ -1590,7 +1582,7 @@ fn the_persons_server(
         user_public_key: root.group_public_key(),
         device_public_key: server_key.verifying_key().to_bytes(),
         device_label: "home-server".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        capabilities: DeviceCapabilities::member(),
         issued_at_ns: 1,
         expires_at_ns: None,
         signature: [0; 64],

@@ -21,14 +21,15 @@ use tilo_peer_state::members::MembershipOpCommand;
 use tilo_peer_state::workspace::GovernanceRow;
 use tilo_peer_state::{CopyPolicy, CopyRole, CopyStatus, Missing, Shortfall};
 use tilo_server_protocol::WorkSetting;
-use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::workspaces::WorkspaceSummary;
 
 use crate::keep::common::{
-    Hosted, Linked, RECORDS_APP as APP, TestDevice, TestUser, holds_writes, keys_of, receives,
-    serve_in, serve_on, write_sealed,
+    Hosted, Linked, RECORDS_APP as APP, TestDevice, TestUser, device_endpoint, holds_writes,
+    keys_of, receives, serve_in, serve_on, write_sealed,
 };
 use tilo_server_protocol::WorkspaceId;
+use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::own_device::{Device, Opened, open_in};
 
 /// Where `holder` says `workspace`'s copies stand, once `done` holds of it.
 async fn copies_once(
@@ -533,8 +534,25 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     // workspace on the remaining server as a further device of hers, by the certificate her root
     // signed.
     let laptop_state = tempfile::tempdir().unwrap();
-    let (laptop_service, _laptop_keys) =
-        crate::keep::common::own_service(laptop_state.path(), &laptop).await;
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
+    let Opened {
+        service: laptop_service,
+        keys: _laptop_keys,
+    } = open_in(
+        laptop_state.path(),
+        Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        key_group::VaultKey::new([3; 32]),
+        device_endpoint(&laptop).await,
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| config,
+    )
+    .await
+    .unwrap();
     let own = laptop_service.workspaces().clone();
     tilo_workspace_service::workspaces::person_workspace::found(&own)
         .await

@@ -16,10 +16,12 @@ use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipC
 
 use super::*;
 use crate::test_support::Started;
+use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::workspaces::fixtures::{
     hosting_device, on_issue_change, save_signed, test_host,
 };
 
+use tilo_peer_state::fixture::labelled_with;
 tilo_test_env::scenario! {
     fn a_committed_change_is_a_record_event_only_with_its_entry;
 
@@ -1311,21 +1313,14 @@ fn agent_grant(
 ) -> (tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let workspace = *uuid::Uuid::parse_str(workspace).unwrap().as_bytes();
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "An agent's grant".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::agent_in(workspace, agent),
-        ),
-        issued_at_ns: issued_ns,
-        expires_at_ns: Some(
-            issued_ns.saturating_add(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS),
-        ),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    let cert = labelled_with(
+        root,
+        &key,
+        "An agent's grant",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(workspace, agent)),
+        issued_ns,
+        Some(issued_ns.saturating_add(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS)),
+    );
     (cert, key)
 }
 

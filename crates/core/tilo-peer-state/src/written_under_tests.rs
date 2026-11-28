@@ -3,6 +3,7 @@
 //! took its writer's standing away since judges it too, unless the change
 //! kept it as written before.
 use super::*;
+use crate::fixture::at;
 
 /// `message`, a write signed by `key`, naming `heads` as the governance it was
 /// written under, as its writer's page drafts it.
@@ -35,7 +36,7 @@ fn arrive(
         TransportOrigin::ServerDelta(from.device_public_key)
     };
     let report = copy
-        .receive_from(origin, message, now())
+        .receive_from(origin, message, at())
         .map_err(|error| error.to_string())?;
     if report.deferred || report.rejected > 0 || !report.dropped.is_empty() || !report.changed {
         return Err(format!("not taken in: {report:?}"));
@@ -64,7 +65,7 @@ fn refused(copy: &mut StatePeer, from: &DeviceCert, message: NeighbourMsg) -> St
 /// decides changes by the surfaces `surfaces` finds, and holds nothing yet.
 fn empty_copy(surfaces: Arc<dyn SurfaceSource>) -> StatePeer {
     let (_, owner) = owner();
-    let mut copy = StatePeer::new(WORKSPACE, owner, vec![], RevocationList::new(), now()).unwrap();
+    let mut copy = StatePeer::new(WORKSPACE, owner, vec![], RevocationList::new(), at()).unwrap();
     copy.set_surfaces(Surfaces::from_source(surfaces));
     copy
 }
@@ -75,7 +76,7 @@ fn take_in(copy: &mut StatePeer, peer: &mut StatePeer, records: bool) {
     let (owner_key, owner) = owner();
     for message in peer
         .publication_mut()
-        .bootstrap_messages(&owner_key, now())
+        .bootstrap_messages(&owner_key, at())
         .unwrap()
     {
         if records || !matches!(message, NeighbourMsg::AppDocument { .. }) {
@@ -141,7 +142,7 @@ fn demotion() -> Demotion {
     assert!(
         owner_copy
             .governance_mut()
-            .set_member_role(guest.user_public_key, Role::Viewer, &owner_key, now())
+            .set_member_role(guest.user_public_key, Role::Viewer, &owner_key, at())
             .unwrap()
     );
     let beside = edit(&before, &key, "beside", 2);
@@ -203,7 +204,7 @@ tilo_test_env::scenario! {
         // next admission: the heads the write names went into the base.
         let mut based = story.owner_copy.clone();
         let (owner_key, owner) = owner();
-        assert!(based.compact_workspace(&owner, &owner_key, now()).unwrap());
+        assert!(based.compact_workspace(&owner, &owner_key, at()).unwrap());
         let mut late = empty_copy(Arc::new(Source(true)));
         take_in(&mut late, &mut based, true);
         let refusal = handed(&mut late, &guest, story.beside.clone()).unwrap_err();
@@ -266,7 +267,7 @@ tilo_test_env::scenario! {
         assert!(
             owner_copy
                 .governance_mut()
-                .transfer_ownership(guest.user_public_key, &owner_key, now())
+                .transfer_ownership(guest.user_public_key, &owner_key, at())
                 .unwrap()
         );
         let again = owners_send(&owner_copy, "again", 11);
@@ -295,9 +296,9 @@ tilo_test_env::scenario! {
         sent(&mut owner_copy, &owner, history.clone()).unwrap();
         owner_copy
             .governance_mut()
-            .transfer_ownership(guest.user_public_key, &owner_key, now())
+            .transfer_ownership(guest.user_public_key, &owner_key, at())
             .unwrap();
-        assert!(owner_copy.compact_workspace(&owner, &owner_key, now()).unwrap());
+        assert!(owner_copy.compact_workspace(&owner, &owner_key, at()).unwrap());
 
         take_in(&mut device, &mut owner_copy.clone(), false);
         assert_eq!(device.owner(), guest.user_public_key);

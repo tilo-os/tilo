@@ -459,6 +459,7 @@ mod display_name_tests {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
+    use crate::fixture::member_cert;
     fn cert(label: &str) -> DeviceCert {
         DeviceCert {
             user_public_key: [1; 32],
@@ -527,17 +528,7 @@ mod display_name_tests {
                 .unwrap();
             let guest_root = SigningKey::from_bytes(&[51; 32]);
             let guest_key = SigningKey::from_bytes(&[52; 32]);
-            let mut guest_cert = DeviceCert {
-                user_public_key: guest_root.verifying_key().to_bytes(),
-                device_public_key: guest_key.verifying_key().to_bytes(),
-                device_label: "Gina Guest".into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-                issuer: None,
-            };
-            sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+            let guest_cert = member_cert(&guest_root, &guest_key, "Gina Guest");
             let signed = issue_invitation(
                 InviteGrant {
                     workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -697,21 +688,12 @@ mod retention_tests {
     };
     use crate::{NeighbourMsg, StatePeer};
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+    use tilo_user_identity::{DeviceCert, RevocationList};
 
+    use crate::fixture::member_cert;
     fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
         let key = SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("guest-{seed}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, root).unwrap();
+        let cert = member_cert(root, &key, &format!("guest-{seed}"));
         (key, cert)
     }
 

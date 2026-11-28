@@ -6013,26 +6013,16 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
-        sign_device_cert, sign_revocation_entry,
+        DeviceCert, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
     };
 
+    use crate::fixture::member_cert;
     const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
     /// A member device `n` certified by `root`.
     fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
         let key = SigningKey::from_bytes(&[n; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("device-{n}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, root).unwrap();
+        let cert = member_cert(root, &key, &format!("device-{n}"));
         (key, cert)
     }
 

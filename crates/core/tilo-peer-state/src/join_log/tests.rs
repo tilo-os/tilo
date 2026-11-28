@@ -5,12 +5,9 @@ use crate::join::{
     sign_membership_proof,
 };
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{
-    DeviceCapabilities, EndpointDelegation, RevocationList, sign_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, EndpointDelegation, RevocationList};
 
-use crate::fixture::ns;
-
+use crate::fixture::{labelled_with, ns};
 fn guest() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[41; 32]);
     let key = SigningKey::from_bytes(&[42; 32]);
@@ -454,17 +451,14 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     // A key made to act for her joins too, saying what the key goes by, as
     // the API hands it over: it names the key, never Ada.
     let backend_key = SigningKey::from_bytes(&[53; 32]);
-    let mut backend = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: backend_key.verifying_key().to_bytes(),
-        device_label: "Ada's backend".into(),
-        capabilities: DeviceCapabilities::server_key_grant(),
-        issued_at_ns: 2,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut backend, &root).unwrap();
+    let backend = labelled_with(
+        &root,
+        &backend_key,
+        "Ada's backend",
+        DeviceCapabilities::server_key_grant(),
+        2,
+        None,
+    );
     let again = Listed {
         peer: (&joined_ada).into(),
         host: &server_cert,

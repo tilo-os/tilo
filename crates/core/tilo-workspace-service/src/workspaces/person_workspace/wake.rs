@@ -476,22 +476,12 @@ mod tests {
     use super::*;
     use tilo_resource::AppNamed;
     use tilo_resource::Replica;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+    use tilo_user_identity::DeviceCert;
 
+    use tilo_peer_state::fixture::member_cert;
     fn device(root: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> DeviceCert {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs");
-        cert
+        member_cert(root, &key, label)
     }
 
     fn route(mac: u8, subnet: &str, magic_packet: bool) -> WakeRoute {

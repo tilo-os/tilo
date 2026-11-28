@@ -13,26 +13,23 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_service::service::{ServiceConfig, ServiceIdentity, WorkspaceService};
 
+use tilo_peer_state::fixture::labelled_with;
 fn certified(root: &SigningKey, key: &SigningKey, label: &str, primary: bool) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: if primary {
+    labelled_with(
+        root,
+        key,
+        label,
+        if primary {
             DeviceCapabilities::primary()
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+        tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
+        None,
+    )
 }
 
 async fn endpoint(key: &SigningKey) -> Endpoint {

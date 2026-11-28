@@ -2,9 +2,7 @@
 //! the ended device is refused and sent nothing more, and the others keep
 //! receiving what the workspace writes.
 
-use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened, opened_heads, write_sealed,
-};
+use crate::common::{addr, localhost_endpoint, members_keys, opened, opened_heads, write_sealed};
 use key_group::ContentKeys;
 
 use automerge::transaction::CommitOptions;
@@ -17,9 +15,10 @@ use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Replica, Serving};
 use tilo_peer_state::store::{Appetite, Store};
 use tilo_server_protocol::refusal::Refusal;
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbb0022";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -127,9 +126,9 @@ impl LinkedPair {
     /// it, and wait for each to hold the record.
     async fn started() -> Self {
         let root = SigningKey::from_bytes(&[0x81; 32]);
-        let (host_key, host_cert) = device(&root, 0x82);
-        let (first_key, first_cert) = device(&root, 0x83);
-        let (second_key, second_cert) = device(&root, 0x84);
+        let (host_key, host_cert) = certify(&root, 0x82, DeviceCapabilities::member());
+        let (first_key, first_cert) = certify(&root, 0x83, DeviceCapabilities::member());
+        let (second_key, second_cert) = certify(&root, 0x84, DeviceCapabilities::member());
         let members = vec![host_cert.clone(), first_cert, second_cert];
         let now = SystemTime::now();
         let mut peer = StatePeer::new(

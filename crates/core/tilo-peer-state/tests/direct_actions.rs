@@ -4,7 +4,7 @@
 //! engine authorized, and is refused from the moment the asking device may
 //! no longer act.
 
-use crate::common::{addr, device, device_with, localhost_endpoint, workspace};
+use crate::common::{addr, device_with, localhost_endpoint, workspace};
 use serde_json::Value;
 use tilo_peer_state::join::WorkspaceId;
 
@@ -31,6 +31,8 @@ use tilo_user_identity::{
 use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::labelled_with;
+use tilo_peer_state::fixture::{certify, ns};
 const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ELSEWHERE: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
@@ -40,14 +42,12 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// A device `root` delegates to `agent`: its own key, and a certificate that
 /// holds none of the person's capabilities.
 fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    let (key, mut cert) = device(root, n);
+    let (key, mut cert) = certify(root, n, DeviceCapabilities::member());
     cert.device_label = format!("Agent: Scribe {n}");
     cert.capabilities = DeviceCapabilities::nothing();
     sign_device_cert(&mut cert, root).unwrap();
     (key, cert)
 }
-
-use tilo_peer_state::fixture::ns;
 
 /// The moment this test reads, the clock the engines read with it: a test
 /// that holds the wall clock holds both sides of every exchange.
@@ -221,8 +221,8 @@ fn refusal(error: &ActionCallError) -> &str {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_action_reaches_the_device_it_names_and_is_answered() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -290,8 +290,8 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_says_whose_device_answers_its_dispatch() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let engine = Engine::serving(
         Replica::new(workspace(WORKSPACE, &a, &roster)),
@@ -327,8 +327,8 @@ async fn a_device_says_whose_device_answers_its_dispatch() {
 #[tokio::test(flavor = "multi_thread")]
 async fn where_the_asker_serves_rides_the_request_and_is_not_what_it_asks() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -377,8 +377,8 @@ async fn where_the_asker_serves_rides_the_request_and_is_not_what_it_asks() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_that_is_not_the_sender_is_refused() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -393,7 +393,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     // A device of another person the workspace never admitted is only the key it signs with:
     // a visitor, which browses nothing.
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
-    let c = device(&stranger_root, 10);
+    let c = certify(&stranger_root, 10, DeviceCapabilities::member());
     let (c_endpoint, c_action_service) = asking(&c.0).await;
     let stranger = c_action_service.remote(&c_endpoint, &engine.addr(), WORKSPACE);
     let refused = queried(
@@ -442,7 +442,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     // A request naming a third device is not this one's to answer, and is refused at once: one
     // it has no link to, and the stranger above, whose link proves only its key and which the
     // workspace never certified.
-    let unreached = device(&stranger_root, 11);
+    let unreached = certify(&stranger_root, 11, DeviceCapabilities::member());
     for (n, third) in [unreached.1.device_public_key, c.1.device_public_key]
         .into_iter()
         .enumerate()
@@ -498,12 +498,12 @@ async fn a_device_that_is_not_the_sender_is_refused() {
 async fn a_device_is_refused_once_the_workspace_no_longer_admits_it() {
     use tilo_peer_state::fixture::{invitation, redeem};
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let outsider = device(&root, 9);
-    let lost = device(&root, 6);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
+    let outsider = certify(&root, 9, DeviceCapabilities::member());
+    let lost = certify(&root, 6, DeviceCapabilities::member());
     let guest_root = SigningKey::from_bytes(&[4; 32]);
-    let g = device(&guest_root, 5);
+    let g = certify(&guest_root, 5, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone(), lost.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let now = tilo_clock::wall();
@@ -626,7 +626,7 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
     let held = tilo_clock::testing::hold_wall_everywhere(process, tilo_clock::wall());
     let started = tilo_clock::wall();
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
+    let a = certify(&root, 2, DeviceCapabilities::member());
     let helper = agent_device(&root, 4);
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
@@ -740,7 +740,7 @@ fn agent_delegation(root: &SigningKey, device: &[u8; 32], id: &str, at: SystemTi
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
+    let a = certify(&root, 2, DeviceCapabilities::member());
     let helper = agent_device(&root, 4);
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
@@ -803,17 +803,14 @@ async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
 fn agent_key(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[n; 32]);
     let now = tilo_clock::unix_now_ns().saturating_sub(60_000_000_000);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
-        issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = labelled_with(
+        root,
+        &key,
+        &format!("device-{n}"),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        now,
+        Some(now.saturating_add(3_600_000_000_000)),
+    );
     (key, cert)
 }
 
@@ -834,7 +831,7 @@ struct HostWithKeys {
 
 async fn host_with_keys() -> HostWithKeys {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
+    let a = certify(&root, 2, DeviceCapabilities::member());
     let agent = agent_key(&root, 7);
     let server = device_with(
         &root,
@@ -1128,7 +1125,7 @@ async fn a_server_key_acts_as_its_person() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_the_workspace_lists_not_or_retired_is_refused() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
+    let a = certify(&root, 2, DeviceCapabilities::member());
     let retired = agent_device(&root, 5);
     let unknown = agent_device(&root, 6);
     let roster = vec![a.1.clone()];
@@ -1207,8 +1204,8 @@ async fn a_key_the_workspace_lists_not_or_retired_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn changes_spend_their_budget_while_reading_spends_none() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -1343,8 +1340,8 @@ fn claiming_a_read(invocation: InvocationId, action: &str) -> InvokeRequest {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_read_its_provider_describes_spends_nothing_and_a_write_called_a_read_still_spends() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -1410,8 +1407,8 @@ async fn a_read_its_provider_describes_spends_nothing_and_a_write_called_a_read_
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -1537,7 +1534,7 @@ async fn the_entry_decides_a_visitors_calls(remote: &RemoteDevice, nobody: &Call
 #[tokio::test(flavor = "multi_thread")]
 async fn a_visitor_does_what_the_entry_opens_and_no_more_and_not_too_often() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
+    let a = certify(&root, 2, DeviceCapabilities::member());
     let mut peer = workspace(WORKSPACE, &a, std::slice::from_ref(&a.1));
     // The workspace takes people by invitation and keeps their requests.
     peer.governance_mut()
@@ -1642,8 +1639,8 @@ fn addressed_to(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_carries_the_requests_of_the_device_at_its_other_end() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     // A serves its action service on the link it holds; B asks over the other end.
@@ -1675,9 +1672,9 @@ async fn a_link_carries_the_requests_of_the_device_at_its_other_end() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_addressed_to_another_device_is_passed_on() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let c = device(&root, 4);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
+    let c = certify(&root, 4, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone(), c.1.clone()];
     // A answers the requests its devices address to it; C is a page that holds
     // a link to A and answers what reaches it there.
@@ -1728,7 +1725,9 @@ async fn a_request_addressed_to_another_device_is_passed_on() {
     );
 
     // A device no link reaches is refused at once, never left waiting.
-    let unfound = device(&root, 5).1.device_public_key;
+    let unfound = certify(&root, 5, DeviceCapabilities::member())
+        .1
+        .device_public_key;
     let refused = send(
         &b_endpoint,
         engine.addr(),
@@ -1791,8 +1790,8 @@ fn signed_request(request: &InvokeRequest, cert: &DeviceCert, key: &SigningKey) 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_signs_only_its_persons_own_calls_as_theirs() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -1873,8 +1872,8 @@ async fn a_device_signs_only_its_persons_own_calls_as_theirs() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_invocation_runs_as_the_key_that_signed_it() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -2004,8 +2003,8 @@ async fn query_error(remote: &RemoteDevice, caller: &Caller) -> ActionCallError 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_the_provider_abandons_is_refused() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     // A provider that drops the completer of every answer it is asked for.
     let silent = Arc::new(TestProvider::new().answering(|_, _| {
@@ -2121,8 +2120,8 @@ fn scoped(invocation: InvocationId, resource: &str, action: &str) -> InvokeReque
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_with_no_certificate_reaches_only_the_entry() {
     let root = SigningKey::from_bytes(&[5; 32]);
-    let host = device(&root, 6);
-    let asker = device(&root, 7);
+    let host = certify(&root, 6, DeviceCapabilities::member());
+    let asker = certify(&root, 7, DeviceCapabilities::member());
     let host_endpoint = localhost_endpoint(&host.0).await;
     let service = ActionService::new(
         host.0.clone(),
@@ -2223,9 +2222,9 @@ fn naming(mut request: InvokeRequest, acting: &tilo_member_types::Acting) -> Inv
 async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     let started = tilo_clock::wall();
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let c = device(&root, 5);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
+    let c = certify(&root, 5, DeviceCapabilities::member());
     let helper = agent_device(&root, 4);
     let roster = vec![a.1.clone(), b.1.clone(), c.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
@@ -2384,7 +2383,11 @@ async fn unproven_forwards_are_refused(
     );
     assert_eq!(dispatcher.asked().len(), before, "nothing ran");
 
-    let stranger = device(&SigningKey::from_bytes(&[9; 32]), 6);
+    let stranger = certify(
+        &SigningKey::from_bytes(&[9; 32]),
+        6,
+        DeviceCapabilities::member(),
+    );
     let (stranger_endpoint, stranger_service) = asking(&stranger.0).await;
     let from_outside = stranger_service.remote(&stranger_endpoint, &engine.addr(), WORKSPACE);
     let carried = signed_request(&invoke(InvocationId::new()), &helper.1, &helper.0);
@@ -2505,8 +2508,8 @@ impl tilo_actions::remote::ResourceReads for JobReads {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_jobs_read_from_another_device_is_answered_there_and_followed_to_its_end() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
+    let a = certify(&root, 2, DeviceCapabilities::member());
+    let b = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a.1.clone(), b.1.clone()];
     let moved = Arc::new(tokio::sync::watch::Sender::new(0_u64));
     let engine = Engine::serving_provider(

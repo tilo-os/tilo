@@ -4,6 +4,7 @@
 )]
 use super::*;
 
+use tilo_peer_state::fixture::member_cert_with;
 #[path = "host_action_lifecycle_tests.rs"]
 mod lifecycle;
 use std::sync::Arc;
@@ -13,17 +14,13 @@ fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
     // A host names the device its admitted calls are signed as; this one is synthetic.
     let root_key = ed25519_dalek::SigningKey::from_bytes(&[231; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[232; 32]);
-    let mut certificate = tilo_user_identity::DeviceCert {
-        user_public_key: root_key.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "A host's device".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+    let certificate = member_cert_with(
+        &root_key,
+        &device,
+        "A host's device",
+        tilo_clock::unix_now_ns(),
+        None,
+    );
     tilo_invocation_journal::serve_as(certificate, Arc::new(device));
     tilo_invocation_journal::opened(tilo_peer_state::owner::testing::WORKSPACE);
     let (state, _bridge) =

@@ -2,16 +2,17 @@
 //! still stands on the history the base replaced: both keep writing, the copy moves to the base
 //! through the workspace's own sync, and the two converge with every change kept.
 
-use crate::common::{addr, device, localhost_endpoint};
+use crate::common::{addr, localhost_endpoint};
 
 use ed25519_dalek::SigningKey;
 use std::time::Duration;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 use tilo_peer_state::workspace::base::generation;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace, unranked};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 /// How long a lease taken here lasts: far past the test.
 const LEASE: Duration = Duration::from_secs(600);
@@ -92,8 +93,8 @@ async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool 
 )]
 async fn a_copy_moves_to_the_base_the_other_made_with_every_change_kept() {
     let root = SigningKey::from_bytes(&[0x31; 32]);
-    let (a_key, a_cert) = device(&root, 0x32);
-    let (b_key, b_cert) = device(&root, 0x33);
+    let (a_key, a_cert) = certify(&root, 0x32, DeviceCapabilities::member());
+    let (b_key, b_cert) = certify(&root, 0x33, DeviceCapabilities::member());
     let roster = vec![a_cert.clone(), b_cert.clone()];
     let now = SystemTime::now();
 

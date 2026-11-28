@@ -19,10 +19,7 @@ use crate::person_telling;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, ReceiptStatus};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
-    sign_revocation_entry,
-};
+use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry};
 
 use super::told_tests::{ASSISTANT, Setup, agent_of, nobody};
 use crate::fixtures::guest_device;
@@ -31,6 +28,7 @@ use crate::push_addresses::{
     self, AddressList, LIST, Listed, MAX_ADDRESSES, PushEnvironment, PushKind, REGISTER, UNREGISTER,
 };
 
+use tilo_peer_state::fixture::member_cert;
 /// The app the made-up tokens were given to.
 const APP: &str = "so.tilo.chat";
 
@@ -54,18 +52,7 @@ fn registration(n: u8) -> Value {
 /// one.
 fn device_of(root: &SigningKey, label: &str) -> DeviceCert {
     let key = SigningKey::from_bytes(&rand::random());
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+    member_cert(root, &key, label)
 }
 
 /// `root` revokes the key `device`.

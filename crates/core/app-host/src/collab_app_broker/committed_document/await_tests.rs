@@ -15,6 +15,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use tilo_peer_state::fixture::primary_cert;
 const WORKSPACE: &str = "7851d1ef-c4fa-4d23-aa65-5ad85f80a6af";
 
 /// What the owner would answer an Open now.
@@ -115,17 +116,7 @@ impl super::DocumentBytes for Bytes {
 fn context(ownership: &Arc<AtomicBool>) -> NativeDocumentReadContext {
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    let mut certificate = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Reader".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    let certificate = primary_cert(&root, &device, "Reader");
     let ownership = Arc::clone(ownership);
     NativeDocumentReadContext {
         resource_type: None,

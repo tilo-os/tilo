@@ -15,10 +15,10 @@ use tilo_actions::{
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::join::Role;
-use crate::owner::testing::member_certificate as certificate;
-use crate::owner::testing::{now, receive};
+use crate::owner::testing::receive;
 use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 
+use crate::fixture::{at, member_cert};
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -128,13 +128,13 @@ fn workspace_with(role: Role) -> (StatePeer, SigningKey, DeviceCert) {
 /// are any), and a member of another person holding `role` in it.
 fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+    let owner = member_cert(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     let mut peer = StatePeer::new(
         WORKSPACE,
         owner.clone(),
         vec![owner.clone()],
         RevocationList::new(),
-        now(),
+        at(),
     )
     .unwrap();
     let mut body = AutoCommit::new();
@@ -167,20 +167,20 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
         (&owner_key, &owner),
         std::slice::from_ref(&owner),
         vec![crate::fixture::document(APP, RECORD, KIND, body.save())],
-        now(),
+        at(),
     );
 
     let guest_key = SigningKey::from_bytes(&[42; 32]);
-    let guest = certificate(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
-    let signed = crate::fixture::invitation(&peer, &owner_key, now(), |grant| {
+    let guest = member_cert(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
+    let signed = crate::fixture::invitation(&peer, &owner_key, at(), |grant| {
         grant.role = role;
         grant.nonce = [43; 16];
         grant.recipient_user_public_key = Some(guest.user_public_key);
     });
-    let redemption = crate::fixture::redeem(&signed, (&guest_key, &guest), 44, now());
+    let redemption = crate::fixture::redeem(&signed, (&guest_key, &guest), 44, at());
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now())
+            .admit_invited_member(&redemption, &guest_key, at())
             .unwrap()
     );
     peer.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
@@ -335,7 +335,7 @@ fn signed_write_at(
     key: &SigningKey,
     seq: u64,
 ) -> NeighbourMsg {
-    signed_write_stamped(doc, heads, key, seq, now())
+    signed_write_stamped(doc, heads, key, seq, at())
 }
 
 /// [`signed_write_at`] naming `at` as its time: a write's time is whatever
@@ -509,7 +509,7 @@ tilo_test_env::scenario! {
             .decide_relayed_document(
                 TransportOrigin::ServerDelta(guest.device_public_key),
                 &moderation_write,
-                now(),
+                at(),
             )
             .unwrap_err();
         assert!(refused.contains("not granted"), "{refused}");
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
         page.decide_relayed_document(
             TransportOrigin::ServerDelta(guest.device_public_key),
             &later,
-            now(),
+            at(),
         )
         .expect("a page reads the record on past the refused changes");
         receive(&mut peer, &guest, later)
@@ -741,7 +741,7 @@ tilo_test_env::scenario! {
             .receive_from(
                 TransportOrigin::ServerDelta(guest.device_public_key),
                 edited.clone(),
-                now(),
+                at(),
             )
             .unwrap();
         assert!(held.deferred, "kept for later");
@@ -808,7 +808,7 @@ tilo_test_env::scenario! {
             author,
             collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
             collab_types::OpKind::Change,
-            now(),
+            at(),
             2,
         )
         .with_surface(Some([8; 32]));
@@ -868,7 +868,7 @@ tilo_test_env::scenario! {
         const NEWER: [u8; 32] = [8; 32];
         let (mut peer, key, guest) = workspace_with(Role::Editor);
         let owner_key = SigningKey::from_bytes(&[2; 32]);
-        let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+        let owner = member_cert(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
         let release = AppRelease {
             app: APP.into(),
             version: "2.0.0-dev.1".into(),
@@ -882,7 +882,7 @@ tilo_test_env::scenario! {
         };
         let refused = peer
             .clone()
-            .grant_app_records(&guest, APP, &owner_key, now())
+            .grant_app_records(&guest, APP, &owner_key, at())
             .unwrap_err();
         assert!(
             refused.contains("Not allowed"),
@@ -909,7 +909,7 @@ tilo_test_env::scenario! {
             .receive_from(
                 TransportOrigin::ServerDelta(guest.device_public_key),
                 old,
-                now(),
+                at(),
             )
             .unwrap();
         assert!(held.deferred, "held, not refused");
@@ -949,7 +949,7 @@ fn upgraded_write(
         author,
         collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
         collab_types::OpKind::Change,
-        now(),
+        at(),
         2,
     )
     .with_surface(Some(surface));
@@ -996,7 +996,7 @@ fn an_unsigned_draft_under_a_write_its_device_sent_meanwhile_is_numbered_past_it
     };
     envelope.signature = collab_types::Signature::from_bytes([0; 64]);
     let (numbered, again) = peer
-        .sequenced_local_document(&app_id, &document_id, *envelope, now())
+        .sequenced_local_document(&app_id, &document_id, *envelope, at())
         .expect("numbered past, not refused");
     assert!(again, "signed again under its new number");
     assert!(numbered.seq > 1, "past the write sent meanwhile");
@@ -1031,7 +1031,7 @@ fn guest_write_under(
 /// The owner's device, which hosts the test workspace.
 fn owner() -> (SigningKey, DeviceCert) {
     let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+    let owner = member_cert(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
     (owner_key, owner)
 }
 
@@ -1071,7 +1071,7 @@ fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
     let mut owner_copy = peer.clone();
     owner_copy
         .governance_mut()
-        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
+        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, at())
         .unwrap();
     let before = value(&peer);
     let write = guest_write_under(
@@ -1086,7 +1086,7 @@ fn a_write_under_a_role_given_a_moment_ago_waits_for_it_then_applies() {
     peer.receive_from(
         TransportOrigin::ServerDelta(owner.device_public_key),
         owner_copy.workspace_message(),
-        now(),
+        at(),
     )
     .unwrap();
     assert_ne!(value(&peer), before, "taken in once the role arrived");
@@ -1103,7 +1103,7 @@ fn a_write_citing_governance_from_before_its_writers_removal_is_refused() {
     let before_removal = peer.governance().heads();
     let write = guest_write_under(&peer, &guest_key, "edited", &before_removal);
     peer.governance_mut()
-        .remove_member(guest.user_public_key, &owner_key, now())
+        .remove_member(guest.user_public_key, &owner_key, at())
         .unwrap();
     assert!(
         receive(&mut peer, &guest, write).is_err(),
@@ -1123,7 +1123,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
     let mut owner_copy = peer.clone();
     owner_copy
         .governance_mut()
-        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, now())
+        .set_member_role(guest.user_public_key, Role::Editor, &owner_key, at())
         .unwrap();
     let named: Vec<[u8; 4]> = owner_copy
         .governance()
@@ -1158,7 +1158,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
     let mut let_go = Vec::new();
     for write in &writes {
         let report = peer
-            .receive_from(origin, write.clone(), now())
+            .receive_from(origin, write.clone(), at())
             .expect("a write ahead of its role change is not refused");
         for dropped in &report.dropped {
             assert!(
@@ -1177,7 +1177,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
         .receive_from(
             TransportOrigin::ServerDelta(owner.device_public_key),
             owner_copy.workspace_message(),
-            now(),
+            at(),
         )
         .unwrap();
     assert!(
@@ -1186,7 +1186,7 @@ fn writes_ahead_of_their_role_change_are_asked_for_again_once_it_arrives() {
     );
     for dropped in &let_go {
         let replayed = &writes[usize::try_from(dropped.sequence).unwrap() - 1];
-        let report = peer.receive_from(origin, replayed.clone(), now()).unwrap();
+        let report = peer.receive_from(origin, replayed.clone(), at()).unwrap();
         assert!(
             !report.deferred && report.dropped.is_empty(),
             "write {} applies once replayed",
@@ -1236,11 +1236,11 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     let copied_from = peer.clone();
 
     let original = guest_write_at(&peer, &key, comment_on("c1"), comment(), Some("c1"), 1);
-    peer.receive_from_report(origin, original, now())
+    peer.receive_from_report(origin, original, at())
         .expect("the original machine's write");
     let clash = copied_machine_write(&copied_from, &key, comment_on("c2"), "c2", 1);
     let refused = peer
-        .receive_from_report(origin, clash, now())
+        .receive_from_report(origin, clash, at())
         .expect_err("two changes under one number");
     assert!(
         matches!(&refused, crate::AdmissionError::CopiedDevice(copied)
@@ -1257,7 +1257,7 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     // Nothing more under the key, from either machine.
     let next = guest_write_at(&peer, &key, comment_on("c3"), comment(), Some("c3"), 2);
     assert!(matches!(
-        peer.receive_from_report(origin, next.clone(), now()),
+        peer.receive_from_report(origin, next.clone(), at()),
         Err(crate::AdmissionError::CopiedDevice(_))
     ));
     assert!(!value_has_comment(&peer, "c3"));
@@ -1280,10 +1280,10 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
         &mut doc,
         &heads,
         &owner_key,
-        collab_types::next_unordered_document_sequence(now()),
+        collab_types::next_unordered_document_sequence(at()),
     );
     let report = peer
-        .receive_from_report(owner_origin, owners, now())
+        .receive_from_report(owner_origin, owners, at())
         .expect("another device's write is taken");
     assert!(
         matches!(report.primary(), crate::InputDisposition::Accepted(_)),
@@ -1293,9 +1293,9 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     assert!(value_has_comment(&peer, "o1"));
 
     // The person re-adds the copy with a ticket: it is certified under a key of its own.
-    let later = now() + std::time::Duration::from_secs(1);
+    let later = at() + std::time::Duration::from_secs(1);
     let readded_key = SigningKey::from_bytes(&[46; 32]);
-    let mut readded = certificate(&SigningKey::from_bytes(&[41; 32]), &readded_key, "guest");
+    let mut readded = member_cert(&SigningKey::from_bytes(&[41; 32]), &readded_key, "guest");
     readded.issued_at_ns = crate::fixture::ns(later);
     tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32])).unwrap();
     assert!(
@@ -1344,12 +1344,12 @@ fn run_version(peer: &mut StatePeer, release: Option<crate::workspace_membership
         installed_at_ns: 0,
     });
     match installed {
-        Some(_) => peer.grant_app_records(&owner, APP, &owner_key, now()),
-        None => peer.revoke_app_records(&owner, APP, &owner_key, now()),
+        Some(_) => peer.grant_app_records(&owner, APP, &owner_key, at()),
+        None => peer.revoke_app_records(&owner, APP, &owner_key, at()),
     }
     .unwrap();
     let apps = peer.apps().installing(APP, installed);
-    let _report = peer.read_apps(apps, now());
+    let _report = peer.read_apps(apps, at());
 }
 
 /// `message`, naming the surface `surface` instead, signed again by its author.
@@ -1404,7 +1404,7 @@ fn a_change_naming_a_surface_the_workspace_never_ran_waits_through_every_version
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             edit_to(&peer, &key, "x", 1),
-            now(),
+            at(),
         )
         .unwrap();
     assert!(held.deferred, "set aside, not refused");
@@ -1414,7 +1414,7 @@ fn a_change_naming_a_surface_the_workspace_never_ran_waits_through_every_version
         (None, "uninstalling the app"),
     ] {
         run_version(&mut peer, change);
-        let report = peer.redecide_set_aside(now());
+        let report = peer.redecide_set_aside(at());
         assert!(
             report.deferred,
             "{what} lets in no surface the workspace never ran"
@@ -1422,7 +1422,7 @@ fn a_change_naming_a_surface_the_workspace_never_ran_waits_through_every_version
         assert_eq!(value(&peer), "\"seed\"", "{what} merged nothing");
     }
     run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
-    peer.redecide_set_aside(now());
+    peer.redecide_set_aside(at());
     assert_eq!(
         value(&peer),
         "\"x\"",
@@ -1449,19 +1449,19 @@ fn a_change_is_decided_under_the_surface_it_names_and_a_refusal_stays_through_a_
     let refused = naming(refused, NEWER, &key);
     receive(&mut peer, &guest, refused.clone()).expect_err("the newer surface refuses it");
     run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
-    peer.redecide_set_aside(now());
+    peer.redecide_set_aside(at());
     receive(&mut peer, &guest, refused.clone())
         .expect_err("going back a version lets in nothing the newer surface refused");
     assert_eq!(value(&peer), "\"x\"", "going back a version merged nothing");
     // An app the workspace runs no more has its changes set aside: whether one was written
     // while it ran is not something the change says.
     run_version(&mut peer, None);
-    peer.redecide_set_aside(now());
+    peer.redecide_set_aside(at());
     let again = peer
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             refused,
-            now(),
+            at(),
         )
         .expect("set aside, not refused");
     assert!(again.deferred, "uninstalling sets the change aside");
@@ -1502,14 +1502,14 @@ fn two_copies_take_in_the_same_set_aside_changes_whatever_order_they_come_in() {
             .receive_from(
                 TransportOrigin::ServerDelta(guest.device_public_key),
                 message,
-                now(),
+                at(),
             )
             .unwrap();
         assert!(held.deferred, "set aside, not refused");
     }
     for version in versions.iter().skip(1) {
         run_version(&mut early, version.clone());
-        early.redecide_set_aside(now());
+        early.redecide_set_aside(at());
     }
 
     // The late copy has every version change first, then the changes, the other way round.
@@ -1520,7 +1520,7 @@ fn two_copies_take_in_the_same_set_aside_changes_whatever_order_they_come_in() {
         let _ = late.receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             message,
-            now(),
+            at(),
         );
     }
 
@@ -1560,7 +1560,7 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
             .decide(
                 &TreePath::workspace(WORKSPACE).app(APP),
                 ActionKind::Undoable,
-                &Context::at_time(now()),
+                &Context::at_time(at()),
             )
             .answer
     };
@@ -1571,7 +1571,7 @@ fn an_apps_own_records_are_its_while_it_is_installed() {
     );
     let (owner_key, owner) = owner();
     assert!(
-        peer.grant_app_records(&owner, APP, &owner_key, now())
+        peer.grant_app_records(&owner, APP, &owner_key, at())
             .unwrap()
     );
     assert_eq!(
@@ -1647,18 +1647,18 @@ fn a_copy_takes_an_installed_apps_write_and_sets_one_aside_once_the_uninstall_re
     // An app writes no more than the member whose device runs it may, and only while installed.
     let (mut peer, key, guest) = workspace_with(Role::Editor);
     let installed = installed_in(&peer.apps());
-    let _read = peer.read_apps(installed.clone(), now());
+    let _read = peer.read_apps(installed.clone(), at());
     let write = app_write(&peer, &key, "x", 1);
     receive(&mut peer, &guest, write).expect("an installed app keeps its own records");
     assert_eq!(value(&peer), "\"x\"");
 
-    let _read = peer.read_apps(installed.installing(APP, None), now());
+    let _read = peer.read_apps(installed.installing(APP, None), at());
     let write = app_write(&peer, &key, "y", 2);
     let held = peer
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             write,
-            now(),
+            at(),
         )
         .expect("set aside, not refused");
     assert!(held.deferred, "the uninstall sets the app's write aside");
@@ -1675,13 +1675,13 @@ fn an_apps_own_write_waits_for_the_install_a_copy_has_not_read() {
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             write,
-            now(),
+            at(),
         )
         .expect("set aside, not refused");
     assert!(held.deferred, "the copy has not read the install yet");
     assert_eq!(value(&peer), "\"seed\"");
     let installed = installed_in(&peer.apps());
-    let _read = peer.read_apps(installed, now());
+    let _read = peer.read_apps(installed, at());
     assert_eq!(value(&peer), "\"x\"", "reading the install takes it in");
 }
 
@@ -1700,7 +1700,7 @@ fn an_app_the_copy_never_read_installed_fills_no_more_than_its_writers_share() {
     let mut let_go = Vec::new();
     for write in &writes {
         let report = peer
-            .receive_from(origin, write.clone(), now())
+            .receive_from(origin, write.clone(), at())
             .expect("never refused");
         assert!(
             report
@@ -1712,7 +1712,7 @@ fn an_app_the_copy_never_read_installed_fills_no_more_than_its_writers_share() {
         let_go.extend(report.dropped.clone());
     }
     assert!(!let_go.is_empty(), "past its share a write is let go");
-    let read = peer.read_apps(installed_in(&peer.apps()), now()).unwrap();
+    let read = peer.read_apps(installed_in(&peer.apps()), at()).unwrap();
     assert!(
         read.replay_wanted,
         "reading other apps asks for what was let go"
@@ -1720,7 +1720,7 @@ fn an_app_the_copy_never_read_installed_fills_no_more_than_its_writers_share() {
     assert_eq!(value(&peer), "\"x\"", "what waited is taken in");
     for dropped in &let_go {
         let replayed = &writes[usize::try_from(dropped.sequence).unwrap() - 1];
-        let report = peer.receive_from(origin, replayed.clone(), now()).unwrap();
+        let report = peer.receive_from(origin, replayed.clone(), at()).unwrap();
         assert!(
             !report.deferred && report.dropped.is_empty(),
             "applies once replayed"
@@ -1736,7 +1736,7 @@ fn a_members_write_without_the_right_is_refused_whatever_the_apps() {
     let write = edit_to(&peer, &key, "x", 1);
     receive(&mut peer, &guest, write).expect_err("a viewer edits nothing");
     let installed = installed_in(&peer.apps());
-    let _read = peer.read_apps(installed, now());
+    let _read = peer.read_apps(installed, at());
     let write = edit_to(&peer, &key, "y", 2);
     receive(&mut peer, &guest, write).expect_err("installing the app gives the viewer nothing");
     assert_eq!(value(&peer), "\"seed\"");
@@ -1824,14 +1824,14 @@ fn an_earlier_versions_change_is_decided_under_both_versions() {
         .receive_from(
             TransportOrigin::ServerDelta(guest.device_public_key),
             title,
-            now(),
+            at(),
         )
         .expect("set aside, not refused");
     assert!(held.deferred, "the running version removed the field");
     assert!(!title_kept(&peer));
 
     run_version(&mut peer, Some(release_of(PINNED, "1.0.0")));
-    peer.redecide_set_aside(now());
+    peer.redecide_set_aside(at());
     assert!(
         title_kept(&peer),
         "running the earlier version again takes the change in"

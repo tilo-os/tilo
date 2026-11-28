@@ -894,18 +894,7 @@ pub(super) fn device_certificate(
     root: &SigningKey,
     device: &SigningKey,
 ) -> tilo_user_identity::DeviceCert {
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Test device".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
-    cert
+    tilo_peer_state::fixture::primary_cert(root, device, "Test device")
 }
 
 #[cfg(test)]

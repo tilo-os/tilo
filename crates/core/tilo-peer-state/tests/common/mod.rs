@@ -11,14 +11,9 @@ use tilo_peer_state::direct::DirectSync;
 pub use tilo_peer_state::sealed_records::{
     members_keys, opened, opened_heads, sealed_write, write_sealed,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_user_identity::DeviceCert;
 
 pub use tilo_peer_state::fixture::certify as device_with;
-
-/// A member device key `n` certified by `root`.
-pub fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    device_with(root, n, DeviceCapabilities::member())
-}
 
 pub use tilo_peer_state::loopback::{addr, endpoint as localhost_endpoint};
 

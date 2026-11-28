@@ -56,22 +56,17 @@ impl AsRef<DeviceCert> for VerifiedCertificate {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
+    use crate::fixture::member_cert_with;
     fn certificate() -> DeviceCert {
         let root = SigningKey::from_bytes(&[31; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: SigningKey::from_bytes(&[32; 32]).verifying_key().to_bytes(),
-            device_label: "verified".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(10),
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        cert
+        member_cert_with(
+            &root,
+            &SigningKey::from_bytes(&[32; 32]),
+            "verified",
+            1,
+            Some(10),
+        )
     }
 
     #[test]

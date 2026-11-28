@@ -4,24 +4,14 @@ use crate::StatePeer;
 use crate::admission_tests::seeded;
 use crate::join::Role;
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_user_identity::{DeviceCert, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
+use crate::fixture::member_cert_with;
 const SECOND: u64 = 1_000_000_000;
 
 fn cert(root: &SigningKey, device: &SigningKey, issued: u64, expires: Option<u64>) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Editor".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: issued,
-        expires_at_ns: expires,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+    member_cert_with(root, device, "Editor", issued, expires)
 }
 
 /// Admit `member` into `peer` as an Editor, through the owner's

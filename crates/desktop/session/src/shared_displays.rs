@@ -223,8 +223,9 @@ mod tests {
         DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
         OutputDescriptor, OutputMode,
     };
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+    use tilo_user_identity::DeviceCert;
 
+    use tilo_peer_state::fixture::member_cert_with;
     /// One of this device's outputs at `x` , built-in when `builtin` , at `scale` .
     fn output(
         connector: &str,
@@ -291,18 +292,7 @@ mod tests {
     /// A device of the person whose root is `root`, labelled `label`, its key drawn from `seed`.
     fn device(root: &ed25519_dalek::SigningKey, label: &str, seed: u8) -> DeviceCert {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs");
-        cert
+        member_cert_with(root, &key, label, tilo_clock::unix_now_ns(), None)
     }
 
     tilo_test_env::scenario! {

@@ -39,6 +39,7 @@ use crate::workspaces::{
     Workspaces,
 };
 
+use tilo_peer_state::fixture::{labelled_with, member_cert_with};
 async fn offered(
     host: &ServiceWorkspaceActions,
     device: &DeviceCert,
@@ -2140,17 +2141,14 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     let (_, host, root, _) = site.parts();
     let now = tilo_clock::unix_now_ns();
     let grant_key = SigningKey::from_bytes(&rand::random());
-    let mut all = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: grant_key.verifying_key().to_bytes(),
-        device_label: "backend".into(),
-        capabilities: DeviceCapabilities::server_key_grant(),
-        issued_at_ns: now,
-        expires_at_ns: Some(now + 3_600_000_000_000),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut all, root).unwrap();
+    let all = labelled_with(
+        root,
+        &grant_key,
+        "backend",
+        DeviceCapabilities::server_key_grant(),
+        now,
+        Some(now + 3_600_000_000_000),
+    );
     let read = || {
         let mut read = super::super::tests::request("", server_account::ACCOUNT, json!({}));
         read.target = server_account::target(server_account::ACCOUNT);
@@ -3277,17 +3275,13 @@ async fn an_invited_member_enters_what_they_were_invited_into() {
 fn tab_of(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&rand::random());
     let now = tilo_clock::unix_now_ns();
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now.saturating_sub(1_000_000_000),
-        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = member_cert_with(
+        root,
+        &key,
+        label,
+        now.saturating_sub(1_000_000_000),
+        Some(now.saturating_add(3_600_000_000_000)),
+    );
     (key, cert)
 }
 

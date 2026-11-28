@@ -15,6 +15,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 
+use tilo_peer_state::fixture::labelled_with;
 /// The person's laptop, serving one ticket the person issued for their server: the server that
 /// logs in with it is certified by the person's root as their own, whatever system it runs, and
 /// enters the person's workspace.
@@ -39,7 +40,7 @@ impl Issuing {
         workspaces: Workspaces,
     ) -> Result<Self, Declined> {
         let laptop = key(8);
-        let cert = certified(person, &laptop, "the person's laptop", true)?;
+        let cert = certified(person, &laptop, "the person's laptop", true);
         let endpoint = runtime.block_on(endpoint(&laptop))?;
         let ticket = Ticket::new(reached_of(&endpoint.addr()));
         let router = {
@@ -125,28 +126,19 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// `key`'s certificate, signed by `root`: a device of the person whose root it is.
-fn certified(
-    root: &SigningKey,
-    key: &SigningKey,
-    label: &str,
-    primary: bool,
-) -> Result<DeviceCert, Declined> {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: if primary {
+fn certified(root: &SigningKey, key: &SigningKey, label: &str, primary: bool) -> DeviceCert {
+    labelled_with(
+        root,
+        key,
+        label,
+        if primary {
             DeviceCapabilities::primary()
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).map_err(|error| Declined(error.to_string()))?;
-    Ok(cert)
+        tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
+        None,
+    )
 }
 
 /// Where `addr` is reached, as a ticket carries it.

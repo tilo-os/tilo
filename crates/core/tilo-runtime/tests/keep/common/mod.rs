@@ -10,6 +10,7 @@
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::Arc;
+use tilo_peer_state::fixture::labelled_with;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::SigningKey;
@@ -17,7 +18,6 @@ use iroh::endpoint::Endpoint;
 use iroh::protocol::Router;
 use tempfile::TempDir;
 use tilo_peer_state::StatePeer;
-
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::direct::{DirectSync, Heard, Reader};
 use tilo_server_client::LinkError;
@@ -25,7 +25,7 @@ use tilo_server_client::link::{Dialer, Purpose};
 use tilo_server_protocol::refusal::Refusal;
 
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
+    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
 };
 
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
@@ -55,44 +55,28 @@ pub static KEYS: std::sync::LazyLock<key_group::ContentKeys> = std::sync::LazyLo
 /// one that seals names what it did for the readers that hold no key.
 pub fn signed_by_hand(
     key: &SigningKey,
-    (workspace, app, record): (&str, &str, &str),
+    route: (&str, &str, &str),
     mutation: &collab_types::DocumentMutation,
     seq: u64,
     surface: Option<[u8; 32]>,
     claims: Vec<collab_types::claim::ChangeClaim>,
 ) -> neighbour_wire::NeighbourMsg {
-    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let artifact = collab_types::document_artifact_id(app, workspace, record);
-    let plaintext = mutation.encode().unwrap();
-    let retention = collab_types::ContentRetention::of_frame(&plaintext);
-    let (encryption, mut payload) = KEYS.seal_content(artifact, retention, &plaintext).unwrap();
-    // A whole record is a checkpoint, which names the writes it holds: none, of a record it starts.
-    if retention == collab_types::ContentRetention::Checkpoint {
-        payload = collab_types::SealedCheckpoint::new([], payload)
-            .encode()
-            .unwrap();
-    }
-    let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
-        payload,
-        artifact,
-        author,
-        collab_types::document_attestation_id(app, workspace, record),
-        collab_types::OpKind::Change,
-        std::time::SystemTime::now(),
+    let mut frame = tilo_peer_state::fixture::sealed(
+        &KEYS,
+        route,
+        key,
+        &mutation.encode().unwrap(),
         seq,
-        encryption,
-    )
-    .with_claims(claims)
-    .with_surface(surface);
-    collab_types::sign_op(&mut op, key).unwrap();
-    neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(author.as_bytes()),
-        app_id: app.into(),
-        cluster_id: workspace.into(),
-        document_id: record.into(),
-        envelope: Box::new(op),
-        readers: None,
+        std::time::SystemTime::now(),
+    );
+    // What the write claims, and the surface its changes are decided against, are the caller's to
+    // name: the frame is signed again over them.
+    if let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = &mut frame {
+        envelope.claims = claims;
+        envelope.surface = surface;
+        collab_types::sign_op(envelope, key).unwrap();
     }
+    frame
 }
 
 /// A "user" (root keypair) + on-disk identity root usable by the
@@ -119,17 +103,7 @@ impl TestUser {
     /// Enrol a device (mints a keypair + signed cert).
     pub fn enrol(&self, label: &str, caps: DeviceCapabilities) -> TestDevice {
         let (dev_sk, dev) = DeviceIdentity::generate(label, 100);
-        let mut cert = DeviceCert {
-            user_public_key: self.user_pk,
-            device_public_key: dev.public_key,
-            device_label: dev.label,
-            capabilities: caps,
-            issued_at_ns: 200,
-            expires_at_ns: None,
-            signature: [0u8; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &self.user_sk).unwrap();
+        let cert = labelled_with(&self.user_sk, &dev_sk, &dev.label, caps, 200, None);
         TestDevice { sk: dev_sk, cert }
     }
 
@@ -138,17 +112,14 @@ impl TestUser {
     pub fn agent_key(&self, label: &str, caps: DeviceCapabilities) -> TestDevice {
         let (dev_sk, dev) = DeviceIdentity::generate(label, 100);
         let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: self.user_pk,
-            device_public_key: dev.public_key,
-            device_label: dev.label,
-            capabilities: caps,
-            issued_at_ns: now,
-            expires_at_ns: Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
-            signature: [0u8; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &self.user_sk).unwrap();
+        let cert = labelled_with(
+            &self.user_sk,
+            &dev_sk,
+            &dev.label,
+            caps,
+            now,
+            Some(now.saturating_add(24 * 60 * 60 * 1_000_000_000)),
+        );
         TestDevice { sk: dev_sk, cert }
     }
 }
@@ -1274,27 +1245,21 @@ pub async fn laptop_service_at(
 ) {
     let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
         std::sync::Arc::new(laptop.sk.clone());
-    let keys = tilo_workspace_service::own_device::KeyService::open(
-        "laptop-groups",
-        &state.join("groups"),
-        key_group::VaultKey::new([3; 32]),
-        std::sync::Arc::clone(&signer),
-        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
-    )
-    .expect("the laptop's key service opens");
-    let service = tilo_workspace_service::own_device::open(
-        state.join("service"),
-        tilo_workspace_service::own_device::Device {
-            cert: &laptop.cert,
-            signer: &signer,
-            itself: None,
-        },
-        endpoint,
-        keys.groups(),
-        |config| config,
-    )
-    .await
-    .expect("the laptop's own service opens");
+    let tilo_workspace_service::own_device::Opened { service, keys } =
+        tilo_workspace_service::own_device::open_in(
+            state,
+            tilo_workspace_service::own_device::Device {
+                cert: &laptop.cert,
+                signer: &signer,
+                itself: None,
+            },
+            key_group::VaultKey::new([3; 32]),
+            endpoint,
+            std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+            |config| config,
+        )
+        .await
+        .expect("the laptop's own service opens");
     (service, keys)
 }
 

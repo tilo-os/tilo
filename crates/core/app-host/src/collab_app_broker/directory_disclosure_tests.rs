@@ -6,6 +6,7 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use tilo_actions::{ActionContract, OperationKind};
 
+use tilo_peer_state::fixture::member_cert;
 struct Person {
     root: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
@@ -14,17 +15,7 @@ impl Person {
     fn new(root_seed: u8, device_seed: u8) -> Self {
         let root = SigningKey::from_bytes(&[root_seed; 32]);
         let device = SigningKey::from_bytes(&[device_seed; 32]);
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Directory regression device".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let certificate = member_cert(&root, &device, "Directory regression device");
         Self { root, certificate }
     }
     fn id(&self) -> String {

@@ -20,9 +20,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_server_protocol::WorkspaceId;
-use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::own_device::{Device, Opened, open_in};
 
-use crate::keep::common::{TestUser, own_service, spawn_server};
+use crate::keep::common::{TestUser, device_endpoint, spawn_server};
+use tilo_user_identity::DeviceCapabilities;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x0066_696c_6573_7065_6564);
 
@@ -384,7 +385,22 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
     let hint = host_hint(hosted, &workspace, server_key).await;
 
     let state = tempfile::tempdir().unwrap();
-    let (service, keys) = own_service(state.path(), &laptop).await;
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
+    let Opened { service, keys } = open_in(
+        state.path(),
+        Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        key_group::VaultKey::new([3; 32]),
+        device_endpoint(&laptop).await,
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| config,
+    )
+    .await
+    .unwrap();
     let copies = service.workspaces().clone();
     tilo_test_env::within(
         "the laptop holds the workspace as a member copy",

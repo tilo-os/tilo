@@ -1643,23 +1643,13 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_session_core::desktop::seed_tree;
-    use tilo_user_identity::DeviceCert;
 
+    use tilo_peer_state::fixture::member_cert_with;
     /// A device of the person's, certified for their own root key.
     fn identity(user: u8, device: u8, label: &str) -> tilo_network_actor::DeviceIdentity {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: this.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        let cert = member_cert_with(&person, &this, label, tilo_clock::unix_now_ns(), None);
         tilo_network_actor::DeviceIdentity::kept(cert, this)
     }
 

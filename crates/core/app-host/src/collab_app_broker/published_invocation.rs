@@ -3,7 +3,6 @@ use super::{
     AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
 };
-
 /// What the daemon delivered to the app for one admitted invocation. It is
 /// built only from what admission decided, never from a caller's envelope.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -810,22 +809,12 @@ mod agent_actor_tests {
     use super::super::{BrokerActor, person_id_for_root};
     use super::agent_actor;
 
+    use tilo_peer_state::fixture::member_cert_with;
     /// A certificate issued by a person to a device of theirs.
     fn certificate(user: u8, device: u8) -> tilo_user_identity::DeviceCert {
         let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
         let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: this.verifying_key().to_bytes(),
-            device_label: "an agent".to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 0,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-        cert
+        member_cert_with(&person, &this, "an agent", 0, None)
     }
 
     tilo_test_env::scenario! {

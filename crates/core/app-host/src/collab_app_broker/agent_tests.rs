@@ -11,6 +11,7 @@ use tilo_action_types::KindSet;
 use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
+use tilo_peer_state::fixture::primary_cert;
 #[path = "agent_session_tests.rs"]
 mod agent_session;
 
@@ -239,11 +240,7 @@ impl Fixture {
         let home = crate::test_support::ProvisionedHome::new();
         let owner = tilo_peer_state::owner::open_file(&home.root().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
-        let mut certificate = tilo_peer_state::owner::testing::certificate(
-            &SigningKey::from_bytes(&[91; 32]),
-            &key,
-            "Host",
-        );
+        let mut certificate = primary_cert(&SigningKey::from_bytes(&[91; 32]), &key, "Host");
         // A device of the person's own runs the agents: a foreign one is held to the
         // workspace's cap, which no agent runs under.
         certificate.capabilities.foreign = foreign;

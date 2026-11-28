@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::common::{device, localhost_endpoint};
+use crate::common::localhost_endpoint;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _, transaction::Transactable};
 use ed25519_dalek::SigningKey;
@@ -35,7 +35,7 @@ use tilo_peer_state::owner::session::{
 };
 use tilo_peer_state::owner::{DeviceWorkspaces, open_file};
 use tilo_peer_state::{CLOCK_SKEW_NS, CopyRole, unranked};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_service::Reaching;
 use tilo_workspace_service::own_device::{self, KeyService, Opened};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
@@ -43,6 +43,7 @@ use tilo_workspace_service::workspaces::IssueInvitationRequest;
 use tilo_workspace_service::workspaces::fixtures::{declare_record_kind, write_record};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0";
 const APP: &str = "test.app";
 const DOCUMENT: &str = "tab:1";
@@ -381,11 +382,11 @@ async fn until(desktops: &[&Desktop], step: &str, done: impl Fn(&Desktop) -> boo
 async fn held_by_five(directory: &Path) -> [Desktop; 5] {
     let root_a = SigningKey::from_bytes(&[0x51; 32]);
     let root_b = SigningKey::from_bytes(&[0x61; 32]);
-    let (a1_key, a1_cert) = device(&root_a, 0x52);
-    let (a2_key, a2_cert) = device(&root_a, 0x53);
-    let (a3_key, a3_cert) = device(&root_a, 0x54);
-    let (b1_key, b1_cert) = device(&root_b, 0x62);
-    let (b2_key, b2_cert) = device(&root_b, 0x63);
+    let (a1_key, a1_cert) = certify(&root_a, 0x52, DeviceCapabilities::member());
+    let (a2_key, a2_cert) = certify(&root_a, 0x53, DeviceCapabilities::member());
+    let (a3_key, a3_cert) = certify(&root_a, 0x54, DeviceCapabilities::member());
+    let (b1_key, b1_cert) = certify(&root_b, 0x62, DeviceCapabilities::member());
+    let (b2_key, b2_cert) = certify(&root_b, 0x63, DeviceCapabilities::member());
     let a1 = Desktop::start(directory, "a1", a1_key, a1_cert).await;
     let a2 = Desktop::start(directory, "a2", a2_key, a2_cert).await;
     let a3 = Desktop::start(directory, "a3", a3_key, a3_cert).await;
@@ -517,8 +518,8 @@ async fn five_desktops_hold_one_workspace_with_no_server_in_it() {
 async fn the_desktop_a_workspace_was_made_on_founds_its_key_group() {
     let directory = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[0x71; 32]);
-    let (a1_key, a1_cert) = device(&root, 0x72);
-    let (a2_key, a2_cert) = device(&root, 0x73);
+    let (a1_key, a1_cert) = certify(&root, 0x72, DeviceCapabilities::member());
+    let (a2_key, a2_cert) = certify(&root, 0x73, DeviceCapabilities::member());
     let desktops = [
         Desktop::start(directory.path(), "a1", a1_key, a1_cert).await,
         Desktop::start(directory.path(), "a2", a2_key, a2_cert).await,
@@ -638,8 +639,8 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     const RESOURCES: [&str; 3] = [DOCUMENT, "tab:2", "tab:3"];
     let directory = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[0x81; 32]);
-    let (a1_key, a1_cert) = device(&root, 0x82);
-    let (a2_key, a2_cert) = device(&root, 0x83);
+    let (a1_key, a1_cert) = certify(&root, 0x82, DeviceCapabilities::member());
+    let (a2_key, a2_cert) = certify(&root, 0x83, DeviceCapabilities::member());
     let a1 = Desktop::start(directory.path(), "a1", a1_key, a1_cert).await;
     let a2 = Desktop::start(directory.path(), "a2", a2_key.clone(), a2_cert.clone()).await;
     a1.founds().await;
@@ -663,7 +664,7 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
 
     // Another desktop of the person reads every resource from the desktop it
     // was made on, whose service has them all. It goes away then.
-    let (seen_key, seen_cert) = device(&root, 0x84);
+    let (seen_key, seen_cert) = certify(&root, 0x84, DeviceCapabilities::member());
     let seen = Desktop::start(directory.path(), "seen", seen_key, seen_cert).await;
     seen.enters_as_member(&a1.own_address().await).await;
     until(
@@ -727,7 +728,7 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     )
     .await;
 
-    let (later_key, later_cert) = device(&root, 0x85);
+    let (later_key, later_cert) = certify(&root, 0x85, DeviceCapabilities::member());
     let later = Desktop::start(directory.path(), "later", later_key, later_cert).await;
     later.enters_as_member(&a2.own_address().await).await;
     until(
@@ -741,7 +742,7 @@ async fn a_desktop_handed_the_workspace_keeps_all_of_it_when_the_one_that_handed
     // From its files alone, after a restart, it serves all of it still.
     a2.leaves().await;
     let a2 = Desktop::start(directory.path(), "a2", a2_key, a2_cert).await;
-    let (after_key, after_cert) = device(&root, 0x86);
+    let (after_key, after_cert) = certify(&root, 0x86, DeviceCapabilities::member());
     let after = Desktop::start(directory.path(), "after", after_key, after_cert).await;
     after.enters_as_member(&a2.own_address().await).await;
     until(&[&after], "the restarted desktop serves all of it", has_all).await;
@@ -840,7 +841,7 @@ async fn why_no_dial(
 
 async fn founded(directory: &Path) -> Desktop {
     let root = SigningKey::from_bytes(&[0x71; 32]);
-    let (key, cert) = device(&root, 0x72);
+    let (key, cert) = certify(&root, 0x72, DeviceCapabilities::member());
     let desktop = Desktop::start(directory, "founder", key, cert).await;
     desktop.founds().await;
     desktop
@@ -873,7 +874,11 @@ async fn a_device_the_workspace_does_not_take_and_cannot_renew_says_so() {
     let desktop = founded(directory.path()).await;
     // Another device of another person holds this copy: its certificate is
     // not the one the workspace enrolled, and nothing renews it.
-    let (key, cert) = device(&SigningKey::from_bytes(&[0x73; 32]), 0x74);
+    let (key, cert) = certify(
+        &SigningKey::from_bytes(&[0x73; 32]),
+        0x74,
+        DeviceCapabilities::member(),
+    );
     let stranger = DeviceIdentity::kept(cert, key);
     let heard = why_no_dial(&desktop, Some(stranger), true).await;
     drop(desktop);

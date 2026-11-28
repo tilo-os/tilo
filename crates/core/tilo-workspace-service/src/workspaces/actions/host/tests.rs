@@ -16,7 +16,7 @@ use tilo_server_protocol::workspaces::{
     HOST_ACTIONS_PROVIDER, HOST_WORKSPACE, HOST_WORKSPACES_RESOURCE, LIST_REVOCATIONS,
     LIST_WORKSPACES, UNHOST_WORKSPACE, WorkspaceListing,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
 
 use super::super::tests::{caller, settled};
 use super::super::{HostActionServer, ServiceWorkspaceActions};
@@ -24,23 +24,13 @@ use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{guest_device, hosting_device, test_host};
 use tilo_server_protocol::WorkspaceId;
 
+use tilo_peer_state::fixture::primary_cert;
 /// Another device of the server's own person: one the person's root key
 /// certifies, as it certifies the server.
 fn owners_laptop() -> DeviceCert {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[5; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "laptop".into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
-    cert
+    primary_cert(&root, &key, "laptop")
 }
 
 fn host_request(action: &str, argument: Value) -> InvokeRequest {

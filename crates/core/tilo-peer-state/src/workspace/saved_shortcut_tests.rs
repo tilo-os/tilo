@@ -2,7 +2,9 @@ use super::*;
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT, ScalarValue};
 use ed25519_dalek::SigningKey;
+use tilo_user_identity::DeviceCapabilities;
 
+use crate::fixture::labelled_with;
 pub(crate) const WORKSPACE: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const OTHER_WORKSPACE: &str = "5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60";
 /// Within every fixture certificate's validity.
@@ -31,11 +33,7 @@ impl Device {
 pub(crate) fn device(root: u8, device: u8) -> Device {
     let root = SigningKey::from_bytes(&[root; 32]);
     let key = SigningKey::from_bytes(&[device; 32]);
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
+    let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
     Device { root, cert, key }
 }
 
@@ -280,19 +278,14 @@ fn agent_grant(
 ) -> (DeviceCert, SigningKey) {
     let key = SigningKey::from_bytes(&[key; 32]);
     let workspace = *uuid::Uuid::parse_str(workspace).unwrap().as_bytes();
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "An agent's grant".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::agent_in(workspace, agent),
-        ),
-        issued_at_ns: 1,
-        expires_at_ns: Some(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+    let cert = labelled_with(
+        root,
+        &key,
+        "An agent's grant",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(workspace, agent)),
+        1,
+        Some(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS),
+    );
     (cert, key)
 }
 

@@ -425,8 +425,9 @@ impl Direct {
 mod tests {
     use super::Direct;
     use http_body_util::BodyExt as _;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
+    use tilo_user_identity::{DeviceCert, UserIdentity};
 
+    use tilo_peer_state::fixture::member_cert_with;
     /// A desktop holding one workspace, whose actions are the app it publishes, and the
     /// workspaces it was entered for.
     #[derive(Default)]
@@ -442,17 +443,13 @@ mod tests {
         let (person, _) = UserIdentity::generate("Ada", 1);
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let now = tilo_clock::unix_now_ns();
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Ada's laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: now.saturating_sub(60_000_000_000),
-            expires_at_ns: Some(now.saturating_add(3600 * 1_000_000_000)),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
+        let cert = member_cert_with(
+            &person,
+            &key,
+            "Ada's laptop",
+            now.saturating_sub(60_000_000_000),
+            Some(now.saturating_add(3600 * 1_000_000_000)),
+        );
         (key, cert)
     }
 

@@ -7,8 +7,9 @@ use automerge::{ROOT, ReadDoc, ScalarValue};
 use std::collections::BTreeMap;
 use tilo_action_policy::Change;
 use tilo_action_policy::{Grantee, Role, roles};
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
+use crate::fixture::labelled_with;
 const WORKSPACE: &str = "0b5c3f1e-7d2a-4c1b-9e8f-6a5d4c3b2a19";
 const NOW: u64 = 1_000;
 
@@ -1281,11 +1282,7 @@ tilo_test_env::scenario! {
 fn rooted(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
     let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
+    let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
     (key, cert)
 }
 
@@ -1495,11 +1492,7 @@ fn two_devices_first_durability_receipts_both_survive_a_merge() {
 fn owners_other_device(seed: u8) -> DeviceCert {
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    )
+    crate::fixture::cert(&root, &key, DeviceCapabilities::member())
 }
 
 /// The workspace document `founder` seeds, started over from a base `bases` times, as a
@@ -1736,19 +1729,16 @@ fn viewers_agent_key(expires_ns: u64) -> (ed25519_dalek::SigningKey, DeviceCert)
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x35; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[0x3a; 32]);
     let workspace = *uuid::Uuid::parse_str(WORKSPACE).unwrap().as_bytes();
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Scribe".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::agent_in(workspace, "scribe"),
-        ),
-        issued_at_ns: 2_000_000,
-        expires_at_ns: Some(expires_ns),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = labelled_with(
+        &root,
+        &key,
+        "Scribe",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+            workspace, "scribe",
+        )),
+        2_000_000,
+        Some(expires_ns),
+    );
     assert_eq!(cert.user_public_key, viewer_root());
     (key, cert)
 }

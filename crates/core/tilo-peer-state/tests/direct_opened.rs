@@ -6,8 +6,8 @@
 //! at all.
 
 use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened as read_opened, opened_heads,
-    sealed_write, write_sealed,
+    addr, localhost_endpoint, members_keys, opened as read_opened, opened_heads, sealed_write,
+    write_sealed,
 };
 
 use automerge::transaction::CommitOptions;
@@ -25,9 +25,10 @@ use tilo_actions::{ActionContext, ActionInvoker, Did, EditOp, FieldEdit, PathSte
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{Admitting, DIRECT_ALPN, DirectSync, LinkScope, Replica, Serving};
 use tilo_peer_state::store::{Appetite, Frame, Store};
-use tilo_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeee0011";
 const APP: &str = "test.app";
 const EAGER: &str = "tab:1";
@@ -111,8 +112,8 @@ fn devices(
     tempfile::TempDir,
 ) {
     let root = SigningKey::from_bytes(&[root; 32]);
-    let (host_key, host_cert) = device(&root, host);
-    let (member_key, member_cert) = device(&root, member);
+    let (host_key, host_cert) = certify(&root, host, DeviceCapabilities::member());
+    let (member_key, member_cert) = certify(&root, member, DeviceCapabilities::member());
     let members = vec![host_cert.clone(), member_cert];
     let now = SystemTime::now();
     let mut peer = StatePeer::new(
@@ -557,11 +558,11 @@ async fn a_link_without_key_access_joins_no_channel_and_is_heard_asking() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_link_from_a_device_without_the_workspace_refuses_another_devices_frame() {
     let root = SigningKey::from_bytes(&[0x61; 32]);
-    let (host_key, host_cert) = device(&root, 0x62);
-    let (member_key, member_cert) = device(&root, 0x63);
+    let (host_key, host_cert) = certify(&root, 0x62, DeviceCapabilities::member());
+    let (member_key, member_cert) = certify(&root, 0x63, DeviceCapabilities::member());
     // Another certified device of the same person, whose write the member
     // carries.
-    let (other_key, other_cert) = device(&root, 0x64);
+    let (other_key, other_cert) = certify(&root, 0x64, DeviceCapabilities::member());
     let members = vec![host_cert.clone(), member_cert, other_cert.clone()];
     let now = SystemTime::now();
     let mut peer = StatePeer::new(

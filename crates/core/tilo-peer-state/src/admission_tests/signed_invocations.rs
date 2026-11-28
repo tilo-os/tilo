@@ -8,9 +8,10 @@ use tilo_actions::{
 };
 use tilo_server_protocol::invocation::sign_invocation_now;
 use tilo_user_identity::{
-    RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
+    DeviceCapabilities, RevocationEntry, RevocationList, RevocationReason, sign_revocation_entry,
 };
 
+use crate::fixture::labelled_with;
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -474,11 +475,7 @@ fn value_at(peer: &StatePeer, record: &str) -> String {
 fn stranger() -> (SigningKey, SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[41; 32]);
     let key = SigningKey::from_bytes(&[42; 32]);
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
+    let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
     (root, key, cert)
 }
 
@@ -1674,19 +1671,17 @@ tilo_test_env::scenario! {
         // A key of the person's agent, certified by their root for that agent by its id.
         let agent_key = |seed: u8, id: &str| {
             let key = SigningKey::from_bytes(&[seed; 32]);
-            let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: key.verifying_key().to_bytes(),
-                device_label: id.to_owned(),
-                capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-                    tilo_user_identity::AgentScope::agent_in(workspace_id, id),
-                ),
-                issued_at_ns: now_ns(now) - 1,
-                expires_at_ns: Some(now_ns(now) + 3_600_000_000_000),
-                signature: [0; 64],
-                issuer: None,
-            };
-            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            let cert = labelled_with(
+                &root,
+                &key,
+                id,
+                DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+                    workspace_id,
+                    id,
+                )),
+                now_ns(now) - 1,
+                Some(now_ns(now) + 3_600_000_000_000),
+            );
             (key, cert)
         };
         let (scribe_key, scribe) = agent_key(41, "scribe");

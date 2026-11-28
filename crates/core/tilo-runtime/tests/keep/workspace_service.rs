@@ -28,6 +28,7 @@ use tilo_server_client::ServerAddress;
 use tilo_server_client::link::{Dialer, Link, Purpose};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_workspace_service::own_device::{Device, Opened, open_in};
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::{
     ENTER_WORKSPACE, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_WORKSPACE,
@@ -364,8 +365,25 @@ async fn a_router_built_before_any_workspace_refuses_until_its_host_is_installed
     // The laptop's own service, which founds and seals as the laptop's device, answers on the
     // router's endpoint once it is installed.
     let state = tempfile::tempdir().unwrap();
-    let (service, _keys) =
-        crate::keep::common::laptop_service_at(state.path(), &laptop, endpoint.clone()).await;
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
+    let Opened {
+        service,
+        keys: _keys,
+    } = open_in(
+        state.path(),
+        Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        key_group::VaultKey::new([3; 32]),
+        endpoint.clone(),
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| config,
+    )
+    .await
+    .unwrap();
     let service = Arc::new(service);
     // A workspace the laptop made is served here before any device asks for it.
     let home = service.workspaces().create("Home").await.unwrap();

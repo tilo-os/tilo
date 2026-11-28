@@ -5,11 +5,12 @@
 use super::*;
 use crate::workspace::compaction::{self, CompactionRefusal};
 
+use crate::fixture::{at, primary_cert};
 /// A copy of the workspace on a device that has just joined it through the
 /// owner's device: it holds nothing yet.
 fn newcomer() -> StatePeer {
     let (_, owner) = owner();
-    let mut copy = StatePeer::new(WORKSPACE, owner, vec![], RevocationList::new(), now()).unwrap();
+    let mut copy = StatePeer::new(WORKSPACE, owner, vec![], RevocationList::new(), at()).unwrap();
     copy.set_surfaces(Surfaces::from_source(Arc::new(Source(true))));
     copy
 }
@@ -18,7 +19,7 @@ fn newcomer() -> StatePeer {
 /// taken in, or why not.
 fn handed(copy: &mut StatePeer, from: [u8; 32], message: NeighbourMsg) -> Result<(), String> {
     let report = copy
-        .receive_from(TransportOrigin::RetainedServerDelta(from), message, now())
+        .receive_from(TransportOrigin::RetainedServerDelta(from), message, at())
         .map_err(|error| error.to_string())?;
     if report.deferred || report.rejected > 0 || !report.dropped.is_empty() || !report.changed {
         return Err(format!("not taken in: {report:?}"));
@@ -76,7 +77,11 @@ tilo_test_env::scenario! {
         let (mut peer, key, guest) = workspace_with(Role::Editor);
         let (owner_key, owner) = owner();
         let mut copy = newcomer();
-        for message in peer.publication_mut().bootstrap_messages(&owner_key, now()).unwrap() {
+        for message in peer
+            .publication_mut()
+            .bootstrap_messages(&owner_key, at())
+            .unwrap()
+        {
             handed(&mut copy, owner.device_public_key, message).unwrap();
         }
         let write = guest_write_at(
@@ -121,16 +126,22 @@ tilo_test_env::scenario! {
         let (_, owner) = owner();
 
         let stranger_key = SigningKey::from_bytes(&[62; 32]);
-        let stranger = certificate(&SigningKey::from_bytes(&[61; 32]), &stranger_key, "stranger");
+        let stranger = primary_cert(&SigningKey::from_bytes(&[61; 32]), &stranger_key, "stranger");
         let mut founded_elsewhere = StatePeer::new(
             WORKSPACE,
             stranger.clone(),
             vec![stranger.clone()],
             RevocationList::new(),
-            now(),
+            at(),
         )
         .unwrap();
-        crate::fixture::found(&mut founded_elsewhere, (&stranger_key, &stranger), std::slice::from_ref(&stranger), Vec::new(), now());
+        crate::fixture::found(
+            &mut founded_elsewhere,
+            (&stranger_key, &stranger),
+            std::slice::from_ref(&stranger),
+            Vec::new(),
+            at(),
+        );
         assert!(
             handed(
                 &mut newcomer(),
@@ -182,7 +193,7 @@ tilo_test_env::scenario! {
         let refusal = handed(&mut holder, guest.device_public_key, sent(&by_an_editor)).unwrap_err();
         assert!(refusal.contains(&CompactionRefusal::NotAdministrator.to_string()), "{refusal}");
         assert!(
-            peer.compact_workspace(&guest, &key, now()).is_err(),
+            peer.compact_workspace(&guest, &key, at()).is_err(),
             "an editor's device makes no compaction"
         );
     }
@@ -197,21 +208,26 @@ tilo_test_env::scenario! {
         let (owner_key, owner) = owner();
         assert!(
             peer.governance_mut()
-                .put_saved_presets(&[preset("Secret plan")], &owner_key, now())
+                .put_saved_presets(&[preset("Secret plan")], &owner_key, at())
                 .unwrap()
         );
         assert!(
             peer.governance_mut()
-                .put_saved_presets(&[], &owner_key, now())
+                .put_saved_presets(&[], &owner_key, at())
                 .unwrap()
         );
         assert!(
             peer.governance_mut()
-                .set_member_administrator(guest.user_public_key, None, &owner_key, now())
+                .set_member_administrator(
+                    guest.user_public_key,
+                    None,
+                    &owner_key,
+                    at(),
+                )
                 .unwrap()
         );
         assert!(ever_held(&document_of(&peer), "Secret plan"));
-        assert!(peer.compact_workspace(&guest, &key, now()).unwrap());
+        assert!(peer.compact_workspace(&guest, &key, at()).unwrap());
 
         let mut copy = newcomer();
         handed(&mut copy, owner.device_public_key, peer.workspace_message())
@@ -245,12 +261,12 @@ tilo_test_env::scenario! {
         for name in ["One", "Two", "Three", "Four"] {
             assert!(
                 peer.governance_mut()
-                    .put_saved_presets(&[preset(name)], &owner_key, now())
+                    .put_saved_presets(&[preset(name)], &owner_key, at())
                     .unwrap()
             );
         }
         let old = document_of(&peer).get_changes(&[]);
-        assert!(peer.compact_workspace(&owner, &owner_key, now()).unwrap());
+        assert!(peer.compact_workspace(&owner, &owner_key, at()).unwrap());
         let mut reader = newcomer();
         handed(&mut reader, owner.device_public_key, peer.workspace_message()).unwrap();
         let base = document_of(&peer).get_heads();
@@ -259,7 +275,7 @@ tilo_test_env::scenario! {
         for name in ["Five", "Six", "Seven"] {
             assert!(
                 peer.governance_mut()
-                    .put_saved_presets(&[preset(name)], &owner_key, now())
+                    .put_saved_presets(&[preset(name)], &owner_key, at())
                     .unwrap()
             );
         }
@@ -283,14 +299,14 @@ tilo_test_env::scenario! {
         };
         let from = TransportOrigin::RetainedServerDelta(owner.device_public_key);
         reader
-            .receive_from(from, one(vec![superseded]), now())
+            .receive_from(from, one(vec![superseded]), at())
             .expect("the old change, as a reader catching up replays it");
         reader
-            .receive_from(from, one(ahead.to_vec()), now())
+            .receive_from(from, one(ahead.to_vec()), at())
             .expect("the base's change at the old one's number, ahead of its parent");
         // The history it builds on, as the holder sends it once more.
         reader
-            .receive_from(from, one(new.clone()), now())
+            .receive_from(from, one(new.clone()), at())
             .expect("the base's history whole");
         assert_eq!(reader.workspace_heads(), peer.workspace_heads());
         let names = |peer: &StatePeer| {

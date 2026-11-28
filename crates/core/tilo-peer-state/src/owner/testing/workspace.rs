@@ -18,9 +18,10 @@ use std::{collections::BTreeMap, time::SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::DeviceCert;
 
-use super::{APP, certificate};
+use super::APP;
 use collab_types::WorkspaceId;
 
+use crate::fixture::primary_cert;
 /// Longest a join challenge stays open.
 const CHALLENGE_NS: u64 = 60_000_000_000;
 
@@ -88,7 +89,7 @@ impl TestWorkspace {
         let now = tilo_clock::wall();
         let person = SigningKey::from_bytes(&random());
         let key = SigningKey::from_bytes(&random());
-        let device = certificate(&person, &key, "Device");
+        let device = primary_cert(&person, &key, "Device");
         let workspace = uuid::Builder::from_random_bytes(random()).into_uuid();
         let workspace_id = WorkspaceId::from(workspace);
         let workspace = workspace.to_string();
@@ -497,10 +498,11 @@ impl TestWorkspace {
 
 #[cfg(test)]
 mod empty_interactive_tests {
-    use super::{TestWorkspace, certificate};
+    use super::TestWorkspace;
     use ed25519_dalek::SigningKey;
     use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 
+    use crate::fixture::primary_cert;
     tilo_test_env::scenario! {
         fn the_fixture_holds_its_workspace_as_one_device;
 
@@ -508,7 +510,7 @@ mod empty_interactive_tests {
         {
             let signing_identity = SigningKey::from_bytes(&[91; 32]);
             let key = SigningKey::from_bytes(&[92; 32]);
-            let cert = certificate(&signing_identity, &key, "Fixture session");
+            let cert = primary_cert(&signing_identity, &key, "Fixture session");
             let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
             let workspace_fixture =
                 TestWorkspace::empty_interactive(cert.clone(), key, &workspace).unwrap();
@@ -537,7 +539,7 @@ mod empty_interactive_tests {
                 JoinTransportResponse, Role,
             };
             let key = SigningKey::from_bytes(&[92; 32]);
-            let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
+            let cert = primary_cert(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
             let mut workspace_fixture =
                 TestWorkspace::empty_interactive(cert.clone(), key.clone(), super::super::WORKSPACE)
                     .unwrap();

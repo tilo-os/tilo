@@ -85,13 +85,27 @@ pub fn labelled(
     label: &str,
     capabilities: DeviceCapabilities,
 ) -> DeviceCert {
+    labelled_with(root, key, label, capabilities, 1, None)
+}
+
+/// [`labelled`] with the window it lasts: issued at `issued_at_ns` and expiring
+/// at `expires_at_ns`, or never.
+#[must_use]
+pub fn labelled_with(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+    expires_at_ns: Option<u64>,
+) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
+        issued_at_ns,
+        expires_at_ns,
         signature: [0; 64],
         issuer: None,
     };
@@ -112,6 +126,80 @@ pub fn record(value: &str) -> Vec<u8> {
     document.put(ROOT, "value", value).unwrap();
     document.commit();
     document.save()
+}
+
+/// [`labelled`] with a member device's capabilities.
+#[must_use]
+pub fn member_cert(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    labelled(root, key, label, DeviceCapabilities::member())
+}
+
+/// [`labelled`] with a person's primary device capabilities.
+#[must_use]
+pub fn primary_cert(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+    labelled(root, key, label, DeviceCapabilities::primary())
+}
+
+/// [`member_cert`] with the window it lasts.
+#[must_use]
+pub fn member_cert_with(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    issued_at_ns: u64,
+    expires_at_ns: Option<u64>,
+) -> DeviceCert {
+    labelled_with(
+        root,
+        key,
+        label,
+        DeviceCapabilities::member(),
+        issued_at_ns,
+        expires_at_ns,
+    )
+}
+
+/// The frame `key`'s device publishes for `bytes` in `record` of `app` in
+/// `workspace`: `bytes` sealed under `keys`, the group that reads the record,
+/// and signed as the device's `seq`th write at `at`. Bytes that are a whole
+/// record travel as a checkpoint holding no write before them.
+#[must_use]
+pub fn sealed(
+    keys: &key_group::ContentKeys,
+    (workspace, app, record): (&str, &str, &str),
+    key: &SigningKey,
+    bytes: &[u8],
+    seq: u64,
+    at: SystemTime,
+) -> NeighbourMsg {
+    let artifact = collab_types::document_artifact_id(app, workspace, record);
+    let retention = collab_types::ContentRetention::of_frame(bytes);
+    let (encryption, mut payload) = keys.seal_content(artifact, retention, bytes).unwrap();
+    if retention == collab_types::ContentRetention::Checkpoint {
+        payload = collab_types::SealedCheckpoint::new([], payload)
+            .encode()
+            .unwrap();
+    }
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mut envelope = collab_types::SignedOp::new_unsigned_with_encryption(
+        payload,
+        artifact,
+        author,
+        collab_types::document_attestation_id(app, workspace, record),
+        collab_types::OpKind::Change,
+        at,
+        seq,
+        encryption,
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer: crate::peer_handle(author.as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.into(),
+        document_id: record.into(),
+        envelope: Box::new(envelope),
+        readers: None,
+    }
 }
 
 /// A workspace founded by one device, with the devices on its roster and the

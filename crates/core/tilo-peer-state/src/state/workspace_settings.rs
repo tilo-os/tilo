@@ -302,25 +302,16 @@ mod tests {
     use super::super::{NeighbourMsg, SigningKey, StatePeer, TransportOrigin};
     use automerge::{ROOT, ScalarValue, transaction::Transactable as _};
     use tilo_desktop_model::projection::WORKSPACE_NAME_KEY;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+    use tilo_user_identity::{DeviceCert, RevocationList};
 
+    use crate::fixture::member_cert;
     const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
 
     /// A device of the person whose root is `[11; 32]`.
     fn device(seed: u8) -> (DeviceCert, SigningKey) {
         let root = SigningKey::from_bytes(&[11; 32]);
         let device = SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: format!("device {seed}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
+        let cert = member_cert(&root, &device, &format!("device {seed}"));
         (cert, device)
     }
 

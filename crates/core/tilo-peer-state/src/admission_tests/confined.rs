@@ -3,6 +3,7 @@
 
 use super::*;
 
+use crate::fixture::labelled;
 /// The workspace the VM reaches, and another of the same person's.
 const VM_WORKSPACE: &str = "11111111-1111-4111-8111-111111111111";
 const OTHER_WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -13,19 +14,14 @@ fn laptop_and_vm() -> (SigningKey, DeviceCert, DeviceCert, SystemTime) {
     let (a, ac, _, _, now) = fixtures();
     let root = SigningKey::from_bytes(&[1; 32]);
     let vm = SigningKey::from_bytes(&[9; 32]);
-    let mut vm_cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: vm.verifying_key().to_bytes(),
-        device_label: "Workspace computer".into(),
-        capabilities: DeviceCapabilities::workspace_device(
+    let vm_cert = labelled(
+        &root,
+        &vm,
+        "Workspace computer",
+        DeviceCapabilities::workspace_device(
             *uuid::Uuid::parse_str(VM_WORKSPACE).unwrap().as_bytes(),
         ),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut vm_cert, &root).unwrap();
+    );
     (a, ac, vm_cert, now)
 }
 

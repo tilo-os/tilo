@@ -188,8 +188,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_lock::MutexRecover as _;
+
+/// `person`'s own workspace, at the id their key names.
+pub(crate) fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
+    WorkspaceId::from(collab_types::workspace_id::person_workspace(person))
+}
 
 /// How serving the device ended ([`hold`]).
 pub(crate) enum Ended {

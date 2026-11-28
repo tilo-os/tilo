@@ -3,9 +3,10 @@
 //! dial names the workspace.
 
 use tilo_server_protocol::WorkspaceId;
-use tilo_user_identity::DeviceCapabilities;
+use tilo_workspace_service::own_device::{Device, Opened, open_in};
 
-use crate::keep::common::{TestUser, own_service, spawn_server};
+use crate::keep::common::{TestUser, device_endpoint, spawn_server};
+use tilo_user_identity::DeviceCapabilities;
 
 const WORKSPACE: WorkspaceId = WorkspaceId::from_u128(0x006d_656d_6265_722d_636f_7079);
 
@@ -31,7 +32,25 @@ async fn a_members_device_opens_the_workspaces_tree_from_its_server() {
         .find(|hint| hint.host.device_public_key == server_key)
         .expect("the server names its own address");
     let state = tempfile::tempdir().unwrap();
-    let (service, _keys) = own_service(state.path(), &laptop).await;
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
+    let Opened {
+        service,
+        keys: _keys,
+    } = open_in(
+        state.path(),
+        Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        key_group::VaultKey::new([3; 32]),
+        device_endpoint(&laptop).await,
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| config,
+    )
+    .await
+    .unwrap();
     let copies = service.workspaces().clone();
     tilo_test_env::within(
         "the laptop holds the workspace as a member copy",

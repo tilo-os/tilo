@@ -3,7 +3,7 @@
 //! once the other device links and keeps it, and refused when the other device refuses it.
 
 use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened_heads, sealed_write, write_sealed,
+    addr, localhost_endpoint, members_keys, opened_heads, sealed_write, write_sealed,
 };
 use key_group::ContentKeys;
 
@@ -24,9 +24,10 @@ use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::reach::{Reach, RecordReach};
 use tilo_peer_state::store::{Appetite, Store};
-use tilo_user_identity::RevocationList;
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -44,8 +45,8 @@ struct Two {
 
 fn two() -> Two {
     let root = SigningKey::from_bytes(&[0x51; 32]);
-    let (a_key, a_cert) = device(&root, 0x52);
-    let (b_key, b_cert) = device(&root, 0x53);
+    let (a_key, a_cert) = certify(&root, 0x52, DeviceCapabilities::member());
+    let (b_key, b_cert) = certify(&root, 0x53, DeviceCapabilities::member());
     let roster = vec![a_cert.clone(), b_cert];
     let now = SystemTime::now();
     let mut a = StatePeer::new(

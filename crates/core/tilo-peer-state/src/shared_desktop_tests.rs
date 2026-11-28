@@ -16,10 +16,10 @@ use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::join::Role;
-use crate::owner::testing::member_certificate as certificate;
-use crate::owner::testing::{now, receive};
+use crate::owner::testing::receive;
 use crate::{NeighbourMsg, StatePeer};
 
+use crate::fixture::{at, member_cert};
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
 
 fn tab(id: u64) -> Tab {
@@ -74,14 +74,14 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
 fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
     let owner_root = SigningKey::from_bytes(&[1; 32]);
     let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let owner = certificate(&owner_root, &owner_key, "owner");
+    let owner = member_cert(&owner_root, &owner_key, "owner");
     let owner_person = hex::encode(owner.user_public_key);
     let mut peer = StatePeer::new(
         WORKSPACE,
         owner.clone(),
         vec![owner.clone()],
         RevocationList::new(),
-        now(),
+        at(),
     )
     .unwrap();
     let mut record = AutoCommit::new();
@@ -97,20 +97,20 @@ fn workspace_with(role: Role) -> (StatePeer, String, SigningKey, DeviceCert) {
             DESKTOP_KIND,
             record.save(),
         )],
-        now(),
+        at(),
     );
 
     let guest_key = SigningKey::from_bytes(&[42; 32]);
-    let guest = certificate(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
-    let signed = crate::fixture::invitation(&peer, &owner_key, now(), |grant| {
+    let guest = member_cert(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
+    let signed = crate::fixture::invitation(&peer, &owner_key, at(), |grant| {
         grant.role = role;
         grant.nonce = [43; 16];
         grant.recipient_user_public_key = Some(guest.user_public_key);
     });
-    let redemption = crate::fixture::redeem(&signed, (&guest_key, &guest), 44, now());
+    let redemption = crate::fixture::redeem(&signed, (&guest_key, &guest), 44, at());
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now())
+            .admit_invited_member(&redemption, &guest_key, at())
             .unwrap()
     );
     (peer, owner_person, guest_key, guest)
@@ -238,7 +238,7 @@ fn signed(
         author,
         collab_types::document_attestation_id(DESKTOP_APP, WORKSPACE, record),
         collab_types::OpKind::Change,
-        now(),
+        at(),
         sequence,
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
             .receive_from(
                 crate::TransportOrigin::ServerDelta(guest.device_public_key),
                 looks,
-                now(),
+                at(),
             )
             .expect("the guest writes their own view");
         assert_eq!(taken.rejected, 0, "the guest's own view is theirs to write");
@@ -390,7 +390,7 @@ tilo_test_env::scenario! {
                     guest.user_public_key,
                     Role::Editor,
                     &SigningKey::from_bytes(&[2; 32]),
-                    now(),
+                    at(),
                 )
                 .unwrap()
         );

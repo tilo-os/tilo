@@ -5,6 +5,7 @@ pub use tilo_action_policy::{Answer, GrantId, Grantee, Level, Role, TreePath};
 pub use tilo_action_types::KindSet;
 pub use tilo_desktop_model::{Workspace, WorkspaceId};
 
+use tilo_peer_state::fixture::member_cert_with;
 /// The grants fixtures give, in the workspace's own terms.
 pub trait Grants {
     /// Let `subject` take actions of `kinds` at `relative` (a path below the
@@ -116,17 +117,13 @@ pub fn serve_the_test_signer(workspaces: impl IntoIterator<Item = String>) {
         tilo_identity::sources::test_trust::install();
         let root = ed25519_dalek::SigningKey::from_bytes(&[0x91; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[0x92; 32]);
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Synthetic test device".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let certificate = member_cert_with(
+            &root,
+            &device,
+            "Synthetic test device",
+            tilo_clock::unix_now_ns(),
+            None,
+        );
         tilo_invocation_journal::serve_as(certificate, Arc::new(device));
     });
     for workspace in workspaces {

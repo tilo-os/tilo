@@ -1188,22 +1188,12 @@ impl ServiceWorkspaces {
     /// workspace starts from.
     pub(crate) async fn test_hosting(workspace: WorkspaceId) -> (Arc<Self>, tempfile::TempDir) {
         use ed25519_dalek::SigningKey;
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+        use tilo_peer_state::fixture::member_cert;
 
         let directory = tempfile::tempdir().unwrap();
         let key = SigningKey::from_bytes(&[93; 32]);
         let root = SigningKey::from_bytes(&[94; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Synthetic runtime".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let cert = member_cert(&root, &key, "Synthetic runtime");
         let identity = DeviceIdentity::kept(cert.clone(), key.clone());
         let endpoint = test_endpoint(&key).await;
         let service = tilo_workspace_service::own_device::open(

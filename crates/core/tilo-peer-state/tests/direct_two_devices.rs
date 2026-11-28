@@ -3,7 +3,7 @@
 //! outside the workspace roster is refused.
 
 use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened, opened_heads, stored, write_sealed,
+    addr, localhost_endpoint, members_keys, opened, opened_heads, stored, write_sealed,
 };
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -14,9 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
-use tilo_user_identity::RevocationList;
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -76,8 +77,8 @@ async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_devices_of_one_person_converge_directly() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (a_key, a_cert) = device(&root, 2);
-    let (b_key, b_cert) = device(&root, 3);
+    let (a_key, a_cert) = certify(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a_cert.clone(), b_cert.clone()];
     let now = SystemTime::now();
 
@@ -138,7 +139,7 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // A device of another person, absent from the roster, is refused.
     let stranger_root = SigningKey::from_bytes(&[9; 32]);
-    let (c_key, c_cert) = device(&stranger_root, 10);
+    let (c_key, c_cert) = certify(&stranger_root, 10, DeviceCapabilities::member());
     let c =
         StatePeer::from_join(WORKSPACE, a_cert.clone(), vec![a_cert, c_cert], &[], now).unwrap();
     let c = DirectSync::new(c, c_key.clone());
@@ -164,8 +165,8 @@ async fn two_devices_of_one_person_converge_directly() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways() {
     let root = SigningKey::from_bytes(&[4; 32]);
-    let (a_key, a_cert) = device(&root, 5);
-    let (b_key, b_cert) = device(&root, 6);
+    let (a_key, a_cert) = certify(&root, 5, DeviceCapabilities::member());
+    let (b_key, b_cert) = certify(&root, 6, DeviceCapabilities::member());
     let now = SystemTime::now();
 
     // A makes the workspace with itself alone in it, and a document.
@@ -263,7 +264,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     let root = SigningKey::from_bytes(&[5; 32]);
-    let (key, cert) = device(&root, 7);
+    let (key, cert) = certify(&root, 7, DeviceCapabilities::member());
     let now = SystemTime::now();
     let roster = vec![cert.clone()];
     let mut made = StatePeer::new(
@@ -313,8 +314,8 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_device_dialled_answers_each_write_it_takes_in() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (a_key, a_cert) = device(&root, 2);
-    let (b_key, b_cert) = device(&root, 3);
+    let (a_key, a_cert) = certify(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = certify(&root, 3, DeviceCapabilities::member());
     let roster = vec![a_cert.clone(), b_cert];
     let now = SystemTime::now();
     let mut a = StatePeer::new(
@@ -397,8 +398,8 @@ impl Hosted {
     /// holding nothing, and takes them in over its first link.
     async fn start() -> Self {
         let root = SigningKey::from_bytes(&[7; 32]);
-        let (a_key, a_cert) = device(&root, 20);
-        let (b_key, b_cert) = device(&root, 21);
+        let (a_key, a_cert) = certify(&root, 20, DeviceCapabilities::member());
+        let (b_key, b_cert) = certify(&root, 21, DeviceCapabilities::member());
         let roster = vec![a_cert.clone(), b_cert];
         let now = SystemTime::now();
         let mut a = StatePeer::new(

@@ -12,6 +12,7 @@ use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_action_types::KindSet;
 use tilo_invocation_journal::{InvocationJournal, InvocationKey};
 
+use tilo_peer_state::fixture::member_cert_with;
 struct Library(tokio::runtime::Handle);
 
 impl ShortcutLibraryServices for Library {
@@ -1399,17 +1400,7 @@ impl Saver {
     fn new() -> Self {
         let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-        let mut certificate = tilo_user_identity::DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Their laptop".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 0,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let certificate = member_cert_with(&root, &key, "Their laptop", 0, None);
         Self {
             root,
             certificate,

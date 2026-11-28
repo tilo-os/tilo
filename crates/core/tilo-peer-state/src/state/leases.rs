@@ -387,11 +387,9 @@ impl PeerWorkspaceMut<'_> {
 )]
 mod tests {
     use super::*;
-    use crate::owner::testing::now;
+    use crate::fixture::member_cert;
     use crate::state::test_desktops::{cert_of, desktops, sync};
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::DeviceCert;
-
     fn rank(load: u32) -> Rank {
         Rank {
             power: Power::Unknown,
@@ -431,7 +429,7 @@ mod tests {
     #[test]
     fn one_device_holds_the_lease_and_a_second_takes_it_only_once_it_is_over() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let left_cert = cert_of(&left);
         let right_cert = cert_of(&right);
 
@@ -489,7 +487,7 @@ mod tests {
     #[test]
     fn the_vm_goes_to_the_machine_that_holds_its_disk() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
         let lease = vm_lease("default");
         let disk = 8 << 30;
@@ -556,7 +554,7 @@ mod tests {
             } else {
                 (right, left)
             };
-        let now = now();
+        let now = crate::fixture::at();
         let better_cert = cert_of(&better);
         let worse_cert = cert_of(&worse);
         // Neither device could see the other when each claimed the lease no
@@ -611,7 +609,7 @@ mod tests {
     #[test]
     fn of_two_alike_claims_the_earlier_holds_and_keeps_its_start() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let (left_cert, right_cert) = (cert_of(&left), cert_of(&right));
         // The higher key claims first, so the key alone would pick the other.
         let ((first, first_cert), (second, second_cert)) =
@@ -671,7 +669,7 @@ mod tests {
     #[test]
     fn a_renewing_holder_keeps_its_term() {
         let (mut left, _left_key, _, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let left_cert = cert_of(&left);
         let first = left
             .workspace_mut()
@@ -703,20 +701,10 @@ mod tests {
     #[test]
     fn a_device_that_may_not_change_the_workspace_holds_no_lease() {
         let (mut left, _left_key, _, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let stranger_root = SigningKey::from_bytes(&[77; 32]);
         let stranger_key = SigningKey::from_bytes(&[78; 32]);
-        let mut stranger = DeviceCert {
-            user_public_key: stranger_root.verifying_key().to_bytes(),
-            device_public_key: stranger_key.verifying_key().to_bytes(),
-            device_label: "stranger".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut stranger, &stranger_root).unwrap();
+        let stranger = member_cert(&stranger_root, &stranger_key, "stranger");
         assert!(
             left.workspace_mut()
                 .take_lease(&stranger, "tick", Duration::from_secs(60), unranked(), now)

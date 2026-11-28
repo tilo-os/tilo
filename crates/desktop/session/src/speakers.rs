@@ -113,25 +113,16 @@ mod tests {
         PersonalFabricAction, PersonalFabricSendError,
     };
     use tilo_speaker_service::devices::{Record, Speakers};
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+    use tilo_user_identity::DeviceCert;
     use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
     use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
 
+    use tilo_peer_state::fixture::member_cert;
     /// This laptop's person and device key, as the record keeps them.
     fn laptop() -> ([u8; 32], ed25519_dalek::SigningKey, DeviceCert) {
         let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "This laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("the certificate signs");
+        let cert = member_cert(&root, &key, "This laptop");
         (root.verifying_key().to_bytes(), key, cert)
     }
 

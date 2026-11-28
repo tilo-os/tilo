@@ -40,6 +40,8 @@ use tilo_actions::remote::{
 };
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
+
+use super::person_workspace;
 use tilo_live::grant;
 use tilo_live::link;
 use tilo_live::live::{self, Namespace};
@@ -429,11 +431,6 @@ fn placed_here(
                 })
         })
         .is_some_and(|(_, member)| member)
-}
-
-/// `person`'s own workspace.
-fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
-    WorkspaceId::from(collab_types::workspace_id::person_workspace(person))
 }
 
 /// What each call of each workspace this relay carries allows, by the tag its tracks name

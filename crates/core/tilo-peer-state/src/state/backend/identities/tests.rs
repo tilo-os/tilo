@@ -2,8 +2,9 @@ use super::*;
 use crate::StatePeer;
 use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
+use crate::fixture::labelled_with;
 /// The import of `workspace` over `peer`'s certificates, read fresh and read
 /// after the state the peer holds, whose views carry over: both alike.
 #[expect(
@@ -130,19 +131,14 @@ tilo_test_env::scenario! {
         let now_ns = now_ns(now);
         let root = SigningKey::from_bytes(&[91; 32]);
         let grant_key = SigningKey::from_bytes(&[92; 32]);
-        let mut grant = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: grant_key.verifying_key().to_bytes(),
-            device_label: "agent".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-                tilo_user_identity::AgentScope::AllWorkspaces,
-            ),
-            issued_at_ns: now_ns - 1,
-            expires_at_ns: Some(now_ns + 3_600_000_000_000),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut grant, &root).unwrap();
+        let grant = labelled_with(
+            &root,
+            &grant_key,
+            "agent",
+            DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::AllWorkspaces),
+            now_ns - 1,
+            Some(now_ns + 3_600_000_000_000),
+        );
         let mut minted = tilo_user_identity::prepare_minted_grant(
             &grant,
             SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),

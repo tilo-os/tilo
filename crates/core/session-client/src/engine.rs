@@ -823,26 +823,6 @@ impl Engine {
             .flatten()
     }
 
-    /// Whether this device's person may administer `workspace` here: the governance gives their
-    /// person the grant action. A workspace decided by another device's governance says no,
-    /// whatever this device holds of it.
-    #[must_use]
-    pub fn administers(&self, workspace: &str) -> bool {
-        let Some(workspace) = WorkspaceId::parse(workspace) else {
-            return false;
-        };
-        let device = self.identity.device_cert.device_public_key;
-        self.owner
-            .with_current(workspace, |view| {
-                Ok(view
-                    .peer()
-                    .workspace()
-                    .check_workspace_administration(device, tilo_clock::wall())
-                    .is_ok())
-            })
-            .unwrap_or(false)
-    }
-
     /// The name `workspace` knows `person` by, when it knows one: what an invitation made for them
     /// records as its invitee.
     pub fn name_of(&self, workspace: &str, person: [u8; 32]) -> Option<String> {

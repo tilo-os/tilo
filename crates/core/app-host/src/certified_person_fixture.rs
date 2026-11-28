@@ -1,6 +1,8 @@
 // Only compiled by the existing native test-support feature. Synthetic keys
 // still enter through the production signed admission verifier, never a context
 // constructor or a bypass of certificate/current-execution policy.
+
+use tilo_peer_state::fixture::member_cert_with;
 pub struct CertifiedPersonFixture {
     pub broker: crate::collab_broker::AppActionBroker,
     pub context: CertifiedPersonContext,
@@ -67,17 +69,13 @@ pub fn certified_person_fixture_for_seeds(
     let device = ed25519_dalek::SigningKey::from_bytes(&[device_seed; 32]);
     let clock = crate::policy_clock::OwnerPolicyClock::new().unwrap();
     let origin = clock.new_origin();
-    let mut certificate = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Synthetic native messaging device".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: clock.now_ns().unwrap(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    let certificate = member_cert_with(
+        &root,
+        &device,
+        "Synthetic native messaging device",
+        clock.now_ns().unwrap(),
+        None,
+    );
     let workspace_id = collab_types::person_workspace(&certificate.user_public_key);
     let mut workspace = crate::test_support::Workspace::new(
         tilo_desktop_model::WorkspaceId::parse(&workspace_id.to_string()).unwrap(),

@@ -86,6 +86,8 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# The people, devices and workspaces the tests tell their stories with.
+tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # Compiles the account's surface as `account-surface.json` carries it.
 tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }

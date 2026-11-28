@@ -19,11 +19,12 @@ use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::page::PageAddress;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_user_identity::DeviceCert;
 
 use crate::language::host;
 use crate::language::host::button_labelled;
 
+use tilo_peer_state::fixture::member_cert_with;
 /// Names the test the process [`run`] starts runs, and where its profile is.
 const OWN: &str = "TILO_KEEPING_TEST";
 const PROFILE: &str = "TILO_KEEPING_TEST_PROFILE";
@@ -134,18 +135,13 @@ impl Keeping {
         let key = SigningKey::from_bytes(&[0x5d; 32]);
         let now = tilo_clock::unix_now_ns();
         let certified = |key: &SigningKey, label: &str| {
-            let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: key.verifying_key().to_bytes(),
-                device_label: label.into(),
-                capabilities: DeviceCapabilities::member(),
-                issued_at_ns: now.saturating_sub(60_000_000_000),
-                expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-                signature: [0; 64],
-                issuer: None,
-            };
-            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-            cert
+            member_cert_with(
+                &root,
+                key,
+                label,
+                now.saturating_sub(60_000_000_000),
+                Some(now.saturating_add(3_600_000_000_000)),
+            )
         };
         let cert = certified(&key, "the-server");
         let browser = certified(&SigningKey::from_bytes(&[0x5e; 32]), "Ada's browser");

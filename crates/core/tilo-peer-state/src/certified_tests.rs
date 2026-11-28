@@ -3,7 +3,6 @@ use crate::certified::{IntentRecord, now_ns};
 use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
 use crate::join::{JoinBootstrap, JoinTransportRequest, TransportHint, VerifiedJoin};
 use crate::owner::VerifiedNativeEnrollmentIntent;
-use crate::owner::testing::member_certificate as certificate;
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -11,6 +10,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
 
+use crate::fixture::member_cert;
 fn actual_redemption() -> (
     VerifiedJoin,
     JoinCompleteRequest,
@@ -39,9 +39,9 @@ fn actual_redemption_at(
 ) {
     let ns = crate::fixture::ns(now);
     let owner_copy_key = SigningKey::from_bytes(&[71; 32]);
-    let owner_copy = certificate(&SigningKey::from_bytes(&[72; 32]), &owner_copy_key, "Host");
+    let owner_copy = member_cert(&SigningKey::from_bytes(&[72; 32]), &owner_copy_key, "Host");
     let device_key = SigningKey::from_bytes(&[73; 32]);
-    let device = certificate(
+    let device = member_cert(
         &SigningKey::from_bytes(&[74; 32]),
         &device_key,
         "Joining device",

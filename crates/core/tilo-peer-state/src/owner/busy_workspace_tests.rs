@@ -2,7 +2,7 @@
 //! has": becoming a member takes the workspace's governance alone, and its app
 //! messages reach the workspace afterwards through its sync, each authorized as
 //! any write is.
-use crate::owner::testing::{APP, WORKSPACE, certificate};
+use crate::owner::testing::{APP, WORKSPACE};
 use crate::owner::{DeviceWorkspaces, VerifiedNativeEnrollmentIntent, WorkspaceId, open_file};
 use crate::{
     InputDisposition, SeedDocument, SeedState, StatePeer, TransportOrigin, join, seed_workspace,
@@ -15,10 +15,9 @@ use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
+use crate::fixture::{ns, primary_cert};
 /// People who write in the workspace before the joining device arrives.
 const AUTHORS: u8 = 40;
-
-use crate::fixture::ns;
 
 /// The host's invitation for `device`, redeemed by it.
 fn redemption(
@@ -140,9 +139,9 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let now = SystemTime::now();
     let root = SigningKey::from_bytes(&[121; 32]);
     let owner_copy_key = SigningKey::from_bytes(&[122; 32]);
-    let owner_copy = certificate(&root, &owner_copy_key, "Lounge host");
+    let owner_copy = primary_cert(&root, &owner_copy_key, "Lounge host");
     let device_key = SigningKey::from_bytes(&[123; 32]);
-    let device = certificate(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
+    let device = primary_cert(&SigningKey::from_bytes(&[124; 32]), &device_key, "Joining");
     let workspace_id = tilo_server_protocol::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
         version: 1,
@@ -208,7 +207,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
     let mut texts = Vec::new();
     for author in 0..AUTHORS {
         let key = SigningKey::from_bytes(&[author.wrapping_add(1); 32]);
-        let cert = certificate(
+        let cert = primary_cert(
             &SigningKey::from_bytes(&[author.wrapping_add(160); 32]),
             &key,
             "Author",

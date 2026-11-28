@@ -25,6 +25,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::in_process::Device;
 
+use tilo_peer_state::fixture::labelled_with;
 /// The workspace the person's server keeps for this test.
 const WORKSPACE_NAME: &str = "Studio";
 
@@ -49,22 +50,18 @@ fn key(seed: u8) -> SigningKey {
 
 /// `key`'s certificate, signed by `root`.
 fn certified(root: &SigningKey, key: &SigningKey, label: &str, primary: bool) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: if primary {
+    labelled_with(
+        root,
+        key,
+        label,
+        if primary {
             DeviceCapabilities::primary()
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+        tilo_clock::unix_now_ns().saturating_sub(1_000_000_000),
+        None,
+    )
 }
 
 /// An endpoint of `key`'s on this machine's loopback.

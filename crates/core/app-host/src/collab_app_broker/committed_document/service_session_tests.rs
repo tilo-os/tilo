@@ -13,6 +13,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use tilo_peer_state::fixture::primary_cert;
 /// A vault item's reference, made up.
 const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 /// What the made-up item keeps: nobody's password, and it says so.
@@ -165,17 +166,7 @@ impl BrowserServiceSessionServices for Service {
 fn context(app: &str, live: Arc<AtomicBool>) -> BrowserServiceSessionRequestContext {
     let root = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
-    let mut certificate = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Synthetic fixture".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    let certificate = primary_cert(&root, &device, "Synthetic fixture");
     let read = NativeDocumentReadContext {
         resource_type: None,
         route: crate::collab_broker::CrdtRoute::record(

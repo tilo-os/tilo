@@ -14,6 +14,7 @@ use super::*;
 use crate::platform::notice::OPEN_ACTION;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
+use tilo_peer_state::fixture::member_cert_with;
 /// What an app with a launcher-verified identity sent.
 fn from_app(
     mut notification: tilo_notifications_service::Notification,
@@ -1206,18 +1207,7 @@ impl PersonsWorkspace {
     /// A device of the person, called `label`, its key drawn from `seed`.
     fn device(&self, label: &str, seed: u8) -> tilo_user_identity::DeviceCert {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = tilo_user_identity::DeviceCert {
-            user_public_key: self.root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &self.root).expect("the root signs");
-        cert
+        member_cert_with(&self.root, &key, label, tilo_clock::unix_now_ns(), None)
     }
 }
 

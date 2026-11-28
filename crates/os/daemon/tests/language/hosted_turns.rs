@@ -22,6 +22,7 @@ use tilolang_workspace as tl;
 use crate::language::host;
 use crate::language::host::Host;
 
+use tilo_peer_state::fixture::member_cert_with;
 const CHAT: &str = "so.tilo.chat";
 /// The assistant a workspace starts with, as its list of agents names it, and the id a mention
 /// of it carries.
@@ -134,17 +135,13 @@ async fn member_as(host: &Host, role: Role) -> (Caller, String, host::Member) {
     getrandom::fill(&mut secret).unwrap();
     let key = SigningKey::from_bytes(&secret);
     let now = tilo_clock::unix_now_ns();
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "bo-browser".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(86_400_000_000_000)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = member_cert_with(
+        &root,
+        &key,
+        "bo-browser",
+        now,
+        Some(now.saturating_add(86_400_000_000_000)),
+    );
     let daemon = host.daemon();
     let workspaces = daemon.workspaces();
     workspaces

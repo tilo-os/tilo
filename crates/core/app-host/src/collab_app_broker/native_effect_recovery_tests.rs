@@ -9,6 +9,7 @@ use std::{
 };
 use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 
+use tilo_peer_state::fixture::primary_cert;
 struct NativeEffects {
     owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
     held: Arc<tokio::sync::Semaphore>,
@@ -84,11 +85,7 @@ fn fixture() -> Fixture {
     let owner =
         Arc::new(tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap());
     let key = SigningKey::from_bytes(&[92; 32]);
-    let certificate = tilo_peer_state::owner::testing::certificate(
-        &SigningKey::from_bytes(&[91; 32]),
-        &key,
-        "Host",
-    );
+    let certificate = primary_cert(&SigningKey::from_bytes(&[91; 32]), &key, "Host");
     tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate).unwrap();
     let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
     let mut workspace = crate::test_support::Workspace::new(

@@ -4,8 +4,7 @@
 //! make a change it never sends, then send one built on it.
 
 use crate::common::{
-    addr, device, localhost_endpoint, members_keys, opened, opened_heads, sealed_write,
-    write_sealed,
+    addr, localhost_endpoint, members_keys, opened, opened_heads, sealed_write, write_sealed,
 };
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -17,9 +16,10 @@ use std::time::Duration;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 use tilo_peer_state::store::{Appetite, Frame, Store};
-use tilo_user_identity::RevocationList;
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
+use tilo_peer_state::fixture::certify;
 const WORKSPACE: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
@@ -59,8 +59,8 @@ struct Linked {
 impl Linked {
     async fn start() -> Self {
         let root = SigningKey::from_bytes(&[0x31; 32]);
-        let (a_key, a_cert) = device(&root, 0x32);
-        let (b_key, b_cert) = device(&root, 0x33);
+        let (a_key, a_cert) = certify(&root, 0x32, DeviceCapabilities::member());
+        let (b_key, b_cert) = certify(&root, 0x33, DeviceCapabilities::member());
         let devices = vec![a_cert.clone(), b_cert];
         let now = SystemTime::now();
         let mut a = StatePeer::new(

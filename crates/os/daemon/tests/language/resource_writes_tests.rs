@@ -14,9 +14,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use collab_types::ContentRetention;
 use collab_types::store::wire::{Command, Reply};
 use collab_types::store::{Cell, Query, Resource, Value};
-use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_resource_store::{Stamp, Store};
@@ -250,7 +250,7 @@ impl Writer {
         let written = self.store.mark(KIND, id, &stamp).unwrap();
         let mutation =
             collab_types::DocumentMutation::Incremental(written.change.raw_bytes().to_vec());
-        let body = self.seal(workspace, &written.doc, &mutation.encode().unwrap(), false);
+        let body = self.seal(workspace, &written.doc, &mutation.encode().unwrap());
         workspaces
             .absorb_member_write(workspace, self.key.verifying_key().to_bytes(), &body)
             .await
@@ -278,60 +278,28 @@ impl Writer {
         let mut placed = String::new();
         let mut bodies = Vec::new();
         for write in written {
-            let founding = self.seq == 0;
-            let mutation = if founding {
+            let mutation = if self.seq == 0 {
                 let whole = self.store.document(&write.doc).unwrap().save();
                 collab_types::DocumentMutation::Snapshot(whole)
             } else {
                 collab_types::DocumentMutation::Incremental(write.change.raw_bytes().to_vec())
             };
-            bodies.push(self.seal(workspace, &write.doc, &mutation.encode().unwrap(), founding));
+            bodies.push(self.seal(workspace, &write.doc, &mutation.encode().unwrap()));
             placed = write.doc;
         }
         (placed, bodies)
     }
 
-    fn seal(&mut self, workspace: &str, doc: &str, plaintext: &[u8], founding: bool) -> Vec<u8> {
-        let retention = if founding {
-            ContentRetention::Checkpoint
-        } else {
-            ContentRetention::Delta
-        };
-        let artifact = collab_types::document_artifact_id(APP, workspace, doc);
-        let (metadata, payload) = self
-            .keys
-            .seal_content(artifact, retention, plaintext)
-            .unwrap();
-        let author =
-            collab_types::Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes());
+    fn seal(&mut self, workspace: &str, doc: &str, plaintext: &[u8]) -> Vec<u8> {
         self.seq = self.seq.saturating_add(1);
-        // A founding checkpoint holds no write before it.
-        let payload = if founding {
-            collab_types::SealedCheckpoint::new([], payload)
-                .encode()
-                .unwrap()
-        } else {
-            payload
-        };
-        let mut envelope = SignedOp::new_unsigned_with_encryption(
-            payload,
-            artifact,
-            author,
-            collab_types::document_attestation_id(APP, workspace, doc),
-            collab_types::OpKind::Change,
-            tilo_clock::wall(),
+        tilo_peer_state::fixture::sealed(
+            &self.keys,
+            (workspace, APP, doc),
+            &self.key,
+            plaintext,
             self.seq,
-            metadata,
-        );
-        collab_types::sign_op(&mut envelope, &self.key).unwrap();
-        NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(author.as_bytes()),
-            app_id: APP.into(),
-            cluster_id: workspace.into(),
-            document_id: doc.into(),
-            envelope: Box::new(envelope),
-            readers: None,
-        }
+            tilo_clock::wall(),
+        )
         .encode()
         .unwrap()
     }

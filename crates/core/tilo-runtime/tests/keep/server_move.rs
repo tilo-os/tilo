@@ -27,14 +27,15 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::config::ServerConfig;
 use tilo_server_protocol::web::{PageHost, PageHostAddress};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_workspace_service::own_device::{Device, Opened, open_in};
 use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 use tilo_workspace_service::workspaces::Workspaces;
 
 use tilo_peer_state::join::Role;
 
 use crate::keep::common::{
-    Linked, TestDevice, TestUser, copy_says, invitation, redeem, servers_action, start_server,
-    write,
+    Linked, TestDevice, TestUser, copy_says, device_endpoint, invitation, redeem, servers_action,
+    start_server, write,
 };
 
 /// The app the record naming the computer's picture is written in.
@@ -364,8 +365,25 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
     // from here on, the one copy its key writes.
     drop(on_a);
     let laptop_state = tempfile::tempdir().unwrap();
-    let (laptop_service, laptop_keys) =
-        crate::keep::common::own_service(laptop_state.path(), &laptop).await;
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
+    let Opened {
+        service: laptop_service,
+        keys: laptop_keys,
+    } = open_in(
+        laptop_state.path(),
+        Device {
+            cert: &laptop.cert,
+            signer: &signer,
+            itself: None,
+        },
+        key_group::VaultKey::new([3; 32]),
+        device_endpoint(&laptop).await,
+        std::sync::Arc::new(tilo_workspace_keys::NoSealChecks),
+        |config| config,
+    )
+    .await
+    .unwrap();
     let own = laptop_service.workspaces().clone();
     // Alice's own workspace is founded on her computer, which marks itself as the device that
     // keeps her root there.

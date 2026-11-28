@@ -241,6 +241,7 @@ mod tests {
         reason = "fixture offsets are a few chunks, far below u32::MAX"
     )]
     use super::*;
+    use tilo_peer_state::fixture::primary_cert;
     struct Bytes(Vec<u8>);
     impl DocumentBytes for Bytes {
         fn bytes(&self) -> &[u8] {
@@ -256,20 +257,10 @@ mod tests {
             use automerge::ReadDoc as _;
             use runtime_collab::committed_document::Reply;
             use tilo_peer_state::{SeedDocument, SeedState, StatePeer};
-            use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+            use tilo_user_identity::{RevocationList};
             let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
             let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
-            let mut certificate = DeviceCert {
-                user_public_key: person.verifying_key().to_bytes(),
-                device_public_key: device.verifying_key().to_bytes(),
-                device_label: "Empty record fixture".into(),
-                capabilities: DeviceCapabilities::primary(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-                issuer: None,
-            };
-            tilo_user_identity::sign_device_cert(&mut certificate, &person).unwrap();
+            let certificate = primary_cert(&person, &device, "Empty record fixture");
             let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
             let roster = vec![certificate.clone()];
             let now = tilo_clock::wall();

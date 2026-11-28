@@ -55,6 +55,8 @@ use tilo_app_host::{
     },
 };
 use tilo_desktop_model::WorkspaceId;
+
+use super::person_workspace;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
 use tilo_invocations::Invocations;
@@ -3828,11 +3830,6 @@ fn asked_store(
     workspaces.copies().asked_store().ok_or_else(|| {
         io::Error::other("the workspaces this device serves keep no calls that wait")
     })
-}
-
-/// `person`'s own workspace, at the id their key names.
-fn person_workspace(person: &[u8; 32]) -> WorkspaceId {
-    WorkspaceId::from(collab_types::person_workspace(person))
 }
 
 /// The systemd credential that fixes the UDP port this device's endpoint binds, for a device

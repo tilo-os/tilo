@@ -2,6 +2,7 @@
 //! and refuses what it refuses, whatever this session holds; and what it has
 //! of them is what the session's copy shows.
 
+use tilo_peer_state::fixture::{member_cert_with, primary_cert};
 tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
@@ -28,7 +29,7 @@ fn identity(cert: &tilo_user_identity::DeviceCert, key: &SigningKey) -> DeviceId
 fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir) {
     let person_root = SigningKey::from_bytes(&[9; 32]);
     let person_key = SigningKey::from_bytes(&[10; 32]);
-    let cert = testing::certificate(&person_root, &person_key, "This device");
+    let cert = primary_cert(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
     let identity = identity(&cert, &person_key);
     let engine = Engine::open(identity, Some(directory.path()), std::iter::empty())
@@ -41,7 +42,7 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
     // workspace has a device of is one it has.
     let her_root = SigningKey::from_bytes(&[21; 32]);
     let her_key = SigningKey::from_bytes(&[22; 32]);
-    let her = testing::certificate(&her_root, &her_key, joiner);
+    let her = primary_cert(&her_root, &her_key, joiner);
     let joining = tempfile::TempDir::new().expect("her state directory");
     let hers = tilo_peer_state::owner::open_file(&joining.path().join("owner.json"))
         .expect("her owner opens");
@@ -141,7 +142,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
     // The workspace's owner, whose own device signs for it.
     let a_root = SigningKey::from_bytes(&[51; 32]);
     let a_key = SigningKey::from_bytes(&[52; 32]);
-    let a_cert = testing::certificate(&a_root, &a_key, "The owner's laptop");
+    let a_cert = primary_cert(&a_root, &a_key, "The owner's laptop");
     let admitting = TestWorkspace::empty_interactive(a_cert.clone(), a_key.clone(), WORKSPACE)
         .expect("the workspace's owner hosts it");
     let a_state = tempfile::TempDir::new().expect("a state directory");
@@ -156,7 +157,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
     // The person at this session joins it as their own device, and so does another member.
     let b_root = SigningKey::from_bytes(&[53; 32]);
     let b_key = SigningKey::from_bytes(&[54; 32]);
-    let b_cert = testing::certificate(&b_root, &b_key, "This session");
+    let b_cert = primary_cert(&b_root, &b_key, "This session");
     let b_state = tempfile::TempDir::new().expect("this session's state directory");
     let b_engine = Engine::open(
         identity(&b_cert, &b_key),
@@ -168,7 +169,7 @@ fn the_owner_admitted_ada() -> TwoSessions {
         .expect("the workspace admits this session");
     let her_root = SigningKey::from_bytes(&[55; 32]);
     let her_key = SigningKey::from_bytes(&[56; 32]);
-    let her = testing::certificate(&her_root, &her_key, "ada");
+    let her = primary_cert(&her_root, &her_key, "ada");
     let hers_at = tempfile::TempDir::new().expect("her state directory");
     let hers = tilo_peer_state::owner::open_file(&hers_at.path().join("owner.json"))
         .expect("her owner opens");
@@ -916,17 +917,13 @@ fn this_computer(
     let device = SigningKey::from_bytes(&[0x62; 32]);
     tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
         .expect("this computer's device key");
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "The laptop".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+    let cert = member_cert_with(
+        &person,
+        &device,
+        "The laptop",
+        tilo_clock::unix_now_ns(),
+        None,
+    );
     tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &person.verifying_key().to_bytes(),
@@ -979,7 +976,7 @@ fn the_people_another_device_admits_are_on_this_shells_people() {
     let now = tilo_clock::wall();
     let her_root = SigningKey::from_bytes(&[0x63; 32]);
     let her_key = SigningKey::from_bytes(&[0x64; 32]);
-    let her = testing::certificate(&her_root, &her_key, "ada");
+    let her = primary_cert(&her_root, &her_key, "ada");
     {
         let engine = Engine::open(identity(&cert, &key), Some(state.path()), [workspace_id])
             .expect("this computer's engine opens");
@@ -1207,7 +1204,7 @@ fn a_second_device(
     seed: impl FnOnce(&mut TestWorkspace, &tilo_user_identity::DeviceCert, &SigningKey),
 ) -> (Engine, tilo_user_identity::DeviceCert, SigningKey, String) {
     let her_key = SigningKey::from_bytes(&[0x72; 32]);
-    let her = testing::certificate(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
+    let her = primary_cert(&SigningKey::from_bytes(&[0x71; 32]), &her_key, "ada");
     let hers = Engine::open(identity(&her, &her_key), Some(her_state), [workspace_id])
         .expect("her engine opens");
     // This computer's device hosts the workspace, and admits her.

@@ -8,8 +8,10 @@ use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
 use tilo_app_host::services::WorkspaceGrants;
 use tilo_desktop_model::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_user_identity::DeviceCapabilities;
 use tilo_workspace_service::workspaces::app_invocations::AppInvocations as _;
 
+use tilo_peer_state::fixture::member_cert_with;
 /// The test whose phase runs in a fresh process; libtest selects it by this
 /// exact path.
 const PROCESS_TEST: &str = "device::services::tests::sdk_apps_join_the_daemon_and_publish_to_mcp";
@@ -975,7 +977,7 @@ tilo_test_env::scenario! {
         // workspace's VM): this workspace refuses it before its member list is asked, though the
         // list names its key.
         let mut confined = cert.clone();
-        confined.capabilities = tilo_user_identity::DeviceCapabilities::workspace_device(
+        confined.capabilities = DeviceCapabilities::workspace_device(
             *uuid::Uuid::from_u128(8).as_bytes(),
         );
         assert_eq!(
@@ -985,7 +987,7 @@ tilo_test_env::scenario! {
         assert!(certificates.authorize_join(workspace, &confined).is_err());
         let mut at_home = cert.clone();
         at_home.capabilities =
-            tilo_user_identity::DeviceCapabilities::workspace_device(*workspace.as_bytes());
+            DeviceCapabilities::workspace_device(*workspace.as_bytes());
         assert_eq!(
             certificates.authorize(workspace, &at_home),
             Ok(()),
@@ -1043,17 +1045,13 @@ fn a_logins_device_is_what_this_computers_apps_sign_as() {
     let root = SigningKey::from_bytes(&[41; 32]);
     let key = SigningKey::from_bytes(&[42; 32]);
     let now = tilo_clock::unix_now_ns();
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Ada's laptop".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: now.saturating_sub(60_000_000_000),
-        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = member_cert_with(
+        &root,
+        &key,
+        "Ada's laptop",
+        now.saturating_sub(60_000_000_000),
+        Some(now.saturating_add(3_600_000_000_000)),
+    );
     let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys()).unwrap();
     tilo_device_identity::persist::adopt_device_key(place.keys(), &key.to_bytes()).unwrap();
     // No daemon runs here: this process holds the key it adopted, as the daemon does.
@@ -2145,9 +2143,10 @@ fn a_migrations_calls_are_its_agents_under_a_key_its_person_certified() {
     );
     assert_eq!(
         cert.capabilities,
-        tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::agent_in(*id.as_uuid().as_bytes(), &agent)
-        ),
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+            *id.as_uuid().as_bytes(),
+            &agent
+        )),
         "a grant to the migration's agent in this workspace alone"
     );
 
@@ -3009,7 +3008,7 @@ const ENVIRONMENT_ASK_TEST: &str =
 fn certified_device(
     root: &ed25519_dalek::SigningKey,
     byte: u8,
-    capabilities: tilo_user_identity::DeviceCapabilities,
+    capabilities: DeviceCapabilities,
 ) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[byte; 32]);
     let now = tilo_clock::unix_now_ns();
@@ -3041,7 +3040,6 @@ fn a_hosting_daemon_answers_its_environments_media_key_ask() {
     use std::os::unix::fs::PermissionsExt as _;
     use tilo_action_services::environment_device;
     use tilo_actions::remote::{Caller, InvokeRequest, ReceiptStatus, RemoteActionMessage};
-    use tilo_user_identity::DeviceCapabilities;
 
     if let Some(root) = std::env::var_os(PROCESS_ROOT) {
         // The deployment's own process: its root, its configuration and what its Browser
@@ -3947,7 +3945,7 @@ fn an_own_keys_run_is_the_agent_its_workspace_lists() {
         user_public_key: identity.group_public_key(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "Ada's backend".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
+        capabilities: DeviceCapabilities::agent_grant(
             tilo_user_identity::AgentScope::AllWorkspaces,
         ),
         issued_at_ns: now.saturating_sub(60_000_000_000),

@@ -9,6 +9,7 @@
 use super::*;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, SignInProof};
 
+use tilo_peer_state::fixture::{labelled_with, member_cert};
 pub(crate) const ISSUER: &str = "https://api.test";
 pub(crate) const WEB_ENTRY: &str = "https://tilo.test";
 pub(crate) const REDIRECT: &str = "http://127.0.0.1:33418/callback";
@@ -75,17 +76,7 @@ impl Person {
     pub(crate) fn new(seed: u8) -> Self {
         let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(100); 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Laptop".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let cert = member_cert(&root, &device, "Laptop");
         Self { root, device, cert }
     }
 
@@ -1140,17 +1131,14 @@ async fn a_key_carries_its_grant_to_every_api_server() {
 fn key_of(person: &Person, seed: u8) -> GrantKey {
     let now = tilo_clock::unix_now_ms();
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "anything".into(),
-        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
-        issued_at_ns: now.saturating_sub(1_000).saturating_mul(1_000_000),
-        expires_at_ns: Some(now.saturating_add(86_400_000).saturating_mul(1_000_000)),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person.root).unwrap();
+    let cert = labelled_with(
+        &person.root,
+        &key,
+        "anything",
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        now.saturating_sub(1_000).saturating_mul(1_000_000),
+        Some(now.saturating_add(86_400_000).saturating_mul(1_000_000)),
+    );
     GrantKey::held(key, cert, now.saturating_mul(1_000_000)).unwrap()
 }
 

@@ -3,6 +3,7 @@
 use super::*;
 use crate::join::JoinTransportResponse;
 
+use crate::fixture::primary_cert;
 struct Vouched {
     _directory: tempfile::TempDir,
     path: PathBuf,
@@ -89,7 +90,7 @@ tilo_test_env::scenario! {
         let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let owner = open_file(&directory.path().join("joined-workspaces.json")).unwrap();
         let workspace = bootstrap.workspace_id;
-        let stranger = crate::owner::testing::certificate(
+        let stranger = primary_cert(
             &SigningKey::from_bytes(&[71; 32]),
             &SigningKey::from_bytes(&[72; 32]),
             "Stranger",
@@ -146,13 +147,13 @@ tilo_test_env::scenario! {
                 held.now,
             )
         };
-        let member = crate::owner::testing::certificate(
+        let member = primary_cert(
             &SigningKey::from_bytes(&[64; 32]),
             &crate::owner::testing::member_key(),
             "Member",
         );
         receive(&member).unwrap();
-        let unlisted = crate::owner::testing::certificate(
+        let unlisted = primary_cert(
             &SigningKey::from_bytes(&[64; 32]),
             &SigningKey::from_bytes(&[70; 32]),
             "Second",

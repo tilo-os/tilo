@@ -21,7 +21,7 @@ fn trigger(seconds: u64) -> TriggerSpec {
 #[test]
 fn a_fire_time_one_key_holder_answered_is_where_the_next_one_carries_on() {
     let (mut left, _left_key, mut right, _right_key) = desktops();
-    let now = crate::owner::testing::now();
+    let now = crate::fixture::at();
     let left_cert = cert_of(&left);
     let mark = trigger_mark(&trigger(60));
     assert_eq!(
@@ -74,7 +74,7 @@ fn a_fire_time_one_key_holder_answered_is_where_the_next_one_carries_on() {
 #[test]
 fn a_key_holder_taking_the_lease_over_answers_where_the_previous_one_stopped() {
     let (mut left, _left_key, mut right, _right_key) = desktops();
-    let now = crate::owner::testing::now();
+    let now = crate::fixture::at();
     let left_cert = cert_of(&left);
     let right_cert = cert_of(&right);
     let mark = trigger_mark(&trigger(60));

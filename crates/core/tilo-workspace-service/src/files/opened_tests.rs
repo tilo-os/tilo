@@ -18,7 +18,9 @@ use serde_json::json;
 use crate::workspaces::fixtures::{hosting_device, test_host};
 
 use super::*;
+use tilo_user_identity::DeviceCapabilities;
 
+use tilo_peer_state::fixture::labelled_with;
 /// A content store's shelf in memory, as a device's own is: content kept under the scope a
 /// record's content lives under, addressed by its hash.
 #[derive(Default)]
@@ -508,19 +510,17 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
     let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
     let now = tilo_clock::unix_now_ns();
-    let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Porter".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-            tilo_user_identity::AgentScope::agent_in(*put.workspace.as_uuid().as_bytes(), "porter"),
-        ),
-        issued_at_ns: now - 1,
-        expires_at_ns: Some(now + 3_600_000_000_000),
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = labelled_with(
+        &root,
+        &key,
+        "Porter",
+        DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+            *put.workspace.as_uuid().as_bytes(),
+            "porter",
+        )),
+        now - 1,
+        Some(now + 3_600_000_000_000),
+    );
     let porter = |request: &tilo_actions::remote::InvokeRequest| {
         tilo_actions::ActionContext {
             source_invocation: Some(request.invocation),

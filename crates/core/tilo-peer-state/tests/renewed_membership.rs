@@ -25,6 +25,7 @@ use tilo_peer_state::owner::testing::{self, WORKSPACE};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
+use tilo_peer_state::fixture::primary_cert;
 /// The workspace's admitted state, which also gives the governance a joining
 /// member admits.
 struct Admitted(StatePeer);
@@ -182,7 +183,7 @@ impl MemoryWorkspaces {
                     key: &self.key,
                     nonce: [1; 16],
                 },
-                testing::ns(now).unwrap(),
+                tilo_peer_state::fixture::ns(now),
             )
             .unwrap();
         workspace.log = log;
@@ -202,7 +203,8 @@ fn answer(
     request: JoinTransportRequest,
     now: SystemTime,
 ) -> JoinTransportResponse {
-    let answer = std::pin::pin!(owner_copy.answer(remote, request, testing::ns(now).unwrap()));
+    let answer =
+        std::pin::pin!(owner_copy.answer(remote, request, tilo_peer_state::fixture::ns(now)));
     match answer.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
         std::task::Poll::Ready(answer) => answer,
         std::task::Poll::Pending => panic!("a memory host answers at once"),
@@ -218,7 +220,7 @@ fn expiring(
     issued: SystemTime,
     lifetime: Duration,
 ) -> DeviceCert {
-    let issued_at_ns = testing::ns(issued).unwrap();
+    let issued_at_ns = tilo_peer_state::fixture::ns(issued);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
@@ -244,10 +246,10 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     let directory = tempfile::tempdir().unwrap();
     let person = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
-    let device = testing::certificate(&person, &key, "Desktop");
+    let device = primary_cert(&person, &key, "Desktop");
     let workspace = WorkspaceId::parse(WORKSPACE).unwrap();
     let joined_at = SystemTime::now();
-    let joined_ns = testing::ns(joined_at).unwrap();
+    let joined_ns = tilo_peer_state::fixture::ns(joined_at);
     let owner_copy = JoinAnswer(MemoryWorkspaces::new(&device, &key, joined_at));
     let workspace_id = join::WorkspaceId::parse(WORKSPACE).unwrap();
     let hint = WorkspaceDeviceHintV1 {
@@ -360,7 +362,7 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
     // Two days on, the first certificate has expired; the slot's root
     // renewed it when it was due.
     let later = joined_at.checked_add(48 * HOUR).unwrap();
-    let later_ns = testing::ns(later).unwrap();
+    let later_ns = tilo_peer_state::fixture::ns(later);
     let renewed = expiring(
         &slot_root,
         &slot_key,

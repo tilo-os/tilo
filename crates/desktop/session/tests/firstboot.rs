@@ -20,6 +20,7 @@ use tilo_session::startup::{self, Identity};
 use tilo_session::{BeforeShell, Options};
 use tilo_user_identity::DeviceCertError;
 
+use tilo_peer_state::fixture::member_cert_with;
 /// The unit the image ships for the machine's own first-boot setup.
 const UNIT: &str = include_str!("../../../../os/usr/lib/systemd/system/tilo-firstboot.service");
 
@@ -327,7 +328,6 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
 #[test]
 fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     let machine = machine();
     // A node's session, certified when the node was installed: a member certificate its person
@@ -336,17 +336,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     let (device, _) =
         persist::load_or_create_device_key(&machine.paths).expect("this device's key");
     let now = tilo_clock::unix_now_ns();
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "node".to_owned(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &person).expect("the person's signature");
+    let cert = member_cert_with(&person, &device, "node", now, None);
     // The node was enrolled from the factory, never set up here: no root and no key of an identity
     // of its own beside the device key the imager left.
     let cert_path = machine.certificate_path();

@@ -4,6 +4,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::Change;
 
+use crate::fixture::{member_cert, member_cert_with};
 mod confined;
 mod editor;
 mod holders;
@@ -363,17 +364,7 @@ tilo_test_env::scenario! {
         // workspace's own devices and kept: replay gives it no effect, because its
         // author is no longer a member.
         let newcomer = SigningKey::from_bytes(&[66; 32]);
-        let mut newcomer_cert = DeviceCert {
-            user_public_key: newcomer.verifying_key().to_bytes(),
-            device_public_key: SigningKey::from_bytes(&[67; 32]).verifying_key().to_bytes(),
-            device_label: "Newcomer".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut newcomer_cert, &newcomer).unwrap();
+        let newcomer_cert = member_cert(&newcomer, &SigningKey::from_bytes(&[67; 32]), "Newcomer");
         let NeighbourMsg::SyncResp { changes, workspace } = peer.workspace_message() else {
             panic!("unexpected fixture shape");
         };
@@ -1721,24 +1712,14 @@ tilo_test_env::scenario! {
         let later = now + Duration::from_secs(2);
         let root = SigningKey::from_bytes(&[104; 32]);
         let authority_key = SigningKey::from_bytes(&[105; 32]);
-        let mut authority = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: authority_key.verifying_key().to_bytes(),
-            device_label: "historical authority".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: Some(
+        let authority = member_cert_with(&root, &authority_key, "historical authority", 1, Some(
                 (now + Duration::from_secs(1))
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
                     .try_into()
                     .unwrap(),
-            ),
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut authority, &root).unwrap();
+            ));
         let workspace = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         let mut peer = StatePeer::new(
             workspace,
@@ -1748,7 +1729,13 @@ tilo_test_env::scenario! {
             now,
         )
         .unwrap();
-        crate::fixture::found(&mut peer, (&authority_key, &authority), &[authority.clone()], vec![], now);
+        crate::fixture::found(
+            &mut peer,
+            (&authority_key, &authority),
+            std::slice::from_ref(&authority),
+            vec![],
+            now,
+        );
 
         let restored = StatePeer::restore(
             &peer.durable().unwrap(),

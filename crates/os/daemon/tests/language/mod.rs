@@ -3,6 +3,7 @@
 //! records are of compiled from their sources, and the daemon itself through its API, its
 //! dispatch and the device link, each test on a daemon of its own.
 
+use tilo_peer_state::fixture::labelled_with;
 mod app_records_tests;
 mod approved_checks;
 mod calendar_bridge_tests;
@@ -107,7 +108,7 @@ use tilo_app_host::test_support::Started;
 use tilo_app_host::triggers::{Firing, Runner};
 use tilo_member_types::Actor as Who;
 use tilo_resource_store::Stamp;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, declare_built_in_app, hosting_device, test_host_holding,
@@ -306,19 +307,16 @@ impl CertifiedKeys {
         let issued = tilo_clock::unix_now_ns();
         // An agent's grant runs out, as every one a person's device makes does.
         let day = 24 * 60 * 60 * 1_000_000_000;
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: agent.into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::agent_grant(
-                tilo_user_identity::AgentScope::agent_in(workspace, agent),
-            ),
-            issued_at_ns: issued,
-            expires_at_ns: Some(issued + day),
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, root).expect("the agent's grant signs");
+        let cert = labelled_with(
+            root,
+            &key,
+            agent,
+            DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
+                workspace, agent,
+            )),
+            issued,
+            Some(issued + day),
+        );
         Self { cert, key }
     }
 }

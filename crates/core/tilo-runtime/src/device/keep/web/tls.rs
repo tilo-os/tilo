@@ -687,6 +687,7 @@ fn save_stored(path: &Path, issued: &Issued) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    use tilo_peer_state::fixture::member_cert_with;
     tilo_test_env::scenario! {
         fn tls_identities_load_renew_and_are_replaced_when_names_change;
 
@@ -907,17 +908,7 @@ mod tests {
         seed: u8,
     ) -> (ed25519_dalek::SigningKey, DeviceCert) {
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "server".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+        let cert = member_cert_with(root, &key, "server", tilo_clock::unix_now_ns(), None);
         (key, cert)
     }
 

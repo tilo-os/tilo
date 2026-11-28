@@ -23,7 +23,6 @@ use super::SystemTime;
 use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{device_rows, now_ns};
 use serde::{Deserialize, Serialize};
-
 /// Key of the work a workspace's key holders did, in its own document: a map,
 /// there from the workspace's founding, from `<lease id>/<device key hex>` of
 /// each device that did it to what it answered ([`device_rows`]).
@@ -155,11 +154,10 @@ impl PeerWorkspaceMut<'_> {
 )]
 mod tests {
     use super::*;
-    use crate::owner::testing::now;
+    use crate::fixture::member_cert;
     use crate::state::leases::{CLOCK_SKEW_NS, unranked};
     use crate::state::test_desktops::{cert_of, desktops, sync};
     use web_time::Duration;
-
     fn at(now: SystemTime, seconds: u64) -> SystemTime {
         now + Duration::from_secs(seconds)
     }
@@ -190,7 +188,7 @@ mod tests {
     #[test]
     fn one_key_holder_sends_a_message_and_the_other_finds_it_sent() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let left_cert = cert_of(&left);
         let right_cert = cert_of(&right);
         let message = "outbox-1";
@@ -248,7 +246,7 @@ mod tests {
     #[test]
     fn a_message_its_sender_stopped_on_is_taken_over_once_and_sent_once() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let right_cert = cert_of(&right);
         let message = "outbox-2";
 
@@ -284,7 +282,7 @@ mod tests {
     #[test]
     fn two_senders_after_a_partition_merge_on_one_winner_and_send_no_more() {
         let (mut left, _left_key, mut right, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let left_cert = cert_of(&left);
         let right_cert = cert_of(&right);
         assert!(
@@ -330,20 +328,10 @@ mod tests {
     #[test]
     fn a_device_that_may_not_change_the_workspace_keeps_no_send() {
         let (mut left, _left_key, _, _right_key) = desktops();
-        let now = now();
+        let now = crate::fixture::at();
         let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[77; 32]);
         let stranger_key = ed25519_dalek::SigningKey::from_bytes(&[78; 32]);
-        let mut stranger = tilo_user_identity::DeviceCert {
-            user_public_key: stranger_root.verifying_key().to_bytes(),
-            device_public_key: stranger_key.verifying_key().to_bytes(),
-            device_label: "stranger".into(),
-            capabilities: tilo_user_identity::DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        tilo_user_identity::sign_device_cert(&mut stranger, &stranger_root).unwrap();
+        let stranger = member_cert(&stranger_root, &stranger_key, "stranger");
         assert!(
             left.workspace_mut()
                 .keep_done(&stranger, &mail_send_lease("outbox-4"), sent(""), now)
