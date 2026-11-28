@@ -121,7 +121,7 @@ fn settled(device: &Device) -> u64 {
 }
 
 /// The person switches dark mode `on` with `switch`, as Quick Settings does, and the window's
-/// next frame is drawn within [`SWITCH`] of it: how the window looks once it settled.
+/// next frame is drawn within [`SWITCH`] of it: how the display shows the window then.
 fn switched(device: &Device, switch: &tilo_actions::remote::RemoteActionTarget, on: bool) -> Look {
     let before = settled(device);
     let asked = Instant::now();
@@ -131,7 +131,9 @@ fn switched(device: &Device, switch: &tilo_actions::remote::RemoteActionTarget, 
         "the person switches dark mode {on}: {answer}"
     );
     // The window's next frame: drawn within a moment of the switch, without anything else
-    // happening on the desktop.
+    // happening on the desktop. What the display shows as the window's next frame is drawn is the
+    // theme the person switched to: a frame in the appearance before it is the appearance reaching
+    // the window one frame late, which is what a person sees as the switch not having taken.
     while frames(device) <= before {
         assert!(
             asked.elapsed() < SWITCH,
@@ -141,7 +143,6 @@ fn switched(device: &Device, switch: &tilo_actions::remote::RemoteActionTarget, 
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    settled(device);
     look(device, if on { "dark" } else { "light" })
 }
 

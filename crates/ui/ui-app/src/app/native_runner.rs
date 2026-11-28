@@ -2304,6 +2304,15 @@ impl AppHandler {
         if self.surface_suspended {
             return;
         }
+        // What the shell wrote since the last frame — the window's appearance and the theme every
+        // part wears among it — is taken up before this frame draws. A redraw can be dispatched in
+        // the same turn of the loop as the shell's own message and before the loop's idle pass
+        // reads it, so a window that drew only there showed the appearance before: the shell's
+        // word is this frame's, never the next one's.
+        if self.app.floating.client.is_some() && self.app.pump_floating_surface_service() {
+            self.app.invalidate_widget_resource_cache();
+            self.app.layout.layout_dirty = true;
+        }
         tilo_ui_base::input_frame::frame_started();
         self.input_backlog.frame_started(crate::time::now());
         if first_primary_frame {
