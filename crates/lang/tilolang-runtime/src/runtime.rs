@@ -2049,6 +2049,20 @@ impl Runtime {
         crate::did::renamed(&self.core.registry.borrow().type_info(ty)?.1, field)
     }
 
+    /// The arguments of the version `v` that the words its action declares for what it did read,
+    /// by name ([`crate::did::did_args`]); none for an action that declares none.
+    #[must_use]
+    pub fn did_args(&self, v: &crate::store::Version) -> Vec<(String, serde_json::Value)> {
+        let registry = self.core.registry.borrow();
+        registry
+            .action_package(&v.action)
+            .and_then(|pkg| {
+                let action = pkg.action(&v.action)?;
+                Some(crate::did::did_args(&pkg.meta, action, &v.args))
+            })
+            .unwrap_or_default()
+    }
+
     /// The runs `person` reviewed, as their own record keeps them: every version of one is
     /// seen. A view that read what is unseen runs again when they move.
     pub fn set_seen_runs(&self, person: &Actor, runs: &[String]) {

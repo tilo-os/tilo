@@ -391,9 +391,12 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         message(&mut out, &action.id, &action.label, &action.doc);
         // What the action did, as a history entry says it after who did it.
         if let Some(did) = &action.did {
-            let words = match &action.did_many {
-                Some(many) => counted(&pattern(did), &pattern(many)),
-                None => pattern(did),
+            let words = match (&action.did_by, &action.did_many) {
+                // Words a parameter's value picks: a selector over it, the last branch the words
+                // of any other value.
+                (Some(choice), _) => chosen(choice, did),
+                (None, Some(many)) => counted(&pattern(did), &pattern(many)),
+                (None, None) => pattern(did),
             };
             attribute(&mut out, "did", &words);
         }
@@ -467,6 +470,17 @@ fn noun(ty: &TypeMeta) -> String {
 /// `one` and `several` as one Fluent message that picks by `$count`.
 fn counted(one: &str, several: &str) -> String {
     format!("{{ $count ->\n        [one] {one}\n       *[other] {several}\n    }}")
+}
+
+/// `{ $on -> [true] turned it on *[other] turned it off }`: the words `choice`'s parameter picks,
+/// `other` those of any value it does not name.
+fn chosen(choice: &crate::meta::DidChoice, other: &str) -> String {
+    let mut out = format!("{{ ${} ->\n", choice.param);
+    for (case, words) in &choice.cases {
+        let _ = writeln!(out, "        [{case}] {}", pattern(words));
+    }
+    let _ = write!(out, "       *[other] {}\n    }}", pattern(other));
+    out
 }
 
 fn message(out: &mut String, id: &str, words: &str, doc: &str) {

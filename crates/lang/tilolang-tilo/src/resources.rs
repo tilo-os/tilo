@@ -4281,6 +4281,29 @@ impl ResourceStore {
     /// The stamp a commit of `note` carries: the action, who invoked it and when, and what the
     /// versions it makes say of it on every replica (what it was made from, the run it is a
     /// step of, who proposed it).
+    /// An invocation's arguments as its changes are stamped with them. A plain enum's case says
+    /// the name the record holds it by beside its id: a change keeps of its arguments only what
+    /// it holds, and history reads the case by name.
+    fn stamped_args(&self, args: &serde_json::Value) -> Vec<serde_json::Value> {
+        let kinds = self.inner.kinds.borrow();
+        args.as_array()
+            .into_iter()
+            .flatten()
+            .map(|arg| {
+                let mut arg = arg.clone();
+                if let Some(fields) = arg.as_object_mut()
+                    && let Some(name) = fields
+                        .get("variant")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|variant| kinds.variant_name(variant))
+                {
+                    fields.insert("case".to_owned(), name.into());
+                }
+                arg
+            })
+            .collect()
+    }
+
     fn stamp(&self, note: &ChangeNote, migration: bool) -> Stamp {
         let burst = self.burst_invocation(note);
         let (acted_for, acting) = self.acted_for();
@@ -4392,7 +4415,7 @@ impl ResourceStore {
             args: if note.action.starts_with('$') {
                 Vec::new()
             } else {
-                note.args.as_array().cloned().unwrap_or_default()
+                self.stamped_args(&note.args)
             },
             moment: self.next_moment(note.at.as_deref()),
             signed: self.inner.serving_signed.borrow().clone(),
@@ -4492,6 +4515,11 @@ impl ResourceStore {
             who,
             at: stamp.at,
             action,
+            args: if stamp.args.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Array(stamp.args)
+            },
             run: stamp.group.map(|group| tilolang_runtime::store::Run {
                 id: group.id,
                 title: group.label,

@@ -255,6 +255,9 @@ pub struct Presentation {
     pub did: Option<String>,
     /// `did_many: "moved {count} tasks"`: what it did when it changed several.
     pub did_many: Option<String>,
+    /// `did: if on { "turned it on" } else { "turned it off" }`: the words a parameter's value
+    /// picks ([`crate::meta::ActionMeta::did_by`]).
+    pub did_by: Option<crate::meta::DidChoice>,
     /// `keywords: ["interrupt", "ctrl+c"]`: other words a person finds the action by in the
     /// system's search, beside its label.
     pub keywords: Vec<String>,

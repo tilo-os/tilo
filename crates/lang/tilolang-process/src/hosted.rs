@@ -4840,14 +4840,13 @@ impl Hosted {
             }));
         }
         if encoded.type_id == VIEW_TYPE {
-            let locale = self.phrases.locale();
             return Self::history_view(
                 &surface,
                 &shown,
                 &address,
                 &encoded.payload,
                 &host,
-                &locale,
+                &self.phrases,
                 &self.spec.person,
             )
             .map(Ran::Done);
@@ -4990,14 +4989,14 @@ impl Hosted {
 
     /// Answer a history view of the resource `address` names: the versions the store holds of
     /// it and of what it is published with, oldest first, as many as it asks for, each with the
-    /// sentence it reads as in `locale`, as the person `person` reads them.
+    /// sentence it reads as in the words of `phrases`, as the person `person` reads them.
     fn history_view(
         surface: &Surface,
         shown: &[String],
         address: &ActionAddress,
         payload: &[u8],
         host: &Host,
-        locale: &str,
+        phrases: &Phrases,
         person: &str,
     ) -> Result<tilo_actions::ActionOutput, Refused> {
         let view = collab_types::history::verbs::view_from_payload(payload)
@@ -5007,7 +5006,7 @@ impl Hosted {
         let reader = tilolang_tilo::runtime::Actor::Member(MemberId::person(person));
         let mut value = tilolang_service::history(host, &trees, &view, &reader)
             .map_err(|error| Refused::new("action_failed", error))?;
-        say_versions(&mut value, &resources, locale);
+        tilolang_tilo::versions::say_versions(&mut value, &resources, phrases, &phrases.locale());
         Ok(tilo_actions::ActionOutput {
             value: Some(value),
             resources: Vec::new(),
@@ -5930,63 +5929,6 @@ fn media_action(
             vec![target, Value::Float(level.clamp(0.0, 1.0))],
         ),
         runtime_portal::process_link::MediaCommand::Mute => ("mute", vec![target]),
-    }
-}
-
-/// Give each version `history` lists the sentence it reads as in `locale`: what was done, by the
-/// label its action is published under in `resources`, to the resource by the name history
-/// calls it ("Ran “New note” on Untitled", "Created Notebook"), never by an id.
-fn say_versions(history: &mut serde_json::Value, resources: &[ResourceSpec], locale: &str) {
-    let mut labels = tilo_history::ActionLabels::default();
-    labels.learn(resources);
-    let reader = tilo_history::Reader::new(locale).with_labels(&labels);
-    let Some(versions) = history
-        .get_mut("versions")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return;
-    };
-    for version in versions {
-        let text = |key: &str| version[key].as_str().unwrap_or_default().to_owned();
-        let (resource, action, label) = (text("resource"), text("action"), text("label"));
-        let named = version["named"].as_str().map(str::to_owned);
-        let app = tilolang_tilo::publish::app_of(&resource)
-            .unwrap_or_default()
-            .to_owned();
-        // A checkpoint or a restore is a step through history, said as history says it.
-        let step = match (action.as_str(), named) {
-            ("checkpoint", Some(name)) => Some(tilo_actions::HistoryOp::Checkpoint { name }),
-            ("restore", _) => Some(tilo_actions::HistoryOp::Restore),
-            _ => None,
-        };
-        let entry = tilo_actions::ActionContext {
-            app: Some(tilo_actions::ActionApp {
-                id: app.clone(),
-                label: String::new(),
-            }),
-            item: Some(tilo_actions::ActionItem {
-                id: resource,
-                label,
-            }),
-            what: Some(step.map_or_else(
-                || {
-                    tilo_actions::Did::Verb(tilo_actions::VerbCall {
-                        action: tilo_actions::ActionKey {
-                            app,
-                            kind: String::new(),
-                            action,
-                        },
-                        args: std::collections::BTreeMap::new(),
-                    })
-                },
-                |op| tilo_actions::Did::history(op, 0, None),
-            )),
-            ..tilo_actions::ActionContext::default()
-        };
-        let sentence = reader.sentence(&entry);
-        if let Some(fields) = version.as_object_mut() {
-            fields.insert("sentence".to_owned(), sentence.into());
-        }
     }
 }
 

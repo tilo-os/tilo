@@ -610,6 +610,11 @@ pub struct Version {
     pub at: String,
     /// The action's id (`$create` for a resource the host made).
     pub action: String,
+    /// The arguments the action was invoked with, one per parameter in order, as its change
+    /// recorded them: what history reads the words the action declares for what it did with
+    /// ([`crate::did::did_args`]). `null` where the change recorded none.
+    #[serde(default, skip_serializing_if = "Json::is_null")]
+    pub args: Json,
     /// The run that made it; `None` for a change made outside a run.
     #[serde(rename = "task")]
     pub run: Option<Run>,
@@ -941,6 +946,7 @@ pub fn versions_in<'c>(
                 who: note.invoker.clone(),
                 at: note.at.clone().unwrap_or_else(|| EPOCH.to_owned()),
                 action: note.action.clone(),
+                args: note.args.clone(),
                 run: note.group.clone(),
                 kind,
                 fields: Vec::new(),

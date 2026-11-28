@@ -227,6 +227,18 @@ impl Phrases {
     }
 }
 
+/// The window's catalogues as history reads an app's words for a step: an action's `did` with the
+/// step's arguments.
+impl tilo_history::Messages for Phrases {
+    fn format(&self, key: &str, args: &FluentArgs<'_>) -> Option<String> {
+        self.catalogue.borrow().format(key, args)
+    }
+
+    fn has(&self, key: &str) -> bool {
+        self.catalogue.borrow().has(key)
+    }
+}
+
 impl tilo_formats::Words for Phrases {
     fn word(&self, key: &str, args: &[(&str, tilo_formats::Word)]) -> String {
         let mut fluent = FluentArgs::new();

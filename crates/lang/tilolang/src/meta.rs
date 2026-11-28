@@ -719,6 +719,54 @@ pub struct Reach {
     pub own: bool,
 }
 
+/// The words of an action's `did:` a parameter's value picks ([`ActionMeta::did_by`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DidChoice {
+    /// The parameter whose value picks the words.
+    pub param: String,
+    /// Each value the branches name (`true`, `false`, `line-art`, a variant's name) and the
+    /// words it picks.
+    pub cases: Vec<(String, String)>,
+}
+
+/// The parameters `words` reads, written `{name}`.
+fn read_in(words: &str, into: &mut Vec<String>) {
+    let mut rest = words;
+    while let Some((_, after)) = rest.split_once('{') {
+        let Some((name, next)) = after.split_once('}') else {
+            break;
+        };
+        if !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !into.iter().any(|held| held == name)
+        {
+            into.push(name.to_owned());
+        }
+        rest = next;
+    }
+}
+
+impl ActionMeta {
+    /// The parameters the action's `did:` words read: the one that picks them and those they
+    /// name. What a history entry keeps of the action's arguments to say it with, and nothing
+    /// else of them.
+    #[must_use]
+    pub fn did_reads(&self) -> Vec<String> {
+        let mut reads = Vec::new();
+        if let Some(choice) = &self.did_by {
+            reads.push(choice.param.clone());
+            for (_, words) in &choice.cases {
+                read_in(words, &mut reads);
+            }
+        }
+        if let Some(did) = &self.did {
+            read_in(did, &mut reads);
+        }
+        reads.retain(|name| self.params.iter().any(|param| param.name == *name));
+        reads
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -758,6 +806,11 @@ pub struct ActionMeta {
     /// entry reads with the count (`{ $count -> [one] … *[other] … }`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_many: Option<String>,
+    /// `did: if on { "turned it on" } else { "turned it off" }`: the words a parameter's value
+    /// picks, a selector of the action's `did` message over that parameter. [`Self::did`] holds
+    /// the words of the last branch, which any value the branches do not name reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_by: Option<DidChoice>,
     /// `keywords: ["interrupt", "ctrl+c"]`: other words a person finds the action by in the
     /// system's search, beside its label; an attribute of the action's message
     /// (`d-<id>.keywords`), the words separated by commas.

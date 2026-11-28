@@ -845,18 +845,30 @@ impl Core {
     /// The words the action that made `v` declares it does (`did:`), read through the
     /// catalogue, or empty where it declares none. `count` is how many changes the words speak
     /// of: an action whose words say how many ("wrote 7 messages") reads its catalogue with it.
+    /// Words that name an argument or pick by one read the change's own
+    /// ([`crate::did::did_args`]).
     fn declared_did(&self, v: &crate::store::Version, count: usize) -> String {
-        self.registry
-            .borrow()
-            .action_package(&v.action)
-            .and_then(|pkg| pkg.action(&v.action).cloned())
-            .map_or_else(String::new, |a| match (&a.did, &a.id) {
-                (Some(source), id) => {
-                    let key = format!("{}.did", tilolang::messages::key_of(id));
-                    self.word_args(&key, &[("count".to_owned(), count.to_string())], source)
-                }
-                (None, _) => String::new(),
-            })
+        let Some(pkg) = self.registry.borrow().action_package(&v.action) else {
+            return String::new();
+        };
+        let Some(action) = pkg.action(&v.action) else {
+            return String::new();
+        };
+        let Some(source) = &action.did else {
+            return String::new();
+        };
+        let key = format!("{}.did", tilolang::messages::key_of(&action.id));
+        let mut args = vec![("count".to_owned(), count.to_string())];
+        let mut source = source.clone();
+        for (name, value) in crate::did::did_args(&pkg.meta, action, &v.args) {
+            let said = match value {
+                serde_json::Value::String(text) => text,
+                other => other.to_string(),
+            };
+            source = source.replace(&format!("{{{name}}}"), &said);
+            args.push((name, said));
+        }
+        self.word_args(&key, &args, &source)
     }
 
     /// The words a step of `versions` says its changes with, where every change it folds is the

@@ -77,8 +77,10 @@ pub trait Labels {
 
     /// What the action did, in the words its app declares beside its label, said after who did
     /// it ("added to the note"): how a step of it reads where the app has no message of its own.
-    fn did(&self, key: &ActionKey) -> Option<String> {
-        let _ = key;
+    /// `args` are the step's arguments: words that name one ("scanning at { $dpi } dpi") or pick
+    /// by one (`{ $on -> [true] turned it on *[other] turned it off }`) read the step's own.
+    fn did(&self, key: &ActionKey, args: &FluentArgs<'_>) -> Option<String> {
+        let _ = (key, args);
         None
     }
 
@@ -218,7 +220,7 @@ impl Labels for ActionLabels {
             .filter(|label| !label.trim().is_empty())
     }
 
-    fn did(&self, key: &ActionKey) -> Option<String> {
+    fn did(&self, key: &ActionKey, _args: &FluentArgs<'_>) -> Option<String> {
         self.find(key)?.did.clone()
     }
 }
@@ -738,7 +740,7 @@ impl<'a> Reader<'a> {
         }
         // What the app says the action did ("added to the note"), said with the item it did it
         // to, starts the row: a sentence in the app's own words without a message of its own.
-        if let Some(did) = self.labels.and_then(|labels| labels.did(&key)) {
+        if let Some(did) = self.labels.and_then(|labels| labels.did(&key, &args)) {
             args.set("did", did);
             let sentence = if scope.within {
                 self.framework_message("history-verb-did-in", &args)

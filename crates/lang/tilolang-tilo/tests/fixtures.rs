@@ -1210,6 +1210,8 @@ pub struct Pane {
     roles: Vec<(String, Option<String>)>,
     views: Vec<(String, String)>,
     types: Vec<(String, String)>,
+    /// The app's id and its words in its source language, as its module carries them.
+    app: (String, String),
 }
 
 impl Pane {
@@ -1217,6 +1219,12 @@ impl Pane {
     /// platform carries the actions package the host already runs, and a host loads one package
     /// once.
     pub fn install(me: &Actor, source: &str) -> Self {
+        Self::install_with_ids(me, source, "")
+    }
+
+    /// [`Self::install`] with the ids `ids` (an `app.ids`) keeps: what an app's translations
+    /// are keyed by.
+    pub fn install_with_ids(me: &Actor, source: &str, ids: &str) -> Self {
         let host = Host::new(me.clone(), || None).expect("a host");
         let metas = tilolang_tilo::platform::named_platform_packages(source)
             .expect("the platform's packages read");
@@ -1225,9 +1233,14 @@ impl Pane {
                 .load_foreign(meta.clone())
                 .expect("the device is loaded");
         }
-        let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &metas)
+        let ids = tilolang::IdsLock::parse(ids).expect("the ids parse");
+        let compiled = tilolang::compile_package(source, &ids, &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
         let package = host.load_compiled(&compiled).expect("the app loads");
+        let app = (
+            package.meta.app.clone(),
+            tilolang::messages::source_catalogue(&package.meta),
+        );
         let views: Vec<(String, String)> = package
             .meta
             .views
@@ -1268,7 +1281,35 @@ impl Pane {
             root: None,
             view,
             actions,
+            app,
         }
+    }
+
+    /// What the system's History says of each version of `at`, oldest first, in `locale`: the
+    /// app's own words, with `translation` (a `locales/<language>.ftl`) over its source words,
+    /// read by the one reader History says every app's versions with.
+    pub fn history(&self, at: &ResourceRef, locale: &str, translation: &str) -> Vec<String> {
+        let (app, source) = &self.app;
+        let words =
+            tilolang_tilo::versions::Catalogue::new(locale, &[translation, source.as_str()]);
+        let versions = self
+            .host
+            .runtime()
+            .versions(at)
+            .expect("the store reads its versions");
+        let mut history = serde_json::json!({
+            "versions": versions
+                .iter()
+                .map(|version| tilolang_tilo::versions::version_entry(&self.host, app, version))
+                .collect::<Vec<_>>(),
+        });
+        tilolang_tilo::versions::say_versions(&mut history, &[], &words, locale);
+        history["versions"]
+            .as_array()
+            .expect("the versions are listed")
+            .iter()
+            .map(|version| version["sentence"].as_str().unwrap_or_default().to_owned())
+            .collect()
     }
 
     /// What the app asks of other apps is run by the host's own resources, not carried out

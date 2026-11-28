@@ -465,8 +465,12 @@ impl tilo_history::Labels for ThreadLabels {
         ACTION_LABELS.with(|labels| tilo_history::Labels::action(&*labels.borrow(), key))
     }
 
-    fn did(&self, key: &tilo_actions::ActionKey) -> Option<String> {
-        ACTION_LABELS.with(|labels| tilo_history::Labels::did(&*labels.borrow(), key))
+    fn did(
+        &self,
+        key: &tilo_actions::ActionKey,
+        args: &tilo_history::FluentArgs<'_>,
+    ) -> Option<String> {
+        ACTION_LABELS.with(|labels| tilo_history::Labels::did(&*labels.borrow(), key, args))
     }
 
     fn item(&self, id: &str) -> Option<String> {

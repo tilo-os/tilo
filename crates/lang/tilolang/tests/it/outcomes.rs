@@ -340,6 +340,7 @@ fn published() -> tilolang::PackageMeta {
             scenario: false,
             did: None,
             did_many: None,
+            did_by: None,
             keywords: Vec::new(),
             search: None,
             uses: Vec::new(),

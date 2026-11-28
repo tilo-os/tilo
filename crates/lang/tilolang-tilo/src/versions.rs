@@ -3,6 +3,8 @@
 
 use serde_json::Value as Json;
 use tilo_actions::ResourceSpec;
+/// The words [`say_versions`] reads: an app's catalogue in the reader's language over its source.
+pub use tilo_history::{Catalogue, Messages};
 use tilolang_runtime::store::{Store as _, Version};
 use tilolang_runtime::value::ResourceRef;
 
@@ -27,8 +29,125 @@ pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
             "happened".to_owned(),
             Json::String(version.kind.what().word().to_owned()),
         );
+        // The arguments the words its action declares for what it did read, by name: what
+        // history says the change with. The others stay out of the entry, so a value only the
+        // action took (a password, a message) is never listed beside the change.
+        let said = host.runtime().did_args(version);
+        if said.is_empty() {
+            entry.remove("args");
+        } else {
+            entry.insert("args".to_owned(), Json::Object(said.into_iter().collect()));
+        }
     }
     entry
+}
+
+/// The words of the actions a window publishes, as history reads a step of one: each action's
+/// label, and what the app says it did, read in the reader's language with the step's own
+/// arguments (`did: if on { "turned a rule on" } else { "turned a rule off" }`, the action's
+/// `d-<id>.did` message), so a translation picks its own words by them too.
+struct Declared<'a> {
+    labels: &'a tilo_history::ActionLabels,
+    words: &'a dyn tilo_history::Messages,
+}
+
+impl tilo_history::Labels for Declared<'_> {
+    fn action(&self, key: &tilo_actions::ActionKey) -> Option<String> {
+        // The action's own message is its label in the reader's language, whether or not the
+        // window publishes it.
+        self.words
+            .format(
+                &tilolang::messages::key_of(&key.action),
+                &tilo_history::FluentArgs::new(),
+            )
+            .or_else(|| tilo_history::Labels::action(self.labels, key))
+    }
+
+    fn did(
+        &self,
+        key: &tilo_actions::ActionKey,
+        args: &tilo_history::FluentArgs<'_>,
+    ) -> Option<String> {
+        // A change names its action by the id it declares it under, the key of its words.
+        let words = format!("{}.did", tilolang::messages::key_of(&key.action));
+        self.words
+            .format(&words, args)
+            .or_else(|| tilo_history::Labels::did(self.labels, key, args))
+    }
+}
+
+/// Give each version `history` lists (as [`version_entry`] writes each) the sentence it reads as
+/// in `locale`, with the app's words from `words`: what was done, in the words its action declares
+/// for it and with the arguments they read, else by the label its action is published under in
+/// `resources`, to the resource by the name history calls it ("Turned a rule off “https”", "Ran
+/// “New note” on Untitled", "Created Notebook"), never by an id.
+pub fn say_versions(
+    history: &mut Json,
+    resources: &[ResourceSpec],
+    words: &dyn tilo_history::Messages,
+    locale: &str,
+) {
+    let mut labels = tilo_history::ActionLabels::default();
+    labels.learn(resources);
+    let declared = Declared {
+        labels: &labels,
+        words,
+    };
+    let reader = tilo_history::Reader::new(locale).with_labels(&declared);
+    let Some(versions) = history.get_mut("versions").and_then(Json::as_array_mut) else {
+        return;
+    };
+    for version in versions {
+        let text = |key: &str| version[key].as_str().unwrap_or_default().to_owned();
+        let (resource, action, label) = (text("resource"), text("action"), text("label"));
+        let named = version["named"].as_str().map(str::to_owned);
+        let app = crate::publish::app_of(&resource)
+            .unwrap_or_default()
+            .to_owned();
+        // A checkpoint or a restore is a step through history, said as history says it.
+        let step = match (action.as_str(), named) {
+            ("checkpoint", Some(name)) => Some(tilo_actions::HistoryOp::Checkpoint { name }),
+            ("restore", _) => Some(tilo_actions::HistoryOp::Restore),
+            _ => None,
+        };
+        // The arguments the action's words read, as the entry names them.
+        let args = version["args"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(name, value)| {
+                Some((name.clone(), tilo_actions::Scalar::from_json(value)?))
+            })
+            .collect();
+        let entry = tilo_actions::ActionContext {
+            app: Some(tilo_actions::ActionApp {
+                id: app.clone(),
+                label: String::new(),
+            }),
+            item: Some(tilo_actions::ActionItem {
+                id: resource,
+                label,
+            }),
+            what: Some(step.map_or_else(
+                || {
+                    tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                        action: tilo_actions::ActionKey {
+                            app,
+                            kind: String::new(),
+                            action,
+                        },
+                        args,
+                    })
+                },
+                |op| tilo_actions::Did::history(op, 0, None),
+            )),
+            ..tilo_actions::ActionContext::default()
+        };
+        let sentence = reader.sentence(&entry);
+        if let Some(fields) = version.as_object_mut() {
+            fields.insert("sentence".to_owned(), sentence.into());
+        }
+    }
 }
 
 /// What the app's history calls the resource `id` (as [`ResourceRef::id_string`] writes it): an

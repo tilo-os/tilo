@@ -12,6 +12,54 @@ use crate::registry::{FieldInfo, TypeInfo};
 use crate::value::Value;
 use tilolang::types::Ty;
 
+/// The arguments a change of `action` recorded (`args`, one per parameter in order) that the
+/// words it declares for what it did read ([`tilolang::meta::ActionMeta::did_reads`]), by the
+/// parameter's name, each as a plain value: a flag, a number, text, or the name of an enum's
+/// case. What a history entry says the change with, and the only arguments it keeps: an
+/// argument the words do not read is never shown beside them.
+#[must_use]
+pub fn did_args(
+    package: &tilolang::meta::PackageMeta,
+    action: &tilolang::meta::ActionMeta,
+    args: &serde_json::Value,
+) -> Vec<(String, serde_json::Value)> {
+    let reads = action.did_reads();
+    let Some(given) = args.as_array() else {
+        return Vec::new();
+    };
+    action
+        .params
+        .iter()
+        .zip(given)
+        .filter(|(param, _)| reads.contains(&param.name))
+        .filter_map(|(param, value)| {
+            let plain = match value {
+                serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_)
+                | serde_json::Value::String(_) => value.clone(),
+                // An enum's case is said by the name its declaration gives it, which the
+                // words pick by: the name a change kept beside the case's id, else the name of
+                // that id.
+                serde_json::Value::Object(fields) => {
+                    if let Some(name) = fields.get("case").and_then(serde_json::Value::as_str) {
+                        return Some((param.name.clone(), name.into()));
+                    }
+                    let case = fields.get("variant")?.as_str()?;
+                    let name = package
+                        .enums
+                        .iter()
+                        .flat_map(|en| &en.variants)
+                        .find(|variant| variant.id == case)
+                        .map_or(case, |variant| variant.name.as_str());
+                    serde_json::Value::String(name.to_owned())
+                }
+                _ => return None,
+            };
+            Some((param.name.clone(), plain))
+        })
+        .collect()
+}
+
 /// Which of a change's two values its words speak of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shows {

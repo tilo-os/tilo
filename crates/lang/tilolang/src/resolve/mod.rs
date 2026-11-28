@@ -647,6 +647,7 @@ impl Env {
                 export: a.export.clone(),
                 did: a.did.clone(),
                 did_many: a.did_many.clone(),
+                did_by: a.did_by.clone(),
                 keywords: a.keywords.clone(),
                 search: a.search.clone(),
                 opens: a.opens.clone(),
@@ -2483,6 +2484,7 @@ impl Resolver<'_> {
             export: None,
             did: None,
             did_many: None,
+            did_by: None,
             keywords: Vec::new(),
             search: None,
             opens: Vec::new(),
@@ -2597,23 +2599,21 @@ impl Resolver<'_> {
                     "`export:` takes the format in quotes, without `{ }`: `export: \"Markdown\"`",
                 ),
                 // `did: "moved this"`: what the action did, said after who did it ("Ana moved this").
-                ("did", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
-                    let said = plain_text(&opt.value).unwrap_or_default();
-                    if said.trim().is_empty() {
-                        self.err(
-                            "E090",
-                            opt.value.span,
-                            "`did:` says what the action did, after who did it: `did: \"moved this\"`",
-                        );
-                    } else {
+                // Its words may name a parameter (`did: "scanned at {dpi} dpi"`), and a parameter's
+                // value may pick them (`did: if on { "turned it on" } else { "turned it off" }`):
+                // history reads them with the step's own arguments.
+                ("did", _) => match text::did_words(&opt.value, params) {
+                    Ok((said, _)) if said.trim().is_empty() => self.err(
+                        "E090",
+                        opt.value.span,
+                        "`did:` says what the action did, after who did it: `did: \"moved this\"`",
+                    ),
+                    Ok((said, choice)) => {
                         out.did = Some(said);
+                        out.did_by = choice;
                     }
-                }
-                ("did", _) => self.err(
-                    "E090",
-                    opt.value.span,
-                    "`did:` takes words in quotes, without `{ }`: `did: \"moved this\"`",
-                ),
+                    Err(said) => self.err("E090", opt.value.span, said),
+                },
                 // `did_many: "moved {count} tasks"`: what it did when it changed several, which a
                 // history entry reads in place of `did:` and a count beside it.
                 ("did_many", _) => match counted_text(&opt.value) {
