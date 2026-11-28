@@ -1901,7 +1901,11 @@ view hunk_card(s: Session, h: Hunk, writing: State<Int>, typed: State<Text>, at_
 view merged_section(s: Session) {
     let word = language_word(s.ours_label)
     ui.Section(
-        if s.conflicts == 0 { "Merged result" } else { "{count(s.conflicts)} conflicts left" },
+        if s.conflicts == 0 {
+            "Merged result"
+        } else {
+            "Merged result · {count(s.conflicts)} conflicts left"
+        },
         collapsible: false,
     ) {
         if s.merged != s.composed {

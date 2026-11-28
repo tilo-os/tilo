@@ -463,7 +463,7 @@ d-zuhaksi6 = Quelle des Änderungsblocks
 
 d-lbu6ypgz = Zusammengeführtes Ergebnis
     .w-merged-result = Zusammengeführtes Ergebnis
-    .w-conflicts-left = { $count } Konflikte übrig
+    .w-merged-result-conflicts-left = Zusammengeführtes Ergebnis · { $count } Konflikte übrig
     .w-the-merged-result-was-edited-by = Das zusammengeführte Ergebnis wurde von Hand bearbeitet: der Rest wird darin aufgelöst, und eine Seite zu nehmen würde deine Bearbeitung ersetzen.
     .w-save = Speichern…
     .w-save-to = Nach { $saved_name } speichern
