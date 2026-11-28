@@ -1799,3 +1799,10 @@ opt-level = 3
 # so editing it stays a quick build.
 [profile.test.package.tilolang-runtime]
 opt-level = 2
+# The terminal's emulator parses every byte a program prints into its grid, and a command's
+# output is megabytes: unoptimised, a build's log takes seconds to reach the answer an agent
+# waits on.
+[profile.dev.package.tilo-terminal]
+opt-level = 3
+[profile.test.package.tilo-terminal]
+opt-level = 3
