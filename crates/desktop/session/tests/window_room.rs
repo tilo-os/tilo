@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_session::{Options, Session};
 
@@ -109,6 +109,48 @@ fn front_window(session: &mut Session) -> ui::kurbo::Rect {
     frame(session).expect("the window's frame")
 }
 
+/// Choose the light theme, as Settings' Appearance page does: the appearance section's own setters,
+/// which every device of the person reads.
+fn light(session: &mut Session) {
+    // The settings service publishes its sections on a pass of its own.
+    for _ in 0..4 {
+        step(session);
+    }
+    for (field, value) in [
+        ("light_theme", json!("paper-light")),
+        ("mode", json!("light")),
+    ] {
+        let arguments: serde_json::Map<String, Value> = json!({ "value": value })
+            .as_object()
+            .cloned()
+            .expect("an object");
+        let action = format!("set-{}", field.replace('_', "-"));
+        session
+            .invoke("settings/appearance", &action, &arguments)
+            .unwrap_or_else(|error| panic!("the appearance's {action}: {error:?}"));
+    }
+    // The shell draws the choice once the section holds it.
+    for _ in 0..8 {
+        step(session);
+    }
+}
+
+/// The mean luminance of the capture `<name>`, 0 to 255: the theme a person sees is its light.
+fn mean_luminance(name: &str) -> f64 {
+    let picture = image::open(shots().join(format!("{name}.png")))
+        .expect("the capture")
+        .to_rgb8();
+    let mut sum = 0.0;
+    let mut count = 0.0_f64;
+    for pixel in picture.pixels() {
+        sum += 0.2126 * f64::from(pixel[0])
+            + 0.7152 * f64::from(pixel[1])
+            + 0.0722 * f64::from(pixel[2]);
+        count += 1.0;
+    }
+    sum / count.max(1.0)
+}
+
 /// The bar's band, as the window's top meets it.
 #[track_caller]
 fn bar_band(session: &Session) -> (f64, f64) {
@@ -187,6 +229,23 @@ fn a_window_fills_the_room_the_bar_and_dock_leave_on_the_foot() {
         "a lone window fills its row, less the page's own insets: {window:?}"
     );
     capture(&mut session, "room-foot-dark");
+    light(&mut session);
+    let window = front_window(&mut session);
+    let dock = on_screen(&session, "Dock").expect("the dock rides the foot");
+    assert!(
+        (dock.1 - window.y1 - GAP).abs() <= 1.0 && window.width() >= 1280.0 - 48.0,
+        "the light theme leaves the same room: {window:?} against the dock at {}",
+        dock.1
+    );
+    capture(&mut session, "room-foot-light");
+    let (dark, light) = (
+        mean_luminance("room-foot-dark"),
+        mean_luminance("room-foot-light"),
+    );
+    assert!(
+        light > dark + 20.0,
+        "the light theme reaches the shell: {light:.1} against {dark:.1}"
+    );
 }
 
 /// A window beside a dock on the leading edge reaches the bar at the top and the display's foot
@@ -222,6 +281,15 @@ fn a_window_fills_the_room_a_dock_beside_it_leaves() {
         dock.2
     );
     capture(&mut session, "room-left-dark");
+    light(&mut session);
+    let window = front_window(&mut session);
+    let dock = on_screen(&session, "Dock").expect("the dock rides the leading edge");
+    assert!(
+        window.x0 - (dock.0 + dock.2) <= 3.0 * RELATED && window.x1 >= 1280.0 - GAP - SLACK,
+        "the light theme leaves the same room beside the dock: {window:?} at {}",
+        dock.0 + dock.2
+    );
+    capture(&mut session, "room-left-light");
 }
 
 /// A dock that hides itself takes no room: the window fills the display to its foot, and reaching
