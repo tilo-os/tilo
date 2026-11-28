@@ -1215,12 +1215,12 @@ impl Workspaces {
     }
 
     /// The registries `workspace` fetches apps from, as its tree records
-    /// them now.
+    /// them now ([`Self::registries_read`]).
     pub async fn registries(
         &self,
         workspace: &str,
     ) -> Result<Vec<tilo_peer_state::PackageRegistry>, CollaborationError> {
-        let mut rows = self
+        let recorded = self
             .workspace(workspace)
             .await?
             .lock()
@@ -1228,8 +1228,21 @@ impl Workspaces {
             .peer()
             .governance()
             .package_registries();
-        Self::repair_official_pin(&mut rows);
-        Ok(rows)
+        Ok(Self::registries_read(recorded))
+    }
+
+    /// The registries a workspace that records `recorded` fetches apps from. A workspace that
+    /// names none (one made where no registry was seeded, or moved from such a device) starts
+    /// from the official store, as a device that names none does: otherwise nothing it runs
+    /// could ever be updated. A workspace that wants no store keeps the row, disabled.
+    pub(crate) fn registries_read(
+        mut recorded: Vec<tilo_peer_state::PackageRegistry>,
+    ) -> Vec<tilo_peer_state::PackageRegistry> {
+        if recorded.is_empty() {
+            return super::default_apps::registry_rows(&crate::service::RegistriesFile::seeded());
+        }
+        Self::repair_official_pin(&mut recorded);
+        recorded
     }
 
     /// Restore the official registry's pin on its row when the row carries none (an emptied or

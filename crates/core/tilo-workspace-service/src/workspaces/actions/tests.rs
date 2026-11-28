@@ -1355,9 +1355,15 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
         (&read["attestors"], &read["revoked"]),
         (&json!([]), &json!([]))
     );
+    // A workspace that names no registry fetches from the official store, as a device that
+    // names none does.
+    let official = json!(crate::workspaces::default_apps::registry_rows(
+        &crate::service::RegistriesFile::seeded()
+    ));
+    assert_eq!(official.as_array().map(Vec::len), Some(1));
     assert_eq!(
         ask(REGISTRIES, json!({})).await.unwrap()["registries"],
-        json!([])
+        official
     );
     for verb in [ADD_ATTESTOR, REVOKE_PUBLISHER, ADD_REGISTRY] {
         let refused = ask(verb, any.clone()).await;
@@ -1427,7 +1433,7 @@ async fn the_workspace_keeps_the_package_trust_and_registries_its_members_fetch_
         );
     }
     let removed = ask(REMOVE_REGISTRY, tilo).await.unwrap();
-    assert_eq!(removed["registries"], json!([]));
+    assert_eq!(removed["registries"], official);
     server.shutdown().await;
 }
 

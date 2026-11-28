@@ -473,7 +473,9 @@ impl tilo_broker_core::services::WorkspaceAuthority for Workspaces {
     /// is checked against here.
     fn package_registries(&self, workspace: &str) -> Option<serde_json::Value> {
         let peer = self.copy_now(WorkspaceId::parse(workspace)?)?.peer;
-        Some(serde_json::json!({ "registries": peer.governance().package_registries() }))
+        Some(serde_json::json!({
+            "registries": Self::registries_read(peer.governance().package_registries())
+        }))
     }
 
     /// The work kept done in the workspace's copy here: what counts a shortcut's triggered runs
