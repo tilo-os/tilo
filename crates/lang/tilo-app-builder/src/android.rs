@@ -2788,6 +2788,9 @@ pub struct DeviceRequest {
     pub device: Option<String>,
     /// `None` builds for the device's architecture.
     pub arch: Option<PackageArch>,
+    /// The signed packages the app's manifest declares, packed into this folder by the caller:
+    /// what the APK carries for its store to install at first start.
+    pub carried_apps: Option<PathBuf>,
 }
 
 fn build_for_device(
@@ -2809,7 +2812,7 @@ fn build_for_device(
             bundle: false,
             features: Vec::new(),
             no_default_features: false,
-            carried_apps: None,
+            carried_apps: request.carried_apps.clone(),
         },
     )?;
     eprintln!(

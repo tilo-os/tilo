@@ -1974,11 +1974,14 @@ fn run_run(args: RunArgs) -> Result<Value> {
             if !args.forwarded.is_empty() {
                 anyhow::bail!("an Android app takes no command-line arguments");
             }
+            let carried =
+                carried_packages(&path, None, tilo_app_builder::PackagePlatform::Android)?;
             let build = tilo_app_builder::android::run_on_device(
                 &path,
                 &tilo_app_builder::android::DeviceRequest {
                     device: args.device,
                     arch,
+                    carried_apps: carried.as_ref().and_then(|(_, folder)| folder.clone()),
                 },
             )?;
             return Ok(build.to_json());
@@ -2061,12 +2064,14 @@ fn run_dev(args: DevArgs) -> Result<Value> {
     };
     let (platform, arch) = args.platform.resolve();
     if platform == tilo_app_builder::PackagePlatform::Android {
+        let carried = carried_packages(&path, None, tilo_app_builder::PackagePlatform::Android)?;
         tilo_app_builder::android::dev_on_device(
             &path,
             &request,
             &tilo_app_builder::android::DeviceRequest {
                 device: args.device,
                 arch,
+                carried_apps: carried.as_ref().and_then(|(_, folder)| folder.clone()),
             },
         )?;
     } else {
@@ -2105,6 +2110,7 @@ fn build_android(
     if args.static_link {
         anyhow::bail!("--static is not for --platform android");
     }
+    let carried = carried_packages(path, None, tilo_app_builder::PackagePlatform::Android)?;
     let build = tilo_app_builder::android::build(
         path,
         &tilo_app_builder::android::BuildRequest {
@@ -2114,7 +2120,7 @@ fn build_android(
             bundle: false,
             features: Vec::new(),
             no_default_features: false,
-            carried_apps: None,
+            carried_apps: carried.as_ref().and_then(|(_, folder)| folder.clone()),
         },
     )?;
     let mut json = build.to_json();
