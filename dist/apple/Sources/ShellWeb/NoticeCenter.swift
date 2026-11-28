@@ -29,6 +29,9 @@ private enum Names {
 public final class NoticeCenter: NSObject {
     /// Called with the page's name for the notice and what the person did.
     public var answered: ((_ id: String, _ answer: NoticeAnswer) -> Void)?
+    /// Called with what a push named, the button pressed (if any) and what was typed, when the
+    /// person answered a notice their host pushed while no page ran.
+    public var toldAnswered: ((_ name: String, _ action: String?, _ reply: String?) -> Void)?
 
     private let center = UNUserNotificationCenter.current()
     private var categories: [String: UNNotificationCategory] = [:]
@@ -64,12 +67,15 @@ public final class NoticeCenter: NSObject {
         content.sound = .default
         content.userInfo = [Names.notice: notice.id]
         content.categoryIdentifier = category(for: notice.actions)
-        let identifier = Names.request(notice.id)
+        // A notice named as a push names a thing is that thing's notice, under the same name.
+        let named = notice.tag.flatMap { ClosedPush.isName($0) ? $0 : nil }
+        let identifier = named ?? Names.request(notice.id)
         if let tag = notice.tag {
-            content.threadIdentifier = tag
+            content.threadIdentifier = named ?? tag
             // A newer notice under a tag takes the older one's place.
             if let before = byTag[tag] { center.removeDeliveredNotifications(withIdentifiers: [before]) }
             byTag[tag] = identifier
+            ClosedPush.withdraw(named ?? tag)
         }
         center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil),
                    withCompletionHandler: nil)
@@ -88,7 +94,9 @@ public final class NoticeCenter: NSObject {
 
     private func category(for actions: [NoticeAction]) -> String {
         guard !actions.isEmpty else { return Names.plain }
-        let identifier = "tilo.answers." + actions.map { "\($0.kind.rawValue):\($0.id):\($0.title)" }.joined(separator: "|")
+        // The name a push's own notice of the same thing uses too: one set of buttons, whether
+        // the page or the host told of it.
+        let identifier = ClosedPush.category(of: actions.map { ClosedPush.Opened.Action(id: $0.id, label: $0.title) })
         guard categories[identifier] == nil else { return identifier }
         // On a Mac the app runs behind its menu-bar item, so the page answers without coming
         // forward. A phone has to bring the app up for the page to run at all.
@@ -135,11 +143,20 @@ extension NoticeCenter: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let taken = Taken(completionHandler)
-        let id = response.notification.request.content.userInfo[Names.notice] as? String
+        let fields = response.notification.request.content.userInfo
+        let id = fields[Names.notice] as? String
+        let push = ClosedPush(fields)
         let answer = NoticeCenter.answer(to: response.actionIdentifier,
                                          typed: (response as? UNTextInputNotificationResponse)?.userText)
         DispatchQueue.main.async {
-            if let id, let answer {
+            if let push, !push.isGone, let answer {
+                // What a push named is answered where the log is: the page's own session.
+                switch answer {
+                case .opened: MainActor.assumeIsolated { self.toldAnswered?(push.name, nil, nil) }
+                case .action(let action, let reply): MainActor.assumeIsolated { self.toldAnswered?(push.name, action, reply) }
+                default: break
+                }
+            } else if let id, let answer {
                 MainActor.assumeIsolated { self.answered?(id, answer) }
             }
             taken.tell()
@@ -151,6 +168,8 @@ extension NoticeCenter: UNUserNotificationCenterDelegate {
         case UNNotificationDefaultActionIdentifier: .opened
         case UNNotificationDismissActionIdentifier: .dismissed
         case Names.reply: .reply(typed ?? "")
+        case let chosen where chosen.hasPrefix(ClosedPush.actionPrefix):
+            .action(String(chosen.dropFirst(ClosedPush.actionPrefix.count)), reply: typed)
         case let chosen where chosen.hasPrefix(Names.page): .action(String(chosen.dropFirst(Names.page.count)), reply: typed)
         default: nil
         }

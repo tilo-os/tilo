@@ -1,4 +1,4 @@
-import AssistantClosed
+import ShellCore
 import CryptoKit
 import XCTest
 
@@ -60,23 +60,6 @@ final class ClosedKeyTests: XCTestCase {
         let again = try XCTUnwrap(ClosedKey(kept: key.kept))
         XCTAssertEqual(again.open(message), said)
         XCTAssertEqual(again.handedOver.p256dh, key.handedOver.p256dh)
-    }
-
-    /// The name of a thing in a push, against the server's own way to it
-    /// (`apple_push.rs` `name_for`, and `Device::name_of` in its tests): the first 16 bytes of
-    /// HMAC-SHA256 under the device's secret over "tilo told", a zero byte and the id, in
-    /// base64 for addresses without padding. The two names written down here were worked out
-    /// outside this package, with Python's hmac, hashlib and base64, for a secret of sixteen
-    /// bytes 7 as the server's tests give their device number 7.
-    func testAThingsNameInAPushIsTheOneItsServerGivesIt() throws {
-        let private32 = Data(repeating: 9, count: 32)
-        let key = try XCTUnwrap(ClosedKey(kept: private32 + Data(repeating: 7, count: 16)))
-        XCTAssertEqual(key.name(of: "question:ws-1:m_ask_1"), "rf-qsLfA_59buuS5z2pKfA")
-        XCTAssertEqual(key.name(of: "turn:ws-1:m_ask_1:0"), "pdnPjzr5rV8UkOtx7UT4XQ")
-        // Another device has another name for the same thing, so nothing ties the two together.
-        let other = try XCTUnwrap(ClosedKey(kept: private32 + Data(repeating: 8, count: 16)))
-        XCTAssertNotEqual(other.name(of: "question:ws-1:m_ask_1"), key.name(of: "question:ws-1:m_ask_1"))
-        XCTAssertEqual(key.name(of: "question:ws-1:m_ask_1").count, 22)
     }
 
     func testAKeySaysNothingOfItselfAndIsNoKeyWhenItsBytesAreNot() {

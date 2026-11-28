@@ -25,6 +25,24 @@ final class PhoneAppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
+    /// Apple's address for this iPhone goes to the page, which hands it to the person's host.
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        for scene in application.connectedScenes {
+            guard let window = (scene as? UIWindowScene)?.windows.first,
+                  let root = window.rootViewController as? RootViewController else { continue }
+            root.registered(deviceToken)
+        }
+    }
+
+    /// A push that shows nothing: the thing it names waits no more, and its notice is taken away.
+    func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        guard let push = ClosedPush(userInfo), push.isGone else { return completionHandler(.noData) }
+        ClosedPush.withdraw(push.name)
+        completionHandler(.newData)
+    }
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let configuration = UISceneConfiguration(name: "Tilo", sessionRole: session.role)

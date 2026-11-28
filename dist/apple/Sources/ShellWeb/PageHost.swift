@@ -34,6 +34,8 @@ public final class PageHost: NSObject {
     private let messages = MessageHandler()
     private let offer: WayInOffer?
     private var permission: NoticePermission
+    /// Where this app is reached while it is closed, as the page hands it to its host.
+    private var push: String?
     private var lastEnd: Date?
     private var titleWatch: NSKeyValueObservation?
     private var addressWatch: NSKeyValueObservation?
@@ -198,6 +200,24 @@ public final class PageHost: NSObject {
         call("permission", ["state": permission.rawValue], "state")
     }
 
+    /// Give the page where this app is reached while it is closed, for its session to hand its
+    /// host (`tilo.telling` `addresses#register`). Pages loaded later read the same.
+    public func setPush(_ address: String?) {
+        push = address
+        installScript()
+        guard let address else { return }
+        call("push", ["address": address], "address")
+    }
+
+    /// What a push answered while no page ran: the thing by the name the push gave it, and the
+    /// button pressed, if one was. The page answers it through the log's own action.
+    public func told(_ name: String, action: String? = nil, reply: String? = nil) {
+        view.callAsyncJavaScript(
+            "globalThis.__tiloShell?.told(name, action, reply)",
+            arguments: ["name": name, "action": action ?? NSNull(), "reply": reply ?? NSNull()],
+            in: nil, in: .page, completionHandler: nil)
+    }
+
     /// The person chose a notice, one of its answers, or typed one.
     public func chose(notice id: String, action: String? = nil, reply: String? = nil) {
         view.callAsyncJavaScript(
@@ -220,7 +240,7 @@ public final class PageHost: NSObject {
         let scripts = view.configuration.userContentController
         scripts.removeAllUserScripts()
         scripts.addUserScript(WKUserScript(
-            source: Bridge.script(origin: settings.origin, permission: permission, offer: offer),
+            source: Bridge.script(origin: settings.origin, permission: permission, offer: offer, push: push),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
@@ -234,7 +254,9 @@ public final class PageHost: NSObject {
               let said = PageMessage(body: message.body)
         else { return }
         if case .entry(let entry) = said {
+            let wasEntered = entered
             entered = entry.state == "open"
+            if wasEntered, entry.state == "refused" { call("signedOut", [:], "") }
             if entered, let shown = view.url, policy.isOwn(shown) { returns = 0 }
         }
         delegate?.page(self, said: said)

@@ -1,4 +1,3 @@
-import AssistantCore
 import Foundation
 import Security
 
@@ -96,13 +95,16 @@ public enum ClosedProblem: Error, Equatable {
 /// a build without it asks Apple's service for nothing and keeps no key.
 public struct ClosedBuild: Equatable, Sendable {
     /// Which of Apple's two services reaches the build.
-    public let service: PushAddress.Service
+    public enum Service: String, Equatable, Sendable { case development, production }
+
+    /// Which of Apple's two services reaches the build.
+    public let service: Service
     /// The keychain group the app shares with its notice extension.
     public let group: String
 
     /// From a bundle's `Info.plist`: `TiloPush`, and the group from `TiloTeam` and `TiloTold`.
     public init?(info: [String: Any]?) {
-        guard let service = (info?["TiloPush"] as? String).flatMap(PushAddress.Service.init(rawValue:)),
+        guard let service = (info?["TiloPush"] as? String).flatMap(Service.init(rawValue:)),
               let kept = KeychainClosedKeys(info: info)
         else { return nil }
         self.service = service

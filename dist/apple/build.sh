@@ -25,7 +25,13 @@
 #                                app's). A profile made for the app's own identifier, which
 #                                passkeys take, covers the app alone.
 #   TILO_APPLE_MAC_PROFILE       the Mac app's provisioning profile (a .provisionprofile). A
-#                                Mac app carries one only to use passkeys.
+#                                Mac app carries one only to use passkeys, or to be told while
+#                                it is closed (TILO_APPLE_PUSH).
+#   TILO_APPLE_PUSH              set to build the app told while it is closed: Apple's push
+#                                right and the extension that opens what a push says. Only when
+#                                the profile grants the right; README.md says what that takes.
+#   TILO_APPLE_NOTICE_PROFILE    the profile of that extension in the iPhone app (default: the
+#                                app's). The Mac app's extension carries none.
 #   TILO_APPLE_PASSKEY_SITES     the sites whose passkeys the app may use, as host names with
 #                                spaces between them (default: the host of TILO_SHELL_SITE,
 #                                unless that is this computer). The build names them only
@@ -229,6 +235,53 @@ associate() { # rights, decoded profile, Info.plist
   say "passkeys: the build names ${passkey_sites[*]}"
 }
 
+# Being told while the app is closed: which of Apple's push services the build is for, from
+# what its profile ($1, decoded; empty for none) grants under the right's name there ($2), and
+# nothing where it grants none or the build was not told to (TILO_APPLE_PUSH). A build claims
+# only what its profile grants, as with passkeys; one that may not says why.
+pushes() { # decoded profile, the right's name
+  local granted
+  [ -n "${TILO_APPLE_PUSH:-}" ] || return 0
+  if [ -z "$1" ]; then
+    say "no push in this build: it carries no profile (README.md, \"Told while the app is closed\")"
+    return 0
+  fi
+  if ! granted="$(plist -c "Print :Entitlements:$2" "$1" 2>/dev/null)"; then
+    say "no push in this build: its profile grants none (README.md, \"Told while the app is closed\")"
+    return 0
+  fi
+  case "$granted" in
+    development | production) printf '%s\n' "$granted" ;;
+    *) die "the profile grants push for \"$granted\", which is neither development nor production" ;;
+  esac
+}
+
+# Write the push right into an app's rights ($1) and its Info.plist ($2): the service ($3) and
+# the place it shares with the notice extension, where the device's key is kept. The profile
+# ($5) says whether a push may come through a Focus.
+claim_push() { # rights, Info.plist, development or production, mac or iphone, decoded profile
+  local rights="$1" info="$2"
+  plist -c "Add :TiloPush string $3" -c "Add :TiloTold string $id.told" "$info"
+  case "$4" in
+    mac)
+      # The share extension's place comes first; the notice extension's is one more.
+      plist -c "Add :com.apple.developer.aps-environment string $3" \
+        -c "Add :com.apple.security.application-groups:1 string $team.$id.told" "$rights"
+      ;;
+    iphone)
+      plist -c "Add :aps-environment string $3" -c "Add :keychain-access-groups:2 string $team.$id.told" "$rights"
+      # The push that takes a notice back shows nothing: the app is woken for it.
+      plist -c "Add :UIBackgroundModes array" -c "Add :UIBackgroundModes:0 string remote-notification" "$info"
+      ;;
+  esac
+  if plist -c 'Print :Entitlements:com.apple.developer.usernotifications.time-sensitive' "$5" >/dev/null 2>&1; then
+    plist -c "Add :com.apple.developer.usernotifications.time-sensitive bool true" "$rights"
+  else
+    say "push: the profile grants no time-sensitive notifications, so no push comes through a Focus"
+  fi
+  say "push: the build is told while it is closed, through Apple's $3 service"
+}
+
 draw() { sips -s format png -z "$2" "$2" "$mark" --out "$1" >/dev/null; }
 
 build_mac() {
@@ -289,6 +342,20 @@ build_mac() {
       -c "Add :com.apple.developer.team-identifier string $team" "$rights"
   fi
   associate "$rights" "$profile" "$contents/Info.plist"
+  # Told while it is closed, where the profile grants it: the notice extension, then the right.
+  local told
+  told="$(pushes "$profile" com.apple.developer.aps-environment)"
+  if [ -n "$told" ]; then
+    claim_push "$rights" "$contents/Info.plist" "$told" mac "$profile"
+    local notice="$contents/PlugIns/TiloNotice.appex"
+    mkdir -p "$notice/Contents/MacOS" "$notice/Contents/Resources"
+    cp "$bin/TiloNotice" "$notice/Contents/MacOS/TiloNotice"
+    fill "$bundle/MacNotice-Info.plist" "$notice/Contents/Info.plist"
+    stamp "$notice/Contents/Info.plist"
+    cp -R "$bundle/en.lproj" "$notice/Contents/Resources/"
+    fill "$bundle/MacNotice.entitlements" "$made/mac/notice.entitlements"
+    "${sign[@]}" --entitlements "$made/mac/notice.entitlements" "$notice"
+  fi
   "${sign[@]}" --entitlements "$rights" "$app"
   codesign --verify --deep --strict "$app"
 }
@@ -302,9 +369,11 @@ check_mac() {
 }
 
 # One bundle of the iPhone app: what it says of itself, its sentences, the profile that lets
-# it run on the phone, and its signature. The program is already in it.
-phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" for the app itself
+# it run on the phone, and its signature. The program is already in it. The app itself also
+# claims the push right, where `pushes` said the build has it ($7).
+phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" for the app itself, push service
   local dir="$1" rights="$made/iphone/$2.entitlements" profile="$5" decoded="$made/iphone/$2.profile.plist" sdk covers
+  local push="${7:-}"
   security cms -D -i "$profile" > "$decoded" 2>/dev/null || die "$profile is no provisioning profile"
   [ "$(plist -c 'Print :TeamIdentifier:0' "$decoded")" = "$team" ] \
     || die "$profile is another team's than the signing identity's"
@@ -312,7 +381,11 @@ phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" 
   covers="$(plist -c 'Print :Entitlements:application-identifier' "$decoded")"
   # shellcheck disable=SC2254  # the profile's identifier is a pattern ("TEAM.*")
   local hint=""
-  [ "${6:-}" = app ] || hint=": name the profile of the share extension in TILO_APPLE_SHARE_PROFILE"
+  if [ "$2" = "$id.notice" ]; then
+    hint=": name the profile of the notice extension in TILO_APPLE_NOTICE_PROFILE"
+  elif [ "${6:-}" != app ]; then
+    hint=": name the profile of the share extension in TILO_APPLE_SHARE_PROFILE"
+  fi
   case "$team.$2" in $covers) ;; *) die "the profile covers $covers, not $2$hint" ;; esac
   fill "$3" "$dir/Info.plist"
   stamp "$dir/Info.plist" "${6:-}"
@@ -325,8 +398,11 @@ phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" 
   if [ "$(plist -c 'Print :Entitlements:get-task-allow' "$decoded" 2>/dev/null)" = true ]; then
     plist -c "Add :get-task-allow bool true" "$rights"
   fi
-  # The app itself, not its extension, shows the page.
-  [ "${6:-}" != app ] || associate "$rights" "$decoded" "$dir/Info.plist"
+  # The app itself, not its extensions, shows the page, and claims the push right.
+  if [ "${6:-}" = app ]; then
+    associate "$rights" "$decoded" "$dir/Info.plist"
+    [ -z "$push" ] || claim_push "$rights" "$dir/Info.plist" "$push" iphone "$decoded"
+  fi
   codesign --force --timestamp=none --sign "$identity" --entitlements "$rights" "$dir"
 }
 
@@ -340,9 +416,24 @@ build_iphone() {
   rm -rf "$made/iphone"
   mkdir -p "$appex"
 
-  # The extension first, then the app that seals it. Each carries the profile that covers it.
+  # The extensions first, then the app that seals them. Each carries the profile that covers it.
   cp "$bin/TiloShare" "$appex/TiloShare"
   phone_part "$appex" "$id.share" "$bundle/PhoneShare-Info.plist" "$bundle/PhoneShare.entitlements" "$share_profile"
+  # Told while it is closed, where the profile grants it: the notice extension, then the right.
+  local told=""
+  if [ -n "${TILO_APPLE_PUSH:-}" ]; then
+    security cms -D -i "$TILO_APPLE_PROFILE" > "$made/iphone/push.profile.plist" 2>/dev/null \
+      || die "$TILO_APPLE_PROFILE is no provisioning profile"
+    told="$(pushes "$made/iphone/push.profile.plist" aps-environment)"
+    rm -f "$made/iphone/push.profile.plist"
+  fi
+  if [ -n "$told" ]; then
+    local notice="$app/PlugIns/TiloNotice.appex" notice_profile="${TILO_APPLE_NOTICE_PROFILE:-$TILO_APPLE_PROFILE}"
+    [ -f "$notice_profile" ] || die "TILO_APPLE_NOTICE_PROFILE names no file"
+    mkdir -p "$notice"
+    cp "$bin/TiloNotice" "$notice/TiloNotice"
+    phone_part "$notice" "$id.notice" "$bundle/Notice-Info.plist" "$bundle/Notice.entitlements" "$notice_profile"
+  fi
   cp "$bin/TiloPhone" "$app/$program"
   cp -R "$bundle/Settings.bundle" "$app/"
   # The two files Phone-Info.plist names as the app's icon.
@@ -353,7 +444,7 @@ build_iphone() {
     sips -s format png "$made/iphone/icon.jpg" --out "$app/AppIcon60x60@${scale}x.png" >/dev/null
   done
   rm -f "$made/iphone/icon.png" "$made/iphone/icon.jpg"
-  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$bundle/Phone.entitlements" "$TILO_APPLE_PROFILE" app
+  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$bundle/Phone.entitlements" "$TILO_APPLE_PROFILE" app "$told"
   codesign --verify --deep --strict "$app"
 }
 

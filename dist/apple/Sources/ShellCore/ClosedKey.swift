@@ -3,11 +3,10 @@ import Foundation
 
 /// The device's own key and secret for being told while the app is closed.
 ///
-/// The person's server seals what a push says for this key, so that neither Apple's service
-/// nor anything else on the way reads a word of it; and it names a thing in a push by a name
-/// only this device can tie to the thing, made with the secret. The app makes a new key at
-/// every sign-in and hands its public half and the secret to the person's server; the notice
-/// extension reads the key from the one place it shares with the app.
+/// The person's host seals what a push says for this key, so that neither Apple's service nor
+/// anything else on the way reads a word of it, and names a thing by a tag only this device
+/// can tie to it. The app makes it and hands its public half and secret to the host; the
+/// notice extension reads it from the place they share.
 ///
 /// It says nothing of itself: printing it, describing it or looking into it shows no byte.
 public struct ClosedKey: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
@@ -41,17 +40,7 @@ public struct ClosedKey: Sendable, CustomStringConvertible, CustomDebugStringCon
         (ClosedKey.hex(own.publicKey.x963Representation), ClosedKey.hex(secret))
     }
 
-    /// What the thing `id` is called in a push to this device, and so what the system keeps
-    /// its notice under: `base64url(HMAC-SHA256(secret, "tilo told" 0 id)[0..<16])`, unpadded.
-    /// A thing's own id says which workspace it came from, so it is in no push.
-    public func name(of id: String) -> String {
-        let said = Data("tilo told\0".utf8) + Data(id.utf8)
-        let tag = Data(HMAC<SHA256>.authenticationCode(for: said, using: SymmetricKey(data: secret)))
-        return tag.prefix(16).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-    }
-
-    /// Open what the person's server sealed for this device: one `aes128gcm` message as a web
+    /// Open what the person's host sealed for this device: one `aes128gcm` message as a web
     /// push carries one (RFC 8291, RFC 8188). Nil for anything else, and for a message sealed
     /// for another key or changed on the way.
     ///

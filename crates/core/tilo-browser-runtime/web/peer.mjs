@@ -51,6 +51,18 @@ const CERTIFICATE = 'certificate';
  * timestamps are nanoseconds, beyond what a JavaScript number holds exactly,
  * and a parsed and re-serialized copy no longer matches its signature.
  */
+/** The name a push gives the thing `id` on the device whose push secret is `auth` (hex): the
+ * first 16 bytes of HMAC-SHA256 over "tilo told", a zero byte and the id, in hex, as the host
+ * works it out (`known_as` in person_telling). */
+export async function knownAs(auth, id) {
+  const key = await globalThis.crypto.subtle.importKey('raw',
+    Uint8Array.from(auth.match(/../g) ?? [], pair => parseInt(pair, 16)),
+    {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const tag = new Uint8Array(await globalThis.crypto.subtle.sign('HMAC', key,
+    new TextEncoder().encode(`tilo told\0${id}`)));
+  return [...tag.slice(0, 16)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export function withStartFields(certified, fields) {
   const added = Object.entries(fields)
     .filter(([, value]) => value !== undefined)
@@ -782,6 +794,41 @@ async function connect({
       voice ??= voiceOptions === false ? undefined : createPeerVoice({peer: () => peer, workspace, device: hostDevice, person: userPublicKey, ...voiceOptions});
       actions = hostDevice ? createActions() : undefined;
     }
+    // A shell gives the page where this app is reached while it is closed: the session hands
+    // it to the host, and answers what a push answered through the log.
+    const shell = globalThis.__tiloShell;
+    const TOLD = (resource, action) => ({provider: 'tilo.telling', address: {resource, action}});
+    let pushAuth = null;
+    const told = async ({name, action} = {}) => {
+      if (!actions || !workspace || !pushAuth || !name) return;
+      try {
+        const list = await actions.once(TOLD('told', 'list'), {after: null, waitMs: 0, device: 'Tilo Shell'});
+        const value = list.output?.value;
+        const rows = (typeof value === 'string' ? JSON.parse(value) : value)?.told ?? [];
+        for (const row of rows) {
+          if (await knownAs(pushAuth, row.id) !== name) continue;
+          await actions.once(TOLD('told', 'acknowledge'), {told: row.id, device: 'Tilo Shell', by: action || 'opened'});
+          if (row.about?.app) location.hash = `#/me/${row.about.app}`;
+          return;
+        }
+      } catch { /* answered where the page next reads the log */ }
+    };
+    const handed = address => {
+      try {
+        const key = JSON.parse(address)?.key;
+        if (!key?.auth) return;
+        pushAuth = key.auth;
+        actions?.once(TOLD('addresses', 'register'), JSON.parse(address)).catch(() => {});
+      } catch { /* not an address this page reads */ }
+    };
+    // Signed out, ask the host to forget where this device is reached.
+    const signedOut = () => {
+      pushAuth = null;
+      actions?.once(TOLD('addresses', 'unregister'), {}).catch(() => {});
+    };
+    shell?.hearingPush?.(handed);
+    shell?.hearingTold?.(told);
+    shell?.hearingSignedOut?.(signedOut);
     publish();
   }
   function stopLive() {
@@ -1197,6 +1244,8 @@ async function connect({
     },
     /** The workspace's app actions (`actions.mjs`), or `undefined` without a workspace. */
     get actions() { return actions; },
+    /** The name a push gives the thing `id` here (`knownAs`), or null with no address. */
+    pushName: id => (pushAuth ? knownAs(pushAuth, id) : Promise.resolve(null)),
     /** Public address of this admitted session; it conveys no authority. */
     get resourceScope() {
       if (disposed || snapshot.phase !== 'ready' || !actions || !workspace) return undefined;

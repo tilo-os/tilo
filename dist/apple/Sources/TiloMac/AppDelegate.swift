@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var arrived = false
     private var notices: NoticeCenter?
     private var permission = NoticePermission.notAsked
+    /// Where this Mac is reached while the app is closed, once Apple's service gave it one.
+    private var push: String?
+    /// What a push answered before the page was there to hear it.
+    private var toldAnswer: (name: String, action: String?, reply: String?)?
     private var statusItem: NSStatusItem?
     private var statusLine: NSMenuItem?
     private var problem: ProblemView?
@@ -32,9 +36,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         installStatusItem()
         let notices = NoticeCenter()
         notices.answered = { [weak self] id, answer in self?.answered(id, answer) }
+        notices.toldAnswered = { [weak self] name, action, reply in self?.told(name, action, reply) }
         self.notices = notices
         Task {
             permission = await notices.permission()
+            registerPush()
             openSite()
         }
     }
@@ -53,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // The person may have answered the system's question in its settings meanwhile.
             if let notices { permission = await notices.permission() }
             host?.setPermission(permission)
+            registerPush()
             await takeShared()
         }
     }
@@ -87,6 +94,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                                 inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
             host.delegate = self
             self.host = host
+            host.setPush(push)
+            if let toldAnswer {
+                host.told(toldAnswer.name, action: toldAnswer.action, reply: toldAnswer.reply)
+                self.toldAnswer = nil
+            }
             place(host.view, in: window)
             window.makeFirstResponder(host.view)
             show(nil)
@@ -234,6 +246,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Notifications
 
+    /// Ask Apple's service for this Mac's address, once the build may be told while it is
+    /// closed and the person lets notifications show.
+    private func registerPush() {
+        guard permission == .granted, ClosedBuild(info: Bundle.main.infoDictionary) != nil else { return }
+        NSApp.registerForRemoteNotifications()
+    }
+
+    /// Apple's address for this Mac, with the device's own key, goes to the person's host
+    /// through the page's own session, as the phone's app hands its own over.
+    func application(_ application: NSApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard let address = PushAddress.handedOver(token: deviceToken, info: Bundle.main.infoDictionary) else { return }
+        push = address
+        host?.setPush(address)
+    }
+
+    /// A push that shows nothing: the thing it names waits no more, and its notice is taken away.
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        guard let push = ClosedPush(userInfo), push.isGone else { return }
+        ClosedPush.withdraw(push.name)
+    }
+
+    /// A push was answered while the app was closed: the page answers it through the log.
+    private func told(_ name: String, _ action: String?, _ reply: String?) {
+        showWindow(nil)
+        guard let host else {
+            toldAnswer = (name, action, reply)
+            return
+        }
+        host.told(name, action: action, reply: reply)
+    }
+
     private func answered(_ id: String, _ answer: NoticeAnswer) {
         guard let host else { return }
         switch answer {
@@ -314,6 +358,7 @@ extension AppDelegate: PageHostDelegate {
                 guard let notices else { return }
                 permission = await notices.ask()
                 host.setPermission(permission)
+                registerPush()
             }
         case .wordsInserted:
             hint?.removeFromSuperview()

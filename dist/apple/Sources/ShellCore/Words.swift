@@ -26,7 +26,7 @@ public enum Words: String, CaseIterable, Sendable {
     case shareAdded = "share-added", shareNothing = "share-nothing", shareFailed = "share-failed", done
     case wayInMac = "way-in-mac", wayInPhone = "way-in-phone", pasteLink = "paste-link", scanCode = "scan-code"
     case codeNoLink = "code-no-link", cameraNotAllowed = "camera-not-allowed", pageStopped = "page-stopped"
-    case pageAway = "page-away"
+    case pageAway = "page-away", important
 
     /// The sentence in English, with `{app}` where the app's own name goes and `{site}` where
     /// the site does.
@@ -88,6 +88,7 @@ public enum Words: String, CaseIterable, Sendable {
         case .cameraNotAllowed: "Allow the camera for {app} in the system's settings to scan a code."
         case .pageStopped: "The page stopped while it loaded."
         case .pageAway: "This Tilo site keeps leaving {app} for another page."
+        case .important: "Important"
         }
     }
 

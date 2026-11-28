@@ -23,6 +23,7 @@ Sources/ShellWeb     the web view that holds the page, notifications, dictation,
 Sources/TiloMac      the Mac app: one window, the menu-bar item, settings
 Sources/TiloPhone    the iPhone app
 Sources/TiloShare    the share extension of both
+Sources/TiloNotice   the notice service extension: opens what a push sealed for this device
 Bundle/              what the bundles carry, with room for an app's name and identifier:
                      Info.plists, entitlements, the English sentences, the phone's page in
                      Settings, the icon's one drawing
@@ -35,7 +36,7 @@ build.sh             builds the app, signs, checks, installs
 | ------------- | ------------------------------------- |
 | Built by      | `build.sh mac …`, or `build.sh …`     |
 | Identifier    | `so.tilo.assistant.shell` (see below) |
-| Programs      | `TiloMac`, `TiloPhone`, `TiloShare`   |
+| Programs      | `TiloMac`, `TiloPhone`, `TiloShare`, `TiloNotice` |
 | What is shown | everything of the site, in a web view |
 | Bundle files  | `Bundle/`                             |
 
@@ -174,37 +175,38 @@ system's Settings), and `-TiloSite <origin>` on the command line is kept from th
 - **The one-app page's bar.** The page that shows one app draws a bar over it with Share and "Open
   in Tilo". In a shell held to one app the second leads to the system's browser. A page that knew
   it was shown as an app of its own could leave the bar out.
-- **Answers in a notification.** The page names no `actions` today, so a notification has no
-  answer buttons of its own. When it does, they appear with no change here.
-- **Being told while nothing runs.** A notice is shown while the app runs, because the page asks
-  for it. On a phone that is only while the app is in front. Web push does not exist in a system
-  web view; telling a person whose app is closed takes a push from their host through Apple's
-  service, an App ID that may receive it, and a place where the host keeps the device's address for
-  the person, as it keeps a browser's for web push.
-- **An answer with the app closed.** The key that proves the person is the page's. A button that
-  answers while the page does not run needs a key the app itself holds.
+- **Answers in a notification.** The page names no `actions` today, so a notice the page shows has
+  no answer buttons of its own. When it does, they appear with no change here. A push's buttons
+  are the thing's own, and answer through the log ("Told while the app is closed" below).
 - **A typed way to post.** Words reach the thread through the field the person writes in. Posting
   on the person's word without a caret (a reply from a notification, a share sent straight away)
   needs an action of the page the script can call.
 - **Notices while the window is in view but the app is not in front.** The page tells the system
   only while it is hidden.
 
-## The retired assistant's remaining parts
+## Told while the app is closed
 
-The SwiftUI Tilo Assistant (`so.tilo.assistant`) was built to read Tilo through a browser desktop
-that no longer exists, and its own window has been replaced by Chat's, drawn by the Rust UI library
-(`apps/tl/chat`). Its apps, its views, its picture tool and its files are gone: Chat's composer
-chooses a file with the system's own chooser and a message's file opens in the app that opens its
-kind, so nothing of the engine that carried them stays. One part stays, because the capability it
-carries has no place in Tilo yet:
+While no page runs, the person's host tells them through Apple's push service. A push carries, in
+the open, only that something waits and a name for the thing that only this device can tie to it;
+the agent's name, the words, the Important mark and the buttons are sealed for a key of the
+device's own (`apple_push.rs`, `sealed`). The notice extension (`TiloNotice`) opens the sealed
+part with that key, keeps it in the one keychain group the app shares with the extension, and
+shows the notice under the name, and a notice the page shows under that tag takes its place: the
+page names its own notice of a thing with the push's name (`pushName`). Signing out unregisters
+the address, so a closed app is told nothing until someone signs in there again.
 
-- **Told while the app is closed.** Push to a closed app is a platform service of an Apple app, and
-  no Tilo app on Apple's platforms runs Chat natively. `AssistantClosed` and `AssistantNotice`, and
-  the bundle files they need, stay until a native Chat app receives a push.
+The key and the address are handed over by the page's session, not by the shell directly: the
+person's identity is the page's device, so only the page can call `tilo.telling`
+`addresses#register`. The shell has the token Apple gave it and makes the key; the bridge gives
+the page where the app is reached (`__tiloShell.push`) and the page hands it to the host, as the
+phone's own app hands its endpoint over. What a push answered reaches the page the same way
+(`__tiloShell.told`): the page answers it through the log's own `acknowledge`, with the button's
+id as how, and opens what the thing is about. A push that shows nothing takes away what it
+showed.
 
-The tests still build these parts: `AssistantCoreTests` and `TiloLiveTests` reach AssistantCore,
-AssistantTilo and TiloLive, and `AssistantClosedTests` reaches AssistantClosed. AssistantNotice is
-built only as part of a bundle, and `build.sh` makes none while Chat has no Apple app.
+At Apple this takes an App ID with Push Notifications and a profile that grants
+`aps-environment` (development or production; none and the build has no push and says so), and
+for the host a key from the same team. `build.sh` builds it when `TILO_APPLE_PUSH` is set.
 
 ## Build, check, run
 
@@ -334,10 +336,13 @@ the page's sentence for it.
 
 The iPhone's entry page is drawn in a simulator that shows no window, and read out there.
 
-`AssistantClosed` is checked by its own tests: what the device's key opens against the example
-message the standard for web push itself gives (RFC 8291, section 5), which nothing of Tilo made,
-and against messages the tests seal the way the person's server does; the name of a thing against
-names worked out outside the package; and that a key prints nothing of itself.
+Being told while the app is closed is checked by `ShellCoreTests`: what the device's key opens
+against the standard's own example (RFC 8291, section 5) and against a push the host's sender
+sealed (`Fixtures/SealedPush.json`, kept in step by a test in `apple_push.rs`); the name against
+the host's; the extension's notice, under that name; the address handed over; and that a key
+prints nothing of itself. `ShellWebTests` checks that the bridge gives the page the address and
+what a push answered.
 
-Not checked by anything here: a push from Apple's service, and anything the system does with one,
-because no app carries the notice extension while Chat has no Apple app.
+Not checked by anything here: a push from Apple's service, and anything the system does with one.
+That takes an App ID with Push Notifications, a profile that grants `aps-environment`, and the
+host's own key: a real Mac or iPhone, and nothing a build on this machine makes.

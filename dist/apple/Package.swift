@@ -16,6 +16,13 @@ let package = Package(
         // The web view that holds the page, the script that joins the page to the system,
         // notifications and dictation. Shared by the Mac and the iPhone app.
         .target(name: "ShellWeb", dependencies: ["ShellCore"]),
+        // The notification service extension of both: what the person's host pushed while no
+        // page ran, opened on the device with the key the app keeps.
+        .executableTarget(
+            name: "TiloNotice",
+            dependencies: ["ShellCore"],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+        ),
         // The Mac app: one window, the menu-bar item, settings.
         .executableTarget(name: "TiloMac", dependencies: ["ShellCore", "ShellWeb"]),
         // The iPhone app.
@@ -26,22 +33,15 @@ let package = Package(
             dependencies: ["ShellCore"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
-        // The retired Swift assistant's remaining parts, kept until what they alone still do has
-        // a place in Tilo: the values its window showed and the interface they came through
-        // (AssistantCore), and being told while no app runs (AssistantClosed, AssistantNotice).
+        // The retired Swift assistant's window values, which its tests still read; the shell
+        // carries what a person needs of it.
         .target(name: "AssistantCore"),
-        .target(name: "AssistantClosed", dependencies: ["AssistantCore"]),
-        .executableTarget(
-            name: "AssistantNotice",
-            dependencies: ["AssistantClosed"],
-            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
-        ),
         // The content of the retired window's drawing, for its tests only.
         .target(name: "AssistantDrawing", dependencies: ["AssistantCore"]),
-        .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"]),
+        // The fixture is read from the source tree by `#filePath`, not copied into a bundle.
+        .testTarget(name: "ShellCoreTests", dependencies: ["ShellCore"], exclude: ["Fixtures"]),
         .testTarget(name: "ShellWebTests", dependencies: ["ShellCore", "ShellWeb"]),
         .testTarget(name: "AssistantCoreTests", dependencies: ["AssistantCore", "AssistantDrawing"]),
-        .testTarget(name: "AssistantClosedTests", dependencies: ["AssistantClosed", "AssistantCore"]),
     ],
     swiftLanguageModes: [.v6]
 )

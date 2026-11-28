@@ -322,6 +322,31 @@ final class OneAppTests: PageCase {
         try await until("the app is asked for again") { self.seen.failures.count == 4 }
         XCTAssertEqual(asked.filter { $0 == Self.own }.count, 3, "\(asked)")
     }
+    /// Where the app is reached while it is closed is the page's to hand over, so the page
+    /// hears it, as a browser's page hears where its own push endpoint is.
+    func testTheAddressTheAppIsReachedAtWhileClosedReachesThePage() async throws {
+        try await run("window.pushHeard = null; __tiloShell.hearingPush(address => window.pushHeard = address)")
+        let address = #"{"kind":"apns","token":"abcd","environment":"production","#" +
+            #""topic":"so.tilo.assistant.shell","key":{"p256dh":"04ab","auth":"cd"}}"#
+        host.setPush(address)
+        try await expect("window.pushHeard", address)
+    }
+
+    /// Signing out tells the page to ask the host to forget where this app is reached.
+    func testSigningOutTellsThePageToForgetItsAddress() async throws {
+        try await run("window.signedOut = 0; __tiloShell.hearingSignedOut(() => { window.signedOut += 1 })")
+        try await run("window.webkit.messageHandlers.tiloShell.postMessage({kind: 'entry', state: 'open'})")
+        try await until("the page is in") { self.seen.entry?.state == "open" }
+        try await run("window.webkit.messageHandlers.tiloShell.postMessage({kind: 'entry', state: 'refused'})")
+        try await expect("window.signedOut", 1)
+    }
+
+    /// What a push answered while no page ran reaches the page, named as the push named it.
+    func testWhatAPushAnsweredReachesThePage() async throws {
+        try await run("window.toldHeard = null; __tiloShell.hearingTold(answer => window.toldHeard = [answer.name, answer.action, answer.reply])")
+        host.told("6b772338188df9437a7c79158c3ce70b", action: "sign", reply: nil)
+        try await expect("window.toldHeard.join('|')", "6b772338188df9437a7c79158c3ce70b|sign|")
+    }
 }
 
 /// A page host with nothing on screen, what its app hears from it, and the page asked.

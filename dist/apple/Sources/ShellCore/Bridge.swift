@@ -176,6 +176,11 @@ public enum ComposeOutcome: String, Sendable, Equatable {
 /// `closed(id)` and `compose(words)`. It also tells the shell where the page stands on its
 /// site's entry page, which the page writes on its root element.
 ///
+/// A build told while it is closed gives the page where this app is reached (`push(address)`),
+/// which its session hands to the host (`hearingPush`), and what a push answered
+/// (`told(name, action, reply)`), which it answers through the log (`hearingTold`). A sign-out
+/// (`signedOut`) has it unregister the address (`hearingSignedOut`).
+///
 /// On an entry page that refuses the device it shows the shell's `WayInOffer` on that page. The entry page is
 /// plain markup in one dark look, set in the system's type, and it scrolls; a native bar
 /// under it followed the system's appearance and stood apart. So the offer is put into the
@@ -194,11 +199,13 @@ public enum Bridge {
     /// The message handler the page's side posts to.
     public static let name = "tiloShell"
 
-    public static func script(origin: String, permission: NoticePermission, offer: WayInOffer? = nil) -> String {
+    public static func script(origin: String, permission: NoticePermission, offer: WayInOffer? = nil,
+                              push: String? = nil) -> String {
         source
             .replacingOccurrences(of: "%ORIGIN%", with: literal(origin))
             .replacingOccurrences(of: "%PERMISSION%", with: literal(permission.rawValue))
             .replacingOccurrences(of: "%OFFER%", with: offer.map(literal) ?? "null")
+            .replacingOccurrences(of: "%PUSH%", with: push.map(literal) ?? "null")
     }
 
     /// `offer` as a JavaScript object literal.
@@ -230,6 +237,16 @@ public enum Bridge {
       const shown = new Map();
       const names = new WeakMap();
       let serial = 0;
+
+      // Where this app is reached while it is closed, and what a push answered: the page's
+      // own session hands the first to the person's host and answers the second through the
+      // log, so a push and the page name a thing one way.
+      let push = %PUSH%;
+      const pushHeard = [];
+      let told = null;
+      const toldHeard = [];
+      let out = false;
+      const outHeard = [];
       class ShellNotification extends EventTarget {
         static get permission() { return permission; }
         static get maxActions() { return 4; }
@@ -473,6 +490,40 @@ public enum Bridge {
           if (!notice) return;
           shown.delete(id);
           notice.dispatchEvent(new Event('close'));
+        },
+        push(address) {
+          if (typeof address !== 'string' || !address) return false;
+          push = address;
+          for (const hear of pushHeard.splice(0)) { try { hear(address); } catch { /* the page is gone */ } }
+          return true;
+        },
+        hearingPush(hear) {
+          if (typeof hear !== 'function') return false;
+          if (push) { try { hear(push); } catch { /* the page is gone */ } } else pushHeard.push(hear);
+          return true;
+        },
+        told(name, action, reply) {
+          if (typeof name !== 'string' || !name) return false;
+          told = {name, action: typeof action === 'string' ? action : null,
+                  reply: typeof reply === 'string' ? reply : null};
+          for (const hear of toldHeard.splice(0)) { try { hear(told); } catch { /* the page is gone */ } }
+          return true;
+        },
+        hearingTold(hear) {
+          if (typeof hear !== 'function') return false;
+          if (told) { try { hear(told); } catch { /* the page is gone */ } } else toldHeard.push(hear);
+          return true;
+        },
+        signedOut() {
+          if (out) return true;
+          out = true;
+          for (const hear of outHeard.splice(0)) { try { hear(); } catch { /* the page is gone */ } }
+          return true;
+        },
+        hearingSignedOut(hear) {
+          if (typeof hear !== 'function') return false;
+          if (out) { try { hear(); } catch { /* the page is gone */ } } else outHeard.push(hear);
+          return true;
         },
         compose,
         ways,

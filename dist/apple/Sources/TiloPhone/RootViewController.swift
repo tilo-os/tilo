@@ -16,6 +16,10 @@ final class RootViewController: UIViewController {
     private var arrived = false
     private var notices: NoticeCenter?
     private var permission = NoticePermission.notAsked
+    /// Where this iPhone is reached while the app is closed, once Apple's service gave it one.
+    private var push: String?
+    /// What a push answered before the page was there to hear it.
+    private var toldAnswer: (name: String, action: String?, reply: String?)?
     private var problem: UIView?
     private var hint: UIView?
     /// The site keeps this iPhone out, and the page shows the way in at its entry page.
@@ -32,9 +36,11 @@ final class RootViewController: UIViewController {
         ShellSettings.keepArguments()
         let notices = NoticeCenter()
         notices.answered = { [weak self] id, answer in self?.answered(id, answer) }
+        notices.toldAnswered = { [weak self] name, action, reply in self?.told(name, action, reply) }
         self.notices = notices
         Task {
             permission = await notices.permission()
+            registerPush()
             openSite()
         }
     }
@@ -47,11 +53,35 @@ final class RootViewController: UIViewController {
             permission = await notices.permission()
             if case .success(let chosen) = ShellSettings.load(), chosen == host?.settings {
                 host?.setPermission(permission)
+                registerPush()
                 await takeShared()
             } else {
                 openSite()
             }
         }
+    }
+
+    /// Ask Apple's service for this iPhone's address, once the build may be told while it is
+    /// closed and the person lets notifications show.
+    private func registerPush() {
+        guard permission == .granted, ClosedBuild(info: Bundle.main.infoDictionary) != nil else { return }
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    /// Apple's address for this iPhone goes to the person's host through the page's session.
+    func registered(_ deviceToken: Data) {
+        guard let address = PushAddress.handedOver(token: deviceToken, info: Bundle.main.infoDictionary) else { return }
+        push = address
+        host?.setPush(address)
+    }
+
+    /// A push was answered while the app was closed: the page answers it through the log.
+    private func told(_ name: String, _ action: String?, _ reply: String?) {
+        guard let host else {
+            toldAnswer = (name, action, reply)
+            return
+        }
+        host.told(name, action: action, reply: reply)
     }
 
     func perform(_ action: QuickAction?) {
@@ -95,6 +125,11 @@ final class RootViewController: UIViewController {
                                 frame: view.bounds, inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
             host.delegate = self
             self.host = host
+            host.setPush(push)
+            if let toldAnswer {
+                host.told(toldAnswer.name, action: toldAnswer.action, reply: toldAnswer.reply)
+                self.toldAnswer = nil
+            }
             host.view.translatesAutoresizingMaskIntoConstraints = false
             view.insertSubview(host.view, at: 0)
             // To the screen's edges: the page keeps clear of the notch and the home bar itself.
@@ -332,6 +367,7 @@ extension RootViewController: PageHostDelegate {
                 guard let notices else { return }
                 permission = await notices.ask()
                 host.setPermission(permission)
+                registerPush()
             }
         case .wordsInserted:
             hint?.removeFromSuperview()

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The notice extension of Tilo Assistant on the Mac: it opens what a push says for this
+<!-- The notice extension of Tilo Shell on the Mac: it opens what a push says for this
      device alone. Only a build that is told while it is closed carries it (TILO_APPLE_PUSH).
      build.sh writes its app's name and identifier for __NAME__ and __ID__. TiloTold names the
      one place it shares with the app, where the device's key is kept. -->
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>__NAME__</string>
-  <key>CFBundleExecutable</key><string>AssistantNotice</string>
+  <key>CFBundleExecutable</key><string>TiloNotice</string>
   <key>CFBundleIdentifier</key><string>__ID__.notice</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>__NAME__</string>

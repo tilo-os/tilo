@@ -57,3 +57,5 @@
 "camera-not-allowed" = "Allow the camera for {app} in the system's settings to scan a code.";
 "page-stopped" = "The page stopped while it loaded.";
 "page-away" = "This Tilo site keeps leaving {app} for another page.";
+"important" = "Important";
+"TOLD_WAITS" = "Something from your assistant waits for you";
