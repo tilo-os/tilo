@@ -161,6 +161,7 @@ tilo-ui-base = { path = "../ui-base", features = ["test-support"] }
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 # The charts and stat tiles the runner's tests mount, and the registry its component tests build.
 tilo-ui-charts = { path = "../ui-charts", features = ["test-support"] }
+tilo-ui-keypad = { path = "../ui-keypad", features = ["test-support"] }
 tilo-ui-timeline = { path = "../ui-timeline", features = ["test-support"] }
 tilo-ui-capture = { path = "../ui-capture", features = ["test-support"] }
 tilo-ui-video = { path = "../ui-video", features = ["test-support"] }

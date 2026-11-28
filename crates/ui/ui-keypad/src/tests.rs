@@ -2,9 +2,9 @@
 //! press order, a long press offers a letter's forms, a held Backspace repeats, a swipe is reported
 //! with the shape of the keys it crossed, and the space bar steers the caret.
 
-use crate::time::{Duration, now};
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui::time::{Duration, now};
 
 use vello::kurbo::{Point, Rect};
 use winit::event::TouchPhase;

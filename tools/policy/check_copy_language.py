@@ -750,6 +750,7 @@ LIBRARY_SKIP += (
     "crates/ui/tilo-rich-edit/",
     "crates/ui/ui-base/",
     "crates/ui/ui-charts/",
+    "crates/ui/ui-keypad/",
     "crates/ui/ui-timeline/",
     "crates/ui/ui-capture/",
     "crates/ui/ui-video/",

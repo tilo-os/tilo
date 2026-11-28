@@ -39,6 +39,9 @@ pub use tilo_rich_edit as rich_edit;
 /// Charts and plots: lines, bars, pies, distributions, hierarchies, flows, ranges and stat tiles.
 pub use tilo_ui_charts as charts;
 
+/// The on-screen keyboard's key pad.
+pub use tilo_ui_keypad as key_pad;
+
 /// The timelines: the calendar's days, weeks and months, and tracks of spans along a time axis.
 pub use tilo_ui_timeline as timeline;
 

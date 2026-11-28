@@ -3785,102 +3785,6 @@
       }
     },
     {
-      "name": "KeyPad",
-      "doc": "The keyboard's keys.",
-      "props": [
-        {
-          "name": "keys",
-          "doc": "The keys, each with its row and column: the pad lays each row out by the keys' widths, and a key's column is where it stands in its row.",
-          "type": {
-            "list": {
-              "cases": {
-                "name": "PadKey"
-              }
-            }
-          },
-          "required": true,
-          "positional": true
-        },
-        {
-          "name": "size",
-          "doc": "How tall a key's rows are, independent of the desktop's density.",
-          "type": {
-            "choice": {
-              "name": "PadSize",
-              "cases": [
-                "compact",
-                "standard",
-                "large"
-              ]
-            }
-          }
-        },
-        {
-          "name": "caps",
-          "doc": "Caps Lock is latched: the Shift key stands lit and letters show upper case.",
-          "type": "bool"
-        },
-        {
-          "name": "secret",
-          "doc": "The field is secret: the pad shows no key preview, no alternates and no swipe trail.",
-          "type": "bool"
-        },
-        {
-          "name": "enabled",
-          "doc": "Whether a press runs now.",
-          "type": "bool"
-        },
-        {
-          "name": "label",
-          "doc": "What the pad shows, as assistive technology announces it: \"On-screen keyboard\".",
-          "type": {
-            "option": "text"
-          }
-        },
-        {
-          "name": "description",
-          "doc": "Why it cannot be pressed now, where the label does not say.",
-          "type": {
-            "option": "text"
-          }
-        }
-      ],
-      "events": [
-        {
-          "name": "press",
-          "doc": "A key was pressed: carries its place in `keys` and where the finger was, as fractions of the pad's box, `[index, x, y]`.",
-          "value": "int",
-          "at": {
-            "list": "float"
-          }
-        },
-        {
-          "name": "hold",
-          "doc": "A long press chose one of a key's forms: carries its place in `keys` and the form, `[index, form]`.",
-          "value": {
-            "list": "text"
-          }
-        },
-        {
-          "name": "swipe",
-          "doc": "A finger crossed the keys and lifted: carries the path in fractions of the pad's box (`x, y, x, y, …`) and the box's width in its heights, so the keys it crossed keep their shape wherever the pad stands.",
-          "value": {
-            "list": "float"
-          },
-          "at": "float"
-        },
-        {
-          "name": "caret",
-          "doc": "The person dragged the space bar: carries the caret steps it asks for, left for a negative number.",
-          "value": "int"
-        }
-      ],
-      "semantics": {
-        "role": "Group",
-        "label": "label"
-      }
-    },
-    {
       "name": "Labelled",
       "doc": "A control a view composed of its own parts (a chooser, a field holding parts of its own), named by the caption the view places beside it: a screen reader and an agent reach it by the words the person reads there. A control that names itself keeps its own name.",
       "props": [
@@ -10117,6 +10021,102 @@
       }
     },
     {
+      "name": "KeyPad",
+      "doc": "The keyboard's keys.",
+      "props": [
+        {
+          "name": "keys",
+          "doc": "The keys, each with its row and column: the pad lays each row out by the keys' widths, and a key's column is where it stands in its row.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "PadKey"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "size",
+          "doc": "How tall a key's rows are, independent of the desktop's density.",
+          "type": {
+            "choice": {
+              "name": "PadSize",
+              "cases": [
+                "compact",
+                "standard",
+                "large"
+              ]
+            }
+          }
+        },
+        {
+          "name": "caps",
+          "doc": "Caps Lock is latched: the Shift key stands lit and letters show upper case.",
+          "type": "bool"
+        },
+        {
+          "name": "secret",
+          "doc": "The field is secret: the pad shows no key preview, no alternates and no swipe trail.",
+          "type": "bool"
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether a press runs now.",
+          "type": "bool"
+        },
+        {
+          "name": "label",
+          "doc": "What the pad shows, as assistive technology announces it: \"On-screen keyboard\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "A key was pressed: carries its place in `keys` and where the finger was, as fractions of the pad's box, `[index, x, y]`.",
+          "value": "int",
+          "at": {
+            "list": "float"
+          }
+        },
+        {
+          "name": "hold",
+          "doc": "A long press chose one of a key's forms: carries its place in `keys` and the form, `[index, form]`.",
+          "value": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "swipe",
+          "doc": "A finger crossed the keys and lifted: carries the path in fractions of the pad's box (`x, y, x, y, …`) and the box's width in its heights, so the keys it crossed keep their shape wherever the pad stands.",
+          "value": {
+            "list": "float"
+          },
+          "at": "float"
+        },
+        {
+          "name": "caret",
+          "doc": "The person dragged the space bar: carries the caret steps it asks for, left for a negative number.",
+          "value": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "label"
+      }
+    },
+    {
       "name": "Timeline",
       "doc": "A day, week or month as a time grid: events at their hours laid side by side where they overlap, an all-day lane, the line where now is, and a month of days with what stands on each. Dragging an event moves it, dragging its edge resizes it, and dragging across empty hours makes one that starts and ends where the drag did; each is a typed event, and the grid never changes what it shows.",
       "props": [
@@ -14470,95 +14470,6 @@
       ]
     },
     {
-      "name": "PadKey",
-      "doc": "One key of the pad: what it shows, the row and column it stands in, and what a long press or a hold on it offers.",
-      "cases": [
-        {
-          "name": "key",
-          "doc": "A key, a tap away.",
-          "fields": [
-            {
-              "name": "label",
-              "ty": "text",
-              "doc": "What it shows, a word or one character."
-            },
-            {
-              "name": "name",
-              "ty": "text",
-              "doc": "What assistive technology calls it, where that says more than the label."
-            },
-            {
-              "name": "icon",
-              "ty": "text",
-              "doc": "A glyph instead of the label, by its icon name (`delete`); empty for none."
-            },
-            {
-              "name": "tone",
-              "ty": {
-                "choice": {
-                  "name": "PadTone",
-                  "cases": [
-                    "plain",
-                    "modifier",
-                    "active",
-                    "primary"
-                  ]
-                }
-              },
-              "default": {
-                "choice": "plain"
-              },
-              "doc": "How it stands on the pad: a letter, a modifier, or the key that commits."
-            },
-            {
-              "name": "width",
-              "ty": "float",
-              "default": {
-                "float": 1.0
-              },
-              "doc": "Its width in letter keys: the space bar is wider."
-            },
-            {
-              "name": "row",
-              "ty": "int",
-              "doc": "The row it stands in, counted from 0 at the top."
-            },
-            {
-              "name": "column",
-              "ty": "int",
-              "doc": "Its place in its row, counted from 0."
-            },
-            {
-              "name": "holds",
-              "ty": {
-                "list": "text"
-              },
-              "default": {
-                "list": []
-              },
-              "doc": "What a long press on it offers, the plain key first; empty for none."
-            },
-            {
-              "name": "repeat",
-              "ty": "bool",
-              "default": {
-                "bool": false
-              },
-              "doc": "Holding it acts again and again: the Backspace key's repeat."
-            },
-            {
-              "name": "caret",
-              "ty": "bool",
-              "default": {
-                "bool": false
-              },
-              "doc": "Dragging along it moves the caret: the space bar's steering."
-            }
-          ]
-        }
-      ]
-    },
-    {
       "name": "Connection",
       "doc": "One connection of a graph, between two of its nodes.",
       "cases": [
@@ -15232,6 +15143,95 @@
               },
               "default": "none",
               "doc": "How far it has come, from zero to one, filled in the bar by the `plan` kind."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PadKey",
+      "doc": "One key of the pad: what it shows, the row and column it stands in, and what a long press or a hold on it offers.",
+      "cases": [
+        {
+          "name": "key",
+          "doc": "A key, a tap away.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What it shows, a word or one character."
+            },
+            {
+              "name": "name",
+              "ty": "text",
+              "doc": "What assistive technology calls it, where that says more than the label."
+            },
+            {
+              "name": "icon",
+              "ty": "text",
+              "doc": "A glyph instead of the label, by its icon name (`delete`); empty for none."
+            },
+            {
+              "name": "tone",
+              "ty": {
+                "choice": {
+                  "name": "PadTone",
+                  "cases": [
+                    "plain",
+                    "modifier",
+                    "active",
+                    "primary"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "plain"
+              },
+              "doc": "How it stands on the pad: a letter, a modifier, or the key that commits."
+            },
+            {
+              "name": "width",
+              "ty": "float",
+              "default": {
+                "float": 1.0
+              },
+              "doc": "Its width in letter keys: the space bar is wider."
+            },
+            {
+              "name": "row",
+              "ty": "int",
+              "doc": "The row it stands in, counted from 0 at the top."
+            },
+            {
+              "name": "column",
+              "ty": "int",
+              "doc": "Its place in its row, counted from 0."
+            },
+            {
+              "name": "holds",
+              "ty": {
+                "list": "text"
+              },
+              "default": {
+                "list": []
+              },
+              "doc": "What a long press on it offers, the plain key first; empty for none."
+            },
+            {
+              "name": "repeat",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Holding it acts again and again: the Backspace key's repeat."
+            },
+            {
+              "name": "caret",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Dragging along it moves the caret: the space bar's steering."
             }
           ]
         }

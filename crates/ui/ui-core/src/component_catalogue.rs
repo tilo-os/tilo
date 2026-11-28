@@ -20,7 +20,6 @@ pub static TOOLKIT: Set = Set {
 fn toolkit_enums() -> Vec<EnumDescription> {
     vec![
         crate::widget::drawing::shape_description(),
-        crate::widget::key_pad::key_pad_description(),
         crate::widget::connection_description(),
         crate::widget::sheet_component::sheet_cell_description(),
         crate::widget::sheet_component::sheet_peer_description(),

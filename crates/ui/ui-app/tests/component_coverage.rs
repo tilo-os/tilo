@@ -80,6 +80,7 @@ fn every_described_component_settles_its_layout() {
     let registry = Registry::of(&[
         &TOOLKIT,
         &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_keypad::COMPONENTS,
         &tilo_ui_timeline::COMPONENTS,
         &tilo_ui_capture::COMPONENTS,
         &tilo_ui_video::COMPONENTS,
@@ -182,6 +183,7 @@ fn the_gallery_shows_every_described_component() {
     let catalogue = tilo_ui_base::component::Registry::of(&[
         &TOOLKIT,
         &tilo_ui_charts::COMPONENTS,
+        &tilo_ui_keypad::COMPONENTS,
         &tilo_ui_timeline::COMPONENTS,
         &tilo_ui_capture::COMPONENTS,
         &tilo_ui_video::COMPONENTS,

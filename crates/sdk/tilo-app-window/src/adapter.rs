@@ -44,6 +44,7 @@ pub fn components() -> &'static tilo_ui_base::component::Registry {
             &tilo_ui_model::COMPONENTS,
             &tilo_rich_edit::COMPONENTS,
             &tilo_ui_charts::COMPONENTS,
+            &tilo_ui_keypad::COMPONENTS,
             &tilo_ui_timeline::COMPONENTS,
             &tilo_ui_capture::COMPONENTS,
             &tilo_ui_video::COMPONENTS,

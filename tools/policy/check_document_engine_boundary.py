@@ -48,6 +48,7 @@ ENGINE_OWNERS = (
     "crates/core/tilo-resource/",
     "crates/ui/ui-core/",
     "crates/ui/ui-charts/",
+    "crates/ui/ui-keypad/",
     "crates/ui/ui-timeline/",
     "crates/ui/ui-capture/",
     "crates/ui/ui-video/",

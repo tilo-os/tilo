@@ -28,14 +28,78 @@
 //! Presses, holds, swipes and caret steps are [`KeyPadProps`]' events. Assistive technology reads
 //! each key as a button where it stands, and activating one is the tap it stands for.
 
-use crate::time::{Duration, Instant, now};
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
+use tilo_ui::time::{Duration, Instant, now};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
-use crate::widget::Interaction;
+use tilo_ui::widget::Interaction;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{
@@ -44,7 +108,7 @@ use tilo_ui_base::{
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
-#[path = "key_pad/key_pad_component.rs"]
+#[path = "key_pad_component.rs"]
 mod component;
 pub use component::{KeyPadProps, key_pad_description};
 
@@ -1031,9 +1095,9 @@ fn key_fill(theme: &Theme, tone: PadTone, hovered: bool, pressed: bool) -> Color
             }
         }
         PadTone::Plain => {
-            crate::widget::face_colors(
+            tilo_ui::widget::face_colors(
                 theme,
-                crate::widget::ButtonRole::Key,
+                tilo_ui::widget::ButtonRole::Key,
                 Interaction {
                     hovered,
                     pressed,
@@ -1533,5 +1597,18 @@ impl Widget for KeyPad {
 
 /// The geometry helpers the tests and the drawing share.
 #[cfg(test)]
-#[path = "key_pad/tests.rs"]
 mod tests;
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The on-screen keyboard's key pad, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: key_pad_enums,
+};
+
+fn key_pad_enums() -> Vec<tilo_ui_base::component::EnumDescription> {
+    vec![key_pad_description()]
+}

@@ -5,7 +5,7 @@
 //! around it (the toolbar, the suggestions) and what a press types; the pad draws the keys,
 //! hit-tests them the way a thumb does, and reports what happened.
 
-use crate::widget::key_pad::{KeyPad, PadKey, PadSize, PadTone};
+use crate::{KeyPad, PadKey, PadSize, PadTone};
 use tilo_ui_base::{
     component::Component, component::Described, component::Event, component::PropType,
     component::Type, component::Value,

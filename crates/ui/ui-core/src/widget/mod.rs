@@ -491,10 +491,6 @@ pub use {
 };
 pub mod hex_grid;
 pub use {hex_grid::HexColumn, hex_grid::HexGrid, hex_grid::HexGridProps};
-pub mod key_pad;
-pub use {
-    key_pad::KeyPad, key_pad::KeyPadProps, key_pad::PadKey, key_pad::PadSize, key_pad::PadTone,
-};
 pub mod diff_grid;
 pub use {diff_grid::DiffGrid, diff_grid::DiffGridProps, diff_grid::DiffSide};
 pub mod paint_surface;

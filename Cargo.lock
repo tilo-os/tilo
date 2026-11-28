@@ -15032,6 +15032,7 @@ dependencies = [
  "tilo-ui-capture",
  "tilo-ui-charts",
  "tilo-ui-file-picker",
+ "tilo-ui-keypad",
  "tilo-ui-map",
  "tilo-ui-nav",
  "tilo-ui-search",
@@ -15451,6 +15452,7 @@ dependencies = [
  "tilo-ui-charts",
  "tilo-ui-file-picker",
  "tilo-ui-graph",
+ "tilo-ui-keypad",
  "tilo-ui-map",
  "tilo-ui-model",
  "tilo-ui-nav",
@@ -21666,6 +21668,7 @@ dependencies = [
  "tilo-ui-capture",
  "tilo-ui-charts",
  "tilo-ui-file-picker",
+ "tilo-ui-keypad",
  "tilo-ui-map",
  "tilo-ui-model",
  "tilo-ui-nav",
@@ -21882,6 +21885,21 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-member-types",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-keypad"
+version = "0.1.0"
+dependencies = [
+ "tilo-component-scan",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-ui-graph",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
