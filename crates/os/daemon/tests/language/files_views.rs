@@ -268,7 +268,7 @@ async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
 /// The window runs `action` with `args`, as a press of the control that fronts it does: a window
 /// still taking its time answers that its call waits, and is asked again.
 async fn runs(session: &Session<'_>, workspace: &str, action: &str, args: Value) {
-    let (said, failed) = tried(session, workspace, action, args).await;
+    let (said, failed) = tried(session, workspace, action, args.clone()).await;
     assert!(!failed, "the window runs {action} with {args}: {said}");
 }
 
