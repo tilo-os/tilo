@@ -90,8 +90,8 @@ open before anything is installed.
 
 - **Opening one** is `app.so.tilo.linux#open` naming the app's desktop file
   (`linux#open app=org.gnome.TextEditor`), from a window or an agent's key.
-  The server places it as it places Browser: the open makes the workspace's
-  `so.tilo.linux` record, and the device that takes the workspace's Linux turn
+  The open makes the workspace's `so.tilo.linux` record, and the device that
+  takes the workspace's Linux turn
   starts the app (`tilo_action_services::linux_apps`), asking its hosted-VM
   service (`Request::OpenApp`).
 - **The apps session.** The first app starts a second headless Tilo session
