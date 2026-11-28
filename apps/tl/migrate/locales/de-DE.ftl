@@ -293,10 +293,23 @@ d-ppjrgkrc = Quelle beginnen
     .w-that-could-not-be-done = Das ging nicht
 
 d-zezhz2t3 = Umzugsinhalt
+    .w-accounts-to-connect = Zu verbindende Konten
     .w-could-not-be-read = Nicht lesbar
     .w-what-to-bring-in = Was übernommen wird
     .w-the-review-found-nothing-to-bring = Die Durchsicht hat nichts zum Übernehmen gefunden
     .w-runs = Läufe
+
+d-eh7ap3fl = Zu verbindende Konten
+    .w-these-browsers-were-also-signed-in = Diese Browser waren außerdem bei { $join } angemeldet. Als Konten des Arbeitsbereichs verbinden, mit ihren E-Mails, Kalendern und Dateien? Jedes fragt auf seiner eigenen Anmeldeseite, und verbunden wird erst, wenn du dort zustimmst.
+    .w-connect-them = Verbinden
+
+d-dqzhks7q = Zu verbindendes Konto
+    .w-connected = Verbunden
+    .w-spotify-connects-in-music-on-spotify = Spotify wird in Musik verbunden, auf Spotifys eigener Seite.
+    .w-open-music = Musik öffnen
+    .w-sign-in-on-s-page = Auf der Seite von { $title } anmelden
+    .w-the-address-you-sign-in-to = Die Adresse, mit der du dich bei Microsoft anmeldest
+    .w-sign-in = Anmelden
 
 d-zwcqzi7i = Stand des Laufs
     .w-bringing-in = Wird übernommen

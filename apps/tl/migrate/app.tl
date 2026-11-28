@@ -6,6 +6,8 @@ app so.tilo.migrate "Migrations" (
 )
 
 use so.tilo.migrate.engine as engine
+use so.tilo.session as session
+use tilo.accounts as accounts
 
 /// Where a migration's run stands: offered, a source the device can read that nobody looked at
 /// yet; reviewed, with what the source holds waiting to be chosen;
@@ -547,8 +549,14 @@ view source_start(g: Migration) {
 /// A migration that was looked at: where its run stands, what the source holds to choose from,
 /// what could not be read, and the runs that brought things in.
 view migration_body(g: Migration) {
+    let signed_in = g.items.filter(x -> x.kind == "account-to-connect")
     stack(gap: .group) {
         run_status(g)
+        if g.state == .complete and not signed_in.is_empty() {
+            section("Accounts to connect") {
+                accounts_to_connect(g)
+            }
+        }
         if not g.unreadable.is_empty() {
             section("Could not be read") {
                 for what in g.unreadable {
@@ -563,7 +571,7 @@ view migration_body(g: Migration) {
                 // The rows are built as they scroll into view, so a source of ten thousand items
                 // costs the rows on screen. An item has no page of its own: its row is all of it.
                 ui.VirtualList(tree: true, in_column: false, name: "What to bring in") {
-                    for x in g.items {
+                    for x in g.items.filter(x -> x.kind != "account-to-connect") {
                         ui.ListItem(
                             item: x,
                             presence: lenses(x).find(l -> not l.mine)?.who,
@@ -579,6 +587,95 @@ view migration_body(g: Migration) {
             section("Runs") {
                 for r in g.runs {
                     run_row(g, r)
+                }
+            }
+        }
+    }
+}
+
+/// The accounts the browsers a run read were signed in to, offered once the run is done: one
+/// confirmation begins each one's own sign-in, and nothing is connected until the person
+/// approves it on that page. A browser's cookies never connect an account.
+view accounts_to_connect(g: Migration) {
+    state confirmed: Bool = false
+    let found = g.items.filter(x -> x.kind == "account-to-connect")
+    stack(gap: .related) {
+        text(
+            "These browsers were also signed in to {found.map(x -> x.title).join(", ")}. Connect them as the workspace's accounts, with their mail, calendars and files? Each asks on its own sign-in page, and nothing is connected until you approve it there.",
+            secondary: true,
+        )
+        for x in found {
+            account_to_connect(g, x, confirmed)
+        }
+        if not confirmed {
+            ui.Button("Connect them", icon: .link, role: .primary) {
+                on press: set(confirmed, true)
+            }
+        }
+    }
+}
+
+/// One account a browser was signed in to: its own sign-in, begun once the person confirmed
+/// connecting them, the page it asks on, and whether the workspace has it. Microsoft's asks for
+/// the address it signs in with when no saved password named it; Spotify's is Music's.
+view account_to_connect(g: Migration, x: Item, begin: Bool) {
+    state open: Text = ""
+    state code: Text = ""
+    state typed: Text = x.note
+    let spotify = x.key.ends_with("/spotify")
+    let provider = if x.key.ends_with("/google") { "google" } else { "microsoft" }
+    let connected = not spotify
+        and accounts.accounts.accounts.any(
+            a -> a.provider == provider and (typed == "" or a.address == typed),
+        )
+    stack(gap: .related) {
+        ui.ListRow(
+            x.title,
+            secondary: if x.note != "" { x.note } else { parent_of(g, x)?.title ?? "" },
+            meta: if connected { "Connected" },
+            meta_tone: if connected { .success } else { .neutral },
+        )
+        if begin and not connected {
+            if spotify {
+                text(
+                    "Spotify connects in Music, on Spotify's own page.",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Button("Open Music", icon: .link) {
+                    on press: session.open_app(app: "so.tilo.music")
+                }
+            } else if open != "" {
+                ui.Link(open, label: "Sign in on {x.title}'s page")
+                if code != "" {
+                    text(code, role: .caption, secondary: true)
+                }
+            } else if provider == "microsoft" and x.note == "" {
+                ui.TextInput(bind: typed, placeholder: "The address you sign in to Microsoft with")
+                ui.Button("Sign in", icon: .link) {
+                    on press: {
+                        let step = accounts.begin_sign_in(
+                            accounts.accounts,
+                            provider: provider,
+                            address: typed,
+                            mail: true,
+                            calendar: true,
+                            files: true,
+                        )
+                        set(open, step.open).then(set(code, step.code))
+                    }
+                }
+            } else {
+                after 0s: {
+                    let step = accounts.begin_sign_in(
+                        accounts.accounts,
+                        provider: provider,
+                        address: typed,
+                        mail: true,
+                        calendar: true,
+                        files: true,
+                    )
+                    set(open, step.open).then(set(code, step.code))
                 }
             }
         }
@@ -828,6 +925,83 @@ scenario "a migration halfway" -> Migration {
     let now = tb.runs.insert(Run(id: "run-2", title: "Mail, contacts and calendars"))
     now.keys.add("calendar:home")
     tb
+}
+
+/// This computer's browsers brought in, and the accounts their profiles were signed in to
+/// offered to connect.
+scenario "browsers signed in to accounts" -> Migration {
+    let m = root Migrations
+    let g = m.migrations.insert(
+        Migration(
+            source: "browsers",
+            title: "Browsers on this computer",
+            device: "5b0e9c41d2a7f3e8",
+            handle: "/home/sam",
+            state: .complete,
+            run: "run-1",
+            run_title: "Bring 412 bookmarks and the sign-ins to 38 sites",
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release",
+            kind: "browser-profile",
+            title: "Firefox · default-release",
+            count: 450,
+            counts: "things",
+            chosen: true,
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release/bookmarks",
+            kind: "bookmarks",
+            title: "Firefox · default-release bookmarks",
+            count: 412,
+            counts: "bookmarks",
+            within: "firefox/default-release",
+            chosen: true,
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release/sign-ins",
+            kind: "sign-ins",
+            title: "Firefox · default-release sign-ins",
+            count: 38,
+            counts: "sites",
+            within: "firefox/default-release",
+            chosen: true,
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release/account/google",
+            kind: "account-to-connect",
+            title: "Google",
+            within: "firefox/default-release",
+            note: "sam.rivera@gmail.com",
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release/account/microsoft",
+            kind: "account-to-connect",
+            title: "Microsoft",
+            within: "firefox/default-release",
+        ),
+    )
+    g.items.insert(
+        Item(
+            key: "firefox/default-release/account/spotify",
+            kind: "account-to-connect",
+            title: "Spotify",
+            within: "firefox/default-release",
+        ),
+    )
+    g.brought.insert(Count(kind: "bookmarks", count: 412))
+    g.brought.insert(Count(kind: "sign-ins", count: 3))
+    g
 }
 
 scenario "a mail account not looked at yet" -> Migration {
