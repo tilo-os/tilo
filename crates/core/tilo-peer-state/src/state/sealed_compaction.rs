@@ -2088,15 +2088,16 @@ impl PeerPublication<'_> {
     /// is what seals their content again under the document's own scope.
     #[must_use]
     pub fn sealed_to_compact(self) -> Vec<(String, String)> {
+        // Each document is asked once per state: a write asks only the documents it changed.
         let mut due: Vec<(String, String)> = self
             .peer
             .core
             .documents
-            .iter()
-            .filter(|(route, document)| {
+            .due(|route, document| {
                 document.sealed.due() || self.holds_sealed_before_reader_sets(route, document)
             })
-            .map(|(route, _)| route.named())
+            .iter()
+            .map(Route::named)
             .collect();
         // Every sealed write leaves exact admission evidence until a
         // compaction folds it into its writer's mark. Many records each
@@ -2109,10 +2110,8 @@ impl PeerPublication<'_> {
                 self.peer
                     .core
                     .documents
-                    .iter()
-                    .filter(|(_, document)| document.sealed.writes().0 >= PRESSED_HISTORY)
-                    .max_by_key(|(_, document)| document.sealed.writes().0)
-                    .map(|(route, _)| route.named()),
+                    .most_writes(PRESSED_HISTORY, |document| document.sealed.writes().0)
+                    .map(|route| route.named()),
             );
         }
         due

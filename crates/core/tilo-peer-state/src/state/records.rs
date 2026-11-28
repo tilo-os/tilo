@@ -196,12 +196,7 @@ impl StatePeer {
     /// its channel's keys to be opened into the store.
     #[must_use]
     pub fn holds_sealed_content_of(&self, app: &str, record: &str) -> bool {
-        self.core.documents.iter().any(|(route, entry)| {
-            entry.encryption_required
-                && route.app == app
-                && collab_types::store_content_resource(&route.record)
-                    .is_some_and(|(_, id)| id == record)
-        })
+        self.core.documents.holds_sealed_content(app, record)
     }
 
     /// The `(app, record)` of every encrypted record this state holds: only

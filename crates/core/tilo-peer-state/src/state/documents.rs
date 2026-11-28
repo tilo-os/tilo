@@ -41,10 +41,47 @@ pub(super) struct Documents {
 struct Made {
     tree_of: Ordered<Route, StoredDocument>,
     tree: Option<Node>,
-    sealed_of: Ordered<Route, StoredDocument>,
-    sealed: Ordered<Route, ()>,
+    sealed: Index<Ordered<Route, ()>>,
+    due: Index<Ordered<Route, ()>>,
+    pressed: Index<Ordered<Route, usize>>,
+    content: Index<Ordered<(String, String), usize>>,
     parts_of: Ordered<Route, StoredDocument>,
     parts: Ordered<Route, DocumentParts>,
+}
+
+/// A fact about some of the held documents, with the documents it was last brought up to date
+/// with: only the documents changed since are asked again.
+#[derive(Clone, Default)]
+struct Index<T> {
+    of: Ordered<Route, StoredDocument>,
+    held: T,
+}
+
+impl<T> Index<T> {
+    /// Bring the fact up to date with `map`: `change` takes each document changed since, as it
+    /// was and as it is.
+    fn follow(
+        &mut self,
+        map: &Ordered<Route, StoredDocument>,
+        mut change: impl FnMut(&mut T, &Route, Option<&StoredDocument>, Option<&StoredDocument>),
+    ) {
+        for changed in Ordered::changes(&self.of, map, StoredDocument::same) {
+            change(&mut self.held, changed.key, changed.before, changed.after);
+        }
+        self.of = map.clone();
+    }
+}
+
+/// `set` with `route` in it while `held` holds for it.
+fn mark<V: Clone>(set: &mut Ordered<Route, V>, route: &Route, held: Option<V>) {
+    match held {
+        Some(value) => {
+            set.insert(route.clone(), value);
+        }
+        None => {
+            set.remove(route);
+        }
+    }
 }
 
 impl Clone for Documents {
@@ -87,22 +124,90 @@ fn walked() {
 impl Documents {
     /// How many documents hold sealed history.
     pub(super) fn sealed_count(&self) -> usize {
-        let mut guard = self.made.lock();
-        let made = &mut *guard;
-        for change in Ordered::changes(&made.sealed_of, &self.map, StoredDocument::same) {
-            if change
-                .after
-                .is_some_and(|document| document.stores_sealed())
-            {
-                made.sealed.insert(change.key.clone(), ());
-            } else {
-                made.sealed.remove(change.key);
-            }
+        let mut made = self.made.lock();
+        made.sealed.follow(&self.map, |sealed, route, _, after| {
+            mark(
+                sealed,
+                route,
+                after
+                    .is_some_and(|document| document.stores_sealed())
+                    .then_some(()),
+            );
+        });
+        made.sealed.held.len()
+    }
+
+    /// The documents `due` holds for, in route order. `due` must answer by the route and the
+    /// document alone: it is asked once per state of a document.
+    pub(super) fn due(&self, due: impl Fn(&Route, &StoredDocument) -> bool) -> Vec<Route> {
+        let mut made = self.made.lock();
+        made.due.follow(&self.map, |set, route, _, after| {
+            mark(
+                set,
+                route,
+                after
+                    .is_some_and(|document| due(route, document))
+                    .then_some(()),
+            );
+        });
+        made.due.held.keys().cloned().collect()
+    }
+
+    /// Of the documents whose `writes` reach `least`, the one with the most (the last in route
+    /// order of those with as many). `writes` must answer by the document alone.
+    pub(super) fn most_writes(
+        &self,
+        least: usize,
+        writes: impl Fn(&StoredDocument) -> usize,
+    ) -> Option<Route> {
+        let mut made = self.made.lock();
+        made.pressed.follow(&self.map, |set, route, _, after| {
+            mark(
+                set,
+                route,
+                after.map(&writes).filter(|writes| *writes >= least),
+            );
+        });
+        made.pressed
+            .held
+            .iter()
+            .max_by_key(|(_, writes)| **writes)
+            .map(|(route, _)| route.clone())
+    }
+
+    /// Whether a sealed document of `app` holds the content of the store's `record`
+    /// (`<readers>/<kind>/<record>~<n>`).
+    pub(super) fn holds_sealed_content(&self, app: &str, record: &str) -> bool {
+        fn content(route: &Route, document: &StoredDocument) -> Option<(String, String)> {
+            let (_, id) = collab_types::store_content_resource(&route.record)?;
+            document
+                .encryption_required
+                .then(|| (route.app.clone(), id.to_owned()))
         }
-        made.sealed_of = self.map.clone();
-        let count = made.sealed.len();
-        drop(guard);
-        count
+        let mut made = self.made.lock();
+        made.content
+            .follow(&self.map, |counts, route, before, after| {
+                for (key, step) in [
+                    (before.and_then(|before| content(route, before)), -1_i8),
+                    (after.and_then(|after| content(route, after)), 1),
+                ] {
+                    let Some(key) = key else { continue };
+                    let count = counts.get(&key).copied().unwrap_or(0);
+                    let count = if step > 0 {
+                        count.saturating_add(1)
+                    } else {
+                        count.saturating_sub(1)
+                    };
+                    if count == 0 {
+                        counts.remove(&key);
+                    } else {
+                        counts.insert(key, count);
+                    }
+                }
+            });
+        made.content
+            .held
+            .contains_key(&(app.to_owned(), record.to_owned()))
     }
 
     /// Each document's part of the durable encoding, as `encode` makes it:
