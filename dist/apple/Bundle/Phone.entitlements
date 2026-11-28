@@ -5,10 +5,14 @@
      that wraps the page's keys; the second is the one place shared between app and extension.
      Where the provisioning profile grants associated domains, build.sh also names the sites
      whose passkeys the page may use (com.apple.developer.associated-domains, one
-     webcredentials: entry each): a system web view asks for a passkey only for those. -->
+     webcredentials: entry each): a system web view asks for a passkey only for those. The app
+     group is the one place the app and its home-screen widget read the same file from. -->
 <plist version="1.0"><dict>
   <key>application-identifier</key><string>__TEAM__.__ID__</string>
   <key>com.apple.developer.team-identifier</key><string>__TEAM__</string>
+  <key>com.apple.security.application-groups</key><array>
+    <string>group.__ID__.shared</string>
+  </array>
   <key>keychain-access-groups</key><array>
     <string>__TEAM__.__ID__</string>
     <string>__TEAM__.__ID__.shared</string>

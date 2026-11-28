@@ -47,13 +47,17 @@ public struct PageNotice: Equatable, Sendable {
     /// A newer notice with the same tag replaces this one.
     public let tag: String?
     public let actions: [NoticeAction]
+    /// Where the page would go if this notice were clicked, as it names it; empty where it would
+    /// go nowhere. A home-screen widget carries it, so a tap opens the same place.
+    public let link: String
 
-    public init(id: String, title: String, body: String = "", tag: String? = nil, actions: [NoticeAction] = []) {
+    public init(id: String, title: String, body: String = "", tag: String? = nil, actions: [NoticeAction] = [], link: String = "") {
         self.id = id
         self.title = title
         self.body = body
         self.tag = tag
         self.actions = actions
+        self.link = link
     }
 }
 
@@ -129,9 +133,10 @@ public enum PageMessage: Equatable, Sendable {
             else { return nil }
             let tag = (said["tag"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(64)) }
             let actions = (said["actions"] as? [[String: Any]] ?? []).prefix(4).compactMap(NoticeAction.init(said:))
+            let link = String(((said["link"] as? String) ?? "").prefix(1024))
             self = .notify(PageNotice(id: id, title: String(title.prefix(256)),
                                       body: String((said["body"] as? String ?? "").prefix(2048)),
-                                      tag: tag, actions: actions))
+                                      tag: tag, actions: actions, link: link))
         case "withdraw":
             guard let id = said["id"] as? String, !id.isEmpty, id.count <= 64 else { return nil }
             self = .withdraw(id: id)
@@ -276,7 +281,8 @@ public enum Bridge {
             type: action?.type === 'text' ? 'text' : 'button', placeholder: cut(action?.placeholder, 64),
           })).filter(action => action.action && action.title);
           shown.set(id, this);
-          tell('notify', {id, title: this.title, body: this.body, tag: this.tag, actions});
+          tell('notify', {id, title: this.title, body: this.body, tag: this.tag,
+                           link: cut(options?.data, 1024), actions});
           queueMicrotask(() => this.dispatchEvent(new Event('show')));
         }
         close() {

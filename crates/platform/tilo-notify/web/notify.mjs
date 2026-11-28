@@ -23,7 +23,9 @@ export function showNotification(tag,title,body,activation,{Notification:N=globa
   if(typeof N!=='function')throw Error('Notifications are unavailable in this browser');
   if(N.permission!=='granted')throw Error('Notifications are not permitted for this site');
   shown.get(tag)?.close();
-  const notification=new N(title,{body,tag});
+  // The activation rides along as the notification's data, which a browser ignores and a host
+  // that keeps its own notices (Tilo Shell) reads, so a home-screen card opens the same place.
+  const notification=new N(title,{body,tag,data:activation});
   shown.set(tag,notification);
   notification.addEventListener?.('close',()=>{if(shown.get(tag)===notification)shown.delete(tag);});
   notification.addEventListener?.('click',event=>{

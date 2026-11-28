@@ -33,6 +33,13 @@ let package = Package(
             dependencies: ["ShellCore"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
+        // The home screen's card of what waits for the person: a widget extension, which starts
+        // as the share extension does, on the Mac and the iPhone.
+        .executableTarget(
+            name: "TiloWidgets",
+            dependencies: ["ShellCore"],
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+        ),
         // The retired Swift assistant's window values, which its tests still read; the shell
         // carries what a person needs of it.
         .target(name: "AssistantCore"),

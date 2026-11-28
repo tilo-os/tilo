@@ -24,6 +24,8 @@
 #   TILO_APPLE_SHARE_PROFILE     the profile of the iPhone app's share extension (default: the
 #                                app's). A profile made for the app's own identifier, which
 #                                passkeys take, covers the app alone.
+#   TILO_APPLE_WIDGETS_PROFILE   the profile of the iPhone app's widget extension (default: the
+#                                app's). Its app group must be one the profile grants.
 #   TILO_APPLE_MAC_PROFILE       the Mac app's provisioning profile (a .provisionprofile). A
 #                                Mac app carries one only to use passkeys, or to be told while
 #                                it is closed (TILO_APPLE_PUSH).
@@ -319,7 +321,18 @@ build_mac() {
   else
     # Signed by nobody, the app and an extension share no place: it is built without one.
     plist -c "Delete :com.apple.security.application-groups" "$rights"
-    say "signed by nobody: no share extension, and the next build cannot read this one's keys"
+    say "signed by nobody: no share or widget extension, and the next build cannot read this one's keys"
+  fi
+  if [ -n "$team" ]; then
+    local widgets="$contents/PlugIns/TiloWidgets.appex"
+    mkdir -p "$widgets/Contents/MacOS"
+    cp "$bin/TiloWidgets" "$widgets/Contents/MacOS/TiloWidgets"
+    fill "$bundle/Widgets-Info.plist" "$widgets/Contents/Info.plist"
+    stamp "$widgets/Contents/Info.plist"
+    plist -c "Set :CFBundleSupportedPlatforms:0 MacOSX" "$widgets/Contents/Info.plist"
+    plist -c "Delete :UIDeviceFamily" -c "Delete :MinimumOSVersion" "$widgets/Contents/Info.plist"
+    fill "$bundle/Widgets.entitlements" "$made/mac/widgets.entitlements"
+    "${sign[@]}" --entitlements "$made/mac/widgets.entitlements" "$widgets"
   fi
   # A Mac app runs without a provisioning profile. It carries one only to use passkeys: being
   # associated with a site is a right a profile grants, to the app the signature says it is.
@@ -413,8 +426,25 @@ build_iphone() {
   [ -f "$share_profile" ] || die "TILO_APPLE_SHARE_PROFILE names no file"
   bin="$(products iphone)"
   local appex="$app/PlugIns/TiloShare.appex"
+  local widgets="$app/PlugIns/TiloWidgets.appex"
+  local widgets_profile="${TILO_APPLE_WIDGETS_PROFILE:-$TILO_APPLE_PROFILE}"
+  [ -f "$widgets_profile" ] || die "TILO_APPLE_WIDGETS_PROFILE names no file"
   rm -rf "$made/iphone"
   mkdir -p "$appex"
+  # The home screen's card reads the app group its signature names, which a profile must grant: a
+  # profile without it builds the app as it was, and says so.
+  local group="group.$id.shared" phone_entitlements="$bundle/Phone.entitlements" widget=""
+  security cms -D -i "$TILO_APPLE_PROFILE" > "$made/iphone/app.profile.plist" 2>/dev/null \
+    || die "$TILO_APPLE_PROFILE is no provisioning profile"
+  if plist -c 'Print :Entitlements:com.apple.security.application-groups' \
+      "$made/iphone/app.profile.plist" 2>/dev/null | grep -qF -- "$group"; then
+    widget=1
+  else
+    say "no home-screen widget: the profile grants no $group app group"
+    phone_entitlements="$made/iphone/Phone.entitlements"
+    cp "$bundle/Phone.entitlements" "$phone_entitlements"
+    plist -c "Delete :com.apple.security.application-groups" "$phone_entitlements"
+  fi
 
   # The extensions first, then the app that seals them. Each carries the profile that covers it.
   cp "$bin/TiloShare" "$appex/TiloShare"
@@ -434,6 +464,11 @@ build_iphone() {
     cp "$bin/TiloNotice" "$notice/TiloNotice"
     phone_part "$notice" "$id.notice" "$bundle/Notice-Info.plist" "$bundle/Notice.entitlements" "$notice_profile"
   fi
+  if [ -n "$widget" ]; then
+    mkdir -p "$widgets"
+    cp "$bin/TiloWidgets" "$widgets/TiloWidgets"
+    phone_part "$widgets" "$id.widgets" "$bundle/Widgets-Info.plist" "$bundle/Widgets.entitlements" "$widgets_profile"
+  fi
   cp "$bin/TiloPhone" "$app/$program"
   cp -R "$bundle/Settings.bundle" "$app/"
   # The two files Phone-Info.plist names as the app's icon.
@@ -444,7 +479,7 @@ build_iphone() {
     sips -s format png "$made/iphone/icon.jpg" --out "$app/AppIcon60x60@${scale}x.png" >/dev/null
   done
   rm -f "$made/iphone/icon.png" "$made/iphone/icon.jpg"
-  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$bundle/Phone.entitlements" "$TILO_APPLE_PROFILE" app "$told"
+  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$phone_entitlements" "$TILO_APPLE_PROFILE" app "$told"
   codesign --verify --deep --strict "$app"
 }
 

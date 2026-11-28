@@ -21,5 +21,6 @@
   <!-- Where the share extension leaves what it was given. -->
   <key>com.apple.security.application-groups</key><array>
     <string>__TEAM__.__ID__.shared</string>
+    <string>group.__ID__.shared</string>
   </array>
 </dict></plist>

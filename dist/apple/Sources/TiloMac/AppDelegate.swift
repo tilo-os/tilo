@@ -278,6 +278,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         host.told(name, action: action, reply: reply)
     }
 
+    /// A tap on the home screen's card: the URL says where its page would have gone, so the notice
+    /// is opened now, or when the page next shows it.
+    private func route(_ url: URL) {
+        guard let activation = WidgetLink.activation(in: url), let notices else { return }
+        if host != nil, let id = notices.notice(at: activation) {
+            answered(id, .opened)
+        } else {
+            notices.pending = activation
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if let url = urls.first { route(url) }
+    }
+
     private func answered(_ id: String, _ answer: NoticeAnswer) {
         guard let host else { return }
         switch answer {

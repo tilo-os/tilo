@@ -22,6 +22,10 @@
   <key>CFBundleShortVersionString</key><string>0.0.0</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
   <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>__ID__.widget</string>
+    <key>CFBundleURLSchemes</key><array><string>tilo-phone</string></array>
+  </dict></array>
   <!-- What the page hands the person to keep lands in the app's documents, which Files shows. -->
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
   <key>UIFileSharingEnabled</key><true/>
@@ -44,6 +48,7 @@
   <key>NSSpeechRecognitionUsageDescription</key><string>__NAME__ turns what you dictate into words on this iPhone.</string>
   <key>TiloAlone</key><false/>
   <key>TiloApp</key><string></string>
+  <key>TiloGroup</key><string>group.__ID__.shared</string>
   <key>TiloShared</key><string>__ID__.shared</string>
   <key>TiloSite</key><string>https://tilo.sh</string>
   <key>TiloTeam</key><string></string>

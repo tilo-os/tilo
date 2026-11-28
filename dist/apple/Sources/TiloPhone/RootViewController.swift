@@ -306,6 +306,17 @@ final class RootViewController: UIViewController {
         }
     }
 
+    /// A link the system handed the app: a tap on the home screen's card says where its page would
+    /// have gone. Open that notice now, or when the page next shows it.
+    func route(_ url: URL) {
+        guard let activation = WidgetLink.activation(in: url), let notices else { return }
+        if host != nil, let id = notices.notice(at: activation) {
+            answered(id, .opened)
+        } else {
+            notices.pending = activation
+        }
+    }
+
     private func answered(_ id: String, _ answer: NoticeAnswer) {
         guard let host else { return }
         switch answer {

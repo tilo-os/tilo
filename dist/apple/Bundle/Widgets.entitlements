@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The home screen's card, which reads what the shell kept of the person's waiting things from
+     the app group the app and this extension share. build.sh writes the signing team for __TEAM__
+     and the app's identifier for __ID__. -->
+<plist version="1.0"><dict>
+  <key>application-identifier</key><string>__TEAM__.__ID__.widgets</string>
+  <key>com.apple.developer.team-identifier</key><string>__TEAM__</string>
+  <key>com.apple.security.application-groups</key><array>
+    <string>group.__ID__.shared</string>
+  </array>
+</dict></plist>

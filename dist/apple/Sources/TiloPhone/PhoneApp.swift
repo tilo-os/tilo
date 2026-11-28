@@ -63,6 +63,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
         root.perform(options.shortcutItem.flatMap { QuickAction(rawValue: $0.type) })
+        if let url = options.urlContexts.first?.url { root.route(url) }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+        if let url = contexts.first?.url { root.route(url) }
     }
 
     func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem) async -> Bool {

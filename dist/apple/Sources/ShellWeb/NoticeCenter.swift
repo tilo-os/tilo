@@ -34,6 +34,11 @@ public final class NoticeCenter: NSObject {
     public var toldAnswered: ((_ name: String, _ action: String?, _ reply: String?) -> Void)?
 
     private let center = UNUserNotificationCenter.current()
+    /// Where a home-screen widget asked to go, until the page shows the notice that names it.
+    public var pending: String?
+    /// What stands for the widget, newest first: the page's name for each notice, where it would
+    /// go, and what it says, so withdrawing one takes the right one away.
+    private var waiting: [(id: String, activation: String, item: WidgetSnapshot.Item)] = []
     private var categories: [String: UNNotificationCategory] = [:]
     private var byTag: [String: String] = [:]
 
@@ -79,12 +84,36 @@ public final class NoticeCenter: NSObject {
         }
         center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil),
                    withCompletionHandler: nil)
+        // The home screen's widget shows the same things: it keeps this one first.
+        waiting.removeAll { $0.id == notice.id }
+        waiting.insert((notice.id, notice.link,
+                        WidgetSnapshot.Item(title: notice.title, body: notice.body,
+                                            link: WidgetLink.url(for: notice.link))), at: 0)
+        published()
+        // A tap on that widget came before the page showed what it names: it is a click now.
+        if let pending, !notice.link.isEmpty, pending == notice.link {
+            self.pending = nil
+            answered?(notice.id, .opened)
+        }
     }
 
     public func withdraw(id: String) {
         let identifier = Names.request(id)
         byTag = byTag.filter { $0.value != identifier }
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        waiting.removeAll { $0.id == id }
+        published()
+    }
+
+    /// The notice the page shows for the page link, if it shows one.
+    public func notice(at activation: String) -> String? {
+        waiting.first { $0.activation == activation }?.id
+    }
+
+    /// Keep what the widget shows in the app group, and ask it to draw again.
+    private func published() {
+        WidgetSnapshot(items: waiting.prefix(WidgetSnapshot.most).map { $0.item })
+            .write(in: WidgetSnapshot.group())
     }
 
     /// The count on the app's icon.
