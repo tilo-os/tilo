@@ -16,7 +16,7 @@ d-6mf2skfm = Namen
 
 d-pezu5gyc = Laufwerk benennen
     .doc = Der Name eines Laufwerks in den Worten der Person, die es liest, nach seiner Seriennummer.
-    .did = Ein Laufwerk benannt
+    .did = benannte ein Laufwerk „{ $name }“
     .w-a-drive-s-name-is-not = Der Name eines Laufwerks ist nicht leer und steht ohne Leerzeichen
 
 d-pezu5gyc-serial = Seriennummer

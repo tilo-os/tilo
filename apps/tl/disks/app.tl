@@ -223,7 +223,7 @@ fn format_loses(drive: device.Drive, target: Text) -> Text {
 action name_drive(d: Disks, serial: Text, name: Text) (
     icon: .pencil,
     label: "Name drive",
-    did: "Named a drive",
+    did: "named a drive “{name}” in",
 ) {
     require name.trim() == name or name.trim() == "" "A drive's name is not blank and not padded"
     let named = name.trim()

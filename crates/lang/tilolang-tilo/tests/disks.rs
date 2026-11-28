@@ -628,3 +628,35 @@ fn blocks_legend_entries_and_the_chip_report_the_choice() {
         shown(&window)
     );
 }
+
+/// What the system's History says naming a drive did, in English and in German: the name it
+/// was given.
+#[test]
+fn history_says_the_name_a_drive_was_given_in_the_readers_language() {
+    let app = Pane::install_with_ids(
+        &me(),
+        SOURCE,
+        include_str!("../../../../apps/tl/disks/app.ids"),
+    )
+    .delegating()
+    .reading(&reading(), READING)
+    .rooted_of(APP);
+    app.call(
+        "name_drive",
+        vec![app.root_value(), Value::text("S2"), Value::text("Stick")],
+    );
+    let german = include_str!("../../../../apps/tl/disks/locales/de-DE.ftl");
+    let said = app.history(app.root(), "en-US", "");
+    let gesagt = app.history(app.root(), "de-DE", german);
+    assert!(
+        said.last()
+            .is_some_and(|said| said.starts_with("Named a drive “Stick” in")),
+        "{said:?}"
+    );
+    assert!(
+        gesagt
+            .last()
+            .is_some_and(|said| said.starts_with("Benannte ein Laufwerk „Stick“")),
+        "{gesagt:?}"
+    );
+}
