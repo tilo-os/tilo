@@ -405,11 +405,16 @@ impl Host {
     /// reads them: who is in the workspace, and the reading of them a view reads. Whether the
     /// reading moved.
     fn serve_rows(&self, rows: &[collab_types::Member]) -> bool {
-        *self.inner.member_rows.borrow_mut() = std::rc::Rc::new(
-            rows.iter()
-                .map(|row| (row.id.clone(), row.clone()))
-                .collect(),
-        );
+        let before = Rc::clone(&self.inner.member_rows.borrow());
+        let now: HashMap<MemberId, collab_types::Member> = rows
+            .iter()
+            .map(|row| (row.id.clone(), row.clone()))
+            .collect();
+        // A view shows a name the workspace keeps, and the reading below names its members by
+        // their actor alone: a member renamed moves no actor, and still every view naming them
+        // runs again.
+        let renamed = *before != now;
+        *self.inner.member_rows.borrow_mut() = Rc::new(now);
         let me = self.viewer().clone();
         let mine = self
             .authority()
@@ -453,7 +458,7 @@ impl Host {
             });
         self.inner.members_known.set(true);
         self.inner.members_asked.set(false);
-        if took {
+        if took || renamed {
             // A view that read a name runs again even where a read followed the members first:
             // the move is kept until an embedder takes it.
             self.inner.members_named_moved.set(true);
