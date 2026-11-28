@@ -681,7 +681,7 @@ def describe_shell_parts(report: dict, n: int = 6) -> str:
     return ", ".join(heap + rest + peak_text + sites_text)
 
 
-HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) free_mib=(\d+)")
+HEAP_MILESTONE = re.compile(r"HEAP-MILESTONE what=(\S+) in_use_mib=(\d+) heap_free_mib=(\d+)")
 
 
 def heap_milestones(log: str, trims: int = 3) -> str:

@@ -354,9 +354,11 @@ const fn supported() -> bool {
     cfg!(all(target_os = "linux", target_env = "gnu"))
 }
 
-/// One `HEAP-MILESTONE` line for the session log: glibc's heap in use and free and the process's
-/// anonymous RSS, at `what` (the compositor's start, its first frame, each trim). The vm-acceptance
-/// memory checks quote these lines, so an over-budget compositor says when its heap grew.
+/// One `HEAP-MILESTONE` line for the session log: glibc's heap in use and free, the process's
+/// anonymous RSS and the machine's available memory, at `what` (the compositor's start, its first
+/// frame, each trim). The vm-acceptance memory checks quote these lines, so an over-budget
+/// compositor says when its heap grew; `heap_free_mib` is the allocator's few tens of MiB and
+/// `mem_available_mib` the machine's.
 pub fn log_milestone(what: &str) {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
@@ -366,10 +368,11 @@ pub fn log_milestone(what: &str) {
         let mib = |bytes: usize| bytes >> 20;
         // A measurement line for the session log, like RENDERER-MEMORY.
         eprintln!(
-            "HEAP-MILESTONE what={what} in_use_mib={} free_mib={} rss_anon_mib={}",
+            "HEAP-MILESTONE what={what} in_use_mib={} heap_free_mib={} rss_anon_mib={} mem_available_mib={}",
             mib(info.uordblks),
             mib(info.fordblks),
             rss_anon_kib().map_or_else(|| "-".to_owned(), |kib| (kib >> 10).to_string()),
+            mem_available_kib().map_or_else(|| "-".to_owned(), |kib| (kib >> 10).to_string()),
         );
     }
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
@@ -410,9 +413,33 @@ fn rss_anon_kib() -> Option<u64> {
         })
 }
 
+/// The machine's available memory, in KiB: what its kernel could give a new allocation without
+/// reclaiming, beside the compositor's own heap.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn mem_available_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemAvailable:")?
+                .trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse()
+                .ok()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The milestone says the machine's available memory beside the allocator's free heap.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn a_milestone_names_the_machines_memory_apart_from_the_heaps() {
+        assert!(mem_available_kib().is_some_and(|kib| kib > 0));
+    }
 
     tilo_test_env::scenario! {
         /// When freed heap goes back to the kernel.
