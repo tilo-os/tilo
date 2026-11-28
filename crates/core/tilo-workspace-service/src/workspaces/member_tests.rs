@@ -821,12 +821,17 @@ async fn served_value_became(
 }
 
 /// A member copy writes a record the serving device founds; `served` answers only once that
-/// device holds the write, and reading its copy of the record shows the change there.
+/// device holds the write, and reading its copy of the record shows the change there. The write
+/// is sealed under a key the founding device does not hold yet: it is taken in once that arrives.
 #[tokio::test]
 async fn served_answers_once_the_serving_device_holds_the_write() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
-    let (serving, device, created, invitation) = shared(serving_state.path(), "Answered", 41).await;
+    let (key, cert) = hosting_device();
+    let founding = Arc::new(super::super::fixtures::TestGroupKeys::default());
+    let serving = test_host_holding(serving_state.path(), &key, &cert, Arc::clone(&founding)).await;
+    let (serving, device, created, invitation) =
+        invited(serving, &cert, "Answered", 41, laptop(41)).await;
     let workspace = created.workspace.clone();
     serving_writes_record(
         &serving,
@@ -835,6 +840,7 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
         ("value", "by-the-serving-device"),
     )
     .await;
+    group_keys().hand_every_member_of(&founding, &workspace);
     let member = member_service(member_state.path(), device).await;
     let copies = member.workspaces().clone();
     let kind = super::super::fixtures::declare_record_kind(&copies, "test.app");
@@ -844,6 +850,7 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
         .await
         .expect("the invitation is redeemed");
     catching_up(&copies, workspace_id).await;
+    founding.hold_nothing();
     copies
         .own_record_write(
             &workspace,
@@ -866,6 +873,8 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
             .expect("the serving device answers the write");
     })
     .await;
+    let mut told = serving.workspaces().document_writes();
+    founding.hand_every_member_of(&group_keys(), &workspace);
     served_value_became(
         serving.workspaces(),
         &workspace,
@@ -873,6 +882,11 @@ async fn served_answers_once_the_serving_device_holds_the_write() {
         "value",
         "written",
     )
+    .await;
+    // Whoever follows the record there is told of it, as of a write taken in as it came.
+    tilo_test_env::within("the serving device tells its followers", async {
+        while told.recv().await.expect("the service runs").app != "test.app" {}
+    })
     .await;
     drop(copies);
     member.shutdown().await;

@@ -350,6 +350,7 @@ impl Workspaces {
         self.inner
             .kept_workspaces
             .send_modify(|kept| *kept = kept.wrapping_add(1));
+        self.take_part_in_keys(workspace);
     }
 
     /// What `workspace` is read through: its store and its copy, a command or a read at a time.

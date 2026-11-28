@@ -1553,8 +1553,10 @@ impl Workspaces {
 /// What became of a kept write through [`Workspaces::replay_resource_write`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Restored {
-    /// The store's projection holds it.
+    /// The store's projection holds it, and did not before.
     Taken,
+    /// The store's projection held it already.
+    Held,
     /// A sealed resource write this device may read, kept until the key of the epoch it was
     /// sealed under, or the rest of a change it is a segment of, arrives.
     Waiting,
@@ -1593,6 +1595,7 @@ impl Workspaces {
             return Restored::NotOurs;
         }
         drop(self.store_of(&mut *hosted));
+        let before = hosted.resources.heads(document_id);
         let restored = match hosted
             .take_resources(
                 author,
@@ -1603,6 +1606,7 @@ impl Workspaces {
             )
             .await
         {
+            Ok(true) if hosted.resources.heads(document_id) == before => Restored::Held,
             Ok(true) => Restored::Taken,
             // Not placed yet: the epoch's key or the rest of a segmented change is still on its
             // way, and the write is taken in when it lands.

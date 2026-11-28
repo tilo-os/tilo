@@ -41,6 +41,7 @@ use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::DeviceCert;
 
 use super::actions::NAME;
+use super::resources::Restored;
 use super::{Held, HostedWorkspace, Workspaces, appended, peer_parts};
 
 /// How long naming the person in a workspace they just joined may take.
@@ -187,8 +188,6 @@ struct MemberSyncing {
     dialling: tokio::task::AbortHandle,
     /// The reader of what the serving device sends.
     following: tokio::task::AbortHandle,
-    /// The wait for the group's keys, which takes in what the copy kept before it held them.
-    keying: Option<tokio::task::AbortHandle>,
     /// What the serving device answers of this device's writes there
     /// ([`Workspaces::answer_member_writes`]).
     answering: tokio::task::AbortHandle,
@@ -198,9 +197,6 @@ impl MemberSyncing {
     fn abort(&self) {
         self.dialling.abort();
         self.following.abort();
-        if let Some(keying) = &self.keying {
-            keying.abort();
-        }
         self.answering.abort();
     }
 }
@@ -2279,7 +2275,6 @@ impl Workspaces {
         if let Ok(mut links) = self.inner.member.links.lock() {
             links.insert(workspace_id, link.clone());
         }
-        let keying = self.take_part_in_keys(&name, Held::MemberCopy);
         let following = self.follow_member(&name, &link);
         let (up, waiting) = tokio::sync::watch::channel(false);
         drop(waiting);
@@ -2357,7 +2352,6 @@ impl Workspaces {
         let syncing = MemberSyncing {
             dialling: dialing.abort_handle(),
             following,
-            keying,
             answering,
         };
         if let Ok(mut all) = self.inner.member.syncing.lock()
@@ -2377,25 +2371,20 @@ impl Workspaces {
     ///
     /// When the device comes to hold the group's keys, the member copy takes in
     /// once what it kept but could not open before
-    /// ([`Self::take_in_what_keys_open`]), and a copy this device hosts — one
-    /// another host handed over — replays what this host retains
+    /// ([`Self::take_in_what_keys_open`]), and a workspace this device hosts — founded here,
+    /// reopened or handed over — replays what this host retains
     /// ([`Self::replay`]). A member of a workspace whose group rotates its keys takes in again
     /// each time they advance while something it kept waits for a key, and wakes to take in a
     /// write that arrives sealed under an epoch it holds not yet: the same pass, for the same
-    /// writes, until nothing it keeps waits for a key. Answers the task that waits for them,
-    /// `None` when the device has no key service.
-    pub(super) fn take_part_in_keys(
-        &self,
-        workspace: &str,
-        held: Held,
-    ) -> Option<tokio::task::AbortHandle> {
-        let keys = self.device_keys()?;
+    /// writes, until nothing it keeps waits for a key. Started once, as the workspace comes to
+    /// be held here ([`Self::keep_held`]); it ends once the workspace is held here no more.
+    pub(super) fn take_part_in_keys(&self, workspace: &str) {
+        let Some(keys) = self.device_keys() else {
+            return;
+        };
         let workspace = workspace.to_owned();
         let workspaces = self.downgrade();
-        let task = tokio::spawn(async move {
-            if !super::sealed_documents::wait_for_group_keys(&keys, &workspace).await {
-                return;
-            }
+        tokio::spawn(async move {
             let Some(service) = workspaces.upgrade() else {
                 return;
             };
@@ -2404,19 +2393,31 @@ impl Workspaces {
             };
             let wanted = {
                 let hosted = state.lock().await;
+                // A store of the workspace's ciphertext is never let into its group.
+                if service.holds_as_store(&hosted) {
+                    return;
+                }
                 Arc::clone(&hosted.keys_wanted)
             };
-            drop(service);
+            let held = Arc::downgrade(&state);
+            drop((service, state));
+            if !super::sealed_documents::wait_for_group_keys(&keys, &workspace).await {
+                return;
+            }
             // Where the keys stood at the last look: a pass that leaves a write waiting waits for
             // a change after it, never for one that already happened.
             let mut seen = 0;
             loop {
-                let Some(workspaces) = workspaces.upgrade() else {
+                let (Some(workspaces), 1..) = (workspaces.upgrade(), held.strong_count()) else {
                     return;
                 };
-                let waiting = match held {
-                    Held::MemberCopy => workspaces.take_in_what_keys_open(&workspace).await,
-                    Held::Hosts => workspaces.replay(&workspace).await,
+                // Read each pass: a copy held here may come to host the workspace, or the reverse.
+                let waiting = match workspaces.read_now(&workspace, |_| ()) {
+                    Some((Held::MemberCopy, ())) => {
+                        workspaces.take_in_what_keys_open(&workspace).await
+                    }
+                    Some((Held::Hosts, ())) => workspaces.replay(&workspace).await,
+                    None => return,
                 };
                 drop(workspaces);
                 if waiting {
@@ -2430,7 +2431,6 @@ impl Workspaces {
                 }
             }
         });
-        Some(task.abort_handle())
     }
 
     /// Take into the member copy `workspace` the writes the device serving it sent that the copy
@@ -2486,9 +2486,9 @@ impl Workspaces {
                     .replay_resource_write(&mut hosted, frame.author, &message)
                     .await
                 {
-                    super::resources::Restored::Taken => took = true,
-                    super::resources::Restored::Waiting => waiting = true,
-                    super::resources::Restored::NotOurs => {}
+                    Restored::Taken | Restored::Held => took = true,
+                    Restored::Waiting => waiting = true,
+                    Restored::NotOurs => {}
                 }
             } else if hosted.take_served(frame.author, &message)
                 || self
@@ -2528,7 +2528,7 @@ impl Workspaces {
                 let admitted = !matches!(
                     self.replay_resource_write(hosted, frame.author, &message)
                         .await,
-                    super::resources::Restored::NotOurs
+                    Restored::NotOurs
                 );
                 if admitted
                     && self.member_device_key() == Some(frame.author)
@@ -2702,7 +2702,7 @@ impl Workspaces {
                     .await;
                 // Sealed under an epoch whose key is not here yet, or not placed yet: the copy's
                 // wait for keys takes it in once they advance.
-                watch_keys = restored != super::resources::Restored::Taken;
+                watch_keys = !matches!(restored, Restored::Taken | Restored::Held);
             }
             self.tell_followers(&hosted, author, message, history).await;
             self.wrote(workspace, app_id, document_id);

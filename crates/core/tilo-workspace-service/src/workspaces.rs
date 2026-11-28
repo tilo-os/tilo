@@ -1908,13 +1908,12 @@ impl Workspaces {
         {
             sink.attach(&this);
         }
-        let workspaces = Box::pin(this.open_kept(&dir)).await?;
-        *this.inner.workspaces.lock().await = workspaces;
         // Every workspace this part opened is held from here on: whoever waited for one to be
         // held hears it now.
-        this.inner
-            .kept_workspaces
-            .send_modify(|kept| *kept = kept.wrapping_add(1));
+        let opened = Box::pin(this.open_kept(&dir)).await?;
+        for (name, state) in opened {
+            this.keep_held(&name, &state).await;
+        }
         let kept = this.served_kept().await;
         this.serve_kept(&kept).await?;
         // A page reading an invitation answers without a workspace's lock

@@ -1424,10 +1424,10 @@ impl Workspaces {
             let followed = self
                 .follow_kept_checked(workspace, retained.author, message.clone())
                 .await;
-            waiting |= self
+            let restored = self
                 .replay_resource_write(workspace, retained.author, &message)
-                .await
-                == super::resources::Restored::Waiting;
+                .await;
+            waiting |= restored == super::resources::Restored::Waiting;
             let Followed {
                 changed: took,
                 replay_wanted,
@@ -1437,7 +1437,9 @@ impl Workspaces {
             } = followed;
             changed |= took;
             again |= replay_wanted;
-            if took
+            // A store write taken in here is told as one taken as it came: whoever follows the
+            // record (the device that keeps the root, for a call asked of it) reads it now.
+            if (took || restored == super::resources::Restored::Taken)
                 && let neighbour_wire::NeighbourMsg::AppDocument {
                     app_id,
                     document_id,

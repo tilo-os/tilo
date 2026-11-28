@@ -46,7 +46,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
 use super::links::{Link, Links};
-use super::{Held, HostedWorkspace, Workspaces, appended, peer_parts};
+use super::{HostedWorkspace, Workspaces, appended, peer_parts};
 
 /// How long a holder of a workspace's keys handed the workspace waits to open what it holds
 /// before it refuses the hand-over: the frames that admit it travel with it, so it is a bound on
@@ -356,20 +356,11 @@ impl Workspaces {
         drop(holding);
         let mut hosted = state.lock().await;
         self.settle(&mut hosted).await?;
-        // A copy another host hands over starts here without the workspace's group keys: the
-        // holder that founded it elsewhere holds them. This device takes part in the group the
-        // way a member copy does, asking its key holders to admit it; once they are here, the
-        // sealed records it took in before open, and what this host retains is replayed.
-        let keying = self.take_part_in_keys(&workspace, Held::Hosts);
         tracing::info!(%workspace, workspace_id = %request.workspace_id, role = ?request.role, "holding a workspace another host handed over");
         let hint = self
             .transport_hint_as(&hosted, request.role)
             .map_err(|error| error.to_string())?;
-        let holds_keys = hosted
-            .peer()
-            .governance()
-            .holder_role(&self.inner.host.cert.device_public_key)
-            != Some(CopyRole::Store);
+        let holds_keys = !self.holds_as_store(&hosted);
         // A device of someone the workspace has writes in it once it is handed it: it signs its
         // own row on the member list, as every device enters, so the copy it keeps takes its
         // changes even when the device that handed it over is gone. A server of a person the
@@ -391,7 +382,6 @@ impl Workspaces {
         if holds_keys {
             self.open_what_is_handed(&workspace, &request.keys).await?;
         }
-        drop(keying);
         // The row goes back with the answer: the device that handed the workspace over takes it
         // in at once, rather than waiting for it over a link.
         let row = if theirs {
