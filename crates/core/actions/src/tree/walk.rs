@@ -1091,7 +1091,9 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
 
     /// The surface the app `app_id` publishes, as the workspace's catalogue carries it on the
     /// row the app's provider publishes: for an app that is no installed application, such as
-    /// the workspace's own actions. `None` when no row names one.
+    /// the workspace's own actions. Only a row of the app itself counts, since a workspace
+    /// carries its own surface on a root row that a query for another app may answer beside the
+    /// rows asked for. `None` when no row of the app names one.
     pub async fn surface_of(&self, app_id: &str) -> Option<String> {
         let page = self
             .ask(CatalogueQuery {
@@ -1101,7 +1103,10 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
             })
             .await
             .ok()?;
-        page.rows.into_iter().find_map(|row| row.surface)
+        page.rows
+            .into_iter()
+            .filter(|row| row.app_id == app_id)
+            .find_map(|row| row.surface)
     }
 
     /// The apps installed for this workspace, with their labels and whether

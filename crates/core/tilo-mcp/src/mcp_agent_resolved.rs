@@ -307,9 +307,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// publishes: the actions its resources offer, and those that open a window. `None` when
     /// the workspace lists no surface for it here, or one that does not read.
     ///
-    /// What this device and the caller's workspace answer for the app is asked, never the
-    /// fleet's compiled copy of that package: the app installed here may be another version,
-    /// and refusing an action the fleet's copy lacks would refuse one this app has.
+    /// What this device and the caller's workspace answer for the app is asked first: the app
+    /// installed here may be another version than the fleet's. A built-in app whose own build
+    /// this device does not answer for is known by the surface the fleet compiles in.
     /// The refusal for an action no surface of an installed app declares, when the path names one:
     /// an app that is not running declares its actions in the surface its package publishes, and a
     /// name none of them has is no action of it, answered before anything starts for it.

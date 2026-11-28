@@ -1134,7 +1134,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(surface) = known {
             return Some((*surface).clone());
         }
-        let found = match crate::offered::published_surface(&self.tree, app_id).await {
+        let found = match crate::offered::installed_surface(&self.tree, app_id).await {
             Some(surface) => Some(surface),
             None => self.host.installed_surface(app_id).await.flatten(),
         }?;
