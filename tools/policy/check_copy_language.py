@@ -530,9 +530,20 @@ def rust_sources(root: Path) -> list[Path]:
     return sorted(found)
 
 
+# A host type's name is code: `name: "Saved"` in the compiler's type table
+# and `host_ty("Saved")` match it. A label derived from the type is copy.
+HOST_TYPE_MATCH = re.compile(r"(?:host_ty|value_type|host_enum)\(\s*$")
+
+
+def names_a_host_type(path: Path, code: str, literal) -> bool:
+    before = code[: literal.start]
+    return bool(HOST_TYPE_MATCH.search(before)) or (
+        path.name == "host.rs" and before.rstrip().endswith("name:"))
+
+
 def routine_save_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each production string literal that announces
-    routine saving in English."""
+    routine saving in English, but a host type's name."""
     found = []
     for path in rust_sources(root):
         text = path.read_text(errors="replace")
@@ -548,6 +559,8 @@ def routine_save_literals(root: Path) -> list[tuple[str, int, str]]:
         kept = rust_source.blank_test_items("".join(marked))
         for literal in literals:
             if literal.byte or kept[literal.start] != "x":
+                continue
+            if names_a_host_type(path, code, literal):
                 continue
             value = re.sub(r"\{[^{}]*\}", "…", literal.value.replace("\\u{2026}", "…"))
             # Lower-case literals are identifiers ("saved" as a state's id).

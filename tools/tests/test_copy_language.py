@@ -1512,6 +1512,19 @@ class CopyLanguageTests(unittest.TestCase):
             "`RowShape::TITLE` names another type's own TITLE, not the "
             "constant the crate defines")
 
+    def test_a_host_types_name_is_code_and_a_label_beside_it_is_copy(self):
+        root = self._root({
+            "crates/lang/tilolang/src/host.rs":
+                'pub const SAVED: ValueType = ValueType { name: "Saved" };\n',
+            "crates/lang/tilolang/src/checker.rs": "\n".join([
+                "fn a() { let _ = host_ty(\"Saved\"); }",
+                'fn b() -> &\'static str { "Saved" }',
+            ]) + "\n",
+        })
+        self.assertEqual(
+            [(file, line) for file, line, _ in copy.routine_save_literals(root)],
+            [("crates/lang/tilolang/src/checker.rs", 2)])
+
 
 if __name__ == "__main__":
     unittest.main()
