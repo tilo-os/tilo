@@ -213,6 +213,9 @@ pub struct WidgetSurface {
     /// The previews the tree's views report to as it lays them out: shared
     /// with what names the windows it pictures to the compositor.
     previews: Option<ui::widget::Previews>,
+    /// The controls the last frame this tree drew showed: what the session lists until a frame
+    /// draws the tree as it stands now.
+    drawn_controls: Option<Vec<ui::window_targets::WindowControl>>,
     /// What an assistive technology knows the tree's window by.
     name: Option<String>,
     /// Something outside the tree asked for its next pass without holding the
@@ -282,6 +285,7 @@ impl WidgetSurface {
             revision: 0,
             wells: None,
             previews: None,
+            drawn_controls: None,
             name: None,
             asked: std::sync::Arc::default(),
             drag_seen: ui::widget::drag_bus::revision(),
@@ -818,6 +822,12 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
     /// in its accessibility tree, each where it stands on the desktop, and
     /// by what it does where it does something the app publishes.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
+        // A tree with a change no frame drew says nothing of what the person sees.
+        if self.host.app().unsettled()
+            && let Some(drawn) = &self.drawn_controls
+        {
+            return drawn.clone();
+        }
         let mut found: Vec<(String, vello::kurbo::Rect)> =
             self.host.targets().into_iter().collect();
         // The controls of an app the tree shows as its own (setup's steps),
@@ -849,7 +859,7 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
         }
         // What an embedded app was handed may have changed it.
         self.forget_schedule();
-        shown
+        let drawn: Vec<ui::window_targets::WindowControl> = shown
             .into_iter()
             .map(|(name, rect)| ui::window_targets::WindowControl {
                 name,
@@ -858,7 +868,9 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
                 level: None,
                 selected: false,
             })
-            .collect()
+            .collect();
+        self.drawn_controls = Some(drawn.clone());
+        drawn
     }
 
     /// The name `controls` showed, pressed: a widget addressed by its own
