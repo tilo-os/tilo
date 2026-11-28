@@ -71,6 +71,14 @@ impl Widget for PageBody {
     fn name(&self) -> &'static str {
         self.name
     }
+    /// The column asks for layout only for what its parts ask: a page with no sections yet has
+    /// nothing to lay out again once it stands.
+    fn is_layout_dirty(&self) -> bool {
+        self.parts
+            .children
+            .iter()
+            .any(|child| child.is_layout_dirty())
+    }
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
