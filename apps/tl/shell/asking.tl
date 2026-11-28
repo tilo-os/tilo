@@ -249,12 +249,14 @@ view asked_banners(roomy: Bool) {
     let asked = asked_elsewhere()
     if not asked.is_empty() {
         let shown = if roomy { 2 } else { 1 }
+        let more = asked.len() - shown
+        let last = asked.take(shown).last()
         stack(gap: .related) {
             for q in asked.take(shown) {
-                asked_banner(q, roomy: roomy)
-            }
-            if asked.len() > shown {
-                more_asked(asked.len() - shown)
+                // The count of the questions that do not fit is the last card's own foot: the
+                // banner and its way to the rest are one surface, never a line standing under it.
+                let is_last = if let l = last { key_of(l) == key_of(q) } else { false }
+                asked_banner(q, roomy: roomy, more: if is_last { more } else { 0 })
             }
         }
     }
@@ -262,9 +264,14 @@ view asked_banners(roomy: Bool) {
 
 /// One question standing with the banners: a banner's width in the corner, or across a display
 /// too narrow to keep it there, and rising from the edge it stands by as a notice does.
-view asked_banner(q: invocations.Invocation, roomy: Bool) {
+view asked_banner(q: invocations.Invocation, roomy: Bool, more: Int) {
     if let a = q.asked {
         ui.FloatingPanel(width: if roomy { 360.0 }, fill: not roomy, slide: true) {
+            footer: {
+                if more > 0 {
+                    more_asked(more)
+                }
+            }
             question_body(
                 key_of(q),
                 answered_here(q),

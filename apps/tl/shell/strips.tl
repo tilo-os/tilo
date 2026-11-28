@@ -739,6 +739,11 @@ action bring_forward(a: Layout, s: LayoutStrip) (icon: .app_window, label: "Brin
 /// the session's, so a press and an agent change the shell the same way, and none of them ever
 /// asks for a bar of its own.
 view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
+    // The frame keeps the room for three controls at the bar's trailing end: the window's menu,
+    // the way bigger, and the close. A screen too narrow for a window's whole bar keeps exactly
+    // them: what the app put in its bar, and the share, are listed in that menu, so no control is
+    // laid past the window where nobody can reach it.
+    let compact = space.compact
     row(gap: .tight, align: .center) {
         if let p = shown {
             if let w = shown_window(p) {
@@ -755,13 +760,17 @@ view window_controls(s: LayoutStrip, shown: Option<LayoutPlace>, listed: Bool) {
                     this_window_menu(w, shown, listed)
                 } else {
                     this_window_menu(w, shown, listed)
-                    window_bar_actions(w, starting(w, p))
+                    if not compact {
+                        window_bar_actions(w, starting(w, p))
+                    }
                 }
             }
         }
         // The window shared with the workspace, or the way to share it: an eye that says a member
         // asks to see it, and the window's own menu stops the share or lets them control it.
-        share_control(shown)
+        if not compact {
+            share_control(shown)
+        }
         if s.maximized {
             ui.Button("Restore", icon: .minimize_2, icon_only: true, role: .plain) {
                 on press: session.maximize_strip(strip: the_strip(s.key), on: false)

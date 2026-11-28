@@ -20,15 +20,17 @@ type ReportPick {
     app_name: Text
 }
 
-/// How wide a window's card stands in the picker, in canvas pixels, and how tall: the window's
-/// shape, wide enough to see which window it is.
-fn report_card_width() -> Int {
-    return 520
+/// The room the picker's cards are cut from, as its width and height in canvas pixels: the band
+/// the session holds under the bar, where the cards stand.
+fn report_room() -> List<Float> {
+    let room = device.room
+    return [room.width, room.height]
 }
 
-/// See [`report_card_width`].
-fn report_card_height() -> Int {
-    return 360
+/// The least a window's card stands across, in canvas pixels: wide enough to see which window it
+/// is.
+fn report_least_width() -> Int {
+    return 192
 }
 
 /// The room between two cards.
@@ -36,9 +38,44 @@ fn report_gap() -> Int {
     return 24
 }
 
-/// How many cards stand across.
+/// How many cards stand across: as many of the least width as the picker's room holds, three at
+/// most, so a phone shows one and a desktop three.
 fn report_columns() -> Int {
-    return 3
+    let room = report_room()
+    let width = room.at(0) ?? 0.0
+    let gap = report_gap().to_float()
+    let fit = (width - gap * 2.0) / (report_least_width().to_float() + gap)
+    if fit >= 3.0 {
+        return 3
+    }
+    if fit >= 2.0 {
+        return 2
+    }
+    return 1
+}
+
+/// How wide a window's card stands: its share of the room, no wider than a card reads.
+fn report_card_width() -> Int {
+    let room = report_room()
+    let width = room.at(0) ?? 0.0
+    let columns = report_columns().to_float()
+    let gap = report_gap().to_float()
+    let share = (width - gap * (columns + 1.0)) / columns
+    return share.min(520.0).max(report_least_width().to_float()).to_int()
+}
+
+/// How tall a window's card stands: its picture at the window's shape and the names under it, or
+/// the share of the room its row leaves, whichever is less, so every card of `count` stands in the
+/// picker rather than past it.
+fn report_card_height(count: Int) -> Int {
+    let room = report_room()
+    let height = room.at(1) ?? 0.0
+    let columns = report_columns().to_float()
+    let rows = (count.to_float() / columns).ceil().to_float().max(1.0)
+    let gap = report_gap().to_float()
+    let share = (height - gap * (rows + 1.0)) / rows
+    let content = report_card_width().to_float() * 10.0 / 16.0 + 120.0
+    return share.min(content).max(96.0).to_int()
 }
 
 /// The windows a report may be about: the ones the workspace in front shows, in the order the
@@ -56,16 +93,16 @@ fn report_windows() -> List<device.Window> {
 /// Where the picker stands the window at `index` among the ones it offers: the corner and size of
 /// its card, in canvas pixels. What the drawing and the rectangle the person drags both read, so a
 /// rectangle picks exactly the cards it covers.
-fn report_cell(index: Int) -> List<Int> {
+fn report_cell(index: Int, count: Int) -> List<Int> {
     let columns = report_columns()
     let across = columns - 1
     let column = if across > 0 { index - index / columns * columns } else { 0 }
     let row = index / columns
     return [
         report_gap() + column * (report_card_width() + report_gap()),
-        report_gap() + row * (report_card_height() + report_gap()),
+        report_gap() + row * (report_card_height(count) + report_gap()),
         report_card_width(),
-        report_card_height(),
+        report_card_height(count),
     ]
 }
 
@@ -80,8 +117,9 @@ fn report_window_in(area: List<Int>) -> Text {
         return ""
     }
     let keys = report_windows().map(w -> w.key)
+    let count = keys.len()
     for key in keys {
-        let cell = report_cell(keys.index_of(key) ?? 0)
+        let cell = report_cell(keys.index_of(key) ?? 0, count)
         let left = cell.at(0) ?? 0
         let top = cell.at(1) ?? 0
         let right = left + (cell.at(2) ?? 0)
@@ -149,8 +187,9 @@ view report_picker() {
     layers(fill) {
         ui.Map(name: "What the report is about", ground: true, outline: shell.report_area, fill) {
             on frame(at: List<Int>): pick_report_region(shell, at)
+            let count = windows.len()
             for w in windows {
-                let cell = report_cell(keys.index_of(w.key) ?? 0)
+                let cell = report_cell(keys.index_of(w.key) ?? 0, count)
                 ui.MapPin(
                     name: w.title,
                     item: w.key,
