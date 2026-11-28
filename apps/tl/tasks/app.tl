@@ -1676,7 +1676,12 @@ view board(t: Tasks) {
     let project = chosen_project(t, chosen)
     let listed = chosen_items(t, chosen)
     let found = if searched.is_empty() { listed } else { listed.matching(searched) }
-    ui.NavShell(content_kind: .page, sidebar_title: "Tasks", title: chosen_title(t, chosen)) {
+    ui.NavShell(
+        content_kind: .page,
+        sidebar_title: "Tasks",
+        title: chosen_title(t, chosen),
+        actions: [new_task, clear_done],
+    ) {
         on search(q: Text): set(searched, q)
         sidebar: {
             places_side(t, chosen, key -> set(chosen, key))
@@ -1734,6 +1739,7 @@ view threads(t: Tasks) {
         sidebar_title: "Tasks",
         title: chosen_title(t, chosen),
         count: spoken.counted(),
+        actions: [new_task, clear_done],
     ) {
         on search(q: Text): set(searched, q)
         sidebar: {
