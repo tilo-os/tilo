@@ -3459,7 +3459,7 @@ pub struct CallbackBinding {
     pub writes_as_author: bool,
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "model", any(test, feature = "test-support")))]
 impl CallbackBinding {
     /// The records the component publishes into, read by a test through its binding.
     #[doc(hidden)]
