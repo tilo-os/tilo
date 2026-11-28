@@ -761,7 +761,7 @@ fn every_mutable_entry_point_brings_its_change_to_a_frame() {
     }
     for method in all.iter().filter(|method| method.entry) {
         checked += 1;
-        if settles(&method.name, &all, SETTLES) {
+        if settles(&method.name, &all, SETTLES) || drains(method) {
             continue;
         }
         match QUIET_ENTRY_POINTS
@@ -800,6 +800,19 @@ fn every_mutable_entry_point_brings_its_change_to_a_frame() {
     );
 }
 
+/// A drain that writes a field of `self` changes what a frame reads, so the check refuses it.
+#[test]
+fn a_drain_that_changes_what_is_shown_is_no_drain() {
+    let method = |code: &str| Method {
+        file: "fixture.rs".to_owned(),
+        name: "take_it".to_owned(),
+        body: format!("// Drains: the frames run drew these.\n{code}"),
+        entry: true,
+    };
+    assert!(drains(&method("std::mem::take(&mut self.painted)")));
+    assert!(!drains(&method("self.painted = Painted::Nothing")));
+}
+
 /// A method of the driver: the file it is written in, its name, its body and whether a caller
 /// outside the driver reaches it with `&mut self`.
 struct Method {
@@ -807,6 +820,19 @@ struct Method {
     name: String,
     body: String,
     entry: bool,
+}
+
+/// Whether `method` is a drain, said as `// Drains: <why>` where it is written: it hands over what
+/// the frames drew and writes no field of `self`, which would change what a frame reads.
+fn drains(method: &Method) -> bool {
+    let Some((_, body)) = method.body.split_once("// Drains: ") else {
+        return false;
+    };
+    let why = body.lines().next().unwrap_or_default();
+    why.trim().len() >= 12
+        && body
+            .lines()
+            .all(|line| !(line.contains("self.") && line.contains(" = ")))
 }
 
 /// Whether `name` reaches a call that runs or schedules a frame, itself or through another method
