@@ -1845,9 +1845,8 @@ fn an_earlier_versions_change_is_decided_under_both_versions() {
 fn a_change_naming_another_surface_is_never_decided_under_it_alone_while_one_runs() {
     use crate::state::{SurfaceGate, surface_gate};
     use std::collections::BTreeSet;
-    use std::sync::Arc;
     let ran = |surfaces: &[[u8; 32]]| {
-        let ran: Arc<BTreeSet<[u8; 32]>> = Arc::new(surfaces.iter().copied().collect());
+        let ran: BTreeSet<[u8; 32]> = surfaces.iter().copied().collect();
         move || ran
     };
     for (named, running, ran_before, gate, what) in [

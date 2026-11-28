@@ -1925,6 +1925,17 @@ async fn a_workspace_made_with_no_catalogue_starts_with_the_defaults_the_cache_h
         1,
         "only what the cache holds is recorded with no catalogue: {running:?}"
     );
+    let state = server
+        .workspaces()
+        .workspace(&made.workspace)
+        .await
+        .unwrap();
+    let held = state.lock().await.apps_in_store();
+    assert_eq!(
+        held.map(|apps| apps.running().values().cloned().collect::<Vec<_>>()),
+        Some(running),
+        "its store holds the record of what it was founded with"
+    );
     server.shutdown().await;
 }
 

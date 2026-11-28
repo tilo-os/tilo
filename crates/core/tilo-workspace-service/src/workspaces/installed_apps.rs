@@ -28,19 +28,7 @@ impl HostedWorkspace {
     /// The apps the replica read now, with what reading them let in, or `None` when it read these
     /// already.
     pub(super) fn read_apps(&self) -> Option<(WorkspaceApps, tilo_peer_state::AdmissionReport)> {
-        let apps = {
-            let mut store = self.resources.store_mut();
-            if !apps::ever_written(&store) {
-                return None;
-            }
-            match in_store(&mut store) {
-                Ok(apps) => apps,
-                Err(error) => {
-                    tracing::error!(workspace = %self.workspace(), %error, "the apps the workspace runs do not read");
-                    return None;
-                }
-            }
-        };
+        let apps = self.apps_in_store()?;
         let report = self.peer().read_apps(apps.clone(), tilo_clock::wall())?;
         Some((apps, report))
     }
@@ -51,7 +39,9 @@ impl HostedWorkspace {
         if !apps::ever_written(&store) {
             return None;
         }
-        in_store(&mut store).ok()
+        in_store(&mut store)
+            .inspect_err(|error| tracing::error!(workspace = %self.workspace(), %error, "the apps the workspace runs do not read"))
+            .ok()
     }
 }
 
@@ -63,11 +53,6 @@ impl Workspaces {
         if !hosted.resources.take_apps_moved() {
             return;
         }
-        self.read_apps(hosted);
-    }
-
-    /// [`HostedWorkspace::read_apps`], told and followed as [`Self::follow_apps`] tells them.
-    pub(super) fn read_apps(&self, hosted: &HostedWorkspace) {
         let Some((apps, report)) = hosted.read_apps() else {
             return;
         };
@@ -82,13 +67,11 @@ impl Workspaces {
     /// Tell the devices on `workspace`'s link the apps it runs, as its store holds them: what a
     /// link that starts serving it tells first.
     pub(super) fn tell_apps(&self, hosted: &HostedWorkspace) {
-        let (Some(apps), Some(link)) = (
-            hosted.apps_in_store(),
-            self.inner.direct.link(hosted.workspace_id()),
-        ) else {
-            return;
-        };
-        link.tell_apps(&apps);
+        if let Some(link) = self.inner.direct.link(hosted.workspace_id())
+            && let Some(apps) = hosted.apps_in_store()
+        {
+            link.tell_apps(&apps);
+        }
     }
 
     /// Write each of `apps` as the record of the app it names: the version it runs, or, with
@@ -204,31 +187,33 @@ impl Workspaces {
         Ok(invocation)
     }
 
-    /// Bring the apps `workspace`'s governance kept before its store did into the store, once:
-    /// where the store never held a record of them and the governance names some. Keyed by app,
-    /// so two devices bringing them over write the same records.
+    /// Bring the apps `workspace`'s replica runs into its store, once: where the store never held
+    /// a record of them and the replica names some, the apps it was founded with or those its
+    /// governance kept before its store did. Keyed by app, so two devices bringing them over write
+    /// the same records.
     ///
-    /// This goes once the oldest build a workspace's devices may run is past 61782b0f16a, the
-    /// last that wrote its apps to its governance: every workspace's apps are in its store then.
-    pub(super) async fn bring_apps_over(&self, workspace: &str) {
-        let Ok(state) = self.workspace(workspace).await else {
-            return;
-        };
+    /// Kept while the oldest supported build is 61782b0f16a, which reads it.
+    pub(super) async fn bring_apps_over(&self, workspace: &str) -> Result<(), String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
         let hosted = state.lock().await;
         let apps = (hosted.member.is_none() && hosted.apps_in_store().is_none())
-            .then(|| hosted.peer().apps_in_versions_map());
+            .then(|| hosted.peer().apps());
         drop(hosted);
         let Some(apps) = apps.filter(|apps| !apps.running().is_empty()) else {
-            return;
+            return Ok(());
         };
         let records = apps
             .running()
             .iter()
             .map(|(app, installed)| (app.clone(), Some(installed.clone())))
             .collect();
-        if let Err(error) = self.write_app_records(workspace, records).await {
-            tracing::error!(%workspace, %error, "the apps the workspace runs were not brought into its store");
-        }
+        self.write_app_records(workspace, records)
+            .await
+            .map(drop)
+            .inspect_err(|error| tracing::error!(%workspace, %error, "the apps the workspace runs were not brought into its store"))
     }
 }
 
@@ -389,7 +374,7 @@ mod tests {
             Some(row.clone()),
             "the copy admits by the map it kept them in"
         );
-        workspaces.bring_apps_over(&workspace).await;
+        workspaces.bring_apps_over(&workspace).await.unwrap();
         let hosted = state.lock().await;
         let (held, read) = (hosted.apps_in_store(), hosted.peer().apps());
         drop(hosted);

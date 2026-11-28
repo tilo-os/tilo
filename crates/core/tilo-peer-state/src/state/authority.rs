@@ -1577,8 +1577,12 @@ impl StatePeer {
     /// again once the workspace runs more, so a copy that has not seen a version yet keeps out
     /// nothing a copy that has takes in.
     pub(crate) fn surface_gate(&self, app: &str, surface: Option<[u8; 32]>) -> SurfaceGate {
-        surface_gate(surface, self.workspace_surface(app), || {
-            self.ran_surfaces(app)
+        surface_gate(surface, self.running_surface(app), || {
+            let apps = self.apps();
+            apps.ran(app)
+                .iter()
+                .filter_map(crate::workspace_membership::AppRelease::surface_hash)
+                .collect()
         })
     }
 
@@ -2294,7 +2298,7 @@ pub(crate) enum SurfaceGate {
 pub(crate) fn surface_gate(
     named: Option<[u8; 32]>,
     running: Option<[u8; 32]>,
-    ran: impl FnOnce() -> std::sync::Arc<BTreeSet<[u8; 32]>>,
+    ran: impl FnOnce() -> BTreeSet<[u8; 32]>,
 ) -> SurfaceGate {
     match (named, running) {
         (None, None) => SurfaceGate::Decide,

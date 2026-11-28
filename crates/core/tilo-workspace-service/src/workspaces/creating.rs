@@ -247,16 +247,6 @@ impl super::Workspaces {
             )?,
         };
         self.bind(&workspace).await?;
-        // The apps it runs from its founding are written to its store as records once it is
-        // served, by the founder who installed them.
-        let founded: Vec<_> = defaults
-            .iter()
-            .map(|release| {
-                let installed =
-                    super::founding::founded(&self.inner.host.cert, release, tilo_clock::wall());
-                (release.app.clone(), Some(installed))
-            })
-            .collect();
         let summary = self.people(&workspace);
         let reading = workspace.reading();
         let workspace = Arc::new(AsyncMutex::new(workspace));
@@ -278,7 +268,8 @@ impl super::Workspaces {
         // part opens the store as this one leaves it, whatever moment this one ends at.
         hosted.keep_followed();
         drop(hosted);
-        self.write_app_records(&summary.workspace, founded).await?;
+        // The apps it was founded with are written to its store, by the founder who installed them.
+        self.bring_apps_over(&summary.workspace).await?;
         self.keep_reading(&workspace).await;
         tracing::info!(workspace = %summary.workspace, workspace_id = %summary.workspace_id, "hosted workspace created");
         // The person's list names the workspace they now have, where this device holds their own

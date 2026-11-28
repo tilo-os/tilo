@@ -13,10 +13,10 @@
 //! decided against it.
 //!
 //! Workspaces made before the resource kept their apps in the `app_versions_v1` map of their
-//! governance. It is read once, to bring them over ([`StatePeer::apps_in_versions_map`]), and
-//! never written again.
+//! governance. A copy that read no apps yet decides by it ([`StatePeer::apps`]), and bringing
+//! the workspace over writes what it names into the resource; it is never written again.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, ReadDoc};
@@ -51,20 +51,14 @@ pub struct InstalledApp {
 /// A copy reads it after the resource changed, so it can trail the resource for a moment. That
 /// is safe because a change naming a surface the workspace has not run is only ever set aside
 /// ([`super::authority::SurfaceGate`]): reading the apps again decides it once more.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A host sends it, its heads beside it, to a device that keeps no store.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceApps {
     running: BTreeMap<String, InstalledApp>,
     ran: BTreeMap<String, Vec<AppRelease>>,
-    surfaces: BTreeMap<String, Arc<BTreeSet<[u8; 32]>>>,
     /// The heads of the apps resource they were read at.
+    #[serde(skip)]
     heads: Vec<[u8; 32]>,
-}
-
-/// [`WorkspaceApps`] as a host sends it to a device that keeps no store.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Sent {
-    running: BTreeMap<String, InstalledApp>,
-    ran: BTreeMap<String, Vec<AppRelease>>,
 }
 
 impl WorkspaceApps {
@@ -73,29 +67,17 @@ impl WorkspaceApps {
     #[must_use]
     pub fn new(
         running: BTreeMap<String, InstalledApp>,
-        ran: BTreeMap<String, Vec<AppRelease>>,
+        mut ran: BTreeMap<String, Vec<AppRelease>>,
     ) -> Self {
-        let mut ran = ran;
         for (app, installed) in &running {
             let releases = ran.entry(app.clone()).or_default();
             if !releases.contains(&installed.release) {
                 releases.push(installed.release.clone());
             }
         }
-        let surfaces = ran
-            .iter()
-            .map(|(app, releases)| {
-                let surfaces = releases
-                    .iter()
-                    .filter_map(AppRelease::surface_hash)
-                    .collect();
-                (app.clone(), Arc::new(surfaces))
-            })
-            .collect();
         Self {
             running,
             ran,
-            surfaces,
             heads: Vec::new(),
         }
     }
@@ -117,16 +99,12 @@ impl WorkspaceApps {
     /// ([`neighbour_wire::NeighbourMsg::WorkspaceApps`]).
     #[must_use]
     pub fn message(&self, workspace: &str) -> neighbour_wire::NeighbourMsg {
-        let sent = Sent {
-            running: self.running.clone(),
-            ran: self.ran.clone(),
-        };
         neighbour_wire::NeighbourMsg::WorkspaceApps {
             cluster_id: workspace.to_owned(),
             heads: self.heads.clone(),
             // Every field is the workspace's own and encodes; a release that does not is none
             // the resource holds.
-            apps: serde_json::to_vec(&sent).unwrap_or_default(),
+            apps: serde_json::to_vec(self).unwrap_or_default(),
         }
     }
 
@@ -141,10 +119,11 @@ impl WorkspaceApps {
         else {
             return None;
         };
-        if cluster_id != workspace {
-            return None;
-        }
-        let sent: Sent = serde_json::from_slice(apps).ok()?;
+        let sent: Self = tilo_failure::ignored!(
+            "apps that do not decode are none a host of this build sent",
+            serde_json::from_slice(apps).ok()
+        )
+        .filter(|_| cluster_id == workspace)?;
         Some(Self::new(sent.running, sent.ran).at(heads.clone()))
     }
 
@@ -174,16 +153,9 @@ impl WorkspaceApps {
                 releases.push(installed.release.clone());
                 running.insert(app.to_owned(), installed);
             }
-            None => {
-                running.remove(app);
-            }
+            None => drop(running.remove(app)),
         }
         Self::new(running, ran).at(self.heads.clone())
-    }
-
-    /// Every surface the workspace ran `app` with.
-    fn ran_surfaces(&self, app: &str) -> Arc<BTreeSet<[u8; 32]>> {
-        self.surfaces.get(app).cloned().unwrap_or_default()
     }
 }
 
@@ -219,17 +191,6 @@ impl StatePeer {
             .workspace_doc
             .as_ref()
             .map(crate::cached_document::CachedDocument::apps)
-            .unwrap_or_default()
-    }
-
-    /// The apps the workspace's governance kept before its apps resource did, and every release
-    /// it ran each with: what bringing a workspace over to the resource writes into it.
-    #[must_use]
-    pub fn apps_in_versions_map(&self) -> WorkspaceApps {
-        self.core
-            .workspace_doc
-            .as_deref()
-            .map(apps_in_map)
             .unwrap_or_default()
     }
 
@@ -338,22 +299,7 @@ impl StatePeer {
     /// workspace does not run.
     #[must_use]
     pub fn running_surface(&self, app: &str) -> Option<[u8; 32]> {
-        self.workspace_surface(app)
-    }
-
-    /// The surface the workspace runs `app` with, when it chose a version.
-    pub(super) fn workspace_surface(&self, app: &str) -> Option<[u8; 32]> {
         self.governance().app_version(app)?.release.surface_hash()
-    }
-
-    /// Every surface the workspace ran `app` with, the one it runs now included: a change naming
-    /// one of them is decided under the surface it names, and one naming any other surface waits.
-    pub(super) fn ran_surfaces(&self, app: &str) -> Arc<BTreeSet<[u8; 32]>> {
-        self.core
-            .workspace_doc
-            .as_ref()
-            .map(|doc| doc.apps().ran_surfaces(app))
-            .unwrap_or_default()
     }
 }
 
@@ -394,13 +340,16 @@ impl StatePeer {
 /// The apps the app versions map of `doc` names, and every release it ran each with: what a
 /// copy decides by before it read the apps resource, as every build before the resource did, and
 /// what bringing a workspace over to the resource writes into it.
+///
+/// Kept while the oldest supported build is 61782b0f16a, which reads it.
 pub(crate) fn apps_in_map(doc: &AutoCommit) -> WorkspaceApps {
     let Ok(Some((_, versions))) = doc.get(ROOT, APP_VERSIONS) else {
         return WorkspaceApps::default();
     };
+    let heads = doc.committed_document().get_heads();
     let running: BTreeMap<String, InstalledApp> = doc
         .keys(&versions)
-        .filter_map(|app| Some((app.clone(), read_version(doc, &versions, &app)?)))
+        .filter_map(|app| Some((app.clone(), read_version_at(doc, &versions, &app, &heads)?)))
         .collect();
     let mut ran: BTreeMap<String, Vec<AppRelease>> = BTreeMap::new();
     for change in doc.committed_document().get_changes(&[]) {
@@ -463,56 +412,34 @@ impl PeerGovernance<'_> {
             .running
             .get(app)
             .map(|row| unpinned(row.release.clone()));
-        let mut ran: Vec<AppRelease> = Vec::new();
-        for release in apps.ran(app) {
-            let release = unpinned(release.clone());
-            ran.retain(|earlier| *earlier != release);
-            ran.push(release);
+        let mut earlier: Vec<AppRelease> = Vec::new();
+        for release in apps.ran(app).iter().rev().cloned().map(unpinned) {
+            if Some(&release) != current.as_ref() && !earlier.contains(&release) {
+                earlier.push(release);
+            }
         }
-        ran.retain(|release| Some(release) != current.as_ref());
-        ran.reverse();
-        ran
+        earlier
     }
 }
 
-/// The row kept under `app` as the document stood at `heads`, if it read as a valid release then.
+/// The row kept under `app` as the document stood at `heads`, if it read as a valid release of
+/// that app then: a row naming another app than its key is not trusted.
 fn read_version_at(
     doc: &impl ReadDoc,
     versions: &automerge::ObjId,
     app: &str,
     heads: &[automerge::ChangeHash],
 ) -> Option<InstalledApp> {
-    match doc.get_at(versions, app, heads).ok()?? {
-        (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
-                "a row that did not decode then named no version the workspace ran",
-                serde_json::from_slice::<InstalledApp>(bytes)
-                    .ok()
-                    .filter(|row| row.release.app == app && row.release.validate().is_ok())
-            ),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The row kept under `app`, if it reads as a valid release of that app: a
-/// row naming another app than its key is not trusted.
-fn read_version(
-    doc: &impl ReadDoc,
-    versions: &automerge::ObjId,
-    app: &str,
-) -> Option<InstalledApp> {
-    match doc.get(versions, app).ok()?? {
-        (automerge::Value::Scalar(value), _) => match value.as_ref() {
-            automerge::ScalarValue::Bytes(bytes) => tilo_failure::ignored!(
-                "a row that does not decode names no installed app",
-                serde_json::from_slice::<InstalledApp>(bytes)
-                    .ok()
-                    .filter(|row| row.release.app == app && row.release.validate().is_ok())
-            ),
-            _ => None,
-        },
-        _ => None,
-    }
+    let (automerge::Value::Scalar(value), _) = doc.get_at(versions, app, heads).ok()?? else {
+        return None;
+    };
+    let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
+        return None;
+    };
+    tilo_failure::ignored!(
+        "a row that did not decode then named no version the workspace ran",
+        serde_json::from_slice::<InstalledApp>(bytes)
+            .ok()
+            .filter(|row| row.release.app == app && row.release.validate().is_ok())
+    )
 }
