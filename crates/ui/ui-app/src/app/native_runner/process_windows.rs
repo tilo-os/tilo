@@ -195,6 +195,13 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
         self.close_finished(event_loop);
     }
 
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+            let _bar = crate::window_toolbar::enter(Some(bar));
+            handler.new_events(event_loop, cause);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
             let _bar = crate::window_toolbar::enter(Some(bar));
