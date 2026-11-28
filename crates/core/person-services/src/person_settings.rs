@@ -467,6 +467,12 @@ impl crate::PersonServices {
             | AccountsAction::CancelSignIn { .. } => {
                 sign_in::accounts_sign_in(self, reach.person, &here, (request, asked)).await
             }
+            // The cookies the person's own browser was signed in with: theirs to bring, never
+            // an agent's, kept for them alone.
+            brought @ AccountsAction::AddWebsiteSession { .. } => {
+                let person = reach.agent.is_none().then_some(reach.person);
+                Box::pin(self.bring_website_sign_in(&here, person, brought)).await
+            }
             // The workspace's mail accounts, without their secrets.
             AccountsAction::List => {
                 let held = signing

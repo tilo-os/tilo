@@ -17,7 +17,7 @@ test-support = ["tilo-workspace-service/test-support", "dep:tilo-test-env", "dep
 # calendars and the secrets it uses.
 agents = ["tilo-workspace-service/agents", "apps", "device-keys", "dep:tilo-model-gateway", "dep:collaboration"]
 # A device serves its apps: Browser's asks for the website sessions a person keeps.
-apps = ["tilo-workspace-service/apps", "dep:browser-continuity-core", "dep:collaboration"]
+apps = ["tilo-workspace-service/apps", "dep:collaboration"]
 # A host carries the sign-ins it kept before the vault over into it.
 device-keys = ["tilo-workspace-service/device-keys"]
 
@@ -72,7 +72,8 @@ agent-provider-config = { package = "tilo-agent-provider-config", path = "../../
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-account-probe = { path = "../../integrations/account-probe" }
 account-credentials = { path = "../../integrations/account-credentials", features = ["store"] }
-browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../browser-continuity-core", optional = true }
+# A website sign-in the person keeps is the session vocabulary Browser reads back.
+browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../browser-continuity-core" }
 tilo-oauth = { path = "../../integrations/tilo-oauth" }
 tilo-dav = { path = "../../integrations/tilo-dav" }
 tilo-fs-client = { path = "../tilo-fs-client" }

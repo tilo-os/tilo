@@ -5,10 +5,13 @@
 //! inside a Flatpak's own directory, and where Windows and macOS keep them in a home. Every place
 //! is looked in on every system, so a Windows or macOS home is read from its disk just as well. [`profiles`] finds the profiles of an installation (a
 //! Chromium-family `Default`/`Profile N`, the sections of Firefox's `profiles.ini`);
-//! bookmarks and history are read by `browser-continuity`, passwords here ([`saved_logins`]).
+//! bookmarks and history are read by `browser-continuity`, passwords here ([`saved_logins`]),
+//! and the sites each profile is signed in to in [`sign_ins`].
 //!
-//! A password read here is held only in wiped memory and handed straight to the vault it is
-//! moving to; it is never written, printed or put in a resource.
+//! A password or cookie read here is held only in wiped memory and handed straight to the vault
+//! it is moving to; it is never written, printed or put in a resource.
+
+pub mod sign_ins;
 
 use std::path::{Path, PathBuf};
 
@@ -80,6 +83,12 @@ pub const LOCATIONS: &[Location] = &[
         Engine::Chromium,
         "Brave",
     ),
+    at(
+        Root::Config,
+        "microsoft-edge",
+        Engine::Chromium,
+        "Microsoft Edge",
+    ),
     at(Root::Home, ".mozilla/firefox", Engine::Firefox, "Firefox"),
     at(Root::Home, ".librewolf", Engine::Firefox, "LibreWolf"),
     at(
@@ -131,6 +140,12 @@ pub const LOCATIONS: &[Location] = &[
         "Brave",
     ),
     at(
+        Root::Flatpak("com.brave.Browser"),
+        "config/BraveSoftware/Brave-Browser",
+        Engine::Chromium,
+        "Brave",
+    ),
+    at(
         Root::WindowsLocal,
         "Chromium/User Data",
         Engine::Chromium,
@@ -175,6 +190,12 @@ pub const LOCATIONS: &[Location] = &[
     at(Root::MacSupport, "Chromium", Engine::Chromium, "Chromium"),
     at(Root::MacSupport, "Vivaldi", Engine::Chromium, "Vivaldi"),
     at(Root::MacSupport, "Firefox", Engine::Firefox, "Firefox"),
+    at(
+        Root::Flatpak("com.microsoft.Edge"),
+        "config/microsoft-edge",
+        Engine::Chromium,
+        "Microsoft Edge",
+    ),
 ];
 
 impl Location {
@@ -247,9 +268,15 @@ fn chromium_profiles(location: &Location, directory: &Path, found: &mut Vec<Brow
     names.sort();
     for name in names {
         let profile = directory.join(&name);
-        if ["Bookmarks", "History", "Login Data"]
-            .iter()
-            .any(|file| profile.join(file).is_file())
+        if [
+            "Bookmarks",
+            "History",
+            "Login Data",
+            "Cookies",
+            "Network/Cookies",
+        ]
+        .iter()
+        .any(|file| profile.join(file).is_file())
         {
             found.push(BrowserProfile {
                 label: format!("{} · {name}", location.label),
@@ -273,7 +300,10 @@ fn firefox_profiles(location: &Location, directory: &Path, found: &mut Vec<Brows
         } else {
             PathBuf::from(&path)
         };
-        if profile.join("places.sqlite").is_file() || profile.join("logins.json").is_file() {
+        if ["places.sqlite", "logins.json", "cookies.sqlite"]
+            .iter()
+            .any(|file| profile.join(file).is_file())
+        {
             found.push(BrowserProfile {
                 label: format!("{} · {name}", location.label),
                 engine: Engine::Firefox,
@@ -456,6 +486,8 @@ fn keyring_key(profile: &BrowserProfile) -> Option<Zeroizing<[u8; 16]>> {
     let brand = match profile.browser {
         "Google Chrome" => ChromiumBrand::Chrome,
         "Chromium" | "Ungoogled Chromium" => ChromiumBrand::Chromium,
+        "Brave" => ChromiumBrand::Brave,
+        "Microsoft Edge" => ChromiumBrand::Edge,
         _ => return None,
     };
     let directory = std::fs::File::open(&profile.directory).ok()?;

@@ -44,7 +44,86 @@ fn entry_of<'a>(
     })
 }
 
+/// What a website sign-in kept by its person themselves (`add-website-session`) is made under:
+/// what [`crate::website_session_asks`] reads it back for them with.
+pub const KEPT_BINDING: &str = "workspace";
+
 impl crate::PersonServices {
+    /// Answer `add-website-session` for `person`, `None` where an agent asks: only the person
+    /// brings the sign-ins of their own browser, kept for them alone.
+    pub(crate) async fn bring_website_sign_in(
+        &self,
+        workspace: &str,
+        person: Option<[u8; 32]>,
+        brought: tilo_workspace_records::accounts::AccountsAction,
+    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::ActionCallError;
+        let tilo_workspace_records::accounts::AccountsAction::AddWebsiteSession {
+            id,
+            title,
+            service,
+            site,
+            cookies,
+        } = brought
+        else {
+            return Err(ActionCallError::UnknownAction);
+        };
+        let person = person.ok_or_else(|| {
+            ActionCallError::refused("Only the person brings their own website sign-ins")
+        })?;
+        let cookies = Zeroizing::new(cookies);
+        let named = (id.as_str(), title.as_str(), service.as_str(), site.as_str());
+        Box::pin(self.keep_website_sign_in(workspace, person, named, &cookies))
+            .await
+            .map_err(ActionCallError::refused)?;
+        self.person_settings_changed();
+        Ok(serde_json::json!({"id": id, "title": title}))
+    }
+
+    /// Keep the cookies `cookies` (a JSON list) the person `person` was signed in to sites with
+    /// as the workspace's website sign-in `id`, titled `title`, for `service` (`web`, `slack`,
+    /// `discord`) and opening `site`: what `add-website-session` keeps. Only cookies of the
+    /// sites `service` signs in to are kept; anything else is refused before the vault is
+    /// opened. Keeping it again under its id keeps the newer cookies in its place.
+    ///
+    /// # Errors
+    /// The id, the service or the cookies do not read, or the vault or the accounts record does
+    /// not take the write.
+    pub async fn keep_website_sign_in(
+        &self,
+        workspace: &str,
+        person: [u8; 32],
+        (id, title, service, site): (&str, &str, &str, &str),
+        cookies: &Zeroizing<String>,
+    ) -> Result<(), String> {
+        use browser_continuity_core::sessions::{Cookie, Service, SessionCookies};
+        let service = Service::from_word(service)
+            .ok_or_else(|| format!("{service} is no service a website sign-in is for"))?;
+        let unreadable = || "Those cookies are no website sign-in this workspace keeps".to_owned();
+        let read: Vec<Cookie> = serde_json::from_str(cookies).map_err(|_| unreadable())?;
+        let session = SessionCookies {
+            schema: 1,
+            session_id: id.to_owned(),
+            service,
+            identity_public_key: person,
+            setup_binding: KEPT_BINDING.to_owned(),
+            source_snapshot_digest: *blake3::hash(cookies.as_bytes()).as_bytes(),
+            cookies: read,
+            origin_storage: Vec::new(),
+        };
+        session.validate().map_err(|_| unreadable())?;
+        let kept = Zeroizing::new(serde_json::to_string(&session).map_err(|_| unreadable())?);
+        let mut account = Account::new(
+            id,
+            account_credentials::service_sessions::SERVICE_SESSION_TYPE,
+        );
+        title.clone_into(&mut account.display_name);
+        account.config =
+            serde_json::json!({"service": service.as_str(), "setup_binding": KEPT_BINDING});
+        self.keep_website_session(workspace, &account, (title, site), kept)
+            .await
+    }
+
     /// Keep `cookies` as the website session `account` of `workspace`, for `site`, titled
     /// `title`: in the entry the account names where the vault keeps it there, in a new one
     /// otherwise. The account is kept among the workspace's accounts, naming the entry.

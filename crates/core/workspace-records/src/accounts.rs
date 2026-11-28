@@ -36,7 +36,7 @@ use tilo_resource::Effect as _;
 /// the first one included. In the accounts record, an account added or changed is kept
 /// (`save-account`), a removed one goes (`remove-account`), and a sign-in says how it went
 /// (`report-sync`). An action not named writes nothing besides.
-pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 18] = {
+pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 19] = {
     const SAVE: &str = "save-account";
     const REMOVE: &str = "remove-account";
     const REPORT: &str = "report-sync";
@@ -74,6 +74,8 @@ pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 18] = {
         // it reports is the record's.
         ("cloud-credential", &[KEEP_USES, KEEP_SEALED], &[]),
         ("report-sync", &[], &[REPORT]),
+        // A website sign-in keeps its cookies in the vault, in the entry its account names.
+        ("add-website-session", &[KEEP_SEALED], &[SAVE]),
     ]
 };
 
@@ -465,6 +467,33 @@ pub enum AccountsAction {
         #[param("The issuer's id, as that app names it.")]
         issuer: String,
     },
+    /// Keep a website sign-in
+    ///
+    /// Keeps the cookies a browser on one of the person's computers was signed in to sites with
+    /// as one of the workspace's accounts, its cookies sealed in the workspace's vault: the
+    /// person's Browser opens those sites signed in with them. Keeping it again under its id
+    /// keeps the newer cookies in place of the older ones. Only the person asks it.
+    #[effect(kind = "undoable")]
+    AddWebsiteSession {
+        #[param("The account's id: letters, digits, `-` and `_`, at most 96 of them.")]
+        id: String,
+        #[param("What it is called, such as `Slack (from Firefox)`.")]
+        title: String,
+        #[param(
+            "What it signs in to: `web` for every site its cookies are for, which the person's \
+             own Browser window takes, or `slack` or `discord` for that service's window."
+        )]
+        service: String,
+        #[param("The web address it opens, such as https://app.slack.com/.")]
+        site: String,
+        #[param(
+            secret,
+            "The cookies, as a JSON list of `{host, domain, host_only, name, value, path, \
+             expires_unix_seconds, secure, http_only, same_site}`: sealed in the workspace's \
+             vault, never answered back."
+        )]
+        cookies: String,
+    },
 }
 
 /// Each action's id, as its declaration in [`AccountsAction`] names it.
@@ -482,6 +511,7 @@ ids! {
     DISCOVER_CALENDARS, SET_CALENDARS, FIND_SERVERS, BEGIN_SIGN_IN, CANCEL_SIGN_IN, SET_SERVICES,
     SIGN_INS, SET_FILES_MODE, CLOUD_ACCOUNTS, CLOUD_CREDENTIAL, REPORT_SYNC, SYNC_NOW, PAUSE_SYNC,
     RESUME_SYNC, BEGIN_CLOUD_SIGN_IN, SUBMIT_SIGN_IN_CODE, CONNECT_ACCOUNT, FINISH_CONNECT_ACCOUNT,
+    ADD_WEBSITE_SESSION,
     FORGET_CONNECTED_ACCOUNT
 }
 
@@ -1335,6 +1365,7 @@ mod tests {
             (REPLACE_PASSWORD, "password"),
             (BEGIN_CLOUD_SIGN_IN, "password"),
             (SUBMIT_SIGN_IN_CODE, "code"),
+            (ADD_WEBSITE_SESSION, "cookies"),
         ] {
             let params = params_of(action).unwrap();
             let param = params.iter().find(|param| param.name == secret).unwrap();

@@ -3,13 +3,19 @@
 //! [`browser_continuity`]) and landed through the apps' own actions: bookmarks into the person's
 //! library in Browser (`import_bookmarks`), history into their history there
 //! (`import_history`), each password into their vault in Passwords (`save_login`, whose
-//! password is a secret parameter that is never printed).
+//! password is a secret parameter that is never printed), and the sites each profile is signed
+//! in to as the workspace's website sign-ins (`workspace/mail-accounts#add-website-session`,
+//! whose cookies are a secret parameter too): the person's own Browser window takes them, so
+//! they are signed in to those sites in Tilo, and Slack and Discord open signed in, each in a
+//! window of its own.
 
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use browser_continuity::imports::{ImportBatch, ImportBundle};
+use browser_continuity::sessions::{Cookie, Service};
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 use super::registry::Row;
 use super::state::{Item, Review};
@@ -52,14 +58,28 @@ impl Source for Browsers {
 const IMPORT_BOOKMARKS: &str = "browser#import_bookmarks";
 const IMPORT_HISTORY: &str = "browser#import_history";
 const SAVE_LOGIN: &str = "passwords#save_login";
+/// The workspace's accounts' action that keeps a website sign-in.
+const ADD_WEBSITE_SESSION: &str = "add-website-session";
 /// The most rows one import carries, so its arguments stay well under what one call takes.
 const ROWS_PER_CALL: usize = 4_000;
+/// The parts of a profile a review lists.
+const PARTS: [&str; 4] = ["bookmarks", "history", "passwords", "sign-ins"];
 
 /// What one profile holds.
 struct Read {
     bookmarks: Option<ImportBundle>,
     history: Option<ImportBundle>,
     logins: Result<Vec<crate::thunderbird::SavedLogin>, String>,
+    sign_ins: Result<Vec<Cookie>, crate::thunderbird::LoginsError>,
+}
+
+/// Now, in Unix seconds: what a cookie's expiry is measured against.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 /// The config directory of this computer's home `home`.
@@ -110,6 +130,14 @@ fn read(profile: &BrowserProfile) -> Read {
             )),
             None => browsers::saved_logins(profile).map_err(|error| error.to_string()),
         },
+        sign_ins: match profile.sealed_by {
+            Some(system) => Err(crate::thunderbird::LoginsError::Unreadable(format!(
+                "{system} keeps the sites {} is signed in to locked to its own sign-in, so they \
+                 come over only from {system} itself",
+                profile.browser
+            ))),
+            None => browsers::sign_ins::sign_ins(profile, now()),
+        },
     }
 }
 
@@ -125,9 +153,32 @@ fn history_count(bundle: &ImportBundle) -> usize {
     bundle.chunks.iter().map(|chunk| chunk.history.len()).sum()
 }
 
+/// What a person reads of the sign-ins `cookies` bring beside their own window: the services
+/// that open signed in, each in a window of its own.
+fn sign_ins_note(cookies: &[Cookie]) -> Option<String> {
+    let services: Vec<&str> = browsers::sign_ins::sessions(cookies)
+        .iter()
+        .filter(|(service, _)| *service != Service::Web)
+        .map(|(service, _)| service.label())
+        .collect();
+    match services.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "{one} also becomes an account of the workspace, opening signed in in a window of \
+             its own"
+        )),
+        many => Some(format!(
+            "{} also become accounts of the workspace, each opening signed in in a window of \
+             its own",
+            many.join(" and ")
+        )),
+    }
+}
+
 /// `tilo migrate review browsers`: each profile in `home`, whose config directory is `config`, and
-/// its bookmarks, history and passwords.
+/// its bookmarks, history, passwords and the sites it is signed in to.
 pub fn review(home: &Path, config: &Path) -> Review {
+    use crate::thunderbird::LoginsError;
     let mut items = Vec::new();
     let mut unreadable = Vec::new();
     for profile in browsers::profiles(home, config) {
@@ -135,17 +186,33 @@ pub fn review(home: &Path, config: &Path) -> Review {
         let held = read(&profile);
         let mut parts = Vec::new();
         if let Some(bundle) = &held.bookmarks {
-            parts.push(("bookmarks", bookmark_count(bundle)));
+            parts.push(("bookmarks", bookmark_count(bundle), None));
         }
         if let Some(bundle) = &held.history {
-            parts.push(("history", history_count(bundle)));
+            parts.push(("history", history_count(bundle), None));
         }
         match &held.logins {
-            Ok(logins) => parts.push(("passwords", logins.len())),
+            Ok(logins) => parts.push(("passwords", logins.len(), None)),
             Err(why) if why.contains("saved no") || why.contains("no passwords") => {}
             Err(why) => unreadable.push(format!("{}: passwords: {why}", profile.label)),
         }
-        let total = parts.iter().map(|(_, count)| count).sum();
+        match &held.sign_ins {
+            Ok(cookies) => parts.push((
+                "sign-ins",
+                browsers::sign_ins::site_count(cookies),
+                sign_ins_note(cookies),
+            )),
+            Err(LoginsError::NoneSaved) => {}
+            Err(LoginsError::Locked) => unreadable.push(format!(
+                "{}: sign-ins: the system keyring keeps their key locked; unlock it (sign in to \
+                 the desktop the browser runs on), then review again",
+                profile.label
+            )),
+            Err(LoginsError::Unreadable(why)) => {
+                unreadable.push(format!("{}: sign-ins: {why}", profile.label));
+            }
+        }
+        let total = parts.iter().map(|(_, count, _)| count).sum();
         items.push(Item {
             key: key.clone(),
             kind: "browser-profile".to_owned(),
@@ -156,16 +223,16 @@ pub fn review(home: &Path, config: &Path) -> Review {
             chosen: false,
             note: None,
         });
-        for (part, count) in parts {
+        for (part, count, note) in parts {
             items.push(Item {
                 key: format!("{key}/{part}"),
                 kind: part.to_owned(),
                 title: format!("{} {part}", profile.label),
                 count,
-                counts: part.to_owned(),
+                counts: if part == "sign-ins" { "sites" } else { part }.to_owned(),
                 within: Some(key.clone()),
                 chosen: false,
-                note: None,
+                note,
             });
         }
     }
@@ -190,10 +257,11 @@ pub fn summary(review: &Review) -> String {
             .sum()
     };
     format!(
-        "Bring {}, {} and {} from this computer's browsers",
+        "Bring {}, {}, {} and the sign-ins to {} from this computer's browsers",
         super::services::counted(count("bookmarks"), "bookmarks"),
         super::services::counted(count("history"), "pages of history"),
         super::services::counted(count("passwords"), "passwords"),
+        super::services::counted(count("sign-ins"), "sites"),
     )
 }
 
@@ -284,10 +352,7 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
     for profile in browsers::profiles(home, config) {
         let key = key_of(&profile);
         let wants = |part: &str| chosen.contains(&format!("{key}/{part}"));
-        if !["bookmarks", "history", "passwords"]
-            .iter()
-            .any(|part| wants(part))
-        {
+        if !PARTS.iter().any(|part| wants(part)) {
             continue;
         }
         let held = read(&profile);
@@ -353,6 +418,73 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
                 )?;
             }
         }
+        if wants("sign-ins") {
+            let cookies = held.sign_ins.map_err(|why| {
+                anyhow!(
+                    "{}'s sign-ins can't be read ({why}). Close the browser, or unlock the \
+                     system keyring, then start again",
+                    profile.label
+                )
+            })?;
+            land_sign_ins(&profile, &key, &cookies, lander)?;
+        }
+    }
+    Ok(())
+}
+
+/// Keep the sign-ins `cookies` of `profile` (listed under `key`) as the workspace's website
+/// sign-ins: one for each service that opens in a window of its own, and every cookie in as
+/// few as hold them for the person's own Browser window. Each is the workspace's account of it,
+/// named after the profile, so bringing the profile over again keeps the newer cookies in place
+/// of the older ones.
+fn land_sign_ins(
+    profile: &BrowserProfile,
+    key: &str,
+    cookies: &[Cookie],
+    lander: &mut Lander<'_>,
+) -> Result<()> {
+    let profile_id = blake3::hash(key.as_bytes()).to_hex();
+    let profile_id = profile_id.get(..16).unwrap_or_default();
+    let mut part = 0_usize;
+    for (service, session) in browsers::sign_ins::sessions(cookies) {
+        let (id, title, site) = if service == Service::Web {
+            part = part.saturating_add(1);
+            let title = if part == 1 {
+                format!("Sign-ins from {}", profile.label)
+            } else {
+                format!("Sign-ins from {} ({part})", profile.label)
+            };
+            let site = session
+                .first()
+                .map(|cookie| format!("https://{}/", cookie.host))
+                .unwrap_or_default();
+            (format!("web-{profile_id}-{part}"), title, site)
+        } else {
+            (
+                format!("{}-{profile_id}", service.as_str()),
+                format!("{} (from {})", service.label(), profile.label),
+                service.url().to_owned(),
+            )
+        };
+        let encoded = Zeroizing::new(serde_json::to_string(&session)?);
+        let named = format!(
+            "{key}/sign-ins/{id}/{}",
+            blake3::hash(encoded.as_bytes()).to_hex()
+        );
+        lander.once(&named, "website sign-ins", |workspace, _| {
+            workspace.person(
+                super::thunderbird::MAIL_ACCOUNTS,
+                ADD_WEBSITE_SESSION,
+                json!({
+                    "id": id,
+                    "title": title,
+                    "service": service.as_str(),
+                    "site": site,
+                    "cookies": encoded.as_str(),
+                }),
+            )?;
+            Ok(Landed::One)
+        })?;
     }
     Ok(())
 }
@@ -363,4 +495,108 @@ fn site_of(origin: &str) -> String {
         .ok()
         .and_then(|url| url.domain().map(str::to_owned))
         .unwrap_or_else(|| origin.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::state::Place;
+    use super::super::tests::test_env::{Recorded, Told, land_as};
+    use super::super::writer::Invocation;
+    use super::*;
+
+    /// A Firefox profile signed in to Slack and GitHub, reviewed and its sign-ins chosen, lands
+    /// as the person's own requests to keep them: Slack's cookies as Slack's account, and every
+    /// cookie as the sign-ins the person's own Browser window takes. Landing it again keeps
+    /// nothing twice.
+    #[test]
+    fn a_profiles_sign_ins_become_the_workspaces_website_sign_ins() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        crate::browsers::sign_ins::tests::firefox_home(&home, now());
+        let place = Place::at(&dir.path().join("state"));
+        let mut review = review(&home, &home.join(".config"));
+        let item = review
+            .items
+            .iter()
+            .find(|item| item.kind == "sign-ins")
+            .expect("the profile's sign-ins are listed");
+        assert_eq!(item.key, "firefox/default-release/sign-ins");
+        assert_eq!((item.count, item.counts.as_str()), (2, "sites"));
+        assert!(
+            item.note
+                .as_deref()
+                .is_some_and(|note| note.starts_with("Slack also becomes an account")),
+            "{item:?}"
+        );
+        review
+            .choose(&["firefox/default-release/sign-ins".to_owned()], true, true)
+            .unwrap();
+        place.keep_review(&review).unwrap();
+        assert!(summary(&review).contains("the sign-ins to 2 sites"));
+
+        let invocation = Invocation {
+            id: "run-1".into(),
+            title: summary(&review),
+        };
+        let mut workspace = Recorded::default();
+        let mut told = Told::default();
+        land_as(
+            &place,
+            "browsers",
+            &invocation,
+            &mut workspace,
+            &mut told,
+            |lander| land(&home, &home.join(".config"), &review, lander),
+        )
+        .unwrap();
+        let kept: Vec<(&str, &str, &str)> = workspace
+            .websites
+            .iter()
+            .map(|asked| {
+                (
+                    asked["service"].as_str().unwrap(),
+                    asked["title"].as_str().unwrap(),
+                    asked["site"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (
+                    "slack",
+                    "Slack (from Firefox · default-release)",
+                    "https://app.slack.com/"
+                ),
+                (
+                    "web",
+                    "Sign-ins from Firefox · default-release",
+                    "https://github.com/"
+                ),
+            ]
+        );
+        let cookies = |at: usize| -> Vec<Cookie> {
+            serde_json::from_str(workspace.websites[at]["cookies"].as_str().unwrap()).unwrap()
+        };
+        assert_eq!(cookies(0).len(), 1);
+        assert_eq!(cookies(0)[0].value, "slack-session");
+        let web: Vec<String> = cookies(1).iter().map(|c| c.value.clone()).collect();
+        assert_eq!(web, ["gh-session", "slack-session"]);
+        assert!(
+            workspace.actions.is_empty(),
+            "no app is asked: sign-ins are the person's own requests"
+        );
+
+        let mut again = Recorded::default();
+        land_as(
+            &place,
+            "browsers",
+            &invocation,
+            &mut again,
+            &mut told,
+            |lander| land(&home, &home.join(".config"), &review, lander),
+        )
+        .unwrap();
+        assert!(again.websites.is_empty(), "nothing is kept twice");
+    }
 }

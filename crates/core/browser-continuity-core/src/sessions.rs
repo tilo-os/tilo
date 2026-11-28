@@ -11,12 +11,16 @@ pub const MAX_SESSION_BYTES: usize = 2 * 1024 * 1024;
 pub enum Service {
     Slack,
     Discord,
+    /// Every site a browser profile was signed in to: the cookies of any host, which the
+    /// person's own Browser window takes into the profile it browses with.
+    Web,
 }
 impl Service {
     pub fn allows_host(self, host: &str) -> bool {
         let base = match self {
             Self::Slack => "slack.com",
             Self::Discord => "discord.com",
+            Self::Web => return valid_host(host),
         };
         valid_host(host)
             && (host == base
@@ -28,13 +32,40 @@ impl Service {
         match self {
             Self::Slack => "https://app.slack.com/",
             Self::Discord => "https://discord.com/app",
+            // Sign-ins to every site open no one page: the person's own window holds them.
+            Self::Web => "about:blank",
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Slack => "slack",
             Self::Discord => "discord",
+            Self::Web => "web",
         }
+    }
+    /// The service `word` names, as [`Self::as_str`] spells it.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        [Self::Slack, Self::Discord, Self::Web]
+            .into_iter()
+            .find(|service| service.as_str() == word)
+    }
+    /// What a person calls it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Slack => "Slack",
+            Self::Discord => "Discord",
+            Self::Web => "Website sign-ins",
+        }
+    }
+    /// The service whose sign-in a cookie of `host` is, when it is one a window of its own
+    /// opens.
+    #[must_use]
+    pub fn of_host(host: &str) -> Option<Self> {
+        [Self::Slack, Self::Discord]
+            .into_iter()
+            .find(|service| service.allows_host(host))
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

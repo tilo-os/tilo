@@ -29,6 +29,7 @@ tilo-accounts-submit-sign-in-code = Finish signing in with a code
 tilo-accounts-connect-account = Connect an account at an app's issuer
 tilo-accounts-finish-connect-account = Wait for a connected account
 tilo-accounts-forget-connected-account = Forget a connected account
+tilo-accounts-add-website-session = Keep a website sign-in
 
 # The workspace's vault, kept by the host that keeps the workspace.
 tilo-vault-list = List vault items

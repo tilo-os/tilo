@@ -9,6 +9,8 @@ pub enum ChromiumBrand {
     /// Public Slack 4.52.178 / Electron 44.4.5 `OSCrypt` contract; callers must
     /// authenticate its exact public application before selected capture.
     Slack452178,
+    Brave,
+    Edge,
 }
 impl ChromiumBrand {
     pub(crate) fn application(self) -> &'static str {
@@ -16,6 +18,8 @@ impl ChromiumBrand {
             Self::Chrome => "chrome",
             Self::Chromium => "chromium",
             Self::Slack452178 => "Slack",
+            Self::Brave => "brave",
+            Self::Edge => "microsoft-edge",
         }
     }
 }

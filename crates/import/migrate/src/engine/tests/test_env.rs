@@ -50,6 +50,8 @@ pub struct Recorded {
     pub forgets: bool,
     /// How the person answers each account's asked record.
     pub answer: Answered,
+    /// Every website sign-in the person asked the server to keep, as it was asked.
+    pub websites: Vec<Value>,
 }
 
 impl Workspace for Recorded {
@@ -74,6 +76,10 @@ impl Workspace for Recorded {
         match action {
             "list" => Ok(serde_json::json!({"accounts": self.kept})),
             "add" => self.add_account(&args),
+            "add-website-session" => {
+                self.websites.push(args);
+                Ok(Value::Null)
+            }
             other => anyhow::bail!("no workspace/mail-accounts#{other}"),
         }
     }

@@ -324,6 +324,98 @@ mod tests {
         );
     }
 
+    /// The sign-ins a person brought from their browser (`add-website-session`) are kept as the
+    /// workspace's account with their cookies in its vault, and Browser lists and opens them for
+    /// that person alone, every site's for their own window. Cookies for a site the service
+    /// does not sign in to are refused before anything is kept, and bringing the profile again
+    /// keeps the newer cookies in place of the older.
+    #[cfg(feature = "device-keys")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sign_in_the_person_brought_opens_for_them_alone() {
+        use crate::website_sessions::KEPT_BINDING;
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = hosting_device();
+        let (host, _keys) = test_host_keyed(dir.path(), &key, &cert).await;
+        let workspaces = &crate::PersonServices::of(host.workspaces());
+        let workspace = workspaces.create("Sign-ins").await.unwrap().workspace;
+        let person = cert.user_public_key;
+        let mut cookies = selected(person).cookies;
+        let at = workspace.as_str();
+        let keep = |service: &'static str, cookies: &Vec<Cookie>| {
+            let encoded = zeroize::Zeroizing::new(serde_json::to_string(cookies).unwrap());
+            async move {
+                workspaces
+                    .keep_website_sign_in(
+                        at,
+                        person,
+                        (
+                            "web-firefox-1",
+                            "Sign-ins from Firefox",
+                            service,
+                            "https://github.com/",
+                        ),
+                        &encoded,
+                    )
+                    .await
+            }
+        };
+        let mut github = cookies[0].clone();
+        github.host = "github.com".into();
+        github.domain = "github.com".into();
+        assert!(
+            keep("slack", &vec![github.clone()]).await.is_err(),
+            "a cookie of another site is no Slack sign-in"
+        );
+        cookies.push(github);
+        keep("web", &cookies)
+            .await
+            .expect("the person's sign-ins are kept");
+
+        let ask = |command| workspaces.website_session_ask(&workspace, person, command);
+        let Ok(Reply::List { sessions }) = ask(Command::List {}).await else {
+            panic!("the person's sign-ins are listed");
+        };
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            (
+                sessions[0].id.as_str(),
+                sessions[0].service,
+                sessions[0].setup_binding.as_str()
+            ),
+            ("web-firefox-1", Service::Web, KEPT_BINDING)
+        );
+        let resolve = || Command::Resolve {
+            id: "web-firefox-1".into(),
+            setup_binding: KEPT_BINDING.into(),
+        };
+        let Ok(Reply::Resolved { session }) = ask(resolve()).await else {
+            panic!("the person's sign-ins open");
+        };
+        assert_eq!(session.cookies, cookies);
+        assert_eq!(session.identity_public_key, person);
+        let others = workspaces.website_session_ask(&workspace, [8; 32], Command::List {});
+        assert!(
+            matches!(others.await, Ok(Reply::List { sessions }) if sessions.is_empty()),
+            "another member is listed none of them"
+        );
+
+        cookies.truncate(1);
+        keep("web", &cookies).await.expect("brought again");
+        let Ok(Reply::Resolved { session }) = ask(resolve()).await else {
+            panic!("the newer sign-ins open");
+        };
+        assert_eq!(
+            session.cookies, cookies,
+            "the newer cookies, in place of the older"
+        );
+        let held = workspaces
+            .website_sessions(&workspace, SERVICE_SESSION_TYPE)
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 1, "kept once");
+        assert_eq!(held[0].account.display_name, "Sign-ins from Firefox");
+    }
+
     /// Only the person's own, enabled selection is listed and opened, and only theirs is
     /// forgotten; one that is gone already is forgotten again without asking whose it was.
     #[test]

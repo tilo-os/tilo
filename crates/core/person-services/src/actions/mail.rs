@@ -99,7 +99,7 @@ const SIGN_INS_VERB: Verb = Verb {
 /// (`workspace/mail-accounts`): listing them, adding one, and adding one whose sign-in the
 /// vault keeps by reference. Each is decided by the workspace's policy on its mail as any call
 /// of it is.
-const ACCOUNT_VERBS: [(&Verb, &str); 3] = [
+const ACCOUNT_VERBS: [(&Verb, &str); 4] = [
     (&VERBS[0], workspace_accounts::LIST),
     (
         &Verb {
@@ -121,7 +121,22 @@ const ACCOUNT_VERBS: [(&Verb, &str); 3] = [
         },
         workspace_accounts::ADD_MAIL_WITH_ITEM,
     ),
+    (
+        &Verb {
+            id: workspace_accounts::ADD_WEBSITE_SESSION,
+            label: "Keep a website sign-in",
+            check: "",
+            kind: ActionKind::Outside,
+            params: add_website_session_params,
+        },
+        workspace_accounts::ADD_WEBSITE_SESSION,
+    ),
 ];
+
+/// The parameters `add-website-session` is declared with: its cookies are a secret.
+fn add_website_session_params() -> Vec<ActionParam> {
+    workspace_accounts::params_of(workspace_accounts::ADD_WEBSITE_SESSION).unwrap_or_default()
+}
 
 /// The parameters `add-mail` is declared with.
 pub(super) fn add_account_params() -> Vec<ActionParam> {
