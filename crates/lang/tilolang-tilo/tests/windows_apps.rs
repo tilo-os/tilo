@@ -191,6 +191,7 @@ fn words(node: &UiNode, into: &mut Vec<String>) {
         "badge",
         "message",
         "description",
+        "action",
     ] {
         if let Some(Value::Text(text)) = node.props.get(prop) {
             into.push(text.clone());
@@ -523,11 +524,12 @@ fn the_support_banner_offers_to_install_windows_support() {
     let app = installed(reading(vec![reader_app()], appliance(), None, support));
     let window = shown_at(&app, "adobe-reader");
     assert!(
-        contains(&window, "Install Windows support"),
+        contains(&window, "Windows support isn't installed"),
         "{:?}",
         shown(&window)
     );
-    assert!(contains(&window, "1.2 GB"));
+    assert!(contains(&window, "1.2 GB"), "{:?}", shown(&window));
+    assert!(contains(&window, "Install"), "{:?}", shown(&window));
 }
 
 #[test]
@@ -791,5 +793,142 @@ fn a_program_of_the_reading_is_the_record_the_window_opens() {
             .open_plan("so.tilo.windows", "windows-apps/not-a-program", None)
             .is_err(),
         "a program the reading does not list names nothing"
+    );
+}
+
+/// What installing Windows support is doing, as the helper reports it, and what the program
+/// that needs it says about it.
+#[test]
+fn windows_support_says_its_size_its_progress_and_why_it_failed() {
+    let mut missing = support();
+    missing["state"] = serde_json::json!("needs-install");
+    missing["summary"] = serde_json::json!("This program needs it to open.");
+    missing["size"] = serde_json::json!("2.5 GB");
+    let app = installed(reading(vec![reader_app()], appliance(), None, missing));
+    let window = shown_at(&app, "adobe-reader");
+    assert!(
+        contains(&window, "Windows support isn't installed"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "It is a download of about 2.5 GB."),
+        "the size the helper reports is what the person agrees to: {:?}",
+        shown(&window)
+    );
+
+    let mut installing = support();
+    installing["state"] = serde_json::json!("installing");
+    installing["step"] = serde_json::json!({
+        "label": "Fetching Wine",
+        "number": 2,
+        "count": 5,
+        "megabytes-done": 120,
+        "megabytes-total": 400
+    });
+    let app = installed(reading(vec![reader_app()], appliance(), None, installing));
+    let window = shown_at(&app, "adobe-reader");
+    assert!(
+        contains(&window, "Installing Windows support…"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "Fetching Wine: 120 of 400 MB"),
+        "the step it is on and the bytes it fetched: {:?}",
+        shown(&window)
+    );
+
+    let mut waiting = support();
+    waiting["state"] = serde_json::json!("waiting-for-network");
+    let app = installed(reading(vec![reader_app()], appliance(), None, waiting));
+    let window = shown_at(&app, "adobe-reader");
+    assert!(
+        contains(&window, "Windows support installs once you're online"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(
+            &window,
+            "The download starts by itself when this device has a network."
+        ),
+        "{:?}",
+        shown(&window)
+    );
+
+    let mut failed = support();
+    failed["state"] = serde_json::json!("failed");
+    failed["summary"] = serde_json::json!("The download stopped.");
+    failed["problem"] = serde_json::json!("the mirror refused the connection");
+    let app = installed(reading(vec![reader_app()], appliance(), None, failed));
+    let window = shown_at(&app, "adobe-reader");
+    assert!(
+        contains(&window, "Windows support couldn't be installed"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(
+        contains(&window, "the mirror refused the connection"),
+        "{:?}",
+        shown(&window)
+    );
+    assert!(contains(&window, "Try again"), "{:?}", shown(&window));
+}
+
+#[test]
+fn a_programs_route_says_what_it_may_reach() {
+    let app = installed_full();
+    let window = shown_at(&app, "adobe-reader");
+    assert!(
+        contains(
+            &window,
+            "It runs in a private capsule that sees only the files and devices you allow."
+        ),
+        "{:?}",
+        shown(&window)
+    );
+    let window = shown_at(&app, "visual-studio");
+    assert!(
+        contains(
+            &window,
+            "It shares Windows with your other Windows apps. Files reach it only when you open them with it."
+        ),
+        "{:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn choosing_a_route_and_letting_the_catalogue_decide_say_so() {
+    let app = installed_full();
+    let _ = app.host.runtime().take_said();
+    app.call(
+        "set_route",
+        vec![
+            app.root_value(),
+            Value::text("adobe-reader"),
+            open_with(&app, "proton"),
+        ],
+    );
+    let said = app.host.runtime().take_said();
+    assert_eq!(
+        said.iter()
+            .map(|said| said.text.as_str())
+            .collect::<Vec<_>>(),
+        ["This app opens this way from its next start."],
+        "{said:?}"
+    );
+    app.call(
+        "use_recommendation",
+        vec![app.root_value(), Value::text("adobe-reader")],
+    );
+    let said = app.host.runtime().take_said();
+    assert_eq!(
+        said.iter()
+            .map(|said| said.text.as_str())
+            .collect::<Vec<_>>(),
+        ["This app opens the recommended way again."],
+        "{said:?}"
     );
 }

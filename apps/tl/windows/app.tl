@@ -2,7 +2,7 @@ app so.tilo.windows "Windows Apps" (
     icon: .app_window,
     category: .system,
     tagline: "Windows programs on this computer, and the Windows appliance",
-    keywords: ["windows", "wine", "proton", "exe", "msi", "windows apps", "windows-apps", "windows programme", "windows anwendungen"],
+    keywords: ["windows", "wine", "proton", "exe", "msi", "win32", "compatibility", "run windows", "dos", "legacy", "windows apps", "windows-apps", "windows programme", "windows anwendungen"],
     splash_budget: 250,
 )
 
@@ -206,6 +206,40 @@ fn duration_words(seconds: Int) -> Text {
     } else { std.say("{seconds / 3600} hours") }
 }
 
+/// What a temporary connection was opened for, in the person's words.
+fn purpose_words(purpose: Text) -> Text {
+    if purpose == "activation" {
+        std.say("Windows activation")
+    } else if purpose == "update" { std.say("Windows Update") } else { purpose }
+}
+
+/// What Windows support's install is doing now, as the helper reports it.
+fn support_progress(support: device.WindowsPrograms) -> Text {
+    if let step = support.step {
+        if let done = step.megabytes_done {
+            if let total = step.megabytes_total {
+                std.say("{step.label}: {done} of {total} MB")
+            } else { std.say("{step.label}: {done} MB") }
+        } else {
+            std.say("{step.label} (step {step.number} of {step.count})")
+        }
+    } else { support.summary }
+}
+
+/// What installing Windows support asks of the person: what it is and how large the download is.
+fn support_offer(support: device.WindowsPrograms) -> Text {
+    if let size = support.size {
+        std.say("{support.summary} It is a download of about {size}.")
+    } else { support.summary }
+}
+
+/// Why Windows support is not installed: what the helper said, and what it blamed.
+fn support_trouble(support: device.WindowsPrograms) -> Text {
+    if let problem = support.problem {
+        std.say("{support.summary} {problem}")
+    } else { support.summary }
+}
+
 /// The programs a setup put on this computer.
 fn setup_programs(ws: device.WindowsApps, capsule: Text) -> List<device.WindowsApp> {
     ws.apps.filter(program -> program.capsule == capsule and program.route != .vm)
@@ -248,12 +282,14 @@ fn shared_grant_words(grant: Text) -> Text {
 action set_route(w: Windows, program: Text, route: OpenWith) {
     w.routes.put(program, route)
     device.set_route(device.windows_apps, program: program, route: .some(device_route(route)))
+    notice("This app opens this way from its next start.", kind: .success)
 }
 
 /// Let a program open the way the catalogue recommends, and carry that to this computer.
 action use_recommendation(w: Windows, program: Text) {
     w.routes.remove(program)
     device.set_route(device.windows_apps, program: program, route: .none)
+    notice("This app opens the recommended way again.", kind: .success)
 }
 
 /// Install the installer the person chose, or the one a file manager opened here.
@@ -268,6 +304,7 @@ primary action installed(w: Windows, file: File) (
 /// Set up the appliance from the Windows ISO the person chose.
 action imported_iso(file: File) (icon: .monitor, label: "Import Windows ISO") {
     device.import_iso(device.windows_apps, path: .some(file.path))
+    notice("Windows media was accepted.", kind: .success)
 }
 
 /// Open the appliance's recovery desktop.
@@ -275,46 +312,55 @@ action imported_iso(file: File) (icon: .monitor, label: "Import Windows ISO") {
 // reach them without opening a window. The computer answers them, and says so when it cannot.
 action recovery_desktop() (icon: .wrench, label: "Open recovery desktop") {
     device.recovery(device.windows_apps)
+    notice("The Windows setup and recovery desktop is open.", kind: .success)
 }
 
 /// Start the appliance.
 action start_windows() (icon: .play, label: "Start Windows") {
     device.start(device.windows_apps)
+    notice("Windows has started.", kind: .success)
 }
 
 /// Restart the appliance.
 action restart_windows() (icon: .rotate_cw, label: "Restart Windows") {
     device.restart(device.windows_apps)
+    notice("Windows has restarted.", kind: .success)
 }
 
 /// Suspend the appliance.
 action suspend_windows() (icon: .pause, label: "Suspend Windows") {
     device.suspend(device.windows_apps)
+    notice("Windows has been suspended.", kind: .success)
 }
 
 /// Resume the appliance.
 action resume_windows() (icon: .play, label: "Resume Windows") {
     device.resume(device.windows_apps)
+    notice("Windows has resumed.", kind: .success)
 }
 
 /// Shut the appliance down.
 action shutdown_windows() (icon: .power, label: "Shut down Windows") {
     device.shutdown(device.windows_apps)
+    notice("Windows has been shut down.", kind: .success)
 }
 
 /// Connect the appliance for activation, for a while.
 action temporary_network() (icon: .wifi, label: "Connect for activation") {
     device.temporary_network(device.windows_apps)
+    notice("Windows has a temporary activation connection.", kind: .success)
 }
 
 /// Connect the appliance for Windows Update, for a while.
 action update_network() (icon: .download, label: "Connect for Windows Update") {
     device.update_network(device.windows_apps)
+    notice("Windows has a temporary update connection.", kind: .success)
 }
 
 /// End the appliance's temporary connection.
 action revoke_network() (icon: .x, label: "End temporary network access") {
     device.revoke_network(device.windows_apps)
+    notice("The temporary Windows connection was revoked.", kind: .info)
 }
 
 /// Open the document the person chose in `program`.
@@ -451,21 +497,40 @@ view appliance_row(ws: device.WindowsApps, chosen: State<Text>) {
     }
 }
 
-/// The banner that says Windows support must be installed before a program can open.
+/// The banner that says Windows support must be installed before a program can open: is it
+/// missing and how large the download is, is it being fetched and how far it has got, or did it
+/// fail and why.
 view support_banner(ws: device.WindowsApps) {
-    if ws.support.state == .needs-install or ws.support.state == .failed {
+    if ws.support.state == .needs-install {
         ui.Banner(
-            if ws.support.state == .failed {
-                "Windows support is needed"
-            } else { "Install Windows support" },
-            message: ws.support.summary,
+            "Windows support isn't installed",
+            message: support_offer(ws.support),
             kind: .warning,
-            action: if ws.support.state == .failed { "Try again" } else { "Install" },
+            action: "Install",
         ) {
             on act: device.install(device.windows_compat)
         }
-    } else if ws.support.state == .installing or ws.support.state == .waiting-for-network {
-        ui.Banner("Windows support is being installed", message: ws.support.summary, kind: .info)
+    } else if ws.support.state == .failed {
+        ui.Banner(
+            "Windows support couldn't be installed",
+            message: support_trouble(ws.support),
+            kind: .error,
+            action: "Try again",
+        ) {
+            on act: device.install(device.windows_compat)
+        }
+    } else if ws.support.state == .installing {
+        ui.Banner(
+            "Installing Windows support…",
+            message: support_progress(ws.support),
+            kind: .info,
+        )
+    } else if ws.support.state == .waiting-for-network {
+        ui.Banner(
+            "Windows support installs once you're online",
+            message: "The download starts by itself when this device has a network.",
+            kind: .info,
+        )
     }
 }
 
@@ -551,7 +616,13 @@ view app_page(
     ui.Section("What it may reach") {
         if program.route == .vm {
             ui.Text(
-                "Files reach it only when you open them with it.",
+                "It shares Windows with your other Windows apps. Files reach it only when you open them with it.",
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            ui.Text(
+                "It runs in a private capsule that sees only the files and devices you allow.",
                 role: .caption,
                 secondary: true,
             )
@@ -761,7 +832,7 @@ view appliance_page(w: Windows, ws: device.WindowsApps) {
         ui.Section("Temporary connection") {
             if let connection = appliance.temporary_connection {
                 ui.Text(
-                    "Connected for {connection.purpose} for another {duration_words(connection.expires_in_seconds)}.",
+                    "Connected for {purpose_words(connection.purpose)} for another {duration_words(connection.expires_in_seconds)}.",
                     role: .body,
                 )
                 row(gap: .tight, wrap: true) {
@@ -795,6 +866,7 @@ view appliance_page(w: Windows, ws: device.WindowsApps) {
 /// The setup that waits for the person to choose where it goes.
 view pending_page(ws: device.WindowsApps) {
     if let pending = ws.pending_install {
+        ui.ObjectHeader(pending.display_name, caption: "Ready to install", icon: .download)
         if pending.detail != "" {
             ui.Text(pending.detail, role: .body)
         }

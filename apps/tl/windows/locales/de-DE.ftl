@@ -3,7 +3,7 @@
 
 d-so-tilo-windows = Windows-Apps
 
-d-so-tilo-windows-keywords = windows, wine, proton, exe, msi, windows apps, windows-apps, windows programme, windows anwendungen
+d-so-tilo-windows-keywords = windows, wine, proton, win32, kompatibilität, windows ausführen, exe, msi, dos, altlasten, windows apps, windows-apps, windows programme, windows anwendungen
 
 d-sdllaiod = Windows
     .doc = Die Startwege, auf die sich die Personen in diesem Arbeitsbereich geeinigt haben: die des Arbeitsbereichs, damit jedes Mitglied ein Programm gleich öffnet.
@@ -25,6 +25,7 @@ d-y76crbne = Windows-VM
 
 d-iwyrwi7q = Weg setzen
     .doc = Wählen, wie ein Programm ab jetzt öffnet, und die Wahl an diesen Computer übergeben.
+    .w-this-app-opens-this-way-from = Diese App öffnet ab dem nächsten Start so.
 
 d-iwyrwi7q-program = Programm
 
@@ -32,6 +33,7 @@ d-iwyrwi7q-route = Weg
 
 d-eixkuayr = Empfehlung verwenden
     .doc = Ein Programm so öffnen lassen, wie es der Katalog empfiehlt, und das an diesen Computer übergeben.
+    .w-this-app-opens-the-recommended-way = Diese App öffnet wieder wie empfohlen.
 
 d-eixkuayr-program = Programm
 
@@ -42,35 +44,45 @@ d-6efyasbu-file = Datei
 
 d-5bb7zjnm = Windows-ISO importieren
     .doc = Die Windows-Maschine aus dem Windows-ISO einrichten, das die Person gewählt hat.
+    .w-windows-media-was-accepted = Windows-Medien wurden angenommen.
 
 d-5bb7zjnm-file = Datei
 
 d-vcxxtpm7 = Wiederherstellungs-Desktop öffnen
     .doc = Den Wiederherstellungs-Desktop der Windows-Maschine öffnen.
+    .w-the-windows-setup-and-recovery-desktop = Der Windows-Einrichtungs- und Wiederherstellungsdesktop ist offen.
 
 d-i2uoznn5 = Windows starten
     .doc = Die Windows-Maschine starten.
+    .w-windows-has-started = Windows wurde gestartet.
 
 d-ysu5u6q3 = Windows neu starten
     .doc = Die Windows-Maschine neu starten.
+    .w-windows-has-restarted = Windows wurde neu gestartet.
 
 d-2laszyib = Windows anhalten
     .doc = Die Windows-Maschine anhalten.
+    .w-windows-has-been-suspended = Windows wurde angehalten.
 
 d-7ecwpiem = Windows fortsetzen
     .doc = Die Windows-Maschine fortsetzen.
+    .w-windows-has-resumed = Windows läuft wieder.
 
 d-4ltkrolo = Windows herunterfahren
     .doc = Die Windows-Maschine herunterfahren.
+    .w-windows-has-been-shut-down = Windows wurde heruntergefahren.
 
 d-ja3iikds = Für die Aktivierung verbinden
     .doc = Die Windows-Maschine für eine Weile zur Aktivierung verbinden.
+    .w-windows-has-a-temporary-activation-connection = Windows hat eine vorübergehende Verbindung zur Aktivierung.
 
 d-3jpdidlo = Für Windows Update verbinden
     .doc = Die Windows-Maschine für eine Weile für Windows Update verbinden.
+    .w-windows-has-a-temporary-update-connection = Windows hat eine vorübergehende Verbindung für Windows Update.
 
 d-vynm7ten = Temporären Netzzugang beenden
     .doc = Die vorübergehende Verbindung der Windows-Maschine beenden.
+    .w-the-temporary-windows-connection-was-revoked = Die vorübergehende Windows-Verbindung wurde beendet.
 
 d-xa7fjun4 = Datei geöffnet
     .doc = Das Dokument, das die Person gewählt hat, in `program` öffnen.
@@ -166,6 +178,18 @@ d-b5rfyupy = Dauer in Worten
     .w-minutes = { $value } Minuten
     .w-hours = { $value } Stunden
 
+d-cntd43bo = Zweck in Worten
+    .w-windows-activation = Windows-Aktivierung
+    .w-windows-update = Windows Update
+
+d-esxjlyfo = Fortschritt der Unterstützung
+    .w-of-mb = { $label }: { $done } von { $total } MB
+    .w-mb = { $label }: { $done } MB
+    .w-step-of = { $label } (Schritt { $number } von { $count })
+
+d-livb5iyq = Angebot der Unterstützung
+    .w-it-is-a-download-of-about = { $summary } Der Download ist etwa { $size } groß.
+
 d-plojzp75 = Einrichtungsname
     .w-programs = { $len } Programme
 
@@ -204,7 +228,8 @@ d-rytkiloj = Fenster
     .w-open-with = Öffnen mit
     .w-let-the-catalogue-decide = Den Katalog entscheiden lassen
     .w-what-it-may-reach = Worauf es zugreifen darf
-    .w-files-reach-it-only-when-you = Dateien erreichen es nur, wenn du sie damit öffnest.
+    .w-it-shares-windows-with-your-other = Es teilt Windows mit deinen anderen Windows-Apps. Dateien erreichen es nur, wenn du sie damit öffnest.
+    .w-it-runs-in-a-private-capsule = Es läuft in einer eigenen Kapsel, die nur die Dateien und Geräte sieht, die du erlaubst.
     .w-files-it-can-read = Dateien, die es lesen kann
     .w-files-it-can-change = Dateien, die es ändern kann
     .w-network = Netzwerk
@@ -244,11 +269,13 @@ d-rytkiloj = Fenster
     .w-the-program-s-own-uninstaller-runs = Das eigene Deinstallationsprogramm läuft. Deine Dateien bleiben, außer es entfernt sie.
 
 d-272vvptg = Hinweis zu Windows-Unterstützung
-    .w-windows-support-is-needed = Windows-Unterstützung wird gebraucht
-    .w-install-windows-support = Windows-Unterstützung installieren
-    .w-try-again = Erneut versuchen
+    .w-windows-support-isn-t-installed = Windows-Unterstützung ist nicht installiert
     .w-install = Installieren
-    .w-windows-support-is-being-installed = Windows-Unterstützung wird installiert
+    .w-windows-support-couldn-t-be-installed = Windows-Unterstützung konnte nicht installiert werden
+    .w-try-again = Erneut versuchen
+    .w-installing-windows-support = Windows-Unterstützung wird installiert…
+    .w-windows-support-installs-once-you-re = Windows-Unterstützung installiert sich, sobald du online bist
+    .w-the-download-starts-by-itself-when = Der Download startet von selbst, sobald dieses Gerät ein Netzwerk hat.
 
 d-texb3b2c = Wegwahl
 
@@ -269,7 +296,7 @@ d-l7abpa6n = Seite der Windows-Umgebung
     .w-open-a-windows-desktop-that-starts = Öffne einen Windows-Desktop, der auch startet, wenn Windows selbst es nicht tut.
     .w-open-the-recovery-desktop = Den Wiederherstellungsdesktop öffnen
     .w-temporary-connection = Vorübergehende Verbindung
-    .w-connected-for-for-another = Für { $purpose } verbunden, noch { $duration_words }.
+    .w-connected-for-for-another = Für { $purpose_words } verbunden, noch { $duration_words }.
     .w-end-the-connection = Die Verbindung beenden
     .w-windows-reaches-nothing-on-your-network = Windows erreicht nichts in deinem Netzwerk, außer du verbindest es eine Weile: Aktivierung und Windows Update brauchen das.
     .w-start-windows-to-connect-it-for = Starte Windows, um es für die Aktivierung oder Windows Update zu verbinden.
@@ -277,6 +304,7 @@ d-l7abpa6n = Seite der Windows-Umgebung
     .w-connect-for-windows-update = Für Windows Update verbinden
 
 d-4nhz6ji3 = Seite der wartenden Einrichtung
+    .w-ready-to-install = Bereit zur Installation
     .w-install-it-in = Installieren in
     .w-windows = Windows
     .w-in-the-windows-appliance-beside-the = In der Windows-Umgebung, neben den Programmen, die Wine nicht ausführen kann.

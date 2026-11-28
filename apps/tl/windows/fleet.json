@@ -17,10 +17,18 @@
     "proton",
     "exe",
     "msi",
+    "win32",
+    "compatibility",
+    "run windows",
+    "dos",
+    "legacy",
     "windows apps",
     "windows-apps",
     "windows programme",
-    "windows anwendungen"
+    "windows anwendungen",
+    "kompatibilität",
+    "windows ausführen",
+    "altlasten"
   ],
   "resource_types": [
     [
