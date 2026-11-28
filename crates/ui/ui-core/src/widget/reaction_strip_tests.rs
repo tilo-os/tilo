@@ -454,6 +454,19 @@ fn on_touch_a_pill_is_pressed_within_its_grown_target_and_its_face_stays_compact
         "{target:?}"
     );
 
+    // A member's face on the pill is a control of its own: assistive technology reads the
+    // grown target, not the avatar's own size.
+    let face = access
+        .children
+        .iter()
+        .find(|node| node.role == Role::Button && node.name.as_deref() == Some("bo"))
+        .expect("the member's face is a control");
+    let face_target = face.bounds.expect("its bounds").to_rect();
+    assert!(
+        face_target.width() >= side - 0.5 && face_target.height() >= side - 0.5,
+        "a member's face is a target under a finger: {face_target:?}"
+    );
+
     let above_the_face = Point::new(target.center().x, target.center().y - side / 2.0 + 2.0);
     click(&mut widget, above_the_face);
     let toggles = widget.take_toggles();

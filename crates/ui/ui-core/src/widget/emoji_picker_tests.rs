@@ -621,3 +621,37 @@ fn a_touch_presses_and_picks_where_a_mouse_does() {
     press(&mut picker, &touch(TouchPhase::Ended));
     assert!(picker.take_events().is_empty());
 }
+
+/// The search field is the row a person types in, and a finger's row is never shorter than its
+/// input's target: the card grows with it, and what it says to assistive technology is the field
+/// drawn.
+#[test]
+fn on_touch_the_search_field_is_a_finger_high() {
+    let theme = Theme::dark();
+    let mut picker = opened(&theme);
+    let side = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    let before = picker.size(&theme).1;
+    picker.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
+    ));
+    let tree = picker.access_tree();
+    let field = tree
+        .children
+        .iter()
+        .find(|node| node.role == tilo_ui_base::a11y::Role::TextInput)
+        .expect("the search field");
+    let bounds = field.bounds.expect("its bounds").to_rect();
+    assert!(
+        bounds.height() >= side - 0.5,
+        "a finger types in a field it can hit: {bounds:?}"
+    );
+    assert!(
+        picker.size(&theme).1 >= before,
+        "the card keeps the room its field takes"
+    );
+}

@@ -120,6 +120,9 @@ pub struct EmojiPicker {
     notice: Option<String>,
     shown_added: u64,
     cursor: Point,
+    /// How the person reaches the surface: the search field is at least the minimum target of the
+    /// input it is used with, so a finger types in the row it sees.
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     dirty: bool,
 }
 
@@ -158,6 +161,7 @@ impl EmojiPicker {
             notice: None,
             shown_added: 0,
             cursor: Point::ZERO,
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             dirty: true,
         };
         picker.reset();
@@ -190,7 +194,15 @@ impl EmojiPicker {
         if self.framed {
             self.geometry.size
         } else {
-            geometry_of(theme, false, false, Rect::ZERO, 0).size
+            geometry_of(
+                theme,
+                false,
+                false,
+                Rect::ZERO,
+                0,
+                f64::from(self.interaction.minimum_target()),
+            )
+            .size
         }
     }
 
@@ -498,6 +510,7 @@ impl EmojiPicker {
             self.sheet,
             self.viewport,
             self.groups.len(),
+            f64::from(self.interaction.minimum_target()),
         );
         if self.framed {
             self.rect = framed_card(
@@ -1282,6 +1295,7 @@ fn geometry_of(
     sheet: bool,
     viewport: Rect,
     groups: usize,
+    minimum_target: f64,
 ) -> Geometry {
     let spacing = &theme.tokens.spacing;
     let metrics = &theme.tokens.metrics;
@@ -1291,7 +1305,9 @@ fn geometry_of(
     // it never covers the last column.
     let gutter = f64::from(spacing.s2);
     let edge = f64::from(spacing.s4);
-    let field_h = super::ButtonFace::height(ControlSize::Regular, theme);
+    // The search field is a target: at least the minimum the input it is used with asks for
+    // (48 on touch), so a finger types in the row it sees.
+    let field_h = super::ButtonFace::height(ControlSize::Regular, theme).max(minimum_target);
     let tab_height = SegmentedFace::height(ControlSize::Regular, theme);
     let hint_h = f64::from(metrics.selector_height);
     let wanted = f64::from(if sheet {
@@ -1445,6 +1461,17 @@ impl Widget for EmojiPicker {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The input the person uses changes the search field's height, and with it the card's.
+    fn set_interaction_environment(
+        &mut self,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.layout();
+        }
     }
 
     /// Its card is the size its own geometry gives it, which it lays out whenever its theme, its

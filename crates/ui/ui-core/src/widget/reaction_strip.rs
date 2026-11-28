@@ -307,6 +307,14 @@ impl StripLayout {
         self
     }
 
+    /// Where a member's face on a pill is read as a control: the face grown about its centre to
+    /// the minimum target, as every target is. A finger still chooses the person where the face
+    /// is drawn ([`Self::hit`]); assistive technology and a layout audit see the target.
+    #[must_use]
+    pub fn face_target(&self, face: Rect) -> Rect {
+        self.target(face)
+    }
+
     /// Where a control whose face is `face` is pressed: the face, grown
     /// about its centre to the minimum target.
     fn target(&self, face: Rect) -> Rect {
@@ -684,7 +692,7 @@ impl ReactionStrip {
                 .map_or_else(|| who.id().to_owned(), |person| person.name.clone());
             AccessNode::new(Role::Button)
                 .with_name(name)
-                .with_bounds(face)
+                .with_bounds(self.layout.face_target(face))
                 .with_hashed_key(("reaction-person", who.id()))
                 .with_state(AccessState::new().focusable(true))
         }));

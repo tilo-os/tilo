@@ -260,6 +260,7 @@ impl SectionHeader {
             disclosure,
             painted: None,
             presented: None,
+            minimum_target: 0.0,
         }
     }
 }
@@ -705,6 +706,10 @@ struct HeaderRow {
     /// row repaints its box only when they change.
     painted: Option<(Interaction, Rect)>,
     presented: Option<(Interaction, Rect)>,
+    /// How large a control must be for the input the header is used with
+    /// (`InteractionEnvironment::minimum_target`): the disclosure's target is at least this, so a
+    /// finger on a one-line band still presses it.
+    minimum_target: f64,
 }
 
 impl HeaderRow {
@@ -1074,13 +1079,31 @@ impl Widget for HeaderRow {
         dirty
     }
 
+    /// The header's parts take the input the section is used with, and the disclosure's target
+    /// grows to it: a one-line band is still a target for a finger.
+    fn set_interaction_environment(
+        &mut self,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
+    ) {
+        self.minimum_target = f64::from(environment.minimum_target());
+        for child in &mut self.parts.children {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn accessibility(&self) -> Option<AccessNode> {
         let disclosure = self.disclosure.as_ref()?;
+        let side = self.minimum_target;
+        let band = self.parts.rect;
+        let target = Rect::from_center_size(
+            band.center(),
+            (band.width().max(side), band.height().max(side)),
+        );
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.title.clone())
                 .with_action_target(disclosure.id.clone())
-                .with_bounds(self.parts.rect)
+                .with_bounds(target)
                 .with_state(
                     AccessState::new()
                         .focusable(true)

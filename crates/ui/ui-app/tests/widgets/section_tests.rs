@@ -225,6 +225,44 @@ fn a_disclosure_header_is_a_bound_view_local_control() {
     assert!(ids.iter().any(|id| id == "wired-details"), "{ids:?}");
 }
 
+/// A collapsible header's band is one line high, so under a finger its target grows about the
+/// band's centre to the touch minimum: a person presses the whole header, not a 29-pixel stripe.
+#[test]
+fn a_disclosures_target_grows_to_the_touch_minimum() {
+    let mut harness = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        Box::new(
+            tilo_ui_app::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(
+                    Section::new(vec![Box::new(ListRow::new("a", "Ada"))])
+                        .with_header(SectionHeader::group("Details"))
+                        .collapsed(),
+                )),
+        ),
+        (400, 300),
+        Theme::light(),
+    );
+    harness.set_interaction_environment(InteractionEnvironment::TOUCH);
+    let side = f64::from(InteractionEnvironment::TOUCH.minimum_target());
+    let root = &harness.inspection().root;
+    let header = root
+        .nodes()
+        .into_iter()
+        .find(|node| node.widget == "SectionHeader")
+        .expect("the section's header");
+    let bounds = header
+        .semantics
+        .as_ref()
+        .and_then(|semantics| semantics.bounds)
+        .map(|bounds| bounds.to_rect())
+        .expect("the disclosure's target");
+    assert!(
+        bounds.width() >= side - 0.5 && bounds.height() >= side - 0.5,
+        "a finger presses the header's target: {bounds:?}"
+    );
+}
+
 #[test]
 fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     let opened = std::rc::Rc::new(std::cell::Cell::new(None));

@@ -1237,6 +1237,17 @@ impl Widget for Autocomplete {
         environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.input.set_interaction_environment(environment);
+        // A row a person presses is never shorter than a finger's target, as a dropdown's rows
+        // are floored: the list grows its rows to the touch minimum, so the row drawn is the row
+        // pressed.
+        let touch_minimum = if environment.pointer_precision
+            == tilo_ui_base::interaction::PointerPrecision::Coarse
+        {
+            f64::from(environment.minimum_target())
+        } else {
+            0.0
+        };
+        self.list.set_min_row_height(touch_minimum);
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -1925,9 +1936,43 @@ mod tests {
                 assert_eq!(ac.row_at(second.center()), Some(1));
             }
 
+            fn touch_rows_are_a_finger_high() {
+                let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
+                ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 120.0));
+                ac.set_suggestions(vec![Suggestion::new("Amsterdam"), Suggestion::new("Berlin")]);
+                ac.open();
+                Widget::set_interaction_environment(
+                    &mut ac,
+                    tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
+                );
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                let theme = Theme::dark().with_text_scale(1.5);
+                text.set_text_scale(theme.text_scale);
+                ac.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    tilo_ui_base::draw::DrawEnv::default(),
+                ));
+                let panel = ac.dropdown_rect().expect("a list under a finger");
+                let row = ac.row_rect(panel, 0);
+                assert!(
+                    row.height()
+                        >= f64::from(
+                            tilo_ui_base::interaction::InteractionEnvironment::TOUCH
+                                .minimum_target()
+                        ),
+                    "a row a finger presses is a target: {row:?}"
+                );
+                assert_eq!(ac.row_at(row.center()), Some(0), "the row drawn is the row pressed");
+            }
+
             status_line_keeps_the_dropdown_open_with_no_rows();
             reactive_suggestions_after_open_replace_the_status_line();
             large_text_scales_dropdown_rows_and_hit_geometry_together();
+            touch_rows_are_a_finger_high();
         }
 
         phase a_short_label_leaves_its_detail_the_rest_of_the_row;
