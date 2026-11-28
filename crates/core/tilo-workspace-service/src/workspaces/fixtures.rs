@@ -432,14 +432,6 @@ pub async fn lists(reader: &Workspaces, workspace: &str) -> bool {
     })
 }
 
-/// A certified host of `cert`'s device keeping its state under `state_root`,
-/// taking part in its workspaces' channels as every server that hosts
-/// workspaces does: what its members seal it opens, and what it writes itself
-/// it seals.
-///
-/// # Panics
-///
-/// The endpoint cannot bind or the host cannot open.
 /// A device's own keys, as the channel service of the device a workspace is founded on holds
 /// them: what a founding seals the workspace's records with.
 #[must_use]
@@ -447,8 +439,30 @@ pub fn founding_device() -> crate::documents::device_keys::DeviceKeys {
     Arc::<TestGroupKeys>::default()
 }
 
+/// A certified host of `cert`'s device keeping its state under `state_root`,
+/// taking part in its workspaces' channels as every server that hosts
+/// workspaces does: what its members seal it opens, and what it writes itself
+/// it seals. It keeps no limit on the pre-admissions a workspace holds.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
 pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
-    test_host_with_grants(state_root, key, cert, None).await
+    host_on(
+        state_root,
+        key,
+        cert,
+        DeviceKeyGroups {
+            keys: Arc::<TestGroupKeys>::default(),
+            sink: None,
+        },
+        None,
+        None,
+        Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        None,
+    )
+    .await
 }
 
 /// [`test_host`] whose workspaces open with `registers` on them, as an embedder's that runs
@@ -795,35 +809,6 @@ pub async fn answer_grant(
     grant: tilo_action_policy::Grant,
 ) -> Result<(), String> {
     commit_member_change(workspaces, workspace, Change::Grant(grant)).await
-}
-
-/// The same host, keeping `grants` pre-admissions per workspace
-/// ([`crate::service::ServiceConfig::max_workspace_grants`]).
-///
-/// # Panics
-///
-/// The endpoint cannot bind or the server cannot open.
-pub async fn test_host_with_grants(
-    state_root: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-    grants: Option<usize>,
-) -> TestHost {
-    host_on(
-        state_root,
-        key,
-        cert,
-        DeviceKeyGroups {
-            keys: Arc::<TestGroupKeys>::default(),
-            sink: None,
-        },
-        grants,
-        None,
-        Vec::new(),
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
-    )
-    .await
 }
 
 /// [`test_host`] on a device that takes part in no workspace's channels: it seals nothing, and
