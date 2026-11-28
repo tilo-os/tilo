@@ -43,6 +43,9 @@ pub(super) struct ProcessWindows<'a, 'b> {
     proxy: EventLoopProxy<UserEvent>,
     #[cfg(feature = "local-daemons")]
     open: Option<&'a mut OpenWindow<'b>>,
+    /// Without the session's daemons no later window opens, so nothing is held to open one.
+    #[cfg(not(feature = "local-daemons"))]
+    open: std::marker::PhantomData<&'a mut &'b ()>,
     /// The window that last had the keyboard: input of no window goes to it.
     focused: Option<WindowId>,
 }
@@ -63,6 +66,8 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             proxy,
             #[cfg(feature = "local-daemons")]
             open,
+            #[cfg(not(feature = "local-daemons"))]
+            open: std::marker::PhantomData,
             focused: None,
         }
     }
