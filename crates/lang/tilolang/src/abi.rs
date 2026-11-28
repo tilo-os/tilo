@@ -589,11 +589,11 @@ imports! {
     // action holds, by its name and the address of its bytes.
     FileOpenPath = "file_open_path" ([H] -> [H]);
     FileOpen = "file_open" ([H] -> [H]);
-    ActChoose = "act_choose" ([H, H] -> [H]);
+    ActChoose = "act_choose" ([H, H, H] -> [H]);
     // `file.choose(a, edit: true)`: the file the person chooses is opened for writing too, so the
     // action that saves its words back writes over it.
-    ActChooseEditing = "act_choose_editing" ([H, H] -> [H]);
-    ActChooseFolder = "act_choose_folder" ([H, H] -> [H]);
+    ActChooseEditing = "act_choose_editing" ([H, H, H] -> [H]);
+    ActChooseFolder = "act_choose_folder" ([H, H, H] -> [H]);
     ActSave = "act_save" ([H, H, H] -> [H]);
     // `blur()`: the field the keyboard is in ends its edit, as closing its editor does.
     ActBlur = "act_blur" ([] -> [H]);

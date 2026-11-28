@@ -174,6 +174,14 @@ pub struct DiffGrid {
     pub(crate) description: Option<String>,
     /// What an empty row reads where only the other side has a line there, as one side shows.
     pub(crate) gap_words: Option<String>,
+    /// The first of the comparison's rows this grid holds, as the window it was given starts.
+    pub(crate) shown_first: i64,
+    /// How many rows the whole comparison has; 0 holds every row the grid was given.
+    pub(crate) total: i64,
+    /// Each row's line number on the left, when the grid holds a window.
+    pub(crate) left_numbers: Option<Vec<String>>,
+    /// Each row's line number on the right, when the grid holds a window.
+    pub(crate) right_numbers: Option<Vec<String>>,
     /// Each line of each side as its language colours it, once per change of the text.
     left_spans: Vec<LineSpans>,
     right_spans: Vec<LineSpans>,
@@ -203,6 +211,10 @@ impl Default for DiffGrid {
             label: None,
             description: None,
             gap_words: None,
+            shown_first: 0,
+            total: 0,
+            left_numbers: None,
+            right_numbers: None,
             left_spans: Vec::new(),
             right_spans: Vec::new(),
             rect: Rect::ZERO,
@@ -220,7 +232,21 @@ impl Default for DiffGrid {
 
 impl DiffGrid {
     fn rows(&self) -> usize {
-        self.left.len().max(self.right.len())
+        if self.total > 0 {
+            usize::try_from(self.total).unwrap_or(0)
+        } else {
+            self.left.len().max(self.right.len())
+        }
+    }
+
+    /// Where `row` of the comparison stands among the rows the grid holds: the whole comparison
+    /// is held, or the window that starts at `first`.
+    fn held(&self, row: usize) -> usize {
+        if self.total > 0 {
+            row.saturating_sub(self.first)
+        } else {
+            row
+        }
     }
 
     fn kind_at(&self, row: usize) -> RowKind {
@@ -242,6 +268,18 @@ impl DiffGrid {
     /// Counts each side's line numbers from the kinds: a side's number moves only where it has a
     /// line, so both columns stand level while each keeps its own file's numbering.
     pub(crate) fn number_rows(&mut self) {
+        if self.total > 0 {
+            // A window's numbers come with it: the rows before it are not here to count from.
+            self.left_nos = self
+                .left_numbers
+                .clone()
+                .unwrap_or_else(|| vec![String::new(); self.left.len()]);
+            self.right_nos = self
+                .right_numbers
+                .clone()
+                .unwrap_or_else(|| vec![String::new(); self.right.len()]);
+            return;
+        }
         let rows = self.rows();
         let mut left = Vec::with_capacity(rows);
         let mut right = Vec::with_capacity(rows);
@@ -275,7 +313,7 @@ impl DiffGrid {
             DiffSide::Right => &self.right,
             DiffSide::Both | DiffSide::Left => &self.left,
         };
-        lines.get(row).map_or("", String::as_str)
+        lines.get(self.held(row)).map_or("", String::as_str)
     }
 
     fn number(&self, side: DiffSide, row: usize) -> &str {
@@ -283,7 +321,7 @@ impl DiffGrid {
             DiffSide::Right => &self.right_nos,
             DiffSide::Both | DiffSide::Left => &self.left_nos,
         };
-        numbers.get(row).map_or("", String::as_str)
+        numbers.get(self.held(row)).map_or("", String::as_str)
     }
 
     /// Resolve this frame's geometry from the rect and the measured cells.
@@ -348,6 +386,16 @@ impl DiffGrid {
 
     fn scroll_to(&mut self, first: usize) {
         let first = first.min(self.max_first());
+        if self.total > 0 {
+            // A window asks its app for the rows it needs: what this window holds is the app's,
+            // and the next one comes as a change of it.
+            let rows = i64::try_from(first).unwrap_or(i64::MAX)
+                - i64::try_from(self.first).unwrap_or(i64::MAX);
+            if rows != 0 {
+                self.scrolled(rows);
+            }
+            return;
+        }
         if first != self.first {
             self.first = first;
             self.dirty = true;
@@ -356,6 +404,10 @@ impl DiffGrid {
 
     /// Bring `row` into view, keeping the rows around it where they are when it already shows.
     fn reveal(&mut self, row: usize) {
+        if self.total > 0 {
+            // The app that holds a window brings the row into it; the grid paints what it holds.
+            return;
+        }
         if row < self.first {
             self.scroll_to(row);
         } else if row >= self.first.saturating_add(self.geo.visible_rows) {

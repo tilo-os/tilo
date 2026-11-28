@@ -5,6 +5,7 @@
 
 #[cfg(test)]
 mod cases {
+    use std::fmt::Write as _;
     use std::rc::Rc;
 
     use crate::common::*;
@@ -199,6 +200,20 @@ mod cases {
         }
     }
 
+    /// One of a desk's lists of lines, as text.
+    fn lines(s: &Desk, desk: &ResourceRef, field: &str) -> Vec<String> {
+        match s.rt.read(desk, field).unwrap() {
+            Value::List(items) => items
+                .into_iter()
+                .filter_map(|item| match item {
+                    Value::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect(),
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
     /// The first node of `kind` in `node`'s tree.
     fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
         if node.kind == kind {
@@ -284,16 +299,17 @@ mod cases {
             assert_eq!(s.number(&d, "added"), 2, "the new line and the blank one");
             assert_eq!(s.number(&d, "removed"), 0);
             assert_eq!(s.text(&d, "name"), "a.rs and b.rs");
-            let aligned = s.text(&d, "left_aligned").split('\n').count();
-            assert_eq!(
-                s.text(&d, "right_aligned").split('\n').count(),
-                aligned,
-                "both columns stand level"
-            );
             let kinds = s.text(&d, "kinds");
-            assert_eq!(kinds.len(), aligned, "one character per aligned row");
+            let rows = usize::try_from(s.number(&d, "rows")).unwrap_or(0);
+            assert_eq!(kinds.len(), rows, "one character per aligned row");
             assert!(kinds.contains('m'), "{kinds:?}");
             assert!(kinds.contains('a'), "{kinds:?}");
+            // The rows themselves are this person's window on the alignment, and both columns
+            // stand level in it.
+            let desk = s.records(&d, "desks")[0].clone();
+            assert_eq!(rows, 7, "the lines of both files, aligned");
+            assert_eq!(lines(&s, &desk, "left").len(), rows);
+            assert_eq!(lines(&s, &desk, "right").len(), rows);
             let blocks = s.blocks(&d);
             assert_eq!(blocks.len(), 2, "the edited line and the added one");
             assert_eq!(s.text(&blocks[0], "kind"), "modified");
@@ -355,6 +371,45 @@ mod cases {
             let said = status(&window);
             assert!(said.contains("modified"), "{said}");
             assert!(said.contains("Change 1 of"), "{said}");
+        }
+
+        phase the_windows_of_a_long_comparison_read_the_rows_they_show;
+        {
+            let s = Desk::new();
+            let mut left = String::new();
+            let mut right = String::new();
+            for line in 0..20_000 {
+                let _ = writeln!(left, "line {line}");
+                // Every thousandth line differs, so the comparison has changes to find.
+                if line % 1000 == 0 {
+                    let _ = writeln!(right, "line {line}, changed");
+                } else {
+                    let _ = writeln!(right, "line {line}");
+                }
+            }
+            let d = s.compare(&left, &right);
+            assert_eq!(s.number(&d, "rows"), 20_000);
+            let desk = s.records(&d, "desks")[0].clone();
+            assert_eq!(s.number(&desk, "first"), 0);
+            assert_eq!(lines(&s, &desk, "left").len(), 96, "a window, not the file: notice {:?} first {} rows {}", s.text(&d, "notice"), s.number(&desk, "first"), s.number(&d, "rows"));
+            // The wheel asks for another window; the rows it shows are the rows it read.
+            s.call("scrolled", vec![Value::resource(&d), Value::Int(10_000)]);
+            let desk = s.records(&d, "desks")[0].clone();
+            assert_eq!(s.number(&desk, "first"), 10_000);
+            let numbers = match s.rt.read(&desk, "left_numbers").unwrap() {
+                Value::List(items) => items,
+                other => panic!("left_numbers reads {other:?}"),
+            };
+            assert_eq!(numbers.first(), Some(&Value::text("10001")), "{numbers:?}");
+            let window = s.window(&d);
+            let grid = find(window.tree(), "ui.DiffGrid").expect("the grid stands in the window");
+            assert_eq!(grid.props.get("first"), Some(&Value::Int(10_000)));
+            assert_eq!(grid.props.get("total"), Some(&Value::Int(20_000)));
+            // A row asked for comes into the window.
+            s.call("reveal_row", vec![Value::resource(&d), Value::Int(250)]);
+            let desk = s.records(&d, "desks")[0].clone();
+            assert!(s.number(&desk, "first") <= 250);
+            assert!(s.number(&desk, "first") + 96 > 250);
         }
 
         phase three_texts_merge_and_a_side_is_taken;
@@ -740,6 +795,45 @@ mod cases {
             assert_eq!(
                 shown.props.get("gap_words"),
                 Some(&Value::text("Removed from the left"))
+            );
+        }
+
+        phase a_folder_chooser_put_away_says_so;
+        {
+            let s = Desk::new();
+            let d = s.compare("a\n", "b\n");
+            let mut window = s.window(&d);
+            // The window's Folders mode; this device's chooser picks no folder, so the person
+            // put it away.
+            let mode = of_kind(window.tree(), "ui.ToggleGroup")
+                .into_iter()
+                .find(|group| {
+                    group.children.iter().any(|segment| {
+                        segment.props.get("label").and_then(Value::as_text) == Some("Folders")
+                    })
+                })
+                .expect("the window's modes")
+                .key
+                .clone();
+            window
+                .fire_with(&mode, "change", Some(&Value::Int(2)))
+                .unwrap();
+            window.poll_patches().unwrap();
+            let choose = of_kind(window.tree(), "ui.EmptyState")
+                .into_iter()
+                .find(|state| {
+                    state.props.get("action").and_then(Value::as_text)
+                        == Some("Choose the left folder")
+                })
+                .unwrap_or_else(|| panic!("the folders page offers its chooser: {}", dump(window.tree())))
+                .key
+                .clone();
+            window.fire(&choose, "act").unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(
+                s.text(&d, "notice"),
+                "Choosing folders was cancelled",
+                "the window says the chooser was put away"
             );
         }
 

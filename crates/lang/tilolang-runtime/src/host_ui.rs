@@ -532,10 +532,11 @@ impl Core {
                 ));
             }
         };
+        let cancel = self.val(a.h(2)?)?;
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
             action: action_name.to_owned(),
-            args: vec![action, Value::List(accept)],
+            args: vec![action, Value::List(accept), cancel],
             author,
             from: None,
         }))

@@ -2052,7 +2052,10 @@ impl Checker<'_> {
                     }
                 }
                 Some("then") if !choosing => {
-                    then = Some(self.saved_handler(&a.value));
+                    then = Some(self.outcome_handler(&a.value, "Saved"));
+                }
+                Some("then") => {
+                    then = Some(self.outcome_handler(&a.value, "Chosen"));
                 }
                 Some(other) => {
                     self.err(
@@ -2062,7 +2065,7 @@ impl Checker<'_> {
                             "`file.{}` takes {}; not `{other}:`",
                             name.name,
                             if choosing {
-                                "`accept:` and `edit:`"
+                                "`accept:`, `edit:` and `then:`"
                             } else {
                                 "`name:` and `then:`"
                             }
@@ -2101,7 +2104,10 @@ impl Checker<'_> {
             } else {
                 Imp::ActChoose
             };
-            Ex::host(imp, vec![action, accept], Ty::Action)
+            let then = then.unwrap_or_else(|| {
+                Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Action)))
+            });
+            Ex::host(imp, vec![action, accept, then], Ty::Action)
         } else {
             let called = match called {
                 Some(called) => called,
@@ -3637,10 +3643,13 @@ impl Checker<'_> {
     /// `then: saved -> exported(p, saved)`: what `file.save` runs once the person has answered.
     /// One of this app's actions, handed what the save came to as `host.Saved`, with the other
     /// arguments resources and values the view has now.
-    fn saved_handler(&mut self, e: &ast::Expr) -> Ex {
-        let shape = "`then:` names one of this app's actions and hands it what the save came to \
-                     as `host.Saved`: `then: saved -> exported(p, saved)`; it runs once the \
-                     person has answered the chooser";
+    fn outcome_handler(&mut self, e: &ast::Expr, outcome: &str) -> Ex {
+        let shape = format!(
+            "`then:` names one of this app's actions and hands it what the chooser came to as \
+             `host.{outcome}`: `then: saved -> exported(p, saved)`; it runs once the person has \
+             answered the chooser"
+        );
+        let shape = shape.as_str();
         let ExprKind::Lambda { params, body } = &e.kind else {
             self.err("E063", e.span, shape);
             let _ = self.expr(e, None);
@@ -3660,7 +3669,7 @@ impl Checker<'_> {
             self.err("E063", body.span, shape);
             return Ex::error();
         }
-        let ty = super::platform::host_ty("Saved");
+        let ty = super::platform::host_ty(outcome);
         self.st.scopes.push(std::collections::HashMap::new());
         self.push_sink();
         let local = self.declare(&saved.name, ty.clone());

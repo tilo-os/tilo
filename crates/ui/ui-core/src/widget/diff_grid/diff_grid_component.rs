@@ -50,6 +50,16 @@ pub struct DiffGridProps {
     /// What an empty row reads where only the other side has a line there, as one side shows:
     /// "Added on the right". Empty paints the row blank.
     pub gap_words: Option<String>,
+    /// The first of the grid's rows this frame holds, when it holds a window of a longer
+    /// comparison: `total` says how many rows the comparison has.
+    pub first: i64,
+    /// How many rows the whole comparison has. 0 holds every row it was given.
+    pub total: i64,
+    /// Each row's line number on the left, when the grid holds a window: numbers a window cannot
+    /// count from the rows before it.
+    pub left_numbers: Option<Vec<String>>,
+    /// Each row's line number on the right, as `left_numbers` is the left's.
+    pub right_numbers: Option<Vec<String>>,
 }
 
 /// A grid takes a press until something says otherwise.
@@ -68,6 +78,10 @@ impl Default for DiffGridProps {
             enabled: true,
             description: None,
             gap_words: None,
+            first: 0,
+            total: 0,
+            left_numbers: None,
+            right_numbers: None,
         }
     }
 }
@@ -92,7 +106,10 @@ impl Described for DiffGrid {
             || props.side != self.side
             || props.label != self.label
             || props.description != self.description
-            || props.gap_words != self.gap_words;
+            || props.gap_words != self.gap_words
+            || (props.first, props.total) != (self.shown_first, self.total)
+            || props.left_numbers != self.left_numbers
+            || props.right_numbers != self.right_numbers;
         self.left = props.left;
         self.right = props.right;
         self.kinds = props.kinds;
@@ -103,11 +120,18 @@ impl Described for DiffGrid {
         self.description = props.description;
         // An empty string is no note: the row stays blank.
         self.gap_words = props.gap_words.filter(|words| !words.is_empty());
+        self.shown_first = props.first;
+        self.total = props.total;
+        self.left_numbers = props.left_numbers;
+        self.right_numbers = props.right_numbers;
+        if self.total > 0 {
+            self.first = usize::try_from(props.first.max(0)).unwrap_or(0);
+        }
         if text_changed {
             self.first = 0;
             self.highlight_rows();
         }
-        if numbering_changed {
+        if numbering_changed || self.total > 0 {
             self.number_rows();
         }
         if at_changed && let Some(at) = props.at.and_then(|at| usize::try_from(at).ok()) {

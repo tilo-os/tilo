@@ -11,17 +11,19 @@
 //!
 //! | op | asks | answers |
 //! |---|---|---|
-//! | `open` | `{path}` | `{label, text}` |
-//! | `diff` | `{left, right}` | `{blocks, left, right, kinds, added, removed, modified, identical}` |
+//! | `open` | `{path}` or `{address, name}`, `text` for a merge's side | `{label, address, length}`, and `text` when asked |
+//! | `diff` | `{left_address, right_address}` | `{block_*, rows, added, removed, modified, identical}` |
+//! | `rows` | `{left_address, right_address, first, count}` | `{left, right, left_numbers, right_numbers, kinds, rows}` |
 //! | `merge` | `{base, ours, theirs}` | `{hunks, merged, changes, conflicts}` |
 //! | `compose` | `{base, ours, theirs, choices, written}` | `{merged, changes, conflicts}` |
 //! | `compare-folders` | `{left, right}` | `{left_label, right_label, left_root, right_root, entries, truncated}` |
 //! | `save` | `{path, text}` | `{name}` |
 //! | `sample` | `{kind}` | the sample's inputs |
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Mutex;
 
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -39,12 +41,58 @@ pub const MAX_COMPARE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The engine of Diff & Merge, as the session keeps it for the app.
 #[derive(Default)]
-pub struct DiffmergeEngine;
+pub struct DiffmergeEngine {
+    /// The alignments made, newest last, by the pair of addresses they were made of: a window
+    /// reads its rows from here, so scrolling reads no file again.
+    alignments: Mutex<VecDeque<(String, String, std::sync::Arc<model::DiffModel>)>>,
+}
 
 impl DiffmergeEngine {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// The alignment of the two sides at `left` and `right`, as the window reads it: made once
+    /// for a pair of addresses, from the bytes the content store holds at them. An empty address
+    /// is a side with no file.
+    fn alignment(
+        &self,
+        left: &str,
+        right: &str,
+    ) -> Result<std::sync::Arc<model::DiffModel>, String> {
+        let held = {
+            let alignments = self
+                .alignments
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            alignments
+                .iter()
+                .rev()
+                .find(|(one, other, _)| one == left && other == right)
+                .map(|(_, _, model)| std::sync::Arc::clone(model))
+        };
+        if let Some(model) = held {
+            return Ok(model);
+        }
+        // The files are read with the cache open to no one: two windows may ask at once.
+        let left_text = side_text(left)?;
+        let right_text = side_text(right)?;
+        let model = model::comparison(&left_text, &right_text);
+        let mut alignments = self
+            .alignments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if alignments.len() >= 2 {
+            alignments.pop_front();
+        }
+        alignments.push_back((
+            left.to_owned(),
+            right.to_owned(),
+            std::sync::Arc::clone(&model),
+        ));
+        drop(alignments);
+        Ok(model)
     }
 
     fn op_open(input: &str) -> Result<String, String> {
@@ -56,39 +104,55 @@ impl DiffmergeEngine {
             address: String,
             #[serde(default)]
             name: String,
+            /// Whether the answer carries the text as well as its address: a merge needs the
+            /// text, a comparison reads it address by address.
+            #[serde(default)]
+            text: bool,
         }
         let ask: Ask = read_ask(input)?;
-        if !ask.address.is_empty() {
+        let (bytes, label) = if ask.address.is_empty() {
+            if !ask.path.is_empty() {
+                absolute(&ask.path)?;
+            }
+            let path = Path::new(&ask.path);
+            let label = if ask.name.is_empty() {
+                label_of(path)
+            } else {
+                ask.name
+            };
+            (read_bytes(path)?, label)
+        } else {
             let bytes = read_address(&ask.address)
                 .ok_or_else(|| "The file is not on this device.".to_owned())?;
-            let text = String::from_utf8(bytes).map_err(|_| "it is not UTF-8 text".to_owned())?;
-            return Ok(json!({ "label": ask.name, "text": text }).to_string());
-        }
-        if !ask.path.is_empty() {
-            absolute(&ask.path)?;
-        }
-        let path = Path::new(&ask.path);
-        let text = read_text(path)?;
-        let label = if ask.name.is_empty() {
-            label_of(path)
-        } else {
-            ask.name
+            (bytes, ask.name)
         };
-        Ok(json!({ "label": label, "text": text }).to_string())
+        let address = keep(&bytes)?;
+        let mut answer = json!({
+            "label": label,
+            "address": address,
+            "length": bytes.len(),
+        });
+        if ask.text {
+            let text = String::from_utf8(bytes).map_err(|_| "it is not UTF-8 text".to_owned())?;
+            if let Some(fields) = answer.as_object_mut() {
+                fields.insert("text".to_owned(), json!(text));
+            }
+        }
+        Ok(answer.to_string())
     }
 
-    fn op_diff(input: &str) -> Result<String, String> {
+    fn op_diff(&self, input: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Ask {
+            /// The address of each side's bytes in the content store; empty for a side with no
+            /// file.
             #[serde(default)]
-            left: String,
+            left_address: String,
             #[serde(default)]
-            right: String,
+            right_address: String,
         }
         let ask: Ask = read_ask(input)?;
-        checked_size(&ask.left, &ask.right)?;
-        let model = model::DiffModel::compute(&ask.left, &ask.right);
-        let (left_aligned, right_aligned, rows) = aligned_text(&model);
+        let model = self.alignment(&ask.left_address, &ask.right_address)?;
         let mut firsts = Vec::with_capacity(model.blocks.len());
         let mut lasts = Vec::with_capacity(model.blocks.len());
         let mut kinds = Vec::with_capacity(model.blocks.len());
@@ -99,18 +163,56 @@ impl DiffmergeEngine {
             kinds.push(block_word(block.kind));
             previews.push(preview(&model, block.first_row, block.last_row));
         }
+        let row_kinds: String = model
+            .rows
+            .iter()
+            .map(|row| match row.kind {
+                model::RowKind::Equal => ' ',
+                model::RowKind::Insert => 'a',
+                model::RowKind::Delete => 'r',
+                model::RowKind::Modify => 'm',
+            })
+            .collect();
         Ok(json!({
             "block_firsts": firsts,
             "block_lasts": lasts,
             "block_kinds": kinds,
             "block_previews": previews,
-            "left": left_aligned,
-            "right": right_aligned,
-            "rows": rows,
+            "kinds": row_kinds,
+            "rows": model.rows.len(),
             "added": model.added,
             "removed": model.removed,
             "modified": model.modified,
             "identical": model.is_identical(),
+        })
+        .to_string())
+    }
+
+    /// The rows `first` to `first + count` of the alignment, as the window shows them: each
+    /// side's line (an empty line where it has none), the row's number on each side, and one
+    /// character per row saying what it is.
+    fn op_rows(&self, input: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Ask {
+            #[serde(default)]
+            left_address: String,
+            #[serde(default)]
+            right_address: String,
+            #[serde(default)]
+            first: usize,
+            #[serde(default)]
+            count: usize,
+        }
+        let ask: Ask = read_ask(input)?;
+        let model = self.alignment(&ask.left_address, &ask.right_address)?;
+        let window = window_of(&model, ask.first, ask.count.min(4096));
+        Ok(json!({
+            "left": window.left,
+            "right": window.right,
+            "left_numbers": window.left_numbers,
+            "right_numbers": window.right_numbers,
+            "kinds": window.kinds,
+            "rows": model.rows.len(),
         })
         .to_string())
     }
@@ -209,7 +311,8 @@ impl DiffmergeEngine {
     pub fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "open" => Self::op_open(input),
-            "diff" => Self::op_diff(input),
+            "diff" => self.op_diff(input),
+            "rows" => self.op_rows(input),
             "merge" => Self::op_merge(input),
             "compose" => Self::op_compose(input),
             "compare-folders" => Self::op_compare_folders(input),
@@ -376,32 +479,45 @@ fn preview(model: &model::DiffModel, first: usize, last: usize) -> String {
     }
 }
 
-/// Each side as the aligned text a window shows: one line per aligned row, an empty line where
-/// that side has none, so both columns stand level, and one character per row saying what the row
-/// is (`' '` equal, `'a'` added, `'r'` removed, `'m'` modified).
-fn aligned_text(model: &model::DiffModel) -> (String, String, String) {
-    let mut left = String::new();
-    let mut right = String::new();
-    let mut kinds = String::with_capacity(model.rows.len());
-    for (index, row) in model.rows.iter().enumerate() {
-        if index > 0 {
-            left.push('\n');
-            right.push('\n');
-        }
-        if let Some(text) = &row.left {
-            left.push_str(text);
-        }
-        if let Some(text) = &row.right {
-            right.push_str(text);
-        }
-        kinds.push(match row.kind {
+/// What one window of an alignment shows: each side's line for every row it covers (an empty
+/// line where that side has none, so both columns stand level), each side's line number, and one
+/// character per row saying what it is (`' '` equal, `'a'` added, `'r'` removed, `'m'` modified).
+struct Window {
+    left: Vec<String>,
+    right: Vec<String>,
+    left_numbers: Vec<String>,
+    right_numbers: Vec<String>,
+    kinds: String,
+}
+
+/// The rows `first` to `first + count` of `model`.
+fn window_of(model: &model::DiffModel, first: usize, count: usize) -> Window {
+    let end = first.saturating_add(count).min(model.rows.len());
+    let rows = model.rows.get(first..end).unwrap_or_default();
+    let mut window = Window {
+        left: Vec::with_capacity(rows.len()),
+        right: Vec::with_capacity(rows.len()),
+        left_numbers: Vec::with_capacity(rows.len()),
+        right_numbers: Vec::with_capacity(rows.len()),
+        kinds: String::with_capacity(rows.len()),
+    };
+    for row in rows {
+        window.left.push(row.left.clone().unwrap_or_default());
+        window.right.push(row.right.clone().unwrap_or_default());
+        window
+            .left_numbers
+            .push(row.left_no.map_or_else(String::new, |no| no.to_string()));
+        window
+            .right_numbers
+            .push(row.right_no.map_or_else(String::new, |no| no.to_string()));
+        window.kinds.push(match row.kind {
             model::RowKind::Equal => ' ',
             model::RowKind::Insert => 'a',
             model::RowKind::Delete => 'r',
             model::RowKind::Modify => 'm',
         });
     }
-    (left, right, kinds)
+    window
 }
 
 /// Refuses a path that names no place whole: a relative one would read from wherever the session
@@ -448,14 +564,33 @@ fn label_of(path: &Path) -> String {
 }
 
 /// Reads a file as UTF-8 text, refusing one that is not text.
-fn read_text(path: &Path) -> Result<String, String> {
+/// A file's bytes, refused where it is no file a person reads as text.
+fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
     let meta = std::fs::metadata(path).map_err(|error| failed(&error))?;
     if meta.is_dir() {
         return Err(format!("{} is a folder", path.display()));
     }
-    let bytes = std::fs::read(path).map_err(|error| failed(&error))?;
-    String::from_utf8(bytes).map_err(|_| format!("{}: not UTF-8 text", path.display()))
+    std::fs::read(path).map_err(|error| failed(&error))
+}
+
+/// The text one side of a comparison holds at `address`, in the content store; empty for a side
+/// with no file.
+fn side_text(address: &str) -> Result<String, String> {
+    if address.is_empty() {
+        return Ok(String::new());
+    }
+    let bytes =
+        read_address(address).ok_or_else(|| "The file is not on this device.".to_owned())?;
+    String::from_utf8(bytes).map_err(|_| "it is not UTF-8 text".to_owned())
+}
+
+/// Bytes kept where every device of the workspace reads them by their address.
+fn keep(bytes: &[u8]) -> Result<String, String> {
+    let store = tilo_resource::content::current()
+        .ok_or_else(|| "This device keeps no content store for the window.".to_owned())?;
+    let reference = store.put(bytes).map_err(|error| error.to_string())?;
+    Ok(format!("tilo-blob://{reference}"))
 }
 
 /// Write `bytes` to `path` whole or not at all: a temporary file beside it, then a rename.
@@ -504,14 +639,43 @@ mod tests {
             assert!(composed(&model, &["not-a-hunk:ours".into()], &[]).is_err());
         }
 
-        phase the_aligned_texts_stand_level_and_name_their_own_lines;
+        phase a_window_stands_level_and_names_each_rows_own_line;
         {
             let model = model::DiffModel::compute("a\nc\n", "a\nb\nc\n");
-            let (left, right, kinds) = aligned_text(&model);
-            assert_eq!(left.lines().count(), right.lines().count());
-            assert_eq!(right, "a\nb\nc");
-            assert_eq!(kinds, " a ");
+            let window = window_of(&model, 0, 96);
+            assert_eq!(window.left, ["a", "", "c"]);
+            assert_eq!(window.right, ["a", "b", "c"]);
+            assert_eq!(window.left_numbers, ["1", "", "2"]);
+            assert_eq!(window.right_numbers, ["1", "2", "3"]);
+            assert_eq!(window.kinds, " a ");
             assert_eq!(preview(&model, 1, 1), "b");
+            // The window asks for no more than the alignment holds.
+            let tail = window_of(&model, 2, 96);
+            assert_eq!(tail.kinds, " ");
+            assert!(window_of(&model, 9, 96).left.is_empty());
+        }
+
+        phase a_pair_of_twenty_megabytes_is_a_window_like_any_other;
+        {
+            // Two 20 MB files that differ by one line: the alignment is rows, and a window of it
+            // costs what the window shows, not what the files hold.
+            let line = "the garden planner writes its beds here\n";
+            let left = line.repeat(500_000);
+            let right = left.replacen(line, "the garden planner writes its beds there\n", 1);
+            let model = model::comparison(&left, &right);
+            assert_eq!(model.left_lines, 500_000);
+            assert!(!model.blocks.is_empty(), "the one changed line is a change");
+            let first = 499_990;
+            let window = window_of(&model, first, 96);
+            assert_eq!(window.left.len(), 10);
+            assert_eq!(window.right.len(), 10);
+            let changed = model
+                .rows
+                .iter()
+                .position(|row| row.kind != model::RowKind::Equal)
+                .expect("a changed row");
+            let at = window_of(&model, changed, 3);
+            assert!(!at.kinds.trim().is_empty(), "{:?}", at.kinds);
         }
 
         phase a_relative_path_reads_nothing_and_writes_nothing;
@@ -544,11 +708,12 @@ mod tests {
             std::fs::create_dir_all(&base).unwrap();
             let path = base.join("merged.txt");
             write_atomic(&path, "a\nb\n".as_bytes()).unwrap();
-            assert_eq!(read_text(&path).unwrap(), "a\nb\n");
+            assert_eq!(read_bytes(&path).unwrap(), b"a\nb\n");
             assert_eq!(label_of(&path), "merged.txt");
             std::fs::write(base.join("bytes.bin"), [0xff, 0xfe]).unwrap();
-            assert!(read_text(&base.join("bytes.bin")).is_err());
-            assert!(read_text(&base.join("missing.txt")).is_err());
+            assert!(read_bytes(&base.join("bytes.bin")).is_ok(), "bytes are bytes");
+            assert!(String::from_utf8(read_bytes(&base.join("bytes.bin")).unwrap()).is_err());
+            assert!(read_bytes(&base.join("missing.txt")).is_err());
             std::fs::remove_dir_all(&base).unwrap();
         }
     }

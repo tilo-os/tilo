@@ -205,6 +205,24 @@ pub(crate) fn default_window(target: &ViewTarget, args: &[Value]) -> String {
         .unwrap_or_else(|| target.export.clone())
 }
 
+/// What the parameter the action leaves out takes.
+enum Filled {
+    /// The one file the person chose.
+    One,
+    /// Every file the person chose.
+    Many,
+    /// The folder the person chose, by the reference that reaches it again.
+    Folder,
+}
+
+/// Why a chooser's `then:` is not one.
+fn no_chooser_handler(value: &Value) -> RuntimeError {
+    RuntimeError::BadArgs(format!(
+        "`file.choose`'s `then:` takes an action, not {}",
+        value.kind_name()
+    ))
+}
+
 impl ViewInstance {
     pub(crate) fn open(
         core: Rc<Core>,
@@ -1466,22 +1484,69 @@ impl ViewInstance {
         folder: bool,
         edit: bool,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        /// What the parameter the action leaves out takes.
-        enum Filled {
-            /// The one file the person chose.
-            One,
-            /// Every file the person chose.
-            Many,
-            /// The folder the person chose, by the reference that reaches it again.
-            Folder,
-        }
-        let [Value::Action(next), Value::List(accept)] = aref.args.as_slice() else {
-            return Err(RuntimeError::BadArgs("a malformed `file.choose`".into()));
+        let (next, accept, then) = match aref.args.as_slice() {
+            [Value::Action(next), Value::List(accept)] => (next, accept, None),
+            [Value::Action(next), Value::List(accept), Value::Opt(after)] => {
+                (next, accept, after.as_deref())
+            }
+            _ => return Err(RuntimeError::BadArgs("a malformed `file.choose`".into())),
+        };
+        let then = match then {
+            Some(Value::Action(after)) => Some(after.clone()),
+            None => None,
+            Some(other) => return Err(no_chooser_handler(other)),
         };
         let accept: Vec<String> = accept
             .iter()
             .filter_map(|media| media.as_text().map(str::to_owned))
             .collect();
+        let (filled, request) = self.chooser_asked(next, folder, edit, &accept)?;
+        let many = matches!(filled, Filled::Many);
+        let filled_value = {
+            let blobs = self.core.blobs.borrow();
+            let Some(blobs) = blobs.as_ref() else {
+                return Err(RuntimeError::Package(
+                    "this host chooses no files".to_owned(),
+                ));
+            };
+            if matches!(filled, Filled::Folder) {
+                match blobs.choose_folder(&request) {
+                    Ok(Some(reference)) => Value::text(reference),
+                    Ok(None) => return self.chooser_answered(then, true, ""),
+                    Err(why) => return self.chooser_answered(then, false, &why),
+                }
+            } else {
+                let chosen = match blobs.choose(&request) {
+                    Ok(chosen) => chosen,
+                    Err(why) => return self.chooser_answered(then, false, &why),
+                };
+                match chosen_files_value(chosen, many, &accept)? {
+                    Some(value) => value,
+                    None => return self.chooser_answered(then, true, ""),
+                }
+            }
+        };
+        let filled = ActionRef {
+            args: next
+                .args
+                .iter()
+                .cloned()
+                .chain(std::iter::once(filled_value))
+                .collect(),
+            ..next.clone()
+        };
+        self.run(&filled)
+    }
+
+    /// What the chooser asks for, and what the action leaves out for it to fill: the request the
+    /// device's chooser answers.
+    fn chooser_asked(
+        &self,
+        next: &ActionRef,
+        folder: bool,
+        edit: bool,
+        accept: &[String],
+    ) -> Result<(Filled, crate::blob::FileRequest), RuntimeError> {
         let Some(package) = self.core.registry.borrow().action_package(&next.action) else {
             return Err(RuntimeError::NotFound(format!("action {}", next.action)));
         };
@@ -1510,57 +1575,42 @@ impl ViewInstance {
             }
         };
         let many = matches!(filled, Filled::Many);
+        let label = crate::platform::label_of(action);
         let request = crate::blob::FileRequest {
-            title: {
-                let label = crate::platform::label_of(action);
-                if folder {
-                    format!("Choose a folder for {label}")
-                } else {
-                    label
-                }
+            title: if folder {
+                format!("Choose a folder for {label}")
+            } else {
+                label
             },
             name: String::new(),
-            accept: accept.clone(),
+            accept: accept.to_vec(),
             multiple: many && !folder,
             folder,
             edit: edit && !folder && !many,
         };
-        let filled_value = {
-            let blobs = self.core.blobs.borrow();
-            let Some(blobs) = blobs.as_ref() else {
-                return Err(RuntimeError::Package(
-                    "this host chooses no files".to_owned(),
-                ));
-            };
-            if matches!(filled, Filled::Folder) {
-                match blobs
-                    .choose_folder(&request)
-                    .map_err(RuntimeError::Package)?
-                {
-                    Some(reference) => Value::text(reference),
-                    // The person dismissed the chooser: nothing runs.
-                    None => return Ok(InvokeOutcome::Done(Value::Unit)),
-                }
+        Ok((filled, request))
+    }
+
+    /// What a chooser came to, told to the action the app named with `then:`: that it was put
+    /// away, or why it was refused. With no handler the refusal is the call's failure, as it was
+    /// before `then:`; a dismissal was and is nothing.
+    fn chooser_answered(
+        &self,
+        then: Option<ActionRef>,
+        cancelled: bool,
+        refused: &str,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let Some(mut after) = then else {
+            return if refused.is_empty() {
+                Ok(InvokeOutcome::Done(Value::Unit))
             } else {
-                let chosen = blobs.choose(&request).map_err(RuntimeError::Package)?;
-                match chosen_files_value(chosen, many, &accept)? {
-                    Some(value) => value,
-                    // The person dismissed the chooser, or the folder held nothing to take:
-                    // nothing runs.
-                    None => return Ok(InvokeOutcome::Done(Value::Unit)),
-                }
-            }
+                Err(RuntimeError::Package(refused.to_owned()))
+            };
         };
-        let filled = ActionRef {
-            args: next
-                .args
-                .iter()
-                .cloned()
-                .chain(std::iter::once(filled_value))
-                .collect(),
-            ..next.clone()
-        };
-        self.run(&filled)
+        let outcome = Value::Tuple(vec![Value::Bool(cancelled), Value::text(refused)]);
+        fill_event(&mut after, Some(&outcome), Held::default())
+            .map_err(|()| RuntimeError::BadArgs("a malformed `file.choose`".into()))?;
+        self.run(&after)
     }
 
     /// `file.save(a, name, then: b)`: run `a`, and put what it made — text, or a file — in a

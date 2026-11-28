@@ -9,6 +9,7 @@ app so.tilo.diffmerge "Diff & Merge" (
 
 op "open"
 op "diff"
+op "rows"
 op "merge"
 op "compose"
 op "compare-folders"
@@ -47,24 +48,44 @@ type FolderEntry {
     by_length: Bool = false
 }
 
-/// One comparison or merge: the texts a person opened, what the device made of them, and the
+/// One person's window on a comparison: the rows of the alignment it holds, and where they
+/// start. The alignment itself stays on the device, so two 20 MB files are a comparison like any
+/// other and a window costs what it shows.
+type Desk (readers: author) {
+    first: Int = 0
+    left: List<Text>
+    right: List<Text>
+    left_numbers: List<Text>
+    right_numbers: List<Text>
+}
+
+/// The most rows a window holds: more than a window shows, so a scroll is drawn before it is
+/// asked for.
+fn window_rows() -> Int {
+    96
+}
+
+/// One comparison or merge: the sides a person opened, what the device made of them, and the
 /// merged result everyone edits.
 ///
 /// The sides, the merged result and the ways each change was taken are the workspace's: every
 /// member sees the same comparison and can take the next side. Which of what is open a window
-/// shows, the change it is at and what it typed for a change are each window's own.
+/// shows, the change it is at, what it typed for a change and the rows it holds are each
+/// window's own.
 type Session (title: name, untitled: "Untitled comparison") {
     name: Text = ""
-    /// The two sides of a comparison, and the alignment the device made of them: one line per
-    /// aligned row, an empty line where a side has none.
+    /// The two sides of a comparison: the addresses of their bytes in the workspace's content
+    /// store, and what each is called.
     left_label: Text = ""
-    left: Text = ""
+    left_address: Text = ""
     right_label: Text = ""
-    right: Text = ""
-    left_aligned: Text = ""
-    right_aligned: Text = ""
+    right_address: Text = ""
     /// One character per aligned row: ` ` equal, `a` added, `r` removed, `m` modified.
     kinds: Text = ""
+    /// How many rows the alignment has.
+    rows: Int = 0
+    /// Each person's window on the alignment.
+    desks: Collection<Desk>
     blocks: Collection<Block>
     added: Int = 0
     removed: Int = 0
@@ -120,16 +141,22 @@ type OpenAsk {
     path: Text = ""
     address: Text = ""
     name: Text = ""
+    /// Whether the answer carries the text as well as the address of its bytes.
+    text: Bool = false
 }
 
 type OpenedAnswer {
     label: Text = ""
+    /// Where the file's bytes stand in the content store, so a comparison reads them by address.
+    address: Text = ""
+    length: Int = 0
+    /// The text, when the caller asked for it: a merge reads its sides as text.
     text: Text = ""
 }
 
 type DiffAsk {
-    left: Text
-    right: Text
+    left_address: Text
+    right_address: Text
 }
 
 type DiffAnswer {
@@ -138,13 +165,28 @@ type DiffAnswer {
     block_lasts: List<Int>
     block_kinds: List<Text>
     block_previews: List<Text>
-    left: Text = ""
-    right: Text = ""
-    rows: Text = ""
+    /// One character per aligned row: ` ` equal, `a` added, `r` removed, `m` modified.
+    kinds: Text = ""
+    rows: Int = 0
     added: Int = 0
     removed: Int = 0
     modified: Int = 0
     identical: Bool = false
+}
+
+type RowsAsk {
+    left_address: Text
+    right_address: Text
+    first: Int = 0
+    count: Int = 0
+}
+
+type RowsAnswer {
+    left: List<Text>
+    right: List<Text>
+    left_numbers: List<Text>
+    right_numbers: List<Text>
+    rows: Int = 0
 }
 
 type MergeAsk {
@@ -247,9 +289,9 @@ action open_comparison(
     right: Text,
 ) -> Session (icon: .columns_2, label: "Compare two texts", did: "compared two texts") {
     s.left_label = left_label
-    s.left = left
+    s.left_address = File.of_text(left_label, left).url
     s.right_label = right_label
-    s.right = right
+    s.right_address = File.of_text(right_label, right).url
     s.compared = true
     if refresh_comparison(s) {
         s.name = comparison_title(s)
@@ -268,13 +310,13 @@ action open_files(lib: Library, left: Text = "", right: Text = "") -> Session (
     require not (right == "" and left != "") "the left and right paths are given together, or not at all"
     let made = lib.sessions.insert(Session(name: "Diff & Merge"))
     if left == "" {} else {
-        match read_side(left, "", "") {
-            .ok(l) => match read_side(right, "", "") {
+        match read_side(left, "", "", false) {
+            .ok(l) => match read_side(right, "", "", false) {
                 .ok(r) => {
                     made.left_label = l.label
-                    made.left = l.text
+                    made.left_address = l.address
                     made.right_label = r.label
-                    made.right = r.text
+                    made.right_address = r.address
                     made.compared = true
                     if refresh_comparison(made) {
                         made.name = comparison_title(made)
@@ -296,15 +338,15 @@ action open_one(lib: Library, path: Text, side: Text = "left") -> Session (
     did: "opened a file",
 ) {
     let made = lib.sessions.insert(Session(name: "Diff & Merge"))
-    match read_side(path, "", "") {
+    match read_side(path, "", "", false) {
         .ok(one) => {
             if side == "right" {
                 made.left_label = "(no such file)"
                 made.right_label = one.label
-                made.right = one.text
+                made.right_address = one.address
             } else {
                 made.left_label = one.label
-                made.left = one.text
+                made.left_address = one.address
                 made.right_label = "(no such file)"
             }
             made.compared = true
@@ -323,10 +365,10 @@ action chosen_left(s: Session, file: File) -> Session (
     icon: .file_plus,
     label: "Choose a file to compare",
 ) {
-    match read_side("", file.url, file.name) {
+    match read_side("", file.url, file.name, false) {
         .ok(one) => {
             s.left_label = one.label
-            s.left = one.text
+            s.left_address = one.address
             if meaningful(s.right_label) {
                 s.compared = true
                 refresh_comparison(s)
@@ -345,10 +387,10 @@ action chosen_right(s: Session, file: File) -> Session (
     icon: .file_plus,
     label: "Choose a file to compare",
 ) {
-    match read_side("", file.url, file.name) {
+    match read_side("", file.url, file.name, false) {
         .ok(one) => {
             s.right_label = one.label
-            s.right = one.text
+            s.right_address = one.address
             s.compared = true
             if refresh_comparison(s) {
                 s.name = comparison_title(s)
@@ -364,9 +406,10 @@ fn meaningful(label: Text) -> Bool {
 }
 
 /// Reads the file at `path`, or the bytes at `address` when a chooser handed them over: its name
-/// and its text.
-fn read_side(path: Text, address: Text, name: Text) -> Result<OpenedAnswer, Text> {
-    match engine.call("open", json.encode(OpenAsk(path: path, address: address, name: name))) {
+/// and the address of its bytes, with the text too when a merge reads it as text.
+fn read_side(path: Text, address: Text, name: Text, text: Bool) -> Result<OpenedAnswer, Text> {
+    let ask = OpenAsk(path: path, address: address, name: name, text: text)
+    match engine.call("open", json.encode(ask)) {
         .ok(answer) => match json.decode<OpenedAnswer>(answer) {
             .ok(opened) => .ok(opened),
             .err(why) => .err(why),
@@ -375,15 +418,16 @@ fn read_side(path: Text, address: Text, name: Text) -> Result<OpenedAnswer, Text
     }
 }
 
-/// Asks the device to align the two sides, and holds what it made: the aligned columns, the rows
-/// that changed and how many of each.
+/// Asks the device to align the two sides, and holds what it made: what each row is, the rows
+/// that changed and how many of each. The rows themselves are read a window at a time, so two
+/// large files cost what their window shows.
 action refresh_comparison(s: Session) -> Bool {
-    match engine.call("diff", json.encode(DiffAsk(left: s.left, right: s.right))) {
+    let ask = DiffAsk(left_address: s.left_address, right_address: s.right_address)
+    match engine.call("diff", json.encode(ask)) {
         .ok(answer) => match json.decode<DiffAnswer>(answer) {
             .ok(diff) => {
-                s.left_aligned = diff.left
-                s.right_aligned = diff.right
-                s.kinds = diff.rows
+                s.kinds = diff.kinds
+                s.rows = diff.rows
                 s.added = diff.added
                 s.removed = diff.removed
                 s.modified = diff.modified
@@ -404,6 +448,7 @@ action refresh_comparison(s: Session) -> Bool {
                 }
                 s.notice = ""
                 s.notice_kind = "info"
+                show_rows(s, 0)
                 true
             }
             .err(why) => {
@@ -416,6 +461,46 @@ action refresh_comparison(s: Session) -> Bool {
             false
         }
     }
+}
+
+/// Reads the rows of the alignment from `first` on, as this person's window shows them.
+action show_rows(s: Session, first: Int) {
+    if not s.compared {
+        return
+    }
+    let desk = s.desks.first() ?? s.desks.insert(Desk())
+    let most = if s.rows > window_rows() { s.rows - window_rows() } else { 0 }
+    let start = if first < 0 { 0 } else if first > most { most } else { first }
+    let ask = RowsAsk(
+        left_address: s.left_address,
+        right_address: s.right_address,
+        first: start,
+        count: window_rows(),
+    )
+    match engine.call("rows", json.encode(ask)) {
+        .ok(answer) => match json.decode<RowsAnswer>(answer) {
+            .ok(window) => {
+                desk.first = start
+                desk.left = window.left
+                desk.right = window.right
+                desk.left_numbers = window.left_numbers
+                desk.right_numbers = window.right_numbers
+                s.rows = window.rows
+            }
+            .err(why) => refuse(s, why),
+        },
+        .err(why) => refuse(s, why),
+    }
+}
+
+/// The wheel or the bar moved this person's window by `rows`.
+action scrolled(s: Session, rows: Int) {
+    if let desk = s.desks.first() { show_rows(s, desk.first + rows) } else { show_rows(s, rows) }
+}
+
+/// Brings `row` of the alignment into this person's window, a few rows above the middle.
+action reveal_row(s: Session, row: Int) {
+    show_rows(s, row - window_rows() / 3)
 }
 
 /// Merges three texts: a common base and the two versions of it a person has.
@@ -757,9 +842,9 @@ action fill_sample(s: Session) (
         .ok(answer) => match json.decode<SampleDiff>(answer) {
             .ok(sample) => {
                 made.left_label = sample.left_label
-                made.left = sample.left
+                made.left_address = File.of_text(sample.left_label, sample.left).url
                 made.right_label = sample.right_label
-                made.right = sample.right
+                made.right_address = File.of_text(sample.right_label, sample.right).url
                 made.compared = true
                 refresh_comparison(made)
             }
@@ -1266,10 +1351,15 @@ view comparison_sides(s: Session, at: State<Int>) {
 }
 
 view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text, gap: Text) {
+    let desk = s.desks.first() ?? Desk()
     ui.DiffGrid(
-        left: s.left_aligned.split("\n"),
-        right: s.right_aligned.split("\n"),
+        left: desk.left,
+        right: desk.right,
         kinds: s.kinds,
+        first: desk.first,
+        total: s.rows,
+        left_numbers: desk.left_numbers,
+        right_numbers: desk.right_numbers,
         at: if s.blocks.is_empty() { .none } else { .some(block_first(s, at)) },
         side: if side == "left" { .left } else if side == "right" { .right } else { .both },
         language: if language == "rust" {
@@ -1318,6 +1408,20 @@ view comparison_grid(s: Session, at: State<Int>, side: Text, language: Text, gap
         fill,
     ) {
         on press(row: Int): set(at, change_for_row(s, row))
+        on wheel(rows: Int): scrolled(s, rows)
+    }
+}
+
+/// What the folder chooser came to: put away, refused, or a folder to compare.
+action chosen_folder_answered(s: Session, chosen: host.Chosen) (
+    label: "Choosing folders was cancelled",
+) {
+    if chosen.cancelled {
+        s.notice = "Choosing folders was cancelled"
+        s.notice_kind = "info"
+    } else if chosen.refused != "" {
+        s.notice = chosen.refused
+        s.notice_kind = "warning"
     }
 }
 
@@ -1881,7 +1985,10 @@ view folders_page(s: Session) {
                 message: "Choose two folders to list the files only one holds and the files both hold but differ in.",
                 action: "Choose the left folder",
             ) {
-                on act: file.choose_folder(chosen_folder_left(s))
+                on act: file.choose_folder(
+                    chosen_folder_left(s),
+                    then: chosen -> chosen_folder_answered(s, chosen),
+                )
             }
             ui.Button("Show the sample folders", icon: .sparkles) {
                 on press: sample_folders(s)
@@ -1897,7 +2004,10 @@ view folders_page(s: Session) {
                     fill: 1.0,
                 )
                 ui.Button("Choose the folders again", icon: .folder) {
-                    on press: file.choose_folder(chosen_folder_left(s))
+                    on press: file.choose_folder(
+                        chosen_folder_left(s),
+                        then: chosen -> chosen_folder_answered(s, chosen),
+                    )
                 }
             }
             if s.folder_truncated {

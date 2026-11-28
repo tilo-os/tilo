@@ -2160,6 +2160,34 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "first",
+          "doc": "The first of the grid's rows this frame holds, when it holds a window of a longer comparison: `total` says how many rows the comparison has.",
+          "type": "int"
+        },
+        {
+          "name": "total",
+          "doc": "How many rows the whole comparison has. 0 holds every row it was given.",
+          "type": "int"
+        },
+        {
+          "name": "left_numbers",
+          "doc": "Each row's line number on the left, when the grid holds a window: numbers a window cannot count from the rows before it.",
+          "type": {
+            "option": {
+              "list": "text"
+            }
+          }
+        },
+        {
+          "name": "right_numbers",
+          "doc": "Each row's line number on the right, as `left_numbers` is the left's.",
+          "type": {
+            "option": {
+              "list": "text"
+            }
+          }
         }
       ],
       "events": [

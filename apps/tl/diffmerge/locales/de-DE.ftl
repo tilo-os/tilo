@@ -84,15 +84,7 @@ d-j6uarraa = Name
 d-odsfatc7 = Beschriftung links
     .doc = Die beiden Seiten eines Vergleichs und die Ausrichtung, die das Gerät aus ihnen machte: eine Zeile je ausgerichteter Zeile, eine leere Zeile, wo eine Seite keine hat.
 
-d-kcdcrgzi = Links
-
 d-3q7df7eg = Beschriftung rechts
-
-d-prwrxrg4 = Rechts
-
-d-ebpdel6u = Ausrichtung links
-
-d-vjlsurzf = Ausrichtung rechts
 
 d-7obphfng = Arten
     .doc = Ein Zeichen je ausgerichteter Zeile: ` ` gleich, `a` hinzugefügt, `r` entfernt, `m` geändert.
@@ -216,6 +208,7 @@ d-bliesnie = Öffnungsantwort
 d-f4rrknsp = Beschriftung
 
 d-ced6vdp4 = Text
+    .doc = Der Text, wenn die aufrufende Stelle ihn verlangt: eine Zusammenführung liest ihre Seiten als Text.
 
 d-bk2hllx2 = Vergleichsfrage
     .noun = { $count ->
@@ -223,19 +216,11 @@ d-bk2hllx2 = Vergleichsfrage
        *[other] Vergleichsfragen
     }
 
-d-vz6ogvrp = Links
-
-d-3upzelrr = Rechts
-
 d-df4q7mdq = Vergleichsantwort
     .noun = { $count ->
         [one] Vergleichsantwort
        *[other] Vergleichsantworten
     }
-
-d-fejavrie = Links
-
-d-zmrjesu2 = Rechts
 
 d-akgopqc4 = Hinzugefügt
 
@@ -776,3 +761,110 @@ d-7cpekxgz = Zwei-Wege-Vergleich
 d-lwftwowh = Drei-Wege-Zusammenführung
 
 d-w7qgfrp5 = Ordnervergleich
+
+d-vcmzsddb = Platz
+    .doc = Das Fenster einer Person auf einen Vergleich: die Zeilen der Ausrichtung, die es hält, und wo sie beginnen. Die Ausrichtung bleibt auf dem Gerät, sodass zwei Dateien von 20 MB ein Vergleich wie jeder andere sind und ein Fenster nur kostet, was es zeigt.
+    .noun = { $count ->
+        [one] Platz
+       *[other] Plätze
+    }
+
+d-26oe7r7i = Beginn
+
+d-hbty7tad = Links
+
+d-mvaigor7 = Rechts
+
+d-tmpyvfh2 = Linke Zeilennummern
+
+d-bopuzie6 = Rechte Zeilennummern
+
+d-vcmzsddb-filter-first = Beginn
+
+d-f3pi44mo = Linke Adresse
+
+d-57ekttni = Rechte Adresse
+
+d-j6lacz53 = Zeilen
+    .doc = Wie viele Zeilen die Ausrichtung hat.
+
+d-pqzz56jm = Plätze
+    .doc = Das Fenster jeder Person auf die Ausrichtung.
+
+d-ucubeuze = Text
+    .doc = Ob die Antwort den Text neben der Adresse seiner Bytes trägt.
+
+d-vtrbr4ti = Adresse
+    .doc = Wo die Bytes der Datei im Inhaltsspeicher stehen, sodass ein Vergleich sie über die Adresse liest.
+
+d-snlzrihn = Länge
+
+d-da2j5zli = Arten
+    .doc = Ein Zeichen je ausgerichteter Zeile: ` ` gleich, `a` hinzugefügt, `r` entfernt, `m` geändert.
+
+d-pkgucqny = Zeilenabfrage
+    .noun = { $count ->
+        [one] Zeilenabfrage
+       *[other] Zeilenabfragen
+    }
+
+d-7krgb3hm = Linke Adresse
+
+d-4o7u2cqn = Rechte Adresse
+
+d-ensynoum = Beginn
+
+d-47s3jkvj = Anzahl
+
+d-pkgucqny-filter-first = Beginn
+
+d-pkgucqny-filter-count = Anzahl
+
+d-wla3mmvp = Zeilenantwort
+    .noun = { $count ->
+        [one] Zeilenantwort
+       *[other] Zeilenantworten
+    }
+
+d-hp4womta = Links
+
+d-42w4oxqb = Rechts
+
+d-ewtios5w = Linke Zeilennummern
+
+d-toy35fti = Rechte Zeilennummern
+
+d-3i4ti4vb = Zeilen
+
+d-3c4ncooe = Zeilen zeigen
+    .doc = Liest die Zeilen der Ausrichtung ab `first`, wie das Fenster dieser Person sie zeigt.
+
+d-3c4ncooe-first = Beginn
+
+d-yb37fesn = Gescrollt
+    .doc = Das Rad oder die Leiste hat das Fenster dieser Person um `rows` bewegt.
+
+d-yb37fesn-rows = Zeilen
+
+d-kizvurfl = Zeile zeigen
+    .doc = Holt `row` der Ausrichtung in das Fenster dieser Person, einige Zeilen über der Mitte.
+
+d-kizvurfl-row = Zeile
+
+
+d-ybdnnlsv-filter-rows = Zeilen
+
+d-bliesnie-filter-length = Länge
+
+d-ysbvko3t = Linke Adresse
+
+d-jwkbowis = Rechte Adresse
+
+d-df4q7mdq-filter-rows = Zeilen
+
+d-wla3mmvp-filter-rows = Zeilen
+
+d-d5zikvlj = Die Ordnerwahl wurde abgebrochen
+    .doc = Was die Ordnerwahl ergeben hat: weggelegt, abgelehnt oder ein Ordner zum Vergleichen.
+
+d-d5zikvlj-chosen = Gewählt

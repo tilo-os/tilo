@@ -124,6 +124,9 @@ pub const JOB_STATE_TYPE: &str = "host-job-state";
 pub const JOB_TYPE: &str = "host-job";
 /// The id of the host's `Saved` value type: what `file.save`'s `then:` action is handed.
 pub const SAVED_TYPE: &str = "host-saved";
+/// The id of the host's `Chosen` value type: what `file.choose`'s and `file.choose_folder`'s
+/// `then:` action is handed.
+pub const CHOSEN_TYPE: &str = "host-chosen";
 
 pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
@@ -175,6 +178,23 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "refused",
                 "Text",
                 "Why the save was refused; empty unless it was.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Chosen",
+        id: CHOSEN_TYPE,
+        doc: "What asking for a file came to, as `file.choose`'s and `file.choose_folder`'s `then:` action is handed it: that a file was chosen, that the person closed the chooser, or why it was refused.",
+        fields: &[
+            (
+                "cancelled",
+                "Bool",
+                "Whether the person closed the chooser without choosing.",
+            ),
+            (
+                "refused",
+                "Text",
+                "Why the chooser was refused; empty unless it was.",
             ),
         ],
     },
