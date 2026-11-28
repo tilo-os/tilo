@@ -173,6 +173,18 @@ type Clash {
     clashing: List<Text>
 }
 
+/// What one of the workspace tree's own verbs is asked with: paths in the workspace, `""` for
+/// its own folder. `entries` are paths from `from` or `folder`; what a verb does not read it
+/// leaves alone.
+type TreeAsk {
+    parent: Text = ""
+    folder: Text = ""
+    to: Text = ""
+    entry: Text = ""
+    name: Text = ""
+    entries: List<Text>
+}
+
 /// How far a transfer has got, as the device records it.
 type TransferState {
     done: Int
@@ -571,6 +583,16 @@ action put_into(
         "Moving {what} to “{name_of(folder)}”"
     } else {
         "Copying {what} to “{name_of(folder)}”"
+    }
+    // The workspace's tree moves and copies as one change of its own, and a path on this device
+    // is none of it: the tree says so.
+    if workspace_place(folder) or paths.any(p -> workspace_place(p)) {
+        let verb = if moving { "move" } else { "copy-into" }
+        let why = change_tree(f, verb, TreeAsk(to: folder, entries: paths))
+        if why != "" {
+            s.notice = "Couldn’t put them there: {why}"
+        }
+        return
     }
     let t = s.transfers.insert(Transfer(label: label, paths: paths, folder: folder, moving: moving))
     match engine.start(
@@ -1084,6 +1106,19 @@ action forget_recent(f: Files, path: Text) {
     if let held = f.recent.find(r -> r.path == path) { f.recent.remove(held) }
 }
 
+/// Changes the workspace's tree with its own `verb`, as `ask` says, decided by the workspace's
+/// grants for Files: `""` once the tree took it, else the words it was refused with. The window
+/// follows the tree, so nothing is read again here.
+action change_tree(f: Files, verb: Text, ask: TreeAsk) -> Text {
+    match json.parse(json.encode(ask)) {
+        .err(why) => why,
+        .ok(arguments) => match try_call("files", verb, arguments) {
+            .ok(_) => "",
+            .err(why) => why,
+        },
+    }
+}
+
 /// Makes a folder named `name` in the place shown.
 action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .folder_plus) {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
@@ -1094,6 +1129,13 @@ action new_folder(f: Files, name: Text = "New folder") uses files, time (icon: .
     let named = if name.trim() == "" { "New folder" } else { name.trim() }
     if named.contains("/") {
         s.notice = "A name cannot hold a slash"
+        return
+    }
+    if workspace_place(s.here) {
+        let why = change_tree(f, "new-folder", TreeAsk(parent: s.here, name: named))
+        if why != "" {
+            s.notice = "Couldn’t make the folder: {why}"
+        }
         return
     }
     match File.stat(join(s.here, named)) {
@@ -1252,6 +1294,16 @@ action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .p
     require name.trim() != "" "A name cannot be empty"
     require not name.trim().contains("/") "A name cannot hold a slash"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if workspace_place(path) {
+        if name.trim() != name_of(path) {
+            let ask = TreeAsk(folder: parent_of(path), entry: name_of(path), name: name.trim())
+            let why = change_tree(f, "rename", ask)
+            if why != "" {
+                s.notice = "Couldn’t rename it: {why}"
+            }
+        }
+        return
+    }
     if name.trim() != name_of(path) {
         match File.stat(join(parent_of(path), name.trim())) {
             .ok(found) => {
@@ -1271,7 +1323,8 @@ action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .p
     }
 }
 
-/// Moves the entries at `paths` to this device's trash.
+/// Moves the entries at `paths` to the trash: the workspace's own for entries of its tree, which
+/// keeps them to restore, and this device's for its files.
 action trash_entries(f: Files, paths: List<Text>) uses files, time (
     icon: .trash_2,
     label: "Move to Trash",
@@ -1279,6 +1332,13 @@ action trash_entries(f: Files, paths: List<Text>) uses files, time (
 ) {
     require not paths.is_empty() "Select files first"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if paths.any(p -> workspace_place(p)) {
+        let why = change_tree(f, "trash", TreeAsk(entries: paths))
+        if why != "" {
+            s.notice = "Couldn’t move them to Trash: {why}"
+        }
+        return
+    }
     let gone: List<Text> = []
     for path in paths {
         match File.trash(path) {

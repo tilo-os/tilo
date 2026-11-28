@@ -8,7 +8,9 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use tilo_action_services::formats;
 
-use crate::language::files_support::{Session, kept_when, person_calls, person_files, said};
+use crate::language::files_support::{
+    Session, folder_at, kept_when, person_calls, person_files, said, tree_if_kept,
+};
 use crate::language::host::{self, Host};
 
 /// A folder the person keeps in the workspace.
@@ -476,5 +478,95 @@ fn a_member_the_workspace_lets_read_no_files_sees_nothing() {
             assert!(Instant::now() < deadline, "{lines}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+    });
+}
+
+/// What the workspace's tree keeps once it reads as `ready` says, after a press of the window:
+/// a press the window refused says so in its notice, and fails here in its words.
+async fn tree_keeps(
+    host: &Host,
+    session: &Session<'_>,
+    workspace: &str,
+    ready: impl Fn(&fs_protocol::tree::Tree) -> bool,
+) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if let Some(tree) = tree_if_kept(host, workspace).await
+            && ready(&tree)
+        {
+            return;
+        }
+        let lines = view(session, workspace).await;
+        assert!(!lines.contains("Couldn’t"), "the window refused: {lines}");
+        assert!(
+            Instant::now() < deadline,
+            "the tree never keeps the press: {lines}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// In the workspace's own folder, Files' presses change the workspace's tree: a folder is made,
+/// renamed, has another dragged into it, is copied and pasted, and goes to the trash, and the
+/// tree keeps each change.
+#[test]
+fn files_presses_change_the_workspaces_own_folder() {
+    host::run_with(&["files"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        // The workspace has Files installed, as a person's has: the tree is Files' own records,
+        // which its presses change as the app.
+        host.install_app("so.tilo.file-explorer").await;
+        let agent = host.agent();
+        let session = Session::Agent(&agent);
+        let opened = view(&session, &workspace).await;
+        assert!(opened.contains("This folder is empty"), "{opened}");
+
+        runs(
+            &session,
+            &workspace,
+            "files#new_folder",
+            json!({"name": "Drafts"}),
+        )
+        .await;
+        tree_keeps(&host, &session, &workspace, |tree| {
+            folder_at(tree, "", "Drafts")
+        })
+        .await;
+
+        let renamed = json!({"path": "Drafts", "name": "Plans"});
+        runs(&session, &workspace, "files#rename_entry", renamed).await;
+        tree_keeps(&host, &session, &workspace, |tree| {
+            folder_at(tree, "", "Plans") && !folder_at(tree, "", "Drafts")
+        })
+        .await;
+
+        runs(
+            &session,
+            &workspace,
+            "files#new_folder",
+            json!({"name": "Notes"}),
+        )
+        .await;
+        let dropped = json!({"paths": ["Notes"], "folder": "Plans"});
+        runs(&session, &workspace, "files#drop_into", dropped).await;
+        tree_keeps(&host, &session, &workspace, |tree| {
+            folder_at(tree, "Plans", "Notes") && !folder_at(tree, "", "Notes")
+        })
+        .await;
+
+        let copied = json!({"paths": ["Plans"], "cut": false});
+        runs(&session, &workspace, "files#carry", copied).await;
+        runs(&session, &workspace, "files#paste", json!({})).await;
+        tree_keeps(&host, &session, &workspace, |tree| {
+            folder_at(tree, "Plans (2)", "Notes") && folder_at(tree, "Plans", "Notes")
+        })
+        .await;
+
+        let trashed = json!({"paths": ["Plans (2)"]});
+        runs(&session, &workspace, "files#trash_entries", trashed).await;
+        tree_keeps(&host, &session, &workspace, |tree| {
+            !folder_at(tree, "", "Plans (2)") && folder_at(tree, "Plans", "Notes")
+        })
+        .await;
     });
 }

@@ -321,7 +321,7 @@ d-2b6epu9v-path = Pfad
 d-2b6epu9v-name = Name
 
 d-8anojqje = In den Papierkorb
-    .doc = Verschiebt die Einträge unter `paths` in den Papierkorb dieses Geräts.
+    .doc = Verschiebt die Einträge unter `paths` in den Papierkorb: Einträge aus dem Baum des Arbeitsbereichs in seinen eigenen, der sie zum Wiederherstellen aufbewahrt, und Dateien dieses Geräts in dessen Papierkorb.
     .w-select-files-first = Wähle zuerst Dateien
 
 d-8anojqje-paths = Pfade
@@ -1020,3 +1020,29 @@ d-glaogsbv-path = Pfad
 
 d-ih5smaws = Ordnerbeschriftung
     .w-sign-in-again = Erneut anmelden
+
+d-bqd73x2x = Baumauftrag
+    .doc = Womit eines der eigenen Verben des Arbeitsbereichsbaums aufgerufen wird: Pfade im Arbeitsbereich, `""` für seinen eigenen Ordner. `entries` sind Pfade ab `folder`; was ein Verb nicht liest, lässt es stehen.
+    .noun = { $count ->
+        [one] Baumauftrag
+       *[other] Baumaufträge
+    }
+
+d-ecgrzu3q = Übergeordneter Ordner
+
+d-6lkdt2rn = Ordner
+
+d-yjlklduv = Ziel
+
+d-cg64xlqs = Eintrag
+
+d-pi7d3ddj = Name
+
+d-3jekg6hy = Einträge
+
+d-5suu4ddc = Baum ändern
+    .doc = Ändert den Baum des Arbeitsbereichs mit seinem eigenen `verb`, wie `ask` sagt, entschieden von den Freigaben des Arbeitsbereichs für Dateien: `""`, sobald der Baum es übernommen hat, sonst die Worte, mit denen er ablehnte. Das Fenster folgt dem Baum, daher wird hier nichts neu gelesen.
+
+d-5suu4ddc-verb = Verb
+
+d-5suu4ddc-ask = Auftrag
