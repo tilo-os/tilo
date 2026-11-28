@@ -982,8 +982,18 @@ grep -Fq '(type tilo_fs_t)' <<<"$fs_policy_active" \
   || { bad 'tilo-base.cil no longer defines the tilo_fs_t domain'; fs_policy_fail=1; }
 grep -Eq '\(allow tilo_fs_t fuse_device_t \(chr_file \(' <<<"$fs_policy_active" \
   || { bad 'tilo-base.cil does not grant tilo_fs_t the FUSE device it mounts with'; fs_policy_fail=1; }
-if grep -Eq '\(allow tilo_fs_t (file_type|non_security_file_type|non_auth_file_type|exec_type|domain|unconfined_t|unconfined_service_t|kernel_t)[ )]' <<<"$fs_policy_active"; then
+if grep -Eq '\(allow tilo_fs_t (file_type|non_security_file_type|non_auth_file_type|exec_type|domain|unconfined_t|kernel_t)[ )]' <<<"$fs_policy_active"; then
   bad 'tilo-base.cil grants tilo_fs_t a whole attribute or an unconfined domain'
+  fs_policy_fail=1
+fi
+# The device daemon's native endpoint is where every program asks it for the device's key; the
+# daemon runs unconfined, so that one connect names it and nothing else of an unconfined domain
+# is granted.
+unconfined="$(grep -c '(allow tilo_fs_t unconfined_service_t ' <<<"$fs_policy_active" || true)"
+if [ "$unconfined" -ne 0 ] \
+  && { [ "$unconfined" -ne 1 ] \
+    || ! grep -Eq '\(allow tilo_fs_t unconfined_service_t \(unix_stream_socket \(connectto\)\)' <<<"$fs_policy_active"; }; then
+  bad 'tilo-base.cil grants tilo_fs_t more of an unconfined domain than the device daemon socket'
   fs_policy_fail=1
 fi
 if grep -Eq '\(allow tilo_fs_t [^()]+ \([a-z_0-9]+ \(all\)\)\)' <<<"$fs_policy_active"; then

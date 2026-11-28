@@ -141,6 +141,12 @@
 ; the storage-accounting, document-media and workspace-content sockets.
 (allow tilo_fs_t var_run_t (dir (getattr search open read write add_name remove_name)))
 (allow tilo_fs_t var_run_t (sock_file (create getattr setattr unlink)))
+; The device daemon's native endpoint in /run/tilo-runtime: the filesystem
+; daemon learns this computer's device key and asks it to sign, and the key
+; never leaves that daemon. The endpoint is the daemon's own var_run_t socket,
+; and the daemon runs unconfined, so the connect names both.
+(allow tilo_fs_t var_run_t (sock_file (write read open getattr)))
+(allow tilo_fs_t unconfined_service_t (unix_stream_socket (connectto)))
 ; stdout and stderr: the journal stream systemd hands the service.
 (allow tilo_fs_t init_t (unix_stream_socket (read write)))
 (allow tilo_fs_t init_var_run_t (dir (search)))
