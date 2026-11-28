@@ -1,9 +1,10 @@
-//! A person clicks a text field in a tilolang app's window and types: the clicked field takes
-//! the keyboard, and each key arrives in the app.
+//! A tilolang app's own write is kept: a person picks what starts a Shortcut in the draft's
+//! trigger form, and the record the form edits holds the case they picked.
 //!
 //! Shortcuts' trigger form keeps its fields in a record inside the workbench document the window
-//! shows: the window names the document, and the text belongs to the record the form edits, so
-//! this is the path where a field a view keeps for itself takes typing.
+//! shows: the window names the document, and the pick belongs to the record the form edits. A
+//! store's document is decided against the kinds of the records a change writes, so a control's
+//! own edit has to name the record it wrote.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -21,10 +22,12 @@ use serde_json::{Value, json};
 
 use crate::common::people::{Device, Person};
 
-/// The app the person types into: Shortcuts, whose draft editor draws the trigger form.
+/// The app the person picks a trigger in.
 const APP: &str = "so.tilo.shortcuts";
-/// What the person types into the trigger's app field.
-const TYPED: &str = "so.tilo.chat";
+/// The case the person picks for what starts the shortcut.
+const CASE: &str = "App opened";
+/// The case's own name, as the record holds it.
+const CASE_ID: &str = "app_opened";
 
 /// Whether `target` is drawn anywhere: a control a window holds open but shows nowhere (a
 /// menu's items while its menu is closed) stands nowhere, and a click aimed at it lands on
@@ -49,43 +52,63 @@ fn named(device: &Device, name: &str) -> Vec<Value> {
 /// Wait until `device` draws a control whose name is `name` or starts with it.
 #[track_caller]
 fn wait_drawn(device: &Device, name: &str) -> Value {
-    tilo_test_env::wait_for(format!("{} to draw {name:?}", device.label), || {
-        named(device, name).into_iter().find(drawn)
-    })
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Some(target) = named(device, name).into_iter().find(drawn) {
+            return target;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never drew {name:?}\n{}",
+            device.label,
+            device.diagnostic()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
-/// Click `target` where it is drawn, as the person at `device` does.
+/// Press the first drawn control whose name is `name` or starts with it, as assistive
+/// technology activates it: the way a tool or a screen reader presses a button or a menu row.
 #[track_caller]
-fn click(device: &Device, target: &Value) {
-    let rect = target["rect"]
-        .as_array()
-        .filter(|rect| rect.len() == 4)
-        .unwrap_or_else(|| panic!("{}'s control has a rect: {target}", device.label));
-    let at = |index: usize| {
-        rect[index]
-            .as_f64()
-            .unwrap_or_else(|| panic!("{}'s control rect is numbers: {target}", device.label))
-    };
-    let (x, y, width, height) = (at(0), at(1), at(2), at(3));
-    let answer = device.ask(&json!({
-        "op": "click_at",
-        "x": x + width / 2.0,
-        "y": y + height / 2.0,
-    }));
+fn press(device: &Device, name: &str) {
+    let target = wait_drawn(device, name);
+    let named_by = target["name"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}'s control has a name: {target}", device.label));
+    let answer = device.ask(&json!({"op": "click_named", "name": named_by}));
     assert!(
         answer.get("err").is_none(),
-        "{} clicks {:?}: {answer}\n{}",
+        "{} presses {named_by:?}: {answer}\n{}",
         device.label,
-        target["name"],
         device.diagnostic()
     );
 }
 
-/// A person starts a draft in Shortcuts, picks what starts it and clicks into the app id field
-/// there, then types: the words arrive in the app, and the trigger they add is for the app they
-/// typed.
+/// What the app's window shows, as the app reads its own records to draw it: the app's
+/// `outline` action, the text an agent reads of the window.
+#[track_caller]
+fn outline(device: &Device) -> String {
+    let answer = device.app_act(APP, "outline", &json!({}));
+    answer
+        .pointer("/update/output/value/outline")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || {
+                panic!(
+                    "{} reads {APP}'s outline: {answer}\n{}",
+                    device.label,
+                    device.diagnostic()
+                )
+            },
+            str::to_owned,
+        )
+}
+
+/// A person starts a draft in Shortcuts and picks what starts it: the pick is a control's own
+/// edit of the trigger record, it is kept there, and the workspace's admission does not refuse
+/// it for naming no kind of the record it wrote.
 #[test]
-fn a_person_clicks_a_text_field_in_a_tl_app_and_what_they_type_arrives() {
+fn a_pick_in_a_tl_apps_trigger_form_is_kept_in_its_record() {
     let ada = Person::new("Ada");
     let mut device = ada.device("Ada's laptop");
     device.install_shortcuts();
@@ -94,22 +117,29 @@ fn a_person_clicks_a_text_field_in_a_tl_app_and_what_they_type_arrives() {
     device.wait_for_window(APP);
 
     // New shortcut opens a draft, and its trigger form stands in the window.
-    click(&device, &wait_drawn(&device, "New shortcut"));
+    press(&device, "New shortcut");
     wait_drawn(&device, "Add trigger");
 
-    // What starts it: the case field's menu picks "App opened", and the form asks for the app.
-    click(&device, &wait_drawn(&device, "What starts it"));
-    click(&device, &wait_drawn(&device, "App opened"));
-    // The person clicks into the app id field and types it.
-    click(&device, &wait_drawn(&device, "App id"));
-    device.type_text(TYPED);
+    // What starts it: the case field's menu picks "App opened", and the field shows the case it
+    // took, which the app draws from the record its pick was kept in.
+    press(&device, "What starts it");
+    press(&device, CASE);
+    wait_drawn(&device, &format!("What starts it, {CASE}"));
 
-    // Add trigger takes the form into the draft: the trigger stands with the app that was typed
-    // into the field, which is the app the typing reached.
-    click(&device, &wait_drawn(&device, "Add trigger"));
-    tilo_test_env::wait_for(format!("{} to list its trigger", device.label), || {
-        let titled = named(&device, "An app opens").into_iter().find(drawn);
-        let typed = named(&device, TYPED).into_iter().find(drawn);
-        (titled.is_some() && typed.is_some()).then_some(())
-    });
+    // The record the form edits holds the case: the app reads its records to draw its window, so
+    // the window it outlines for an agent carries the case field holding the case it took.
+    let shown = outline(&device);
+    assert!(
+        shown.contains(CASE),
+        "the form's record holds {CASE_ID:?} ({CASE}): {shown}"
+    );
+
+    // And the workspace kept that write: no change of the app's own record was refused.
+    let log = device.log();
+    assert!(
+        !log.contains("a change was refused"),
+        "{}: the app's write reached its record\n{}",
+        device.label,
+        log.lines().rev().take(40).collect::<Vec<_>>().join("\n")
+    );
 }

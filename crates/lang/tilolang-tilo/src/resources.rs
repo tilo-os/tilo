@@ -4781,6 +4781,23 @@ impl ResourceStore {
         let local = self.inner.local.borrow();
         let mut puts = Vec::new();
         let mut removes = Vec::new();
+        // What each command wrote, as its stamp's context names it: the record's kind and id.
+        // A change of a store's document is decided against the kinds of the records it writes,
+        // and a control's own edit names no action whose kind could say ([`named_by_context`]).
+        let naming = |stamp: &Stamp, kind: &str, id: &str| -> Stamp {
+            let mut stamp = stamp.clone();
+            let mut context = stamp
+                .context
+                .take()
+                .map_or_else(tilo_actions::ActionContext::default, |context| *context);
+            context.resource = Some(tilo_actions::ActionResource {
+                id: id.to_owned(),
+                kind: kind.to_owned(),
+                label: String::new(),
+            });
+            stamp.context = Some(Box::new(context));
+            stamp
+        };
         for id in &state.order {
             let Some(dirty) = state.dirty.get(id) else {
                 continue;
@@ -4801,7 +4818,7 @@ impl ResourceStore {
                     removes.push(Command::Remove {
                         kind: kind.clone(),
                         id: id.clone(),
-                        stamp: stamp.clone(),
+                        stamp: naming(stamp, kind, id),
                     });
                 }
                 continue;
@@ -4824,7 +4841,7 @@ impl ResourceStore {
                         order: held.order.clone(),
                         fields: held.fields.clone(),
                     },
-                    stamp: stamp.clone(),
+                    stamp: naming(stamp, &held.kind, id),
                 });
             }
             if !dirty.edits.is_empty() {
@@ -4832,7 +4849,7 @@ impl ResourceStore {
                     kind: held.kind.clone(),
                     id: id.clone(),
                     edits: dirty.edits.clone(),
-                    stamp: stamp.clone(),
+                    stamp: naming(stamp, &held.kind, id),
                 });
             }
         }

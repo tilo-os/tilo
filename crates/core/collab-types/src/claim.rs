@@ -447,6 +447,33 @@ impl ClaimedAction {
     }
 }
 
+/// `action`, the claim of a store's change, with the kind of the record its stamp's context
+/// names where the verb names no action: a control's edit of a record (`$edit`) says which
+/// record it wrote there, so a document of records is decided against that record's kind
+/// (`check_store_kinds`) and not held for naming none.
+fn named_by_context(action: ClaimedAction, context: Option<&ActionContext>) -> ClaimedAction {
+    let Some(kind) = context
+        .and_then(|context| context.resource.as_ref())
+        .map(|resource| resource.kind.as_str())
+        .filter(|kind| !kind.is_empty())
+    else {
+        return action;
+    };
+    let named = |member: ClaimedAction| match member {
+        ClaimedAction::Edit { kind: held, path } if held.is_empty() && path.is_empty() => {
+            ClaimedAction::whole_resource_edit(kind.to_owned())
+        }
+        other => other,
+    };
+    match action {
+        ClaimedAction::Group(members) => {
+            ClaimedAction::Group(members.into_iter().map(named).collect())
+        }
+        edit @ ClaimedAction::Edit { .. } => named(edit),
+        other => other,
+    }
+}
+
 impl ChangeClaim {
     /// The claim of the change `hash` whose commit message is `message`,
     /// writing `units`.
@@ -505,13 +532,17 @@ impl ChangeClaim {
                 // A resource store's change names its verb in its stamp, and the store that
                 // takes it judges that verb's write-set against it: the claim is an edit of the
                 // records it writes, whose kinds only the store that holds them reads
-                // ([`name_record_kinds`]).
+                // ([`name_record_kinds`]). A control's own edit names no action: the stamp says
+                // which record it wrote, and the claim names that record's kind.
                 stamp_invoker(&read)?;
                 call = read
                     .signed
                     .as_deref()
                     .map(|signed| Box::new(signed.signed.clone()));
-                let action = ClaimedAction::store_write(&read.verb);
+                let action = named_by_context(
+                    ClaimedAction::store_write(&read.verb),
+                    read.context.as_deref(),
+                );
                 stamp = Some(read);
                 action
             }
@@ -1138,6 +1169,48 @@ mod tests {
             ChangeClaim::of_change([7; 32], Some(r#"{"verb":"add"}"#), Vec::new()),
             Err(ClaimError::Unnamed),
             "a message that names a verb and nothing else is no stamp"
+        );
+    }
+
+    /// A stamp names the record its control edit wrote in its context: the claim names that
+    /// record's kind, so a document of records is decided against the record it wrote.
+    #[test]
+    fn a_stores_stamp_names_the_kind_its_context_names() {
+        let person = "ab".repeat(32);
+        let stamp = crate::Stamp {
+            verb: "$edit".into(),
+            invoker: crate::Stamp::by(&tilo_member_types::Actor::Member(
+                tilo_member_types::MemberId::Person(
+                    tilo_member_types::PersonId::parse(&person).unwrap(),
+                ),
+            )),
+            invocation: "i1".into(),
+            context: Some(Box::new(tilo_actions::ActionContext {
+                resource: Some(tilo_actions::ActionResource {
+                    id: "root-w4uftw6l/k1".into(),
+                    kind: "tl.so.tilo.shortcuts.Trigger".into(),
+                    label: String::new(),
+                }),
+                ..tilo_actions::ActionContext::default()
+            })),
+            ..crate::Stamp::default()
+        };
+        let claim = ChangeClaim::of_change([7; 32], Some(&stamp.message()), Vec::new()).unwrap();
+        assert_eq!(
+            claim.action,
+            ClaimedAction::whole_resource_edit("tl.so.tilo.shortcuts.Trigger".into()),
+            "the edit names the record kind its stamp's context says"
+        );
+        let unnamed = crate::Stamp {
+            context: None,
+            ..stamp
+        };
+        assert_eq!(
+            ChangeClaim::of_change([7; 32], Some(&unnamed.message()), Vec::new())
+                .unwrap()
+                .action,
+            ClaimedAction::whole_resource_edit(String::new()),
+            "a stamp that names no record stays unnamed"
         );
     }
     use tilo_actions::{EditOp, FieldEdit, GroupOf, HistoryStep, VerbCall};
