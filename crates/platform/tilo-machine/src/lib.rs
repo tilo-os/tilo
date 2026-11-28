@@ -76,14 +76,17 @@ pub fn serves_the_computer(system: bool, named: Option<&std::path::Path>) -> boo
 /// Whether this computer's daemon is the system's: Tilo OS runs it from boot as its own
 /// account for every person of the computer, where other computers run it as the person.
 ///
-/// The unit file says so, and so does the runtime directory systemd makes for it while it runs:
-/// the unit itself runs in a confined domain that may read the endpoint and not the unit file,
-/// and answering otherwise there would send it to a per-account socket.
+/// The unit file says so, and so does its endpoint: the unit itself runs in a confined domain
+/// that may reach the endpoint and not read the unit file, and answering otherwise there would
+/// send it to a per-account socket. The runtime directory alone says neither: a run may make it
+/// for a daemon of its own, and a computer is not the system's until that daemon serves.
 #[must_use]
 pub fn system_daemon() -> bool {
     cfg!(target_os = "linux")
         && (std::path::Path::new(DAEMON_SYSTEM_UNIT).is_file()
-            || std::path::Path::new(DAEMON_SOCKETS).is_dir())
+            || std::path::Path::new(DAEMON_SOCKETS)
+                .join(DAEMON_NATIVE)
+                .exists())
 }
 
 /// What Tilo's guest OS starts a workspace's VM with: only that image ships it.
