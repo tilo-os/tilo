@@ -241,3 +241,126 @@ fn a_declared_popover_is_read_and_pressed_where_it_paints() {
         "a press where the control is read at takes it"
     );
 }
+
+/// A page of thirty lines, as a panel's body.
+fn a_page_of_lines() -> tilo_ui_base::widget::Element {
+    use tilo_ui_app::widget::Text;
+    use tilo_ui_app::widget::arrange::Stack;
+    let mut page = Stack::stack().fill_width();
+    for index in 0..30 {
+        page = page.push(Box::new(Text::new(&format!("line {index}"))));
+    }
+    Box::new(page)
+}
+
+/// A panel that fills its width and the height it is offered, holding `body`.
+fn a_filling_panel(body: tilo_ui_base::widget::Element) -> DeclaredPanel {
+    DeclaredPanel::from_props(
+        "notices",
+        FloatingPanelProps {
+            fill: true,
+            fill_height: true,
+            body: vec![body],
+            ..FloatingPanelProps::default()
+        },
+    )
+}
+
+/// The panel in a filling row in a filling stack, as a surface's body is laid: a view call's
+/// `fill` gives the panel the room.
+fn a_panel_in_a_filling_row(panel: DeclaredPanel) -> tilo_ui_app::widget::arrange::Stack {
+    use tilo_ui_app::widget::Fitted;
+    use tilo_ui_app::widget::arrange::{Fit, Part, Row, Stack};
+    let row = Row::row()
+        .fill_width()
+        .fill_height()
+        .push_part(Part::new(Box::new(Fitted::new(
+            Box::new(panel),
+            Fit::fill(1.0),
+        ))));
+    Stack::stack()
+        .fill_width()
+        .fill_height()
+        .push_part(Part::new(Box::new(Fitted::new(
+            Box::new(row),
+            Fit::fill(1.0),
+        ))))
+}
+
+/// Every widget's name and rect in `driver`, in tree order.
+fn named_rects(driver: &Driver) -> Vec<(String, [f64; 4])> {
+    driver
+        .inspection()
+        .root
+        .nodes()
+        .into_iter()
+        .map(|node| (node.widget.clone(), node.rect))
+        .collect()
+}
+
+/// A panel a room is measured for takes the room's height, and its body scrolls inside it: a
+/// page taller than the room shows under the panel's header and scrolls, never an empty column
+/// with its content cut off at the foot.
+#[test]
+fn a_filling_panel_caps_its_body_in_the_room_it_is_given() {
+    use tilo_ui_app::widget::Container;
+    let stack = a_panel_in_a_filling_row(a_filling_panel(a_page_of_lines()));
+    let place = Container::new()
+        .with_no_padding()
+        .with_id("place")
+        .with_height(360.0)
+        .with_child(Box::new(stack));
+    let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(place), (304, 400));
+    driver.relayout();
+    let nodes = named_rects(&driver);
+    let panel = nodes
+        .iter()
+        .find(|(widget, _)| widget == "FloatingPanel")
+        .map(|(_, rect)| *rect)
+        .expect("the panel is laid out");
+    assert!(
+        (panel[3] - 360.0).abs() < 2.0,
+        "the panel takes the room's height: {panel:?}"
+    );
+    let scroll = nodes
+        .iter()
+        .find(|(widget, _)| widget == "Scrollable")
+        .map(|(_, rect)| *rect)
+        .expect("the panel's body scrolls");
+    assert!(
+        scroll[3] > 300.0 && scroll[3] <= panel[3] + 0.5 && scroll[2] > 100.0,
+        "the body is the room less the header, with the page inside it: {scroll:?} in {panel:?}"
+    );
+}
+
+/// A panel that fills, standing in a band's scroll (whose content is as tall as what it holds),
+/// still shows what it holds through a scrolling body: the panel stands at its content's height
+/// there, and the page inside it scrolls in the panel's own scroller, never an empty column.
+#[test]
+fn a_filling_panel_in_a_scroll_still_scrolls_its_body() {
+    use tilo_ui_app::widget::Scrollable;
+    let stack = a_panel_in_a_filling_row(a_filling_panel(a_page_of_lines()));
+    let scroll = Scrollable::new_vertical()
+        .fill_parent_height()
+        .with_child(Box::new(stack));
+    let mut driver = Driver::new(tilo_ui_app::State::new(), Box::new(scroll), (304, 360));
+    driver.relayout();
+    let nodes = named_rects(&driver);
+    assert_eq!(
+        nodes.iter().filter(|(w, _)| w == "FloatingPanel").count(),
+        1,
+        "the panel stands"
+    );
+    assert!(
+        nodes.iter().filter(|(w, _)| w == "Scrollable").count() >= 2,
+        "the panel's body is a scroller of its own, beside the band's"
+    );
+    assert!(
+        nodes
+            .iter()
+            .filter(|(w, r)| w == "Text" && r[3] > 0.0)
+            .count()
+            >= 30,
+        "the page shows under the body's scroller"
+    );
+}

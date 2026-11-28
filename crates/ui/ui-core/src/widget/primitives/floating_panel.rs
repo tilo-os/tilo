@@ -615,6 +615,26 @@ impl FloatingPanel {
     #[must_use]
     pub fn fill_height(mut self) -> Self {
         self.fill_height = true;
+        // The panel takes the height it is offered, so what it holds must scroll inside it: a
+        // page taller than the room shows under the header and scrolls, rather than growing the
+        // panel past the room or being cut off at its foot.
+        if self
+            .body
+            .as_any()
+            .is_none_or(|any| any.downcast_ref::<crate::widget::Scrollable>().is_none())
+        {
+            let body = std::mem::replace(
+                &mut self.body,
+                Box::new(tilo_ui_base::widget::Spacer::token(
+                    tilo_ui_base::tokens::SpacingStep::S0,
+                )),
+            );
+            self.body = Box::new(
+                crate::widget::Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(body),
+            );
+        }
         self
     }
 
@@ -971,6 +991,20 @@ impl Widget for FloatingPanel {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             flex_shrink: 0.0,
+            // A panel that fills a side takes that room, never the least its content needs:
+            // what does not fit elides or scrolls inside the body it was given.
+            min_size: taffy::Size {
+                width: if self.fill_width {
+                    taffy::Dimension::length(0.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
+                height: if self.fill_height {
+                    taffy::Dimension::length(0.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
+            },
             size: taffy::Size {
                 width: if self.fill_width {
                     taffy::Dimension::percent(1.0)
