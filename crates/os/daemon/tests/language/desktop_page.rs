@@ -1118,6 +1118,12 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
         let whole = page.opened.body.clone();
         let menu = style_menu(&whole).unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let listed = page.act(Some((menu, PageAction::Activate))).await;
+        // The menu the press opened stands in that press's answer: its rows are part of what the
+        // page was answered, the shell's own styles among them.
+        assert!(
+            labelled(&listed, &style_line(STRIPS)).is_some(),
+            "the menu a press opens stands in that press's answer: {listed}"
+        );
         if labelled(&listed, "Timeline of the layout").is_none() {
             page.until("the page's menu lists the installed style", |html| {
                 labelled(html, "Timeline of the layout").is_some()
@@ -1180,15 +1186,11 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
         let menu = style_menu(&whole).unwrap_or_else(|| panic!("the page's style menu: {whole}"));
         let strips = style_line(STRIPS);
         let listed = page.act(Some((menu, PageAction::Activate))).await;
-        let listed = if labelled(&listed, &strips).is_some() {
-            listed
-        } else {
-            page.until("the page's menu lists the strips", |html| {
-                labelled(html, &strips).is_some()
-            })
-            .await
-        };
-        let row = labelled(&listed, &strips).unwrap();
+        // The menu stands in that press's answer, with the rows the person picks from: the
+        // shell's own styles are there without waiting for another frame.
+        let row = labelled(&listed, &strips).unwrap_or_else(|| {
+            panic!("the menu a press opens stands in that press's answer: {listed}")
+        });
         page.act(Some((row, PageAction::Activate))).await;
         let pressed = computer.picked(&own, STRIPS).await;
         assert_eq!(
