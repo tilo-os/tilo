@@ -1010,6 +1010,8 @@ impl Opening {
 /// The first peer version that reads the apps a host sends
 /// ([`neighbour_wire::NeighbourMsg::WorkspaceApps`]): a device of an earlier one is never sent
 /// them, and decides by the app versions map as it always did.
+///
+/// Kept while the oldest supported build is 61782b0f16a, which reads it.
 const APPS_PEER_VERSION: u32 = 73;
 
 /// Two devices of one workspace in one process, paired from the moment this
@@ -1704,11 +1706,15 @@ impl DirectSync {
     }
 
     /// Read `authored`, the apps a link brought, as the apps the workspace runs: only from the
-    /// host this device dialled, in its own frame, and only by a device whose engine owns its
-    /// copy and keeps no store to read them from. Any other device's apps are ignored.
+    /// host this device dialled, in its own frame, and only by a device that keeps no store to
+    /// read them from. Any other device's apps are ignored.
     fn read_host_apps(&self, remote: [u8; 32], authored: &Authored, opening: &Opening) {
         let from_host = opening.dialled && authored.from == remote;
-        if !from_host || self.0.admission.is_none() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let keeps_store = self.0.store.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let keeps_store = false;
+        if !from_host || keeps_store {
             tracing::debug!(
                 workspace = ?self.workspace().ok(),
                 from = %short(&authored.from),
@@ -6088,22 +6094,27 @@ mod tests {
     }
 
     /// A copy reads the apps the workspace runs only from the host it dialled, in that host's own
-    /// frame, and only where its engine keeps no store to read them from: apps any other device
-    /// sends, or a device that dialled this one, are ignored.
+    /// frame, and only where it keeps no store to read them from: apps any other device sends, or
+    /// a device that dialled this one, are ignored.
     #[test]
     fn a_copy_reads_the_apps_only_its_host_tells_it() {
         let root = SigningKey::from_bytes(&[0x57; 32]);
         let roster = vec![device(&root, 0x58), device(&root, 0x59)];
         let (host, other) = (roster[0].1.device_public_key, roster[1].1.device_public_key);
-        let stored = link(&roster, RevocationList::new());
+        let plain = link(&roster, RevocationList::new());
         let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(
+            directory.path().join("store"),
+            crate::store::Appetite::StoreAll,
+        );
+        let stored = plain.with_store(Arc::new(store.unwrap()));
         let owner = crate::owner::open_file(&directory.path().join("joined.json")).unwrap();
         let copy = DirectSync(Arc::new(Inner {
             admission: Some(Admission {
                 owner,
                 workspace: tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap(),
             }),
-            ..stored.copied()
+            ..plain.copied()
         }));
         let release = crate::workspace_membership::AppRelease {
             app: "so.tilo.notes".into(),

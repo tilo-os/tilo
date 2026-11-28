@@ -64,6 +64,39 @@
           "wait_for": "How reports work"
         }
       ]
+    },
+    {
+      "id": "install-package",
+      "said": "Review a signed package and install it in the workspace",
+      "dark": true,
+      "ops": [
+        {
+          "package": {
+            "name": "calculator"
+          }
+        },
+        {
+          "press_any": [
+            "Review package"
+          ]
+        },
+        {
+          "choose": {
+            "name": "calculator.tapp"
+          }
+        },
+        {
+          "wait_for": "Install reviewed package"
+        },
+        {
+          "press_any": [
+            "Install reviewed package"
+          ]
+        },
+        {
+          "wait_for": "Package installed. Open it from its app details."
+        }
+      ]
     }
   ]
 }

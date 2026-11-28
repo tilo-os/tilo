@@ -58,9 +58,9 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE, WORKSPACE_GRANT_SET,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_app,
-    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
-    workspace_governance_resource, workspace_member, workspace_named_argument,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, workspace_governance_address,
+    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
+    workspace_member, workspace_named_argument,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -171,9 +171,8 @@ pub(crate) const PUBLICATION: &str = "publication";
 pub const IF_ABSENT: &str = "if_absent";
 /// The versions of an app the workspace ran before the one it runs, the most recent first.
 pub(crate) const EARLIER_APP_VERSIONS: &str = "app.earlier";
-/// What the tree publishes on each app the workspace runs, not on its apps: updating, pinning
-/// and uninstalling it.
-const ON_EACH_APP: [&str; 4] = [UNINSTALL_APP, PIN_APP, UNPIN_APP, EARLIER_APP_VERSIONS];
+/// Taking back an install, update, pin or uninstall by the invocation it answered.
+pub(crate) const UNDO_APPS: &str = "apps.undo";
 /// Hand the workspace's holder a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
 /// The attestors whose signatures the workspace accepts for packages.
@@ -222,7 +221,7 @@ pub struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 53] = [
+const VERBS: [Verb; 54] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -546,6 +545,19 @@ const VERBS: [Verb; 53] = [
         check: "",
         kind: ActionKind::Read,
         params: app_params,
+    },
+    Verb {
+        id: UNDO_APPS,
+        label: "Take back a change of the apps",
+        check: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: || {
+            vec![ActionParam::required(
+                "invocation",
+                ParamType::Text,
+                "The change to take back, as its answer names it.",
+            )]
+        },
     },
     Verb {
         id: REVOKE_KEY,
@@ -1347,9 +1359,9 @@ impl Verb {
         if child.is_some() {
             row.parent_resource.clone_from(&root);
         }
-        // The workspace's people each hold what changes their place, and its apps what
-        // updates, pins and uninstalls each.
-        row.has_children = matches!(child, Some(WORKSPACE_MEMBERS | WORKSPACE_APPS));
+        // The workspace's people each hold what changes their place; its apps publish every
+        // change of an app on the apps themselves, so they hold nothing under them.
+        row.has_children = matches!(child, Some(WORKSPACE_MEMBERS));
         if let Some(action) = row.action.as_mut() {
             // Reading the tree (`tilo_read workspace/invitations`) lists it.
             if child.is_some() && address.action == "list" && self.kind == ActionKind::Read {
@@ -1362,50 +1374,6 @@ impl Verb {
         }
         row
     }
-}
-
-/// What each app `workspace` runs publishes (`workspace/apps/<app>`) that `offered` lets the
-/// caller ask, when `query` browses its apps: updating it to another version, keeping the one it
-/// runs or letting it be updated again, and uninstalling it.
-fn app_rows(
-    workspace: &super::HostedWorkspace,
-    query: &CatalogueQuery,
-    offered: impl Fn(&Verb) -> bool,
-) -> Vec<CatalogueRow> {
-    let apps = workspace_governance_child(workspace.workspace(), Some(WORKSPACE_APPS));
-    if query.parent_resource.as_deref() != Some(apps.as_str()) {
-        return Vec::new();
-    }
-    let verbs: Vec<&Verb> = VERBS
-        .iter()
-        .filter(|verb| {
-            (verb.id == governance::INSTALL_APP || ON_EACH_APP.contains(&verb.id)) && offered(verb)
-        })
-        .collect();
-    let installed_apps = workspace.peer().governance().app_versions();
-    let mut rows = Vec::new();
-    for installed in installed_apps {
-        let release = installed.release;
-        let resource = workspace_app(workspace.workspace(), &release.app);
-        for verb in &verbs {
-            let published = match verb.id {
-                governance::INSTALL_APP if !release.pinned => "update",
-                PIN_APP if !release.pinned => "pin",
-                UNPIN_APP if release.pinned => "unpin",
-                UNINSTALL_APP => "uninstall",
-                EARLIER_APP_VERSIONS => "earlier",
-                _ => continue,
-            };
-            let mut row = verb.row(GOVERNANCE, &resource, &release.app);
-            row.parent_resource.clone_from(&apps);
-            if let Some(action) = row.action.as_mut() {
-                action.address = ActionAddress::new(resource.as_str(), published);
-                action.params.retain(|param| param.name != "app");
-            }
-            rows.push(row);
-        }
-    }
-    rows
 }
 
 /// `rows` of a workspace's governance tree, the workspace named `name`, its
@@ -1484,7 +1452,7 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
 }
 
 /// An invocation's typed arguments.
-struct Args(Map<String, Value>);
+pub(super) struct Args(Map<String, Value>);
 
 impl Args {
     fn of(argument: &InvokeArgument) -> Result<Self, ActionCallError> {
@@ -1502,7 +1470,7 @@ impl Args {
         Arguments(&self.0)
     }
 
-    fn text(&self, name: &str) -> Result<Option<&str>, ActionCallError> {
+    pub(super) fn text(&self, name: &str) -> Result<Option<&str>, ActionCallError> {
         self.read()
             .optional_text(name)
             .map_err(ActionCallError::invalid_request)
@@ -1527,7 +1495,7 @@ impl Args {
         signed_in(&self.0)
     }
 
-    fn required_text(&self, name: &str) -> Result<&str, ActionCallError> {
+    pub(super) fn required_text(&self, name: &str) -> Result<&str, ActionCallError> {
         self.read()
             .text(name)
             .map_err(ActionCallError::invalid_request)
@@ -1581,7 +1549,7 @@ impl Args {
     }
 
     /// The flag `name`, false when it was not given.
-    fn flag(&self, name: &str) -> Result<bool, ActionCallError> {
+    pub(super) fn flag(&self, name: &str) -> Result<bool, ActionCallError> {
         self.read()
             .flag_or(name, false)
             .map_err(ActionCallError::invalid_request)
@@ -1918,20 +1886,14 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let offered =
             |verb: &Verb| self.offers(verb, (caller, &device), &workspace, grants.as_ref(), now);
-        // Removing is published on each person, under the workspace's people, and
-        // what changes one app on that app, under its apps.
+        // Removing is published on each person, under the workspace's people.
         let mut rows: Vec<CatalogueRow> = VERBS
             .iter()
-            .filter(|verb| {
-                verb.id != governance::REMOVE_MEMBER
-                    && !ON_EACH_APP.contains(&verb.id)
-                    && offered(verb)
-            })
+            .filter(|verb| verb.id != governance::REMOVE_MEMBER && offered(verb))
             .map(|verb| verb.governance_row(workspace.workspace(), &workspace.name()))
             .collect();
         let own = device.user_public_key;
         rows.extend(self.member_rows(&workspace, (query, own), offered));
-        rows.extend(app_rows(&workspace, query, offered));
         if operating.is_some() {
             rows.extend(server::rows(&workspace));
         }
@@ -2438,17 +2400,17 @@ impl Workspaces {
         action: &str,
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
+        // Every change of the apps the workspace runs is made, written and answered by the one
+        // function that carries their rules ([`Self::change_app`]).
+        if matches!(
+            action,
+            governance::INSTALL_APP | UNINSTALL_APP | PIN_APP | UNPIN_APP | UNDO_APPS
+        ) {
+            return self.change_app(action, call).await;
+        }
         // A change the action asks for is the caller's device's to sign; what the action answers
         // is then read as the workspace stands.
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
         let done = match self.asked_change(action, &call).await? {
-            // The version of an app the workspace runs is the app's record in its store, which
-            // this host writes for a member the workspace lets install apps.
-            Some(command @ (Command::InstallApp(_) | Command::UninstallApp { .. })) => Some(
-                self.govern_app(call.workspace, call.device, call.request_id, command)
-                    .await
-                    .map_err(|error| ActionCallError::refused(error.to_string()))?,
-            ),
             Some(command) => Some(Self::signed_change(
                 self.govern(call.workspace, Self::signed_ask(&call)?, &command)
                     .await,
@@ -2505,17 +2467,6 @@ impl Workspaces {
             server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => Ok(self.governance_listing(call.workspace).await),
-            governance::INSTALL_APP | UNINSTALL_APP | PIN_APP | UNPIN_APP => {
-                let app = Self::named_app(call.args)?;
-                if action == governance::INSTALL_APP && done.is_some() {
-                    self.root_installed(call.workspace, &app).await;
-                }
-                let running = self.running_release(call.workspace, &app).await?;
-                Ok(json!({
-                    "generation": done.as_ref().map(|done| done.generation),
-                    "running": running,
-                }))
-            }
             TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | ADD_ATTESTOR | REMOVE_ATTESTOR
             | REVOKE_PUBLISHER => {
                 let (attestors, revoked) = self
@@ -2561,9 +2512,9 @@ impl Workspaces {
 
     /// The change the governance action `action` asks for with `call`'s arguments, once this
     /// host's own checks of it pass: `None` for an action that reads, or whose change is made
-    /// elsewhere (naming oneself, who reads a resource). Pinning names the version the workspace
-    /// runs; an install is refused over a pinned version, or a package file not here yet; a
-    /// grant is taken back by whoever gave it or whom the workspace lets revoke grants.
+    /// elsewhere (naming oneself, who reads a resource; an app's change, which
+    /// [`Self::change_app`] makes in one place). A grant is taken back by whoever gave it or whom
+    /// the workspace lets revoke grants.
     async fn asked_change(
         &self,
         action: &str,
@@ -2573,30 +2524,8 @@ impl Workspaces {
         ActionCallError,
     > {
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
-        let running = || async {
-            self.running_release(call.workspace, &Self::named_app(call.args)?)
-                .await
-        };
-        // Opening an app installs it only where the workspace runs no version of it: the version
-        // the workspace chose stays.
-        if action == governance::INSTALL_APP
-            && call.args.flag(IF_ABSENT)?
-            && running().await?.is_some()
-        {
-            return Ok(None);
-        }
         let command = match action {
             NAME => return Ok(None),
-            PIN_APP | UNPIN_APP => {
-                let mut release = running()
-                    .await?
-                    .ok_or_else(|| {
-                        ActionCallError::refused("the workspace runs no version of this app")
-                    })?
-                    .release;
-                release.pinned = action == PIN_APP;
-                WorkspaceMembershipCommand::InstallApp(release)
-            }
             _ => match WorkspaceMembershipCommand::of_action(action, &call.args.0)
                 .map_err(ActionCallError::invalid_request)?
             {
@@ -2622,24 +2551,6 @@ impl Workspaces {
                     return Ok(None);
                 }
             }
-            WorkspaceMembershipCommand::InstallApp(release)
-                if action == governance::INSTALL_APP =>
-            {
-                if let Some(running) = running().await?.filter(|running| running.release.pinned) {
-                    return Err(ActionCallError::refused(format!(
-                        "the workspace keeps version {} of this app: unpin it first",
-                        running.release.version
-                    )));
-                }
-                // Members fetch the file from this host: it must be here first.
-                if let Some(file) = &release.file
-                    && !self.keeps_app_file(call.workspace, file)
-                {
-                    return Err(ActionCallError::refused(
-                        "the workspace's host does not have this package file: hand it over with `upload-app-file` first",
-                    ));
-                }
-            }
             WorkspaceMembershipCommand::Revoke { grant } => self.may_revoke(call, grant).await?,
             _ => {}
         }
@@ -2647,26 +2558,6 @@ impl Workspaces {
             .validate()
             .map_err(ActionCallError::invalid_request)?;
         Ok(Some(command))
-    }
-
-    /// The app a change to the apps the workspace runs names, as `args` name it.
-    fn named_app(args: &Args) -> Result<String, ActionCallError> {
-        tilo_peer_state::signed_actions::named_app(args.text("app")?, args.text("flatpak")?)
-            .map_err(ActionCallError::invalid_request)
-    }
-
-    /// The version of `app` `workspace` runs, as its governance records it now.
-    async fn running_release(
-        &self,
-        workspace: &str,
-        app: &str,
-    ) -> Result<Option<tilo_peer_state::InstalledApp>, ActionCallError> {
-        Ok(self
-            .app_versions(workspace)
-            .await
-            .map_err(|error| ActionCallError::refused(error.to_string()))?
-            .into_iter()
-            .find(|installed| installed.release.app == app))
     }
 
     /// Revoke the key `grant` names: the caller's own or one it minted, or, for a device of the
@@ -2946,22 +2837,6 @@ impl Workspaces {
             answer
         };
         entry_answer(&self.entry_policy(workspace).await.unwrap_or_default())
-    }
-
-    /// Make the root of `app`, just installed in `workspace`, empty, as this device's own change
-    /// ([`Self::root_app`]): the app's actions on its whole are offered from then on, before
-    /// anyone opened it, and a record nobody wrote yet holds nothing but that root. An app this
-    /// build carries no package of is rooted where it runs, when a window of it opens.
-    async fn root_installed(&self, workspace: &str, app: &str) {
-        if !self
-            .tilolang()
-            .is_some_and(|tilolang| tilolang.records.built_in(app))
-        {
-            return;
-        }
-        if let Err(error) = self.root_app(workspace, app, None).await {
-            tracing::warn!(%workspace, app, %error, "an installed app's root is not made");
-        }
     }
 
     /// The apps `workspace`'s registries offer: each one's name, the version to install, the
@@ -3462,11 +3337,11 @@ impl Workspaces {
 
 /// One governance invocation, as its workspace method takes it.
 #[derive(Clone, Copy)]
-struct GovernanceCall<'a> {
-    workspace: &'a str,
-    device: &'a DeviceCert,
-    request_id: [u8; 32],
-    args: &'a Args,
+pub(super) struct GovernanceCall<'a> {
+    pub(super) workspace: &'a str,
+    pub(super) device: &'a DeviceCert,
+    pub(super) request_id: [u8; 32],
+    pub(super) args: &'a Args,
 }
 
 /// The workspaces' governance as an action host, attached once the workspaces open.
@@ -4988,7 +4863,7 @@ mod surface_tests {
         WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
     use tilo_actions::remote::{
-        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_CONTENT, WORKSPACE_GRANTS, WORKSPACE_PERMISSION,
+        WORKSPACE_APPS, WORKSPACE_CONTENT, WORKSPACE_GRANTS, WORKSPACE_PERMISSION,
         WORKSPACE_REGISTRIES, WORKSPACE_SERVERS, WORKSPACE_TRUST,
     };
 
@@ -5015,7 +4890,7 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 14] = [
+    const RESOURCES: [(&str, &str); 13] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
@@ -5026,7 +4901,6 @@ mod surface_tests {
         ("trust", "Trust"),
         ("registries", "Registries"),
         ("apps", "Apps"),
-        ("app", "App"),
         ("permission", "Permission"),
         ("grants", "Grants"),
         // A folder of the workspace's tree, read as what Files' `list` answers for it: what a
@@ -5048,7 +4922,6 @@ mod surface_tests {
             Some(WORKSPACE_TRUST) => "trust",
             Some(WORKSPACE_REGISTRIES) => "registries",
             Some(WORKSPACE_APPS) => "apps",
-            Some(WORKSPACE_APP) => "app",
             Some(WORKSPACE_PERMISSION) => "permission",
             Some(WORKSPACE_GRANTS) => "grants",
             other => panic!("the surface names no resource for the actions on {other:?}"),

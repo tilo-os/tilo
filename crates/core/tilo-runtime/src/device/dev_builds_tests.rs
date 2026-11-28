@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use tilo_action_policy::{Answer, Authority, Context, TreePath};
 use tilo_action_types::ActionKind;
-use tilo_actions::remote::{
-    ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-    WORKSPACE_GOVERNANCE_PROVIDER,
-};
+use tilo_actions::remote::{ActionCallError, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER};
 use tilo_app_package::{Manifest, SigningIdentity};
 use tilo_desktop_model::WorkspaceId;
 
@@ -76,25 +73,11 @@ fn uninstall(workspaces: &ServiceWorkspaces, workspace: &str, app: &str) {
     let cert = workspaces.device_cert();
     let person =
         Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace);
-    let request = InvokeRequest {
-        asks: false,
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-            address: tilo_actions::ActionAddress::new(
-                tilo_actions::remote::workspace_app(workspace, app),
-                "uninstall",
-            ),
-        },
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
+    let request = tilo_workspace_service::workspaces::fixtures::request(
+        workspace,
+        "uninstall-app",
+        serde_json::json!({ "app": app }),
+    );
     let receipt = tree
         .answers
         .invoke(&person, request)
@@ -122,8 +105,10 @@ fn uninstall(workspaces: &ServiceWorkspaces, workspace: &str, app: &str) {
 fn a_development_build_keeps_its_records_in_the_workspace_its_person_installs_it_in() {
     let placed = WorkspaceId::new();
     let other = WorkspaceId::new();
-    let (workspaces, _directory) = tilo_rt::app()
-        .block_on(ServiceWorkspaces::test_hosting(placed))
+    // A person's own device, its key service running: the workspace's apps are records of its
+    // store, sealed with the workspace's keys.
+    let (workspaces, _directory, _key, _cert, _lock) = tilo_rt::app()
+        .block_on(ServiceWorkspaces::test_hosting_person(placed))
         .unwrap();
     tilo_rt::app()
         .block_on(workspaces.found(other, "Elsewhere"))

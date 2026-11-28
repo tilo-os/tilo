@@ -917,7 +917,7 @@ fn rollback(query: &str, to: Option<&str>) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    match app_cli::device::update_to(&id, &release) {
+    match app_cli::device::install_offered(&release) {
         Ok(_) => {
             println!(
                 "rolled back {id} {} -> {}",

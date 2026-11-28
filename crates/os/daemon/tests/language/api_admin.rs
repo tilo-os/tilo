@@ -277,10 +277,13 @@ fn a_device_installs_an_app_version_and_takes_it_back() {
             "{installed}"
         );
 
-        // The version is taken back where the workspace publishes that app: its own resource.
-        let app = tilo_actions::remote::workspace_app(&workspace, "so.tilo.notes");
-        let at = tilo_actions::ActionAddress::new(app, "uninstall");
-        let (ran, removed) = settled(&laptop, at, &json!({"app": "so.tilo.notes"})).await;
+        let (ran, removed) = workspace_action(
+            &laptop,
+            &workspace,
+            "uninstall-app",
+            &json!({"app": "so.tilo.notes"}),
+        )
+        .await;
         assert!(ran, "{removed}");
     });
 }

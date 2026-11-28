@@ -1129,9 +1129,9 @@ fn dev_release(publisher: &str, version: &str, surface: u8) -> Value {
 /// recorded. Once the owner lets a member install apps (a developer), its own build runs,
 /// recorded with who signed and installed it; the next push replaces it, so one version runs at a
 /// time, and an install only where none runs (as opening an app the device holds asks) leaves the
-/// version chosen. The app's resource offers updating, pinning and uninstalling it; pinned, the
-/// version stays until it is unpinned. A release names its hashes in full, and taking the choice
-/// back lets each member run their own.
+/// version chosen. The workspace's apps offer installing, pinning and uninstalling an app by
+/// name; pinned, the version stays until it is unpinned. A release names its hashes in full,
+/// taking the choice back lets each member run their own, and undo takes an uninstall back.
 #[tokio::test]
 async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
     let dir = tempfile::tempdir().unwrap();
@@ -1224,8 +1224,13 @@ async fn a_developer_chooses_the_version_of_an_app_the_whole_workspace_runs() {
         "{refused:?}"
     );
 
-    ask(&owner, super::UNINSTALL_APP, notes).await.unwrap();
+    let uninstalled = ask(&owner, super::UNINSTALL_APP, notes).await.unwrap();
     assert!(versions().await.is_empty());
+    // Undo takes the uninstall back: the version the workspace ran runs again.
+    let undo = json!({ "invocation": uninstalled["invocation"] });
+    ask(&owner, super::UNDO_APPS, undo).await.unwrap();
+    let running = versions().await;
+    assert_eq!(running[0].release.version, "1.5.0-dev.2", "{running:?}");
     server.shutdown().await;
 }
 

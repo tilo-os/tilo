@@ -18,7 +18,17 @@ use tilo_peer_state::{InstalledApp, WorkspaceApps};
 use tilo_resource_store::apps::{self, Fields};
 use tilo_resource_store::{Stamp, Store};
 
-use super::{HostedWorkspace, Workspaces};
+use serde_json::json;
+use tilo_action_policy::roles::governance;
+use tilo_actions::remote::ActionCallError;
+
+use super::actions::{
+    Args, GovernanceCall, IF_ABSENT, PIN_APP, UNDO_APPS, UNINSTALL_APP, UNPIN_APP,
+};
+use super::authority::WorkspaceOp;
+use super::collaboration::request_digest;
+use super::{HostedWorkspace, Workspaces, system_time};
+use tilo_peer_state::signed_actions::named_app;
 
 impl HostedWorkspace {
     /// Read the apps the workspace runs from its store into its replica, and decide again every
@@ -64,6 +74,22 @@ impl Workspaces {
         }
     }
 
+    /// Read the apps `hosted`'s store now holds and tell them to the devices on this device's
+    /// link: what a change of them taken in from another does ([`Self::follow_apps`]), and what
+    /// this device's own install, pin or uninstall does too — a device that writes its store
+    /// here tells the devices that keep none.
+    fn tell_apps_written(&self, hosted: &HostedWorkspace) {
+        let Some((apps, report)) = hosted.read_apps() else {
+            return;
+        };
+        if let Some(link) = self.inner.direct.link(hosted.workspace_id()) {
+            link.tell_apps(&apps);
+        }
+        if !report.released().is_empty() || report.replay_wanted {
+            self.replay_soon(hosted.workspace().to_owned());
+        }
+    }
+
     /// Tell the devices on `workspace`'s link the apps it runs, as its store holds them: what a
     /// link that starts serving it tells first.
     pub(super) fn tell_apps(&self, hosted: &HostedWorkspace) {
@@ -72,6 +98,175 @@ impl Workspaces {
         {
             link.tell_apps(&apps);
         }
+    }
+
+    /// The one path every change to an app the workspace runs takes: run a version of it
+    /// (`install-app`), keep that version or let it update again (`app.pin`, `app.unpin`), run
+    /// none (`uninstall-app`), or take one of these back by the invocation it answered
+    /// (`apps.undo`). `action` names the change and `call` carries its arguments and the member
+    /// asking for it.
+    ///
+    /// It carries every rule an app change has: the caller must be a member the workspace lets
+    /// install apps; an install names its release (`version`, `package`, `publisher`, `file`),
+    /// or a Flatpak by its reference, and the workspace's host must keep a package file it names;
+    /// a pinned version refuses an install until it is unpinned; `if_absent` installs only where
+    /// the workspace runs no version, as opening an app the device holds asks. It writes the
+    /// app's record in the store, writes or revokes the records grant the oldest supported build
+    /// still reads (61782b0f16a), roots a new install, and answers the change's own invocation,
+    /// which undo takes back by. Undo leaves the records grant as the change left it.
+    ///
+    /// A pending install (a phone's default app it has not fetched yet, named by a `pending`
+    /// reason on the app's record) is an `install-app` whose release names no version, package
+    /// or publisher; it is the same change, and its record is written as it is given.
+    pub(super) async fn change_app(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        let GovernanceCall {
+            workspace,
+            device,
+            request_id,
+            args,
+        } = call;
+        let refused = |error: &dyn std::fmt::Display| ActionCallError::refused(error.to_string());
+        let state = self.workspace(workspace).await.map_err(|e| refused(&e))?;
+        let now = tilo_clock::unix_now_ns();
+        let op = WorkspaceOp::Govern(governance::INSTALL_APP);
+        self.authorize(device, Some(&*state.lock().await), op, now)
+            .map_err(|e| refused(&e))?;
+        if action == UNDO_APPS {
+            let invocation = args.required_text("invocation")?;
+            let undone = self.undo_apps_change(workspace, invocation).await;
+            let undone = undone.map_err(|e| refused(&e))?;
+            self.tell_apps_written(&*state.lock().await);
+            return Ok(json!({ "invocation": undone }));
+        }
+        // A Flatpak is named by its reference; the record its app id.
+        let flatpak = args.text("flatpak")?.map(str::to_owned);
+        let app = named_app(args.text("app")?, flatpak.as_deref())
+            .map_err(ActionCallError::invalid_request)?;
+        let running_now = state.lock().await.peer().governance().app_version(&app);
+        let release = match action {
+            PIN_APP | UNPIN_APP => {
+                let mut release = running_now
+                    .ok_or_else(|| refused(&"the workspace runs no version of this app"))?
+                    .release;
+                release.pinned = action == PIN_APP;
+                Some(release)
+            }
+            UNINSTALL_APP => None,
+            // Opening an app installs it only where the workspace runs no version of it: the
+            // version the workspace chose stays.
+            _ if args.flag(IF_ABSENT)? && running_now.is_some() => {
+                return Ok(json!({ "running": running_now }));
+            }
+            _ => Some(self.release_asked(workspace, &app, flatpak, args, running_now)?),
+        };
+        let command = match &release {
+            Some(release) => Command::InstallApp(release.clone()),
+            None => Command::UninstallApp { app: app.clone() },
+        };
+        command
+            .validate()
+            .map_err(ActionCallError::invalid_request)?;
+        let digest = request_digest(&("app.version", &command)).map_err(|e| refused(&e))?;
+        let key = self.inner.host.key.clone();
+        let done = self
+            .administer(
+                &mut *state.lock().await,
+                request_id,
+                digest,
+                |peer| {
+                    if release.is_some() {
+                        peer.grant_app_records(device, &app, &key, system_time(now))
+                    } else {
+                        peer.revoke_app_records(device, &app, &key, system_time(now))
+                    }
+                },
+                now,
+            )
+            .await
+            .map_err(|e| refused(&e))?;
+        let installing = release.is_some();
+        let installed = release.map(|release| InstalledApp {
+            release,
+            installed_by: hex::encode(device.user_public_key),
+            installed_at_ns: now,
+        });
+        let invocation = self
+            .write_app_records(workspace, vec![(app.clone(), installed)])
+            .await
+            .map_err(|e| refused(&e))?;
+        self.tell_apps_written(&*state.lock().await);
+        // The app's actions on its whole are offered from the install on, before anyone opened
+        // it. An app this build carries no package of is rooted where a window of it opens.
+        if installing
+            && self
+                .tilolang()
+                .is_some_and(|tilolang| tilolang.records.built_in(&app))
+            && let Err(error) = self.root_app(workspace, &app, None).await
+        {
+            tracing::warn!(%workspace, app, %error, "an installed app's root is not made");
+        }
+        let running = state.lock().await.peer().governance().app_version(&app);
+        Ok(json!({ "generation": done.generation, "running": running, "invocation": invocation }))
+    }
+
+    /// The version of `app` an install asks to run, `args` naming it (`flatpak` its reference,
+    /// for a Flatpak): refused while the workspace keeps the version it `running` at, and for a
+    /// package file the workspace's host does not have.
+    fn release_asked(
+        &self,
+        workspace: &str,
+        app: &str,
+        flatpak: Option<String>,
+        args: &Args,
+        running: Option<InstalledApp>,
+    ) -> Result<AppRelease, ActionCallError> {
+        let refused = |error: &dyn std::fmt::Display| ActionCallError::refused(error.to_string());
+        if let Some(kept) = running.filter(|running| running.release.pinned) {
+            return Err(refused(&format!(
+                "the workspace keeps version {} of this app: unpin it first",
+                kept.release.version
+            )));
+        }
+        // A Flatpak names neither a package nor a publisher: its reference is its payload.
+        let (package, publisher, payload) = match flatpak {
+            Some(reference) => (
+                String::new(),
+                String::new(),
+                AppPayload::Flatpak { reference },
+            ),
+            None => (
+                args.required_text("package")?.to_owned(),
+                args.required_text("publisher")?.to_owned(),
+                AppPayload::Tapp,
+            ),
+        };
+        let file = args.text("file")?.map(str::to_owned);
+        // Members fetch the file from this host: it must be here first.
+        if file
+            .as_ref()
+            .is_some_and(|file| !self.keeps_app_file(workspace, file))
+        {
+            return Err(refused(
+                &"the workspace's host does not have this package file: hand it over with `upload-app-file` first",
+            ));
+        }
+        Ok(AppRelease {
+            app: app.to_owned(),
+            version: args.required_text("version")?.to_owned(),
+            // A version that publishes no surface names none.
+            surface: args.text("surface")?.unwrap_or_default().to_owned(),
+            package,
+            publisher,
+            file,
+            dev: args.flag("dev")?,
+            pinned: false,
+            payload,
+        })
     }
 
     /// Write each of `apps` as the record of the app it names: the version it runs, or, with
@@ -127,7 +322,6 @@ impl Workspaces {
     ///
     /// # Errors
     /// The workspace is not held here, or it or its store refused the undo.
-    #[cfg(test)]
     pub(crate) async fn undo_apps_change(
         &self,
         workspace: &str,

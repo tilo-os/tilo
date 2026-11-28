@@ -271,8 +271,8 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
         install(state, args)
     } else if let Some(verb) = path.strip_prefix("workspace/registries#") {
         registries(verb, args)
-    } else if let Some(rest) = path.strip_prefix("workspace/apps/") {
-        let (app, action) = rest.split_once('#').ok_or("an app's action names it")?;
+    } else if let Some(action) = path.strip_prefix("workspace/apps#") {
+        let app = args.get("app").and_then(Value::as_str).ok_or("no app")?;
         match action {
             "uninstall" => {
                 let answer = apply(
@@ -293,7 +293,6 @@ fn do_action(state: &Arc<State>, path: &str, args: &Value) -> Result<Value, Stri
                     pinned: action == "pin",
                 },
             ),
-            "update" => install(state, args),
             "earlier" => Ok(json!({ "releases": earlier(state, app) })),
             other => Err(format!("the daemon offers no {other} of an app")),
         }

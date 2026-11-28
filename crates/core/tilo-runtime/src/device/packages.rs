@@ -1018,7 +1018,7 @@ fn trust_lists(
 }
 
 /// Keep the apps the workspaces this device keeps (`workspaces`) run in the cache, from now on:
-/// each version a workspace's tree names (`workspace/apps/<app>`) is installed once its package
+/// each version a workspace's tree names (`workspace/apps`) is installed once its package
 /// file is here,
 /// fetched from the workspace when this device has none, and bound to the package root and
 /// publisher the tree names. A Flatpak a tree names is installed into the device's system Flatpak

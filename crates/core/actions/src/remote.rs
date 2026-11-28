@@ -209,9 +209,6 @@ pub const WORKSPACE_REGISTRIES: &str = "registries";
 /// what one member's files may take, now and in any hour. Read by every
 /// member as the Workspace package's `content` root.
 pub const WORKSPACE_CONTENT: &str = "content";
-/// One app a workspace runs (`workspace/apps/<app>`, its id): what updates, pins and uninstalls
-/// it is published on it.
-pub const WORKSPACE_APP: &str = "apps/*";
 /// The mail accounts a workspace keeps on its server, under its governance
 /// root (`workspace/mail-accounts`): `tilo.accounts`'s, reached by path.
 pub const WORKSPACE_MAIL_ACCOUNTS: &str = "mail-accounts";
@@ -331,8 +328,7 @@ pub fn workspace_agent_effects(operation: &str) -> Vec<crate::ActionEffect> {
 /// under the root it is on (none for the root itself) and its id there, as a
 /// person names it. An operation not listed is published on the root under its
 /// own name; one listed on [`WORKSPACE_MEMBER`] is published on each person, who
-/// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
-/// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
+/// is its `person`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
 pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     (
@@ -384,11 +380,11 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     ("install-app", Some(WORKSPACE_APPS), "install"),
     ("upload-app-file", Some(WORKSPACE_APPS), "upload"),
     ("app.offers", Some(WORKSPACE_APPS), "offers"),
-    ("install-app", Some(WORKSPACE_APP), "update"),
-    ("app.pin", Some(WORKSPACE_APP), "pin"),
-    ("app.unpin", Some(WORKSPACE_APP), "unpin"),
-    ("uninstall-app", Some(WORKSPACE_APP), "uninstall"),
-    ("app.earlier", Some(WORKSPACE_APP), "earlier"),
+    ("app.pin", Some(WORKSPACE_APPS), "pin"),
+    ("app.unpin", Some(WORKSPACE_APPS), "unpin"),
+    ("uninstall-app", Some(WORKSPACE_APPS), "uninstall"),
+    ("app.earlier", Some(WORKSPACE_APPS), "earlier"),
+    ("apps.undo", Some(WORKSPACE_APPS), "undo"),
     (WORKSPACE_GRANT_REVOKE, Some(WORKSPACE_PERMISSION), "revoke"),
     (WORKSPACE_READ_GRANT, Some(WORKSPACE_MEMBERS), "grant-read"),
     (
@@ -468,17 +464,8 @@ pub fn workspace_member(workspace: &str, person: &str) -> String {
     )
 }
 
-/// The app `app` (its id) among the apps `workspace` runs.
-#[must_use]
-pub fn workspace_app(workspace: &str, app: &str) -> String {
-    format!(
-        "{}/{app}",
-        workspace_governance_child(workspace, Some(WORKSPACE_APPS))
-    )
-}
-
 /// The address `workspace`'s governance tree publishes the operation
-/// `operation` at, where it is not one person's or one app's.
+/// `operation` at, where it is not one person's.
 #[must_use]
 pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionAddress {
     match WORKSPACE_MEMBER_LIST_PUBLISHED
@@ -486,7 +473,6 @@ pub fn workspace_governance_address(workspace: &str, operation: &str) -> ActionA
         .find(|(granted, child, _)| {
             *granted == operation
                 && *child != Some(WORKSPACE_MEMBER)
-                && *child != Some(WORKSPACE_APP)
                 && *child != Some(WORKSPACE_PERMISSION)
         }) {
         Some((_, child, action)) => {
@@ -515,8 +501,6 @@ pub fn workspace_governance_operation(address: &ActionAddress) -> Option<(&str, 
     let action = address.action.as_str();
     let child = if workspace_person(address).is_some() {
         Some(WORKSPACE_MEMBER)
-    } else if workspace_app_named(address).is_some() {
-        Some(WORKSPACE_APP)
     } else if workspace_grant(address).is_some() {
         Some(WORKSPACE_PERMISSION)
     } else {
@@ -552,22 +536,6 @@ pub fn workspace_person(address: &ActionAddress) -> Option<&str> {
     .then_some(person)
 }
 
-/// The app (its id) `address` names among the apps its workspace runs
-/// (`workspace/apps/<app>`), when it names one.
-#[must_use]
-pub fn workspace_app_named(address: &ActionAddress) -> Option<&str> {
-    let named = address
-        .resource
-        .strip_prefix(workspace_governance_resource("").as_str())?;
-    let (apps, app) = named.split_once('/')?.1.split_once('/')?;
-    (apps == WORKSPACE_APPS
-        && !app.is_empty()
-        && app
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
-    .then_some(app)
-}
-
 /// The grant `address` is on, by its id, when it is one of a workspace's permissions
 /// (`workspace/permissions/<grant>`).
 #[must_use]
@@ -580,12 +548,11 @@ pub fn workspace_grant(address: &ActionAddress) -> Option<&str> {
 }
 
 /// The argument `address` names in its resource, as the governance action asked there reads
-/// it: the person a member's resource is, the app an app's is, or the grant a permission's is.
+/// it: the person a member's resource is, or the grant a permission's is.
 #[must_use]
 pub fn workspace_named_argument(address: &ActionAddress) -> Option<(&'static str, &str)> {
     workspace_person(address)
         .map(|person| ("person", person))
-        .or_else(|| workspace_app_named(address).map(|app| ("app", app)))
         .or_else(|| workspace_grant(address).map(|grant| ("grant", grant)))
 }
 

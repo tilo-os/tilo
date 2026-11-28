@@ -6,7 +6,6 @@
 //! workspace's server is asked directly and every member follows.
 use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
 use tilo_action_types::KindSet;
-use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 use super::*;
 
@@ -139,25 +138,41 @@ async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_
     let file = workspaces
         .keep_app_file(&workspace.workspace, &package)
         .unwrap();
-    workspaces
-        .govern_app(
-            &workspace.workspace,
-            &laptop.cert,
-            [9; 32],
-            WorkspaceMembershipCommand::InstallApp(AppRelease {
-                app: APP.into(),
-                version: "2.0.0-dev.1".into(),
-                surface: hex::encode(surface_of(2)),
-                package: hex::encode([2_u8 ^ 0xff; 32]),
-                publisher: hex::encode(laptop.cert.user_public_key),
-                file: Some(file.clone()),
-                dev: true,
-                pinned: false,
-                payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
-            }),
+    {
+        use tilo_actions::remote::ActionProvider as _;
+        let caller = tilo_actions::remote::Caller::authenticated(
+            laptop.cert.user_public_key,
+            laptop.cert.device_public_key,
         )
-        .await
-        .unwrap();
+        .in_workspace(&workspace.workspace);
+        let release = serde_json::json!({
+            "app": APP,
+            "version": "2.0.0-dev.1",
+            "surface": hex::encode(surface_of(2)),
+            "package": hex::encode([2_u8 ^ 0xff; 32]),
+            "publisher": hex::encode(laptop.cert.user_public_key),
+            "file": file,
+            "dev": true,
+        });
+        let request = tilo_workspace_service::workspaces::fixtures::request(
+            &workspace.workspace,
+            governance::INSTALL_APP,
+            release,
+        );
+        let receipt = workspaces
+            .device_actions()
+            .invoke(&caller, request)
+            .await
+            .expect("the install is answered")
+            .expect("Ada may install apps");
+        assert!(
+            matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "the workspace runs Ada's v2: {receipt:?}"
+        );
+    }
 
     // Bob, still on v1, edits: his device holds the edit until it runs the
     // workspace's version, and sends none of it before.

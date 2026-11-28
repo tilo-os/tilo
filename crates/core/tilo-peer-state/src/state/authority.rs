@@ -1634,10 +1634,34 @@ impl StatePeer {
     /// [`Self::surface_gate`] for a change; anything else is decided as it stands.
     fn change_gate(&self, app_id: &str, envelope: &SignedOp) -> SurfaceGate {
         if envelope.kind == collab_types::OpKind::Change {
+            // A write made before the workspace ran any version of the app was decided then,
+            // when there was no version to name: reading it after a first install never sets it
+            // aside for the surface that install brought.
+            if self.written_before_any_version(app_id, envelope.timestamp) {
+                return SurfaceGate::Decide;
+            }
             self.surface_gate(app_id, envelope.surface)
         } else {
             SurfaceGate::Decide
         }
+    }
+
+    /// Whether a write of `app` made at `written` predates the only version the workspace runs,
+    /// so that it was written when the app ran no version at all. A workspace that ran another
+    /// version before is decided by [`Self::surface_gate`], which knows the ones it ran.
+    fn written_before_any_version(&self, app: &str, written: SystemTime) -> bool {
+        if self.apps().ran(app).len() > 1 {
+            return false;
+        }
+        let Some(running) = self.governance().app_version(app) else {
+            return false;
+        };
+        let written = written
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|since| u64::try_from(since.as_nanos()).ok())
+            .unwrap_or(u64::MAX);
+        written < running.installed_at_ns
     }
 
     /// [`Self::authorize_document`] by the governance this peer holds.

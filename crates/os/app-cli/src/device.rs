@@ -88,7 +88,7 @@ pub fn install_file(file: &Path, dev: bool, pinned: bool) -> Result<Value, Strin
         }),
     )?;
     if pinned {
-        daemon.workspace(&format!("workspace/apps/{}#pin", manifest.id), &json!({}))?;
+        daemon.workspace("workspace/apps#pin", &json!({ "app": manifest.id }))?;
     }
     Ok(installed)
 }
@@ -154,19 +154,11 @@ pub fn update_offered(app: &str, requirement: Option<&str>) -> Result<Value, Str
         .max_by(|(left, _), (right, _)| left.cmp(right))
         .map(|(_, offer)| offer)
         .ok_or_else(|| format!("no repository offers a version of {app} to update to"))?;
-    update_to(app, &release_of(&newest))
-}
-
-/// The workspace's update of `app` to the version `release` names (as [`release_of`] does).
-///
-/// # Errors
-/// The daemon could not be reached, or the workspace refused.
-pub fn update_to(app: &str, release: &Value) -> Result<Value, String> {
-    Daemon::reach()?.workspace(&format!("workspace/apps/{app}#update"), release)
+    install_offered(&release_of(&newest))
 }
 
 /// The versions of `app` the workspace ran before the one it runs, the most recent first, as its
-/// record's history keeps them (`workspace/apps/<app>#earlier`).
+/// record's history keeps them (`workspace/apps#earlier`).
 ///
 /// # Errors
 /// The daemon could not be reached, or the workspace refused.
@@ -179,12 +171,12 @@ pub fn earlier_versions(app: &str) -> Result<Vec<Value>, String> {
         .unwrap_or_default())
 }
 
-/// Ask `action` (`uninstall`, `pin`, `unpin`) of the app `app` in the workspace's tree.
+/// Ask `action` (`uninstall`, `pin`, `unpin`, `earlier`) of the workspace's apps for `app`.
 ///
 /// # Errors
 /// The daemon could not be reached, or the workspace refused.
 pub fn on_app(app: &str, action: &str) -> Result<Value, String> {
-    Daemon::reach()?.workspace(&format!("workspace/apps/{app}#{action}"), &json!({}))
+    Daemon::reach()?.workspace(&format!("workspace/apps#{action}"), &json!({ "app": app }))
 }
 
 /// The workspace's registry action `action` (`registry.list`, `registry.add`,

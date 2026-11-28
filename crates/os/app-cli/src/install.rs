@@ -187,13 +187,12 @@ fn installed_install_bin() -> String {
     }
 }
 
-/// Ask the workspace for `change` of the version `app` is, as a registry offers it: no file
+/// Ask the workspace to run the version `app` is, as a registry offers it: no file
 /// moves here, every device of the workspace fetches it from the registries and checks it
 /// against what the workspace recorded. The runtime it runs on, when this device lacks it, is
 /// asked for first, the same way.
 fn to_tree(
     app: &CatalogueApp,
-    change: Change,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
     let refused = |detail: String| InstallError::Refused { detail };
@@ -203,12 +202,9 @@ fn to_tree(
         ensure_runtime(&app.package_id, runtime, Some(&app.registry), on_progress)?;
     }
     let release = crate::device::release_of(app);
-    match change {
-        Change::Install => crate::device::install_offered(&release),
-        Change::Update | Change::Rollback => crate::device::update_to(&app.package_id, &release),
-    }
-    .map(drop)
-    .map_err(|detail| refused(installer_complaint(&detail)))
+    crate::device::install_offered(&release)
+        .map(drop)
+        .map_err(|detail| refused(installer_complaint(&detail)))
 }
 
 /// Which computer this is, for the one runtime it is itself rather than a bundle it installs.
@@ -723,7 +719,7 @@ pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, Change::Install)
+    install_or_update_app_reporting(app, on_progress)
 }
 
 /// Install an exact runtime from a configured repository without replacing an app.
@@ -772,7 +768,7 @@ pub fn install_runtime_from_enabled(
     let offer = crate::runtime_offer_from_enabled(runtime)
         .map_err(|detail| InstallError::Download { detail })?
         .ok_or_else(not_offered)?;
-    install_or_update_app_reporting(&offer, on_progress, Change::Install)?;
+    install_or_update_app_reporting(&offer, on_progress)?;
     if crate::runtime_installed(runtime) {
         Ok(())
     } else {
@@ -780,17 +776,9 @@ pub fn install_runtime_from_enabled(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Change {
-    Install,
-    Update,
-    Rollback,
-}
-
 fn install_or_update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
-    change: Change,
 ) -> Result<(), InstallError> {
     validate_offer_metadata(app)?;
     on_progress(DownloadProgress {
@@ -800,7 +788,7 @@ fn install_or_update_app_reporting(
             elapsed: Duration::ZERO,
         },
     });
-    to_tree(app, change, on_progress)
+    to_tree(app, on_progress)
 }
 
 /// A file in the staging directory that this process is downloading into or
@@ -945,7 +933,7 @@ pub fn update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, Change::Update)
+    install_or_update_app_reporting(app, on_progress)
 }
 
 /// Download and atomically replace an installed app with an older version
@@ -954,7 +942,7 @@ pub fn rollback_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, Change::Rollback)
+    install_or_update_app_reporting(app, on_progress)
 }
 
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {

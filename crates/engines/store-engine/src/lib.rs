@@ -971,12 +971,12 @@ fn change(change: &Change, update: bool) -> Result<String, String> {
                     })?;
                 app_cli::device::release_of(&offer)
             };
-            if update {
-                app_cli::device::update_to(&change.identity, &release)
-                    .map(|_| "App updated.".to_owned())
+            let said = if update {
+                "App updated."
             } else {
-                app_cli::device::install_offered(&release).map(|_| "App installed.".to_owned())
-            }
+                "App installed."
+            };
+            app_cli::device::install_offered(&release).map(|_| said.to_owned())
         }
         "local" => {
             if change.file.is_empty() {
@@ -1083,7 +1083,7 @@ fn change_app_to_newest(change: &Change) -> Result<(), String> {
         .into_iter()
         .find(|offer| offer.package_id == change.identity)
         .ok_or_else(|| format!("no repository offers {}", change.identity))?;
-    app_cli::device::update_to(&change.identity, &app_cli::device::release_of(&offer))
+    app_cli::device::install_offered(&app_cli::device::release_of(&offer))
         .map(|_| ())
         .map_err(|error| format!("{}: {error}", change.identity))
 }

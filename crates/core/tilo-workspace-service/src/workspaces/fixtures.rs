@@ -2296,29 +2296,7 @@ pub fn request(
                     ),
                 }
             }
-            // Pinning, unpinning and uninstalling are published on the app they change.
-            _ => match (
-                argument.get("app").and_then(serde_json::Value::as_str),
-                verb,
-            ) {
-                (
-                    Some(app),
-                    super::actions::UNINSTALL_APP
-                    | super::actions::PIN_APP
-                    | super::actions::UNPIN_APP,
-                ) => RemoteActionTarget {
-                    provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
-                    address: tilo_actions::ActionAddress::new(
-                        tilo_actions::remote::workspace_app(workspace, app),
-                        match verb {
-                            super::actions::UNINSTALL_APP => "uninstall",
-                            super::actions::PIN_APP => "pin",
-                            _ => "unpin",
-                        },
-                    ),
-                },
-                _ => RemoteActionTarget::workspace_governance(workspace, verb),
-            },
+            _ => RemoteActionTarget::workspace_governance(workspace, verb),
         },
         argument: if argument.is_empty() {
             InvokeArgument::None

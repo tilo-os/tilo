@@ -162,6 +162,8 @@ impl WorkspaceApps {
 impl StatePeer {
     /// Refuse an app version command: the workspace's apps are its apps resource, which
     /// installing and uninstalling write. `None` for every other command.
+    ///
+    /// Kept while the oldest supported build is 61782b0f16a, which sends them.
     pub(super) fn apply_app_command(
         command: &WorkspaceMembershipCommand,
     ) -> Option<Result<bool, String>> {
@@ -205,6 +207,8 @@ impl StatePeer {
     /// same because the oldest build this one still supports reads it to admit the app's own
     /// writes. Whether it wrote one.
     ///
+    /// Kept while the oldest supported build is 61782b0f16a, which reads it.
+    ///
     /// # Errors
     /// The caller may not install apps, or the workspace refused the change.
     pub fn grant_app_records(
@@ -226,6 +230,8 @@ impl StatePeer {
     /// apps, uninstalling it: where the workspace's operations keep one. Uninstalling is what
     /// takes the app's own records away; the grant goes too because the oldest build this one
     /// still supports reads it. Whether it revoked one.
+    ///
+    /// Kept while the oldest supported build is 61782b0f16a, which reads it.
     ///
     /// # Errors
     /// The caller may not install apps, or the workspace refused the change.

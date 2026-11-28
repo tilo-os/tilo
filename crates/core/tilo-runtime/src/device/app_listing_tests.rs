@@ -20,7 +20,6 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use tilo_device_identity::login::{Approval, Approved, Approver, Asked, Entry, Ticket};
 use tilo_peer_state::new_device::Keeping;
-use tilo_peer_state::workspace_membership::{AppPayload, AppRelease, WorkspaceMembershipCommand};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use crate::in_process::Device;
@@ -147,6 +146,7 @@ impl Server {
     /// the workspace's host, and the workspace's record naming it as the version every member
     /// runs.
     fn install(&self, tapp: &Path) {
+        use tilo_actions::remote::ActionProvider as _;
         let bytes = std::fs::read(tapp).unwrap();
         let read = tilo_app_package::tapp::read(
             std::io::BufReader::new(bytes.as_slice()),
@@ -156,25 +156,37 @@ impl Server {
         let manifest = read.meta.manifest.package.clone();
         let workspaces = self.host.workspaces();
         let file = workspaces.keep_app_file(&self.workspace, &bytes).unwrap();
-        let release = AppRelease {
-            app: manifest.id.clone(),
-            version: manifest.version.clone(),
-            surface: String::new(),
-            package: hex::encode(read.meta.id.0),
-            publisher: hex::encode(read.meta.root.publisher_identity),
-            file: Some(file),
-            dev: false,
-            pinned: false,
-            payload: AppPayload::Tapp,
-        };
-        self.runtime
-            .block_on(workspaces.govern_app(
-                &self.workspace,
-                &self.host.host_hint().host,
-                [3; 32],
-                WorkspaceMembershipCommand::InstallApp(release),
-            ))
+        let release = serde_json::json!({
+            "app": manifest.id,
+            "version": manifest.version,
+            "package": hex::encode(read.meta.id.0),
+            "publisher": hex::encode(read.meta.root.publisher_identity),
+            "file": file,
+        });
+        let host = &self.host.host_hint().host;
+        let caller = tilo_actions::remote::Caller::authenticated(
+            host.user_public_key,
+            host.device_public_key,
+        )
+        .in_workspace(&self.workspace);
+        let request = tilo_workspace_service::workspaces::fixtures::request(
+            &self.workspace,
+            "install-app",
+            release,
+        );
+        let receipt = self
+            .runtime
+            .block_on(workspaces.device_actions().invoke(&caller, request))
+            .expect("the install is answered")
             .unwrap_or_else(|error| panic!("the workspace takes {}: {error}", manifest.id));
+        assert!(
+            matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "the workspace runs {}: {receipt:?}",
+            manifest.id
+        );
     }
 }
 
