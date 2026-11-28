@@ -568,6 +568,11 @@ def asked_once(socket_path: Path, path: str, args: dict) -> tuple[dict, int | No
     return said_answer, (handed[0] if handed else None)
 
 
+#: What a device daemon of the walk logs: its own lines, and what each program it starts says on
+#: its error stream (a tilolang process's engine refusal, which nothing else reports).
+DAEMON_LOG = "warn,tilo_runtime=info,tilo::app_output=info"
+
+
 class MachineDaemon:
     """This computer's device daemon, started the way Tilo OS's system unit starts it, and the
     login that starts the session as the person.
@@ -660,7 +665,7 @@ class MachineDaemon:
                "TILO_RUNTIME_BUNDLE_DIR": str(user / "runtimes"),
                "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(publishers),
                "XDG_RUNTIME_DIR": str(self.RUNTIME),
-               "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+               "RUST_LOG": os.environ.get("RUST_LOG", DAEMON_LOG)}
         # What the session is told to read and write the store by, as a device's login is: the
         # one store the shell installs into is the one the daemon publishes from.
         self.store_env = {
@@ -1482,7 +1487,7 @@ class Devices:
                           "TILO_RUNTIME_BUNDLE_DIR": str(state / "apps/runtimes"),
                           "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
                               str(state / "keys/runtime-publishers.txt"),
-                          "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+                          "RUST_LOG": os.environ.get("RUST_LOG", DAEMON_LOG)}
             daemon_log = (logs / f"device-daemon-{tag}.log").open("w")
             daemon = subprocess.Popen(
                 [*as_account(account), str(BUILD / "bin/tilo-runtime")],
