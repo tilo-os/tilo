@@ -405,11 +405,7 @@ fn studio() -> (Site, Device) {
         &pdf(&["An opening page", "The harbour route"]),
     );
     laptop.install_dev_apps();
-    crate::common::dev_apps::install_tree_app(
-        "pdf",
-        &laptop.store(),
-        &laptop.directory().join("sources"),
-    );
+    crate::common::dev_apps::install_tree_app("pdf", &laptop.store());
     let hers = site.admit(ada.public);
     join_together(&mut [&mut laptop], &[hers.as_str()]);
     laptop.wait_holding(&site.workspace);

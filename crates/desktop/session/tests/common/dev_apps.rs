@@ -376,19 +376,35 @@ pub fn install_named(store: &Path, apps: &[&str]) -> Vec<String> {
 /// # Panics
 /// The package does not compile, or the store refuses it.
 pub fn install_package(dir: &Path, store: &Path) -> String {
-    let scratch = dir.with_file_name(format!(
-        "{}-built",
-        dir.file_name()
-            .expect("a directory is named")
-            .to_string_lossy()
-    ));
-    std::fs::create_dir_all(&scratch).expect("a scratch directory for the build");
-    let out = scratch.join("tapps");
-    let built = package::build(
+    let out = dir
+        .with_file_name(format!(
+            "{}-built",
+            dir.file_name()
+                .expect("a directory is named")
+                .to_string_lossy()
+        ))
+        .join("tapps");
+    let built = build_package(dir, &out);
+    for (_, tapp) in &built {
+        install_tapp(tapp, store);
+    }
+    std::fs::remove_dir_all(&out).ok();
+    built
+        .into_iter()
+        .last()
+        .map(|(app, _)| app)
+        .unwrap_or_default()
+}
+
+/// Build the tilolang package written at `dir` into `out`, signed with the test process's
+/// publisher key: each app it makes, and the `.tapp` it is in.
+fn build_package(dir: &Path, out: &Path) -> Vec<(String, PathBuf)> {
+    std::fs::create_dir_all(out).expect("a scratch directory for the build");
+    package::build(
         &BuildOptions {
             dir: dir.to_path_buf(),
             search: vec![packages()],
-            out: out.clone(),
+            out: out.to_path_buf(),
             tilo_runtime: runtime().to_owned(),
             tilolang_runtime: package::default_tilolang_runtime(),
             version: "0.1.0".to_owned(),
@@ -396,42 +412,62 @@ pub fn install_package(dir: &Path, store: &Path) -> String {
         },
         &publisher(),
     )
-    .unwrap_or_else(|error| panic!("{} builds: {error}", dir.display()));
-    let mut installed = String::new();
-    for app in built {
-        let tapp = std::fs::File::open(&app.tapp).expect("the built .tapp reads");
-        let source = app.tapp.display().to_string();
-        package_store::PackageStore::at(store)
-            .install(
-                std::io::BufReader::new(tapp),
-                move |_meta| {
-                    Ok(package_store::Admission {
-                        pinned: false,
-                        attested_by: String::new(),
-                        source,
-                        held: false,
-                    })
-                },
-                None,
-            )
-            .unwrap_or_else(|error| panic!("{}: {error}", app.app));
-        installed = app.app;
-    }
-    std::fs::remove_dir_all(&out).ok();
-    installed
+    .unwrap_or_else(|error| panic!("{} builds: {error}", dir.display()))
+    .into_iter()
+    .map(|app| (app.app, app.tapp))
+    .collect()
 }
 
-/// Build the tree's tilolang app `apps/tl/<app>` from a copy of it under `scratch`, and install
-/// it into the store `store` ([`install_package`]): an app a development session does not install,
-/// which a test installs as a person installs it. The copy is built, since a build writes the
-/// package's ids lock and source catalogue. Answers the package id it installed.
+/// Install the package `tapp` into the store `store`, as a person installs one they downloaded.
+fn install_tapp(tapp: &Path, store: &Path) {
+    let source = tapp.display().to_string();
+    package_store::PackageStore::at(store)
+        .install(
+            std::io::BufReader::new(std::fs::File::open(tapp).expect("the built .tapp reads")),
+            move |_meta| {
+                Ok(package_store::Admission {
+                    pinned: false,
+                    attested_by: String::new(),
+                    source,
+                    held: false,
+                })
+            },
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", tapp.display()));
+}
+
+/// Install the tree's tilolang app `apps/tl/<app>` into the store `store`: an app a development
+/// session does not install, which a test installs as a person installs it. It is built once for
+/// the test process, from a copy (a build writes the package's ids lock and source catalogue),
+/// and every device installs that one package: a release names its package by its hash, so two
+/// devices of a workspace run one app only when they hold the same build of it. Answers the
+/// package id it installed.
 ///
 /// # Panics
 /// The package does not compile, or the store refuses it.
-pub fn install_tree_app(app: &str, store: &Path, scratch: &Path) -> String {
-    let copy = scratch.join(app);
-    copy_tree(&packages().join(app), &copy);
-    install_package(&copy, store)
+pub fn install_tree_app(app: &str, store: &Path) -> String {
+    static BUILT: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (String, PathBuf)>>> =
+        OnceLock::new();
+    static SCRATCH: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let (id, tapp) = BUILT
+        .get_or_init(Default::default)
+        .lock()
+        .expect("the tree apps this process built")
+        .entry(app.to_owned())
+        .or_insert_with(|| {
+            let scratch = SCRATCH
+                .get_or_init(|| tempfile::tempdir().expect("a directory for the tree apps' builds"))
+                .path();
+            let copy = scratch.join(app);
+            copy_tree(&packages().join(app), &copy);
+            build_package(&copy, &scratch.join(format!("{app}-built")))
+                .pop()
+                .unwrap_or_else(|| panic!("apps/tl/{app} builds no app"))
+        })
+        .clone();
+    install_tapp(&tapp, store);
+    id
 }
 
 /// Copy the directory at `from` , a package or a build of them, into `to` , created.

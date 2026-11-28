@@ -2472,12 +2472,8 @@ impl Device {
     /// Install Poker in this device's store: the tilolang app whose one table is the
     /// workspace's record, so a seat taken on either device is taken in the other's window.
     pub fn install_poker(&self) {
-        // No session installs Poker, so the run builds it for no one: built here, from the tree.
-        let installed = super::dev_apps::install_tree_app(
-            "poker",
-            &self.store(),
-            &self.directory().join("sources"),
-        );
+        // No session installs Poker, so the run builds it for no one: built from the tree.
+        let installed = super::dev_apps::install_tree_app("poker", &self.store());
         assert_eq!(installed, POKER, "the tree's poker package is Poker");
     }
 
