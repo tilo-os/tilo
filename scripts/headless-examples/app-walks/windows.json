@@ -10,13 +10,20 @@
   "steps": [
     {
       "id": "open",
-      "said": "Open Windows Apps on a computer whose Windows compatibility service is not running",
+      "said": "Open Windows Apps on a computer whose compatibility service answers, with no programs installed",
       "ops": [
         { "theme": false },
         { "launch": true },
         { "wait_for": "actions" },
         { "targets": true },
-        { "must": { "see": ["Windows Apps", "The Windows compatibility service is not running"] } }
+        {
+          "must": {
+            "see": [
+              "Windows Apps",
+              "Install a Windows program with the button above, or set up the Windows appliance."
+            ]
+          }
+        }
       ]
     },
     {
