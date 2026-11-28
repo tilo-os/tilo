@@ -334,10 +334,25 @@ pub trait BlobHost {
 /// for the runtime and for the window that handed a dropped file over.
 pub use tilo_content_types::media_of;
 
-/// Whether `media` is one of the types `accept` names, an entry of which may be `image/*`; any
-/// media type when `accept` is empty.
+/// The media type of the file called `name` whose content is `bytes`: its name's, and its
+/// content's where the name says nothing (`application/octet-stream`). A chosen document is
+/// whatever its package is — an EPUB book, a deck — and an app that asks for one by its type
+/// finds it by the type the file itself states.
 #[must_use]
-pub fn accepts(accept: &[String], media: &str) -> bool {
+pub fn media_of_file(name: &str, bytes: &[u8]) -> String {
+    let named = media_of(name);
+    if named != "application/octet-stream" {
+        return named;
+    }
+    tilo_content_types::opened_as(bytes).1.to_owned()
+}
+
+/// Whether the file called `name` of media type `media` is one of the files `accept` names: a
+/// media type (`image/png`), any of a kind (`image/*`), any file (`*/*`), or the ending of its
+/// name (`.epub`, `*.epub`), which an app names for a format no media type tells. Any file when
+/// `accept` is empty.
+#[must_use]
+pub fn accepts(accept: &[String], media: &str, name: &str) -> bool {
     accept.is_empty()
         || accept.iter().any(|entry| {
             let entry = entry.trim();
@@ -348,6 +363,11 @@ pub fn accepts(accept: &[String], media: &str) -> bool {
                         .split_once('/')
                         .is_some_and(|(head, _)| head.eq_ignore_ascii_case(kind))
                 })
+                // A name's ending, as the app wrote it: `.epub`, or a pattern's `*.epub`.
+                || {
+                    let ending = entry.strip_prefix('*').unwrap_or(entry).trim();
+                    !ending.is_empty() && name.to_lowercase().ends_with(&ending.to_lowercase())
+                }
         })
 }
 
@@ -386,12 +406,44 @@ mod tests {
         phase a_chooser_takes_the_types_it_names;
         {
             let images = vec!["image/*".to_owned()];
-            assert!(accepts(&images, "image/png"));
-            assert!(!accepts(&images, "text/plain"));
+            assert!(accepts(&images, "image/png", "plan.png"));
+            assert!(!accepts(&images, "text/plain", "plan.txt"));
             let one = vec!["image/webp".to_owned()];
-            assert!(accepts(&one, "image/webp"));
-            assert!(!accepts(&one, "image/png"));
-            assert!(accepts(&[], "anything/at-all"), "no type asked, any file");
+            assert!(accepts(&one, "image/webp", "plan.webp"));
+            assert!(!accepts(&one, "image/png", "plan.png"));
+            assert!(
+                accepts(&[], "anything/at-all", "thing"),
+                "no type asked, any file"
+            );
+            // A format no media type tells is asked for by the ending of its name.
+            let backup = vec![".tilopw".to_owned()];
+            assert!(accepts(&backup, "application/octet-stream", "Backup.tilopw"));
+            assert!(!accepts(&backup, "application/octet-stream", "notes.txt"));
+            let deck = vec!["*.pptx".to_owned()];
+            assert!(
+                accepts(&deck, "application/octet-stream", "Pitch.pptx"),
+                "a pattern's ending"
+            );
+        }
+
+        phase a_documents_type_comes_from_its_bytes_where_its_name_says_nothing;
+        {
+            // An EPUB's own package states its type, which no extension table need repeat.
+            let mut epub = Vec::new();
+            epub.extend_from_slice(b"PK\x03\x04");
+            for number in [20_u16, 0, 0, 0, 0] {
+                epub.extend_from_slice(&number.to_le_bytes());
+            }
+            epub.extend_from_slice(&0_u32.to_le_bytes());
+            epub.extend_from_slice(&20_u32.to_le_bytes());
+            epub.extend_from_slice(&20_u32.to_le_bytes());
+            epub.extend_from_slice(&8_u16.to_le_bytes());
+            epub.extend_from_slice(&0_u16.to_le_bytes());
+            epub.extend_from_slice(b"mimetype");
+            epub.extend_from_slice(b"application/epub+zip");
+            assert_eq!(media_of_file("The Tide Glass.epub", &epub), "application/epub+zip");
+            assert_eq!(media_of_file("plan.png", b"not a picture"), "image/png");
+            assert_eq!(media_of_file("thing", b"\x00\x01"), "application/octet-stream");
         }
     }
 

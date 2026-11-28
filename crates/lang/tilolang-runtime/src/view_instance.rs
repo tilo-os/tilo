@@ -2182,7 +2182,7 @@ fn chosen_files_value(
                 MAX_CHOSEN = crate::blob::MAX_CHOSEN_BYTES
             )));
         }
-        if !crate::blob::accepts(accept, &file.media) {
+        if !crate::blob::accepts(accept, &file.media, &file.name) {
             return Err(RuntimeError::Package(format!(
                 "`{}` is a {}, and what is chosen here is {}",
                 file.name,

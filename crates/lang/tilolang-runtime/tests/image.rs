@@ -261,6 +261,31 @@ view shelf(s: Shelf) {
             assert_eq!(bench.call("thumb", &not_an_image), "none");
         }
 
+        phase a_press_with_no_chooser_is_answered_with_the_systems_refusal;
+        {
+            // A device that serves no chooser at all, as one nobody is at: the press is told what
+            // it cannot do, in words the app shows, rather than doing nothing.
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let shelf = rt.create("Shelf").unwrap();
+            let view = rt
+                .open_view(&me(), &app.view("shelf"), vec![Value::resource(&shelf)])
+                .unwrap();
+            let button = of_kind(view.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| {
+                    matches!(button.props.get("label"), Some(Value::Text(text)) if text == "Import one")
+                })
+                .unwrap_or_else(|| panic!("no Import one control in\n{}", dump(view.tree())))
+                .key
+                .clone();
+            let refused = view
+                .press(&button)
+                .expect_err("a host that chooses no files refuses the press");
+            assert!(refused.to_string().contains("chooses no files"), "{refused}");
+        }
+
         phase a_chooser_fills_a_list_of_files_or_the_one_file_an_action_asks_for;
         {
             let bench = Bench::new();

@@ -3,7 +3,10 @@
 //!
 //! A person who watches a folder picks it in the system's chooser, as every app reaches a
 //! folder: the library keeps the reference the chooser answered, its EPUBs become books, and a
-//! folder no chooser answered is neither read nor watched.
+//! folder no chooser answered is neither read nor watched. A person who presses *Add a book*
+//! picks the book itself in the chooser, on the connection the session opened for the app, and
+//! the EPUB they answer is the one the library takes: its type is the book's own, and one they
+//! dismiss runs nothing.
 
 use std::sync::{Arc, Mutex};
 
@@ -380,5 +383,187 @@ fn a_folder_the_person_did_not_choose_is_refused() {
             .any(|reference| reference == &other),
         "the chooser refused it: {:?}",
         chooser.refused()
+    );
+}
+
+/// The session's chooser, over the protocol a session serves it on: the app asks for a file on
+/// the connection it was handed, the person here answers, and what they chose is opened for the
+/// app. The answers it gives, one per question, and the questions it was asked.
+struct Servant {
+    answers: Mutex<Vec<PersonAnswer>>,
+    asked: Mutex<Vec<tilo_dialogs::chooser_service::Question>>,
+}
+
+/// What the person does with a question.
+enum PersonAnswer {
+    /// They choose these files.
+    Files(Vec<std::path::PathBuf>),
+    /// They dismiss the chooser.
+    Cancelled,
+}
+
+impl Servant {
+    fn new(answers: Vec<PersonAnswer>) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(answers),
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The questions it was asked, oldest first.
+    fn asked(&self) -> Vec<tilo_dialogs::chooser_service::Question> {
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl tilo_dialogs::chooser_service::Person for Servant {
+    fn choose(
+        &self,
+        _caller: &tilo_dialogs::chooser_service::Caller,
+        _handle: String,
+        question: &tilo_dialogs::chooser_service::Question,
+    ) -> Result<Vec<std::path::PathBuf>, tilo_dialogs::chooser_service::Asked> {
+        use tilo_dialogs::chooser_service::Asked;
+        self.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(question.clone());
+        let Some(answer) = self
+            .answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+        else {
+            return Err(Asked::Failed);
+        };
+        match answer {
+            PersonAnswer::Files(paths) => Ok(paths),
+            PersonAnswer::Cancelled => Err(Asked::Cancelled),
+        }
+    }
+}
+
+/// What a choice gives the app: the path itself, as a test's app reads it in place. Nothing is
+/// reopened by its reference, which a session keeps in its own table.
+struct Kept;
+
+impl tilo_dialogs::chooser_service::Grants for Kept {
+    fn grant(
+        &self,
+        _caller: &tilo_dialogs::chooser_service::Caller,
+        chosen: &std::path::Path,
+        choice: tilo_dialogs::chooser_service::Choice,
+    ) -> Result<tilo_dialogs::chooser_service::Granted, String> {
+        Ok(tilo_dialogs::chooser_service::Granted {
+            reference: chosen.to_path_buf(),
+            name: chosen
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            host: chosen.to_path_buf(),
+            choice,
+            save_sibling: None,
+        })
+    }
+
+    fn document(
+        &self,
+        _caller: &tilo_dialogs::chooser_service::Caller,
+        _reference: &std::path::Path,
+    ) -> Option<tilo_dialogs::chooser_service::Granted> {
+        None
+    }
+}
+
+/// A session that opens no link for a chosen file.
+struct OpensNothing;
+
+impl tilo_dialogs::chooser_service::Opens for OpensNothing {
+    fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
+        Ok(None)
+    }
+}
+
+/// A chooser the app reaches over a connection the session opened for it, as a session serves
+/// one: the session's own end answers here.
+fn served_chooser(person: &Arc<Servant>) -> Arc<dyn tilo_dialogs::FilePicker> {
+    use std::io::Write as _;
+    use tilo_dialogs::chooser_service::{Opens, Person, Serving};
+
+    let (person_end, app_end) = std::os::unix::net::UnixStream::pair().expect("a chooser pair");
+    let serving = Arc::new(Serving {
+        person: Some(Arc::clone(person) as Arc<dyn Person>),
+        grants: Arc::new(Kept),
+        opens: Arc::new(OpensNothing) as Arc<dyn Opens>,
+    });
+    std::thread::Builder::new()
+        .name("test-chooser".into())
+        .spawn(move || tilo_dialogs::chooser_service::serve_connection(serving, person_end))
+        .expect("the chooser's thread");
+    // The launcher names the app on the connection before the app reads a word of it.
+    let mut app_end = app_end;
+    runtime_portal::session_services::write_chooser_handshake(&mut app_end, BOOKS, "workspace")
+        .and_then(|()| app_end.flush())
+        .expect("the chooser's handshake");
+    tilo_dialogs::shell::picker(app_end, tilo_dialogs::unavailable_picker())
+        .expect("the person's chooser")
+}
+
+/// A press that asks for a file reaches the session's chooser on the connection the session
+/// handed the app, and the file the person picked there is the one the app's action runs with:
+/// the book they chose stands on the shelf.
+#[test]
+fn a_press_that_asks_for_a_file_reaches_the_sessions_chooser_and_uses_what_it_answered() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, folder) = shelf("Shelf", &[("The Tide Glass.epub", TIDE_GLASS)]);
+    let book = folder.join("The Tide Glass.epub");
+    let person = Servant::new(vec![PersonAnswer::Files(vec![book])]);
+    let picker: Arc<dyn tilo_dialogs::FilePicker> = served_chooser(&person);
+    Session::choosing_files_with(&picker);
+    let mut session = Session::new(BOOKS, "ada");
+
+    session.press_anywhere("Add a book");
+    session.settle();
+
+    let asked = person.asked();
+    assert_eq!(asked.len(), 1, "the person is asked once: {asked:?}");
+    assert!(
+        !asked[0].directory && !asked[0].save,
+        "the question asks for a file to open: {:?}",
+        asked[0]
+    );
+    let books = session.books();
+    assert_eq!(
+        books.len(),
+        1,
+        "the book they chose is on the shelf: {books:?}"
+    );
+    let inspection = session.window.harness().inspection();
+    assert!(
+        card(&inspection.root, "The Tide Glass").is_some(),
+        "the shelf lays the chosen book out: {:#?}",
+        inspection.root
+    );
+}
+
+/// The person dismisses the chooser: the app runs nothing, and nothing is said against it.
+#[test]
+fn a_pressed_file_the_person_cancels_runs_nothing() {
+    let _settled = ui::motion::testing::settled();
+    let person = Servant::new(vec![PersonAnswer::Cancelled]);
+    let picker: Arc<dyn tilo_dialogs::FilePicker> = served_chooser(&person);
+    Session::choosing_files_with(&picker);
+    let mut session = Session::new(BOOKS, "ada");
+
+    session.press_anywhere("Add a book");
+    session.settle();
+
+    assert_eq!(person.asked().len(), 1, "the person was asked");
+    assert!(
+        session.books().is_empty(),
+        "a cancelled choice adds no book: {:?}",
+        session.books()
     );
 }

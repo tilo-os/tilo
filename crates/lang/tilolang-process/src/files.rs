@@ -18,7 +18,7 @@ use tilo_dialogs::portal::{
     FileFilter, MultiOutcome, OpenFileOutcome, OpenedFile, PickRequest, SaveOutcome,
 };
 use tilolang_tilo::runtime::blob::{
-    FileRequest, FileValue, MAX_CHOSEN, SaveRequest, Saved, accepts, media_of,
+    FileRequest, FileValue, MAX_CHOSEN, SaveRequest, Saved, accepts, media_of_file,
 };
 
 /// What a person asking for a file is told when the session opened no chooser for the app: the
@@ -114,8 +114,8 @@ pub fn choose(
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
             .map_or_else(|| path.clone(), str::to_owned);
-        let media = media_of(&name);
-        if !accepts(&request.accept, &media) || bytes.len() > MAX_CHOSEN {
+        let media = media_of_file(&name, &bytes);
+        if !accepts(&request.accept, &media, &name) || bytes.len() > MAX_CHOSEN {
             // The chooser filters by type and reads no more than the limit; a host that answers
             // another file anyhow is answered for here, before anything is kept.
             return Err(format!("`{name}` is not a file this asks for"));
