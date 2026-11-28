@@ -18,7 +18,7 @@
 //! A device of another member of the workspace, which the workspace's roster admitted on the
 //! link, runs as that member: what it asks is decided by the workspace's grants for them, and a
 //! search answers what they may read, never what this device's person may. What is this
-//! device's own ([`crate::personal_devices::own_devices_only`]) stays its person's.
+//! device's own ([`crate::personal_devices::this_device_only`]) stays its person's.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -341,7 +341,7 @@ impl AppActionServer for KeySessions {
         certificate: &DeviceCert,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        let own_only = crate::personal_devices::own_devices_only(&message);
+        let own_only = crate::personal_devices::this_device_only(&message);
         match self
             .runs
             .run(workspace_id, (caller, certificate), (own_only, false))

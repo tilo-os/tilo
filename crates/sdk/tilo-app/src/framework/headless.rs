@@ -802,7 +802,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// Run `act` on the app as it runs in the person's own workspace with no window, where this
     /// window is in another one and keeps records of theirs there: what holds those records, as
     /// another device of theirs or the app the device starts there. `None` where there is none.
-    pub fn in_persons_own_workspace<T>(
+    pub fn in_persons_workspace<T>(
         &self,
         act: impl FnOnce(&mut HeadlessApp<A>) -> T,
     ) -> Option<T> {

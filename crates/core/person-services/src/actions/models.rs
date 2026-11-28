@@ -68,7 +68,7 @@ impl crate::PersonServices {
                 .is_ok()
             {
                 let mut row = verb.row(
-                    tilo_workspace_service::workspaces::actions::GOVERNANCE,
+                    tilo_workspace_service::workspaces::actions::PERMISSIONS,
                     &resource,
                     "Model providers",
                 );

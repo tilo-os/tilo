@@ -715,7 +715,6 @@ readers = [
   "crates/ui/ui-core/src/activity_wire.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
-  "crates/ui/ui-core/src/component/coverage_tests.rs",
   "crates/ui/ui-core/src/history_source/digest.rs",
   "crates/ui/ui-core/src/i18n/tests.rs",
   "crates/ui/ui-core/src/search/system/tests.rs",
@@ -892,12 +891,14 @@ inputs = [
   "os/usr/libexec/",
   "*/locales/en-US.ftl",
   "*/locales/de-DE.ftl",
+  "dist/apple/Tests/ShellCoreTests/Fixtures/SealedPush.json",
 ]
 readers = [
   "crates/core/tilo-runtime/src/device/app_listing_tests.rs",
   "crates/core/tilo-runtime/src/device/environment_directory_tests.rs",
   "crates/core/tilo-runtime/src/device/keep/operations/tests.rs",
   "crates/core/tilo-runtime/src/device/services_tests.rs",
+  "crates/core/tilo-runtime/src/device/keep/apple_push/tests.rs",
 ]
 
 [[cargo]]
@@ -1055,6 +1056,8 @@ readers = [
   "crates/lang/tilolang-tilo/tests/settings_shell.rs",
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
   "crates/lang/tilolang-tilo/tests/passwords_vault.rs",
+  "crates/lang/tilolang-tilo/tests/private_window.rs",
+  "crates/lang/tilolang-tilo/tests/shortcuts_parity.rs",
   "crates/lang/tilolang-tilo/tests/notes.rs",
   "crates/lang/tilolang-tilo/tests/notes_checklist.rs",
   "crates/lang/tilolang-tilo/tests/notes_export.rs",

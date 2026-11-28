@@ -22,7 +22,7 @@ HEADER = (
     "testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,"
     "input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,"
     "input_step,input_step_us,paint_reasons,paint_clients,testctl_cpu_us,paint_animations,"
-    "surfaces_us,after_us"
+    "surfaces_us,after_us,pump_step,pump_step_us"
 ).split(",")
 
 
@@ -30,7 +30,7 @@ def sample() -> dict:
     return dict(zip(HEADER, (
         0, 1_000_000, 16_667, 100, 200, 300, 400, 500, 10, 20, 15_000,
         1, 0, None, None, 0, 0, "io", 1_500, "portal", 200, "apps+revision",
-        "so.tilo.file-explorer", 300, "notification", 600, 30,
+        "so.tilo.file-explorer", 300, "notification", 600, 30, "shell", 20,
     )))
 
 

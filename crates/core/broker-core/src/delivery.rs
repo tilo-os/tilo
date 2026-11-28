@@ -242,7 +242,7 @@ impl<E> Publishers<E> {
 
     /// Whether an instance of `app_id` the host runs with no window takes invocations in
     /// `workspace`, on `record` when one is named.
-    fn runs_windowless(&self, app_id: &str, workspace: &str, record: Option<&str>) -> bool {
+    fn runs_without_a_window(&self, app_id: &str, workspace: &str, record: Option<&str>) -> bool {
         let (Ok(streams), Ok(surfaces)) = (self.streams.lock(), self.surfaces.lock()) else {
             return false;
         };
@@ -423,7 +423,7 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
         // An instance of the app with no window runs already: another would publish what it
         // does, so the ask waits for what that one publishes next instead of running the app
         // twice.
-        if launch && !shows && publishers.runs_windowless(app_id, ask.workspace, ask.opened_on) {
+        if launch && !shows && publishers.runs_without_a_window(app_id, ask.workspace, ask.opened_on) {
             ran = true;
             continue;
         }

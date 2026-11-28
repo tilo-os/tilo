@@ -80,8 +80,6 @@ pub fn bwrap_argv(
         (SPARE_ENV.to_owned(), "1".to_owned()),
         ("HOME".to_owned(), HOME.to_owned()),
         ("XDG_RUNTIME_DIR".to_owned(), HOME.to_owned()),
-        // The window holds none of its app's data: it joins no runtime of its own.
-        ("TILO_RUNTIME_STANDALONE".to_owned(), "1".to_owned()),
         (
             crate::sandbox::WORKSPACE_ID_ENV.to_owned(),
             workspace.to_owned(),

@@ -3,7 +3,7 @@
 //!
 //! What a device is to its person (its settings, its person's account and identities, the
 //! devices it lets in, the agent sessions it serves) is reached by the person's own devices
-//! alone ([`own_devices_only`]). A workspace the device holds is the workspace's: another
+//! alone ([`this_device_only`]). A workspace the device holds is the workspace's: another
 //! member's device asks its actions as that member, and the workspace's grants for them decide
 //! each call, never this device's person's.
 
@@ -131,7 +131,7 @@ impl PersonalDevices {
 /// in, its person's account and identities, its updates), the agent sessions it serves, and its
 /// records (`devices/<id>/…`, its settings in any workspace).
 #[must_use]
-pub fn own_devices_only(message: &RemoteActionMessage) -> bool {
+pub fn this_device_only(message: &RemoteActionMessage) -> bool {
     let own_provider = |provider: &str| {
         provider == tilo_device_identity::login::PROVIDER
             || provider == tilo_action_services::mcp_server::PROVIDER

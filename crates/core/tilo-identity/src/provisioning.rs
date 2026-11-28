@@ -1813,7 +1813,7 @@ mod recovery_words_tests {
         clippy::panic_in_result_fn,
         reason = "the helper asserts what it restored before it returns"
     )]
-    fn restored_account_store(
+    fn restored_accounts(
         restore: impl FnOnce(&Path, &IdentityPaths) -> io::Result<crate::store::IdentityProfile>,
         paths: &IdentityPaths,
         user: [u8; 32],
@@ -1847,7 +1847,7 @@ mod recovery_words_tests {
         clippy::panic_in_result_fn,
         reason = "the test asserts what it restored before it returns"
     )]
-    fn restoring_into_an_account_store_keeps_the_provider_a_founded_person_has()
+    fn restoring_into_accounts_keeps_the_provider_a_founded_person_has()
     -> Result<(), Box<dyn std::error::Error>> {
         crate::sources::test_trust::install();
         let storage = IdentityStorage::Files;
@@ -1870,7 +1870,7 @@ mod recovery_words_tests {
         let founded = stored_backend(&record)?;
         assert_eq!(founded, crate::store::SEALED_FILE_BACKEND);
 
-        restored_account_store(
+        restored_accounts(
             |identity, paths| {
                 restore_from_recovery_words(identity, paths, &words, Some("Restored"), storage)
             },
@@ -1878,7 +1878,7 @@ mod recovery_words_tests {
             user,
             &founded,
         )?;
-        restored_account_store(
+        restored_accounts(
             |identity, paths| restore_from_backup(identity, paths, &backup, passphrase, storage),
             &paths,
             user,

@@ -727,7 +727,7 @@ fn grant_of(
 /// A key its person made for their own programs founds their own workspace at a server, as they
 /// do themselves from a page.
 #[tokio::test]
-async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
+async fn a_persons_own_key_founds_their_persons_workspace_at_a_server() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;

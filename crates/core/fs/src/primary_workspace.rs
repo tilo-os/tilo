@@ -183,14 +183,14 @@ mod tests {
     /// The device's daemon stand-in at its native endpoint `socket`, answering `info` with the
     /// fixture device's public key, stopped when dropped.
     #[cfg(unix)]
-    struct StandInDaemon {
+    struct FakeDaemon {
         socket: PathBuf,
         stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     #[cfg(unix)]
-    impl StandInDaemon {
+    impl FakeDaemon {
         fn start(socket: PathBuf) -> Self {
             use std::io::{BufRead as _, Write as _};
             let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32])
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    impl Drop for StandInDaemon {
+    impl Drop for FakeDaemon {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering;
             self.stop.store(true, Ordering::Relaxed);
@@ -269,7 +269,7 @@ mod tests {
             .set("XDG_RUNTIME_DIR", &runtime)
             .set("TILO_RUNTIME_PROFILE", home.join("daemon"));
         // The daemon listens where the identity's clients dial it: its profile's own sockets.
-        let daemon = StandInDaemon::start(
+        let daemon = FakeDaemon::start(
             tilo_device_identity::login::daemon::DeviceActions::here(IdentityPaths::under(
                 home.join("certified"),
             ))

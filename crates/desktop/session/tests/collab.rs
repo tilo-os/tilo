@@ -2264,7 +2264,7 @@ fn each_persons_screen_stands_under_their_row_or_says_why_it_does_not() {
 /// row and no picture, someone with nothing open a line saying that, while the person beside them
 /// keeps their picture. Software has no screen: its row names the window it works in instead.
 #[test]
-fn the_kept_roster_shows_a_screen_or_one_line_and_softwares_window() {
+fn the_kept_members_show_a_screen_or_one_line_and_softwares_window() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = crate::common::settings_home();
     let own = OwnPresence {

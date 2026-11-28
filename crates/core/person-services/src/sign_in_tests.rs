@@ -261,9 +261,9 @@ async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody(
 
 /// A stand-in Apple sign-in: it accepts one made-up `Apple ID` and password,
 /// asks for the code Apple sends, and takes one made-up code.
-struct StandInApple;
+struct FakeApple;
 
-impl account_credentials::icloud::ICloudAuth for StandInApple {
+impl account_credentials::icloud::ICloudAuth for FakeApple {
     fn sign_in(
         &self,
         apple_id: &str,
@@ -330,7 +330,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
     let device = admit(workspaces, &workspace, &owner, 1).await;
     let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
-    workspaces.icloud_sign_in_through(std::sync::Arc::new(StandInApple));
+    workspaces.icloud_sign_in_through(std::sync::Arc::new(FakeApple));
 
     let step: SignInStep = answered(
         settled(page.invoke(

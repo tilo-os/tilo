@@ -7907,7 +7907,7 @@ impl ActionProvider for RuntimeActionProvider {
             // The person's own rules still decide it: the workspace's verdict, made with their
             // own connection answering what it asks of them, and never an approval this call
             // wrote.
-            let verdict = self.broker.state().own_device_verdict(
+            let verdict = self.broker.state().this_device_verdict(
                 caller,
                 &self.workspace,
                 &registered,

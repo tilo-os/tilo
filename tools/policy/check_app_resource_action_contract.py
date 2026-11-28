@@ -188,6 +188,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_remove_view": "answers the chip's published view action for the removal its person made",
     "on_enter_default": "the surrounding dialog's default action reaching a host that has no "
     "dialog around the body, not a control of the prompt's own",
+    "on_hint_open": "the empty state's hint line opens what its view published as the hint's "
+    "native view action",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a

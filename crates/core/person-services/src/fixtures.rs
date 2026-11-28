@@ -23,7 +23,7 @@ use tilo_workspace_service::workspaces::fixtures as core;
 
 pub(crate) use core::{
     Answering, TestGroupKeys, TestHost, admit, admitted_device_of, answered, approved, caller,
-    create_own, device_cert, guest_device, host_dispatch, hosted_governed as hosted,
+    create_own, device_cert, guest_device, host_dispatch, hosted_permissions as hosted,
     hosting_device, install_app, let_in, member_service, open_home, record_grants, request,
     revoke_grant, revoke_grants, settled, shared_with, signed_from, signed_pre_admission,
     workspaces_served,

@@ -96,7 +96,7 @@ fn opened_as(
 
 /// As [`opened`], in a window the session has not served the workspace's record to yet: a view
 /// opened before its reading arrives.
-fn opened_without_roster(name: &str) -> (Replica, ViewInstance) {
+fn opened_without_members(name: &str) -> (Replica, ViewInstance) {
     open_view(None, name, None)
 }
 
@@ -453,7 +453,7 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
 
 #[test]
 fn a_window_the_record_was_never_served_opens_without_claiming_none() {
-    let (_ada, open) = opened_without_roster("supervision");
+    let (_ada, open) = opened_without_members("supervision");
     let said = shown(&open);
     assert!(
         !said

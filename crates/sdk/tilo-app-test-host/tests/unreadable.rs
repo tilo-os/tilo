@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
 
         // A change the model cannot read arrives from another device, in the
         // person's own workspace, which keeps their records.
-        app.in_persons_own_workspace(|own| {
+        app.in_persons_workspace(|own| {
             own.profile_resource::<Learned>()
                 .expect("the person's record")
                 .record()

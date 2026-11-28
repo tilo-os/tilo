@@ -1613,18 +1613,12 @@ impl EmptyState {
         self
     }
 
-    /// Run `f` when the hint is pressed or activated.
+    /// A hint press that opens or shows something.
     #[must_use]
-    pub fn on_hint_click(mut self, f: impl FnMut() + 'static) -> Self {
+    pub fn on_hint_open(mut self, f: impl FnMut() + 'static) -> Self {
         self.hint_handler = Some(Handler::Press(Rc::new(RefCell::new(Box::new(f)))));
         self.rebuild_hint_engine();
         self
-    }
-
-    /// A hint press that opens or shows something; the same as [`Self::on_hint_click`].
-    #[must_use]
-    pub fn on_hint_open(self, f: impl FnMut() + 'static) -> Self {
-        self.on_hint_click(f)
     }
 
     /// The control id the action is addressed and tested by:

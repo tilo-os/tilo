@@ -175,7 +175,7 @@ fn from_device(route: &::collaboration::RouteSpec, document: Vec<u8>) -> CollabE
 tilo_test_env::scenario! {
     fn a_persons_records_ride_their_own_routes_and_converge;
 
-    phase the_persons_records_ride_their_own_workspace;
+    phase the_persons_records_ride_their_persons_workspace;
     // What is the person's alone is a record of their own workspace: its route
     // names that workspace, which every device of theirs derives from their
     // identity root alone, so the same record opened by the same app on another

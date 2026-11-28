@@ -2641,17 +2641,17 @@ d-frnkdv3w = Dein Winken ist angekommen
     .w-someone = Jemand
     .w-you-waved-at = Du hast { $name } gewunken
 
-d-pnt3r5fh = Wie du teilst
+d-quzzxrza = Wie du teilst
     .w-my-words = Meine Worte
     .w-not-at-all = Gar nicht
     .w-automatically = Automatisch
 
-d-upzs3qkn = Wer was sieht
+d-7aupcdya = Wer was sieht
     .w-that-i-m-here = Dass ich hier bin
     .w-nothing = Nichts
     .w-where-i-am = Wo ich bin
 
-d-pkrsaacd = Was die Wahl bedeutet
+d-yt2eannm = Was die Wahl bedeutet
     .w-your-face-never-which-window-or = Dein Gesicht, nie welches Fenster oder dein Zeiger
     .w-you-don-t-appear-and-you = Du erscheinst nicht, und du siehst die Zeiger anderer nicht
     .w-your-face-the-window-you-re = Dein Gesicht, das Fenster, in dem du bist, und dein Zeiger

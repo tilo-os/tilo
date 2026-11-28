@@ -182,7 +182,7 @@ generic = ["answers"]
 
 [[word]]
 row = "legacy, compat readers"
-idents = ["legacy", "compat"]
+idents = ["legacy", "compat reader"]
 
 [[word]]
 row = "tilo-workspaces, (app, workspace, document)"

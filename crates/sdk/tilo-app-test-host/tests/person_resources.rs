@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         let watched = app.profile_resource::<Watched>().unwrap();
         assert!(watched.record().is_none(), "the window holds none of it");
         assert!(videos(&watched).is_empty(), "the genesis, as nothing answered yet");
-        app.in_persons_own_workspace(|own| {
+        app.in_persons_workspace(|own| {
             own.profile_resource::<Watched>()
                 .unwrap()
                 .invoke(&Watched::WATCH.with("from-their-own"))
@@ -169,7 +169,7 @@ tilo_test_env::scenario! {
         app.settle();
 
         let kept = app
-            .in_persons_own_workspace(|own| {
+            .in_persons_workspace(|own| {
                 let kept = own.profile_resource::<Watched>().unwrap();
                 (videos(&kept), kept.record().map(tilo_app::resource::StoredResource::heads))
             })
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
         // Their other device watches one: its copy of the record arrives in their own
         // workspace, which carries it between their devices. Nothing else tells this
         // window, which has been idle since it opened.
-        app.in_persons_own_workspace(|own| {
+        app.in_persons_workspace(|own| {
             let kept = own.profile_resource::<Watched>().unwrap();
             let record = kept.record().unwrap();
             let mut theirs = Replica::<Watched>::load(&record.document().unwrap())
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         // A device nobody signed in on: the person has no workspace of their own to keep it in.
         let mut app = TestApp::<DeclaringApp>::new().unwrap();
         assert!(app.profile_resource::<Watched>().is_none(), "nothing is opened");
-        assert!(app.in_persons_own_workspace(|_| ()).is_none());
+        assert!(app.in_persons_workspace(|_| ()).is_none());
         app.harness().relayout();
         let reason = app
             .actions()

@@ -341,7 +341,7 @@ impl ServiceSessions {
         }
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.
-        sessions.serve_governance(
+        sessions.serve_permissions(
             governance,
             &workspaces,
             own_server.clone(),
@@ -365,7 +365,7 @@ impl ServiceSessions {
     /// Put the workspaces this service holds on its dispatch, whether it founders them or not:
     /// a founder attaches its governance and its host's own operations, and every other service
     /// serves its workspaces' actions through one of its own.
-    fn serve_governance(
+    fn serve_permissions(
         &self,
         governance: Option<crate::workspaces::ServiceWorkspaceActions>,
         workspaces: &crate::workspaces::Workspaces,

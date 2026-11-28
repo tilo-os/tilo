@@ -412,7 +412,7 @@ wrapper = ["bash", "tools/ci/page-clippy.sh"]
 trailing = ["-D", "warnings"]
 packages = [
     "tilo-key-group", "tilo-browser-runtime",
-    "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
+    "tilo-clipboard", "tilo-local-time", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service",
     "tilolang-web", "tilolang-window", "workspace-unify",
@@ -482,7 +482,7 @@ gate = true
 default = false
 packages = [
     "tilo-key-group", "tilo-browser-runtime",
-    "tilo-clipboard", "tilo-clock", "tilo-dialogs", "tilo-files", "tilo-image-codec",
+    "tilo-clipboard", "tilo-local-time", "tilo-dialogs", "tilo-files", "tilo-image-codec",
     "tilo-location", "tilo-media", "tilo-net", "tilo-notify", "tilo-peer-state", "tilo-rt",
     "tilo-secrets", "tilo-session-client", "tilo-workspace-service",
     "tilolang-web", "tilolang-window", "workspace-unify",

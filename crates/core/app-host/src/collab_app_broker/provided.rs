@@ -264,7 +264,7 @@ impl AppBrokerState {
     /// them, and nothing of it run or approved. `Ok` where it runs unasked, the ask refusal where
     /// the person is asked first, and the refusal where the workspace denies it. `None` for an
     /// action that is no own-device one, which the admission decides as any other.
-    pub fn own_device_verdict(
+    pub fn this_device_verdict(
         &self,
         caller: &Caller,
         workspace: &str,
@@ -2592,7 +2592,7 @@ mod settings_documents_tests {
 }
 
 #[cfg(test)]
-mod own_device_verdict_tests {
+mod this_device_verdict_tests {
     use super::super::AppBrokerState;
     use crate::test_support::{
         Answer, Grantee, KindSet, Role, Workspace, WorkspaceId, WorkspaceTree,
@@ -2686,7 +2686,7 @@ mod own_device_verdict_tests {
 
     /// A workspace `owner` owns, `MEMBER` belongs to, where `rule` answers for the member at the
     /// device action.
-    fn broker_workspace(
+    fn member_workspace(
         rule: Option<Answer>,
     ) -> (Arc<AppBrokerState>, WorkspaceId, String, String) {
         let owner = hex::encode([61u8; 32]);
@@ -2745,13 +2745,13 @@ mod own_device_verdict_tests {
     /// build: the workspace's rules decide it as they decide it at admission, and a rule set for
     /// the person is consulted.
     #[test]
-    fn an_own_device_action_is_asked_or_denied_by_the_workspace_rules() {
+    fn an_this_device_action_is_asked_or_denied_by_the_workspace_rules() {
         // No rule for the workspace's owner: it runs.
-        let (state, id, workspace, owner) = broker_workspace(None);
+        let (state, id, workspace, owner) = member_workspace(None);
         let caller = Caller::own_person(owner).in_workspace(&workspace);
         assert!(
             state
-                .own_device_verdict(&caller, &workspace, &registered(), &request())
+                .this_device_verdict(&caller, &workspace, &registered(), &request())
                 .expect("an own-device action")
                 .is_ok(),
             "with no rule set, an own-device action of the person's runs"
@@ -2762,11 +2762,11 @@ mod own_device_verdict_tests {
             (Answer::Ask, "confirmation_required"),
             (Answer::Deny, "not_permitted"),
         ] {
-            let (state, same, workspace, _) = broker_workspace(Some(rule));
+            let (state, same, workspace, _) = member_workspace(Some(rule));
             assert_eq!(same, id, "the same workspace");
             let caller = Caller::own_person(MEMBER).in_workspace(&workspace);
             let refused = state
-                .own_device_verdict(&caller, &workspace, &registered(), &request())
+                .this_device_verdict(&caller, &workspace, &registered(), &request())
                 .expect("an own-device action")
                 .expect_err("a rule the person set decides their action");
             let answered = if matches!(&refused, ActionCallError::ConfirmationRequired(_)) {

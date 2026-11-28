@@ -3338,17 +3338,17 @@ fn a_development_build_installs_on_the_persons_own_connection() {
     }
 }
 
-const OWN_DEVICE_PROBE: &str = "so.tilo.probe.device";
+const THIS_DEVICE_PROBE: &str = "so.tilo.probe.device";
 
 /// A provider offering `probe-device#publish`, an action of the invoker's own device whose
 /// contract asks its person every time: it records what it was asked, and nothing else.
-fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
+fn this_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
     use tilo_actions::remote::TestProvider;
     use tilo_actions::remote::{CataloguePage, CatalogueProvider, CatalogueRow};
     Arc::new(TestProvider::new().with_catalogue(move |caller, query| {
         let row = CatalogueRow::for_action(
-            OWN_DEVICE_PROBE,
-            OWN_DEVICE_PROBE,
+            THIS_DEVICE_PROBE,
+            THIS_DEVICE_PROBE,
             tilo_actions::ActionDescriptor {
                 did: None,
                 state: tilo_actions::ActionState::default(),
@@ -3376,8 +3376,8 @@ fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
         let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);
         if query.provider.is_none() {
             page.providers.push(CatalogueProvider {
-                provider: OWN_DEVICE_PROBE.into(),
-                app_id: OWN_DEVICE_PROBE.into(),
+                provider: THIS_DEVICE_PROBE.into(),
+                app_id: THIS_DEVICE_PROBE.into(),
                 workspace: caller.workspace().unwrap_or_default().to_owned(),
                 document_id: String::new(),
                 browsable: true,
@@ -3388,10 +3388,10 @@ fn own_device_probe() -> Arc<tilo_actions::remote::TestProvider> {
 }
 
 /// The call of the probe's action, as the person's own connection makes it.
-fn own_device_call() -> InvokeRequest {
+fn this_device_call() -> InvokeRequest {
     InvokeRequest::plain(
         RemoteActionTarget {
-            provider: OWN_DEVICE_PROBE.into(),
+            provider: THIS_DEVICE_PROBE.into(),
             address: tilo_actions::ActionAddress::new("probe-device", "publish"),
         },
         serde_json::Map::new(),
@@ -3410,14 +3410,14 @@ fn answered<T: Send + 'static>(
 }
 
 const OWN_ASK_TEST: &str =
-    "device::services::tests::an_own_device_actions_ask_is_answered_by_the_persons_prompt";
+    "device::services::tests::an_this_device_actions_ask_is_answered_by_the_persons_prompt";
 
 /// An action of the person's own device whose contract asks them every time, called on their own
 /// connection: it waits as its asked record and nothing runs until their prompt approves that
 /// record, and an answer given again runs nothing more. A confirmation the call writes itself is
 /// no answer to it.
 #[test]
-fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
+fn an_this_device_actions_ask_is_answered_by_the_persons_prompt() {
     use tilo_action_services::workspace_invocations;
     use tilo_actions::remote::asked::{AskedRecords as _, RESOLVE};
     use tilo_actions::remote::{ActionProvider as _, Confirmation, ReceiptStatus};
@@ -3426,8 +3426,8 @@ fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    let probe = own_device_probe();
-    daemon.provide(OWN_DEVICE_PROBE, Arc::clone(&probe) as _);
+    let probe = this_device_probe();
+    daemon.provide(THIS_DEVICE_PROBE, Arc::clone(&probe) as _);
     let (tree, caller) = daemon.connection_tree_in(None).unwrap();
     assert!(
         caller.is_own_connection(),
@@ -3435,7 +3435,7 @@ fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
     );
 
     // Their call waits for them: its asked record is written, and nothing of it ran.
-    let first = answered(tree.invoke(&caller, own_device_call())).expect("the call is admitted");
+    let first = answered(tree.invoke(&caller, this_device_call())).expect("the call is admitted");
     assert!(
         matches!(first.status, ReceiptStatus::Accepted),
         "the call waits for its person: {first:?}"
@@ -3475,7 +3475,7 @@ fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
     assert_eq!(probe.asked().len(), 1, "an answer given twice runs nothing");
 
     // A call that writes its own confirmation is no answer to the question that waits.
-    let mut written = own_device_call();
+    let mut written = this_device_call();
     written.confirmation = Some(Confirmation::Operated);
     let waiting = answered(tree.invoke(&caller, written)).expect("the call is admitted");
     assert!(
@@ -3997,7 +3997,7 @@ fn the_shell_links_own_call_reaches_the_providers_the_device_serves() {
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     let workspace = daemon.workspace().unwrap();
-    let probe = crate::device::local::tests::own_device_asking();
+    let probe = crate::device::local::tests::this_device_asking();
     daemon.provide(crate::device::local::tests::ASKS, Arc::clone(&probe) as _);
     let person = daemon.person().unwrap();
     let dispatch = person.provider(&workspace).unwrap();

@@ -735,7 +735,7 @@ fn rows_permitted(
         if let Some(action) = row.action() {
             // A person records the cuts of their own devices' removals: that is their own list
             // of devices, which they keep without the workspace's administration.
-            if *row == GovernanceRow::Removals && own_device_cuts((at, after), before, &actor) {
+            if *row == GovernanceRow::Removals && this_device_cuts((at, after), before, &actor) {
                 continue;
             }
             held.check_action(&authority, action, &cx, false)
@@ -786,7 +786,7 @@ fn rows_permitted(
 
 /// Whether the cuts `after` adds to `at` are of devices the workspace certifies for `actor`: a
 /// person records the removal of their own devices, and takes no one else's.
-fn own_device_cuts(
+fn this_device_cuts(
     (at, after): (&AutoCommit, &AutoCommit),
     before: &WorkspaceGovernance,
     actor: &str,

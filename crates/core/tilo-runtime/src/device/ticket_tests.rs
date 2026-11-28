@@ -1584,7 +1584,7 @@ async fn a_ticket_that_names_a_server_leaves_its_entry() {
 /// does, and the server admits the write. What a device whose founding handed their workspace
 /// to a server does, and what the server decides its later writes against.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_device_keeping_a_member_copy_lists_itself_through_the_server_that_holds_it() {
+async fn a_device_keeping_a_copy_lists_itself_through_the_server_that_holds_it() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = servers_host(&root).await;
     let admin =

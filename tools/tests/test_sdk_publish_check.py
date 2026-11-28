@@ -97,7 +97,7 @@ class ForeignNamesTests(unittest.TestCase):
                 check.foreign_names(OURS)
 
 
-class PublicationTests(unittest.TestCase):
+class PublishCheckTests(unittest.TestCase):
     def test_each_crate_comes_after_what_it_needs_and_the_products_come_first(self):
         needs = {
             "tilolang-lex": set(),
@@ -107,7 +107,7 @@ class PublicationTests(unittest.TestCase):
             "tilo-aaa-drawing": set(),
             "tilo-aaa-unrelated": set(),
         }
-        order = check.publication_order(set(needs), needs)
+        order = check.publish_order(set(needs), needs)
         for name, deps in needs.items():
             for dep in deps:
                 self.assertLess(order.index(dep), order.index(name), f"{dep} before {name}")

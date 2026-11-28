@@ -46,7 +46,7 @@ fn carried_over(app: &str) -> bool {
 /// Walk every entry `keeper` holds, handing each app's secret to `adopt`, and take the entry out
 /// once `adopt` answered. The secret is handed on and never written down: no log line, record or
 /// history carries it. An entry `adopt` refused stays, to be adopted on a later start.
-fn walk_old_keeper(workspace: &str, person: &str, keeper: &dyn OldKeeper, adopt: &mut Adopt<'_>) {
+fn walk_old_secret_store(workspace: &str, person: &str, keeper: &dyn OldSecretStore, adopt: &mut Adopt<'_>) {
     let entries = match keeper.entries() {
         Ok(entries) => entries,
         Err(error) => {
@@ -97,7 +97,7 @@ fn walk_old_keeper(workspace: &str, person: &str, keeper: &dyn OldKeeper, adopt:
 type Adopt<'a> = dyn FnMut(&str, &str, &str, Zeroizing<String>) -> Result<(), String> + 'a;
 
 /// The device's old keeper, as its entries are read from it: the platform's app secret store.
-trait OldKeeper {
+trait OldSecretStore {
     /// Every entry the keeper holds on this device, as `(app, purpose, item)`.
     fn entries(&self) -> Result<Vec<(String, String, String)>, String>;
     /// The secret `app`'s keeper kept for `purpose` and `item`, when it holds one.
@@ -109,7 +109,7 @@ trait OldKeeper {
 /// This device's secret store, the old keeper the native apps kept their secrets in.
 struct Secrets;
 
-impl OldKeeper for Secrets {
+impl OldSecretStore for Secrets {
     fn entries(&self) -> Result<Vec<(String, String, String)>, String> {
         let listed = tilo_secrets::SecretStore::for_app(tilo_app_id::apps::MIGRATE)
             .entries_blocking()
@@ -171,7 +171,7 @@ impl Daemon {
         self.old_secrets.store(true, Ordering::Release);
         let person = hex::encode(self.workspaces().device_cert().user_public_key);
         let workspaces = self.workspaces();
-        walk_old_keeper(
+        walk_old_secret_store(
             &workspace,
             &person,
             &Secrets,
@@ -336,7 +336,7 @@ mod tests {
         }
     }
 
-    impl OldKeeper for Fake {
+    impl OldSecretStore for Fake {
         fn entries(&self) -> Result<Vec<(String, String, String)>, String> {
             Ok(self.held.lock().unwrap().keys().cloned().collect())
         }
@@ -382,7 +382,7 @@ mod tests {
             ));
             Ok(())
         };
-        walk_old_keeper("workspace", "person", &keeper, &mut adopt);
+        walk_old_secret_store("workspace", "person", &keeper, &mut adopt);
         assert_eq!(
             *adopted.lock().unwrap(),
             [
@@ -403,7 +403,7 @@ mod tests {
         );
         assert!(!keeper.holds(tilo_app_id::apps::NOTES, "bot-token", "default"));
         assert!(!keeper.holds(tilo_app_id::apps::TOTP, "seed", "first"));
-        walk_old_keeper("workspace", "person", &keeper, &mut adopt);
+        walk_old_secret_store("workspace", "person", &keeper, &mut adopt);
         assert_eq!(
             adopted.lock().unwrap().len(),
             2,
@@ -421,7 +421,7 @@ mod tests {
             "made-up-token",
         )]);
         let mut adopt = |_: &str, _: &str, _: &str, _: Zeroizing<String>| Err("not yet".to_owned());
-        walk_old_keeper("workspace", "person", &keeper, &mut adopt);
+        walk_old_secret_store("workspace", "person", &keeper, &mut adopt);
         assert!(keeper.holds(tilo_app_id::apps::NOTES, "bot-token", "default"));
     }
 
@@ -449,7 +449,7 @@ mod tests {
             adopted.lock().unwrap().push(app.to_owned());
             Ok(())
         };
-        walk_old_keeper("workspace", "person", &keeper, &mut adopt);
+        walk_old_secret_store("workspace", "person", &keeper, &mut adopt);
         assert_eq!(
             *adopted.lock().unwrap(),
             [tilo_app_id::apps::NOTES.to_owned()]

@@ -392,7 +392,7 @@ fn a_fresh_sessions_seeded_tasks_move_into_the_workspace_it_founds_without_going
         |session| {
             assert!(
                 lists_task(session, SEEDED_TASK),
-                "the seeded tasks are listed while the device enrols"
+                "the seeded tasks are listed while the device joins"
             );
             session.apps_kept_in_workspace().then_some(())
         },

@@ -2300,7 +2300,7 @@ impl DirectSync {
             self.note_genesis(&authored);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.keep_governance(&authored);
+        self.keep_permissions(&authored);
         let author = authored.from;
         let links = self.0.outgoing.send(authored).unwrap_or(0);
         tracing::debug!(
@@ -2318,7 +2318,7 @@ impl DirectSync {
     /// ([`Store::keep_workspace_change`]). Only the host keeps and hands
     /// it, so a member's older copy never stands in for the newest.
     #[cfg(not(target_arch = "wasm32"))]
-    fn keep_governance(&self, authored: &Authored) {
+    fn keep_permissions(&self, authored: &Authored) {
         if !self.fans_out() {
             return;
         }
@@ -4700,7 +4700,7 @@ impl DirectSync {
         // too.
         #[cfg(not(target_arch = "wasm32"))]
         if matches!(&heard.message, NeighbourMsg::SyncResp { .. }) && heard.report.is_ok() {
-            self.keep_governance(&Authored {
+            self.keep_permissions(&Authored {
                 from: author,
                 message: heard.message.clone(),
                 published: false,

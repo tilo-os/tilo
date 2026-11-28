@@ -857,7 +857,7 @@ mod tests {
                     let labels = chart.marks.shown_labels(&drawn, &mut tr, &theme);
                     let items = chart.marks.items();
                     let mut shown = 0;
-                    let mut by_siblings: std::collections::HashMap<(usize, &str), Vec<String>> =
+                    let mut by_parent: std::collections::HashMap<(usize, &str), Vec<String>> =
                         std::collections::HashMap::new();
                     for ((segment, _), label) in drawn.iter().zip(&labels) {
                         // However short the band draws it, the whole name is still read by
@@ -879,13 +879,13 @@ mod tests {
                             "{width}: {:?} shows {text:?}, which is not whole words of it",
                             segment.label
                         );
-                        by_siblings
+                        by_parent
                             .entry((segment.depth, segment.parent.as_str()))
                             .or_default()
                             .push(text);
                     }
                     assert!(shown >= 4, "{width}: the chart still names its segments");
-                    for texts in by_siblings.values() {
+                    for texts in by_parent.values() {
                         let mut cuts: Vec<&String> =
                             texts.iter().filter(|text| text.contains('…')).collect();
                         let count = cuts.len();

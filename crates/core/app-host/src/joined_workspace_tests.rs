@@ -214,7 +214,7 @@ impl crate::services::PublishedResources for NoStanding {
 /// admits the agent's session names it on both. Another person's agent is never listed there.
 #[cfg(feature = "agents")]
 #[tokio::test]
-async fn a_member_copy_lists_its_persons_computer_agent() {
+async fn a_copy_lists_its_persons_computer_agent() {
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
     let (serving, device, created, invitation) = shared(serving_state.path(), "Theirs", 23).await;

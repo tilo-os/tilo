@@ -777,7 +777,7 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str],
         released = {name for name in ready if on_crates_io(name, version)}
         for name in sorted(released):
             print(f"{name}@{version} is already on crates.io; skipping it")
-    remaining = [name for name in publication_order(ready, needs) if name not in released]
+    remaining = [name for name in publish_order(ready, needs) if name not in released]
     if not remaining:
         print(f"every ready crate is on crates.io at {version}")
         return 0
@@ -820,7 +820,7 @@ def package(tree: pathlib.Path, target: pathlib.Path, ready: set[str],
     return publish_each(tree, remaining, len(ready) + len(released), version, args.budget)
 
 
-def publication_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
+def publish_order(ready: set[str], needs: dict[str, set[str]]) -> list[str]:
     """READY in an order crates.io takes them (each after the crates of the set it needs), with
     the products of PRODUCT_ORDER finishing in that order as early as that allows."""
     rank = {}

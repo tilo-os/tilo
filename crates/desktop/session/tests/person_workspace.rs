@@ -127,7 +127,7 @@ fn choose_mode(device: &Device, mode: &str) {
 }
 
 #[test]
-fn a_fresh_device_names_one_own_workspace_for_its_daemon_and_its_session() {
+fn a_fresh_device_names_one_persons_workspace_for_its_daemon_and_its_session() {
     let ada = Person::new("Ada");
     let mut laptop = ada.device("Ada's laptop");
     laptop.install_passwords();

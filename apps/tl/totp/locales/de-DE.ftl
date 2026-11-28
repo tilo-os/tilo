@@ -188,11 +188,23 @@ d-w2yjeczm = Umbenennen
 
 d-w2yjeczm-issuer = Dienst
 
+d-w2yjeczm-algorithm = Verfahren
+
+d-w2yjeczm-digits = Stellen
+
+d-w2yjeczm-period = Zeitraum
+
 d-pyqdda5k = Kontonamen ändern
     .doc = Ändert, womit sich ein Konto anmeldet: was eine Person tat, die seinen Namen änderte.
     .did = änderte den Kontonamen
 
 d-pyqdda5k-label = Bezeichnung
+
+d-pyqdda5k-algorithm = Verfahren
+
+d-pyqdda5k-digits = Stellen
+
+d-pyqdda5k-period = Zeitraum
 
 d-fb5iwznq = Umfärben
     .doc = Gibt einem Konto eine eigene Farbe: was eine Person tat, die es umfärbte.
@@ -206,6 +218,10 @@ d-gps7ofew = Code-Erzeugung ändern
     .w-that-key-is-not-base32-copy = Dieser Schlüssel ist nicht Base32; kopieren Sie ihn erneut vom Dienst
 
 d-gps7ofew-algorithm = Verfahren
+
+d-gps7ofew-digits = Stellen
+
+d-gps7ofew-period = Zeitraum
 
 d-gps7ofew-secret = Schlüssel
 

@@ -1154,7 +1154,7 @@ pub struct Publisher {
 }
 
 /// A workspace's own governance.
-pub const GOVERNANCE: Publisher = Publisher {
+pub const PERMISSIONS: Publisher = Publisher {
     provider: WORKSPACE_GOVERNANCE_PROVIDER,
     kind: WORKSPACE_GOVERNANCE_KIND,
 };
@@ -1355,7 +1355,7 @@ impl Verb {
             Some(other) => other,
             None => name,
         };
-        let mut row = self.row(GOVERNANCE, &address.resource, label);
+        let mut row = self.row(PERMISSIONS, &address.resource, label);
         if child.is_some() {
             row.parent_resource.clone_from(&root);
         }
@@ -1827,7 +1827,7 @@ impl Workspaces {
         if wants(WORKSPACE_GOVERNANCE_PROVIDER)
             && let Some(workspace_id) = workspace_id
         {
-            self.offer_governance(workspace_id, caller, certificate, query, &mut offer)
+            self.offer_permissions(workspace_id, caller, certificate, query, &mut offer)
                 .await;
         }
         if wants(HOST_ACTIONS_PROVIDER)
@@ -1854,7 +1854,7 @@ impl Workspaces {
     /// Offer the governance of `workspace_id` to `caller`: the governance of the workspace it
     /// carries, or, for an agent of the person's asking what it asks of its servers, the serving
     /// device's own operations there.
-    async fn offer_governance(
+    async fn offer_permissions(
         &self,
         workspace_id: WorkspaceId,
         caller: &Caller,
@@ -1870,7 +1870,7 @@ impl Workspaces {
             // governance is not theirs.
             if let Some((hosted, _device)) = operating {
                 let workspace = hosted.lock().await;
-                offer.add(GOVERNANCE, workspace.workspace(), server::rows(&workspace));
+                offer.add(PERMISSIONS, workspace.workspace(), server::rows(&workspace));
             }
             return;
         };
@@ -1913,7 +1913,7 @@ impl Workspaces {
         for (_, answers) in self.providers().all_in_workspace() {
             rows.extend(answers.tree_rows(call, &id).await);
         }
-        offer.add(GOVERNANCE, &id, governance_tree(rows, &name));
+        offer.add(PERMISSIONS, &id, governance_tree(rows, &name));
     }
 
     /// Run `request` from `caller`, on the device `certificate` when the
@@ -2264,7 +2264,7 @@ impl Workspaces {
                 .iter()
                 .find(|verb| verb.id == action)
                 .is_some_and(|verb| verb.kind == ActionKind::Read)
-                || Self::governance_is_decided_later(action);
+                || Self::permissions_are_decided_later(action);
             let permitted = match check {
                 "" => true,
                 _ if leaving => true,
@@ -2297,7 +2297,7 @@ impl Workspaces {
                 Some(workspace_id),
                 caller,
                 &device,
-                &verb.operation(GOVERNANCE),
+                &verb.operation(PERMISSIONS),
                 (&arguments_of(request), request.approval().is_some()),
             )
             .await?;
@@ -2336,7 +2336,7 @@ impl Workspaces {
     /// Whether the change `action` makes is decided where it is made, so the check a governance
     /// call makes before it is only a probe: [`Self::check_governance`] decides a change to who
     /// is in the workspace, and this host decides naming it where it renames it.
-    fn governance_is_decided_later(action: &str) -> bool {
+    fn permissions_are_decided_later(action: &str) -> bool {
         matches!(
             action,
             ADD_MEMBER
@@ -2939,7 +2939,7 @@ impl Workspaces {
             ) && caller.acting().is_person();
         }
         if grants
-            .is_some_and(|grants| grants.answer(&verb.operation(GOVERNANCE), now) == Answer::Deny)
+            .is_some_and(|grants| grants.answer(&verb.operation(PERMISSIONS), now) == Answer::Deny)
         {
             return false;
         }
@@ -2990,7 +2990,7 @@ impl Workspaces {
             for (verb, _) in verbs.iter().filter(|(verb, offered)| {
                 (*offered || (removing(verb) && root == own)) && !(removing(verb) && root == owner)
             }) {
-                let mut row = verb.row(GOVERNANCE, &resource, label);
+                let mut row = verb.row(PERMISSIONS, &resource, label);
                 row.parent_resource.clone_from(&members);
                 if let Some(action) = row.action.as_mut() {
                     let (name, source) = if verb.id == ADD_MEMBER {
@@ -3000,7 +3000,7 @@ impl Workspaces {
                     };
                     action.address = ActionAddress::new(resource.as_str(), name);
                     action.action_label =
-                        crate::i18n::action_words(GOVERNANCE.provider, name, source);
+                        crate::i18n::action_words(PERMISSIONS.provider, name, source);
                     action.params.retain(|param| param.name != "person");
                 }
                 rows.push(row);

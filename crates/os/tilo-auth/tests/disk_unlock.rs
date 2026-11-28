@@ -53,14 +53,14 @@ use tilo_user_identity::{
 // The daemon opens its documents in a worker process, which this test binary serves.
 tilo_automerge_isolate::test_worker!();
 
-/// Names the test the process [`on_own_device`] starts runs, and where its daemon's profile is.
+/// Names the test the process [`on_this_device`] starts runs, and where its daemon's profile is.
 const OWN: &str = "TILO_AUTH_DISK_UNLOCK_TEST";
 const PROFILE: &str = "TILO_AUTH_DISK_UNLOCK_PROFILE";
 
 /// Run `body` on a device of its own: in a process of its own, with a home, identity store and
 /// runtime directory of its own, and its person founded there. `body` is handed the daemon's
 /// profile. A device is one per process, as a computer has one daemon.
-fn on_own_device(body: impl FnOnce(&Path, &SigningIdentity)) {
+fn on_this_device(body: impl FnOnce(&Path, &SigningIdentity)) {
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
@@ -371,7 +371,7 @@ fn a_volume_sets_up_unlock_through_the_daemon_and_opens_at_boot_with_the_half_th
         },
         "the header is written with cryptsetup"
     );
-    on_own_device(sets_up_and_opens);
+    on_this_device(sets_up_and_opens);
 }
 
 fn sets_up_and_opens(profile: &Path, root: &SigningIdentity) {

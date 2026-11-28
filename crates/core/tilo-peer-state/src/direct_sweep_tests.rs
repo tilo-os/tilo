@@ -19,10 +19,11 @@ fn workspace() -> WorkspaceId {
 }
 
 /// The host as a restart serves it: its store read again from `root`, over
-/// the governor's replica, before any device is served it.
-fn reopened(root: &std::path::Path, governor: &StatePeer, key: &SigningKey) -> DirectSync {
+/// the peer's replica, before any device is served it.
+fn reopened(root: &std::path::Path, workspace_peer: &StatePeer, key: &SigningKey) -> DirectSync {
     let store = Arc::new(Store::open(root, Appetite::StoreAll).unwrap());
-    let link = DirectSync::over(Replica::new(governor.clone()), key.clone()).with_store(store);
+    let link =
+        DirectSync::over(Replica::new(workspace_peer.clone()), key.clone()).with_store(store);
     link.host();
     link
 }
@@ -33,37 +34,37 @@ fn reopened(root: &std::path::Path, governor: &StatePeer, key: &SigningKey) -> D
 /// takes all of it in without waiting for history.
 #[tokio::test]
 async fn a_change_the_workspace_refuses_is_dropped_when_the_host_opens_it() {
-    let ((_, _, _, _, now), mut governor, key) = hosted_fixture_at(tilo_clock::wall());
+    let ((_, _, _, _, now), mut workspace_peer, key) = hosted_fixture_at(tilo_clock::wall());
     let workspace = workspace();
-    // One change the workspace takes in — its governor renames it — and one
+    // One change the workspace takes in — its workspace_peer renames it — and one
     // it refuses: the same rename, kept under a device its roster does not
     // list, as a frame a host judged after keeping it.
-    let mut authoring = governor.clone();
+    let mut authoring = workspace_peer.clone();
     authoring
         .governance_mut()
         .author_workspace_name("Refused", &key, now)
         .unwrap();
     let refused = authoring.workspace_message();
-    governor
+    workspace_peer
         .governance_mut()
         .author_workspace_name("Kept", &key, now)
         .unwrap();
-    let accepted = governor.workspace_message();
+    let accepted = workspace_peer.workspace_message();
     assert_ne!(accepted, refused, "the two changes are other frames");
 
     let root = tempfile::tempdir().unwrap();
-    let governor_device = key.verifying_key().to_bytes();
+    let workspace_device_key = key.verifying_key().to_bytes();
     {
         let store = Store::open(root.path(), Appetite::StoreAll).unwrap();
         store
             .keep_workspace_change(workspace, OUTSIDER, &refused)
             .unwrap();
         store
-            .keep_workspace_change(workspace, governor_device, &accepted)
+            .keep_workspace_change(workspace, workspace_device_key, &accepted)
             .unwrap();
     }
 
-    let host = reopened(root.path(), &governor, &key);
+    let host = reopened(root.path(), &workspace_peer, &key);
     assert_eq!(
         host.drop_refused_workspace_changes().await,
         1,
@@ -82,10 +83,10 @@ async fn a_change_the_workspace_refuses_is_dropped_when_the_host_opens_it() {
     );
 
     // And a device that links takes all of it in without waiting for history.
-    let roster = governor.certificates();
+    let roster = workspace_peer.certificates();
     let host_cert = roster
         .iter()
-        .find(|cert| cert.device_public_key == governor_device)
+        .find(|cert| cert.device_public_key == workspace_device_key)
         .unwrap()
         .clone();
     let member = DirectSync::new(
@@ -119,12 +120,12 @@ async fn a_change_the_workspace_refuses_is_dropped_when_the_host_opens_it() {
 /// links after.
 #[tokio::test]
 async fn a_change_that_waits_for_history_is_kept() {
-    let ((_, _, _, _, now), governor, key) = hosted_fixture_at(tilo_clock::wall());
+    let ((_, _, _, _, now), workspace_peer, key) = hosted_fixture_at(tilo_clock::wall());
     let workspace = workspace();
-    let governor_device = key.verifying_key().to_bytes();
+    let workspace_device_key = key.verifying_key().to_bytes();
     // A change made, never sent, and one built on it: only the second is
     // kept, so whoever takes it in waits for the first.
-    let mut writer = governor.clone();
+    let mut writer = workspace_peer.clone();
     writer
         .governance_mut()
         .author_workspace_name("Made", &key, now)
@@ -145,10 +146,10 @@ async fn a_change_that_waits_for_history_is_kept() {
     {
         let store = Store::open(root.path(), Appetite::StoreAll).unwrap();
         store
-            .keep_workspace_change(workspace, governor_device, &waiting)
+            .keep_workspace_change(workspace, workspace_device_key, &waiting)
             .unwrap();
     }
-    let host = reopened(root.path(), &governor, &key);
+    let host = reopened(root.path(), &workspace_peer, &key);
     assert_eq!(
         host.drop_refused_workspace_changes().await,
         0,
@@ -156,7 +157,7 @@ async fn a_change_that_waits_for_history_is_kept() {
     );
     assert_eq!(
         host.store().unwrap().kept_workspace_changes(workspace),
-        vec![(governor_device, waiting)],
+        vec![(workspace_device_key, waiting)],
         "it is kept for the device that links after"
     );
 }

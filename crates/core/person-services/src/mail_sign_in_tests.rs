@@ -999,12 +999,12 @@ async fn an_account_added_from_its_login(setup: &Setup, reference: &str) {
 /// What tells this device's cloud mounts what to do, as a test stands in for the files
 /// service: every request it was told, and the mounts it answers with.
 #[derive(Default)]
-struct StandInCloud {
+struct FakeCloud {
     mounts: Mutex<Vec<Mount>>,
     requests: Mutex<Vec<Request>>,
 }
 
-impl crate::person_settings::cloud_control::CloudControl for StandInCloud {
+impl crate::person_settings::cloud_control::CloudControl for FakeCloud {
     fn mounts(&self) -> Result<Vec<Mount>, String> {
         Ok(self.mounts.lock().unwrap().clone())
     }
@@ -1015,7 +1015,7 @@ impl crate::person_settings::cloud_control::CloudControl for StandInCloud {
     }
 }
 
-impl StandInCloud {
+impl FakeCloud {
     /// The next request it is told, or a panic naming what it was told instead.
     fn told(&self, expected: &Request) {
         let requests = self.requests.lock().unwrap();
@@ -1032,7 +1032,7 @@ impl StandInCloud {
 #[tokio::test]
 async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
     let setup = Setup::new().await;
-    let cloud = Arc::new(StandInCloud::default());
+    let cloud = Arc::new(FakeCloud::default());
     setup.workspaces.cloud_control_through(
         Arc::clone(&cloud) as Arc<dyn crate::person_settings::cloud_control::CloudControl>
     );
@@ -1108,7 +1108,7 @@ async fn its_files_mode_is_chosen(setup: &Setup, id: &str) {
 }
 
 /// Sync now, pause and resume each reach this device's files service.
-async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &StandInCloud, id: &str) {
+async fn sync_controls_reach_the_files_service(setup: &Setup, cloud: &FakeCloud, id: &str) {
     let sync = json!({ "account": id });
     setup
         .ask(
@@ -1170,7 +1170,7 @@ async fn a_mail_accounts_files_do_not_sync(setup: &Setup) {
 }
 
 /// The reading says a paused mount is paused, and its files mode is the one chosen.
-async fn a_paused_mount_reads_paused(setup: &Setup, cloud: &StandInCloud, id: &str) {
+async fn a_paused_mount_reads_paused(setup: &Setup, cloud: &FakeCloud, id: &str) {
     *cloud.mounts.lock().unwrap() = vec![Mount {
         account: id.to_owned(),
         paused: true,

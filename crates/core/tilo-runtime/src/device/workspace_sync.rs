@@ -153,7 +153,7 @@ mod tests {
     /// A copy reports connecting until its first link, synced while linked, unreachable after a
     /// link it had, and synced again when the host returns.
     #[test]
-    fn a_member_copy_is_connecting_synced_and_unreachable_as_its_link_moves() {
+    fn a_copy_is_connecting_synced_and_unreachable_as_its_link_moves() {
         let (moved, _) = tokio::sync::watch::channel(0);
         let sync = WorkspaceSync {
             states: Mutex::default(),

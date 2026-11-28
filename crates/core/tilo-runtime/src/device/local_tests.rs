@@ -559,7 +559,7 @@ fn asking() -> Arc<tilo_actions::remote::TestProvider> {
 /// A provider offering `probe#publish` as an action of the person's own device that asks them
 /// first, and refuses every call for want of their yes as its own code does: the shape of a
 /// question a program raises through the shell.
-pub(crate) fn own_device_asking() -> Arc<tilo_actions::remote::TestProvider> {
+pub(crate) fn this_device_asking() -> Arc<tilo_actions::remote::TestProvider> {
     use tilo_actions::remote::{ActionCallError, Pending};
     Arc::new(
         catalogue(ASKS, tilo_actions::ConfirmationPolicy::Confirm, true).answering(

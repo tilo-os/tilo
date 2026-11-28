@@ -281,7 +281,7 @@ impl KeptContent {
         let _writing = AbortOnDrop(writing);
         let mut writes = self.workspaces.document_writes();
         let mut governance = self.workspaces.governance_changes();
-        let servers = self.servers_workspace();
+        let servers = self.serving_device_workspace();
         self.read_kept_bytes().await;
         for summary in self.workspaces.list().await {
             self.open_workspace(&summary.workspace).await;
@@ -352,7 +352,7 @@ impl KeptContent {
 
     /// The Servers workspace of this host's person: whose record says what the
     /// host keeps for one workspace.
-    fn servers_workspace(&self) -> String {
+    fn serving_device_workspace(&self) -> String {
         tilo_server_protocol::servers::person_workspace_id(&self.workspaces.device_person())
     }
 
@@ -392,7 +392,7 @@ impl KeptContent {
     async fn governance_moved(&self, workspace: &str) {
         self.limits.lock_recover().policies.remove(workspace);
         self.policy_of(workspace).await;
-        if workspace == self.servers_workspace() {
+        if workspace == self.serving_device_workspace() {
             self.read_kept_bytes().await;
         }
         self.limits_changed();

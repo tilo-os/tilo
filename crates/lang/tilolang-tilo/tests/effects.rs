@@ -71,7 +71,7 @@ fn approve(ada: &Replica, record: &InvocationEntry) {
 tilo_test_env::scenario! {
     fn what_the_effects_hold_leaves_once;
 
-    phase a_letter_approved_on_one_replica_leaves_once_from_its_owner;
+    phase a_letter_approved_on_one_copy_leaves_once_from_its_owner;
     {
         let (mut ada, record) = suggested_workspace();
         let mut grace = ada.fork("grace", &[(LETTERS, LETTERS_IDS)]);

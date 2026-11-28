@@ -1398,7 +1398,7 @@ impl Workspaces {
                 theirs
             } else {
                 let (made, at) = self
-                    .make_own_workspace((caller, device), (name, moving, language), own)
+                    .make_persons_workspace((caller, device), (name, moving, language), own)
                     .await?;
                 placed = at;
                 made
@@ -1444,7 +1444,7 @@ impl Workspaces {
     /// `device`'s person's new workspace, made under `name` or the one its language names, and
     /// recorded as theirs ([`Self::found_for`]), with the address the device that carried the
     /// call signed for it, where it was placed.
-    async fn make_own_workspace(
+    async fn make_persons_workspace(
         &self,
         (caller, device): (&Caller, &DeviceCert),
         (name, moving, language): (Option<&str>, Option<&str>, Option<&str>),

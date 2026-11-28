@@ -161,6 +161,8 @@ fn join_failed(vm: &Resolved, why: &str) -> CliError {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
     use super::*;
 
     /// A `tilo device add` that fails says why in its error stream, and how it ended: both
@@ -172,7 +174,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let (_, said) = mpsc::channel();
         let mut joining = Joining {

@@ -214,7 +214,7 @@ impl super::Workspaces {
             None => None,
         };
         let _turn = self.inner.creating.turn().await;
-        self.refuse_held_workspace(workspace).await?;
+        self.refuse_a_workspace_no_device_holds(workspace).await?;
         let device = self.device_keys();
         // The apps this workspace starts with, as `workspace/apps#install` would record them.
         // Made here so the lookup runs once, on the device that makes the workspace.
@@ -283,7 +283,7 @@ impl super::Workspaces {
 
     /// Refuse a workspace `workspace` names that this host already holds, has released, has
     /// deleted, or serves.
-    async fn refuse_held_workspace(&self, workspace: Option<&str>) -> Result<(), String> {
+    async fn refuse_a_workspace_no_device_holds(&self, workspace: Option<&str>) -> Result<(), String> {
         if let Some(workspace) = workspace
             && self.inner.workspaces.lock().await.contains_key(workspace)
         {

@@ -1624,7 +1624,7 @@ mod tests {
             );
         }
 
-        phase a_step_the_called_action_declares_counts_only_from_its_records_keeper;
+        phase a_step_the_called_action_declares_counts_only_from_its_records_owner;
         // Ada keeps an item in the workspace's vault: her call names the vault's `add`, and the
         // host that keeps the vault's record writes the step `add` declares there. The same step
         // from a device that does not keep the record, and a step `add` does not declare, are

@@ -290,7 +290,7 @@ fn the_agents_actions_declare_the_records_own_steps() {
 /// list again: what the app runtime's own thread admits and routes by never lets a removed agent
 /// in for a turn. Until a write of the list begins, the roster names what it last read.
 #[tokio::test]
-async fn a_retired_agent_leaves_the_followed_roster_before_it_is_read_again() {
+async fn a_retired_agent_leaves_the_followed_members_before_it_is_read_again() {
     use tilo_broker_core::services::AgentRoster;
 
     let dir = tempfile::tempdir().unwrap();

@@ -2316,12 +2316,12 @@ async fn an_environment_hears_its_own_record_and_no_other() {
         environment.opened((NOTES, NOTES_RECORD)).is_none(),
         "no other record of the workspace is its to read"
     );
-    named_by_no_roster(&fixture, &environment_device).await;
+    named_by_no_member(&fixture, &environment_device).await;
 }
 
 /// Neither the person's laptop nor the host knows the environment's device: it is in no
 /// certificate list and no member list, so none of them admits it or hands it a key.
-async fn named_by_no_roster(fixture: &Fixture, environment_device: &TestDevice) {
+async fn named_by_no_member(fixture: &Fixture, environment_device: &TestDevice) {
     let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
     let device = environment_device.device_pubkey();
     let now = tilo_clock::wall();
@@ -3468,7 +3468,7 @@ async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'stati
         .await
         .expect("the server holds the workspace");
     let laptop = member_link(&fixture.server.server, &fixture.laptop).await;
-    let (laptop_roster, laptop_access) = laptop.read(|peer| {
+    let (laptop_members, laptop_access) = laptop.read(|peer| {
         (
             peer.certificates()
                 .iter()
@@ -3497,7 +3497,7 @@ async fn listed_by_workspace(fixture: &Fixture, device: [u8; 32]) -> Vec<&'stati
                 .contains(&device),
             "the host's access",
         ),
-        (laptop_roster, "the laptop's roster"),
+        (laptop_members, "the laptop's roster"),
         (laptop_access, "the laptop's access"),
     ]
     .into_iter()

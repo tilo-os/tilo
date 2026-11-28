@@ -28,7 +28,7 @@ use crate::workspaces::tests::{guest_device, hosting_device, is_banned, test_hos
 use tilo_server_protocol::WorkspaceId;
 
 pub(crate) use crate::workspaces::fixtures::{
-    Answering, admit, answered, caller, host_dispatch, hosted_governed as hosted, request, settled,
+    Answering, admit, answered, caller, host_dispatch, hosted_permissions as hosted, request, settled,
 };
 
 async fn grant(

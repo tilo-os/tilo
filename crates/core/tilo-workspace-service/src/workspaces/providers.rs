@@ -415,7 +415,7 @@ impl Providers {
             provider: Arc::from(provider),
             app: Arc::from(app),
             reach: Reach::ThisDevice,
-            answers: Arc::new(ThroughGovernance(self.downgrade())),
+            answers: Arc::new(ThroughPermissions(self.downgrade())),
             published: Vec::new(),
             placed_for: None,
             in_workspace: Some(answers),
@@ -1317,9 +1317,9 @@ fn tree_child(resource: &str) -> Option<&str> {
 /// A provider answering in a workspace, on this device's own dispatch: reached through the
 /// workspaces' governance, which admits a call made here as it admits every call of a workspace's
 /// own tree and hands it on with the certificate of this device where the caller is this device.
-struct ThroughGovernance(WeakProviders);
+struct ThroughPermissions(WeakProviders);
 
-impl ThroughGovernance {
+impl ThroughPermissions {
     fn governance(&self) -> Result<Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
         self.0
             .upgrade()
@@ -1333,7 +1333,7 @@ impl ThroughGovernance {
     }
 }
 
-impl ActionProvider for ThroughGovernance {
+impl ActionProvider for ThroughPermissions {
     fn query(
         &self,
         caller: &Caller,
@@ -1594,7 +1594,7 @@ mod tests {
         let (key, owner) = fixtures::hosting_device();
         let host = fixtures::test_host(dir.path(), &key, &owner).await;
         let workspaces = host.workspaces();
-        let (workspace, workspace_id, governance) = fixtures::hosted_governed(workspaces).await;
+        let (workspace, workspace_id, governance) = fixtures::hosted_permissions(workspaces).await;
         let guest = fixtures::admit(workspaces, &workspace, &owner, 1).await;
         let seen = Arc::new(Mutex::new(Vec::new()));
         workspaces.providers().answer_in_workspaces(

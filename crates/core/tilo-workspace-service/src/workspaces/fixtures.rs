@@ -2517,7 +2517,7 @@ impl<P: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static>
 
 /// A new workspace of `workspaces`, the workspace carrying it, and its governance
 /// as actions.
-pub async fn hosted_governed(
+pub async fn hosted_permissions(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, super::actions::ServiceWorkspaceActions) {
     let summary = needed(workspaces.create("Team").await, "a new workspace");
