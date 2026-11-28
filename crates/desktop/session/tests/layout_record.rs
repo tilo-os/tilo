@@ -238,6 +238,126 @@ fn move_to(place: u64, row: u64) -> layout::LayoutAction {
     }
 }
 
+/// What the shell calls the window of the place `tab`: the name its bar and its pill say — the
+/// place's own name, else its title, else what it shows.
+fn window_name(session: &Session, tab: u64) -> String {
+    let place = place_of(session, tab).expect("the place is in the record");
+    if !place.name.is_empty() {
+        place.name
+    } else if !place.title.is_empty() {
+        place.title
+    } else if !place.shows.is_empty() {
+        place.shows
+    } else {
+        "Window".to_owned()
+    }
+}
+
+/// The bar of the window named `name`, as the shell lays it on screen: the widest control across
+/// the window's top, never the whole frame the same name also names nor a corner's mark.
+fn bar_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
+    crate::common::wait_for(session, "the window's bar", |session| {
+        session
+            .shell_controls(name)
+            .into_iter()
+            .filter(|rect| rect.3 < 100.0)
+            .max_by(|a, b| a.2.total_cmp(&b.2))
+    })
+}
+
+/// Where a hand takes the bar: its middle across, near its top edge, above the tabs it shows and
+/// on no window control.
+fn bar_grip((x, y, w, _h): (f64, f64, f64, f64)) -> (f64, f64) {
+    (x + w / 2.0, y + 14.0)
+}
+
+/// The places standing in the strip `strip`, in the record's order.
+fn places_in(session: &Session, strip: u64) -> Vec<u64> {
+    let key = strip.to_string();
+    layout(session)
+        .places
+        .into_iter()
+        .filter(|place| place.strip == key)
+        .map(|place| number(&place.key))
+        .collect()
+}
+
+// (2) A tab carried out of its window's bar and let go over another window's bar is a tab of that
+// window's: one move of the person's record, which one Undo takes back, leaving each window what
+// it held.
+#[test]
+fn a_tab_dragged_onto_another_window_lands_and_one_undo_puts_it_back() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let first = open_window(&mut session, "org.example.Notes");
+    let second = open_window(&mut session, "org.example.Files");
+    let first_strip = strip_of(&session, first).expect("the first place stands in a strip");
+    let second_strip = strip_of(&session, second).expect("the second place stands in a strip");
+    assert_ne!(
+        first_strip, second_strip,
+        "each window starts in one of its own"
+    );
+    let first_name = window_name(&session, first);
+    let second_name = window_name(&session, second);
+    // The first window's bar is pressed and dragged onto the second window's bar, where the second
+    // window's drop target takes the place it carries.
+    let from = bar_grip(bar_of(&mut session, &first_name));
+    let to = bar_grip(bar_of(&mut session, &second_name));
+    crate::common::drag(&mut session, from, to);
+    crate::common::wait_for(&mut session, "the tab landed", |session| {
+        (strip_of(session, first) == Some(second_strip)).then_some(())
+    });
+    assert_eq!(
+        places_in(&session, second_strip),
+        [second, first],
+        "the tab moved in lands after the window's own tab"
+    );
+    let who = crate::common::last_step(&mut session, "move");
+    assert_eq!(
+        who,
+        crate::common::as_person(&person()),
+        "attributed to the person"
+    );
+    // One Undo takes the drop back: the tab is where it stood, in the window it came from, and the
+    // window it was let go over holds its own place alone.
+    undone(&mut session, |session| {
+        strip_of(session, first) == Some(first_strip)
+    });
+    assert_eq!(places_in(&session, first_strip), [first]);
+    assert_eq!(places_in(&session, second_strip), [second]);
+}
+
+/// A drop that names no place the layout holds is refused in words, never a silence that did
+/// nothing: the shell's gap drop runs its move whatever it carries, so the case is what the
+/// session answers for the address such a drop sends.
+#[test]
+fn a_move_naming_no_place_the_layout_holds_is_refused_in_words() {
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let strip = strip_of(&session, window).expect("the place stands in a strip");
+    let arguments = serde_json::json!({
+        "row": serde_json::Value::String(format!("shell:row:{}", row_of(&session, strip))),
+        "strip": serde_json::Value::Null,
+        "before": serde_json::Value::Null,
+        "window": true,
+    })
+    .as_object()
+    .expect("arguments")
+    .clone();
+    // `the_place("")` is the place a drop sends when the carried thing names none: the session
+    // refuses the call, and the refusal names the address it could not reach.
+    let refused = session
+        .invoke("shell:place:", "move", &arguments)
+        .expect_err("a place the layout does not hold is not moved");
+    let said = format!("{refused:?}");
+    assert!(
+        said.contains("shell:place:"),
+        "the refusal names what it could not reach: {said}"
+    );
+}
+
 /// The action that floats `place` where the person let it go.
 fn float_at(place: u64, float: tilo_desktop_model::FloatPlace) -> layout::LayoutAction {
     layout::LayoutAction::Float { place, float }

@@ -488,23 +488,11 @@ fn a_tab_let_go_in_a_gap_stands_alone_there() {
     // Let go in the gap between the first window and the one after it.
     let gap = ((left.0 + left.2 + right.0) / 2.0, left.1 + 14.0);
     drag(&mut session, pill, gap);
-    // The drop either stands the tab in a window of its own or the shell refuses it in words: a
-    // drop the person makes never turns into nothing at all.
-    crate::common::wait_for(
-        &mut session,
-        "the tab stands alone or the shell refuses the drop",
-        |session| {
-            (strip_of(session, third).is_some_and(|own| own != source)
-                || !session.shell_refusals().is_empty())
-            .then_some(())
-        },
-    );
-    let Some(own) = strip_of(&session, third).filter(|own| *own != source) else {
-        panic!(
-            "the drop did nothing and said nothing; the shell refused: {:?}",
-            session.shell_refusals()
-        );
-    };
+    // Let go in the gap, the tab stands there: a person's drop is never turned into nothing.
+    until(&mut session, "the tab has a window of its own", |session| {
+        strip_of(session, third).is_some_and(|own| own != source)
+    });
+    let own = strip_of(&session, third).expect("the place stands in a strip");
     assert_eq!(places_of(&session, own), [third], "the place stands alone");
     assert_eq!(
         places_of(&session, source),
