@@ -2080,6 +2080,17 @@ impl MediaGrid {
 impl Widget for MediaGrid {
     tilo_ui_base::described!();
 
+    /// A grid whose cards a host renders draws the rows its list holds in place of the list, so
+    /// what that list scrolls stands in the grid's box: a row past the grid's edge is a row of a
+    /// scroller, not content over its container.
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
+        use tilo_ui_base::widget::{LayoutInfo, ScrollDirection, ScrollLayout};
+        self.inner.as_ref()?;
+        Some(LayoutInfo::Scroll(ScrollLayout {
+            direction: ScrollDirection::Vertical,
+        }))
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

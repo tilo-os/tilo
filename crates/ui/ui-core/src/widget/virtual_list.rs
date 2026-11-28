@@ -2247,6 +2247,36 @@ impl Widget for VirtualRows {
         }
         remeasured |= self.keep_end();
         remeasured |= (self.end_slack() - slack).abs() > 0.5;
+        // Stand every row where its own measured height puts it, in this frame: one placed before
+        // its height was measured, or whose place the last solve left behind, would stand over
+        // the row after it in what is drawn and read now. The next solve takes these tops as the
+        // rows' own places.
+        {
+            let children: Vec<(usize, NodeId)> = self
+                .mounted
+                .iter()
+                .filter_map(|row| Some((row.index, row.node?)))
+                .collect();
+            for (index, child) in children {
+                let top = self.viewport.item_top(index).unwrap_or_default() - self.layout_offset;
+                let top =
+                    tilo_ui_base::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
+                // Its own place in the tree stands on where it was laid: shift it so its box
+                // lands where the heights just measured put it.
+                let (laid_x, laid_y) = taffy.layout(child).map_or((0.0, 0.0), |laid| {
+                    (f64::from(laid.location.x), f64::from(laid.location.y))
+                });
+                let at = Point::new(child_origin.x, child_origin.y + top - laid_y);
+                if let Some(row) = self.mounted.iter_mut().find(|row| row.index == index) {
+                    let placed = row.widget.get_rect();
+                    if (placed.y0 - (at.y + laid_y)).abs() > 0.5
+                        || (placed.x0 - (at.x + laid_x)).abs() > 0.5
+                    {
+                        row.widget.apply_layout(taffy, child, at);
+                    }
+                }
+            }
+        }
         let extent = self.viewport.content_extent();
         // A list that hugs its rows inside a scroll view around it gives that view every row: it
         // is not the scroller. One held to its own most height is the scroller, and its height is

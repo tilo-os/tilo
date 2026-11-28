@@ -816,6 +816,45 @@ tilo_test_env::scenario! {
 }
 
 #[test]
+fn a_frame_places_each_row_under_the_box_it_measured() {
+    // A measurement can land after the rows were placed — a row taking a height of its own box
+    // that the frame before it stood at another height for. The frame that takes it up places
+    // the rows after it by the row's own box, never at the height it stood at before.
+    let words = "words long enough to wrap onto more lines than one at the width the gutter \
+                 leaves beside the bar";
+    let mut list = VirtualList::from_items(
+        (0..6u32).collect::<Vec<_>>(),
+        40.0,
+        |item| *item,
+        move |_, _, _| Box::new(crate::widget::Text::new(words)) as Element,
+    )
+    .expect("a list of text rows")
+    .with_viewport_height(80.0);
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let first = list.mounted.first().expect("the rows at the top stand");
+    let (index, key) = (first.index, first.key.clone());
+    let measured = 20.0;
+    list.viewport.measure(index, key, measured);
+    // The frame after it places from what was measured: a list whose tree did not change is
+    // placed again rather than solved, which is where a place left behind shows.
+    let tree = tilo_ui_base::widget::layout::TreeId::of(&taffy);
+    tilo_ui_base::widget::layout::placing_again_in(tree, || {
+        list.apply_layout(&taffy, node, Point::ZERO);
+    });
+    let boxes: Vec<Rect> = list
+        .mounted
+        .iter()
+        .map(|row| row.widget.get_rect())
+        .collect();
+    assert!(boxes.len() >= 2, "the rows at the top stand");
+    let step = boxes[1].y0 - boxes[0].y0;
+    assert!(
+        (step - measured).abs() <= 1.0,
+        "the row after it stands at the height it was measured at: {step} against {measured}"
+    );
+}
+
+#[test]
 fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     use crate::time::testing::with_monotonic_time;
     use tilo_ui_base::tokens::MotionSource;
