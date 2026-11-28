@@ -1171,7 +1171,9 @@ fn test_peer(stream: &std::os::unix::net::UnixStream) -> io::Result<crate::seats
 /// Under the system unit every account reaches the native endpoint, and the account is what it is
 /// answered as: root says who signed in (and nobody else may), an account signed in is its person
 /// and is served, and any other account is answered the device's own actions alone. `account#who`
-/// tells each which it is.
+/// tells each which it is. A shell hands its processes over only on Linux, where the system unit
+/// runs.
+#[cfg(target_os = "linux")]
 #[test]
 #[expect(
     clippy::too_many_lines,

@@ -7,7 +7,6 @@
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
 )]
 
-#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_peer_state::fixture::labelled_with;
