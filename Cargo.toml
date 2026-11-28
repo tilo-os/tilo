@@ -1412,10 +1412,15 @@ debug = "line-tables-only"
 strip = "none"
 incremental = false
 
+# Thin LTO over 16 codegen units is what every shipped release binary is built with: the OS
+# image, the RPM, Debian, Arch and Nix packages and the server binaries all set it, and dev
+# images link without LTO. A plain `cargo build --release` builds the same, so it shares those
+# builds' compiler cache entries. Fat LTO over one codegen unit linked tilo-daemon alone for
+# 41 minutes, single-threaded, against seconds for the thin link.
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 # Unwind, so a process can contain a helper that fails: the compositor
 # restarts its collaboration broker rather than end the session. Every other
 # panic still aborts the process: tilo-rt installs a hook that aborts outside
@@ -1459,9 +1464,13 @@ debug = "line-tables-only"
 [profile.fast.package.tilolang-process]
 strip = "symbols"
 
+# Fat LTO over one codegen unit: the web bundle is downloaded by every visitor, so its size is
+# worth the longer link.
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+lto = "fat"
+codegen-units = 1
 panic = "abort"
 debug = false
 strip = "symbols"
