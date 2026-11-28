@@ -176,6 +176,97 @@ fn the_dock_grows_itself_so_the_items_never_overlap() {
     );
 }
 
+/// Tiles the shell draws straight in a row — each a `Magnify` of its button, no wrapper between —
+/// under a finger: the row places each face by the target it stands at, so no face is drawn over
+/// its neighbour, and a grown tile pushes the row wider rather than over it.
+#[test]
+fn a_row_of_bare_tiles_at_touch_keeps_them_apart() {
+    let mut row = Row::new().with_rhythm(Rhythm::Sibling).with_id("dock");
+    for index in 0..5 {
+        row = row.push(Box::new(Magnify::from_props(
+            &format!("m{index}"),
+            MagnifyProps {
+                zoom: 0.6,
+                body: Some(Box::new(Button::icon_only(
+                    &format!("t{index}"),
+                    tilo_ui_base::icons::Icon::X,
+                    &format!("Tile {index}"),
+                ))),
+            },
+        )));
+    }
+    let mut driver = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        Box::new(row),
+        (600, 140),
+        Theme::dark(),
+    );
+    driver.set_interaction_environment(InteractionEnvironment::TOUCH);
+    driver.relayout();
+    let tiles = |driver: &Driver| -> Vec<Rect> {
+        let snapshot = driver.inspection();
+        snapshot
+            .root
+            .nodes()
+            .into_iter()
+            .filter(|node| node.widget == "Button")
+            .map(|node| {
+                let [x, y, w, h] = node.rect;
+                Rect::new(x, y, x + w, y + h)
+            })
+            .collect()
+    };
+    let rest = tiles(&driver);
+    for pair in rest.windows(2) {
+        assert!(
+            pair[0].x1 <= pair[1].x0 + 0.01,
+            "tiles stand apart at rest: {rest:?}"
+        );
+    }
+    let centre = rest[2].center();
+    driver.hover_at(centre.x, centre.y);
+    assert!(settle(&mut driver, &mut Vec::new()));
+    let grown = tiles(&driver);
+    for group in [&rest, &grown] {
+        for pair in group.windows(2) {
+            assert!(
+                pair[0].x1 <= pair[1].x0 + 0.01,
+                "no face is drawn over its neighbour: {grown:?} against {rest:?}"
+            );
+        }
+    }
+    for face in &rest {
+        assert!(
+            face.width() >= 47.5,
+            "a face under a finger is a target: {face:?}"
+        );
+    }
+    // The same row under a pointer: the item under it grows and the row makes room, so the
+    // neighbour it pushes stands further along rather than under it.
+    driver.set_interaction_environment(InteractionEnvironment::POINTER);
+    driver.hover_at(560.0, 8.0);
+    assert!(settle(&mut driver, &mut Vec::new()));
+    let pointer_rest = tiles(&driver);
+    let centre = pointer_rest[2].center();
+    driver.hover_at(centre.x, centre.y);
+    assert!(settle(&mut driver, &mut Vec::new()));
+    let magnified = tiles(&driver);
+    for pair in magnified.windows(2) {
+        assert!(
+            pair[0].x1 <= pair[1].x0 + 0.01,
+            "a grown face pushes its neighbour apart rather than over it: {magnified:?}"
+        );
+    }
+    assert!(
+        magnified[2].width() > pointer_rest[2].width() + 1.0,
+        "the face under the pointer grows: {magnified:?} against {pointer_rest:?}"
+    );
+    assert!(
+        magnified[3].x0 > pointer_rest[3].x0 + 1.0,
+        "the row makes room for it: {magnified:?} against {pointer_rest:?}"
+    );
+}
+
 /// A tile's props at `size`, as the dock builds its buttons.
 fn tile_props(size: tilo_ui_app::widget::ControlSize) -> tilo_ui_app::widget::ButtonProps {
     tilo_ui_app::widget::ButtonProps {

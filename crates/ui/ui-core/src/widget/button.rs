@@ -2299,6 +2299,13 @@ impl Button {
         let Ok(style) = taffy.style(node) else {
             return false;
         };
+        // A face never pins narrower than the target its style floors it at: the row that holds
+        // it places its neighbours by that floor, never inside the face.
+        let width = style
+            .min_size
+            .width
+            .into_option()
+            .map_or(width, |floor| width.max(floor));
         let width = Dimension::length(width);
         if style.size.width == width {
             return false;
