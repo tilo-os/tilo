@@ -388,3 +388,81 @@ fn a_windows_content_is_found_where_its_well_stands_not_where_the_desktop_reckon
         "the window's content stands in its well"
     );
 }
+
+/// Every pass that lays the shell out reports its wells: a theme switch, input and a move each
+/// run one, and a window whose well went unreported would wait off screen until the next
+/// layout, showing the shell's background where the window stood.
+#[test]
+fn a_window_stays_in_its_well_through_a_theme_switch_input_and_a_move() {
+    use tilo_session::platform::surfaces::WidgetSurface;
+    use tilo_session_core::surface::Placement;
+
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut policy = desktop(7).well_policy();
+    let outputs = output();
+    let (window, key) = mapped(&mut policy, 43, "org.example.App");
+    let frame: Element = Box::new(
+        Column::new()
+            .with_no_padding()
+            .push(Box::new(tilo_ui_base::widget::Spacer::fixed(48.0)))
+            .push(Box::new(WindowWell::new(key.clone()))),
+    );
+    let placement = Placement {
+        origin: (0, 0),
+        size: VIEWPORT,
+        scale: 1.0,
+    };
+    let mut surface = WidgetSurface::new(frame, placement, true);
+    let wells = policy.wells();
+    surface.install_wells(Some(wells.clone()));
+    surface.relayout();
+    let size = policy.initial_size(&window, &outputs).expect("a size");
+    let at = policy.place(&window, size, &outputs);
+    let stands = |policy: &mut WellPolicy, why: &str| {
+        let well = wells
+            .well(&key)
+            .unwrap_or_else(|| panic!("{why}: the well of place {key} is reported"));
+        let placed = policy
+            .arrange(
+                &[(window.clone(), LayoutRect::new(at, size.into()))],
+                &outputs,
+            )
+            .expect("a placement");
+        let placed = placed.first().expect("the window is arranged");
+        assert_eq!(
+            placed.location,
+            LayoutPoint::from((round(well.x0), round(well.y0))),
+            "{why}: the window stands in its well"
+        );
+    };
+    stands(&mut policy, "laid out");
+    surface.set_theme(tilo_ui_base::Theme::dark());
+    stands(&mut policy, "after the switch to dark");
+    surface.set_theme(tilo_ui_base::Theme::light());
+    stands(&mut policy, "after the switch back to light");
+    let _ = surface.key_input(&tilo_session_core::surface::SurfaceKey {
+        keycode: 30,
+        at: std::time::Instant::now(),
+        pressed: true,
+        repeat: false,
+        keysym: 0x61,
+        unmodified_keysym: 0x61,
+        latin_keysym: 0x61,
+        text: Some("a".into()),
+        modifiers: tilo_session_core::surface::KeyModifiers::default(),
+    });
+    stands(&mut policy, "after a key");
+    surface.set_placement(Placement {
+        origin: (40, 30),
+        size: (VIEWPORT.0 + 100, VIEWPORT.1),
+        scale: 1.0,
+    });
+    let moved = wells
+        .well(&key)
+        .expect("the well is reported after the move");
+    assert!(
+        moved.x0 >= 40.0 && moved.y0 >= 30.0 + 48.0,
+        "the well reports where the moved surface stands: {moved:?}"
+    );
+    stands(&mut policy, "after the move");
+}

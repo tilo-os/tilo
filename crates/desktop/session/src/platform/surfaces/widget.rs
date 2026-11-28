@@ -540,18 +540,20 @@ impl WidgetSurface {
         if placement == self.placement {
             return;
         }
-        if placement.size != self.placement.size {
-            let _ = self.host.resize(placement.size);
+        let before = std::mem::replace(&mut self.placement, placement);
+        // The tree lays itself out for its new rectangle where that rectangle stands, so its
+        // wells report where they are now.
+        if placement.size != before.size {
+            let _ = self.with_reports(|host| host.resize(placement.size));
         }
-        let _ = self.host.set_input_scale(placement.scale);
+        let _ = self.with_reports(|host| host.set_input_scale(placement.scale));
         let size = placement.physical_size();
-        if size != self.placement.physical_size() {
+        if size != before.physical_size() {
             self.frames.resize(size);
             // What the tree drew for the old size says nothing of this one.
             self.generation = self.generation.wrapping_add(1);
             self.retained.forget();
         }
-        self.placement = placement;
         self.owe();
     }
 
@@ -564,7 +566,9 @@ impl WidgetSurface {
     /// Draw the tree with `theme`: the person's palette, tokens and fonts,
     /// as the session's presentation settings hand them to every surface.
     pub fn set_theme(&mut self, theme: tilo_ui_base::Theme) {
-        self.host.set_theme(theme);
+        // The frame that takes the theme up lays the tree out afresh: its wells report where
+        // they stand, or the windows they hold would leave the screen until the next pass.
+        self.with_reports(|host| host.set_theme(theme));
         self.owe();
     }
 
@@ -669,11 +673,12 @@ impl WidgetSurface {
     /// Hand `event` to the tree, and say whether the tree took it: what a host of the tree
     /// answers a key its views left over with (a shell handing the focus to a window).
     fn input(&mut self, event: &WindowEvent) -> bool {
-        let _placed = self.placed();
         // What a confirmation asks depends on the modifiers the person holds: the toolkit's one
         // rule skips a question Shift was held for, where Undo takes the action back.
         ui::widget::context_menu::note_input(event);
-        let handled = self.host.send_handled(event);
+        // The input may lay the tree out (a frame it made due runs first), which reports its
+        // wells like any other pass.
+        let handled = self.with_reports(|host| host.send_handled(event));
         self.owe();
         handled
     }
@@ -1083,8 +1088,7 @@ impl ShellSurface for WidgetSurface {
             FingerPhase::Up => winit::event::TouchPhase::Ended,
             FingerPhase::Cancelled => winit::event::TouchPhase::Cancelled,
         };
-        let _placed = self.placed();
-        self.host.send_touch(u64::from(slot), phase, lx, ly);
+        self.with_reports(|host| host.send_touch(u64::from(slot), phase, lx, ly));
         self.owe();
     }
 
