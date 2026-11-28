@@ -835,6 +835,11 @@ fn the_screen_reads_in_the_persons_language() {
         &serde_json::json!("de-DE"),
     )
     .expect("the person's language is saved");
+    // This process is outside the session: it reads what the person left in the profile, as
+    // the screen's starter registers it.
+    let _settings = settings_store::scoped_source(Some(std::sync::Arc::new(
+        settings_store::outside::Outside::of_this_profile(),
+    )));
     let (mut app, _state, _asked) = locked(screen());
     let said = labels(&mut app);
     let field = holds_keyboard(&mut app);
