@@ -278,7 +278,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             store
                 .readers_of(kind, id)
                 .filter(|readers| may_read(readers))
-                .map(|_| store.versions(kind, id))
+                .map(|_| store.versions_read(kind, id, may_read))
                 .unwrap_or_default(),
         ),
         // Read as its history is: a removed resource's kind is still its reader's.
@@ -304,7 +304,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             store
                 .readers_of(kind, id)
                 .filter(|readers| may_read(readers))
-                .and_then(|_| store.at_change(kind, id, change, *after)),
+                .and_then(|_| store.at_change_read(kind, id, change, *after, may_read)),
         ),
         Command::Grouped { group } => grouped_reply(store, group, may_read),
         Command::Removed { kind, parent } => {

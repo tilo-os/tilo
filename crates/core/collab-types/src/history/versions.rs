@@ -82,6 +82,12 @@ pub struct Touches {
 }
 
 impl Touches {
+    /// The resources the document has versions of, as far as it was read: those it holds and
+    /// those it held once.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.by_id.keys().map(String::as_str)
+    }
+
     /// The versions of `id`, oldest first, in the document `doc_id` as it is now: the changes
     /// it took since the last read are read first.
     pub fn of(&mut self, doc: &Automerge, doc_id: &str, id: &str) -> Vec<Version> {

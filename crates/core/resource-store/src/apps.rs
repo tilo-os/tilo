@@ -71,7 +71,7 @@ pub fn read(store: &mut Store) -> Result<Records, String> {
     let mut apps = BTreeMap::new();
     for id in ids {
         let versions = store
-            .read_versions(KIND, &id, None)
+            .read_versions(KIND, &id, None, &|_| true)
             .map_err(|error| error.to_string())?;
         let ran = versions
             .iter()

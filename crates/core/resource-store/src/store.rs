@@ -275,6 +275,10 @@ pub struct Store {
     removed_under: HashMap<String, BTreeSet<(String, String)>>,
     /// The documents the resources nested in each parent are placed in, by the parent.
     nested_in: HashMap<String, BTreeSet<String>>,
+    /// Per resource, the documents it was held in before the one it is in now: a change of its
+    /// readers moves it to their document, and its history before that stays where it was
+    /// written, read by those who read it there.
+    held_before: HashMap<String, BTreeSet<String>>,
     /// Per group of invocations ([`Stamp::group`]), the documents a change of it is in: what
     /// reading the group's changes reads, rather than every document.
     groups: HashMap<String, BTreeSet<String>>,
@@ -350,6 +354,7 @@ impl Store {
             removed: HashMap::new(),
             removed_under: HashMap::new(),
             nested_in: HashMap::new(),
+            held_before: HashMap::new(),
             groups: HashMap::new(),
             made_from: HashMap::new(),
             touches: std::sync::Arc::default(),
@@ -822,6 +827,11 @@ impl Store {
 
     /// Notes that the resource `id` of `kind`, nested in `parent`, was removed from `doc`.
     fn note_removed(&mut self, kind: &str, id: &str, doc: &str, parent: Option<String>) {
+        // Removed from there, it was held there before: where it moved from, if it moved.
+        self.held_before
+            .entry(id.to_owned())
+            .or_default()
+            .insert(doc.to_owned());
         let key = (kind.to_owned(), id.to_owned());
         if let Some(parent) = &parent {
             self.removed_under
@@ -2188,11 +2198,42 @@ impl Store {
     /// not in memory has none.
     #[must_use]
     pub fn versions(&self, kind: &str, id: &str) -> Vec<collab_types::history::Version> {
+        self.versions_read(kind, id, &|_| true)
+    }
+
+    /// [`Self::versions`], with those written in a document the resource was held in before it
+    /// moved only where `may_read` admits that document's readers: one a change let in reads its
+    /// history from that change on.
+    #[must_use]
+    pub fn versions_read(
+        &self,
+        kind: &str,
+        id: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<collab_types::history::Version> {
         let mut touches = self
             .touches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.versions_unlocked(&mut touches, kind, id)
+        self.versions_unlocked(&mut touches, kind, id, may_read)
+    }
+
+    /// The documents other than `now` the resource `id` was held in before it moved, whose
+    /// readers `may_read` admits, each with the document itself.
+    fn earlier<'a>(
+        &'a self,
+        id: &str,
+        now: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<(&'a str, &'a Automerge)> {
+        self.held_before
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|doc_id| doc_id.as_str() != now)
+            .filter_map(|doc_id| Some((doc_id.as_str(), &**self.docs.get(doc_id)?)))
+            .filter(|(_, doc)| may_read(&text_at(*doc, &ROOT, READERS).unwrap_or_default()))
+            .collect()
     }
 
     /// The first version of the resource `id` of `kind`, or its last with `last`. The versions
@@ -2272,6 +2313,7 @@ impl Store {
         touches: &mut HashMap<String, collab_types::history::Touches>,
         kind: &str,
         id: &str,
+        may_read: &dyn Fn(&str) -> bool,
     ) -> Vec<collab_types::history::Version> {
         let mut versions = Vec::new();
         let Some((held, readers)) = self.placed(kind, id) else {
@@ -2279,6 +2321,15 @@ impl Store {
         };
         if let Some(doc) = self.docs.get(&held) {
             versions.extend(touches.entry(held.clone()).or_default().of(doc, &held, id));
+        }
+        // Where it was held before its readers moved it.
+        for (doc_id, doc) in self.earlier(id, &held, may_read) {
+            versions.extend(
+                touches
+                    .entry(doc_id.to_owned())
+                    .or_default()
+                    .of(doc, doc_id, id),
+            );
         }
         let content = content_id(&readers, kind, id);
         if let Some(doc) = self.docs.get(&content) {
@@ -2306,6 +2357,21 @@ impl Store {
         // Each document's changes in its own order, and the documents' interleaved by when their
         // writer wrote them.
         versions.sort_by_key(collab_types::history::Version::order);
+        // A write that removed it from one document and made it in another moved it: one step,
+        // read as the making where it went, not also as a removal.
+        let moved: BTreeSet<(String, u64)> = versions
+            .iter()
+            .filter(|version| version.kind == collab_types::history::VersionKind::Made)
+            .filter_map(|version| version.stamp.as_ref())
+            .map(|stamp| (stamp.invocation.clone(), stamp.moment))
+            .collect();
+        versions.retain(|version| {
+            version.kind != collab_types::history::VersionKind::Removed
+                || !version
+                    .stamp
+                    .as_ref()
+                    .is_some_and(|stamp| moved.contains(&(stamp.invocation.clone(), stamp.moment)))
+        });
         // Where a removed resource stood, which its removal says.
         if let Some(removed) = self.removed.get(&(kind.to_owned(), id.to_owned()))
             && let Some(last) = versions
@@ -2320,7 +2386,8 @@ impl Store {
 
     /// The resource's versions, including documents evicted or indexed from snapshots: each is
     /// read back from the source first. With `end`, only the first version, or the last with
-    /// `true`. The caller checks the resource's readers before asking for its history.
+    /// `true`. The caller checks the resource's readers before asking for its history; what was
+    /// written in a document it was held in before is read where `may_read` admits that one's.
     ///
     /// # Errors
     /// A saved document does not decode.
@@ -2329,11 +2396,12 @@ impl Store {
         kind: &str,
         id: &str,
         end: Option<bool>,
+        may_read: &dyn Fn(&str) -> bool,
     ) -> Result<Vec<collab_types::history::Version>, StoreError> {
         self.read_back_history(kind, id)?;
         Ok(match end {
             Some(last) => self.version_end(kind, id, last).into_iter().collect(),
-            None => self.versions(kind, id),
+            None => self.versions_read(kind, id, may_read),
         })
     }
 
@@ -2346,6 +2414,7 @@ impl Store {
             wanted.push(held);
         }
         wanted.extend(self.nested_in.get(id).into_iter().flatten().cloned());
+        wanted.extend(self.held_before.get(id).into_iter().flatten().cloned());
         for doc in wanted {
             self.existing(&doc)?;
         }
@@ -2535,7 +2604,10 @@ impl Store {
             {
                 continue;
             }
-            if let Some(last) = self.versions_unlocked(&mut touches, kind, id).pop() {
+            if let Some(last) = self
+                .versions_unlocked(&mut touches, kind, id, may_read)
+                .pop()
+            {
                 newest.push((kind.clone(), id.clone(), last));
             }
         }
@@ -2752,14 +2824,34 @@ impl Store {
         change: &str,
         after: bool,
     ) -> Option<(Option<Indexed>, Option<serde_json::Value>)> {
+        self.at_change_read(kind, id, change, after, &|_| true)
+    }
+
+    /// [`Self::at_change`], reading a document the resource was held in before it moved only
+    /// where `may_read` admits that document's readers.
+    #[must_use]
+    pub fn at_change_read(
+        &self,
+        kind: &str,
+        id: &str,
+        change: &str,
+        after: bool,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Option<(Option<Indexed>, Option<serde_json::Value>)> {
         let hash: automerge::ChangeHash = change.parse().ok()?;
         let (index_doc, readers) = self.placed(kind, id)?;
         let content_doc = content_id(&readers, kind, id);
         let held = self.docs.get(&index_doc)?;
         let content = self.docs.get(&content_doc);
+        let earlier = self.earlier(id, &index_doc, may_read);
         let Some(written) = held
             .get_change_by_hash(&hash)
             .or_else(|| content.and_then(|doc| doc.get_change_by_hash(&hash)))
+            .or_else(|| {
+                earlier
+                    .iter()
+                    .find_map(|(_, doc)| doc.get_change_by_hash(&hash))
+            })
             .and_then(|change| Stamp::of(&change))
         else {
             // A change of what it holds, or of what holds it, is a version of it too: it is
@@ -2793,17 +2885,35 @@ impl Store {
                 Some(doc.get_change_by_hash(&first)?.deps().to_vec())
             }
         };
+        // The write is read in the document it was written in: where the resource is now, or one
+        // it was held in before it moved. The change that moved it is read in both, where it
+        // stood before it in the one it left.
         let index_heads = heads_of(held, &index_doc);
         let content_heads = content.and_then(|doc| heads_of(doc, &content_doc));
+        let mut looks: Vec<(&str, &Automerge, Option<Vec<automerge::ChangeHash>>)> = Vec::new();
+        let found_here = index_heads.is_some();
+        if found_here {
+            looks.push((&index_doc, held, index_heads));
+        }
+        for (doc_id, doc) in &earlier {
+            if let Some(heads) = heads_of(doc, doc_id) {
+                looks.push((doc_id, doc, Some(heads)));
+            }
+        }
+        if looks.is_empty() {
+            looks.push((&index_doc, held, None));
+        }
         drop(touches);
-        let indexed = read_as_of(held, index_heads.as_deref(), id)
-            .filter(|(held_kind, _)| held_kind == kind)
-            .map(|(_, resource)| Indexed {
-                doc: index_doc,
-                parent: resource.parent,
-                order: resource.order,
-                fields: resource.fields,
-            });
+        let indexed = looks.into_iter().find_map(|(doc_id, doc, heads)| {
+            read_as_of(doc, heads.as_deref(), id)
+                .filter(|(held_kind, _)| held_kind == kind)
+                .map(|(_, resource)| Indexed {
+                    doc: doc_id.to_owned(),
+                    parent: resource.parent,
+                    order: resource.order,
+                    fields: resource.fields,
+                })
+        });
         let content = content.and_then(|doc| {
             let look = crate::wire::AsOf {
                 doc,
@@ -3333,6 +3443,28 @@ impl Store {
             if self.index.get(&kind, &id).is_none() {
                 self.note_removed(&kind, &id, doc_id, parent);
             }
+        }
+        // What it has history of and holds no more was held here before it moved, or removed.
+        let holds: BTreeSet<&str> = self.index.held(doc_id).map(|(_, id)| id).collect();
+        let mut touches = self
+            .touches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let read = touches.entry(doc_id.to_owned()).or_default();
+        if let Some(doc) = self.docs.get(doc_id) {
+            read.read(doc, doc_id);
+        }
+        let left: Vec<String> = read
+            .ids()
+            .filter(|id| !holds.contains(id))
+            .map(str::to_owned)
+            .collect();
+        drop(touches);
+        for id in left {
+            self.held_before
+                .entry(id)
+                .or_default()
+                .insert(doc_id.to_owned());
         }
         Ok(())
     }

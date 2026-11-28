@@ -298,3 +298,108 @@ fn a_record_kept_on_one_device_keeps_its_history_there_alone() {
         "the scrap's history stays on the device it was written on: {there:?}"
     );
 }
+
+#[test]
+fn history_follows_a_box_its_readers_moved_and_each_reader_reads_what_they_could() {
+    let (ada, bo, package) = devices();
+    let locker = Value::resource(&ada.root(APP));
+    let spare = act(
+        &ada,
+        &bo,
+        &package,
+        "make",
+        vec![
+            locker,
+            Value::text("Spare keys"),
+            Value::Actor(person("ada")),
+        ],
+    )
+    .expect("a box is made");
+    act(
+        &ada,
+        &bo,
+        &package,
+        "set_limit",
+        vec![Value::resource(&spare), Value::Int(5)],
+    );
+    // Letting Bo in changes who reads the box, which moves it to the document they read.
+    act(
+        &ada,
+        &bo,
+        &package,
+        "let_in",
+        vec![
+            Value::resource(&spare),
+            Value::Actor(person("bo")),
+            Value::text("Bo's keys"),
+        ],
+    );
+
+    // Ada read the box all along: its whole history, the move one step of it, with both values.
+    let hers = history(&ada, &package, "ada", &spare);
+    let said: Vec<&str> = hers.iter().map(|(_, sentence)| sentence.as_str()).collect();
+    let [.., (limited, set), (shared, let_in)] = hers.as_slice() else {
+        panic!("the box keeps its history across the move: {said:#?}");
+    };
+    assert!(set.starts_with("Set the limit from 3 to 5 in"), "{said:#?}");
+    assert_eq!(
+        *limited,
+        serde_json::json!([{ "field": "limit", "before": 3, "after": 5 }])
+    );
+    assert!(
+        let_in.starts_with("Let someone in and named the box Bo's keys in"),
+        "{said:#?}"
+    );
+    let fields = shared.as_array().expect("the move lists its fields");
+    assert!(
+        fields.contains(
+            &serde_json::json!({ "field": "name", "before": "Spare keys", "after": "Bo's keys" })
+        ),
+        "{shared}"
+    );
+    assert_eq!(
+        said.len(),
+        3,
+        "made, its limit set and the move, which is no removal and second making: {said:#?}"
+    );
+    assert!(
+        !said.iter().any(|sentence| sentence.starts_with("Deleted")),
+        "{said:#?}"
+    );
+
+    // Bo reads it from the change that let him in, never what came before it.
+    let his = history(&bo, &package, "bo", &spare);
+    let heard: Vec<&str> = his.iter().map(|(_, sentence)| sentence.as_str()).collect();
+    assert!(
+        heard
+            .first()
+            .is_some_and(|first| first.starts_with("Let someone in")),
+        "{heard:#?}"
+    );
+    assert!(
+        !heard.iter().any(|sentence| sentence.contains("limit")),
+        "{heard:#?}"
+    );
+
+    // Ada takes it back: the box returns to her alone, and its history to where it was kept.
+    assert!(ada.undo_last(), "the move is taken back");
+    ada.commit();
+    ada.send_to(&bo);
+    assert_eq!(ada.read(&spare, "name"), Value::text("Spare keys"));
+    let hers = history(&ada, &package, "ada", &spare);
+    let said: Vec<&str> = hers.iter().map(|(_, sentence)| sentence.as_str()).collect();
+    assert!(
+        said.iter()
+            .any(|sentence| sentence.starts_with("Set the limit from 3 to 5 in"))
+            && said
+                .iter()
+                .any(|sentence| sentence.contains("Let someone in")),
+        "undone, the box keeps every step it took: {said:#?}"
+    );
+    assert_eq!(said.len(), 4, "and its undo is one step: {said:#?}");
+    assert_eq!(
+        bo.read(&bo.root(APP), "boxes"),
+        Value::List(Vec::new()),
+        "Bo reads the box no more once the change that let him in is taken back"
+    );
+}

@@ -2134,14 +2134,14 @@ fn read_from(
         Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
             Reply::Versions(
                 store
-                    .read_versions(kind, id, None)
+                    .read_versions(kind, id, None, &may_read)
                     .map_err(|error| error.to_string())?,
             )
         }
         Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
             Reply::Versions(
                 store
-                    .read_versions(kind, id, Some(*last))
+                    .read_versions(kind, id, Some(*last), &may_read)
                     .map_err(|error| error.to_string())?,
             )
         }

@@ -1880,6 +1880,54 @@ mod store {
     }
 
     #[test]
+    fn a_moved_resources_history_follows_it_for_whoever_read_it_where_it_was() {
+        let mut here = issues();
+        let stamp = |invocation: &str, moment: u64| Stamp {
+            invocation: invocation.to_owned(),
+            moment,
+            ..Stamp::default()
+        };
+        let made = here
+            .put(
+                ISSUE,
+                "a",
+                resource("board", "a0", "Draft", "open"),
+                &stamp("made", 1),
+            )
+            .unwrap();
+        let moved = here
+            .put(
+                ISSUE,
+                "a",
+                read_by("ada-only", "board", "a0", "Draft", "open"),
+                &stamp("moved", 2),
+            )
+            .unwrap();
+        let steps = |store: &Store, may_read: &dyn Fn(&str) -> bool| -> Vec<String> {
+            store
+                .versions_read(ISSUE, "a", may_read)
+                .into_iter()
+                .filter_map(|version| version.stamp.map(|stamp| stamp.invocation))
+                .collect()
+        };
+        // The move is one step, no removal beside it, after what was written where it was.
+        assert_eq!(steps(&here, &anyone), ["made", "moved"]);
+        // One who reads only where it went reads its history from the move on.
+        assert_eq!(steps(&here, &|readers| readers == "ada-only"), ["moved"]);
+        // Started again from what was kept, in either order, it reads the same.
+        let mut docs: Vec<String> = made.iter().chain(&moved).map(|w| w.doc.clone()).collect();
+        docs.dedup();
+        for order in [docs.clone(), docs.iter().rev().cloned().collect()] {
+            let mut started = issues();
+            for doc in &order {
+                let bytes = here.document(doc).unwrap().save();
+                started.load(doc, &bytes).unwrap();
+            }
+            assert_eq!(steps(&started, &anyone), ["made", "moved"], "{order:?}");
+        }
+    }
+
+    #[test]
     fn content_is_written_beside_its_resource_and_moves_with_its_readers() {
         use automerge::marks::{ExpandMark, Mark};
         use automerge::transaction::Transactable as _;
