@@ -122,6 +122,22 @@ d-pon234hn = Gültig
 
 d-a6bx5sr3-filter-ok = Gültig
 
+d-d6cmwqlh = Kontoeintrag
+    .doc = Ein Konto, wie ein Skript oder ein Agent es liest: der Dienst, für den es ist, womit es sich anmeldet, und der Tresoreintrag, der seinen Schlüssel hält.
+    .noun = { $count ->
+        [one] Kontoeintrag
+       *[other] Kontoeinträge
+    }
+
+d-zhf4j5mk = Dienst
+
+d-7uzo7hvl = Bezeichnung
+
+d-ue7yimiu = Eintrag
+
+d-zxlss5cc = Konten auflisten
+    .doc = Die Konten, die der Arbeitsbereich hält, in der Reihenfolge des Fensters: wonach ein Skript, ein Agent oder eine andere App fragt.
+
 d-ec2dszgu = Konto hinzufügen
     .doc = Startet ein Konto aus dem, was die Person eingetippt hat, oder aus dem, was ein Einrichtungslink gesagt hat: wonach ein Agent, ein Skript oder das Formular fragt.
     .did = fügte ein Konto hinzu
@@ -172,23 +188,11 @@ d-w2yjeczm = Umbenennen
 
 d-w2yjeczm-issuer = Dienst
 
-d-w2yjeczm-algorithm = Verfahren
-
-d-w2yjeczm-digits = Stellen
-
-d-w2yjeczm-period = Zeitraum
-
 d-pyqdda5k = Kontonamen ändern
     .doc = Ändert, womit sich ein Konto anmeldet: was eine Person tat, die seinen Namen änderte.
     .did = änderte den Kontonamen
 
 d-pyqdda5k-label = Bezeichnung
-
-d-pyqdda5k-algorithm = Verfahren
-
-d-pyqdda5k-digits = Stellen
-
-d-pyqdda5k-period = Zeitraum
 
 d-fb5iwznq = Umfärben
     .doc = Gibt einem Konto eine eigene Farbe: was eine Person tat, die es umfärbte.
@@ -197,19 +201,35 @@ d-fb5iwznq = Umfärben
 d-fb5iwznq-color = Farbe
 
 d-gps7ofew = Code-Erzeugung ändern
-    .doc = Ändert, wie ein Konto seine Codes erzeugt, und mit ihnen seinen Schlüssel: was eine Person tat, die Verfahren, Stellen, Zeitraum oder Schlüssel änderte.
+    .doc = Ändert den Schlüssel, aus dem ein Konto seine Codes erzeugt, und das Verfahren dafür: was eine Person tat, die einen neuen Schlüssel tippte oder das Verfahren änderte.
     .did = änderte, wie ein Konto seine Codes erzeugt
-    .w-a-code-has-4-to-10 = Ein Code hat 4 bis 10 Stellen
-    .w-a-code-changes-every-5-to = Ein Code wechselt alle 5 bis 300 Sekunden
     .w-that-key-is-not-base32-copy = Dieser Schlüssel ist nicht Base32; kopieren Sie ihn erneut vom Dienst
 
 d-gps7ofew-algorithm = Verfahren
 
-d-gps7ofew-digits = Stellen
-
-d-gps7ofew-period = Zeitraum
-
 d-gps7ofew-secret = Schlüssel
+
+d-icbtggmx = Stellen ändern
+    .doc = Ändert, wie viele Stellen die Codes eines Kontos haben: der Verlauf nennt das Konto und seine neue Stellenzahl.
+    .did = änderte die Stellenzahl der Codes eines Kontos
+    .w-a-code-has-4-to-10 = Ein Code hat 4 bis 10 Stellen
+
+d-icbtggmx-digits = Stellen
+
+d-icbtggmx-algorithm = Verfahren
+
+d-icbtggmx-period = Zeitraum
+
+d-fosvkc5j = Gültigkeit eines Codes ändern
+    .doc = Ändert, wie lange die Codes eines Kontos gelten: der Verlauf nennt das Konto und seinen neuen Zeitraum.
+    .did = änderte die Gültigkeit der Codes eines Kontos
+    .w-a-code-changes-every-5-to = Ein Code wechselt alle 5 bis 300 Sekunden
+
+d-fosvkc5j-period = Zeitraum
+
+d-fosvkc5j-digits = Stellen
+
+d-fosvkc5j-algorithm = Verfahren
 
 d-uzlj3vkz = Konto speichern
     .doc = Ändert, was ein Konto sagt, sowie seinen Schlüssel und wie seine Codes erzeugt werden.
@@ -316,6 +336,10 @@ d-arisd42y = Code-Erzeugung ändern
 
 d-3gvwp5ni = Konto speichern
 
+d-p4suiuad = Stellen ändern
+
+d-23tyzk55 = Gültigkeit ändern
+
 d-4dgdsgtn = Tresorfenster
     .w-add-account = Konto hinzufügen
     .w-back = Zurück
@@ -331,6 +355,7 @@ d-4dgdsgtn = Tresorfenster
     .w-read-a-code = Einen Code lesen
     .w-setup-link = Einrichtungslink
     .w-fill-from-the-link = Aus dem Link füllen
+    .w-fills-in-the-service-account-and = Füllt Dienst, Konto und Schlüssel ein
     .w-details = Details
     .w-key-from-the-service = Schlüssel vom Dienst
     .w-new-key-or-leave-empty-to = Neuer Schlüssel, oder leer lassen, um den zu behalten, den der Tresor hält
@@ -353,10 +378,15 @@ d-4dgdsgtn = Tresorfenster
     .w-reveal = Anzeigen
     .w-reveal-code-for = Code für { $issuer } anzeigen
     .w-edit = Bearbeiten
+    .w-read-the-code-from-a-screenshot = Liest den Code aus einem Bildschirmfoto oder Foto
     .w-more = Mehr
     .w-move-up = Nach oben
     .w-move-down = Nach unten
     .w-delete-account = Konto löschen
+    .w-not-set-up-on-this-device = Auf diesem Gerät nicht eingerichtet
+    .w-set-up = Einrichten
+    .w-set-up-on-this-device = Auf diesem Gerät einrichten
+    .w-codes-are-hidden-until-you-ask = Codes bleiben verborgen, bis Sie einen anzeigen lassen; sie bleiben zehn Sekunden lesbar.
 
 d-wkaimxea = Kontofenster
     .w-account = Konto

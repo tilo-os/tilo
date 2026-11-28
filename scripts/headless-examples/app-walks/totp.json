@@ -67,6 +67,7 @@
           {
             "must": {
               "see": [
+                "Codes are hidden until you ask to see one; they stay readable for ten seconds.",
                 {
                   "prefix": "Reveal code for"
                 },
@@ -88,6 +89,95 @@
                 }
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "id": "revealed-copies",
+      "said": "A card already showing its code copies that code when it is pressed, and says so",
+      "ops": {
+        "tl": [
+          {
+            "must": {
+              "see": [
+                {
+                  "prefix": "Reveal code for"
+                }
+              ],
+              "within": 20
+            }
+          },
+          {
+            "press": {
+              "prefix": "Reveal code for"
+            }
+          },
+          {
+            "press": "Acme"
+          },
+          {
+            "must": {
+              "see": [
+                "Copied Acme code"
+              ],
+              "within": 10
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "unkeyed",
+      "said": "An account whose key is not on this device says so and offers to take one",
+      "ops": {
+        "tl": [
+          {
+            "use": {
+              "kind": "Vault",
+              "action": "accounts",
+              "keep": {
+                "item": "0.item"
+              }
+            }
+          },
+          {
+            "use": {
+              "kind": "vault.item",
+              "action": "forget",
+              "args": {
+                "item": "{item}"
+              }
+            }
+          },
+          {
+            "must": {
+              "see": [
+                "Acme",
+                "Not set up on this device",
+                "Set up"
+              ],
+              "within": 20
+            }
+          },
+          {
+            "press": "Set up"
+          },
+          {
+            "wait_for": "Set up on this device"
+          },
+          {
+            "must": {
+              "see": [
+                "Key from the service"
+              ],
+              "within": 10
+            }
+          },
+          {
+            "press_any": [
+              "Back"
+            ]
           }
         ]
       }

@@ -208,6 +208,8 @@ mod cases {
         "relabel_account",
         "recolor_account",
         "recode_account",
+        "set_digits",
+        "set_period",
         "update_account",
         "save_account",
         "move_up",
@@ -1300,10 +1302,16 @@ mod cases {
                 "{relabelled:?}"
             );
             assert_eq!(s.text(&a, "label"), "ada@example.com");
-            let recoded = edit("GitHub Corp", "ada@example.com", 8);
+            // How many digits a code shows is its own sentence: the digits action, not the
+            // whole of how the codes are made.
+            let renumbered = edit("GitHub Corp", "ada@example.com", 8);
             assert!(
-                recoded.contains(&s.app.action("recode_account").as_str().to_owned()),
-                "{recoded:?}"
+                renumbered.contains(&s.app.action("set_digits").as_str().to_owned()),
+                "{renumbered:?}"
+            );
+            assert!(
+                !renumbered.contains(&s.app.action("recode_account").as_str().to_owned()),
+                "{renumbered:?}"
             );
             let kept = s.vault.kept().into_values().next().expect("the vault kept it");
             assert_eq!(kept.digits, 8);

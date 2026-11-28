@@ -2,7 +2,7 @@ app so.tilo.totp "Authenticator" (
     icon: .shield_check,
     category: .utility,
     tagline: "Makes the one-time codes a service asks for",
-    keywords: ["authenticator", "authenticator app", "two-factor", "2fa", "mfa", "totp", "otp", "one-time code", "one-time password", "login code", "verification code", "security key", "authentifizierung", "authenticator-app", "zwei-faktor", "einmalcode", "einmalpasswort", "anmeldecode", "sicherheitsschlüssel"],
+    keywords: ["authenticator", "authenticator app", "two-factor", "two factor", "2fa", "mfa", "totp", "otp", "one-time code", "one-time password", "login code", "verification code", "security key", "authentifizierung", "authenticator-app", "zwei-faktor", "einmalcode", "einmalpasswort", "anmeldecode", "sicherheitsschlüssel"],
     splash_budget: 250,
 )
 
@@ -173,23 +173,27 @@ action scan_picture(v: Vault, file: File) (icon: .qr_code, label: "Read a pictur
         .ok(answer) => match json.decode<ScanAnswer>(answer) {
             .ok(scan) => match parse_uri(scan.uri) {
                 .some(setup) => {
-                    v.pending = vault.keep(
-                        item: .none,
-                        issuer: setup.issuer,
-                        label: setup.label,
-                        secret: setup.secret,
-                        algorithm: setup.algorithm,
-                        digits: setup.digits,
-                        period: setup.period,
-                    )
-                    v.pending_issuer = setup.issuer
-                    v.pending_label = setup.label
-                    v.pending_algorithm = setup.algorithm
-                    v.pending_digits = setup.digits
-                    v.pending_period = setup.period
-                    notice("QR code read", kind: .success)
+                    if setup.secret == "" {
+                        refuse(v, "Couldn't read a code from that image")
+                    } else {
+                        v.pending = vault.keep(
+                            item: .none,
+                            issuer: setup.issuer,
+                            label: setup.label,
+                            secret: setup.secret,
+                            algorithm: setup.algorithm,
+                            digits: setup.digits,
+                            period: setup.period,
+                        )
+                        v.pending_issuer = setup.issuer
+                        v.pending_label = setup.label
+                        v.pending_algorithm = setup.algorithm
+                        v.pending_digits = setup.digits
+                        v.pending_period = setup.period
+                        notice("QR code read", kind: .success)
+                    }
                 }
-                .none => refuse(v, "That is not a setup link this app reads"),
+                .none => refuse(v, "Couldn't read a code from that image"),
             },
             .err(why) => refuse(v, why),
         },
@@ -282,21 +286,33 @@ action recolor_account(a: Account, color: Int) (
     a.color = color
 }
 
-/// Changes how an account makes its codes, and its key with them: what a person changing the
-/// algorithm, the digits, the period or the key did.
+/// One account as a script or an agent reads it: the service it is for, who it signs in as, and
+/// the vault item that holds its key. No key and no code is part of it.
+type AccountEntry (title: issuer) {
+    issuer: Text
+    label: Text
+    item: Text
+}
+
+/// The accounts the workspace keeps, in the order the window lists them: what a script, an agent
+/// or another app asks for. The keys stay in the vault, and no code is part of the answer.
+action accounts(v: Vault) -> List<AccountEntry> (icon: .list, label: "List accounts") {
+    v.accounts.map(a -> AccountEntry(issuer: a.issuer, label: a.label, item: a.item))
+}
+
+/// Changes the key an account makes its codes from, and the algorithm they are made with: what a
+/// person typing a new key or changing the algorithm did.
 action recode_account(
     a: Account,
     algorithm: Text,
     digits: Int,
     period: Int,
     secret: Text = "",
-) uses time (
+) uses secret, time (
     icon: .key,
     label: "Change how the codes are made",
     did: "changed how an account makes its codes",
 ) {
-    require digits >= 4 and digits <= 10 "A code has 4 to 10 digits"
-    require period >= 5 and period <= 300 "A code changes every 5 to 300 seconds"
     require secret.trim() == "" or valid_secret(secret) "That key is not base32; copy it from the service again"
     let reference = vault.keep(
         item: if a.item == "" { .none } else { .some(a.item) },
@@ -310,6 +326,47 @@ action recode_account(
     a.item = reference
     // The settings live in the vault item; the account records when they last changed, so the
     // change is the account's and its history names the action that made it.
+    a.tuned_at = now
+}
+
+/// Changes how many digits an account's codes have: history says which account shows how many.
+action set_digits(a: Account, digits: Int, algorithm: Text, period: Int) uses secret, time (
+    icon: .key,
+    label: "Change the digits",
+    did: "changed how many digits an account's codes have",
+) {
+    require digits >= 4 and digits <= 10 "A code has 4 to 10 digits"
+    let reference = vault.keep(
+        item: if a.item == "" { .none } else { .some(a.item) },
+        issuer: a.issuer,
+        label: a.label,
+        secret: "",
+        algorithm: algorithm,
+        digits: digits,
+        period: period,
+    )
+    a.item = reference
+    a.tuned_at = now
+}
+
+/// Changes how long an account's codes last: history says which account changes its code every
+/// how many seconds.
+action set_period(a: Account, period: Int, algorithm: Text, digits: Int) uses secret, time (
+    icon: .key,
+    label: "Change how long a code lasts",
+    did: "changed how long an account's code lasts",
+) {
+    require period >= 5 and period <= 300 "A code changes every 5 to 300 seconds"
+    let reference = vault.keep(
+        item: if a.item == "" { .none } else { .some(a.item) },
+        issuer: a.issuer,
+        label: a.label,
+        secret: "",
+        algorithm: algorithm,
+        digits: digits,
+        period: period,
+    )
+    a.item = reference
     a.tuned_at = now
 }
 
@@ -458,7 +515,11 @@ view vault_window(v: Vault) {
                     ui.Button("Back", icon: .chevron_left, role: .plain) {
                         on press: set(screen, "list")
                     }
-                    ui.Button("Scan a QR image", icon: .qr_code) {
+                    ui.Button(
+                        "Scan a QR image",
+                        icon: .qr_code,
+                        description: "Read the code from a screenshot or photo",
+                    ) {
                         // The picture is read into the form: the person sees what it said and
                         // saves it, so a picture that names the wrong service can be corrected.
                         on press: file.choose(scan_picture(v), accept: ["image/*"])
@@ -537,6 +598,11 @@ view vault_window(v: Vault) {
                     // each code again, so the digits and their countdown move. Nothing is kept.
                     every 1s: set(second, second + 1)
                     clock_warning()
+                    text(
+                        "Codes are hidden until you ask to see one; they stay readable for ten seconds.",
+                        role: .caption,
+                        secondary: true,
+                    )
                     ui.CardGrid(name: "Accounts", card_width: .regular) {
                         // The selection the arrow keys move is the grid's, and the keys a card
                         // answers are its own: Enter reveals, F2 edits, Delete deletes.
@@ -636,8 +702,16 @@ action save_account(
     }
     if let a = editing {
         // Only what the person changed is an action, so history says which part of the account
-        // it was: a rename is a rename, not "changed an account". The codes' previous settings
-        // come from the form, which read them when it opened: an action never reads the vault.
+        // it was: a rename is a rename, a new key is the key, and how many digits or how long a
+        // code lasts says so in its own sentence. The codes' previous settings come from the
+        // form, which read them when it opened: an action never reads the vault.
+        // The key and the algorithm are the same thing to a person: how the codes are made.
+        let recoded = secret.trim() != "" or was_algorithm != algorithm
+        if recoded {
+            recode_account(a, algorithm, digits, period, secret)
+        }
+        if was_digits != digits { set_digits(a, digits, algorithm, period) }
+        if was_period != period { set_period(a, period, algorithm, digits) }
         if a.issuer != issuer.trim() {
             rename_account(a, issuer, algorithm, digits, period)
         }
@@ -645,21 +719,20 @@ action save_account(
             relabel_account(a, label, algorithm, digits, period)
         }
         if a.color != color { recolor_account(a, color) }
-        // The key, the algorithm and how long a code lasts are one action: they are how the
-        // account makes its codes, and history says so in one sentence.
-        let recoded = secret.trim() != ""
-            or was_algorithm != algorithm
-            or was_digits != digits
-            or was_period != period
-        if recoded {
-            recode_account(a, algorithm, digits, period, secret)
-        }
     } else {
         add_account(v, issuer, label, secret, algorithm, digits, period, color)
     }
     v.notice = ""
     v.notice_kind = "info"
     true
+}
+
+/// Whether an account's key is on this device at all: an account another device set up makes no
+/// code here, and the form takes its key.
+fn unkeyed(editing: Option<Account>) -> Bool {
+    if let a = editing {
+        if let made = vault_code(a.item) { false } else { true }
+    } else { false }
 }
 
 /// The algorithm an account's codes are made with, as the vault keeps it.
@@ -713,7 +786,13 @@ view account_card(
     let made = vault_code(a.item)
     let unveiled = shown == a.id and second < shown_until
     ui.CardGridCard(item: a, title: if a.issuer == "" { "Account" } else { a.issuer }) {
-        on activate: set(shown, a.id).then(set(shown_until, second + 10))
+        // Enter on the card that is already showing its code copies it; on any other it shows
+        // the code, so the keyboard does the two things the card's one button does.
+        on activate: if shown == a.id and second < shown_until {
+            copy_code(a)
+        } else {
+            set(shown, a.id).then(set(shown_until, second + 10))
+        }
         body: {
             row(gap: .related, align: .center) {
                 ui.Avatar(name: a.issuer, colour: account_colour(a.color))
@@ -736,10 +815,29 @@ view account_card(
                     )
                 } else {
                     ui.Text("—", role: .display, numeric: true)
+                    ui.Text("Not set up on this device", role: .caption, secondary: true)
                 }
             }
             row(gap: .related, align: .center) {
-                if unveiled {
+                if made == .none {
+                    // The account is the workspace's; its key is on another device, or nowhere
+                    // yet. The form takes it, with the options open where a key is typed.
+                    ui.Button("Set up", icon: .key, role: .primary, size: .small) {
+                        on press: set(editing, .some(a))
+                            .then(set(issuer, a.issuer))
+                            .then(set(label, a.label))
+                            .then(set(secret, ""))
+                            .then(set(algorithm, algorithm_of(a)))
+                            .then(set(digits, digits_of(a)))
+                            .then(set(period, period_of(a)))
+                            .then(set(was_algorithm, algorithm_of(a)))
+                            .then(set(was_digits, digits_of(a)))
+                            .then(set(was_period, period_of(a)))
+                            .then(set(color, a.color))
+                            .then(set(advanced, true))
+                            .then(set(screen, "form"))
+                    }
+                } else if unveiled {
                     ui.Button(
                         "Copy",
                         icon: .copy,
@@ -900,7 +998,12 @@ view account_form(
     advanced: State<Bool>,
 ) {
     stack(gap: .section, padding: .group, max: 40rem) {
-        ui.Text(if editing == .none { "Add account" } else { "Edit account" }, role: .title)
+        ui.Text(
+            if editing == .none {
+                "Add account"
+            } else if unkeyed(editing) { "Set up on this device" } else { "Edit account" },
+            role: .title,
+        )
         // A picture that was read fills this form: what it said stands here to be corrected,
         // and Save adds it. Nothing else is offered until it is saved or dropped.
         if v.pending != "" {
@@ -930,7 +1033,11 @@ view account_form(
                     ui.TextInput(bind: link, placeholder: "Setup link", entry: true, fill: 1.0) {
                         on submit(uri): set(link, uri)
                     }
-                    ui.Button("Fill from the link", icon: .link) {
+                    ui.Button(
+                        "Fill from the link",
+                        icon: .link,
+                        description: "Fills in the service, account and key",
+                    ) {
                         on press: if parse_uri(link) == .none {
                             refuse(v, "That is not a setup link this app reads")
                         } else {
@@ -961,7 +1068,7 @@ view account_form(
                 ui.TextInput(bind: label, placeholder: "Email or username")
                 ui.TextInput(
                     bind: secret,
-                    placeholder: if editing == .none {
+                    placeholder: if editing == .none or unkeyed(editing) {
                         "Key from the service"
                     } else {
                         "New key, or leave empty to keep the one the vault holds"
@@ -1054,4 +1161,14 @@ view status(v: Vault) {
 
 fn count(n: Int) -> Text {
     if n == 1 { "1 account" } else { "{n} accounts" }
+}
+
+/// A few accounts, as a capture of the window shows them: their services, names and colours.
+/// Their keys are the device's, and a capture is never the person's device, so no code is drawn
+/// and each card says it is not set up here.
+scenario "a few accounts" {
+    let v = root Vault
+    v.accounts.insert(Account(issuer: "Acme", label: "ada@acme.example", color: 0))
+    v.accounts.insert(Account(issuer: "GitHub", label: "ada@example.com", color: 2))
+    v.accounts.insert(Account(issuer: "Hetzner", label: "ops@rivera.example", color: 4))
 }
