@@ -114,6 +114,8 @@ pub fn media_of(name: &str) -> String {
         "rtf" => "application/rtf",
         "epub" => "application/epub+zip",
         "csv" => "text/csv",
+        "ics" | "ical" => "text/calendar",
+        "vcf" | "vcard" => "text/vcard",
         "json" => "application/json",
         "zip" => "application/zip",
         _ => "application/octet-stream",
@@ -199,5 +201,11 @@ mod tests {
             None,
             "opaque bytes are no kind the name makes one"
         );
+    }
+
+    #[test]
+    fn a_calendar_and_a_vcard_are_the_types_their_apps_ask_for_them_by() {
+        assert_eq!(media_of("team.ics"), "text/calendar");
+        assert_eq!(media_of("Grace.VCF"), "text/vcard");
     }
 }
