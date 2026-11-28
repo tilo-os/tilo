@@ -2182,6 +2182,13 @@ impl Compositor {
         self.data.state.committed_frames(id)
     }
 
+    /// What the compositor holds for the window `id` and what could keep it off the display, for
+    /// a check that sees something else where the window stands.
+    #[must_use]
+    pub fn window_shown(&self, id: u64) -> serde_json::Value {
+        self.data.state.window_shown(id)
+    }
+
     /// The foreign-toplevel identifier of the mapped window whose [`WindowInfo::id`] is `id` : what
     /// a capture names a window by, and how what the shell knows of a window reaches what it shows.
     #[must_use]

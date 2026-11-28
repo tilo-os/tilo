@@ -1130,12 +1130,20 @@ fn windows_answer(
         let items = session.handle.window_items();
         let item_of = |tab: u64| items.get(&tab).cloned();
         let shown = (rect_of, frames_of, drawn_of, resource_of, item_of);
-        match &ctx.scope {
+        let mut rows = match &ctx.scope {
             None => session.handle.read(|tree| window_rows(tree, shown, app)),
             Some(scope) => session
                 .handle
                 .read(|tree| window_rows(&within(tree, scope), shown, app)),
+        };
+        // What the compositor holds for each mapped window, and what could keep it off the
+        // display: a check that sees something else where a window stands reads why.
+        for row in &mut rows {
+            if let Some(id) = row["window"].as_u64() {
+                row["surface"] = compositor.window_shown(id);
+            }
         }
+        rows
     };
     json!({"answer": {
         "windows": rows,

@@ -432,6 +432,8 @@ pub struct State {
     /// and one whose app is drawing moves. A tool reads it to prove a shell is quiet or to count an
     /// app's frames in a real session. The entry goes with the window.
     pub(crate) committed: std::collections::HashMap<u64, u64>,
+    /// When each window's client last committed, by window id: how old the buffer it shows is.
+    pub(crate) last_commit: std::collections::HashMap<u64, Instant>,
     /// The serial of the next frame drawn. Frames are retired in order, so a presenter says how far
     /// the display got by its serial.
     frame_serial: std::sync::atomic::AtomicU64,
@@ -584,6 +586,7 @@ impl State {
             switch_latency: tilo_frame_metrics::switch_latency::SwitchLatency::default(),
             switch_holding: AtomicBool::new(false),
             committed: std::collections::HashMap::new(),
+            last_commit: std::collections::HashMap::new(),
             frame_serial: std::sync::atomic::AtomicU64::new(1),
             frames_presented: std::sync::atomic::AtomicU64::new(0),
             presented_outputs: std::sync::Mutex::new(std::collections::BTreeSet::new()),
@@ -829,6 +832,7 @@ impl State {
         }
         self.closing.retain(|closing| closing.info.id != info.id);
         self.committed.remove(&info.id);
+        self.last_commit.remove(&info.id);
         let snapshot = self.snapshots.take(info.id);
         self.closing.push(Closing {
             info,
@@ -2238,6 +2242,81 @@ impl State {
         Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
     }
 
+    /// What the compositor holds for the window `id` and how it would draw it now: whether it is
+    /// mapped and on a display, its place, the buffer it shows and how old that is, and everything
+    /// that could keep that buffer off the display (a clip, an effect, a card in front of it, a
+    /// shell surface drawing it as a picture). What a check reads when a window's place shows
+    /// something other than what its app drew.
+    pub(crate) fn window_shown(&self, id: u64) -> serde_json::Value {
+        let Some(window) = self.mapped_window(id) else {
+            return serde_json::json!({ "mapped": false });
+        };
+        let rect = |r: Rectangle<i32, Logical>| [r.loc.x, r.loc.y, r.size.w, r.size.h];
+        let geometry = self.space.element_geometry(window).map(rect);
+        let outputs: Vec<String> = self
+            .space
+            .outputs_for_element(window)
+            .iter()
+            .map(Output::name)
+            .collect();
+        let buffer = window.toplevel().and_then(|toplevel| {
+            with_renderer_surface_state(toplevel.wl_surface(), |state| {
+                (
+                    state.buffer().is_some(),
+                    state.buffer_size().map(|size| [size.w, size.h]),
+                    state.buffer_scale(),
+                )
+            })
+        });
+        let effect = self.effect_of(window);
+        let own = self.space.elements().position(|element| element == window);
+        // The cards of the windows in front of this one that overlap where it stands.
+        let covered_by: Vec<[i32; 4]> = self
+            .space
+            .elements()
+            .enumerate()
+            .filter(|(index, _)| own.is_some_and(|own| *index > own))
+            .filter_map(|(_, other)| describe(self, other).and_then(|info| self.cover_of(info.id)))
+            .map(|cover| [cover.rect.0, cover.rect.1, cover.rect.2, cover.rect.3])
+            .collect();
+        let pictured: Vec<[f64; 5]> = self
+            .surfaces
+            .iter()
+            .flat_map(|surface| surface.window_pictures())
+            .filter(|picture| picture.window == id)
+            .map(|picture| {
+                let (x, y, width, height) = picture.rect;
+                [x, y, width, height, f64::from(picture.opacity)]
+            })
+            .collect();
+        serde_json::json!({
+            "mapped": true,
+            "geometry": geometry,
+            "window_geometry": rect(window.geometry()),
+            "outputs": outputs,
+            "buffer": buffer.map(|(attached, size, scale)| serde_json::json!({
+                "attached": attached,
+                "size": size,
+                "scale": scale,
+            })),
+            "commits": self.committed_frames(id),
+            "last_commit_ms": self
+                .last_commit
+                .get(&id)
+                .map(|at| u64::try_from(at.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            "clip": self.clip_of(window).map(rect),
+            "effect": {
+                "offset": [effect.offset.0, effect.offset.1],
+                "scale": effect.scale,
+                "opacity": effect.opacity,
+            },
+            "covered_by": covered_by,
+            "pictured": pictured,
+            "stack": own,
+            "protected": crate::capture::protected(self, window),
+        })
+    }
+
     /// The frames the window `id` 's client committed since it opened: a window that shows the same
     /// thing keeps its count, so a shell that draws nothing between two reads has not moved.
     pub(crate) fn committed_frames(&self, id: u64) -> u64 {
@@ -2471,6 +2550,7 @@ impl CompositorHandler for State {
             // and an app that draws moves it, which is what a tool reads to tell the two apart.
             if let Some(id) = self.committed_window(&root) {
                 *self.committed.entry(id).or_default() += 1;
+                self.last_commit.insert(id, Instant::now());
             }
             // A key this client was given is answered by its next commit.
             self.commit_answered(&root);
