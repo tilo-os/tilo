@@ -9,7 +9,7 @@
 //! a pause drains instead of replaying sound captured while paused.
 
 use media::audio::record::{self, Format, Overflow};
-use ui::widget::AudioCaptureMode;
+use ui::capture::AudioCaptureMode;
 
 /// What every recording track is captured at before the muxer takes it: the
 /// file's lossless stereo 48 kHz.

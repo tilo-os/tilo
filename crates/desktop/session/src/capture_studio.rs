@@ -40,13 +40,13 @@ use tilo_capture_studio::{
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
 
-use tilo_portal::CaptureError;
-use tilo_session_core::surfaces::Surfaces;
-use ui::vello::kurbo::Rect;
-use ui::widget::{
+use tilo_app::capture::{
     AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, MarkupExport,
     ScreenshotKept, ScreenshotSendDevice, SourceMode,
 };
+use tilo_portal::CaptureError;
+use tilo_session_core::surfaces::Surfaces;
+use ui::vello::kurbo::Rect;
 
 use crate::Options;
 use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
@@ -312,7 +312,7 @@ impl CaptureStudio {
 
     /// Open the studio on what an app asked for, as the person's own shortcut opens it: the bar
     /// comes up choosing that kind of capture.
-    pub(crate) fn open_asked(&self, mode: ui::widget::CaptureMode) {
+    pub(crate) fn open_asked(&self, mode: tilo_app::capture::CaptureMode) {
         self.state.link().open_on(mode);
         self.presentation().open(false);
     }

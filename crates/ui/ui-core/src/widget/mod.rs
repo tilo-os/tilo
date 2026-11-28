@@ -407,24 +407,8 @@ pub use {enum_field::EnumField, enum_field::EnumFieldProps, enum_field::EnumOpti
 pub use {person_field::PersonField, person_field::PersonFieldProps};
 pub mod time_field;
 pub mod time_picker;
-pub mod timeline_density;
-pub use timeline_density::TimelineDensity;
 pub use {time_field::TimeField, time_field::TimeFieldProps};
 pub use {time_picker::TimePicker, time_picker::TimePickerProps, time_picker::TimeValue};
-pub mod timeline;
-pub mod track_timeline;
-pub use {
-    timeline::Ghost, timeline::MonthFace, timeline::MonthReport, timeline::MonthTarget,
-    timeline::Timeline, timeline::TimelineFace, timeline::TimelineGeom, timeline::TimelineItem,
-    timeline::TimelineItemProps, timeline::TimelineMode, timeline::TimelineProps,
-    timeline::TimelineReport, timeline::TimelineTarget, timeline::TimelineText,
-    timeline::TimelineTokens, timeline::TimelineTone,
-};
-pub use {
-    track_timeline::TimelineMarkerProps, track_timeline::TimelineSpanProps,
-    track_timeline::TimelineTrackProps, track_timeline::TrackTimeline,
-    track_timeline::TrackTimelineProps,
-};
 pub mod color_picker;
 pub mod color_swatch;
 mod curve_editor;
@@ -523,11 +507,6 @@ pub use {
 };
 pub mod split_handle;
 pub use {split_handle::SplitHandle, split_handle::SplitOrientation, split_handle::SplitRatio};
-pub mod video_player;
-pub use {
-    video_player::DeclaredVideo, video_player::PLAYBACK_RATES, video_player::VideoPlayer,
-    video_player::VideoPlayerProps,
-};
 pub mod terminal;
 pub use {terminal::GridEvents, terminal::Terminal, terminal::TerminalProps};
 pub mod image_viewer;
@@ -726,23 +705,7 @@ pub use {
     section::SectionHeaderFace, section::SectionProps, section::StatusLine,
     section::StatusLineProps, section::band_height, section::heading_count,
 };
-pub mod capture_studio;
-pub use {
-    capture_studio::AudioCaptureMode, capture_studio::CaptureDestination,
-    capture_studio::CaptureIntent, capture_studio::CaptureMode, capture_studio::CapturePreview,
-    capture_studio::CaptureStudio, capture_studio::CaptureTarget, capture_studio::LiveCapture,
-    capture_studio::PipLayout, capture_studio::RecordingCommand, capture_studio::RegionAnchor,
-    capture_studio::ReplayCommand, capture_studio::ScreenshotCommand,
-    capture_studio::ScreenshotKept, capture_studio::ScreenshotSendDevice,
-    capture_studio::ScreenshotSendTarget, capture_studio::SourceMode,
-};
-pub mod screenshot_markup;
 pub mod selection_handles;
-pub use {
-    screenshot_markup::MarkupExport, screenshot_markup::MarkupStroke,
-    screenshot_markup::MarkupTool, screenshot_markup::ScreenshotMarkup,
-    screenshot_markup::ScreenshotMarkupCommand,
-};
 pub use {
     selection_handles::Handle as SelectionHandle, selection_handles::SelectionHandles,
     selection_handles::TextGrip, selection_handles::TextGrips,
@@ -812,9 +775,6 @@ pub mod internals {
     pub mod property_list {
         pub use crate::widget::property_list::*;
     }
-    pub mod screenshot_markup {
-        pub use crate::widget::screenshot_markup::*;
-    }
     pub mod scrollable {
         pub use crate::widget::scrollable::*;
     }
@@ -832,9 +792,6 @@ pub mod internals {
     }
     pub mod text_input {
         pub use crate::widget::text_input::*;
-    }
-    pub mod timeline {
-        pub use crate::widget::timeline::*;
     }
     pub mod toggle {
         pub use crate::widget::toggle::*;

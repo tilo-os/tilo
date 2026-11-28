@@ -129,6 +129,9 @@ members = [
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
     "crates/ui/ui-charts",
+    "crates/ui/ui-timeline",
+    "crates/ui/ui-capture",
+    "crates/ui/ui-video",
     "crates/ui/ui-secret",
     "crates/ui/ui-search",
     "crates/ui/ui-file-picker",
@@ -1076,6 +1079,21 @@ debug-assertions = true
 overflow-checks = true
 strip = "symbols"
 [profile.test.package.tilo-ui-secret]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-video]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-capture]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
+strip = "symbols"
+[profile.test.package.tilo-ui-timeline]
 opt-level = 2
 debug-assertions = true
 overflow-checks = true

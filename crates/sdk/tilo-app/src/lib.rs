@@ -39,6 +39,15 @@ pub use tilo_rich_edit as rich_edit;
 /// Charts and plots: lines, bars, pies, distributions, hierarchies, flows, ranges and stat tiles.
 pub use tilo_ui_charts as charts;
 
+/// The timelines: the calendar's days, weeks and months, and tracks of spans along a time axis.
+pub use tilo_ui_timeline as timeline;
+
+/// The capture studio: screenshots, recordings of the screen or a window, and marking a screenshot up.
+pub use tilo_ui_capture as capture;
+
+/// The video player: a video with its transport, captions, playback rates and picture in picture.
+pub use tilo_ui_video as video_player;
+
 /// The secret prompt: the sheet that asks for a password, a passcode or a key.
 pub use tilo_ui_secret as secret_prompt;
 

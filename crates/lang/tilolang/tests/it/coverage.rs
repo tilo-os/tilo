@@ -24,11 +24,14 @@ fn toolkit_src() -> PathBuf {
 }
 
 /// The sources of the widget crates whose components a window builds besides the toolkit's.
-fn widget_crate_srcs() -> [PathBuf; 8] {
+fn widget_crate_srcs() -> [PathBuf; 11] {
     let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui");
     [
         ui.join("tilo-rich-edit/src"),
         ui.join("ui-charts/src"),
+        ui.join("ui-timeline/src"),
+        ui.join("ui-capture/src"),
+        ui.join("ui-video/src"),
         ui.join("ui-secret/src"),
         ui.join("ui-search/src"),
         ui.join("ui-file-picker/src"),

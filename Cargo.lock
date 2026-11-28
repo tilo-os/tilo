@@ -15029,12 +15029,15 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-capture",
  "tilo-ui-charts",
  "tilo-ui-file-picker",
  "tilo-ui-map",
  "tilo-ui-nav",
  "tilo-ui-search",
  "tilo-ui-secret",
+ "tilo-ui-timeline",
+ "tilo-ui-video",
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
@@ -15444,6 +15447,7 @@ dependencies = [
  "tilo-rich-edit",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-capture",
  "tilo-ui-charts",
  "tilo-ui-file-picker",
  "tilo-ui-graph",
@@ -15452,6 +15456,8 @@ dependencies = [
  "tilo-ui-nav",
  "tilo-ui-search",
  "tilo-ui-secret",
+ "tilo-ui-timeline",
+ "tilo-ui-video",
  "tilo-webview",
  "tracing",
  "workspace-hack",
@@ -21655,6 +21661,7 @@ dependencies = [
  "tilo-ui",
  "tilo-ui-app",
  "tilo-ui-base",
+ "tilo-ui-capture",
  "tilo-ui-charts",
  "tilo-ui-file-picker",
  "tilo-ui-map",
@@ -21663,6 +21670,8 @@ dependencies = [
  "tilo-ui-render",
  "tilo-ui-search",
  "tilo-ui-secret",
+ "tilo-ui-timeline",
+ "tilo-ui-video",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-wasm-aot",
@@ -21808,6 +21817,21 @@ version = "0.1.0"
 dependencies = [
  "tilo-app",
  "tilo-files",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-capture"
+version = "0.1.0"
+dependencies = [
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -22068,6 +22092,38 @@ dependencies = [
  "tilo-winit",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-ui-timeline"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "tilo-component-scan",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-video"
+version = "0.1.0"
+dependencies = [
+ "tilo-automerge-fork",
+ "tilo-component-scan",
+ "tilo-media",
+ "tilo-sort",
+ "tilo-taffy",
+ "tilo-test-env",
+ "tilo-ui",
+ "tilo-ui-base",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
 ]
 
 [[package]]

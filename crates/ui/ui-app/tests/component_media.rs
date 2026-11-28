@@ -308,20 +308,20 @@ tilo_test_env::scenario! {
             .on("set_rate")
             .on("select_quality")
             .on("select_captions");
-        let props = tilo_ui_app::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
+        let props = tilo_ui_video::VideoPlayerProps::from_source(&mut node).expect("reads");
         assert_eq!(props.qualities, ["1080p", "720p"]);
         assert_eq!(
             props.caption_tracks.get("en").map(String::as_str),
             Some("English")
         );
-        let mut video = tilo_ui_app::widget::DeclaredVideo::from_props("watch", props);
+        let mut video = tilo_ui_video::DeclaredVideo::from_props("watch", props);
         assert!(
             video.player().setting("playback-rate").is_some(),
             "the player offers a speed"
         );
         assert!(video.player().setting("quality").is_some());
         assert!(video.player().setting("captions").is_some());
-        let twice = tilo_ui_app::widget::PLAYBACK_RATES
+        let twice = tilo_ui_video::PLAYBACK_RATES
             .iter()
             .position(|rate| (*rate - 2.0).abs() < f64::EPSILON)
             .expect("2× is one of the speeds");
@@ -351,8 +351,8 @@ tilo_test_env::scenario! {
             )
             .prop("caption_language", text("en"))
             .on("select_captions");
-        let props = tilo_ui_app::widget::VideoPlayerProps::from_source(&mut node).expect("reads");
-        let mut video = tilo_ui_app::widget::DeclaredVideo::from_props("watch", props);
+        let props = tilo_ui_video::VideoPlayerProps::from_source(&mut node).expect("reads");
+        let mut video = tilo_ui_video::DeclaredVideo::from_props("watch", props);
         assert!(video.player().choose_setting("captions", 0));
         let doc = automerge::AutoCommit::new();
         tilo_ui_base::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);

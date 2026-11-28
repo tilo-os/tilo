@@ -14,7 +14,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::time::{Duration, Instant};
+use tilo_ui::time::{Duration, Instant};
 
 use taffy::{NodeId, Position, Size, Style, TaffyTree};
 use vello::{
@@ -27,7 +27,7 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-use crate::{ColorCompat, widget::Image, widget::ImageFit};
+use tilo_ui::{ColorCompat, widget::Image, widget::ImageFit};
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{
     icons, icons::Icon, surface, text_render::TextWeight, theme::Theme, widget::TaffyTreeExt,
@@ -202,7 +202,7 @@ impl ScreenshotMarkup {
             pan: Vec2::ZERO,
             panning: None,
             pending: Vec::new(),
-            opened_at: crate::time::now(),
+            opened_at: tilo_ui::time::now(),
             spawn_from: None,
             entrance_progress_override: None,
             keyboard: None,
@@ -221,7 +221,7 @@ impl ScreenshotMarkup {
         if let Some(progress) = self.entrance_progress_override {
             return progress;
         }
-        markup_entrance(crate::time::now().saturating_duration_since(self.opened_at))
+        markup_entrance(tilo_ui::time::now().saturating_duration_since(self.opened_at))
     }
 
     /// Freeze the entrance for deterministic screenshot review. Production
@@ -1135,7 +1135,7 @@ impl Widget for ScreenshotMarkup {
         if let Some(on) = self.keyboard_control()
             && let Some((_, rect)) = self.controls().into_iter().find(|(id, _)| *id == on)
         {
-            crate::widget::activation::paint_focus_ring(
+            tilo_ui::widget::activation::paint_focus_ring(
                 scene,
                 transform,
                 rect,
@@ -1494,7 +1494,8 @@ impl Widget for ScreenshotMarkup {
     }
     fn needs_animation_frame(&self) -> bool {
         self.entrance_progress_override.is_none()
-            && crate::time::now().saturating_duration_since(self.opened_at) < markup_entrance_time()
+            && tilo_ui::time::now().saturating_duration_since(self.opened_at)
+                < markup_entrance_time()
     }
     fn test_rects(&self) -> Vec<(String, Rect)> {
         self.controls()

@@ -1,7 +1,7 @@
 //! [`TrackTimeline`] as a described component: the tracks, spans and markers a view hands it, and
 //! the changes a person's hand on it reports back.
 
-use crate::widget::Ink;
+use tilo_ui::widget::Ink;
 use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::widget::{Marker, Span, Track, TrackTimeline};
@@ -40,7 +40,7 @@ pub struct TrackTimelineProps {
     pub markers: Vec<TimelineMarkerProps>,
     /// Where other members are at work in the cut, as the view read them from `spots(p)`:
     /// where each plays from, and the stretch each selected.
-    pub peers: Vec<crate::widget::PeerSpot>,
+    pub peers: Vec<tilo_ui::widget::PeerSpot>,
     /// The playhead is being dragged: carries where it is now, as the hand moves.
     #[component(event(value = f64))]
     pub scrub: Event,

@@ -12,8 +12,8 @@ use vello::peniko::{Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::widget::Ink;
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
+use tilo_ui::widget::Ink;
+use tilo_ui::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -219,10 +219,10 @@ pub struct TrackTimeline {
     pub(crate) markers: Vec<Marker>,
     /// Where other members are at work in the cut, as the view read them from `spots(p)`: where
     /// each plays from and the stretch each selected.
-    pub(crate) peers: Vec<crate::widget::PeerSpot>,
+    pub(crate) peers: Vec<tilo_ui::widget::PeerSpot>,
     /// Where each of their marks is drawn as they move: gliding from where it showed to where
     /// they are now, and landing at once where motion is reduced.
-    peers_glide: crate::presence::PeerGlide,
+    peers_glide: tilo_ui::presence::PeerGlide,
     pub(crate) scrub: Event,
     pub(crate) seek: Event,
     pub(crate) zoomed: Event,
@@ -249,7 +249,7 @@ pub struct TrackTimeline {
     bar: Scrollbar,
     /// The spans let go of, by their keys, held where they were dropped until the view says
     /// where they stand, or until each one's moment passes with no answer: then they glide back.
-    pending: Vec<(String, crate::time::Instant)>,
+    pending: Vec<(String, tilo_ui::time::Instant)>,
 }
 
 impl TrackTimeline {
@@ -265,7 +265,7 @@ impl TrackTimeline {
             tracks: Vec::new(),
             markers: Vec::new(),
             peers: Vec::new(),
-            peers_glide: crate::presence::PeerGlide::default(),
+            peers_glide: tilo_ui::presence::PeerGlide::default(),
             scrub: Event::None,
             seek: Event::None,
             zoomed: Event::None,
@@ -838,13 +838,13 @@ impl TrackTimeline {
         }
         // Nothing will answer a change no view handles: it glides back at once.
         let wait = if unanswered {
-            crate::time::Duration::ZERO
+            tilo_ui::time::Duration::ZERO
         } else {
-            crate::time::Duration::from_millis(ANSWER_WAIT_MS)
+            tilo_ui::time::Duration::from_millis(ANSWER_WAIT_MS)
         };
-        self.pending.push((key, crate::time::now() + wait));
+        self.pending.push((key, tilo_ui::time::now() + wait));
         if unanswered {
-            self.settle_pending(crate::time::now());
+            self.settle_pending(tilo_ui::time::now());
         }
         let Some(span) = self.tracks.get(track).and_then(|t| t.spans.get(index)) else {
             return;
@@ -868,10 +868,10 @@ impl TrackTimeline {
 
     /// A dropped span the view has not answered for by `now` glides back to where it stands,
     /// and so does every span dropped with it.
-    fn settle_pending(&mut self, now: crate::time::Instant) -> bool {
+    fn settle_pending(&mut self, now: tilo_ui::time::Instant) -> bool {
         let (due, waiting): (
-            Vec<(String, crate::time::Instant)>,
-            Vec<(String, crate::time::Instant)>,
+            Vec<(String, tilo_ui::time::Instant)>,
+            Vec<(String, tilo_ui::time::Instant)>,
         ) = self.pending.drain(..).partition(|(_, by)| *by <= now);
         self.pending = waiting;
         if due.is_empty() {
@@ -1156,7 +1156,7 @@ impl TrackTimeline {
             .collect();
         let now = tilo_ui_base::motion::frame_now();
         self.peers_glide
-            .retarget(marks, crate::presence::peer_glide_timing(theme), now);
+            .retarget(marks, tilo_ui::presence::peer_glide_timing(theme), now);
     }
 
     fn paint(&self, ctx: &mut PaintCtx<'_>) {
@@ -1674,10 +1674,10 @@ impl TrackTimeline {
         if dest.width() <= 0.0 || dest.height() <= 0.0 {
             return;
         }
-        let picture = crate::widget::PictureSource {
+        let picture = tilo_ui::widget::PictureSource {
             src: src.to_owned(),
         };
-        let Some(image) = crate::pictures::Pictures::window().get(&picture) else {
+        let Some(image) = tilo_ui::pictures::Pictures::window().get(&picture) else {
             return;
         };
         let (iw, ih) = (f64::from(image.width), f64::from(image.height));
@@ -2125,11 +2125,11 @@ impl Widget for TrackTimeline {
             || self.lift.values().any(|v| v.is_moving(now))
     }
 
-    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<tilo_ui::time::Instant> {
         self.pending.iter().map(|(_, by)| *by).min()
     }
 
-    fn serve_deadline(&mut self, now: crate::time::Instant) -> bool {
+    fn serve_deadline(&mut self, now: tilo_ui::time::Instant) -> bool {
         self.settle_pending(now)
     }
 

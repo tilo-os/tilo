@@ -9,21 +9,21 @@
     reason = "immediate-mode capture geometry uses tiny fixed arrays and bounded screen coordinates"
 )]
 
-use crate::{
+use automerge::ObjId;
+use std::collections::HashMap;
+use tilo_ui::{
     widget::Button, widget::ButtonFace, widget::CaptureButtonFace, widget::CaptureKind,
     widget::ControlSize, widget::IconButton, widget::selection_handles::Handle,
     widget::selection_handles::SelectionHandles, widget::toggle_group::Segment,
     widget::toggle_group::SegmentedFace, widget::toggle_group::SegmentedStyle,
 };
-use automerge::ObjId;
-use std::collections::HashMap;
 use tilo_ui_base::{
     icons::Icon, paint::PaintCtx, presence::PresenceCtx, text_render::TextRenderer, theme::Theme,
     widget::TaffyTreeExt, widget::Widget,
 };
 
-use crate::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
+use tilo_ui::time::{Duration, Instant};
 use tilo_ui_base::tokens::TextRole;
 use vello::{
     Scene,
@@ -429,10 +429,10 @@ pub struct CaptureStudio {
     /// Online devices "Send…" may offer, refreshed by the shell.
     send_devices: Vec<ScreenshotSendDevice>,
     /// The open "Send…" target picker and the target behind each row.
-    send_menu: Option<crate::widget::context_menu::ContextMenu>,
+    send_menu: Option<tilo_ui::widget::context_menu::ContextMenu>,
     send_menu_targets: Vec<Option<ScreenshotSendTarget>>,
     /// The open options popover and what each of its rows does.
-    options_menu: Option<crate::widget::context_menu::ContextMenu>,
+    options_menu: Option<tilo_ui::widget::context_menu::ContextMenu>,
     options_choices: Vec<Option<OptionChoice>>,
     delay_seconds: u8,
     armed_capture: Option<ArmedCapture>,
@@ -527,7 +527,7 @@ impl CaptureStudio {
         self.close_send_menu();
         self.open = true;
         self.put_away = false;
-        self.opened_at = Some(crate::time::now());
+        self.opened_at = Some(tilo_ui::time::now());
         self.regions.clear();
         self.drag = None;
         if self.take.active {
@@ -672,7 +672,7 @@ impl CaptureStudio {
 
     pub fn take_intents(&mut self) -> Vec<CaptureIntent> {
         if self.armed_capture.as_ref().is_some_and(|armed| {
-            crate::time::now().saturating_duration_since(armed.started_at) >= armed.duration
+            tilo_ui::time::now().saturating_duration_since(armed.started_at) >= armed.duration
         }) && let Some(armed) = self.armed_capture.take()
         {
             let starts_recording = armed.intent.recording_command == Some(RecordingCommand::Start);
@@ -700,7 +700,7 @@ impl CaptureStudio {
         if active && !self.take.active {
             self.take = RecordingTake {
                 active: true,
-                started_at: Some(crate::time::now()),
+                started_at: Some(tilo_ui::time::now()),
                 ..RecordingTake::default()
             };
             self.end_recording_receipt();
@@ -727,7 +727,7 @@ impl CaptureStudio {
         self.dirty = true;
         self.take = RecordingTake::default();
         self.recording_skipped = skipped;
-        self.recording_finished_at = Some(crate::time::now());
+        self.recording_finished_at = Some(tilo_ui::time::now());
         self.open = true;
         if !self.replay_active {
             self.scope = None;
@@ -742,7 +742,7 @@ impl CaptureStudio {
         self.take = RecordingTake::default();
         self.recording_failure = Some(reason);
         self.recording_kept = kept;
-        self.recording_finished_at = Some(crate::time::now());
+        self.recording_finished_at = Some(tilo_ui::time::now());
         self.open = true;
         if !self.replay_active {
             self.scope = None;
@@ -764,7 +764,7 @@ impl CaptureStudio {
         if !self.take.active || paused == self.take.paused {
             return;
         }
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         if paused {
             self.take.paused_at = Some(now);
         } else if let Some(paused_at) = self.take.paused_at.take() {
@@ -777,7 +777,7 @@ impl CaptureStudio {
         let Some(started) = self.take.started_at else {
             return Duration::ZERO;
         };
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         let current_pause = self.take.paused_at.map_or(Duration::ZERO, |paused_at| {
             now.saturating_duration_since(paused_at)
         });
@@ -816,7 +816,7 @@ impl CaptureStudio {
         self.dirty = true;
         if self.replay_active {
             self.recording_skipped = 0;
-            self.recording_finished_at = Some(crate::time::now());
+            self.recording_finished_at = Some(tilo_ui::time::now());
         }
     }
 
@@ -883,7 +883,7 @@ impl CaptureStudio {
     /// Open the target picker under the receipt's Send button: the workspace
     /// first (always available), then each online device.
     fn open_send_menu(&mut self, anchor: Rect) {
-        use crate::widget::context_menu::{ContextMenu, MenuItem};
+        use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
         let mut menu = ContextMenu::new();
         let mut targets = Vec::new();
         menu.push(MenuItem::icon_action(
@@ -945,7 +945,7 @@ impl CaptureStudio {
             width,
             height,
             preview,
-            shown_at: crate::time::now(),
+            shown_at: tilo_ui::time::now(),
             origin,
             progress_override: None,
         });
@@ -1187,7 +1187,7 @@ impl CaptureStudio {
         if self.delay_seconds > 0 && self.mode != CaptureMode::Pip {
             self.armed_capture = Some(ArmedCapture {
                 intent,
-                started_at: crate::time::now(),
+                started_at: tilo_ui::time::now(),
                 duration: Duration::from_secs(u64::from(self.delay_seconds)),
             });
             return;
@@ -1411,7 +1411,7 @@ impl CaptureStudio {
     }
 
     fn open_options_menu(&mut self, anchor: Rect) {
-        use crate::widget::context_menu::{ContextMenu, MenuItem};
+        use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
         let sections = self.option_sections();
         if sections.is_empty() {
             return;
@@ -1615,7 +1615,7 @@ impl CaptureStudio {
         tilo_ui_base::motion::unit_opacity(self.opened_at.map_or(1.0, |at| {
             studio_progress(
                 tilo_ui_base::motion::Appear::SPEC,
-                crate::time::now().saturating_duration_since(at),
+                tilo_ui::time::now().saturating_duration_since(at),
             )
         }))
     }
@@ -1686,7 +1686,7 @@ impl CaptureStudio {
                     if !self.remove_shown(index) {
                         continue;
                     }
-                    let on = crate::widget::paint_see_through(
+                    let on = tilo_ui::widget::paint_see_through(
                         scene,
                         transform,
                         remove,
@@ -2095,7 +2095,7 @@ impl Widget for CaptureStudio {
             || self.replay_active
             || self.armed_capture.is_some()
             || self.screenshot_receipt.as_ref().is_some_and(|receipt| {
-                crate::time::now().saturating_duration_since(receipt.shown_at)
+                tilo_ui::time::now().saturating_duration_since(receipt.shown_at)
                     < SCREENSHOT_RECEIPT_DURATION
             })
             // Frames carry a saved recording's receipt out; one that could not
@@ -2103,7 +2103,7 @@ impl Widget for CaptureStudio {
             || (self.recording_finished_at.is_some() && self.recording_failure.is_none())
             || (self.open
                 && self.opened_at.is_some_and(|at| {
-                    crate::time::now().saturating_duration_since(at)
+                    tilo_ui::time::now().saturating_duration_since(at)
                         < studio_motion_time(tilo_ui_base::motion::Appear::SPEC)
                 }))
     }
@@ -2235,7 +2235,7 @@ struct MenuOutcome {
 }
 
 fn drive_menu(
-    menu: &mut crate::widget::context_menu::ContextMenu,
+    menu: &mut tilo_ui::widget::context_menu::ContextMenu,
     cursor: Point,
     e: &WindowEvent,
     (scale, modifiers): (f64, winit::event::Modifiers),

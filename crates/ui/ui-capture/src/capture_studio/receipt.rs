@@ -13,8 +13,8 @@ use super::{
     CapturePreview, CaptureStudio, RECORDING_RECEIPT_DURATION, SCREENSHOT_RECEIPT_DURATION,
     ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress,
 };
-use crate::time::Duration;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, IconButton};
+use tilo_ui::time::Duration;
+use tilo_ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, IconButton};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
@@ -130,7 +130,7 @@ impl CaptureStudio {
         }
         studio_progress(
             tilo_ui_base::motion::Zoom::SPEC,
-            crate::time::now().saturating_duration_since(receipt.shown_at),
+            tilo_ui::time::now().saturating_duration_since(receipt.shown_at),
         )
     }
 
@@ -158,7 +158,7 @@ impl CaptureStudio {
     pub(super) fn recording_receipt_over(&self) -> bool {
         self.recording_failure.is_none()
             && self.recording_finished_at.is_some_and(|at| {
-                crate::time::now().saturating_duration_since(at) >= RECORDING_RECEIPT_DURATION
+                tilo_ui::time::now().saturating_duration_since(at) >= RECORDING_RECEIPT_DURATION
             })
     }
 
@@ -301,7 +301,7 @@ impl CaptureStudio {
             theme,
         } = ctx.reborrow();
         let pill = layout.pill;
-        let radius = 6.0 + (crate::widget::floating_surface::single_row_radius(theme) - 6.0) * p;
+        let radius = 6.0 + (tilo_ui::widget::floating_surface::single_row_radius(theme) - 6.0) * p;
         let fading = alpha < 1.0;
         if fading {
             scene.push_layer(
@@ -312,7 +312,7 @@ impl CaptureStudio {
                 &pill.inflate(48.0, 48.0),
             );
         }
-        crate::widget::floating_surface::paint_rounded(scene, transform, pill, radius, theme);
+        tilo_ui::widget::floating_surface::paint_rounded(scene, transform, pill, radius, theme);
         let colors = &theme.tokens.colors;
         if let Some((pixels, saved)) = preview {
             let rect = layout.preview;
@@ -420,7 +420,7 @@ impl CaptureStudio {
                 .then(|| (layout.dismiss, studio_text("widget-capture-dismiss")))
         });
         if let Some((anchor, label)) = tip {
-            crate::widget::tooltip::draw_hover_tooltip(
+            tilo_ui::widget::tooltip::draw_hover_tooltip(
                 scene,
                 transform,
                 tr,
@@ -451,7 +451,7 @@ impl CaptureStudio {
         let elapsed = if choosing {
             Duration::ZERO
         } else {
-            crate::time::now().saturating_duration_since(receipt.shown_at)
+            tilo_ui::time::now().saturating_duration_since(receipt.shown_at)
         };
         if elapsed >= SCREENSHOT_RECEIPT_DURATION && !self.screenshot_pin_pending {
             self.screenshot_receipt = None;

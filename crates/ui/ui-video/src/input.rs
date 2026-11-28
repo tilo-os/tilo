@@ -528,7 +528,7 @@ impl VideoPlayer {
                     .ok()
                     .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
                     .is_some_and(|seconds| {
-                        let millis = crate::time::Duration::from_secs_f64(seconds).as_millis();
+                        let millis = tilo_ui::time::Duration::from_secs_f64(seconds).as_millis();
                         self.seek_to_ms(u64::try_from(millis).unwrap_or(u64::MAX));
                         true
                     }),

@@ -15,7 +15,6 @@ use tilo_ui_app::kurbo::*;
 use tilo_ui_app::retained_present::*;
 use tilo_ui_app::testing::*;
 use tilo_ui_app::vello::*;
-use tilo_ui_app::widget::internals::screenshot_markup::*;
 use tilo_ui_app::widget::*;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -29,6 +28,8 @@ use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::*;
+use tilo_ui_capture::screenshot_markup::SWATCHES;
+use tilo_ui_capture::*;
 use winit::event::*;
 use winit::keyboard::*;
 

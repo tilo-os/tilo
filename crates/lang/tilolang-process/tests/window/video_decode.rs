@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 // The tools these tests start inherit the test's environment: they run one at a time.
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use ui::video_player::{DeclaredVideo, VideoPlayerProps};
 use ui::widget::Widget as _;
-use ui::widget::video_player::{DeclaredVideo, VideoPlayerProps};
 
 /// A short VP9/AAC clip at `path`, made with whichever tool the test image carries.
 fn make_clip(path: &Path) -> Result<(), String> {

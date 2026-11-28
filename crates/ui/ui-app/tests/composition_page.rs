@@ -192,7 +192,7 @@ fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
     let rgba: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8; 64 * 64 * 4]);
     let mut frame = tilo_ui_app::headless::Driver::for_root(
         tilo_ui_app::State::new(),
-        tilo_ui_app::widget::ScreenshotMarkup::new(rgba, 64, 64),
+        tilo_ui_capture::ScreenshotMarkup::new(rgba, 64, 64),
         (900, 700),
         tilo_ui_base::Theme::dark().with_reduce_motion(true),
     );

@@ -494,7 +494,7 @@ impl CaptureStudio {
             self.setup_bar()
         };
         let on =
-            crate::widget::paint_see_through(scene, transform, bar, self.metrics.radius, theme);
+            tilo_ui::widget::paint_see_through(scene, transform, bar, self.metrics.radius, theme);
         let items = self.bar_items();
         let hovered = |item: BarItem| {
             items
@@ -512,7 +512,7 @@ impl CaptureStudio {
             let outputs = rects(|item| matches!(item, BarItem::Output(_)));
             let output_items = output_segments();
             let chosen = OUTPUTS.iter().position(|m| *m == self.mode).unwrap_or(0);
-            crate::widget::ToggleGroup::paint(
+            tilo_ui::widget::ToggleGroup::paint(
                 scene,
                 transform,
                 tr,
@@ -525,7 +525,7 @@ impl CaptureStudio {
             let targets = rects(|item| matches!(item, BarItem::Target(_)));
             let target_items = target_segments();
             let chosen = TARGETS.iter().position(|s| *s == self.source).unwrap_or(0);
-            crate::widget::ToggleGroup::paint(
+            tilo_ui::widget::ToggleGroup::paint(
                 scene,
                 transform,
                 tr,
@@ -564,7 +564,7 @@ impl CaptureStudio {
                     let text = match self.armed_capture.as_ref() {
                         Some(armed) => {
                             let left = armed.duration.saturating_sub(
-                                crate::time::now().saturating_duration_since(armed.started_at),
+                                tilo_ui::time::now().saturating_duration_since(armed.started_at),
                             );
                             left.as_secs_f64().ceil().max(1.0).to_string()
                         }
@@ -645,7 +645,7 @@ impl CaptureStudio {
             }
         }
         if let Some((anchor, tip)) = self.bar_tip() {
-            crate::widget::tooltip::draw_hover_tooltip(
+            tilo_ui::widget::tooltip::draw_hover_tooltip(
                 scene,
                 transform,
                 tr,

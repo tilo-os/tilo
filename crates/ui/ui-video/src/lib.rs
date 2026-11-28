@@ -10,10 +10,74 @@
 //! `realtime` feature is on (any app that streams video enables it); in other
 //! builds the feed methods report that nothing was decoded.
 
-use crate::time::{Duration, Instant};
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::collapsible_if,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::empty_line_after_doc_comments,
+    clippy::format_collect,
+    clippy::format_push_string,
+    clippy::implicit_hasher,
+    clippy::indexing_slicing,
+    clippy::items_after_statements,
+    clippy::items_after_test_module,
+    clippy::large_enum_variant,
+    clippy::large_stack_arrays,
+    clippy::manual_assert_eq,
+    clippy::manual_find,
+    clippy::manual_midpoint,
+    clippy::many_single_char_names,
+    clippy::map_unwrap_or,
+    clippy::match_wildcard_for_single_variants,
+    clippy::missing_errors_doc,
+    clippy::needless_collect,
+    clippy::needless_pass_by_value,
+    clippy::needless_range_loop,
+    clippy::needless_raw_string_hashes,
+    clippy::or_fun_call,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls,
+    clippy::ref_as_ptr,
+    clippy::result_large_err,
+    clippy::semicolon_if_nothing_returned,
+    clippy::significant_drop_in_scrutinee,
+    clippy::significant_drop_tightening,
+    clippy::similar_names,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::unchecked_time_subtraction,
+    clippy::unicode_not_nfc,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_literal_bound,
+    clippy::unnecessary_wraps,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    clippy::used_underscore_binding,
+    clippy::useless_conversion,
+    reason = "lint debt these widgets carried in the toolkit, scoped to this target"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        clippy::string_slice,
+        clippy::unreachable,
+        clippy::float_cmp,
+        reason = "in a test these are the assertion, not a hazard, and tests may wait on the real clock"
+    )
+)]
+
 use std::borrow::Cow;
 use std::sync::Arc;
 use tilo_sort::CompactSort as _;
+use tilo_ui::time::{Duration, Instant};
 use tilo_ui_base::num::f64_of_u64;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
@@ -215,7 +279,7 @@ pub struct VideoPlayer {
     decoder: Option<media::RealtimeDecoder>,
     decoder_codec: Option<media::StreamCodec>,
     latest_frame: Option<PenikoImage>,
-    poster: Option<crate::widget::MediaSource>,
+    poster: Option<tilo_ui::widget::MediaSource>,
     poster_image: Option<PenikoImage>,
     last_frame_pts: Option<u64>,
     state: PlaybackState,
@@ -382,9 +446,9 @@ impl VideoPlayer {
         }
     }
 
-    pub fn set_poster(&mut self, poster: Option<crate::widget::MediaSource>) {
+    pub fn set_poster(&mut self, poster: Option<tilo_ui::widget::MediaSource>) {
         self.poster_image = match &poster {
-            Some(crate::widget::MediaSource::Image(image)) => Some(image.clone()),
+            Some(tilo_ui::widget::MediaSource::Image(image)) => Some(image.clone()),
             _ => None,
         };
         self.poster = poster;
@@ -394,7 +458,7 @@ impl VideoPlayer {
 
     fn resolve_poster(&mut self) {
         if self.poster_image.is_none()
-            && let Some(crate::widget::MediaSource::Url { store, url }) = &self.poster
+            && let Some(tilo_ui::widget::MediaSource::Url { store, url }) = &self.poster
             && let Some(image) = store.get(url)
         {
             self.poster_image = Some(image);
@@ -896,7 +960,7 @@ impl VideoPlayer {
     pub fn reveal_controls(&mut self) {
         // `checked_add` rather than `+`: `Instant` addition panics on
         // overflow, though `now + 1h` cannot realistically overflow.
-        self.controls_visible_until = crate::time::now().checked_add(Duration::from_secs(3600));
+        self.controls_visible_until = tilo_ui::time::now().checked_add(Duration::from_secs(3600));
         self.dirty = true;
     }
 
@@ -912,7 +976,7 @@ impl VideoPlayer {
 
     fn controls_shown_for_a_while(&self) -> bool {
         match self.controls_visible_until {
-            Some(deadline) => crate::time::now() < deadline,
+            Some(deadline) => tilo_ui::time::now() < deadline,
             None => false,
         }
     }
@@ -926,7 +990,7 @@ impl VideoPlayer {
         let Some(deadline) = self.controls_visible_until else {
             return 0.0;
         };
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         if now >= deadline {
             return 0.0;
         }
@@ -942,7 +1006,7 @@ impl VideoPlayer {
     }
 
     fn show_controls(&mut self) {
-        self.controls_visible_until = crate::time::now().checked_add(CONTROLS_AUTO_HIDE);
+        self.controls_visible_until = tilo_ui::time::now().checked_add(CONTROLS_AUTO_HIDE);
         self.reveal_unpainted = true;
     }
 
@@ -960,7 +1024,7 @@ impl VideoPlayer {
         let Some(deadline) = self.controls_visible_until else {
             return false;
         };
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         tilo_ui_base::motion::Transient::is_moving(
             tilo_ui_base::motion::Transient::CONFIRMATION,
             (now, deadline),
@@ -976,7 +1040,7 @@ impl VideoPlayer {
             return None;
         }
         let deadline = self.controls_visible_until?;
-        let now = crate::time::now();
+        let now = tilo_ui::time::now();
         if self.motion_reduced {
             return (now < deadline).then_some(deadline);
         }
@@ -1001,7 +1065,7 @@ impl VideoPlayer {
     /// When the next picture is taken up: a beat while one plays.
     fn picture_wake(&self) -> Option<Instant> {
         self.picture_playing()
-            .then(|| crate::time::now().checked_add(PICTURE_BEAT))
+            .then(|| tilo_ui::time::now().checked_add(PICTURE_BEAT))
             .flatten()
     }
 
@@ -1167,7 +1231,7 @@ impl VideoPlayer {
 
     fn show_element_picture(&mut self, picture: media::ElementPicture) {
         let image = rgba_image(picture.width, picture.height, Arc::new(Vec::new()));
-        crate::element_pictures::show(image.clone(), picture.element);
+        tilo_ui::element_pictures::show(image.clone(), picture.element);
         self.last_frame_pts = None;
         self.latest_frame = Some(image);
         self.dirty = true;
@@ -1240,7 +1304,7 @@ impl VideoPlayer {
                     &dest,
                 );
             }
-        } else if let Some(crate::widget::MediaSource::Paint(paint)) = &self.poster {
+        } else if let Some(tilo_ui::widget::MediaSource::Paint(paint)) = &self.poster {
             let (rw, rh) = (self.rect.width(), self.rect.height());
             let (dw, dh) = if rw * 9.0 > rh * 16.0 {
                 (rh * 16.0 / 9.0, rh)
@@ -1387,7 +1451,7 @@ impl VideoPlayer {
         if bar.width() <= 0.0 || bar.height() <= 0.0 {
             return;
         }
-        crate::widget::floating_surface::paint(scene, transform, bar, theme);
+        tilo_ui::widget::floating_surface::paint(scene, transform, bar, theme);
         let panel_theme = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let theme = &panel_theme;
         let on_panel = theme.on_surface(theme.tokens.colors.surfaces.content);
@@ -2072,7 +2136,7 @@ impl VideoPlayer {
         let y0 = y1 - panel_h;
         let panel_rect = Rect::new(x0, y0, x1, y1);
 
-        crate::widget::floating_surface::paint(scene, transform, panel_rect, theme);
+        tilo_ui::widget::floating_surface::paint(scene, transform, panel_rect, theme);
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
@@ -2770,3 +2834,13 @@ mod tests;
 #[path = "video_player_component.rs"]
 mod component;
 pub use component::{DeclaredVideo, PLAYBACK_RATES, VideoPlayerProps};
+
+include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
+
+/// The video player, which a window builds by name beside the toolkit's
+/// (`tilo_ui::component_catalogue::TOOLKIT`).
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
+    entries: generated_entries,
+    parts: GENERATED_PARTS,
+    enums: Vec::new,
+};

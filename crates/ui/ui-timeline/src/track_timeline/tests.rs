@@ -10,7 +10,7 @@
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::*;
-use crate::widget::Ink;
+use tilo_ui::widget::Ink;
 use tilo_ui_base::a11y::Role;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
@@ -277,7 +277,7 @@ tilo_test_env::scenario! {
         timeline.release_at_for_test(mute);
         assert_eq!(
             queue.take(),
-            [crate::component_testing::fired("a1", "toggled_mute", Some(Value::Bool(true)))]
+            [tilo_ui::component_testing::fired("a1", "toggled_mute", Some(Value::Bool(true)))]
         );
     }
 

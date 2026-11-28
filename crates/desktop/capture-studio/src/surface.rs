@@ -9,17 +9,18 @@ use std::path::PathBuf;
 use tilo_sheets::{Phase, SheetState as _};
 use ui::framework::{EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
 
+use ui::capture::{
+    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CaptureStudio, MarkupStroke,
+    MarkupTool, RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotMarkup,
+    ScreenshotMarkupCommand, ScreenshotSendTarget, SourceMode,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::vello::Scene as VelloScene;
 use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::widget::{
-    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CaptureStudio, EventCtx,
-    MarkupStroke, MarkupTool, RecordingCommand, ReplayCommand, ScreenshotCommand, ScreenshotMarkup,
-    ScreenshotMarkupCommand, ScreenshotSendTarget, SourceMode, SurfaceLevel, TaffyTreeExt, Widget,
-};
 use ui::winit::event::WindowEvent;
+use ui::{widget::EventCtx, widget::SurfaceLevel, widget::TaffyTreeExt, widget::Widget};
 
 use crate::i18n;
 use crate::link::{Ask, Scene, Studio, Take};
@@ -464,7 +465,7 @@ impl StudioSurface {
         self.save_markup(export);
     }
 
-    fn save_markup(&mut self, export: ui::widget::MarkupExport) {
+    fn save_markup(&mut self, export: ui::capture::MarkupExport) {
         if self.saving {
             return;
         }
@@ -1231,7 +1232,7 @@ mod tests {
 
         // A window in front is taken at once, without the bar coming up.
         studio.link().publish(Scene {
-            windows: vec![ui::widget::CaptureTarget {
+            windows: vec![ui::capture::CaptureTarget {
                 id: "window-1".to_owned(),
                 title: "Notes".to_owned(),
                 app_id: "tilo-notes".to_owned(),
@@ -1254,7 +1255,7 @@ mod tests {
     #[test]
     fn a_shot_from_the_shell_does_not_bring_the_studio_back() {
         use crate::link::Kept;
-        use ui::widget::{CapturePreview, ScreenshotKept};
+        use ui::capture::{CapturePreview, ScreenshotKept};
 
         let studio = Studio::new();
         let mut surface = StudioSurface::new(Some(studio.clone()));
@@ -1353,7 +1354,7 @@ mod tests {
             anchors: Vec::new(),
             include_pointer: false,
             audio: AudioCaptureMode::SystemAndMicrophone,
-            pip_layout: ui::widget::PipLayout::Auto,
+            pip_layout: ui::capture::PipLayout::Auto,
             targets: Vec::new(),
             recording_command: None,
             replay_command: None,

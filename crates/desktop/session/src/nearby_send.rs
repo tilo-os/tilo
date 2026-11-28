@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, ApiError, InvocationId, ResourceSpec};
+use tilo_app::capture::ScreenshotSendDevice;
 use tilo_app_host::nearby_send::{
     AirDrops, HELPER_TIMEOUT, Host, NearbySendAction, Reading, TransferState,
 };
@@ -33,7 +34,6 @@ use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
 use tilo_session_client::workspace_view::WorkspaceView;
 use tilo_session_core::desktop::state::DesktopHandle;
-use ui::widget::ScreenshotSendDevice;
 
 use crate::platform::fabric::Continuity;
 use crate::record_content::RecordContent;

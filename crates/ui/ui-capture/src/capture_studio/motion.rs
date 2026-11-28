@@ -1,6 +1,6 @@
 //! The capture bar's own motion: its motions and the receipt's fade.
 
-use crate::time::{Duration, Instant};
+use tilo_ui::time::{Duration, Instant};
 
 pub(super) fn studio_progress(spec: tilo_ui_base::motion::MotionSpec, elapsed: Duration) -> f64 {
     spec.progress_after(
@@ -20,7 +20,7 @@ pub(super) fn studio_motion_time(spec: tilo_ui_base::motion::MotionSpec) -> Dura
 }
 
 pub(super) fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
-    let now = crate::time::now();
+    let now = tilo_ui::time::now();
     let fade_from = tilo_ui_base::motion::Transient::exit_starts(
         tilo_ui_base::motion::Transient::READOUT,
         shown + lasts,

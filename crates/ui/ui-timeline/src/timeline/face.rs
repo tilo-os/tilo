@@ -5,7 +5,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::widget::TimelineDensity;
+use crate::TimelineDensity;
 use tilo_ui_base::format;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextStyle;

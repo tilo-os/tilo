@@ -17,10 +17,6 @@ use tilo_ui_app::state::State;
 use tilo_ui_app::testing::*;
 use tilo_ui_app::vello::*;
 use tilo_ui_app::widget::*;
-use tilo_ui_app::widget::{
-    AudioCaptureMode, CaptureMode, CapturePreview, CaptureStudio, ScreenshotCommand,
-    ScreenshotKept, SourceMode,
-};
 use tilo_ui_base::a11y::Action;
 use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::*;
@@ -34,6 +30,10 @@ use tilo_ui_base::text_selection::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::*;
 use tilo_ui_base::widget::*;
+use tilo_ui_capture::{
+    AudioCaptureMode, CaptureMode, CapturePreview, CaptureStudio, ScreenshotCommand,
+    ScreenshotKept, SourceMode,
+};
 use winit::event::*;
 use winit::keyboard::*;
 

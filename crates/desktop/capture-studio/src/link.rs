@@ -12,11 +12,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_sheets::{Presentation, SheetState};
-use ui::vello::kurbo::Rect;
-use ui::widget::{
+use ui::capture::{
     AudioCaptureMode, CaptureDestination, CapturePreview, CaptureTarget, MarkupExport,
     RegionAnchor, ScreenshotKept, ScreenshotSendDevice, SourceMode,
 };
+use ui::vello::kurbo::Rect;
 
 /// How a capture is made: what of the desktop, and which parts of it.
 #[derive(Clone, Debug, PartialEq)]
@@ -421,7 +421,7 @@ struct Shared {
     asks: Vec<Ask>,
     /// What the studio opens on when something outside it opened it: the
     /// shell, for an app that asked for a capture.
-    opens_on: Option<ui::widget::CaptureMode>,
+    opens_on: Option<ui::capture::CaptureMode>,
     /// The picture the markup editor draws on, once: the session reads it
     /// back off the last screenshot's file.
     markup: Option<MarkupImage>,
@@ -487,13 +487,13 @@ impl Link {
     /// Open the bar on `mode` the next time it comes up: what somebody
     /// outside the studio opened it for (an app's screenshot, a recording, a
     /// picture in a picture).
-    pub fn open_on(&self, mode: ui::widget::CaptureMode) {
+    pub fn open_on(&self, mode: ui::capture::CaptureMode) {
         self.shared.borrow_mut().opens_on = Some(mode);
     }
 
     /// What the bar opens on, once: nothing after it took it.
     #[must_use]
-    pub fn take_open_on(&self) -> Option<ui::widget::CaptureMode> {
+    pub fn take_open_on(&self) -> Option<ui::capture::CaptureMode> {
         self.shared.borrow_mut().opens_on.take()
     }
 
@@ -607,7 +607,7 @@ mod tests {
 
         phase what_an_app_opened_the_bar_for_is_taken_once;
         {
-            use ui::widget::CaptureMode;
+            use ui::capture::CaptureMode;
             let link = Link::new();
             assert_eq!(link.take_open_on(), None, "nothing opened it yet");
             link.open_on(CaptureMode::Pip);

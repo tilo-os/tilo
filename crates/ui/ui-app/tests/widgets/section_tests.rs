@@ -382,10 +382,11 @@ fn a_section_says_whether_the_pointer_is_over_it() {
 /// follows them down, rather than being zero tall in the section and painting over the next.
 #[test]
 fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
-    use tilo_ui_app::widget::{
-        DeclaredRail, DeclaredVideo, PageSidebarProps, VideoPlayerProps, WebView, WebViewProps,
+    use tilo_ui_app::{
+        widget::DeclaredRail, widget::PageSidebarProps, widget::WebView, widget::WebViewProps,
     };
     use tilo_ui_base::component::Described;
+    use tilo_ui_video::{DeclaredVideo, VideoPlayerProps};
     let theme = Theme::light();
     let views: Vec<(&str, Element)> = vec![
         (

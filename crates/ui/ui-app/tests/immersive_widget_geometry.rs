@@ -33,15 +33,14 @@ use vello::kurbo::Affine;
 
 use tilo_ui_app::State;
 use tilo_ui_app::headless::Driver;
-use tilo_ui_app::widget::video_player::PlayerSetting;
-use tilo_ui_app::{
-    widget::CaptureMode, widget::CaptureStudio, widget::ScreenshotMarkup, widget::VideoPlayer,
-};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_capture::{CaptureMode, CaptureStudio, ScreenshotMarkup};
+use tilo_ui_video::PlayerSetting;
+use tilo_ui_video::VideoPlayer;
 
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;

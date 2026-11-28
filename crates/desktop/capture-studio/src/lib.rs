@@ -72,8 +72,9 @@ pub fn definition() -> &'static ui::prelude::ApplicationDefinition {
 #[cfg(test)]
 mod tests {
     use tilo_sheets::SheetState as _;
+    use ui::capture::{CapturePreview, ScreenshotKept, ScreenshotSendDevice};
     use ui::vello::kurbo::Rect;
-    use ui::widget::{CapturePreview, ScreenshotKept, ScreenshotSendDevice, Widget};
+    use ui::widget::Widget;
 
     use crate::link::{Ask, Finished, Kept, Recording, Scene, Sent, Studio};
     use crate::surface::StudioSurface;

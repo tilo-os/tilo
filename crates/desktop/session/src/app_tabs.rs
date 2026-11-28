@@ -1415,7 +1415,7 @@ impl Answers<'_> {
             // The person picks the area in the session's own studio, so the app opens a chooser
             // and is given nothing it did not pick.
             FloatingSurfaceClientMessage::PickPictureInPictureArea => match self.studio {
-                Some(studio) => studio.open_asked(ui::widget::CaptureMode::Pip),
+                Some(studio) => studio.open_asked(tilo_app::capture::CaptureMode::Pip),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
             // A window paints its own action markers, at the control an agent would press, so

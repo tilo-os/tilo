@@ -306,6 +306,10 @@ pub mod autocorrect {
     pub use spellcheck::contraction;
 }
 pub use widget::AppKind;
+/// Whether this build carries the native runner's services (the `native` feature). A widget
+/// above the toolkit that starts a native service, as a declared video starts its media engine,
+/// asks this: the toolkit's features are the toolkit's own.
+pub const NATIVE: bool = cfg!(feature = "native");
 pub use widget::ModelView;
 pub use {
     widget::Card, widget::CardGrid, widget::Section, widget::card_column_width,

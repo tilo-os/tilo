@@ -6,7 +6,7 @@ use tilo_ui_base::theme::Theme;
 
 use tilo_ui_base::synthetic_input::cursor_moved;
 
-use crate::testing::dispatch;
+use tilo_ui::testing::dispatch;
 use tilo_ui_base::synthetic_input::mouse_press;
 use winit::keyboard::{Key, NamedKey};
 
@@ -370,7 +370,7 @@ tilo_test_env::scenario! {
             tilo_ui_base::tokens::EffectiveMotion::default(),
         );
         assert!(fade_from < until, "the fade starts before the controls go");
-        crate::time::testing::with_monotonic_time(fade_from, || {
+        tilo_ui::time::testing::with_monotonic_time(fade_from, || {
             assert!(vp.needs_animation_frame(), "their fade is motion");
             assert_eq!(
                 vp.next_wake_deadline(),
@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
         // Reduced motion snaps them gone instead: no fade to animate, and the picture's beat is
         // all there is to wait for.
         vp.set_motion_reduced(true);
-        crate::time::testing::with_monotonic_time(until, || {
+        tilo_ui::time::testing::with_monotonic_time(until, || {
             assert!(
                 !vp.needs_animation_frame(),
                 "reduced motion has no fade, so no frames for it"
@@ -414,7 +414,7 @@ tilo_test_env::scenario! {
         );
 
         vp.show_controls();
-        vp.controls_visible_until = Some(crate::time::now());
+        vp.controls_visible_until = Some(tilo_ui::time::now());
         draw_once(&mut vp);
         assert!(
             vp.scrub_track_rect.width() > 0.0
@@ -696,8 +696,8 @@ fn draw_once(vp: &mut VideoPlayer) {
 #[test]
 fn a_german_shell_hears_the_transport_in_german() {
     use tilo_ui_base::i18n::I18nManager;
-    const EN: &str = include_str!("../../../../ui-base/locales/en-US.ftl");
-    const DE: &str = include_str!("../../../../ui-base/locales/de-DE.ftl");
+    const EN: &str = include_str!("../../ui-base/locales/en-US.ftl");
+    const DE: &str = include_str!("../../ui-base/locales/de-DE.ftl");
     I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
 
     let mut engine = media::MediaEngine::new_synthesized();

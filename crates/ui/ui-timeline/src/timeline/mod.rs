@@ -28,7 +28,7 @@ use jiff::civil::Date;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use crate::widget::TimelineDensity;
+use crate::TimelineDensity;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
@@ -633,8 +633,7 @@ pub mod test_support {
         reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
     )]
     use super::*;
-    use crate::composition::Composed;
-    use crate::widget::timeline::widget::ItemEvents;
+    use crate::timeline::widget::ItemEvents;
     use std::cell::*;
     use std::collections::*;
     use std::path::*;
@@ -643,6 +642,7 @@ pub mod test_support {
     use std::sync::*;
     use std::time::*;
     use taffy::{AvailableSpace, Size};
+    use tilo_ui::composition::Composed;
     use tilo_ui::kurbo::*;
     use tilo_ui::testing::Dispatch;
     use tilo_ui::vello::*;

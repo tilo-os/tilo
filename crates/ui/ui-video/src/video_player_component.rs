@@ -265,10 +265,11 @@ impl DeclaredVideo {
             // address is the one the host handed over, already a medium this process plays.
             // The sound is captured rather than played on a device: the session's `outputs`
             // name every place it comes out, and the host routes the one stream there.
-            #[cfg(feature = "native")]
-            player.ensure_engine(|| {
-                media::MediaEngine::with_config(media::EngineConfig::default().captured())
-            });
+            if tilo_ui::NATIVE {
+                player.ensure_engine(|| {
+                    media::MediaEngine::with_config(media::EngineConfig::default().captured())
+                });
+            }
             player.open(Source::for_uri(address));
         }
         if let Some(duration) = duration {
@@ -281,8 +282,11 @@ impl DeclaredVideo {
             });
         }
         if let Some(poster) = poster {
-            let store = crate::pictures::Pictures::window().store().clone();
-            player.set_poster(Some(crate::widget::MediaSource::Url { store, url: poster }));
+            let store = tilo_ui::pictures::Pictures::window().store().clone();
+            player.set_poster(Some(tilo_ui::widget::MediaSource::Url {
+                store,
+                url: poster,
+            }));
         }
         if let Some(volume) = volume {
             player.set_volume(tilo_ui_base::num::f32_of_f64(volume));
@@ -670,7 +674,7 @@ impl PictureInPictureProvider for DeclaredVideo {
     }
 
     /// Where the player stands now: a window that resized carries its picture with it.
-    fn floating_picture_in_picture_region(&self) -> Option<crate::kurbo::Rect> {
+    fn floating_picture_in_picture_region(&self) -> Option<tilo_ui::kurbo::Rect> {
         if !self.floating.get() {
             return None;
         }
@@ -682,8 +686,8 @@ impl PictureInPictureProvider for DeclaredVideo {
     /// place the shell stands it.
     fn draw_picture_in_picture(
         &mut self,
-        source: crate::kurbo::Rect,
-        target: crate::kurbo::Rect,
+        source: tilo_ui::kurbo::Rect,
+        target: tilo_ui::kurbo::Rect,
         ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
     ) -> bool {
         if source.width() < 1.0
@@ -699,7 +703,7 @@ impl PictureInPictureProvider for DeclaredVideo {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, env) = ctx.parts();
-        let onto = crate::kurbo::Affine::translate(target.origin().to_vec2())
+        let onto = tilo_ui::kurbo::Affine::translate(target.origin().to_vec2())
             .pre_scale_non_uniform(
                 target.width() / source.width(),
                 target.height() / source.height(),
@@ -752,11 +756,11 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
     }
 
     /// The next picture of what plays, and the fade of its controls.
-    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<tilo_ui::time::Instant> {
         self.player.next_wake_deadline()
     }
 
-    fn serve_deadline(&mut self, now: crate::time::Instant) -> bool {
+    fn serve_deadline(&mut self, now: tilo_ui::time::Instant) -> bool {
         self.player.serve_deadline(now)
     }
 
@@ -823,7 +827,7 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
         &mut self,
         taffy: &taffy::TaffyTree<()>,
         node: taffy::NodeId,
-        origin: crate::kurbo::Point,
+        origin: tilo_ui::kurbo::Point,
     ) {
         self.player.apply_layout(taffy, node, origin);
     }
@@ -846,7 +850,7 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
         self.player.handle_event(event, ctx);
     }
 
-    fn get_rect(&self) -> crate::kurbo::Rect {
+    fn get_rect(&self) -> tilo_ui::kurbo::Rect {
         self.player.get_rect()
     }
 
@@ -942,10 +946,11 @@ impl Described for DeclaredVideo {
             // address after a failure plays what it now names.
             let at = self.source.is_some().then(|| self.player.position_ms());
             if let Some(address) = source.as_deref() {
-                #[cfg(feature = "native")]
-                self.player.ensure_engine(|| {
-                    media::MediaEngine::with_config(media::EngineConfig::default().captured())
-                });
+                if tilo_ui::NATIVE {
+                    self.player.ensure_engine(|| {
+                        media::MediaEngine::with_config(media::EngineConfig::default().captured())
+                    });
+                }
                 self.player.open(Source::for_uri(address));
                 if self.playing {
                     self.player.play();
@@ -996,7 +1001,7 @@ fn _playing(_: PlaybackState) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::video_player::PlayerSettingControl;
+    use crate::PlayerSettingControl;
 
     /// Every view's player offers picture-in-picture as one of its own controls, so an app never
     /// builds the control itself.
@@ -1042,7 +1047,7 @@ mod tests {
     fn a_views_player_hears_the_persons_reduced_motion() {
         use tilo_ui_base::widget::Widget as _;
         let mut video = DeclaredVideo::new(VideoPlayerProps::default());
-        video.player.rect = crate::kurbo::Rect::new(0.0, 0.0, 640.0, 360.0);
+        video.player.rect = tilo_ui::kurbo::Rect::new(0.0, 0.0, 640.0, 360.0);
         video.player.show_controls();
         // A frame drew them, so what stands is what its opacity fades.
         video.player.reveal_unpainted = false;
@@ -1057,9 +1062,9 @@ mod tests {
         );
         assert!(fading < until, "the controls fade before they go");
         let into_the_fade = until
-            .checked_sub(crate::time::Duration::from_millis(5))
+            .checked_sub(tilo_ui::time::Duration::from_millis(5))
             .expect("the last moments of the fade");
-        crate::time::testing::with_monotonic_time(into_the_fade, || {
+        tilo_ui::time::testing::with_monotonic_time(into_the_fade, || {
             assert!(
                 video.player.controls_opacity() < 0.9,
                 "mid-fade, the controls are mostly gone"

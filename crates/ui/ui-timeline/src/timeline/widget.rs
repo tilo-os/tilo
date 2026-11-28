@@ -17,7 +17,7 @@ use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::{component::Event, component::Value};
 use tilo_ui_base::{motion::Direction, motion::MotionValue};
 
-use crate::widget::Scrollable;
+use tilo_ui::widget::Scrollable;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::MotionSource;
@@ -1142,14 +1142,14 @@ impl Widget for Timeline {
 
     /// Wake at the next whole minute while the now line is shown, so it is repainted when it
     /// crosses a pixel row and never every frame.
-    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<tilo_ui::time::Instant> {
         self.now_here()?;
         let second = i64::from(tilo_ui_base::clock::local_now().second());
         let wait = u64::try_from((60 - second).clamp(1, 60)).unwrap_or(60);
-        Some(crate::time::now() + crate::time::Duration::from_secs(wait))
+        Some(tilo_ui::time::now() + tilo_ui::time::Duration::from_secs(wait))
     }
 
-    fn serve_deadline(&mut self, _now: crate::time::Instant) -> bool {
+    fn serve_deadline(&mut self, _now: tilo_ui::time::Instant) -> bool {
         let Some(now) = self.now_here() else {
             return false;
         };

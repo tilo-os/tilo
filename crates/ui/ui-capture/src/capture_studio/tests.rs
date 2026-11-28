@@ -575,7 +575,7 @@ tilo_test_env::scenario! {
     // of one that could not be finished stays, whole, until the person puts it
     // away.
     {
-        let long_ago = crate::time::now() - crate::time::Duration::from_secs(30);
+        let long_ago = tilo_ui::time::now() - tilo_ui::time::Duration::from_secs(30);
         let mut s = studio();
         s.set_recording_active(true);
         s.set_recording_finished(0);
