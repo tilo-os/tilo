@@ -349,10 +349,12 @@ impl<R: Resource, A> Replica<R, A> {
         let Invoke { id, arguments, .. } = invoke;
         // The action's declaration is what the write is dispatched against, and a type declares
         // its actions: the tree is built from them alone, so a write costs what it changed, not
-        // a read of the whole record (which is what publishing its state would take). A field
-        // edit is the one whose contract reads the record: whether it weakens security depends
-        // on the value now, so its tree is published from this record's state.
-        let tree = if id == resource::FIELD_EDIT {
+        // a read of the whole record (which is what publishing its state would take). The one
+        // exception is an action whose declaration reads the record, because then the record
+        // decides it: an availability answered from state, and a field edit, whose contract
+        // weakens by the value it changes now. Those publish the tree from this record's state,
+        // so an action a view shows as unavailable is refused when it is named directly.
+        let tree = if resource::decision_reads_state::<R>(id) {
             resource::publish::<R>(
                 R::KIND,
                 R::LABEL,

@@ -497,6 +497,16 @@ pub trait Resource: Sized + 'static {
         tilo_actions::Availability::Available
     }
 
+    /// Whether [`availability`](Self::availability) is answered from the
+    /// record's state, as `#[resource(available = path)]` declares it. A write
+    /// of one of the type's actions then reads the record before it decides
+    /// the action can be taken, so an action a view shows as unavailable is
+    /// refused when a caller names it: the answer is the record's, not its
+    /// declaration's. A type that declares none answers the same for every
+    /// record, and its writes dispatch against its declarations alone, at a
+    /// cost that is the change's rather than the record's.
+    const AVAILABILITY_READS_STATE: bool = false;
+
     /// The first content of a new record, written by its creator once it is
     /// created: nobody's undo step. `#[resource(seed = path)]` provides it.
     fn seed() -> Option<Self::Action> {
@@ -2442,11 +2452,21 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
 }
 
 /// The resource tree built from `R`'s declarations alone, reading no state of the record: what
-/// a write is dispatched against. An action is declared by its type, never by what the record
+/// a write is dispatched against when its action's declaration reads none
+/// ([`decision_reads_state`]). An action is declared by its type, never by what the record
 /// holds, so a write costs the change it makes, not a read of the whole record.
 #[must_use]
 pub(crate) fn publish_actions<R: Resource>(id: &str, label: &str) -> tilo_actions::ResourceSpec {
     publish_parts::<R>(id, label, None)
+}
+
+/// Whether deciding `id`, one of `R`'s actions, reads the record's state: a type whose
+/// availability is answered from state ([`Resource::AVAILABILITY_READS_STATE`]) reads the record
+/// for every action, and a field edit reads it because whether it weakens trust depends on the
+/// value it changes now. Every other action is decided by its declaration alone, so its write
+/// costs the change it makes.
+pub(crate) fn decision_reads_state<R: Resource>(id: &str) -> bool {
+    R::AVAILABILITY_READS_STATE || (R::EDITS && id == FIELD_EDIT)
 }
 
 /// A record's state from the reading a document host publishes for it

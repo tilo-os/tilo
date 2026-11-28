@@ -585,6 +585,46 @@ tilo_test_env::scenario! {
         assert_eq!(content["cards"], 2);
     }
 
+    phase an_action_the_view_shows_unavailable_is_refused_when_called_directly;
+    {
+        let mut shelf = Replica::<Shelf>::new().in_app("so.tilo.model", "Model");
+        // What a view shows: on an empty shelf, mailing offers nothing to mail.
+        let shown = published(&shelf)
+            .actions
+            .into_iter()
+            .find(|spec| spec.id == "mail-to")
+            .expect("the shelf declares mailing")
+            .contract
+            .availability
+            .clone();
+        let Availability::Unavailable { code, reason } = shown else {
+            panic!("an empty shelf offers mailing: {shown:?}");
+        };
+        // A caller naming it directly is refused with the view's reason, not admitted for want
+        // of a state to check.
+        match shelf.apply(Shelf::MAIL_TO.with("ada")) {
+            Err(tilo_actions::ApiError::Unavailable {
+                code: refused,
+                reason: told,
+            }) => {
+                assert_eq!(refused, code);
+                assert_eq!(told, reason);
+            }
+            other => panic!("an empty shelf mailed: {other:?}"),
+        }
+        // The state that makes it available admits the call.
+        shelf.apply_action(&Shelf::seed().unwrap()).unwrap();
+        assert!(published(&shelf)
+            .actions
+            .iter()
+            .find(|spec| spec.id == "mail-to")
+            .unwrap()
+            .contract
+            .availability
+            .is_available());
+        shelf.apply(Shelf::MAIL_TO.with("ada")).unwrap();
+    }
+
     phase a_record_that_answers_no_read_declares_it;
     {
         const { assert!(!Scratch::READABLE) };

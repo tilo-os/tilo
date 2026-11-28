@@ -1995,6 +1995,16 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    // A declaration that answers availability answers it from the record, so every action of the
+    // type is decided against its state: the dispatcher reads the record before it takes one.
+    let availability_reads_state = options.available.as_ref().map_or_else(
+        || quote!(),
+        |_| {
+            quote! {
+                const AVAILABILITY_READS_STATE: bool = true;
+            }
+        },
+    );
     let version = options.version.as_ref().map(|version| {
         quote! {
             const VERSION: u32 = #version;
@@ -2622,6 +2632,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #load
             #locate
             #availability
+            #availability_reads_state
             #read_content
             #facts
             #document_child

@@ -2122,7 +2122,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// Resource options: `label`, `params = module` (the parameter module's
 /// name), `initialize = path` (`fn() -> Self`, the deterministic genesis),
 /// `seed = path` (`fn(&mut Self, &mut ActionCx)`, the creator's first
-/// content), `available = path` (`fn(&Self, module::Verb) -> Availability`),
+/// content), `available = path` (`fn(&Self, module::Verb) -> Availability`;
+/// its actions are decided against the record, so a write of one reads it),
 /// `children = path` (`fn(&Self) -> Vec<Derived<Self>>`), `child = path`
 /// (`fn(&Self, &str) -> Option<ResourceSpec>`, a child the published page of
 /// `children` leaves out), `search = path`,
