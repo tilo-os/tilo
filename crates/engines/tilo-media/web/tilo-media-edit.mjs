@@ -9,7 +9,9 @@
 // caller asks, keeps drawing, and reads the element once `shownFrame()` says
 // it holds that frame. A seek lands on the middle of the frame's interval,
 // never its edge, so rounding in the element's clock cannot pick the frame
-// before it.
+// before it. The element can call a seek done while the frame it draws is
+// still the one from before, so `shownFrame()` checks the frame the element
+// has decoded, and `picture` draws that same frame.
 //
 // `TiloClipEncoder` takes RGBA frames (and mixed sound), encodes them with
 // `VideoEncoder` (and Opus through `AudioEncoder`) and writes them into a
@@ -44,11 +46,16 @@ export class TiloFrameSeeker {
     this.el = el;
     this.fps = 30;
     this.target = -1;
+    this.asked = null;
+    this.held = -1;
     this.following = false;
     this.rate = 1;
     this.error = null;
     // A still picture's decoded bitmap, when the source is one.
     this.still = null;
+    // The frame the element holds at the position asked for, kept so the
+    // picture drawn is the one that was checked.
+    this.frame = null;
     el.addEventListener('error', () => {
       const code = el.error?.code;
       this.error = code === 4 ? 'the browser cannot play this format'
@@ -60,7 +67,10 @@ export class TiloFrameSeeker {
   open(url) {
     this.error = null;
     this.target = -1;
+    this.asked = null;
+    this.held = -1;
     this.following = false;
+    this.releaseFrame();
     this.el.src = url;
     this.el.load();
   }
@@ -68,6 +78,7 @@ export class TiloFrameSeeker {
   /// Show a still picture instead: it has one frame, 0, held once decoded.
   openImage(url) {
     this.error = null;
+    this.releaseFrame();
     this.still = {bitmap: null};
     const still = this.still;
     fetch(url).then(response => response.blob()).then(blob => createImageBitmap(blob)).then(bitmap => {
@@ -93,6 +104,9 @@ export class TiloFrameSeeker {
     let at = frameCentre(frame, this.fps);
     const duration = this.el.duration;
     if (Number.isFinite(duration) && duration > 0) at = Math.min(at, Math.max(0, duration - 0.5 / this.fps));
+    this.asked = at;
+    this.held = -1;
+    this.releaseFrame();
     this.el.currentTime = at;
   }
 
@@ -115,6 +129,8 @@ export class TiloFrameSeeker {
     }
     if (!this.following || el.paused) {
       this.following = true;
+      this.held = -1;
+      this.releaseFrame();
       el.play()?.catch?.(() => {});
     }
   }
@@ -126,7 +142,52 @@ export class TiloFrameSeeker {
     const el = this.el;
     if (this.error || el.readyState < 2 || el.seeking || !el.videoWidth) return -1;
     if (this.following) return frameAt(el.currentTime, this.fps);
+    if (this.held !== this.target && !this.confirmHeld()) return -1;
     return this.target;
+  }
+
+  /// Whether the frame the element has decoded is the one holding the
+  /// position asked for. The element can report a seek done while the frame
+  /// it draws is still the one from before, so the decoded frame itself says
+  /// so; it is kept as the picture to draw.
+  confirmHeld() {
+    const Frame = globalThis.VideoFrame;
+    const at = this.asked;
+    if (typeof Frame !== 'function' || at === null) return this.holdUntested();
+    let frame;
+    try {
+      frame = new Frame(this.el);
+    } catch {
+      // A source the frame cannot be read back from: the element's seek
+      // state is all there is, as before.
+      return this.holdUntested();
+    }
+    const start = frame.timestamp / 1e6;
+    const length = frame.duration;
+    if (typeof length !== 'number' || !(length > 0)) {
+      frame.close?.();
+      return this.holdUntested();
+    }
+    if (start <= at + 1e-6 && at < start + length / 1e6) {
+      this.releaseFrame();
+      this.frame = frame;
+      this.held = this.target;
+      return true;
+    }
+    frame.close?.();
+    return false;
+  }
+
+  /// No decoded frame to check against: the position asked for is held once
+  /// the element stops seeking and is ready, as it always was.
+  holdUntested() {
+    this.held = this.target;
+    return true;
+  }
+
+  releaseFrame() {
+    this.frame?.close?.();
+    this.frame = null;
   }
 
   width() { return this.still ? this.still.bitmap?.width ?? 0 : this.el.videoWidth; }
@@ -138,7 +199,7 @@ export class TiloFrameSeeker {
   /// `pictureHeight` give its size. Empty while there is none.
   picture(maxWidth, maxHeight) {
     if (this.shownFrame() < 0) return new Uint8Array();
-    const el = this.still?.bitmap ?? this.el;
+    const el = this.frame ?? this.still?.bitmap ?? this.el;
     const [w, h] = [this.width(), this.height()];
     const scale = Math.min(1, maxWidth / w, maxHeight / h);
     const width = Math.max(1, Math.round(w * scale));
@@ -159,6 +220,7 @@ export class TiloFrameSeeker {
   hasError() { return this.error !== null; }
 
   close() {
+    this.releaseFrame();
     this.still?.bitmap?.close?.();
     this.still = null;
     this.el.pause();
