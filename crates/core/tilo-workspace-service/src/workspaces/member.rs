@@ -1449,15 +1449,23 @@ impl Workspaces {
             NeighbourMsg::decode(&body).map_err(|error| error.to_string())?;
         // This device's own write is this copy's from the moment it is made, as the engine's was:
         // the device serving the workspace carries it to the workspace's other members, and what
-        // it sends back may reach this copy later.
+        // it sends back may reach this copy later. The copy is written through before the write
+        // goes out: a device that stops once it is sent starts again holding it, so its next
+        // change follows it in this device's history. One that came back without it numbered
+        // its next change as this one, and the serving device refused that and every later
+        // change of this device.
         {
             let state = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let mut hosted =
-                super::writes::said_if_long("the member copy's lock", state.lock()).await;
-            self.follow_member_document(&mut hosted, device.device(), &message);
+            let kept = {
+                let mut hosted =
+                    super::writes::said_if_long("the member copy's lock", state.lock()).await;
+                hosted.take_served(device.device(), &message);
+                hosted.keep_later()
+            };
+            Self::write_kept(&state, kept).await?;
         }
         if let NeighbourMsg::AppDocument {
             app_id,

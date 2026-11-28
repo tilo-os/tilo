@@ -1147,6 +1147,68 @@ async fn a_change_saved_before_a_restart_reaches_the_serving_device() {
     serving.shutdown().await;
 }
 
+/// The device's own change, sent to the device serving the workspace, is still this copy's after
+/// the device stops at once and starts again: its next change follows it in the device's history
+/// rather than taking its place, so the serving device takes that one too. A copy that came back
+/// without it wrote its next change under the same number, and the serving device refused every
+/// change of this device from then on.
+#[tokio::test]
+async fn a_change_sent_just_before_a_restart_is_followed_by_the_next() {
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let (serving, device, created, invitation) =
+        shared(serving_state.path(), "Restarted", 51).await;
+    let workspace = created.workspace.clone();
+    let held = device.clone();
+    let member = member_service(member_state.path(), device).await;
+    let copies = member.workspaces().clone();
+    let workspace_id = copies
+        .join_member(&invitation)
+        .await
+        .expect("the invitation is redeemed");
+    catching_up(&copies, workspace_id).await;
+    let save = |id: &str| {
+        let mut shortcut = crate::workspaces::fixtures::on_issue_change();
+        shortcut.id = id.into();
+        tilo_automation::ShortcutChange::Save(Box::new(shortcut))
+    };
+    let reaches = |id: &'static str| {
+        let serving = &serving;
+        let workspace = &workspace;
+        async move {
+            tilo_test_env::within("the serving device takes the device's change", async {
+                while !serving_shortcuts(serving, workspace)
+                    .await
+                    .iter()
+                    .any(|held| held == id)
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
+    };
+    copies
+        .change_own_shortcuts(&workspace, save("tidy"))
+        .await
+        .expect("the person saves a shortcut");
+    reaches("tidy").await;
+    // The device stops the moment the serving device holds the change.
+    drop(copies);
+    member.shutdown().await;
+
+    let member = member_service(member_state.path(), held).await;
+    let copies = member.workspaces().clone();
+    copies
+        .change_own_shortcuts(&workspace, save("sweep"))
+        .await
+        .expect("the person saves another shortcut");
+    reaches("sweep").await;
+    drop(copies);
+    member.shutdown().await;
+    serving.shutdown().await;
+}
+
 /// A write made while this device is still taking a workspace in (it joins, or opens the
 /// workspace as it starts) waits rather than being refused: the person hears nothing, and the same
 /// write, made again once the device holds the workspace, is kept and reaches its serving device.

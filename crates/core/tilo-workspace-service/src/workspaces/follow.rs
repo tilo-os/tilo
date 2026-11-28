@@ -545,30 +545,32 @@ impl Workspaces {
                 }
                 workspace.keep_later()
             };
-            Self::write_kept(&workspace, kept).await;
+            // A refusal is warned of, and the copy kept again by the next write it takes.
+            let _ = Self::write_kept(&workspace, kept).await;
         });
     }
 
     /// Write `kept`, what [`HostedWorkspace::keep_later`] named of `workspace` under its lock,
     /// through to its file with the workspace let go: a large document can take the disk
     /// seconds, and every read and write of the workspace would wait for them. A write the disk
-    /// refused leaves the copy to be kept again.
+    /// refused leaves the copy to be kept again, and is answered.
     pub(super) async fn write_kept(
         workspace: &Arc<tokio::sync::Mutex<HostedWorkspace>>,
         kept: Option<(peer_parts::PartFiles, peer_parts::FileWrite)>,
-    ) {
+    ) -> Result<(), String> {
         let Some((files, write)) = kept else {
-            return;
+            return Ok(());
         };
         let written = tokio::task::spawn_blocking(move || files.write(&write))
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
-        if let Err(error) = written {
+        if let Err(error) = &written {
             let mut workspace = workspace.lock().await;
             workspace.unsure();
             workspace.unkept = true;
             tracing::warn!(workspace = %workspace.workspace(), %error, "the host's copy of members' writes was not kept");
         }
+        written.map(drop)
     }
 }
 

@@ -2764,7 +2764,8 @@ impl Workspaces {
             let workspace = hosted.workspace().to_owned();
             let shared = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&hosted));
             drop(hosted);
-            Self::write_kept(&shared, kept).await;
+            // A refusal is warned of, and the copy kept again by the next write it takes.
+            let _ = Self::write_kept(&shared, kept).await;
             // Every document the action wrote is kept now, so whoever it wakes reads the whole
             // action: a message's files are read with the message they were sent with.
             let documents: Vec<String> = writes
