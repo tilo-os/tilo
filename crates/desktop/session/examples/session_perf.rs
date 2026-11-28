@@ -757,9 +757,8 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
         session.step(Duration::ZERO).expect("an offered turn");
     }
     let wall_us = start.elapsed().as_micros() as f64;
-    let painted: Vec<_> = (session.compositor().recorded_frames().iter())
-        .filter(|sample| sample.painted)
-        .collect();
+    let samples = session.compositor().recorded_frames().to_vec();
+    let painted: Vec<_> = samples.iter().filter(|sample| sample.painted).collect();
     // An idle frame that painted says why, so a shell that never rests names what woke it.
     let mut why = std::collections::BTreeMap::<String, usize>::new();
     for sample in &painted {
@@ -775,10 +774,9 @@ fn idle(session: &mut Session) -> (usize, usize, f64) {
     }
     // Where the passes an idle shell ran spent their time: the slowest named step of each, summed
     // over the offered turns, so the fixed cost of a turn names itself.
-    let samples = session.compositor().recorded_frames();
     let mut steps: std::collections::BTreeMap<&'static str, (usize, u64, u32)> =
         std::collections::BTreeMap::new();
-    for sample in samples {
+    for sample in &samples {
         let step = steps.entry(sample.pump_step).or_default();
         step.0 = step.0.saturating_add(1);
         step.1 = step.1.saturating_add(u64::from(sample.pump_step_us));
