@@ -300,9 +300,7 @@
         },
         {
           "must": [
-            "Basics",
-            "Controls",
-            "Release board",
+            "Type and scripts",
             "Type scale"
           ]
         }
