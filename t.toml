@@ -1005,6 +1005,14 @@ outputs = ["/target/shell-magnify-shots/**"]
 timeout_secs = 3600
 default = false
 
+# What a write to a hosted workspace costs its caller, built optimised as a host runs it: a
+# write's 99th percentile stays within 10 ms at 300, 3,000 and 10,000 records. A debug build
+# measures the compiler's leftovers, not the host's, so the test is ignored in the suites.
+[[check]]
+name = "workspace-write-cost"
+run = "cargo test --locked --profile fast -p tilo-workspace-service --features agents,test-support --lib -- --ignored --exact workspaces::durability_tests::a_write_is_answered_in_10_ms_at_ten_thousand_records\n"
+timeout_secs = 1800
+
 # Pictures of a window filling the room the shell's bar and dock leave, on the foot and up the
 # leading edge, in both themes: the captures of the session tests that hold the front window's
 # rect to the bar's band and the dock's resting band. They start the shell's own session, so the
