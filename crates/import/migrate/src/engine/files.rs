@@ -229,7 +229,7 @@ fn key_of(home: &Path, path: &Path) -> String {
 }
 
 /// The review's item for the folder `key`, counted.
-fn item(home: &Path, key: &str, title: &str, chosen: bool) -> Item {
+pub(crate) fn item(home: &Path, key: &str, title: &str, chosen: bool) -> Item {
     let local = Local {
         home: home.to_path_buf(),
     };

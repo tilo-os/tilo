@@ -8,6 +8,7 @@
 //! - [`browsers`]: where a home keeps its browsers and the passwords they saved.
 //! - [`known_folders`]: the familiar folders of a home (Documents, Pictures, …) as the system
 //!   names them.
+//! - [`old_system`]: Windows, macOS or Linux left on a disk, and the homes it kept.
 //!
 //! [`pinned`] holds the pinned, never-followed directory access the readers read through;
 //! [`destination_security`] is the matching check for destinations the installer writes. Nothing
@@ -18,6 +19,7 @@ pub mod browsers;
 pub mod destination_security;
 pub mod engine;
 pub mod known_folders;
+pub mod old_system;
 pub mod pinned;
 pub mod provider;
 pub mod service;

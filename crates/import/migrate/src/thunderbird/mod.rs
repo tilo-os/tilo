@@ -327,30 +327,22 @@ pub struct ReviewedFile {
     pub local: bool,
 }
 
-/// Where Thunderbird keeps its profiles in a home, with the label people see.
+/// Where Thunderbird keeps its profiles in a home, with the label people see. Every system's
+/// place is looked in on every system: a home is read where it runs, and also from the disk of an
+/// old Windows or macOS system ([`crate::old_system`]).
 fn roots(home: &Path) -> Vec<(&'static str, PathBuf)> {
-    // Windows keeps profiles under the roaming application data of the person's home. It is
-    // looked for on every system: a Windows home is read natively, and also from its disk by the
-    // installer running on another system.
-    let windows = (
-        "Thunderbird (Windows)",
-        home.join("AppData/Roaming/Thunderbird"),
-    );
-    #[cfg(target_os = "macos")]
-    {
-        vec![("Thunderbird", home.join("Library/Thunderbird")), windows]
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        vec![
-            ("Thunderbird", home.join(".thunderbird")),
-            (
-                "Thunderbird (Flatpak)",
-                home.join(".var/app/org.mozilla.Thunderbird/.thunderbird"),
-            ),
-            windows,
-        ]
-    }
+    vec![
+        ("Thunderbird", home.join(".thunderbird")),
+        (
+            "Thunderbird (Flatpak)",
+            home.join(".var/app/org.mozilla.Thunderbird/.thunderbird"),
+        ),
+        ("Thunderbird (macOS)", home.join("Library/Thunderbird")),
+        (
+            "Thunderbird (Windows)",
+            home.join("AppData/Roaming/Thunderbird"),
+        ),
+    ]
 }
 
 /// What one home's Thunderbird profiles are, and everything that could not be

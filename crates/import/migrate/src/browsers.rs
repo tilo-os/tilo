@@ -1,8 +1,9 @@
 //! Where a home keeps its browsers, and the passwords each browser saved.
 //!
-//! [`LOCATIONS`] is the one list of browser installations the installer's account scan and
-//! `tilo migrate review browsers` both read: under the config directory, under the home, and
-//! inside a Flatpak's own directory. [`profiles`] finds the profiles of an installation (a
+//! [`LOCATIONS`] is the one list of browser installations `tilo migrate review browsers` and an
+//! old system's disk ([`crate::old_system`]) read: under the config directory, under the home,
+//! inside a Flatpak's own directory, and where Windows and macOS keep them in a home. Every place
+//! is looked in on every system, so a Windows or macOS home is read from its disk just as well. [`profiles`] finds the profiles of an installation (a
 //! Chromium-family `Default`/`Profile N`, the sections of Firefox's `profiles.ini`);
 //! bookmarks and history are read by `browser-continuity`, passwords here ([`saved_logins`]).
 //!
@@ -30,6 +31,12 @@ pub enum Root {
     Home,
     /// `~/.var/app/<id>/<path>`.
     Flatpak(&'static str),
+    /// A Windows home's `AppData/Local`.
+    WindowsLocal,
+    /// A Windows home's `AppData/Roaming`.
+    WindowsRoaming,
+    /// A macOS home's `Library/Application Support`.
+    MacSupport,
 }
 
 /// One browser installation a home may have.
@@ -105,6 +112,69 @@ pub const LOCATIONS: &[Location] = &[
         Engine::Firefox,
         "LibreWolf",
     ),
+    at(
+        Root::WindowsLocal,
+        "Google/Chrome/User Data",
+        Engine::Chromium,
+        "Google Chrome",
+    ),
+    at(
+        Root::WindowsLocal,
+        "Microsoft/Edge/User Data",
+        Engine::Chromium,
+        "Microsoft Edge",
+    ),
+    at(
+        Root::WindowsLocal,
+        "BraveSoftware/Brave-Browser/User Data",
+        Engine::Chromium,
+        "Brave",
+    ),
+    at(
+        Root::WindowsLocal,
+        "Chromium/User Data",
+        Engine::Chromium,
+        "Chromium",
+    ),
+    at(
+        Root::WindowsLocal,
+        "Vivaldi/User Data",
+        Engine::Chromium,
+        "Vivaldi",
+    ),
+    at(
+        Root::WindowsRoaming,
+        "Mozilla/Firefox",
+        Engine::Firefox,
+        "Firefox",
+    ),
+    at(
+        Root::WindowsRoaming,
+        "librewolf",
+        Engine::Firefox,
+        "LibreWolf",
+    ),
+    at(
+        Root::MacSupport,
+        "Google/Chrome",
+        Engine::Chromium,
+        "Google Chrome",
+    ),
+    at(
+        Root::MacSupport,
+        "Microsoft Edge",
+        Engine::Chromium,
+        "Microsoft Edge",
+    ),
+    at(
+        Root::MacSupport,
+        "BraveSoftware/Brave-Browser",
+        Engine::Chromium,
+        "Brave",
+    ),
+    at(Root::MacSupport, "Chromium", Engine::Chromium, "Chromium"),
+    at(Root::MacSupport, "Vivaldi", Engine::Chromium, "Vivaldi"),
+    at(Root::MacSupport, "Firefox", Engine::Firefox, "Firefox"),
 ];
 
 impl Location {
@@ -115,6 +185,21 @@ impl Location {
             Root::Config => config.join(self.path),
             Root::Home => home.join(self.path),
             Root::Flatpak(app) => home.join(".var/app").join(app).join(self.path),
+            Root::WindowsLocal => home.join("AppData/Local").join(self.path),
+            Root::WindowsRoaming => home.join("AppData/Roaming").join(self.path),
+            Root::MacSupport => home.join("Library/Application Support").join(self.path),
+        }
+    }
+
+    /// The system that seals a Chromium-family browser's saved passwords here to its own sign-in,
+    /// when it is not Linux: Windows (DPAPI) and macOS (its keychain) open them only for the
+    /// account signed in to them, so a home read from its disk cannot.
+    #[must_use]
+    pub const fn sealed_by(&self) -> Option<&'static str> {
+        match (self.engine, self.root) {
+            (Engine::Chromium, Root::WindowsLocal) => Some("Windows"),
+            (Engine::Chromium, Root::MacSupport) => Some("macOS"),
+            _ => None,
         }
     }
 }
@@ -128,6 +213,8 @@ pub struct BrowserProfile {
     /// The browser's name.
     pub browser: &'static str,
     pub directory: PathBuf,
+    /// The system that seals its saved passwords to its own sign-in ([`Location::sealed_by`]).
+    pub sealed_by: Option<&'static str>,
 }
 
 /// Every profile of every browser installed in `home`, whose config directory is `config`.
@@ -169,6 +256,7 @@ fn chromium_profiles(location: &Location, directory: &Path, found: &mut Vec<Brow
                 engine: Engine::Chromium,
                 browser: location.label,
                 directory: profile,
+                sealed_by: location.sealed_by(),
             });
         }
     }
@@ -191,6 +279,7 @@ fn firefox_profiles(location: &Location, directory: &Path, found: &mut Vec<Brows
                 engine: Engine::Firefox,
                 browser: location.label,
                 directory: profile,
+                sealed_by: None,
             });
         }
     }

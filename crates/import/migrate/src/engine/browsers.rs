@@ -28,7 +28,7 @@ impl Source for Browsers {
     }
 
     fn review(&self, cx: &Cx<'_>, row: &'static Row, _: Option<&str>) -> Result<Review> {
-        let mut review = review(cx.home);
+        let mut review = review(cx.home, &config_dir(cx.home));
         super::keep_chosen(&mut review, cx.place.review(row.key)?.as_ref());
         Ok(review)
     }
@@ -45,7 +45,7 @@ impl Source for Browsers {
         _: Option<&super::files::Sink>,
         lander: &mut Lander<'_>,
     ) -> Result<()> {
-        land(cx.home, review, lander)
+        land(cx.home, &config_dir(cx.home), review, lander)
     }
 }
 
@@ -62,6 +62,7 @@ struct Read {
     logins: Result<Vec<crate::thunderbird::SavedLogin>, String>,
 }
 
+/// The config directory of this computer's home `home`.
 fn config_dir(home: &Path) -> std::path::PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -101,7 +102,14 @@ fn read(profile: &BrowserProfile) -> Read {
     Read {
         bookmarks: bookmarks.map(|bundle| bundle.bookmark_bundle()),
         history: history.map(|bundle| bundle.history_bundle()),
-        logins: browsers::saved_logins(profile).map_err(|error| error.to_string()),
+        logins: match profile.sealed_by {
+            Some(system) => Err(format!(
+                "{system} keeps {}'s saved passwords locked to its own sign-in, so they are read \
+                 only there: export them from {} while {system} runs, or sign in to its sync",
+                profile.browser, profile.browser
+            )),
+            None => browsers::saved_logins(profile).map_err(|error| error.to_string()),
+        },
     }
 }
 
@@ -117,11 +125,12 @@ fn history_count(bundle: &ImportBundle) -> usize {
     bundle.chunks.iter().map(|chunk| chunk.history.len()).sum()
 }
 
-/// `tilo migrate review browsers`: each profile, and its bookmarks, history and passwords.
-pub fn review(home: &Path) -> Review {
+/// `tilo migrate review browsers`: each profile in `home`, whose config directory is `config`, and
+/// its bookmarks, history and passwords.
+pub fn review(home: &Path, config: &Path) -> Review {
     let mut items = Vec::new();
     let mut unreadable = Vec::new();
-    for profile in browsers::profiles(home, &config_dir(home)) {
+    for profile in browsers::profiles(home, config) {
         let key = key_of(&profile);
         let held = read(&profile);
         let mut parts = Vec::new();
@@ -238,14 +247,14 @@ fn pieces(bundle: &ImportBundle) -> Result<Vec<ImportBundle>> {
 ///
 /// # Errors
 /// The migration was stopped, or the workspace refused.
-pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()> {
+pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     let chosen: Vec<String> = review
         .chosen()
         .iter()
         .filter(|item| item.within.is_some())
         .map(|item| item.key.clone())
         .collect();
-    for profile in browsers::profiles(home, &config_dir(home)) {
+    for profile in browsers::profiles(home, config) {
         let key = key_of(&profile);
         let wants = |part: &str| chosen.contains(&format!("{key}/{part}"));
         if !["bookmarks", "history", "passwords"]

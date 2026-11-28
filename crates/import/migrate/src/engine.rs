@@ -34,6 +34,7 @@
 pub mod accounts;
 pub mod browsers;
 pub mod clouds;
+pub mod disk;
 pub mod files;
 pub mod flatpaks;
 pub mod mcp;
@@ -46,6 +47,8 @@ pub mod thunderbird;
 pub mod windows;
 pub mod writer;
 
+#[cfg(test)]
+mod disk_tests;
 #[cfg(test)]
 mod files_tests;
 #[cfg(test)]
@@ -185,6 +188,14 @@ pub trait Source: Sync {
         None
     }
 
+    /// Whether landing what `review` chose acts in the workspace, beyond copying files into the
+    /// folder this computer keeps of it: a source of files does not, so it lands with the
+    /// workspace unreached.
+    fn acts(&self, review: &Review) -> bool {
+        let _ = review;
+        false
+    }
+
     /// Bring the chosen items of `review` over through `lander`; files go to `sink`.
     ///
     /// # Errors
@@ -236,6 +247,7 @@ pub fn source_of(engine: Engine) -> &'static dyn Source {
         Engine::Settings => &settings::Settings,
         Engine::Windows => &windows::Windows,
         Engine::Flatpaks => &flatpaks::Flatpaks,
+        Engine::Disk => &disk::Disk,
     }
 }
 
@@ -467,7 +479,9 @@ pub fn start(
         Err(error) => return failed(place, source, &mut journal, error),
     };
     let connected = match &sink {
-        Some(files::Sink::Folder(_)) => Ok(Box::new(writer::Offline) as Box<dyn Workspace>),
+        Some(files::Sink::Folder(_)) if !engine.acts(&review) => {
+            Ok(Box::new(writer::Offline) as Box<dyn Workspace>)
+        }
         _ => connect(),
     };
     let mut held = match connected {

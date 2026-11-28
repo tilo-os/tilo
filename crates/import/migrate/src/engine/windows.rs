@@ -3,6 +3,9 @@
 //! account's folder, Outlook's archives and local stores, and Steam's game saves. Windows names
 //! them in the registry, which is read for their paths only; the folders are copied by the files
 //! engine ([`super::files`]) as any folder here is.
+//!
+//! A Windows home read from its disk ([`crate::old_system`]) has no registry running: its folders
+//! are found where Windows puts them unless told otherwise ([`on_disk`]).
 
 use std::path::{Path, PathBuf};
 
@@ -54,40 +57,14 @@ impl Source for Windows {
         let local = Local {
             home: cx.home.to_path_buf(),
         };
-        let mut items = Vec::new();
         let mut unreadable = Vec::new();
-        match named() {
-            Ok(folders) => {
-                for folder in folders {
-                    if !folder.path.is_dir() {
-                        continue;
-                    }
-                    let key = folder.path.to_string_lossy().into_owned();
-                    if items.iter().any(|item: &Item| item.key == key) {
-                        continue;
-                    }
-                    let (count, bytes) = local.files(&key).map_or((0, 0), |(found, _)| {
-                        (found.len(), found.iter().map(|entry| entry.size).sum())
-                    });
-                    items.push(Item {
-                        key,
-                        kind: "folder".to_owned(),
-                        title: folder.label,
-                        count,
-                        counts: format!("files, {}", super::size(bytes)),
-                        within: None,
-                        chosen: false,
-                        note: (folder.role == Role::OneDrive).then(|| {
-                            "Files OneDrive keeps only in the cloud are downloaded as they are \
-                             copied; connecting the OneDrive account instead brings them from \
-                             the cloud"
-                                .to_owned()
-                        }),
-                    });
-                }
+        let items = match named() {
+            Ok(folders) => items(folders, &local),
+            Err(why) => {
+                unreadable.push(why);
+                Vec::new()
             }
-            Err(why) => unreadable.push(why),
-        }
+        };
         let mut review = Review {
             source: row.key.to_owned(),
             title: "Folders Windows keeps".to_owned(),
@@ -134,6 +111,86 @@ impl Source for Windows {
             .sum::<usize>()
             .saturating_add(journal.already_there))
     }
+}
+
+/// Each of `folders` that is there, as a review lists it: by its path, counted.
+fn items(folders: Vec<Named>, local: &Local) -> Vec<Item> {
+    let mut items: Vec<Item> = Vec::new();
+    for folder in folders {
+        if !folder.path.is_dir() {
+            continue;
+        }
+        let key = folder.path.to_string_lossy().into_owned();
+        if items.iter().any(|item| item.key == key) {
+            continue;
+        }
+        let (count, bytes) = local.files(&key).map_or((0, 0), |(found, _)| {
+            (found.len(), found.iter().map(|entry| entry.size).sum())
+        });
+        items.push(Item {
+            key,
+            kind: "folder".to_owned(),
+            title: folder.label,
+            count,
+            counts: format!("files, {}", super::size(bytes)),
+            within: None,
+            chosen: false,
+            note: (folder.role == Role::OneDrive).then(|| {
+                "Files OneDrive kept only in the cloud are not on this disk; connecting the \
+                 OneDrive account brings them from the cloud"
+                    .to_owned()
+            }),
+        });
+    }
+    items
+}
+
+/// The folders Windows keeps a person's things in outside their familiar folders, in the Windows
+/// home `home` read from its disk: each `OneDrive` folder of the home, Outlook's archives and
+/// local stores, and Steam's game saves, where Windows puts them.
+#[must_use]
+pub fn on_disk(home: &Path) -> Vec<Item> {
+    let mut named = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(home) {
+        let mut onedrive: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("OneDrive"))
+            .map(|entry| entry.path())
+            .collect();
+        onedrive.sort();
+        for path in onedrive {
+            let label = label_of(Role::OneDrive, "", &path);
+            named.push(Named {
+                path,
+                role: Role::OneDrive,
+                label,
+            });
+        }
+    }
+    named.push(Named {
+        path: home.join("Documents/Outlook Files"),
+        role: Role::Outlook,
+        label: "Outlook archives".to_owned(),
+    });
+    named.push(Named {
+        path: home.join("AppData/Local/Microsoft/Outlook"),
+        role: Role::Outlook,
+        label: "Outlook local stores and drafts".to_owned(),
+    });
+    if let Some(system) = home.parent().and_then(Path::parent) {
+        named.push(Named {
+            path: system.join("Program Files (x86)/Steam/userdata"),
+            role: Role::Steam,
+            label: "Steam game saves".to_owned(),
+        });
+    }
+    items(
+        named,
+        &Local {
+            home: home.to_path_buf(),
+        },
+    )
 }
 
 /// The folders the registry names.
@@ -260,6 +317,38 @@ if ($local) { Add-Root 'outlook' (Join-Path $local 'Microsoft\Outlook') 'Outlook
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_windows_disk_names_onedrive_outlook_and_steam_where_windows_puts_them() {
+        let disk = tempfile::tempdir().unwrap();
+        let home = disk.path().join("Users/ada");
+        for folder in [
+            "OneDrive - Contoso",
+            "OneDrive",
+            "Documents/Outlook Files",
+            "AppData/Local/Microsoft/Outlook",
+        ] {
+            std::fs::create_dir_all(home.join(folder)).unwrap();
+        }
+        std::fs::write(home.join("Documents/Outlook Files/archive.pst"), b"pst").unwrap();
+        let saves = disk.path().join("Program Files (x86)/Steam/userdata/42");
+        std::fs::create_dir_all(&saves).unwrap();
+        std::fs::write(saves.join("save.dat"), b"save").unwrap();
+        let found: Vec<(String, usize)> = on_disk(&home)
+            .into_iter()
+            .map(|item| (item.title, item.count))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("OneDrive (OneDrive)".to_owned(), 0),
+                ("OneDrive (OneDrive - Contoso)".to_owned(), 0),
+                ("Outlook archives".to_owned(), 1),
+                ("Outlook local stores and drafts".to_owned(), 0),
+                ("Steam game saves".to_owned(), 1),
+            ]
+        );
+    }
 
     #[test]
     fn the_registry_names_folders_and_nothing_else() {

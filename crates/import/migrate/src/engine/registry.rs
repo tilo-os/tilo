@@ -26,6 +26,8 @@ pub enum Engine {
     Windows,
     /// The Flatpak apps on this computer, installed again through the Store.
     Flatpaks,
+    /// An old system on a disk: its home's folders, browsers and Thunderbird, read offline.
+    Disk,
 }
 
 /// One source.
@@ -97,6 +99,22 @@ pub const SOURCES: &[Row] = &[
         engine: Engine::Windows,
         connect: None,
         resources: FILES,
+    },
+    Row {
+        key: "disk",
+        aliases: &["old-system", "partition"],
+        title: "Windows, macOS or Linux left on a disk: its folders, browsers and Thunderbird",
+        engine: Engine::Disk,
+        connect: None,
+        resources: &[
+            "files/files.tree",
+            "browser/browser.personal-bookmarks",
+            "browser/browser.browsing-history",
+            "passwords/passwords.vault",
+            "workspace/mail-accounts",
+            "contacts",
+            "calendar/calendar.calendar",
+        ],
     },
     Row {
         key: "accounts",
