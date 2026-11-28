@@ -798,3 +798,20 @@ uninstall-files = { $count ->
    *[other] All { $count } copies go to the Trash, where you can restore them.
 }
 uninstall-home-folder = Home
+
+## The tablet pad map: what each button, ring and strip of a pad does now.
+session-pad-map = Pad map
+pad-map-hint = Shown while the button is held
+pad-map-button = Button { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Strip { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Next mode (now { $mode } of { $modes })
+pad-map-shows-map = Shows this map
+pad-map-app-decides = Up to the app
+pad-map-nothing = Does nothing
+pad-map-dial-scroll = Scroll
+pad-map-dial-zoom = Zoom
+pad-map-dial-brush-size = Brush size
+pad-map-dial-volume = Volume
+pad-map-dial-brightness = Brightness

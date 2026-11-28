@@ -2298,6 +2298,8 @@ mod keyboard;
 mod lock;
 #[path = "session/lock_recovery.rs"]
 mod lock_recovery;
+#[path = "session/pad_map.rs"]
+mod pad_map;
 #[path = "session/strip.rs"]
 mod strip;
 #[path = "session/window_ids.rs"]

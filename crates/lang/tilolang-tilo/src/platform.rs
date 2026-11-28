@@ -148,6 +148,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("privacy", "Privacy", "session:privacy"),
     ("notifications", "Notifications", "session:notifications"),
     ("osd", "Osd", "session:osd"),
+    ("pad_map", "PadMap", "session:pad-map"),
     ("vpn", "Vpn", "vpn"),
     ("night_light", "NightLight", "session:night-light"),
     ("banners", "Banners", "session:banners"),

@@ -28,6 +28,7 @@ pub mod live;
 pub mod notifications;
 pub mod osd;
 pub mod overlays;
+pub mod pad_map;
 pub mod people;
 pub mod privacy;
 pub mod quick_settings;
@@ -84,6 +85,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         privacy::consent_surface(),
         notifications::surface(),
         osd::surface(),
+        pad_map::surface(),
         controls::night_light_surface(),
         notifications::banners_surface(),
         time::surface(),

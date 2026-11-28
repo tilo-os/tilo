@@ -24,6 +24,9 @@ pub struct SessionConfig {
     pub shortcuts: ShortcutConfig,
     /// Pointer, touchpad, keyboard repeat and tablets.
     pub input: InputConfig,
+    /// Each tablet's settings as the person keeps them, by device key: what its pad map says each
+    /// control does.
+    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
     /// How the desktop reads three- and four-finger touchpad gestures;
     /// `None` leaves every gesture to the clients.
     pub gestures: Option<GestureConfig>,
@@ -205,6 +208,7 @@ impl SessionConfig {
         Self {
             shortcuts,
             input: preferences,
+            tablets: input.tablets.clone(),
             gestures,
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
@@ -439,6 +443,7 @@ fn tablet(
                 chord(*shortcut).map(|chord| (*button, pressed(&chord)))
             })
             .collect(),
+        pad_map_button: stored.pad_map_button,
         pad_rings: stored.pad_rings.clone(),
         pad_strips: stored.pad_strips.clone(),
     }

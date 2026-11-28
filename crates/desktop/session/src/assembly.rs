@@ -148,6 +148,10 @@ pub(crate) struct Shared {
     /// published as `device.osd` for the shell that draws it.
     #[cfg(target_os = "linux")]
     pub(crate) osd: crate::shell::osd::Shared,
+    /// The tablet pad map: what each control of the pad whose map the person holds up does,
+    /// published as `device.pad_map` for the shell that draws it.
+    #[cfg(target_os = "linux")]
+    pub(crate) pad_map: crate::shell::pad_map::Shared,
     /// The shell link to the device's daemon: while the session asks for a new one, the shell
     /// says so over the desktop it keeps showing.
     #[cfg(unix)]

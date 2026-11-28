@@ -119,6 +119,10 @@ pub use input::{
     TabletPhase,
 };
 pub use keys::KeyRepeat;
+pub use smithay::wayland::tablet_manager::{
+    TabletDescriptor, TabletPadControl, TabletPadDescriptor, TabletPadGroupDescriptor,
+};
+pub use tablet::PadMap;
 
 /// How close to the whole timeout a park must be to have ended on the deadline rather than on
 /// arriving work.
@@ -843,6 +847,11 @@ impl Compositor {
     /// Whether the session is locked.
     pub fn locked(&self) -> bool {
         self.data.state.locked()
+    }
+
+    /// The map of the tablet pad whose map button or mode button the person holds, while they do.
+    pub fn pad_map(&self) -> Option<PadMap> {
+        self.data.state.pad_map()
     }
 
     /// Whether the display is blanked: powered down, with only input waking it.

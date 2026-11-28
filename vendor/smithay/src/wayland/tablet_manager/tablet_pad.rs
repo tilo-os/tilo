@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +10,8 @@ use wayland_protocols::wp::tablet::zv2::server::{
     zwp_tablet_seat_v2::ZwpTabletSeatV2,
 };
 use wayland_server::{
-    backend::ClientId, protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, Resource,
+    backend::{ClientId, ObjectId},
+    protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, Resource,
     Weak,
 };
 
@@ -61,12 +63,59 @@ impl TabletPadDescriptor {
     }
 }
 
+/// One control of a pad: a button, a ring or a strip, by its index (from zero)
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd)]
+pub enum TabletPadControl {
+    /// A button
+    Button(u32),
+    /// A ring
+    Ring(u32),
+    /// A strip
+    Strip(u32),
+}
+
+/// The longest label a client may give a control, in characters
+const FEEDBACK_MAX_CHARS: usize = 64;
+
 #[derive(Debug)]
 struct PadInstance {
     pad: Weak<ZwpTabletPadV2>,
     groups: Vec<Weak<ZwpTabletPadGroupV2>>,
     rings: Vec<(u32, Weak<ZwpTabletPadRingV2>)>,
     strips: Vec<(u32, Weak<ZwpTabletPadStripV2>)>,
+    /// The serial of the last `enter`, which feedback for a control in no group names
+    enter_serial: u32,
+    /// The serial of each group's last `mode_switch`, which feedback for its controls names
+    group_serials: Vec<u32>,
+    /// What the client says each control does in its group's current mode
+    feedback: HashMap<TabletPadControl, String>,
+}
+
+impl PadInstance {
+    /// The control `object` (this instance's pad, one of its rings or strips) is, `button` for the pad
+    fn control_of(&self, object: &ObjectId, button: u32) -> Option<TabletPadControl> {
+        if self.pad.id() == *object {
+            return Some(TabletPadControl::Button(button));
+        }
+        self.rings
+            .iter()
+            .find(|(_, ring)| ring.id() == *object)
+            .map(|(index, _)| TabletPadControl::Ring(*index))
+            .or_else(|| {
+                self.strips
+                    .iter()
+                    .find(|(_, strip)| strip.id() == *object)
+                    .map(|(index, _)| TabletPadControl::Strip(*index))
+            })
+    }
+}
+
+fn group_has(group: &TabletPadGroupDescriptor, control: TabletPadControl) -> bool {
+    match control {
+        TabletPadControl::Button(button) => group.buttons.contains(&button),
+        TabletPadControl::Ring(ring) => group.rings.contains(&ring),
+        TabletPadControl::Strip(strip) => group.strips.contains(&strip),
+    }
 }
 
 #[derive(Debug)]
@@ -86,7 +135,21 @@ impl TabletPad {
             .find(|i| i.pad.id().same_client_as(&focus.id()))
     }
 
-    fn enter(&self, serial: Serial, time: u32) {
+    fn focused_mut(&mut self) -> Option<&mut PadInstance> {
+        let focus = self.focus.as_ref()?;
+        self.instances
+            .iter_mut()
+            .find(|i| i.pad.id().same_client_as(&focus.id()))
+    }
+
+    fn enter(&mut self, serial: Serial, time: u32) {
+        let groups = self.modes.len();
+        if let Some(instance) = self.focused_mut() {
+            // What the client said of the controls before is for a focus it no longer has
+            instance.feedback.clear();
+            instance.enter_serial = serial.into();
+            instance.group_serials = vec![serial.into(); groups];
+        }
         let (Some(focus), Some(instance)) = (self.focus.as_ref(), self.focused()) else {
             return;
         };
@@ -104,13 +167,53 @@ impl TabletPad {
         }
     }
 
-    fn leave(&self, serial: Serial) {
+    fn leave(&mut self, serial: Serial) {
+        if let Some(instance) = self.focused_mut() {
+            instance.feedback.clear();
+        }
         let (Some(focus), Some(instance)) = (self.focus.as_ref(), self.focused()) else {
             return;
         };
         // A destroyed surface takes the focus with it, without a leave
         if let (Ok(pad), true) = (instance.pad.upgrade(), focus.is_alive()) {
             pad.leave(serial.into(), focus);
+        }
+    }
+
+    /// Keep a client's label for the control `object` is, if `serial` is the latest its control's group
+    /// (or, for a control in no group, the pad's `enter`) was sent
+    fn record_feedback(&mut self, object: &ObjectId, button: u32, label: &str, serial: u32) {
+        let groups = self.desc.groups();
+        let buttons = self.desc.buttons;
+        let Some((instance, control)) = self
+            .instances
+            .iter_mut()
+            .find_map(|i| i.control_of(object, button).map(|control| (i, control)))
+        else {
+            return;
+        };
+        if matches!(control, TabletPadControl::Button(button) if button >= buttons) {
+            return;
+        }
+        let expected = groups
+            .iter()
+            .position(|group| group_has(group, control))
+            .map_or(Some(instance.enter_serial), |group| {
+                instance.group_serials.get(group).copied()
+            });
+        if expected != Some(serial) {
+            return;
+        }
+        let label: String = label
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(FEEDBACK_MAX_CHARS)
+            .collect();
+        let label = label.trim();
+        if label.is_empty() {
+            instance.feedback.remove(&control);
+        } else {
+            instance.feedback.insert(control, label.to_owned());
         }
     }
 }
@@ -160,6 +263,9 @@ impl TabletPadHandle {
             groups: Vec::new(),
             rings: Vec::new(),
             strips: Vec::new(),
+            enter_serial: 0,
+            group_serials: Vec::new(),
+            feedback: HashMap::new(),
         };
         for desc in inner.desc.groups() {
             let Ok(group) = client.create_resource::<ZwpTabletPadGroupV2, _, D>(dh, version, data()) else {
@@ -225,6 +331,31 @@ impl TabletPadHandle {
         self.inner.lock().unwrap().focused().is_some()
     }
 
+    /// What the focused client says each control does in its group's current mode
+    /// (`set_feedback`), for an on-screen display of the pad. A label naming an older serial than its
+    /// control's group's latest mode switch (or the pad's `enter`) is not taken, and a client's labels
+    /// go when the pad leaves it or its group switches mode.
+    pub fn feedback(&self) -> Vec<(TabletPadControl, String)> {
+        let inner = self.inner.lock().unwrap();
+        let mut labels: Vec<_> = inner
+            .focused()
+            .map(|instance| {
+                instance
+                    .feedback
+                    .iter()
+                    .map(|(control, label)| (*control, label.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        labels.sort();
+        labels
+    }
+
+    /// The mode each group is in, in group order
+    pub fn modes(&self) -> Vec<u32> {
+        self.inner.lock().unwrap().modes.clone()
+    }
+
     /// A button (by index, from zero) was pressed or released
     pub fn button(&self, button: u32, state: ButtonState, time: u32) {
         let inner = self.inner.lock().unwrap();
@@ -284,6 +415,14 @@ impl TabletPadHandle {
             return;
         };
         *current = mode;
+        let controls = inner.desc.groups().get(group).cloned().unwrap_or_default();
+        if let Some(instance) = inner.focused_mut() {
+            if let Some(slot) = instance.group_serials.get_mut(group) {
+                *slot = serial.into();
+            }
+            // The client labels the group's controls afresh for the new mode
+            instance.feedback.retain(|control, _| !group_has(&controls, *control));
+        }
         if let Some(group) = inner
             .focused()
             .and_then(|i| i.groups.get(group))
@@ -318,13 +457,25 @@ where
     fn request(
         _state: &mut D,
         _client: &Client,
-        _pad: &ZwpTabletPadV2,
-        _request: zwp_tablet_pad_v2::Request,
-        _data: &TabletPadUserData,
+        pad: &ZwpTabletPadV2,
+        request: zwp_tablet_pad_v2::Request,
+        data: &TabletPadUserData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
-        // Button feedback (set_feedback) is a hint for on-screen displays; nothing to do
+        // What the button does now, kept for an on-screen display of the pad
+        if let zwp_tablet_pad_v2::Request::SetFeedback {
+            button,
+            description,
+            serial,
+        } = request
+        {
+            data.handle
+                .inner
+                .lock()
+                .unwrap()
+                .record_feedback(&pad.id(), button, &description, serial);
+        }
     }
 
     fn destroyed(_state: &mut D, _client: ClientId, pad: &ZwpTabletPadV2, data: &TabletPadUserData) {
@@ -362,12 +513,19 @@ where
     fn request(
         _state: &mut D,
         _client: &Client,
-        _ring: &ZwpTabletPadRingV2,
-        _request: zwp_tablet_pad_ring_v2::Request,
-        _data: &TabletPadUserData,
+        ring: &ZwpTabletPadRingV2,
+        request: zwp_tablet_pad_ring_v2::Request,
+        data: &TabletPadUserData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if let zwp_tablet_pad_ring_v2::Request::SetFeedback { description, serial } = request {
+            data.handle
+                .inner
+                .lock()
+                .unwrap()
+                .record_feedback(&ring.id(), 0, &description, serial);
+        }
     }
 }
 
@@ -379,11 +537,18 @@ where
     fn request(
         _state: &mut D,
         _client: &Client,
-        _strip: &ZwpTabletPadStripV2,
-        _request: zwp_tablet_pad_strip_v2::Request,
-        _data: &TabletPadUserData,
+        strip: &ZwpTabletPadStripV2,
+        request: zwp_tablet_pad_strip_v2::Request,
+        data: &TabletPadUserData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        if let zwp_tablet_pad_strip_v2::Request::SetFeedback { description, serial } = request {
+            data.handle
+                .inner
+                .lock()
+                .unwrap()
+                .record_feedback(&strip.id(), 0, &description, serial);
+        }
     }
 }

@@ -149,6 +149,9 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         // moment after the last key. The call carries the anchor: a view call is a layer of its
         // own, so where its foot sits is the caller's to say, not the view's root.
         osd_readout(at: .bottom)
+        // A tablet pad's map, while the person holds the button that shows it: over everything
+        // and in the way of nothing, so the pen goes on drawing where it was.
+        pad_map_card()
         // The keys a held Super reaches, said over everything and in the way of nothing: a
         // picture, so the chord the person is reaching for still runs.
         if let p = device.overlays.peek {

@@ -874,6 +874,7 @@ impl Session {
         }
         self.follow_owner_session()?;
         self.follow_lock()?;
+        self.follow_pad_map();
         self.follow_keyboard();
         // The engine of the active source, after the on-screen keyboard gave up the seat: one input
         // method owns it.

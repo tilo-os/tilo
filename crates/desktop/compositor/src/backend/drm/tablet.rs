@@ -85,6 +85,8 @@ pub struct TabletConfig {
     pub eraser: EraserAction,
     /// Pad button number (libinput's, from zero) to the chord it presses.
     pub pad_buttons: BTreeMap<u32, KeyChord>,
+    /// The pad button that shows the pad's map while it is held, and reaches no app.
+    pub pad_map_button: Option<u32>,
     /// Pad ring number to what it does in each mode of its mode group, indexed by mode. A mode
     /// past the end scrolls.
     pub pad_rings: BTreeMap<u32, Vec<PadDialAction>>,
@@ -104,6 +106,7 @@ impl Default for TabletConfig {
             third_button: StylusButtonAction::Default,
             eraser: EraserAction::Native,
             pad_buttons: BTreeMap::new(),
+            pad_map_button: None,
             pad_rings: BTreeMap::new(),
             pad_strips: BTreeMap::new(),
         }

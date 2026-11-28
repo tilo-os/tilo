@@ -206,6 +206,12 @@ pub(super) fn dispatch_pad(
     let (switched, event, chord, steps, dial) = {
         let mut this = input.borrow_mut();
         let this = &mut *this;
+        // The button the pad's settings pick for its map reaches no app: it holds the map up.
+        let action = map_button_action(
+            action,
+            this.pad_config(device)
+                .and_then(|config| config.pad_map_button),
+        );
         let Some(pad) = this.pads.iter_mut().find(|pad| &pad.device == device) else {
             return;
         };
@@ -285,6 +291,18 @@ pub(super) fn dispatch_pad(
     }
     if let Some(vertical) = steps {
         state.handle_input(InputEvent::PointerAxis(Scroll::Pixels(0.0, vertical)));
+    }
+}
+
+/// What `action` is on a pad whose settings pick `map_button` to show its map: a press or release of
+/// that button holds the map up or lets it go, and every other action is itself.
+fn map_button_action(action: PadAction, map_button: Option<u32>) -> PadAction {
+    match action {
+        PadAction::Button { button, pressed } if map_button == Some(button) => PadAction::ShowMap {
+            button,
+            held: pressed,
+        },
+        other => other,
     }
 }
 
@@ -985,6 +1003,34 @@ mod tests {
     #![allow(clippy::expect_used, reason = "in a test these are the assertion")]
 
     use super::*;
+
+    /// The button a pad's settings pick for its map holds the map up instead of reaching an app;
+    /// every other control is itself.
+    #[test]
+    fn the_map_button_holds_the_map_and_reaches_no_app() {
+        let press = |button, pressed| PadAction::Button { button, pressed };
+        assert_eq!(
+            map_button_action(press(2, true), Some(2)),
+            PadAction::ShowMap {
+                button: 2,
+                held: true
+            }
+        );
+        assert_eq!(
+            map_button_action(press(2, false), Some(2)),
+            PadAction::ShowMap {
+                button: 2,
+                held: false
+            }
+        );
+        assert_eq!(map_button_action(press(1, true), Some(2)), press(1, true));
+        assert_eq!(map_button_action(press(2, true), None), press(2, true));
+        let ring = PadAction::Ring {
+            ring: 0,
+            degrees: Some(10.0),
+        };
+        assert_eq!(map_button_action(ring, Some(0)), ring);
+    }
 
     /// What a pad with two mode groups offers a pane: each ring and strip in its group's modes,
     /// and the buttons that switch them, which no group holds.

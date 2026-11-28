@@ -28,6 +28,8 @@ pub(crate) mod activities;
 pub(crate) mod asks;
 pub(crate) mod mount;
 pub(crate) mod osd;
+#[cfg(target_os = "linux")]
+pub(crate) mod pad_map;
 pub(crate) mod rules;
 pub(crate) mod shortcut_guide;
 

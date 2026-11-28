@@ -88,6 +88,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/overview.tl"),
     ),
     (
+        "pad_map.tl",
+        include_str!("../../../../apps/tl/shell/pad_map.tl"),
+    ),
+    (
         "parts.tl",
         include_str!("../../../../apps/tl/shell/parts.tl"),
     ),

@@ -219,6 +219,16 @@ impl Session {
                 .take();
             if let Some(config) = next {
                 a11y_settings::apply(&mut self.compositor, &config.a11y)?;
+                // Pointer, touchpad and tablet preferences apply as the person changes them; the
+                // touchpad the person switched off here stays off.
+                let touchpad_enabled = self.input.touchpad_enabled;
+                self.input = config.input.clone();
+                self.input.touchpad_enabled = touchpad_enabled;
+                self.compositor.set_input_config(self.input.clone());
+                self.shared
+                    .pad_map
+                    .borrow_mut()
+                    .set_tablets(config.tablets.clone());
                 // A layout the person chose in Settings types from now on, and the keys drawn
                 // follow it.
                 let sources = crate::config::Sources::from_config(&config);

@@ -11,8 +11,14 @@
 //! focus: the focused surface's client gets it when it took a tablet seat.
 //! Otherwise [`State::tablet_pad`] says nobody took the event and the
 //! backend acts on it itself (a ring scrolls).
+//!
+//! While the person holds a pad's map button, or one of its mode buttons, the
+//! pad's map stands ([`PadMap`]): what the focused tablet-aware app says each
+//! control does now, the mode each group is in, and whether an app takes the
+//! pad at all. The session draws it; nothing here decides what Tilo's own
+//! mapping says.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use smithay::backend::input::{ButtonState, TabletToolCapabilities as Caps, TabletToolDescriptor};
 use smithay::input::pointer::CursorImageStatus;
@@ -23,7 +29,9 @@ use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
-use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatTrait};
+use smithay::wayland::tablet_manager::{
+    TabletDescriptor, TabletManagerState, TabletPadControl, TabletPadDescriptor, TabletSeatTrait,
+};
 
 use crate::input::{PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use crate::state::State;
@@ -55,6 +63,41 @@ pub(crate) struct Tablets {
     position: Point<f64, Logical>,
     /// Each tool's cursor, by tool: a pen and an eraser draw their own images.
     cursors: HashMap<TabletToolDescriptor, ToolCursor>,
+    /// The pad whose map is held up, and the buttons holding it.
+    map: Option<MapHeld>,
+}
+
+/// A pad's map held up by the buttons in `buttons`: its map button, its mode buttons.
+#[derive(Debug)]
+struct MapHeld {
+    pad: TabletPadDescriptor,
+    tablet: TabletDescriptor,
+    buttons: BTreeSet<u32>,
+}
+
+/// A tablet pad's map, while one of its buttons holds it up: the pad and its tablet, the mode each
+/// of its groups is in, what the focused tablet-aware app says its controls do in those modes, and
+/// whether an app takes the pad at all (its controls not labelled are then the app's to decide).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PadMap {
+    pub pad: TabletPadDescriptor,
+    pub tablet: TabletDescriptor,
+    /// The mode each group of [`Self::pad`] is in, in group order.
+    pub modes: Vec<u32>,
+    /// The focused app's own label for each control it named, by control.
+    pub labels: Vec<(TabletPadControl, String)>,
+    /// Whether the keyboard focus is on an app that takes the pad.
+    pub app_focused: bool,
+}
+
+/// Whether `button` switches `pad`'s modes: libinput puts its mode buttons in no group's buttons.
+fn mode_button(pad: &TabletPadDescriptor, button: u32) -> bool {
+    !pad.groups.is_empty()
+        && button < pad.buttons
+        && !pad
+            .groups
+            .iter()
+            .any(|group| group.buttons.contains(&button))
 }
 
 impl Tablets {
@@ -232,6 +275,40 @@ impl State {
             .set_pad_focus(focused, SERIAL_COUNTER.next_serial(), time);
     }
 
+    /// The map of the pad a held button holds up, as it stands now.
+    pub(crate) fn pad_map(&self) -> Option<PadMap> {
+        let held = self.tablets.map.as_ref()?;
+        let pad = self.seat.tablet_seat().get_pad(&held.pad)?;
+        Some(PadMap {
+            pad: held.pad.clone(),
+            tablet: held.tablet.clone(),
+            modes: pad.modes(),
+            labels: pad.feedback(),
+            app_focused: pad.has_focused_client(),
+        })
+    }
+
+    /// A button of the pad of `event` that holds its map up was pressed or let go.
+    fn hold_pad_map(&mut self, event: &TabletPadEvent, button: u32, held: bool) {
+        let map = &mut self.tablets.map;
+        if map.as_ref().is_some_and(|map| map.pad != event.pad) {
+            *map = None;
+        }
+        let holding = map.get_or_insert_with(|| MapHeld {
+            pad: event.pad.clone(),
+            tablet: event.tablet.clone(),
+            buttons: BTreeSet::new(),
+        });
+        if held {
+            holding.buttons.insert(button);
+        } else {
+            holding.buttons.remove(&button);
+        }
+        if holding.buttons.is_empty() {
+            *map = None;
+        }
+    }
+
     /// One pad event from a backend that acts on what no client takes; see [`Self::tablet_pad`].
     pub(crate) fn pad_input(&mut self, event: &TabletPadEvent) -> bool {
         self.note_input();
@@ -240,13 +317,36 @@ impl State {
     }
 
     /// Route one pad event to the client the pad is focused on. Returns whether a client took it:
-    /// `false` leaves a button, ring or strip to the compositor. Plugging, unplugging and mode
-    /// switches are always taken.
-    pub(crate) fn tablet_pad(&self, event: &TabletPadEvent, serial: Serial, time: u32) -> bool {
+    /// `false` leaves a button, ring or strip to the compositor. Plugging, unplugging, mode
+    /// switches and the map button are always taken; a mode button also holds the map up while it
+    /// is down.
+    pub(crate) fn tablet_pad(&mut self, event: &TabletPadEvent, serial: Serial, time: u32) -> bool {
         let tablet_seat = self.seat.tablet_seat();
-        if event.action == PadAction::Removed {
-            tablet_seat.remove_pad(&event.pad);
-            return true;
+        match event.action {
+            PadAction::Removed => {
+                tablet_seat.remove_pad(&event.pad);
+                if self
+                    .tablets
+                    .map
+                    .as_ref()
+                    .is_some_and(|map| map.pad == event.pad)
+                {
+                    self.tablets.map = None;
+                }
+                return true;
+            }
+            PadAction::ShowMap { button, held } => {
+                // Known to the seat first, so the map reads its modes and the app's labels.
+                let dh = self.display.clone();
+                let tablet = tablet_seat.add_tablet::<Self>(&dh, &event.tablet);
+                tablet_seat.add_pad::<Self>(&dh, &event.pad, &tablet);
+                self.hold_pad_map(event, button, held);
+                return true;
+            }
+            PadAction::Button { button, pressed } if mode_button(&event.pad, button) => {
+                self.hold_pad_map(event, button, pressed);
+            }
+            _ => {}
         }
         let dh = self.display.clone();
         // A pad seen first through an event (its plug went unnoticed) is added then.
@@ -260,7 +360,7 @@ impl State {
             }
         };
         match event.action {
-            PadAction::Added | PadAction::Removed => {}
+            PadAction::Added | PadAction::Removed | PadAction::ShowMap { .. } => {}
             PadAction::Mode { group, mode } => {
                 pad.mode_switch(group as usize, mode, serial, time);
             }

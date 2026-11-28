@@ -1420,6 +1420,145 @@ fn a_tablet_pad_follows_the_keyboard_focus_to_a_client_that_takes_tablets() {
     });
 }
 
+/// An event of a pad whose buttons 0 to 2 and ring switch modes together, two of them, and whose
+/// button 3, in no group, switches them.
+fn mapped_pad(action: PadAction) -> InputEvent {
+    use smithay::wayland::tablet_manager::{
+        TabletDescriptor, TabletPadDescriptor, TabletPadGroupDescriptor,
+    };
+    InputEvent::TabletPad(TabletPadEvent {
+        pad: TabletPadDescriptor {
+            name: "Pen tablet Pad".into(),
+            syspath: None,
+            buttons: 4,
+            groups: vec![TabletPadGroupDescriptor {
+                buttons: vec![0, 1, 2],
+                rings: vec![0],
+                strips: Vec::new(),
+                modes: 2,
+            }],
+        },
+        tablet: TabletDescriptor {
+            name: "Pen tablet".into(),
+            usb_id: Some((0x056a, 0x0374)),
+            syspath: None,
+        },
+        action,
+    })
+}
+
+/// While the person holds a pad's map button or one of its mode buttons, the pad's map stands: the
+/// mode each group is in and what the focused tablet-aware app says its controls do, a label naming
+/// an older serial left out. A mode switch asks the app for new labels, so the old ones go; letting
+/// go of the button, or unplugging the pad, takes the map down.
+#[test]
+fn a_held_map_or_mode_button_shows_the_pad_map_with_the_focused_apps_labels() {
+    use tilo_compositor::TabletPadControl;
+
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "painter", (200, 100), [255, 0, 0, 255]);
+    let seat = client.seen.seat.clone().unwrap();
+    client
+        .seen
+        .tablet_manager
+        .as_ref()
+        .expect("zwp_tablet_manager_v2")
+        .get_tablet_seat(&seat, &client.queue.handle(), ());
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+
+    let pad = mapped_pad;
+    compositor.input(pad(PadAction::Added)).unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad_object.is_some() && !clients[0].seen.pad_rings.is_empty()
+    });
+    assert_eq!(compositor.pad_map(), None, "nothing held, no map");
+
+    compositor
+        .input(pad(PadAction::ShowMap {
+            button: 2,
+            held: true,
+        }))
+        .unwrap();
+    let serial = client.seen.pad_serial;
+    let object = client.seen.pad_object.clone().unwrap();
+    let ring = client.seen.pad_rings[0].clone();
+    object.set_feedback(0, "Undo".into(), serial);
+    object.set_feedback(1, "Stale".into(), serial.wrapping_add(100));
+    ring.set_feedback("Brush\nsize".into(), serial);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor
+            .pad_map()
+            .is_some_and(|map| map.labels.len() == 2)
+    });
+    let map = compositor
+        .pad_map()
+        .expect("the map stands while its button is held");
+    assert_eq!(map.pad.name, "Pen tablet Pad");
+    assert_eq!(map.modes, [0]);
+    assert!(map.app_focused, "the painter takes the pad");
+    assert_eq!(
+        map.labels,
+        [
+            (TabletPadControl::Button(0), "Undo".to_owned()),
+            (TabletPadControl::Ring(0), "Brushsize".to_owned()),
+        ],
+        "the app's labels, a stale serial's left out and control characters dropped"
+    );
+    assert!(
+        !client
+            .seen
+            .pad
+            .iter()
+            .any(|line| line.starts_with("button 2")),
+        "the map button reaches no app: {:?}",
+        client.seen.pad
+    );
+
+    compositor
+        .input(pad(PadAction::Mode { group: 0, mode: 1 }))
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("mode 1")
+    });
+    let map = compositor.pad_map().expect("still held");
+    assert_eq!(map.modes, [1]);
+    assert!(
+        map.labels.is_empty(),
+        "a mode switch takes the group's labels away"
+    );
+    object.set_feedback(0, "Redo".into(), client.seen.pad_serial);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor
+            .pad_map()
+            .is_some_and(|map| map.labels == [(TabletPadControl::Button(0), "Redo".to_owned())])
+    });
+
+    compositor
+        .input(pad(PadAction::ShowMap {
+            button: 2,
+            held: false,
+        }))
+        .unwrap();
+    assert_eq!(compositor.pad_map(), None, "letting go takes the map down");
+
+    // A mode button holds it up too, and still reaches the app.
+    compositor
+        .input(pad(PadAction::Button {
+            button: 3,
+            pressed: true,
+        }))
+        .unwrap();
+    assert!(
+        compositor.pad_map().is_some(),
+        "a held mode button shows the map"
+    );
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pad.last().map(String::as_str) == Some("button 3 pressed")
+    });
+    compositor.input(pad(PadAction::Removed)).unwrap();
+    assert_eq!(compositor.pad_map(), None, "an unplugged pad has no map");
+}
+
 #[test]
 fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     let mut compositor = headless(Box::new(StackPolicy));

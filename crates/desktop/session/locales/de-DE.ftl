@@ -804,3 +804,20 @@ uninstall-files = { $count ->
    *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
 }
 uninstall-home-folder = Persönlicher Ordner
+
+## The tablet pad map: what each button, ring and strip of a pad does now.
+session-pad-map = Tablett-Übersicht
+pad-map-hint = Wird angezeigt, solange die Taste gedrückt ist
+pad-map-button = Taste { $number }
+pad-map-ring = Ring { $number }
+pad-map-strip = Streifen { $number }
+pad-map-entry = { $control }: { $action }
+pad-map-mode-switch = Nächster Modus (jetzt { $mode } von { $modes })
+pad-map-shows-map = Zeigt diese Übersicht
+pad-map-app-decides = Legt die App fest
+pad-map-nothing = Tut nichts
+pad-map-dial-scroll = Blättern
+pad-map-dial-zoom = Zoomen
+pad-map-dial-brush-size = Pinselgröße
+pad-map-dial-volume = Lautstärke
+pad-map-dial-brightness = Helligkeit

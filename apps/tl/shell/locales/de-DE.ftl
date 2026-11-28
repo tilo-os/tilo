@@ -765,6 +765,14 @@ d-76zs5p4r = Antwortzeile
 
 d-ny7ms2ry = Bildschirmanzeige
 
+d-mz52zjsz = Tablett-Tastenbelegung
+
+d-mpcwgqte = Tablett mit seinen Bedienelementen
+
+d-twljqx7j = Bedienelemente einer Seite
+
+d-7gaoxgif = Bedienelemente einer Kante
+
 d-rcjzvfxp = Übersicht
     .w-overview = Übersicht
     .w-new-workspace = Neuer Arbeitsbereich

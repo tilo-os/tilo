@@ -117,7 +117,9 @@ mod tablet_seat;
 pub(crate) mod tablet_tool;
 
 pub use tablet::{TabletDescriptor, TabletHandle, TabletUserData};
-pub use tablet_pad::{TabletPadDescriptor, TabletPadGroupDescriptor, TabletPadHandle, TabletPadUserData};
+pub use tablet_pad::{
+    TabletPadControl, TabletPadDescriptor, TabletPadGroupDescriptor, TabletPadHandle, TabletPadUserData,
+};
 pub use tablet_seat::{TabletSeatHandle, TabletSeatHandler, TabletSeatUserData};
 pub use tablet_tool::{TabletToolHandle, TabletToolUserData};
 

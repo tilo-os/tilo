@@ -223,6 +223,9 @@ pub enum PadAction {
     Strip { strip: u32, position: Option<f64> },
     /// A group of the pad's controls switched to another mode.
     Mode { group: u32, mode: u32 },
+    /// The button the pad's settings pick to show its map was pressed or let go: it reaches no
+    /// app, and the map stands while it is held.
+    ShowMap { button: u32, held: bool },
 }
 
 /// One tablet pad event.

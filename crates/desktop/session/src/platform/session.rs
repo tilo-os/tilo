@@ -1927,6 +1927,9 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             osd: Rc::default(),
+            pad_map: Rc::new(RefCell::new(crate::shell::pad_map::Held::new(
+                options.config.tablets.clone(),
+            ))),
             #[cfg(unix)]
             link: daemon_link.ok(),
             carried: std::cell::Cell::new(0.0),
@@ -2109,6 +2112,13 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::shell::osd::Served::new(Rc::clone(
                 &shared.osd,
+            ))));
+        // What each control of a tablet pad does, while its map is held up.
+        shared
+            .services
+            .borrow_mut()
+            .add(Box::new(crate::shell::pad_map::Served::new(Rc::clone(
+                &shared.pad_map,
             ))));
         // The tilolang shell draws the banners itself, so the session ages them here: one goes a
         // few seconds after it arrived, as a banner stack takes it away.

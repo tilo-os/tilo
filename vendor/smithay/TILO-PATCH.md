@@ -57,8 +57,13 @@ adds pads beside tablets and tools, in the same shape:
   (`set_focus`, the current mode of every group after `enter`), and sends
   `button`, ring `angle`/`stop`, strip `position`/`stop` (each with its
   `frame`) and `mode_switch` to the focused client; `has_focused_client`
-  tells whether anyone gets them. `set_feedback` requests are accepted and
-  ignored.
+  tells whether anyone gets them. A focused client's `set_feedback` on a
+  button, ring or strip is kept when its serial is the latest `enter` or
+  `mode_switch` its control's group was sent (64 characters at most, control
+  characters dropped), and forgotten when the pad leaves it or the group
+  switches mode; `feedback` returns those labels by `TabletPadControl` and
+  `modes` the mode of every group, for a compositor's on-screen map of the
+  pad.
 - `src/wayland/tablet_manager/tablet_seat.rs`: `TabletSeatHandle::add_pad`
   (attached to a tablet the seat knows), `get_pad`, `count_pads`,
   `remove_pad` and `clear_pads` (clients get `removed`), and

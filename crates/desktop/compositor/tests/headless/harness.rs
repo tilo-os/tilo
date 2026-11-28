@@ -225,6 +225,11 @@ pub struct Seen {
     pub pad: Vec<String>,
     /// The surface the pad entered.
     pub pad_surface: Option<WlSurface>,
+    /// The pad as this client holds it, once it entered, and the rings of its groups.
+    pub pad_object: Option<ZwpTabletPadV2>,
+    pub pad_rings: Vec<ZwpTabletPadRingV2>,
+    /// The serial of the pad's latest `enter` or `mode_switch`, which its labels name.
+    pub pad_serial: u32,
     /// The colour manager, and what it says it can build.
     pub color_manager: Option<WpColorManagerV1>,
     pub color_features: Vec<u32>,
@@ -1508,7 +1513,7 @@ impl Dispatch<WpCursorShapeManagerV1, ()> for Seen {
 impl Dispatch<ZwpTabletPadV2, ()> for Seen {
     fn event(
         seen: &mut Self,
-        _: &ZwpTabletPadV2,
+        pad: &ZwpTabletPadV2,
         event: zwp_tablet_pad_v2::Event,
         (): &(),
         _: &Connection,
@@ -1518,8 +1523,12 @@ impl Dispatch<ZwpTabletPadV2, ()> for Seen {
             zwp_tablet_pad_v2::Event::Group { .. } => "group".into(),
             zwp_tablet_pad_v2::Event::Buttons { buttons } => format!("buttons {buttons}"),
             zwp_tablet_pad_v2::Event::Done => "done".into(),
-            zwp_tablet_pad_v2::Event::Enter { surface, .. } => {
+            zwp_tablet_pad_v2::Event::Enter {
+                surface, serial, ..
+            } => {
                 seen.pad_surface = Some(surface);
+                seen.pad_object = Some(pad.clone());
+                seen.pad_serial = serial;
                 "enter".into()
             }
             zwp_tablet_pad_v2::Event::Leave { .. } => "leave".into(),
@@ -1631,8 +1640,13 @@ impl Dispatch<ZwpTabletPadGroupV2, ()> for Seen {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, .. } = event {
-            seen.pad.push(format!("mode {mode}"));
+        match event {
+            zwp_tablet_pad_group_v2::Event::ModeSwitch { mode, serial, .. } => {
+                seen.pad_serial = serial;
+                seen.pad.push(format!("mode {mode}"));
+            }
+            zwp_tablet_pad_group_v2::Event::Ring { ring } => seen.pad_rings.push(ring),
+            _ => {}
         }
     }
 
