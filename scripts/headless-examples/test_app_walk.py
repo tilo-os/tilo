@@ -1122,6 +1122,16 @@ class WaitingForAnotherAppsActions(unittest.TestCase):
         with self.assertRaisesRegex(walk.Failed, "so.tilo.mail to publish its actions"):
             listed_only.op({"wait_for": {"actions": {"app": "so.tilo.mail", "within": 0.05}}})
 
+    def test_the_launchers_open_row_is_not_the_app_publishing(self):
+        launcher = {"app_id": "so.tilo.calendar",
+                    "action": {"address": {"resource": "app.so.tilo.calendar",
+                                           "action": "open"}}}
+        starting = self.walk_of(self.Session([launcher]))
+        with self.assertRaisesRegex(walk.Failed, "so.tilo.calendar to publish its actions"):
+            starting.op({"wait_for": {"actions": {"app": "so.tilo.calendar", "within": 0.05}}})
+        running = self.walk_of(self.Session([launcher, self.row("so.tilo.calendar", "new_event")]))
+        self.assertEqual(running.op({"wait_for": "actions"}), {"actions": 1})
+
 
 class KeepingWhatAnAnswerSaid(unittest.TestCase):
     ANSWER = {"devices": [{"label": "laptop", "id": "a1"}, {"label": "phone", "id": "b2"}],

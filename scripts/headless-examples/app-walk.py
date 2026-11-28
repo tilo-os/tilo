@@ -2431,10 +2431,13 @@ class Walk:
             else:
                 app, within = named, 120.0
             # The app is ready when it publishes what it can do: a window that
-            # is drawn for a client still connecting publishes nothing.
+            # is drawn for a client still connecting publishes nothing. The
+            # launcher's row for the app (`app.<id>#open`) is the system's, listed
+            # before the app runs at all, so it is no action the app publishes.
             def listed():
                 return [a for a in self.session.actions(app=app)
-                        if a.get("app_id") == app and address(a)]
+                        if a.get("app_id") == app and address(a)
+                        and address(a)[0] != f"app.{app}"]
 
             return {"actions": len(until_value(
                 f"{app} to publish its actions", listed, within))}
