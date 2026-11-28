@@ -394,6 +394,13 @@ mod cases {
         })
     }
 
+    /// The server, every grant of it stopped: the person stopped the agent and its calls wait.
+    fn server_halted() -> Json {
+        let mut server = server_of("https://mcp.tilo.sh");
+        server["grants"][0]["stopped"] = json!(true);
+        server
+    }
+
     /// The text of a node's property, whatever option carries it.
     fn text(node: &UiNode, name: &str) -> String {
         match node.props.get(name) {
@@ -957,6 +964,62 @@ mod cases {
                 }
                 other => panic!("the press copies the card's link, not {other:?}"),
             }
+        }
+
+        phase a_sessions_page_copies_its_own_link;
+        // A session's page offers the system's Copy link too: the link names the session's own
+        // resource, so the person can hand it to someone or open it on another device.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            console.publish();
+            let link = console.link("run-2");
+            let mut view = console.open(&link);
+            let key = button(&view, "Copy link").key;
+            view.fire(&key, "press").unwrap();
+            view.poll_patches().unwrap();
+            match view.poll_events().as_slice() {
+                [ViewEvent::CopyLink { target, app }] => {
+                    assert_eq!(
+                        target.id_string(),
+                        link.id_string(),
+                        "the link is the session's own"
+                    );
+                    assert_eq!(app, "so.tilo.console", "minted as the app's resource");
+                }
+                other => panic!("the press copies the session's link, not {other:?}"),
+            }
+        }
+
+        phase a_stopped_agent_is_offered_the_way_on;
+        // A stopped agent's calls wait until the person lets it go on: the card offers that
+        // instead of Revoke, and the card's action asks the server to answer its calls again.
+        {
+            let console = Console::new(&sessions_of(), &server_halted());
+            console.publish();
+            let card = console.card("Claude Code");
+            let view = console.open(&card);
+            let _ = button(&view, "Let it go on");
+            assert!(
+                of_kind(view.tree(), "ui.Button")
+                    .iter()
+                    .all(|node| node.props.get("label") != Some(&Value::text("Revoke"))),
+                "a stopped agent is not revoked, it is let on"
+            );
+            console.command(&card, "let_agent_go_on");
+            let call = console.dispatch.waiting();
+            assert_eq!(call.app(), "tilo.mcp-server", "the server answers its calls");
+            let (_, args) = console.dispatch.asked();
+            let Some(Value::Rec(session)) = args.get(1) else {
+                panic!("the call names the grant's session: {:?}", args.get(1));
+            };
+            let said = |name: &str| {
+                session
+                    .fields
+                    .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
+                    .and_then(Value::as_text)
+            };
+            assert_eq!(said("grant"), Some("0b1c"));
+            assert_eq!(said("session"), Some("Claude Code"));
         }
 
         phase a_cards_command_acts_on_that_client_only;

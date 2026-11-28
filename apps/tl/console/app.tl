@@ -381,7 +381,7 @@ view session_window(link: SessionLink) {
     let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
     let server = mcp.server
     if let s = sessions.sessions.find(one -> one.id == link.run) {
-        session_page(s, sessions, server, opened, full)
+        session_page(s, sessions, server, link, opened, full)
     } else if sessions.pending {
         ui.EmptyState("Reading this session", icon: .clock)
     } else {
@@ -399,12 +399,13 @@ view session_page(
     s: history.AgentSession,
     sessions: history.Sessions,
     server: mcp.Server,
+    link: SessionLink,
     opened: State<Text>,
     full: State<Text>,
 ) {
     stack(gap: .section) {
         ui.ObjectHeader(title: s.instruction, caption: started_by(s.agent))
-        commands(s, sessions, server)
+        commands(s, sessions, server, link)
         if let blocked = s.undo_blocked {
             ui.Text(blocked, role: .caption, secondary: true)
         }
@@ -417,8 +418,13 @@ view session_page(
     }
 }
 
-/// Stop, Take over and Undo, as the session allows them.
-view commands(s: history.AgentSession, sessions: history.Sessions, server: mcp.Server) {
+/// Stop, Take over, Undo and the session's link, as the session allows them.
+view commands(
+    s: history.AgentSession,
+    sessions: history.Sessions,
+    server: mcp.Server,
+    link: SessionLink,
+) {
     row(gap: .related, wrap: true, align: .center) {
         if let grant = open_grant(s, server) {
             if working(s, sessions.sessions, server) {
@@ -458,6 +464,11 @@ view commands(s: history.AgentSession, sessions: history.Sessions, server: mcp.S
             description: s.undo_blocked ?? "It can be undone here",
         ) {
             on press: history.undo_session(history.history, from: s.range.from, to: s.range.to)
+        }
+        // The system's Copy link on the session's own resource: the link that opens this
+        // session's page for the people and devices of the workspace.
+        ui.Button("Copy link", icon: .link) {
+            on press: link.share_link()
         }
     }
 }

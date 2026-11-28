@@ -237,6 +237,7 @@ d-d22uzx3p = Befehle
     .w-take-over = Übernehmen
     .w-undo-session = Sitzung rückgängig machen
     .w-it-can-be-undone-here = Es kann hier rückgängig gemacht werden
+    .w-copy-link = Link kopieren
 
 d-om4pkkxd = Befehlszeilen
 
