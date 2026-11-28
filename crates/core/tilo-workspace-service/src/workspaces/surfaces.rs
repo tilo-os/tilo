@@ -21,8 +21,8 @@ use super::Workspaces;
 use crate::surfaces::address;
 
 /// How long before the host asks a workspace again for a surface that did not
-/// come: past it, another member may have joined with it.
-const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(60);
+/// come: the change that named it waits, and the ask tracker limits repeats.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Workspaces {
     /// Note that this host lacks the surface `hash` of `app` in `workspace`,

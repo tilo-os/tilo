@@ -1934,10 +1934,13 @@ impl Store {
                 }
                 took = true;
                 if let Err(refusal) = self.judge(doc_id, readers, &received, None, admit) {
-                    self.refused
-                        .entry(doc_id.to_owned())
-                        .or_default()
-                        .insert(hash);
+                    // Not final: a surface can arrive, and a replay decide the change again.
+                    if !matches!(refusal, Refusal::Undeclared(_)) {
+                        self.refused
+                            .entry(doc_id.to_owned())
+                            .or_default()
+                            .insert(hash);
+                    }
                     refusals.push((hash, refusal));
                     continue;
                 }

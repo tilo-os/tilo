@@ -845,6 +845,24 @@ impl HostedWorkspace {
         self.resources.store_mut()
     }
 
+    /// Declare the surface `named` when this process keeps it, so the write is decided by it.
+    fn ensure_surface(&mut self, app: &str, named: Option<&[u8; 32]>) {
+        let Some(named) = named else {
+            return;
+        };
+        if collab_types::app_surface::hash_of(app).is_some() {
+            return;
+        }
+        let Some(bytes) = crate::surfaces::read(&hex::encode(named)) else {
+            return;
+        };
+        let surfaces = collab_types::app_surface::Surfaces::process();
+        if let Err(why) = super::keep_surface(surfaces, app, &bytes) {
+            tracing::warn!(app, %why, "the surface a write names declares nothing");
+        }
+        drop(self.store_with_surfaces(surfaces));
+    }
+
     /// Takes `author`'s write `envelope` of the store document `doc` of `app` into the
     /// workspace's store, `named` the reader set the write names in the clear. A sealed write is
     /// read with its reader set's keys, under the scope the document's id derives; a device that
@@ -866,6 +884,7 @@ impl HostedWorkspace {
         named: Option<&str>,
         whole: bool,
     ) -> Result<bool, String> {
+        self.ensure_surface(app, envelope.surface.as_ref());
         // The reader set picks the key: every member's for `*`, else the set the store met the
         // document under, else the set the write names in the clear, when the id names that
         // set's digest.
@@ -1859,6 +1878,9 @@ impl Workspaces {
         compact: bool,
         notice: bool,
     ) -> Result<(), String> {
+        if let Some(neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }) = messages.first() {
+            hosted.ensure_surface(app, envelope.surface.as_ref());
+        }
         if whole {
             self.store_of(&mut *hosted)
                 .check_batch(writes, device.device())

@@ -3592,11 +3592,12 @@ mod store {
             "{refused:?}"
         );
         let all = |_: &str| true;
-        assert!(
-            there
-                .get("tl.so.tilo.lang.gallery.Gallery", "g", &all)
-                .is_none()
-        );
+        let gallery = "tl.so.tilo.lang.gallery.Gallery";
+        assert!(there.get(gallery, "g", &all).is_none());
+        let surface = Schema::of_app("so.tilo.test", &super::tilolang_surface());
+        there.declare(surface).unwrap();
+        assert_eq!(deliver(&made, &mut there, &anyone), []);
+        assert!(there.get(gallery, "g", &all).is_some());
     }
 
     /// A record a field holds is nested in the record holding it, as a collection's items are:

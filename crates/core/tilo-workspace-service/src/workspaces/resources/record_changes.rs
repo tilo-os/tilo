@@ -2592,6 +2592,58 @@ mod tests {
             "{refused:?}"
         );
     }
+
+    /// A holder that lacks an app's surface refuses its writes; a surface that arrives, declared,
+    /// lets a write of that app through — no registry is asked.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_surface_that_arrives_is_declared_before_the_write_it_was_asked_for_is_judged() {
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_surface_that_arrives_is_declared_before_the_write_it_was_asked_for_is_judged",
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing in this process has named the notes app's surface yet.
+        crate::surfaces::decide_receipt(&dir.path().join("surfaces"));
+        let (key, cert) = hosting_device_with(tilo_user_identity::DeviceCapabilities::member());
+        let host = test_host_holding(dir.path(), &key, &cert, std::sync::Arc::default()).await;
+        let workspaces = host.workspaces().clone();
+        workspaces
+            .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+            .unwrap();
+        workspaces.set_member_device(std::sync::Arc::new(crate::workspaces::MemberDevice {
+            cert: cert.clone(),
+            signer: std::sync::Arc::new(key),
+        }));
+        let workspace = room(&workspaces, "Kitchen").await;
+        let mut note = automerge::AutoCommit::new();
+        note.put(automerge::ROOT, "title", "Before").unwrap();
+        commit(
+            &mut note,
+            &typed_by(&caller_of(&workspaces, &workspace).acting().by.clone()),
+        );
+        let changes = note.save();
+        assert!(
+            write(&workspaces, &workspace, "plan", changes.clone())
+                .await
+                .is_err(),
+            "the holder admits no write of an app whose types it lacks"
+        );
+        // The member that has the app answers with the surface the workspace's version names.
+        let hash = blake3::hash(SURFACE.as_bytes());
+        assert!(crate::surfaces::keep(&hash.to_hex(), SURFACE.as_bytes()));
+        let named = hash.as_bytes();
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        state.lock().await.ensure_surface(NOTES, Some(named));
+        assert!(
+            matches!(
+                write(&workspaces, &workspace, "plan", changes).await,
+                Ok(Reply::Written)
+            ),
+            "the app's write is admitted now"
+        );
+    }
 }
 
 /// This device's turn to write the record `record` of `kind` in `workspace`, as `device`: one
