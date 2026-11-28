@@ -469,6 +469,43 @@ tilo_test_env::scenario! {
         assert!(says(&mut app, "Keep access"));
     }
 
+    phase the_owner_hands_the_workspace_over_after_asking;
+    {
+        let (mut app, state) = mounted("people");
+        press(&mut app, "ws-people-transfer-bo");
+        assert!(says(&mut app, "Hand the workspace over?"));
+        assert!(says(&mut app, "Bo Li Andersson"));
+        assert!(
+            state.take_asked().is_empty(),
+            "nothing is asked of the shell before the person answers"
+        );
+        app.harness().key("Escape");
+        app.settle();
+        assert!(state.take_asked().is_empty(), "keeping changes nothing");
+        press(&mut app, "ws-people-transfer-bo");
+        press(&mut app, "ws-settings-decision.primary");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::TransferOwnership {
+                member: "bo".to_owned()
+            }]
+        );
+    }
+
+    phase a_member_who_does_not_own_it_is_offered_no_hand_over;
+    {
+        let mut app = staged("people-member");
+        assert!(
+            !app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node
+                    .label()
+                    .is_some_and(|label| label.starts_with("Hand over"))),
+            "only the owner hands the workspace over"
+        );
+    }
+
     phase an_agent_changing_a_role_goes_through_the_api;
     {
         let (mut app, state) = mounted("people");

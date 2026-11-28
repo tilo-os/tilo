@@ -162,6 +162,13 @@ pub enum WorkspaceSettingsEffect {
         #[param("The member, by their key in the list")]
         member: String,
     },
+    /// Hand the workspace to a member, who becomes its owner
+    #[effect(kind = "outside")]
+    #[effect(destructive, attended)]
+    TransferOwnership {
+        #[param("The member, by their key in the list")]
+        member: String,
+    },
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
     ReviewActivity,
@@ -359,6 +366,8 @@ pub struct Settings {
 pub enum Confirm {
     /// Remove the member `member`, called `name`.
     RemoveMember { member: String, name: String },
+    /// Hand the workspace to the member `member`, called `name`: they become its owner.
+    TransferOwnership { member: String, name: String },
     /// Remove the custom role named here.
     RemoveRole { role: String, name: String },
     /// Revoke the permission `grant`, which `holder` holds.
@@ -977,6 +986,9 @@ impl Confirm {
             Self::RemoveMember { member, .. } => WorkspaceSettingsEffect::RemoveMember {
                 member: member.clone(),
             },
+            Self::TransferOwnership { member, .. } => WorkspaceSettingsEffect::TransferOwnership {
+                member: member.clone(),
+            },
             Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
                 grant: grant.clone(),
             },
@@ -991,6 +1003,9 @@ impl Confirm {
     fn question<'a>(&self, settings: &'a Settings) -> (&'a Decision, String) {
         match self {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
+            Self::TransferOwnership { name, .. } => {
+                (&settings.people.transfer_decision, name.clone())
+            }
             Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
             Self::RemoveRole { name, .. } => {
                 (&settings.people.role_editor.remove_decision, name.clone())

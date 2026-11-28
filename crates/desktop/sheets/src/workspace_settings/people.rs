@@ -109,6 +109,11 @@ pub struct People {
     pub note: Option<String>,
     /// The question removing someone asks.
     pub remove_decision: Decision,
+    /// Whether the viewer owns the workspace, and may hand it to another member.
+    pub may_transfer: bool,
+    /// The button that hands the workspace over, and the question it asks first.
+    pub transfer: String,
+    pub transfer_decision: Decision,
     /// The holders of the workspace, under their own heading.
     pub holders_header: String,
     pub holders: Vec<Holder>,
@@ -269,7 +274,11 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
     if !details.is_empty() {
         row = row.secondary(details.join(", "));
     }
-    if person.offers == Offers::Nothing {
+    // The person who owns the workspace may hand it to another member, asking first: the
+    // workspace becomes theirs, and this one keeps only what they grant.
+    let transferring =
+        people.may_transfer && !person.you && person.role_key.as_deref() != Some("owner");
+    if person.offers == Offers::Nothing && !transferring {
         return Box::new(row.value(person.role.clone()));
     }
     let roles = people
@@ -297,15 +306,15 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
                 .with_checked(assigned)
         }))
         .collect();
-    let mut controls = Row::new()
-        .with_rhythm(Rhythm::Related)
-        .align_start()
-        .push(Box::new(
+    let mut controls = Row::new().with_rhythm(Rhythm::Related).align_start();
+    if person.offers != Offers::Nothing {
+        controls = controls.push(Box::new(
             Button::new(&format!("ws-people-role-{}", person.key), &person.role)
                 .control_size(ControlSize::Small)
                 .with_enabled(person.can_manage)
                 .with_menu(roles),
         ));
+    }
     if person.offers == Offers::RoleAndRemove {
         let confirm = parts.clone();
         let (member, name) = (person.key.clone(), person.name.clone());
@@ -320,6 +329,24 @@ fn row(people: &People, person: &Person, parts: &Parts) -> Element {
                         name: name.clone(),
                     });
                 }),
+        ));
+    }
+    if transferring {
+        let confirm = parts.clone();
+        let (member, name) = (person.key.clone(), person.name.clone());
+        controls = controls.push(Box::new(
+            Button::new(
+                &format!("ws-people-transfer-{}", person.key),
+                &people.transfer,
+            )
+            .role(ButtonRole::Secondary)
+            .control_size(ControlSize::Small)
+            .on_click(move || {
+                confirm.confirm(Confirm::TransferOwnership {
+                    member: member.clone(),
+                    name: name.clone(),
+                });
+            }),
         ));
     }
     Box::new(row.trailing(Box::new(controls)))
@@ -400,6 +427,15 @@ pub(super) fn sample() -> People {
             review: "Review activity".to_owned(),
             confirm: "Remove person".to_owned(),
         },
+        may_transfer: true,
+        transfer: "Hand over".to_owned(),
+        transfer_decision: Decision {
+            title: "Hand the workspace over?".to_owned(),
+            description: "It becomes theirs: they decide who is in it, what each of them may do, and what you keep. This cannot be undone.".to_owned(),
+            keep: "Keep it".to_owned(),
+            review: String::new(),
+            confirm: "Hand it over".to_owned(),
+        },
         holders_header: "Where it is kept".to_owned(),
         holders: vec![
             Holder {
@@ -429,5 +465,6 @@ pub(super) fn sample_member() -> People {
         }
     }
     people.note = Some("Only admins can change roles or remove people.".to_owned());
+    people.may_transfer = false;
     people
 }

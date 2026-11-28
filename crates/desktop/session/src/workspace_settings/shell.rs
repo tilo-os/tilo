@@ -281,6 +281,7 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::RemoveCustomRole { .. }
         | sheet::WorkspaceSettingsEffect::SetDocumentAccess { .. }
         | sheet::WorkspaceSettingsEffect::RemoveMember { .. }
+        | sheet::WorkspaceSettingsEffect::TransferOwnership { .. }
         | sheet::WorkspaceSettingsEffect::Grant { .. }
         | sheet::WorkspaceSettingsEffect::Revoke { .. } => governance_ask(state, fed, effect),
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
@@ -371,6 +372,11 @@ fn governance_ask(
         sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
             govern(state, fed, move |ws, actor| {
                 domain::remove_member(ws, actor, &member)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::TransferOwnership { member } => {
+            govern(state, fed, move |ws, actor| {
+                domain::transfer_ownership(ws, actor, &member)
             });
         }
         sheet::WorkspaceSettingsEffect::Grant {

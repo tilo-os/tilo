@@ -750,6 +750,27 @@ pub fn set_member_role(
         .change_all_as_at(actor, vec![change], tilo_clock::unix_now())
 }
 
+/// Hand the workspace to `member` as its owner, as `actor` who owns it now: one governance change,
+/// which the workspace refuses from anyone but its owner, and refuses for its owner or a banned
+/// person. Nothing else of theirs changes: the owner they were stays an administrator unless the
+/// new owner decides otherwise.
+///
+/// # Errors
+/// The workspace refused the change, saying why.
+pub fn transfer_ownership(
+    ws: &mut Workspace,
+    actor: &str,
+    member: &str,
+) -> Result<PolicyEdit, Refusal> {
+    ws.policy.change_all_as_at(
+        actor,
+        vec![tilo_action_policy::Change::TransferOwnership {
+            person: member.to_owned(),
+        }],
+        tilo_clock::unix_now(),
+    )
+}
+
 /// Remove `member` and every grant naming them, as `actor`.
 ///
 /// # Errors
@@ -1068,6 +1089,31 @@ mod members_tests {
             ActionKind::Undoable,
             tilo_clock::unix_now(),
         ) == Answer::Allow
+    }
+
+    /// The owner alone hands the workspace over, to a member who is not its owner already: a
+    /// member cannot take it, and the owner cannot hand it to themselves.
+    #[test]
+    fn the_owner_alone_hands_the_workspace_over() {
+        let mut ws = ws_with_two_members();
+        assert!(
+            transfer_ownership(&mut ws, PEER, PEER).is_err(),
+            "a member who does not own the workspace cannot hand it over"
+        );
+        assert!(ws.policy.is_owner(OWNER), "nothing moved");
+        assert!(
+            transfer_ownership(&mut ws, OWNER, OWNER).is_err(),
+            "it cannot be handed to its owner"
+        );
+        assert!(
+            transfer_ownership(&mut ws, OWNER, PEER).is_ok_and(|edit| !edit.is_empty()),
+            "the owner hands it over"
+        );
+        assert!(ws.policy.is_owner(PEER), "the workspace is theirs");
+        assert!(
+            !ws.policy.is_owner(OWNER),
+            "and no longer the owner's who gave it"
+        );
     }
 
     tilo_test_env::scenario! {

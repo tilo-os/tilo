@@ -89,6 +89,15 @@ pub fn tab(content: PeopleContent) -> sheet::People {
             review: t("workspace-settings-review-activity"),
             confirm: t("workspace-settings-remove-person"),
         },
+        may_transfer: content.may_transfer,
+        transfer: t("workspace-settings-transfer"),
+        transfer_decision: sheet::Decision {
+            title: t("workspace-settings-transfer-sheet-title"),
+            description: t("workspace-settings-transfer-sheet-description"),
+            keep: t("workspace-settings-keep-workspace"),
+            review: String::new(),
+            confirm: t("workspace-settings-transfer-confirm"),
+        },
     }
 }
 

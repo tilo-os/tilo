@@ -49,6 +49,8 @@ pub struct PeopleContent {
     pub people: Vec<Person>,
     pub custom_roles: Vec<(String, String)>,
     pub manage_roles: bool,
+    /// The viewer owns the workspace, and may hand it to another member.
+    pub may_transfer: bool,
     /// What an empty list says instead: its title and detail.
     pub empty: (String, String),
     pub note: Option<String>,
@@ -222,6 +224,7 @@ pub fn content_of(
         people,
         custom_roles: Vec::new(),
         manage_roles: administers,
+        may_transfer: is_owner,
         empty: (
             t("workspace-settings-members-empty-title"),
             t("workspace-settings-members-empty-detail"),
