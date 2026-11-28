@@ -3216,6 +3216,9 @@ view editor(d: Draft) {
         // and the draft stays as it is. With one, the draft can also be kept in the account's
         // server Drafts folder for its other mail clients.
         row {
+            ui.Button("Discard", icon: .trash, role: .plain) {
+                on press: discard(mail, d)
+            }
             ui.Button("Attach", icon: .paperclip) {
                 on press: file.choose(attach(d))
             }

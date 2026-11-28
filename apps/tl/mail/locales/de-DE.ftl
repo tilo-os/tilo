@@ -752,6 +752,7 @@ d-oqpazwvc = Schreiben
     .w-add-link = Link hinzufügen
     .w-write-your-message = Schreib deine Nachricht
     .w-attach = Anhängen
+    .w-discard = Verwerfen
     .w-send = Senden
     .w-add-an-account-to-send = Konto zum Senden hinzufügen
     .w-save-in-drafts = In Entwürfen speichern
