@@ -305,6 +305,8 @@ struct Inner {
     /// The runs open, outermost first, with what to go back to when one fails and the
     /// invocation their writes are stamped with.
     runs: RefCell<Vec<(String, Saved, String)>>,
+    /// What runs that ended inside an open one wrote, by how many stayed open: kept on its failure.
+    finished: RefCell<Vec<(usize, Vec<Command>)>>,
     /// What the first commit of a run writes besides what the run does, by the run: the host's
     /// note that a trigger ran is part of the change its run made, not a change of its own.
     run_marks: RefCell<Vec<RunMark>>,
@@ -710,6 +712,7 @@ impl ResourceStore {
                 txn: RefCell::default(),
                 next_txn: StdCell::new(1),
                 runs: RefCell::default(),
+                finished: RefCell::default(),
                 run_marks: RefCell::default(),
                 migrating: RefCell::default(),
                 trials: RefCell::default(),
@@ -6065,6 +6068,12 @@ impl Store for ResourceStore {
             let Some(at) = runs.iter().rposition(|(open, _, _)| open == run) else {
                 return Ok(());
             };
+            let mut finished = self.inner.finished.borrow_mut();
+            finished.retain(|(depth, _)| *depth <= at);
+            if let Some((_, saved, _)) = runs.get(at).filter(|_| at > 0) {
+                let unsent = self.inner.unsent.borrow();
+                finished.push((at, unsent.get(saved.unsent..).unwrap_or_default().to_vec()));
+            }
             runs.truncate(at);
         }
         self.settle()
@@ -6076,7 +6085,7 @@ impl Store for ResourceStore {
             let Some(at) = runs.iter().rposition(|(open, _, _)| open == run) else {
                 return;
             };
-            let saved = runs.get(at).map(|(_, saved, _)| saved.clone());
+            let saved = runs.get(at).map(|(_, saved, _)| (saved.clone(), at));
             runs.truncate(at);
             // What the failed run wrote is taken back, so nothing of it is told.
             self.inner
@@ -6085,8 +6094,18 @@ impl Store for ResourceStore {
                 .retain(|heard| heard.depth <= at);
             saved
         };
-        if let Some(saved) = saved {
-            self.restore(saved);
+        let Some((saved, at)) = saved else { return };
+        self.restore(saved);
+        let mut finished = self.inner.finished.borrow_mut();
+        for (depth, commands) in finished.iter_mut().filter(|(depth, _)| *depth > at) {
+            self.inner.unsent.borrow_mut().extend_from_slice(commands);
+            self.inner.cache.borrow_mut().clear();
+            *depth = at;
+        }
+        finished.retain(|(depth, _)| *depth > 0);
+        drop(finished);
+        if let Err(error) = self.settle() {
+            tracing::warn!(%error, "what a failed run left to send was not sent");
         }
     }
 

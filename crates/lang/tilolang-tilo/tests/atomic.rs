@@ -124,5 +124,13 @@ tilo_test_env::scenario! {
             "nothing of a run that failed anywhere is in the store"
         );
         assert_eq!(value(&host, &tally, &meta), 0);
+        // A call that ended while a run waited on it is a change of its own: it outlives the run.
+        let mut store = host.store().clone();
+        store.begin_run("waits on a call");
+        store.begin_run("the call");
+        assert!(run(&host, &meta, "bump", &tally));
+        store.end_run("the call").unwrap();
+        store.abort_run("waits on a call");
+        assert_eq!(value(&host, &tally, &meta), 1, "the call's own change stands");
     }
 }
