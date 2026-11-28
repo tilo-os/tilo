@@ -44,7 +44,8 @@ fn the_registry_names_the_declared_actions() {
     use tilo_actions::remote::{
         VAULT_DEVICE_KEY, VAULT_FIND, VAULT_FORGET_PAGE_LOGIN, VAULT_ITEM_KIND, VAULT_KEEP,
         VAULT_KEEP_PAGE_LOGIN, VAULT_LIST, VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, VAULT_PROVIDER,
-        VAULT_RELEASE, VAULT_RESOURCE, VAULT_WEBSITE_SIGN_INS,
+        VAULT_RELEASE, VAULT_RESOURCE, VAULT_WEBSITE_ACCOUNT, VAULT_WEBSITE_ACCOUNTS,
+        VAULT_WEBSITE_SIGN_INS,
     };
     assert_eq!(
         (PROVIDER, RESOURCE, ITEM_KIND),
@@ -61,6 +62,8 @@ fn the_registry_names_the_declared_actions() {
         (VAULT_FORGET_PAGE_LOGIN, FORGET_PAGE_LOGIN),
         (VAULT_PAGE_FILL, PAGE_FILL),
         (VAULT_WEBSITE_SIGN_INS, WEBSITE_SIGN_INS),
+        (VAULT_WEBSITE_ACCOUNTS, WEBSITE_ACCOUNTS),
+        (VAULT_WEBSITE_ACCOUNT, WEBSITE_ACCOUNT),
     ] {
         assert_eq!(named, declared);
         assert!(declaration(named).is_some(), "{named} is declared nowhere");

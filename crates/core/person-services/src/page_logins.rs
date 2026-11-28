@@ -360,21 +360,23 @@ impl crate::PersonServices {
             return Some(Err(refused(from_a_tilolang_process(app))));
         }
         match asked_of(request) {
-            Ok(VaultAction::WebsiteSignIns { held }) => {
-                Some(Box::pin(self.sign_ins_for_window((app, workspace), &held)).await)
-            }
+            Ok(
+                asked @ (VaultAction::WebsiteSignIns { .. }
+                | VaultAction::WebsiteAccounts {}
+                | VaultAction::WebsiteAccount { .. }),
+            ) => Some(Box::pin(self.for_browsers_window((app, workspace), asked)).await),
             Ok(_) => None,
             Err(error) => Some(Err(error)),
         }
     }
 
-    /// The website sign-ins the person brought, all but those `held` names, for `app`'s window
-    /// in `workspace`: the sites they open signed in in their own Browser, and in no other
-    /// app's window.
-    async fn sign_ins_for_window(
+    /// What the person brought from a browser of theirs, for `app`'s window in `workspace`: the
+    /// sites they open signed in in their own Browser, and the website accounts it opens a window
+    /// of its own for, and in no other app's window.
+    async fn for_browsers_window(
         &self,
         (app, workspace): (&str, &str),
-        held: &[String],
+        asked: VaultAction,
     ) -> Result<Value, ActionCallError> {
         if app != tilo_app_id::apps::BROWSER {
             return Err(refused(NOT_BROWSER));
@@ -385,10 +387,25 @@ impl crate::PersonServices {
         self.using_vault(workspace, &device, Some(app), false)
             .await
             .map_err(|why| refused(device_may_not_read(app, &why)))?;
-        let sign_ins = Box::pin(self.website_sign_ins(workspace, cert.user_public_key, held))
-            .await
-            .map_err(refused)?;
-        answer(&sign_ins)
+        let person = cert.user_public_key;
+        match asked {
+            VaultAction::WebsiteSignIns { held } => answer(
+                &Box::pin(self.website_sign_ins(workspace, person, &held))
+                    .await
+                    .map_err(refused)?,
+            ),
+            VaultAction::WebsiteAccounts {} => answer(
+                &Box::pin(self.website_accounts(workspace, person))
+                    .await
+                    .map_err(refused)?,
+            ),
+            VaultAction::WebsiteAccount { account } => answer(
+                &Box::pin(self.website_account(workspace, person, &account))
+                    .await
+                    .map_err(refused)?,
+            ),
+            _ => Err(ActionCallError::UnknownAction),
+        }
     }
 
     /// The logins `workspace`'s vault keeps for `site`, as `app`'s window is told them.

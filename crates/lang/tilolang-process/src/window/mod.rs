@@ -19,6 +19,8 @@
     reason = "layout weights, counts and sizes are small values; see crates/lang/tilolang-tilo"
 )]
 
+#[cfg(target_os = "linux")]
+pub mod accounts;
 pub mod app;
 pub mod hosted;
 pub mod i18n;

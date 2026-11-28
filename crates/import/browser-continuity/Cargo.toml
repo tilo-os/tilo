@@ -9,7 +9,10 @@ homepage.workspace = true
 description = "Bounded reviewed browser migration plans and optional read-only source capture"
 
 [features]
-native = ["dep:rustix", "dep:uuid", "dep:tempfile", "dep:rusqlite", "dep:tilo-files", "dep:cap-primitives", "dep:cap-fs-ext", "dep:ed25519-dalek", "dep:tilo-user-identity"]
+# The profiles a website account opens in, each its own, without capture or SQLite: what a window
+# that opens an account links.
+service-profiles = ["dep:rustix", "dep:uuid", "dep:tilo-files"]
+native = ["service-profiles", "dep:tempfile", "dep:rusqlite", "dep:cap-primitives", "dep:cap-fs-ext", "dep:ed25519-dalek", "dep:tilo-user-identity"]
 
 [dependencies]
 zeroize.workspace = true

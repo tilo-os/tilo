@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub use tilo_page_engine::Arrived;
 use tilo_page_engine::{PageSession, codec};
 use tilo_webview::{SharedEngine, WebViewCommand};
 use ui::webview;
@@ -65,6 +66,21 @@ fn vault() -> std::rc::Rc<dyn tilo_page_engine::LoginVault> {
 #[cfg(not(target_arch = "wasm32"))]
 const SIGN_INS_HELD: &str = "tilo-sign-ins";
 
+/// What opens the person's website accounts (Slack, Discord) on profiles of their own, each
+/// signed in as its account: the window's host's, which keeps those profiles.
+pub trait AccountProfiles: Send + Sync {
+    /// Open the account `session` is the sign-in of on its own profile, signed in as it: the
+    /// engine, where the account opens, and what keeps the profile until the window closes. It
+    /// is called off the window's thread, and may take as long as the engine takes to start.
+    ///
+    /// # Errors
+    /// Why the account did not open, in the person's words.
+    fn open(
+        &self,
+        session: tilo_webview::sessions::SessionCookies,
+    ) -> Result<tilo_page_engine::Arrived, String>;
+}
+
 /// What asking the page left to do.
 pub enum Asked {
     /// The operation answered at once (a navigation, a zoom): what the app reads.
@@ -73,11 +89,16 @@ pub enum Asked {
     Waiting(u32),
 }
 
-/// Ask the page `request` (JSON an app's action wrote) to do what it says.
+/// Ask the page `request` (JSON an app's action wrote) to do what it says. `accounts` opens the
+/// person's website accounts, where the window's host gave it one.
 ///
 /// # Errors
 /// The request is no JSON the page reads, or the window keeps no page.
-pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
+pub fn ask(
+    page: &Page,
+    request: &str,
+    accounts: Option<&std::sync::Arc<dyn AccountProfiles>>,
+) -> Result<Asked, String> {
     match codec::decode(request)? {
         // A page opened private starts its window's engine on a fresh, disposable profile. It is
         // the window's to make before anything else is asked, since it settles which engine the
@@ -103,6 +124,17 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             }
             Ok(Asked::Answered(codec::accepted()))
         }
+        // The person's website accounts that open in a window of their own: the vault's answer
+        // reaches the app as a note. A private page (a visitor's) asks for none.
+        codec::Ask::Accounts => {
+            let _ = engine_of(page);
+            if_session(page, PageSession::list_accounts);
+            Ok(Asked::Answered(codec::accepted()))
+        }
+        // A page that opens one of the person's website accounts settles its engine before
+        // anything else is asked: the account's own, signed in as it, which the window's host
+        // opens off this thread. A visitor's page opens none.
+        codec::Ask::Account { account } => open_account(page, &account, accounts),
         // An extension the person chose arrives as the address of its bytes in this device's
         // content store: an app names no host path, so the window reads the package here and
         // hands the engine the bytes.
@@ -185,6 +217,56 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             Ok(Asked::Waiting(session.ask(None, request)))
         }
     }
+}
+
+/// What a page that asks for a website account is told where its window opens none.
+const NO_ACCOUNTS: &str = "This window cannot open your accounts";
+
+/// Open the person's website account `account` in the window of `page`: the page shows that it
+/// is on its way, the vault is asked for the account's sign-in on the window's own connection,
+/// and `accounts` opens its profile off this thread. A page the window already started for the
+/// person goes; a visitor's page opens none, and says so.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_account(
+    page: &Page,
+    account: &str,
+    accounts: Option<&std::sync::Arc<dyn AccountProfiles>>,
+) -> Result<Asked, String> {
+    if page.borrow().as_ref().is_some_and(PageSession::is_private) {
+        return Ok(Asked::Answered(codec::visitor()));
+    }
+    let accounts = std::sync::Arc::clone(accounts.ok_or_else(|| NO_ACCOUNTS.to_owned())?);
+    let (send, arriving) = std::sync::mpsc::channel();
+    let wake = ui::WakeHandle::new();
+    let vault = crate::page_vault::NativeVault::new(wake.clone());
+    vault.website_account(account, move |session| {
+        let opened = std::thread::Builder::new()
+            .name("tilo-page-account".to_owned())
+            .spawn(move || {
+                // A window that closed meanwhile has nobody to hand the engine to; what keeps the
+                // profile goes with the answer.
+                drop(send.send(session.and_then(|session| accounts.open(session))));
+                wake.wake();
+            });
+        if let Err(error) = opened {
+            tracing::error!(%error, "an account's profile could not be opened off the window");
+        }
+    });
+    let placeholder: SharedEngine =
+        tilo_webview::chromium::UnavailableEngine::new("Opening your account…".to_owned());
+    page.borrow_mut()
+        .replace(PageSession::new_arriving(placeholder, arriving));
+    Ok(Asked::Answered(codec::accepted()))
+}
+
+/// A page in a web browser opens no account: its window has no daemon to ask.
+#[cfg(target_arch = "wasm32")]
+fn open_account(
+    _page: &Page,
+    _account: &str,
+    _accounts: Option<&std::sync::Arc<dyn AccountProfiles>>,
+) -> Result<Asked, String> {
+    Err(NO_ACCOUNTS.to_owned())
 }
 
 /// Start the window's page on a fresh, disposable profile, unless it already has one.
@@ -373,7 +455,7 @@ mod tests {
             page.borrow().is_some(),
             "the page starts before the window shows anything"
         );
-        let Ok(Asked::Answered(answer)) = ask(&page, r#"{"op":"sign_ins"}"#) else {
+        let Ok(Asked::Answered(answer)) = ask(&page, r#"{"op":"sign_ins"}"#, None) else {
             panic!("a visitor's window answers at once");
         };
         let answer: serde_json::Value = serde_json::from_str(&answer).expect("JSON");
@@ -388,12 +470,86 @@ mod tests {
             "the page browses on a profile of its own, not the person's"
         );
         // Asked to browse privately or to open the sign-ins again, it stays as it is.
-        let _ = ask(&page, r#"{"op":"private"}"#);
-        let Ok(Asked::Answered(again)) = ask(&page, r#"{"op":"sign_ins"}"#) else {
+        let _ = ask(&page, r#"{"op":"private"}"#, None);
+        let Ok(Asked::Answered(again)) = ask(&page, r#"{"op":"sign_ins"}"#, None) else {
             panic!("a visitor's window answers at once");
         };
         assert_eq!(again, codec::visitor());
         assert!(page.borrow().as_ref().expect("kept").is_private());
+
+        // Nor does it open a website account of the person's, whatever the app asks.
+        let accounts: std::sync::Arc<dyn AccountProfiles> = std::sync::Arc::new(Refused);
+        let Ok(Asked::Answered(account)) = ask(
+            &page,
+            r#"{"op":"account","account":"slack-1"}"#,
+            Some(&accounts),
+        ) else {
+            panic!("a visitor's window answers at once");
+        };
+        assert_eq!(account, codec::visitor());
+        assert!(page.borrow().as_ref().expect("kept").is_private());
+    }
+
+    /// Opens no account, and says so if it is asked.
+    struct Refused;
+    impl AccountProfiles for Refused {
+        fn open(
+            &self,
+            _session: tilo_webview::sessions::SessionCookies,
+        ) -> Result<tilo_page_engine::Arrived, String> {
+            Err("asked to open an account".to_owned())
+        }
+    }
+
+    /// A page that opens one of the person's website accounts starts on a placeholder while the
+    /// account is on its way, never on the person's own profile, and says why when the account
+    /// does not come: a window with no connection to the daemon has no vault to ask for it, and
+    /// its host is never asked to open one. A window whose host opens none refuses at once.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_account_page_waits_for_its_account_and_says_why_it_did_not_come() {
+        let accounts: std::sync::Arc<dyn AccountProfiles> = std::sync::Arc::new(Refused);
+        let page = Page::default();
+        let Ok(Asked::Answered(answer)) = ask(
+            &page,
+            r#"{"op":"account","account":"slack-1"}"#,
+            Some(&accounts),
+        ) else {
+            panic!("the window answers at once");
+        };
+        assert_eq!(answer, codec::accepted());
+        assert!(
+            !page
+                .borrow()
+                .as_ref()
+                .expect("the page started")
+                .is_private(),
+            "an account's page is no visitor's"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let said = loop {
+            if let Some(note) = notes(&page).into_iter().next() {
+                break serde_json::from_str::<serde_json::Value>(&note).expect("JSON");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the page said nothing of its account"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(said["note"], "account");
+        assert_eq!(said["open"], false);
+        assert_eq!(
+            said["message"],
+            crate::page_vault::NO_DAEMON,
+            "the vault was asked, not the host"
+        );
+
+        let page = Page::default();
+        assert_eq!(
+            ask(&page, r#"{"op":"account","account":"slack-1"}"#, None).err(),
+            Some(NO_ACCOUNTS.to_owned())
+        );
     }
 
     #[test]

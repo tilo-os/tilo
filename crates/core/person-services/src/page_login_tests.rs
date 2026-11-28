@@ -360,3 +360,127 @@ async fn the_browsers_window_alone_is_handed_the_persons_website_sign_ins() {
         page_logins::from_a_tilolang_process(BROWSER)
     );
 }
+
+/// The website accounts the person brought (Slack) are listed to their own Browser's window,
+/// which opens each on a profile of its own with the account's sign-in; their sign-ins of every
+/// site are no account of their own, and no other app's window or tilolang process is told of
+/// any.
+#[tokio::test]
+async fn the_browsers_window_alone_lists_and_opens_the_persons_website_accounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, _, _) = hosted(workspaces).await;
+    let cookie = |host: &str, value: &str| {
+        json!([{
+            "host": host, "domain": host, "host_only": true,
+            "name": "d", "value": value, "path": "/",
+            "expires_unix_seconds": null, "secure": true, "http_only": true, "same_site": "lax",
+        }])
+        .to_string()
+    };
+    for (id, title, service, site, cookies) in [
+        (
+            "slack-firefox-1",
+            "Slack (Firefox)",
+            "slack",
+            "https://app.slack.com",
+            cookie("app.slack.com", "made-up-slack-cookie"),
+        ),
+        (
+            "web-firefox-1",
+            "Sign-ins from Firefox",
+            "web",
+            SHOP,
+            cookie("shop.example.test", "made-up-shop-cookie"),
+        ),
+    ] {
+        workspaces
+            .keep_website_sign_in(
+                &workspace,
+                owner.user_public_key,
+                (id, title, service, site),
+                &zeroize::Zeroizing::new(cookies),
+            )
+            .await
+            .expect("the person's sign-ins are kept");
+    }
+    let asking = |app: &'static str, process: AppProcess, action: &'static str, argument: Value| {
+        let workspace = &workspace;
+        async move {
+            let request = at_vault(action, &argument);
+            workspaces
+                .page_login((app, workspace), &process, &request, None)
+                .await
+        }
+    };
+    let listed: workspace_vault::WebsiteAccounts = serde_json::from_value(
+        asking(
+            BROWSER,
+            AppProcess::Unplaced,
+            workspace_vault::WEBSITE_ACCOUNTS,
+            json!({}),
+        )
+        .await
+        .expect("Browser's window is told of them"),
+    )
+    .unwrap();
+    assert_eq!(
+        listed.accounts,
+        [workspace_vault::WebsiteAccount {
+            id: "slack-firefox-1".to_owned(),
+            service: "slack".to_owned(),
+            title: "Slack (Firefox)".to_owned(),
+        }]
+    );
+    let opened: workspace_vault::WebsiteAccountSession = serde_json::from_value(
+        asking(
+            BROWSER,
+            AppProcess::Unplaced,
+            workspace_vault::WEBSITE_ACCOUNT,
+            json!({"account": "slack-firefox-1"}),
+        )
+        .await
+        .expect("Browser's window opens it"),
+    )
+    .unwrap();
+    assert!(opened.session.contains("made-up-slack-cookie"));
+    assert!(!format!("{opened:?}").contains("made-up-slack-cookie"));
+    assert_eq!(
+        refusal(
+            asking(
+                BROWSER,
+                AppProcess::Unplaced,
+                workspace_vault::WEBSITE_ACCOUNT,
+                json!({"account": "web-firefox-1"}),
+            )
+            .await
+        ),
+        crate::website_session_asks::UNAVAILABLE
+    );
+    for (action, argument) in [
+        (workspace_vault::WEBSITE_ACCOUNTS, json!({})),
+        (
+            workspace_vault::WEBSITE_ACCOUNT,
+            json!({"account": "slack-firefox-1"}),
+        ),
+    ] {
+        assert_eq!(
+            refusal(
+                asking(
+                    "so.tilo.notes",
+                    AppProcess::Unplaced,
+                    action,
+                    argument.clone()
+                )
+                .await
+            ),
+            page_logins::NOT_BROWSER
+        );
+        assert_eq!(
+            refusal(asking(BROWSER, AppProcess::Tilolang, action, argument).await),
+            page_logins::from_a_tilolang_process(BROWSER)
+        );
+    }
+}

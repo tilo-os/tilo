@@ -39,6 +39,11 @@ pub const VAULT_FORGET_PAGE_LOGIN: &str = "forget-page-login";
 pub const VAULT_PAGE_FILL: &str = "page-fill";
 /// The website sign-ins the person brought, handed to Browser's window.
 pub const VAULT_WEBSITE_SIGN_INS: &str = "website-sign-ins";
+/// The vault's action that lists the person's website accounts, for Browser's window alone.
+pub const VAULT_WEBSITE_ACCOUNTS: &str = "website-accounts";
+/// The vault's action that opens one of the person's website accounts, for Browser's window
+/// alone.
+pub const VAULT_WEBSITE_ACCOUNT: &str = "website-account";
 
 // The record kind the workspace keeps its vault in, in Passwords, where every action of the vault
 // that writes takes its step, and the id its declaration binds to it.

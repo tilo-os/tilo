@@ -147,6 +147,12 @@ type Page (title: title, readers: author here until shared) {
     /// it opens in, its engine runs on a profile of its own, which holds none of the person's
     /// cookies or sign-ins, is not offered their saved logins, and goes when the window closes.
     visitor: Bool = false
+    /// The website account of the person's (Slack, Discord) the page opens, on a profile of its
+    /// own signed in as that account: empty for a page of the person's own profile.
+    account: Text = ""
+    /// That the account is on its way, or why it did not open, in the person's words: empty once
+    /// it is open.
+    account_notice: Text = ""
     /// What was done in the page, newest last. The newest thousand are kept.
     steps: Collection<PageStep>
     /// What the page's own script asks, and the menu it showed, as its window last read them.
@@ -537,7 +543,8 @@ type Ask {
     credential: Option<Text> = .none
     /// The capture the engine took of a login form, which saving or updating names.
     capture: Option<Text> = .none
-    /// The vault item of a saved login, which filling, updating or forgetting names.
+    /// The vault item of a saved login, which filling, updating or forgetting names, or the
+    /// website account of the person's a page opens, by its id.
     account: Option<Text> = .none
     /// The address a form is filled from, through the engine.
     address: Option<Address> = .none
@@ -602,6 +609,19 @@ type Answer (title: message) {
     }
 }
 
+/// A website account of the person's (Slack, Discord) that opens in a window of its own, on a
+/// profile of its own signed in as that account: one they brought from a browser of theirs or
+/// connected here. Theirs alone, as their window last listed it: its cookies stay in the
+/// workspace's vault.
+type WebsiteAccount (readers: author) {
+    /// The account, as the workspace's accounts name it.
+    account: Text
+    /// The service it signs in to: `slack` or `discord`.
+    service: Text
+    /// What the person calls it.
+    title: Text
+}
+
 /// The workspace's browser: what the person set, the sites they saved and visited, the forms
 /// their pages asked, and the addresses they fill forms with. One workspace holds one, and each
 /// member sees the same one.
@@ -626,6 +646,8 @@ type Browser {
     forms: Collection<RememberedForm>
     addresses: Collection<Address>
     pages: Collection<Page>
+    /// The person's website accounts that open in a window of their own, each theirs alone.
+    accounts: Collection<WebsiteAccount>
     /// Forms are filled with a saved address while the person has one and leaves this on.
     addresses_enabled: Bool = false
     /// The extensions installed on this device, as a page's window last listed them.
@@ -663,6 +685,21 @@ action new_private_page(b: Browser) -> Page (
     key: "Ctrl+Shift+P",
 ) {
     b.pages.insert(Page(url: b.homepage, title: "", shared: false))
+}
+
+/// Opens a website account of the person's (Slack, Discord) in a window of its own, on a profile of
+/// its own signed in as that account: none of their other sign-ins reach it, and it reaches none
+/// of theirs.
+action open_account(b: Browser, a: WebsiteAccount) -> Page (icon: .user, label: "Open account") {
+    let title = a.title
+    b.pages.insert(
+        Page(
+            url: "",
+            title: title,
+            account: a.account,
+            account_notice: std.say("Opening {title}…"),
+        ),
+    )
 }
 
 /// A private window closed: its page goes with it, so nothing of it outlives the window.
@@ -1230,16 +1267,19 @@ action refresh_page(p: Page) -> Answer uses page (
     Answer(ok: true, message: "read")
 }
 
-/// The page's window opened: it settles a private or a visitor's page's engine before anything is
-/// read, and opens any other signed in to the sites the person brought their sign-ins of from a
-/// browser of theirs, then reads what the page asks and shows before anyone looks. A window opened
-/// for an agent opens none of them, says so, and the page browses as a visitor from then on,
-/// whichever window shows it.
+/// The page's window opened: it settles a private, a visitor's or a website account's page's engine
+/// before anything is read, and opens any other signed in to the sites the person brought their
+/// sign-ins of from a browser of theirs and lists their website accounts, then reads what the page
+/// asks and shows before anyone looks. A window opened for an agent opens none of them, says so,
+/// and the page browses as a visitor from then on, whichever window shows it.
 opened action opened_page(p: Page) uses page {
     if not p.shared or p.visitor {
         let _ = page.call(json.encode(Ask(op: "private")))
     } else {
-        match json.parse(page.call(json.encode(Ask(op: "sign_ins")))) {
+        let asked = if p.account != "" {
+            Ask(op: "account", account: .some(p.account))
+        } else { Ask(op: "sign_ins") }
+        match json.parse(page.call(json.encode(asked))) {
             .ok(answer) => {
                 if json_text(answer, "code") == "visitor" {
                     p.visitor = true
@@ -1247,8 +1287,32 @@ opened action opened_page(p: Page) uses page {
             }
             .err(_) => {}
         }
+        if p.account == "" and not p.visitor {
+            let _ = page.call(json.encode(Ask(op: "accounts")))
+        }
     }
     refresh_page(p)
+}
+
+/// Writes the person's website accounts that open in a window of their own, as their window's
+/// vault listed them; a list the vault did not answer leaves them as they were. The window raises
+/// it; a person, agent or script never does.
+action remember_accounts(p: Page, accounts: Text, message: Text) {
+    if message != "" {
+        return
+    }
+    let b = root Browser
+    let listed = website_accounts_of(accounts)
+    b.accounts.remove_where(k -> not listed.any(a -> a.account == k.account and a.title == k.title))
+    for a in listed {
+        if not b.accounts.any(k -> k.account == a.account) { b.accounts.insert(a) }
+    }
+}
+
+/// Writes whether the website account the page opens did, and why not. The window raises it; a
+/// person, agent or script never does.
+action remember_account(p: Page, open: Bool, message: Text) {
+    p.account_notice = if open { "" } else { message }
 }
 
 /// Lets a site use what it asked for (its camera, microphone, location, notifications). The
@@ -2892,6 +2956,31 @@ fn addressed_to(b: Browser, typed: Text) -> Option<Addressed> {
 }
 
 /// The rows the extension's suggestions listed, as its window encoded them.
+/// The website accounts a window's note lists, each by its id, service and name.
+fn website_accounts_of(accounts: Text) -> List<WebsiteAccount> {
+    let value = match json.parse(accounts) {
+        .ok(value) => value,
+        .err(_) => {
+            return []
+        }
+    }
+    let found: List<WebsiteAccount> = []
+    for held in json_arrays(value) {
+        found = [
+            found,
+            [
+                WebsiteAccount(
+                    account: json_text(held, "account"),
+                    service: json_text(held, "service"),
+                    title: json_text(held, "title"),
+                ),
+            ],
+        ]
+            .flat_map(x -> x)
+    }
+    found
+}
+
 fn omnibox_rows(rows: Text) -> List<OmniboxRow> {
     let value = match json.parse(rows) {
         .ok(value) => value,
@@ -3176,6 +3265,11 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
         ui.MenuItem("New private window", icon: .eye_off) {
             on choose: new_private_page(b)
         }
+        for a in b.accounts {
+            ui.MenuItem(std.say("Open {a.title}"), icon: .user) {
+                on choose: open_account(b, a)
+            }
+        }
         ui.MenuItem("History", icon: .clock) {
             on choose: open(b, view: history)
         }
@@ -3331,6 +3425,9 @@ view page_view(p: Page) {
                             message: "An agent browses this page as any visitor would: none of your sign-ins, cookies or saved logins reach it.",
                             kind: .info,
                         )
+                    }
+                    if p.account_notice != "" {
+                        ui.Banner(p.account_notice, kind: .info)
                     }
                     stack(padding: .related) {
                         ui.TextInput(

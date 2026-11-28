@@ -15,13 +15,14 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, ReceiptStatus,
     RemoteActionTarget, VAULT_FORGET_PAGE_LOGIN, VAULT_KEEP_PAGE_LOGIN, VAULT_PAGE_FILL,
-    VAULT_PAGE_LOGINS, VAULT_WEBSITE_SIGN_INS, vault_target,
+    VAULT_PAGE_LOGINS, VAULT_WEBSITE_ACCOUNT, VAULT_WEBSITE_ACCOUNTS, VAULT_WEBSITE_SIGN_INS,
+    vault_target,
 };
 use tilo_page_engine::{Answered, LoginVault, VaultLogin};
 use tilo_webview::ReleasedText;
 
 /// What a window the daemon did not start, or whose connection is gone, is told.
-const NO_DAEMON: &str = "This window has no connection to your computer's daemon, so it cannot \
+pub(crate) const NO_DAEMON: &str = "This window has no connection to your computer's daemon, so it cannot \
                          reach your workspace's vault";
 /// What a call the daemon left unanswered is told.
 const UNANSWERED: &str = "Your computer's daemon did not answer";
@@ -86,6 +87,32 @@ impl NativeVault {
             });
             wake.wake();
         });
+    }
+
+    /// The sign-in of the person's website account `account`, for this window to open the
+    /// account's own profile with: answered only to Browser's window.
+    pub fn website_account(
+        &self,
+        account: &str,
+        done: impl FnOnce(Result<tilo_webview::sessions::SessionCookies, String>) + Send + 'static,
+    ) {
+        self.call(
+            (
+                vault_target(VAULT_WEBSITE_ACCOUNT),
+                json!({"account": account}),
+            ),
+            None,
+            move |value| {
+                done(value.and_then(|value| {
+                    let unreadable = || "The vault answered what is no website account".to_owned();
+                    let session = value
+                        .get("session")
+                        .and_then(Value::as_str)
+                        .ok_or_else(unreadable)?;
+                    serde_json::from_str(session).map_err(|_| unreadable())
+                }));
+            },
+        );
     }
 }
 
@@ -220,6 +247,39 @@ impl LoginVault for NativeVault {
             move |value| done(value.and_then(signed_in)),
         );
     }
+
+    fn website_accounts(&self, done: Answered<Vec<tilo_page_engine::WebsiteAccount>>) {
+        self.call(
+            (vault_target(VAULT_WEBSITE_ACCOUNTS), json!({})),
+            None,
+            move |value| done(value.and_then(accounts_listed)),
+        );
+    }
+}
+
+/// `value` as the website accounts it lists.
+fn accounts_listed(value: Value) -> Result<Vec<tilo_page_engine::WebsiteAccount>, String> {
+    #[derive(serde::Deserialize)]
+    struct WebsiteAccounts {
+        accounts: Vec<WebsiteAccount>,
+    }
+    #[derive(serde::Deserialize)]
+    struct WebsiteAccount {
+        id: String,
+        service: String,
+        title: String,
+    }
+    let answered: WebsiteAccounts = serde_json::from_value(value)
+        .map_err(|_| "The vault answered what is no list of website accounts".to_owned())?;
+    Ok(answered
+        .accounts
+        .into_iter()
+        .map(|account| tilo_page_engine::WebsiteAccount {
+            id: account.id,
+            service: account.service,
+            title: account.title,
+        })
+        .collect())
 }
 
 /// `value` as the website sign-ins it hands, each with the name the window holds it by.

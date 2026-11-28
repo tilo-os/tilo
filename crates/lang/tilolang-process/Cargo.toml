@@ -50,6 +50,9 @@ app-launch = [
     # The App Store's device work: the sources it reads and the changes a person asks for. Its
     # calls read this computer's package cache, so it runs where the app's other work does.
     "dep:tilo-store-engine",
+    # The person's website accounts, each opened in Browser's window on a profile of its own.
+    "dep:browser-continuity",
+    "dep:tilo-webview",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -278,6 +281,10 @@ media = { package = "tilo-media", path = "../../engines/tilo-media", features = 
 # `so.tilo.store` by name. It reads this computer's package cache through the daemon, as the
 # session's own copy does.
 tilo-store-engine = { version = "0.1.0", path = "../../engines/store-engine", optional = true }
+# A website account's own profile, which Browser's window opens it signed in on, and the engine it
+# shows the account with.
+browser-continuity = { workspace = true, features = ["service-profiles"], optional = true }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", optional = true }
 
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # The Backups app's engine: the snapshots this device keeps of a folder, verified and restored.

@@ -373,6 +373,9 @@ pub struct AppWindow {
     /// The person's picker, which answers a page's file input: the host's chooser is the one
     /// place a person chooses a file, and a window the host gave none answers no chooser.
     page_picker: Option<std::sync::Arc<dyn PagePicker>>,
+    /// What opens the person's website accounts on profiles of their own: the host's, which
+    /// keeps those profiles. A window the host gave none opens no account.
+    page_accounts: Option<std::sync::Arc<dyn crate::page_runner::AccountProfiles>>,
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window takes
     /// them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
@@ -572,6 +575,7 @@ impl AppWindow {
             pip_region_told: None,
             page_asks: BTreeMap::new(),
             page_picker: None,
+            page_accounts: None,
             events,
             pan_asks: Vec::new(),
             built: None,
@@ -693,6 +697,15 @@ impl AppWindow {
     /// choose there, and a window given none answers a chooser with nothing.
     pub fn set_page_picker(&mut self, picker: std::sync::Arc<dyn PagePicker>) {
         self.page_picker = Some(picker);
+    }
+
+    /// Give the window what opens the person's website accounts on profiles of their own: a page
+    /// that asks for one opens it signed in as it, and a window given none opens none.
+    pub fn set_page_accounts(
+        &mut self,
+        accounts: std::sync::Arc<dyn crate::page_runner::AccountProfiles>,
+    ) {
+        self.page_accounts = Some(accounts);
     }
 
     /// The system's call pictures reached this window: decode them where it draws, and keep each
@@ -982,7 +995,7 @@ impl AppWindow {
             self.refuse_page(request_id, "a page request is no text");
             return;
         };
-        match crate::page_runner::ask(&self.page, &request) {
+        match crate::page_runner::ask(&self.page, &request, self.page_accounts.as_ref()) {
             Ok(crate::page_runner::Asked::Answered(answer)) => {
                 self.out.push(ToApp::PageAnswer {
                     request_id,

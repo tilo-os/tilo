@@ -495,6 +495,7 @@ d-vsaswu4a = Seitenansicht
     .w-not-signed-in = Nicht angemeldet
     .w-send = Senden
     .w-an-agent-browses-this-page-as = Ein Agent liest diese Seite wie jeder Besucher: keine deiner Anmeldungen, Cookies oder gespeicherten Anmeldedaten erreicht sie.
+    .w-open = { $title } öffnen
 
 d-pu2zdrbu = Schrittzeile
 
@@ -2073,3 +2074,48 @@ d-vdj3mt7p-received = Empfangen
 d-vdj3mt7p-total = Gesamt
 
 d-vdj3mt7p-error = Fehler
+
+d-erulvftf = Konto
+    .doc = Das Website-Konto der Person (Slack, Discord), das die Seite öffnet, auf einem eigenen Profil, das als dieses Konto angemeldet ist: leer für eine Seite im eigenen Profil der Person.
+
+d-orxldgqa = Kontohinweis
+    .doc = Dass das Konto unterwegs ist oder warum es sich nicht geöffnet hat, in den Worten der Person: leer, sobald es offen ist.
+
+d-hcmucsm2 = Website-Konto
+    .doc = Ein Website-Konto der Person (Slack, Discord), das sich in einem eigenen Fenster öffnet, auf einem eigenen Profil, das als dieses Konto angemeldet ist: eines, das sie aus einem ihrer Browser mitgebracht oder hier verbunden hat.
+    .noun = { $count ->
+        [one] Website-Konto
+       *[other] Website-Konten
+    }
+
+d-s25fwo44 = Konto
+    .doc = Das Konto, wie die Konten des Arbeitsbereichs es nennen.
+
+d-lp762orf = Dienst
+    .doc = Der Dienst, bei dem es anmeldet: `slack` oder `discord`.
+
+d-2ghjkbgz = Titel
+    .doc = Wie die Person es nennt.
+
+d-c2fhvjck = Konten
+    .doc = Die Website-Konten der Person, die sich in einem eigenen Fenster öffnen, jedes nur ihres.
+
+d-bkjgrj6d = Konto öffnen
+    .doc = Öffnet ein Website-Konto der Person (Slack, Discord) in einem eigenen Fenster, auf einem eigenen Profil, das als dieses Konto angemeldet ist: keine ihrer anderen Anmeldungen erreicht es, und es erreicht keine von ihnen.
+    .w-opening = { $title } wird geöffnet …
+
+d-bkjgrj6d-a = Konto
+
+d-rr56hsff = Konten merken
+    .doc = Schreibt die Website-Konten der Person, die sich in einem eigenen Fenster öffnen, so wie der Tresor ihres Fensters sie aufgelistet hat; eine Liste, auf die der Tresor nicht geantwortet hat, lässt sie, wie sie waren.
+
+d-rr56hsff-accounts = Konten
+
+d-rr56hsff-message = Nachricht
+
+d-eyxwinod = Konto merken
+    .doc = Schreibt, ob sich das Website-Konto, das die Seite öffnet, geöffnet hat, und warum nicht.
+
+d-eyxwinod-open = Offen
+
+d-eyxwinod-message = Nachricht

@@ -100,6 +100,9 @@ fn note(
         "print" => "note_print",
         "panel" => "remember_panel",
         "omnibox" => "remember_omnibox",
+        // The person's website accounts, and whether the one the page opens did.
+        "accounts" => "remember_accounts",
+        "account" => "remember_account",
         _ => {
             tracing::warn!(kind, "a note the app has no page action for");
             return false;

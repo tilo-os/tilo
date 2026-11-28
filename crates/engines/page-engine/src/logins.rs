@@ -100,6 +100,9 @@ pub trait LoginVault {
     /// names (each its id and digest), each with the name the window holds it by once its
     /// profile took it. Only Browser's window is answered them.
     fn website_sign_ins(&self, held: Vec<String>, done: Answered<Vec<(String, SessionCookies)>>);
+    /// The website accounts of the person's that open in a window of their own (Slack,
+    /// Discord), each on a profile of its own. Only Browser's window is answered them.
+    fn website_accounts(&self, done: Answered<Vec<crate::WebsiteAccount>>);
 }
 
 /// What a vault call answered, for the session to carry on with on the window's thread.
@@ -131,6 +134,8 @@ pub(crate) enum VaultAnswer {
     },
     /// The website sign-ins the person brought that the page's profile does not hold yet.
     SignIns(Result<Vec<(String, SessionCookies)>, String>),
+    /// The website accounts of the person's that open in a window of their own.
+    Accounts(Result<Vec<crate::WebsiteAccount>, String>),
 }
 
 /// What a page that has no vault to ask answers: a private window is offered no saved logins.

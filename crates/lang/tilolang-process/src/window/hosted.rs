@@ -985,6 +985,14 @@ impl HostedWindow {
                 {
                     view.set_page_picker(picker);
                 }
+                // The person's website accounts open in their own window, each on a profile of
+                // its own; a window an agent works opens none.
+                #[cfg(target_os = "linux")]
+                if !self.visitor {
+                    view.set_page_accounts(std::sync::Arc::new(
+                        super::accounts::Accounts::of_browser(),
+                    ));
+                }
                 self.connected = Some(Connected {
                     view,
                     watch,

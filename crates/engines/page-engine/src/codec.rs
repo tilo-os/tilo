@@ -73,6 +73,13 @@ pub enum Ask {
     /// The page's profile opens signed in to the sites the person brought their sign-ins of from
     /// a browser of theirs ([`crate::PageSession::open_sign_ins`]). A private page opens none.
     SignIns,
+    /// Which website accounts of the person's open in a window of their own
+    /// ([`crate::PageSession::list_accounts`]), told the app as a note. A private page asks none.
+    Accounts,
+    /// The page opens the person's website account `account` (Slack, Discord) on a profile of
+    /// its own, signed in as it. Asked before the page says anything else, since it settles which
+    /// engine the page has.
+    Account { account: String },
     /// Install the extension package the person chose, named by the address its bytes stand at
     /// in this device's content store (`tilo-blob://…`). A sandboxed app never names a host
     /// path, so the window reads the bytes and hands the engine the package.
@@ -329,6 +336,14 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "private" => Ask::Private,
         // A page of the person's own opens signed in where they brought their sign-ins.
         "sign_ins" => Ask::SignIns,
+        // The person's website accounts that open in a window of their own, and a page that
+        // opens one of them on its own profile.
+        "accounts" => Ask::Accounts,
+        "account" => Ask::Account {
+            account: text(&value, "account")
+                .filter(|account| !account.is_empty())
+                .ok_or_else(|| "an account's page names its account".to_owned())?,
+        },
         // The engine's own developer tools, opened beside the page.
         "developer_tools" => Ask::Command(WebViewCommand::ShowDeveloperTools),
         // The page written as a PDF the person can print: where the engine wrote it reaches
@@ -856,6 +871,44 @@ pub fn print_note(ok: bool, path: &str, name: &str, message: &str) -> String {
         "ok": ok,
         "path": path,
         "name": name,
+        "message": message,
+    })
+    .to_string()
+}
+
+/// The website accounts of the person's that open in a window of their own, for the window to
+/// hand the app as its call: each by its id, service and name, or why the vault did not say.
+#[must_use]
+pub fn accounts_note(result: &Result<Vec<crate::WebsiteAccount>, String>) -> String {
+    let (accounts, message) = match result {
+        Ok(accounts) => (accounts.as_slice(), ""),
+        Err(why) => (&[][..], why.as_str()),
+    };
+    let accounts: Vec<serde_json::Value> = accounts
+        .iter()
+        .map(|account| {
+            serde_json::json!({
+                "account": account.id,
+                "service": account.service,
+                "title": account.title,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "note": "accounts",
+        "accounts": serde_json::Value::Array(accounts).to_string(),
+        "message": message,
+    })
+    .to_string()
+}
+
+/// Whether the website account the page opens did, for the window to hand the app as its call:
+/// and why not, in the person's words.
+#[must_use]
+pub fn account_note(open: bool, message: &str) -> String {
+    serde_json::json!({
+        "note": "account",
+        "open": open,
         "message": message,
     })
     .to_string()

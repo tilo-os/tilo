@@ -45,7 +45,7 @@ pub use tilo_actions::remote::{ItemRef, VAULT_ITEM_KIND as ITEM_KIND};
 /// step it takes in the record the workspace keeps its vault in ([`VAULT_KIND`] in Passwords).
 /// An item kept is sealed, one forgotten goes, and every use of a secret, a copy and a reveal
 /// included, is written down. A read writes nothing, and an action not named writes nothing.
-pub const VAULT_STEPS: [(&str, &[&str]); 14] = [
+pub const VAULT_STEPS: [(&str, &[&str]); 15] = [
     ("add", &[KEEP_SEALED]),
     ("ask", &[KEEP_SEALED]),
     ("keep", &[KEEP_SEALED]),
@@ -60,6 +60,7 @@ pub const VAULT_STEPS: [(&str, &[&str]); 14] = [
     ("sign", &[KEEP_USES]),
     ("release", &[KEEP_USES]),
     ("website-sign-ins", &[KEEP_USES]),
+    ("website-account", &[KEEP_USES]),
 ];
 
 pub use tilo_actions::remote::VAULT_SECRET_ANSWERS;
@@ -425,6 +426,25 @@ pub enum VaultAction {
         #[param("The sign-ins the window holds already, each as its id and digest.")]
         held: Vec<String>,
     },
+    /// List the person's website accounts
+    ///
+    /// The accounts of a service the person signed in to in a browser of theirs or connected
+    /// here (Slack, Discord), as [`WebsiteAccounts`]: each one Browser opens in a window of its
+    /// own, signed in as that account. Nothing of their cookies. It is answered only to
+    /// Browser's window, on that window's own connection.
+    #[effect(kind = "read", returns = WebsiteAccounts)]
+    WebsiteAccounts {},
+    /// Open one of the person's website accounts
+    ///
+    /// The session of the person's website account `account`, as [`WebsiteAccountSession`],
+    /// for Browser's window to open the account's own profile signed in with. Its use is written
+    /// into its uses first. It is answered only to Browser's window, on that window's own
+    /// connection.
+    #[effect(kind = "outside", returns = WebsiteAccountSession)]
+    WebsiteAccount {
+        #[param("The account to open, by its id.")]
+        account: String,
+    },
 }
 
 impl std::fmt::Debug for VaultAction {
@@ -450,7 +470,7 @@ macro_rules! ids {
 ids! {
     LIST, ADD, REMOVE, USES, TAKE_BACK, COPY, REVEAL, ASK, FILL_PAGE, WEB_CALL, CODE, SIGN,
     RELEASE, FIND, KEEP, DEVICE_KEY, PAGE_LOGINS, KEEP_PAGE_LOGIN, FORGET_PAGE_LOGIN, PAGE_FILL,
-    WEBSITE_SIGN_INS
+    WEBSITE_SIGN_INS, WEBSITE_ACCOUNTS, WEBSITE_ACCOUNT
 }
 
 /// The vault's actions a person asks of it, from Passwords or as themselves, in catalogue
@@ -524,12 +544,14 @@ pub fn surface() -> tilo_actions::surface::Surface {
 }
 
 /// The page login actions, which only a window of an app's own is answered.
-pub const PAGE_LOGIN_ACTIONS: [&str; 5] = [
+pub const PAGE_LOGIN_ACTIONS: [&str; 7] = [
     PAGE_LOGINS,
     KEEP_PAGE_LOGIN,
     FORGET_PAGE_LOGIN,
     PAGE_FILL,
     WEBSITE_SIGN_INS,
+    WEBSITE_ACCOUNTS,
+    WEBSITE_ACCOUNT,
 ];
 
 /// The action `target` asks when it is one only an app's own process or window is answered, on
@@ -548,6 +570,8 @@ pub fn asked_by_app(target: &RemoteActionTarget) -> Option<&'static str> {
         KEEP_PAGE_LOGIN,
         FORGET_PAGE_LOGIN,
         WEBSITE_SIGN_INS,
+        WEBSITE_ACCOUNTS,
+        WEBSITE_ACCOUNT,
     ];
     (target.provider == PROVIDER)
         .then(|| anywhere.into_iter().find(|id| *id == action))
@@ -1037,6 +1061,47 @@ pub struct WebsiteSignIn {
     pub held: String,
     /// The sign-in itself: the session its cookies are kept as, in JSON.
     pub session: String,
+}
+
+/// What [`WEBSITE_ACCOUNTS`] answers: the person's website accounts Browser opens a window of
+/// its own for.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebsiteAccounts {
+    pub accounts: Vec<WebsiteAccount>,
+}
+
+/// One website account, as [`WEBSITE_ACCOUNTS`] lists it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebsiteAccount {
+    /// The account, by its id.
+    pub id: String,
+    /// The service it signs in to, as its word (`slack`, `discord`).
+    pub service: String,
+    /// What the person calls it.
+    pub title: String,
+}
+
+/// What [`WEBSITE_ACCOUNT`] answers: the account's session, for the window that asked alone. It
+/// prints nothing of its cookies.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebsiteAccountSession {
+    /// The session its cookies are kept as, in JSON.
+    pub session: String,
+}
+
+impl std::fmt::Debug for WebsiteAccountSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebsiteAccountSession")
+            .finish_non_exhaustive()
+    }
 }
 
 /// What [`PAGE_FILL`] answers: the login's name and secret, for the window that asked alone. It

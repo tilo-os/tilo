@@ -8,12 +8,14 @@
 
 pub mod codec;
 
+mod accounts;
 mod asks;
 mod logins;
 pub mod omnibox;
 mod prompts;
 mod sign_ins;
 
+pub use accounts::{Arrived, Arriving, WebsiteAccount};
 pub use asks::{Asks, ExtensionButton, ExtensionNotice, Menu};
 pub use logins::{Answered, LoginAsk, LoginVault, VaultLogin};
 pub use omnibox::Addressed;
@@ -126,6 +128,12 @@ pub struct PageSession {
     omnibox: omnibox::Omnibox,
     /// The sites the person brought their sign-ins of, opening in this page's profile.
     sign_ins: Option<sign_ins::SignIns>,
+    /// The website account's engine this page waits on, while its window's host opens the
+    /// account's own profile ([`Self::new_arriving`]).
+    arriving: Option<Arriving>,
+    /// What keeps the website account's profile this page shows, once its engine arrived: it
+    /// goes with the page.
+    account: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl PageSession {
@@ -158,6 +166,8 @@ impl PageSession {
             quiet_sign_ins: Vec::new(),
             omnibox: omnibox::Omnibox::default(),
             sign_ins: None,
+            arriving: None,
+            account: None,
         }
     }
 
@@ -218,6 +228,7 @@ impl PageSession {
     /// events for the view. A window calls this once a frame, before it draws.
     #[expect(clippy::too_many_lines, reason = "one arm per kind of page event")]
     pub fn poll(&mut self) {
+        self.poll_arriving();
         let mut loaded = false;
         for event in self.engine.drain_events() {
             match &event {
@@ -1029,6 +1040,7 @@ impl PageSession {
                 Err(why) => self.notes.push(note("fill_field", Err(&why), "")),
             },
             VaultAnswer::SignIns(result) => self.sign_ins_answered(result),
+            VaultAnswer::Accounts(result) => self.notes.push(codec::accounts_note(&result)),
         }
     }
 
@@ -1060,6 +1072,7 @@ impl PageSession {
             || self.vault_pending > 0
             || !self.fields_filling.is_empty()
             || self.sign_ins_opening()
+            || self.arriving()
             || !self.notes.is_empty()
     }
 }
@@ -1298,6 +1311,14 @@ mod tests {
                 .cloned()
                 .collect()));
         }
+        fn website_accounts(&self, done: Answered<Vec<crate::WebsiteAccount>>) {
+            self.asked.borrow_mut().push("accounts".to_owned());
+            done(Ok(vec![crate::WebsiteAccount {
+                id: "slack-1".to_owned(),
+                service: "slack".to_owned(),
+                title: "Slack (Work)".to_owned(),
+            }]));
+        }
     }
 
     /// A website sign-in of the person's own, for every site, with one cookie of `site`'s.
@@ -1473,6 +1494,35 @@ mod tests {
         let vault = Rc::new(vault);
         session.set_vault(vault.clone());
         (test, session, vault)
+    }
+
+    /// The person's own window lists the website accounts that open in a window of their own, as
+    /// the vault answers them, and tells the app; a private window asks the vault nothing.
+    #[test]
+    fn a_window_lists_the_persons_website_accounts_for_the_app() {
+        let (_test, mut session, vault) = with_vault(FakeVault::default());
+        session.list_accounts();
+        session.poll();
+        assert_eq!(*vault.asked.borrow(), ["accounts"]);
+        let said: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(said["note"], "accounts");
+        let listed: serde_json::Value =
+            serde_json::from_str(said["accounts"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            listed,
+            serde_json::json!([{"account": "slack-1", "service": "slack", "title": "Slack (Work)"}])
+        );
+
+        let vault = Rc::new(FakeVault::default());
+        let mut private = PageSession::new_private(
+            TestEngine::new(),
+            std::env::temp_dir().join(format!("tilo-no-private-root-{}", std::process::id())),
+        );
+        private.set_vault(vault.clone());
+        private.list_accounts();
+        private.poll();
+        assert!(vault.asked.borrow().is_empty());
+        assert!(private.notes().is_empty());
     }
 
     /// A login action asks the engine where the page is first, and acts on the document and the

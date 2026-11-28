@@ -103,6 +103,61 @@ impl crate::PersonServices {
         }
         Ok(WebsiteSignIns { sign_ins })
     }
+
+    /// The website accounts of the person `identity` (Slack, Discord) that Browser opens a window
+    /// of its own for, each signed in as that account: each enabled one whose session is theirs.
+    ///
+    /// # Errors
+    /// The accounts record or the vault does not read.
+    pub async fn website_accounts(
+        &self,
+        workspace: &str,
+        identity: [u8; 32],
+    ) -> Result<tilo_workspace_records::vault::WebsiteAccounts, String> {
+        use tilo_workspace_records::vault::{WebsiteAccount, WebsiteAccounts};
+        let kept = Box::pin(self.website_sessions(workspace, SERVICE_SESSION_TYPE)).await?;
+        let accounts = kept
+            .iter()
+            .filter(|kept| kept.account.enabled)
+            .filter_map(|kept| {
+                let session = selection(kept, identity, setting(&kept.account, "setup_binding")?)?;
+                (session.service != Service::Web).then(|| WebsiteAccount {
+                    id: kept.account.id.as_str().to_owned(),
+                    service: session.service.as_str().to_owned(),
+                    title: kept.account.display_name.clone(),
+                })
+            })
+            .collect();
+        Ok(WebsiteAccounts { accounts })
+    }
+
+    /// The session of the person `identity`'s website account `account`, for Browser's window
+    /// to open the account's own profile with. Its use is written into its entry first.
+    ///
+    /// # Errors
+    /// The person has no such enabled account ([`UNAVAILABLE`]), or the accounts record or the
+    /// vault does not read or take the use.
+    pub async fn website_account(
+        &self,
+        workspace: &str,
+        identity: [u8; 32],
+        account: &str,
+    ) -> Result<tilo_workspace_records::vault::WebsiteAccountSession, String> {
+        let kept = Box::pin(self.website_sessions(workspace, SERVICE_SESSION_TYPE)).await?;
+        let (kept, session) = kept
+            .into_iter()
+            .filter(|kept| kept.account.enabled && kept.account.id.as_str() == account)
+            .find_map(|kept| {
+                let binding = setting(&kept.account, "setup_binding")?;
+                let session = selection(&kept, identity, binding)?;
+                (session.service != Service::Web).then_some((kept, session))
+            })
+            .ok_or(UNAVAILABLE)?;
+        Box::pin(self.website_session_opened(workspace, &kept.account, BROWSER)).await?;
+        Ok(tilo_workspace_records::vault::WebsiteAccountSession {
+            session: serde_json::to_string(&session).map_err(|error| error.to_string())?,
+        })
+    }
 }
 
 /// What a website session's command comes to.
