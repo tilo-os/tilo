@@ -209,66 +209,78 @@ fn workspace_holds_nothing(a: Layout, workspace: Text) -> Bool {
 /// app in the workspace in front through the same action the launcher, a script and an agent use;
 /// with nothing to show, the shell is a way in rather than a blank band.
 view start_cards() {
+    // The page fills the band, so what it holds scrolls inside it: a phone's screen cannot show
+    // every card and the way in at once.
     page(full) {
-        stack(gap: .section) {
-            stack(gap: .tight) {
-                ui.Text("Start something", role: .title)
-                ui.Text(
-                    "Only you see what you make here until you invite someone.",
-                    role: .caption,
-                    secondary: true,
-                )
-            }
-            grid(min: 18rem, gap: .sibling) {
-                ui.Card(title: "Notes") {
-                    row(gap: .related, align: .center) {
-                        ui.Icon(.file_text, size: .large)
-                        stack(gap: .tight) {
-                            ui.Text("Notes", role: .label)
-                            ui.Text("Write ideas down", role: .caption, secondary: true)
+        scroll(axis: .vertical, fill) {
+            stack(gap: .section) {
+                stack(gap: .tight) {
+                    ui.Text("Start something", role: .title)
+                    ui.Text(
+                        "Only you see what you make here until you invite someone.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+                grid(min: 18rem, gap: .sibling) {
+                    ui.Card(title: "Notes") {
+                        row(gap: .related, align: .center) {
+                            ui.Icon(.file_text, size: .large)
+                            stack(gap: .tight) {
+                                ui.Text("Notes", role: .label)
+                                ui.Text("Write ideas down", role: .caption, secondary: true)
+                            }
                         }
+                        on activate: session.launchpad(card: "notes")
                     }
-                    on activate: session.launchpad(card: "notes")
-                }
-                ui.Card(title: "Tasks") {
-                    row(gap: .related, align: .center) {
-                        ui.Icon(.list_checks, size: .large)
-                        stack(gap: .tight) {
-                            ui.Text("Tasks", role: .label)
-                            ui.Text("Write down what needs doing", role: .caption, secondary: true)
+                    ui.Card(title: "Tasks") {
+                        row(gap: .related, align: .center) {
+                            ui.Icon(.list_checks, size: .large)
+                            stack(gap: .tight) {
+                                ui.Text("Tasks", role: .label)
+                                ui.Text(
+                                    "Write down what needs doing",
+                                    role: .caption,
+                                    secondary: true,
+                                )
+                            }
                         }
+                        on activate: session.launchpad(card: "tasks")
                     }
-                    on activate: session.launchpad(card: "tasks")
-                }
-                ui.Card(title: "Invite people") {
-                    row(gap: .related, align: .center) {
-                        ui.Icon(.user_plus, size: .large)
-                        stack(gap: .tight) {
-                            ui.Text("Invite people", role: .label)
-                            ui.Text("Work on this with someone", role: .caption, secondary: true)
+                    ui.Card(title: "Invite people") {
+                        row(gap: .related, align: .center) {
+                            ui.Icon(.user_plus, size: .large)
+                            stack(gap: .tight) {
+                                ui.Text("Invite people", role: .label)
+                                ui.Text(
+                                    "Work on this with someone",
+                                    role: .caption,
+                                    secondary: true,
+                                )
+                            }
                         }
+                        on activate: session.launchpad(card: "invite")
                     }
-                    on activate: session.launchpad(card: "invite")
-                }
-                ui.Card(title: "Catch up") {
-                    row(gap: .related, align: .center) {
-                        ui.Icon(.history, size: .large)
-                        stack(gap: .tight) {
-                            ui.Text("Catch up", role: .label)
-                            ui.Text("See what changed and why", role: .caption, secondary: true)
+                    ui.Card(title: "Catch up") {
+                        row(gap: .related, align: .center) {
+                            ui.Icon(.history, size: .large)
+                            stack(gap: .tight) {
+                                ui.Text("Catch up", role: .label)
+                                ui.Text("See what changed and why", role: .caption, secondary: true)
+                            }
                         }
+                        on activate: session.launchpad(card: "activity")
                     }
-                    on activate: session.launchpad(card: "activity")
                 }
-            }
-            row(gap: .section, align: .center, wrap: true) {
-                ui.KeyHints {
-                    ui.KeyHint(["Arrows"], "Move")
-                    ui.KeyHint(["Enter"], "Open")
-                    ui.KeyHint(["Super", "N"], "Every app")
-                }
-                ui.Button("Open an app", icon: .layout_grid) {
-                    on press: device.show_surface(device.overlays, surface: "launcher")
+                row(gap: .section, align: .center, wrap: true) {
+                    ui.KeyHints {
+                        ui.KeyHint(["Arrows"], "Move")
+                        ui.KeyHint(["Enter"], "Open")
+                        ui.KeyHint(["Super", "N"], "Every app")
+                    }
+                    ui.Button("Open an app", icon: .layout_grid) {
+                        on press: device.show_surface(device.overlays, surface: "launcher")
+                    }
                 }
             }
         }

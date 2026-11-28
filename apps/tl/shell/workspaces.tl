@@ -12,27 +12,30 @@
 view workspaces() {
     state name: Text = ""
     // The cards stand in the shell's page, as the overview's do: their corners round, and a card
-    // on the window's edge has them cut by it.
+    // on the window's edge has them cut by it. The page fills the band, so what it holds scrolls
+    // inside it: a phone cannot show every workspace and the person's whole Tilo at once.
     page(full) {
-        stack(gap: .section) {
-            ui.Text("Workspaces", role: .title)
-            grid(min: 18rem) {
-                for w in layout.workspaces.sort_by(w -> w.name) {
-                    workspace_card(w)
+        scroll(axis: .vertical, fill) {
+            stack(gap: .section) {
+                ui.Text("Workspaces", role: .title)
+                grid(min: 18rem) {
+                    for w in layout.workspaces.sort_by(w -> w.name) {
+                        workspace_card(w)
+                    }
                 }
+                row(gap: .related, align: .end, wrap: true) {
+                    ui.TextInput(bind: name, placeholder: "Name a new workspace", fill) {
+                        on submit: session.new_workspace(name: name).then(set(name, ""))
+                    }
+                    ui.Button("Create", icon: .plus, role: .primary) {
+                        on press: session.new_workspace(name: name)
+                    }
+                    ui.Button("Join a workspace", icon: .users) {
+                        on press: session.join_workspace()
+                    }
+                }
+                your_tilo()
             }
-            row(gap: .related, align: .end, wrap: true) {
-                ui.TextInput(bind: name, placeholder: "Name a new workspace", fill) {
-                    on submit: session.new_workspace(name: name).then(set(name, ""))
-                }
-                ui.Button("Create", icon: .plus, role: .primary) {
-                    on press: session.new_workspace(name: name)
-                }
-                ui.Button("Join a workspace", icon: .users) {
-                    on press: session.join_workspace()
-                }
-            }
-            your_tilo()
         }
     }
 }
