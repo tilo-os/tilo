@@ -151,3 +151,107 @@ async fn a_record_a_part_wrote_is_there_after_it_ends_without_a_save() {
     drop(keys);
     reopened.shutdown().await;
 }
+
+/// What one write costs its caller, over `writes` writes of one record of a workspace that
+/// holds `records` other records of `size` bytes each: the median and the 99th percentile.
+#[cfg(feature = "device-keys")]
+async fn write_cost(
+    (records, size): (usize, usize),
+    writes: usize,
+) -> (std::time::Duration, std::time::Duration) {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspace = server
+        .workspaces()
+        .create("Studio")
+        .await
+        .expect("the workspace is made")
+        .workspace;
+    if records > 0 {
+        let held = server.workspaces().workspace(&workspace).await.unwrap();
+        let mut held = held.lock().await;
+        let state = held.collaboration().clone();
+        let mut candidate = held.peer().clone();
+        for n in 0..records {
+            use automerge::transaction::Transactable as _;
+            // Text no compression makes small, so the record keeps its size in the file.
+            let mut text = vec![0u8; size / 2];
+            blake3::Hasher::new()
+                .update(&n.to_le_bytes())
+                .finalize_xof()
+                .fill(&mut text);
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "text", hex::encode(text)).unwrap();
+            candidate
+                .publication_mut()
+                .publish_document(
+                    "so.tilo.bulk",
+                    &format!("r{n}"),
+                    doc.save(),
+                    &key,
+                    tilo_clock::wall(),
+                )
+                .unwrap();
+        }
+        held.keep(
+            candidate,
+            &key,
+            tilo_clock::wall(),
+            |_, _| Ok(state.clone()),
+        )
+        .unwrap();
+    }
+    let mut costs = Vec::with_capacity(writes);
+    for n in 0..writes {
+        let started = std::time::Instant::now();
+        write_record(
+            server.workspaces(),
+            &workspace,
+            ("so.tilo.notes", "note"),
+            |doc| {
+                use automerge::transaction::Transactable as _;
+                doc.put(automerge::ROOT, "title", format!("Draft {n}"))
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .expect("the record is written");
+        costs.push(started.elapsed());
+    }
+    server.shutdown().await;
+    costs.sort();
+    let at = |share: usize| {
+        let at = costs.len().saturating_mul(share) / 100;
+        costs
+            .get(at.min(costs.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or_default()
+    };
+    (at(50), at(99))
+}
+
+/// A write is answered once it is on disk, and what keeping it costs is its own size, not the
+/// workspace's: a workspace whose file holds megabytes of records answers a write about as fast
+/// as an empty one.
+#[cfg(feature = "device-keys")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_costs_the_same_in_a_large_workspace() {
+    let (small_median, small_p99) = write_cost((0, 0), 100).await;
+    // Records small enough to be kept in the workspace file itself, which then holds 3 MB.
+    let (large_median, large_p99) = write_cost((300, 10 * 1024), 100).await;
+    eprintln!(
+        "a write: median {small_median:?}, p99 {small_p99:?} in an empty workspace; median \
+         {large_median:?}, p99 {large_p99:?} in one of 3 MB"
+    );
+    let bound = |small: std::time::Duration| {
+        small
+            .saturating_mul(3)
+            .saturating_add(std::time::Duration::from_millis(10))
+    };
+    assert!(
+        large_median <= bound(small_median) && large_p99 <= bound(small_p99),
+        "a write in a large workspace costs what one in an empty workspace does: median \
+         {small_median:?} against {large_median:?}, p99 {small_p99:?} against {large_p99:?}"
+    );
+}

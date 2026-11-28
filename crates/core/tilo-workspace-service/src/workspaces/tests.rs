@@ -15,6 +15,7 @@ pub(crate) use super::fixtures::{
 use tilo_peer_state::fixture::member_cert;
 
 pub(crate) mod admission_cost;
+mod change_log;
 mod declared_kinds;
 mod frames;
 #[cfg(feature = "agents")]

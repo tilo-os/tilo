@@ -248,45 +248,82 @@ impl HostedWorkspace {
         Ok(carried)
     }
 
-    /// Write the host's copy, as following members' writes changed it,
-    /// through to the workspace file. A start replays what the server retains,
+    /// Keep the host's copy, as following members' writes changed it, on disk before this
+    /// answers ([`Self::keep_later`]). A start replays what the server retains,
     /// but that replay alone does not bring a write back: the app surfaces
     /// it is decided against are still on their way then, so it holds the
     /// write and may let it go. A write the host took in and lost that
     /// way left its record with a gap, once a later write that builds on it
     /// was committed, and the workspace no longer opened.
     pub(super) fn keep_followed(&mut self) {
-        let Some((files, write)) = self.keep_later() else {
+        let Some(kept) = self.keep_later() else {
             return;
         };
-        if let Err(error) = files.write(&write) {
-            self.unsure();
-            self.unkept = true;
-            tracing::warn!(workspace = %self.workspace(), %error, "the host's copy of members' writes was not kept");
+        if let Err(error) = kept.finish() {
+            self.not_kept(&error);
         }
     }
 
-    /// What [`Self::keep_followed`] writes, named now, and the files it is
-    /// written to: written after the workspace is let go, as a large document
-    /// can take the disk seconds, and every read of the workspace and every
-    /// member's write would wait for them.
-    pub(super) fn keep_later(&mut self) -> Option<(peer_parts::PartFiles, peer_parts::FileWrite)> {
+    /// A change [`Self::keep_later`] appended was not flushed, for `error`: the copy is written
+    /// whole with the next write it takes.
+    fn not_kept(&mut self, error: &str) {
+        self.unsure();
+        self.unkept = true;
+        self.parts.unbase();
+        tracing::warn!(workspace = %self.workspace(), %error, "the host's copy of members' writes was not kept");
+    }
+
+    /// What the copy changed since it was last kept, appended to the workspace's change log
+    /// now, and what is left to make it durable: flushing the log, done after the workspace is
+    /// let go, so writers that append meanwhile share one flush and no read of the workspace
+    /// waits on the disk. A change costs what it changed, not the workspace's size; the file is
+    /// written whole again once its log holds as much as it does, apart from any write.
+    ///
+    /// A change that cannot be logged is written whole here instead, and nothing is left.
+    pub(super) fn keep_later(&mut self) -> Option<peer_parts::Kept> {
         self.unkept = false;
-        let named = {
+        let logged = {
             let peer = self.peer.lock();
-            self.parts.name(&peer)
+            self.parts.log(&peer, &mut self.record.peer)
         };
-        let kept = named.and_then(|parts| {
-            let prior = std::mem::replace(&mut self.record.peer, parts);
-            self.file_write().inspect_err(|_| self.record.peer = prior)
-        });
-        match kept {
-            Ok(write) => Some((self.parts.files(), write)),
+        match logged {
+            Ok(None) => None,
+            Ok(Some(change)) => {
+                let whole = if self.parts.whole_due() {
+                    self.file_write()
+                        .inspect_err(|error| {
+                            self.parts.whole_dropped();
+                            tracing::warn!(workspace = %self.workspace(), %error, "a workspace file was not named whole; its change log keeps its changes");
+                        })
+                        .ok()
+                } else {
+                    None
+                };
+                Some(peer_parts::Kept {
+                    files: self.parts.files(),
+                    change,
+                    whole,
+                })
+            }
             Err(error) => {
-                tracing::warn!(workspace = %self.workspace(), %error, "the host's copy of members' writes was not kept");
+                tracing::debug!(workspace = %self.workspace(), %error, "the copy is written whole");
+                if let Err(error) = self.keep_whole() {
+                    self.not_kept(&error);
+                }
                 None
             }
         }
+    }
+
+    /// Write the copy whole to the workspace file, under the workspace's lock: changes are
+    /// logged against what it names from then on.
+    fn keep_whole(&mut self) -> Result<(), String> {
+        let named = {
+            let peer = self.peer.lock();
+            self.parts.name(&peer)?
+        };
+        let prior = std::mem::replace(&mut self.record.peer, named);
+        self.persist().inspect_err(|_| self.record.peer = prior)
     }
 
     /// Take a member's write into the host's copy, in memory:
@@ -554,27 +591,25 @@ impl Workspaces {
         });
     }
 
-    /// Write `kept`, what [`HostedWorkspace::keep_later`] named of `workspace` under its lock,
-    /// through to its file with the workspace let go: a large document can take the disk
-    /// seconds, and every read and write of the workspace would wait for them. A write the disk
-    /// refused leaves the copy to be kept again, and is answered.
+    /// Finish `kept`, what [`HostedWorkspace::keep_later`] logged of `workspace` under its lock,
+    /// with the workspace let go: its change is flushed to disk before this answers, together
+    /// with every change other writers appended meanwhile, and nobody's read or write waits for
+    /// the disk. A flush the disk refused leaves the copy to be written whole with its next
+    /// write, and is answered.
     pub(super) async fn write_kept(
         workspace: &Arc<tokio::sync::Mutex<HostedWorkspace>>,
-        kept: Option<(peer_parts::PartFiles, peer_parts::FileWrite)>,
+        kept: Option<peer_parts::Kept>,
     ) -> Result<(), String> {
-        let Some((files, write)) = kept else {
+        let Some(kept) = kept else {
             return Ok(());
         };
-        let written = tokio::task::spawn_blocking(move || files.write(&write))
+        let written = tokio::task::spawn_blocking(move || kept.finish())
             .await
             .unwrap_or_else(|error| Err(error.to_string()));
         if let Err(error) = &written {
-            let mut workspace = workspace.lock().await;
-            workspace.unsure();
-            workspace.unkept = true;
-            tracing::warn!(workspace = %workspace.workspace(), %error, "the host's copy of members' writes was not kept");
+            workspace.lock().await.not_kept(error);
         }
-        written.map(drop)
+        written
     }
 }
 

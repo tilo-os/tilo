@@ -474,7 +474,7 @@ pub(crate) fn kept_report(
             path.display()
         ));
     }
-    let stored: document_format::StoredResource =
+    let mut stored: document_format::StoredResource =
         postcard::from_bytes(&bytes).map_err(|error| {
             format!(
                 "{}: {} version {version}: {error}",
@@ -482,9 +482,14 @@ pub(crate) fn kept_report(
                 document_format::FORMAT.name
             )
         })?;
-    // The state's parts are read as they are, and a state of an older layout is refused like an
-    // old record: opening it writes the parts in today's layout and the file that names them.
-    let kept = peer_parts::PeerParts::reading(path)
+    // The state's parts are read as they are, with the changes logged after the file, and a
+    // state of an older layout is refused like an old record: opening it writes the parts in
+    // today's layout and the file that names them.
+    let reading = peer_parts::PeerParts::reading(path);
+    reading
+        .logged(&blake3::hash(&bytes), &mut stored.peer)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let kept = reading
         .load(&stored.peer)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let (state_version, _) = postcard::take_from_bytes::<u32>(&kept)
@@ -545,6 +550,8 @@ impl HostedWorkspace {
     }
     fn open(path: PathBuf, device: Option<&DeviceKeys>) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+        // What the change log beside the file follows it by.
+        let file = blake3::hash(&bytes);
         let (version, _) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| {
             format!(
                 "{}: a workspace record names its version first: {error}",
@@ -572,7 +579,11 @@ impl HostedWorkspace {
         // that every holder keeps as it was handed over; the device opening
         // it only writes what this host changes, and is never taken for the
         // owner.
-        let record = WorkspaceDocumentEntry::read(stored, receipted);
+        let mut record = WorkspaceDocumentEntry::read(stored, receipted);
+        // The changes kept after the file was last written whole.
+        let logged = parts
+            .logged(&file, &mut record.peer)
+            .map_err(|error| format!("workspace change log: {error}"))?;
         let kept = parts
             .load(&record.peer)
             .map_err(|error| format!("peer state parts: {error}"))?;
@@ -595,23 +606,24 @@ impl HostedWorkspace {
             return Err("restored workspace has no governance".into());
         }
         drop(kept);
-        // The state in today's layout, its parts written before the workspace file that names
-        // them; the parts of the older one go once that file is written.
-        let today = if older {
-            Some(parts.stage(&peer)?)
-        } else {
+        // The state as this build names it, its parts written before the workspace file that
+        // names them. The file is written again when it names the state otherwise: a state of
+        // an older layout, one its change log moved past, or one whose parts a restore holds
+        // split otherwise. Changes are logged against the list the file names, part for part.
+        let today = parts.stage(&peer)?;
+        let again = older || logged || today != record.peer;
+        if !again {
             // Parts an interrupted write left behind.
             parts.collect(&record.peer);
-            None
-        };
-        let mut workspace = Self::assemble(record, peer, path, parts, receipts, device)?;
-        if let Some(today) = today {
-            workspace.record.peer = today;
         }
-        if older {
+        let mut workspace = Self::assemble(record, peer, path, parts, receipts, device)?;
+        if again {
+            workspace.record.peer = today;
             workspace
                 .persist()
-                .map_err(|error| format!("workspace written again in today's layout: {error}"))?;
+                .map_err(|error| format!("workspace written again whole: {error}"))?;
+        } else {
+            workspace.parts.written(&workspace.record.peer);
         }
         Ok(workspace)
     }
@@ -676,6 +688,7 @@ impl HostedWorkspace {
             self.unsure();
             return Err(error);
         }
+        self.parts.written(&self.record.peer);
         self.publish_invitations();
         Ok(())
     }
@@ -3391,11 +3404,11 @@ impl Workspaces {
         };
         let (app_id, document_id) = (app_id.clone(), document_id.clone());
         self.note_named_surface(workspace, &app_id, envelope.surface.as_ref());
-        let workspace = self
+        let held = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let mut workspace = workspace.lock().await;
+        let mut workspace = held.lock().await;
         if workspace.peer().holds_document(&app_id, &document_id) {
             let refused = self
                 .follow_write(
@@ -3408,11 +3421,18 @@ impl Workspaces {
                     true,
                 )
                 .await;
-            // Written through before it is answered: a part that ends now leaves the workspace
-            // opening as it stands.
-            if workspace.unkept {
-                workspace.keep_followed();
-            }
+            // On disk before it is answered: a part that ends now leaves the workspace opening as
+            // it stands. Flushed with the workspace let go, together with whatever other writes
+            // were appended meanwhile.
+            let kept = if workspace.unkept {
+                workspace.keep_later()
+            } else {
+                None
+            };
+            drop(workspace);
+            // A flush the disk refused is warned of, and the copy written whole with the next
+            // write it takes.
+            let _ = Self::write_kept(&held, kept).await;
             // This host's own write is answered to whoever made it: a change the workspace
             // refuses here is an error of the write, not a verdict to file for another device.
             // A member's reaches it as their driver's answer, filed where they read it.
