@@ -46,6 +46,28 @@ pub enum ProbeError {
     Unrecognised,
 }
 
+impl std::fmt::Display for ProbeError {
+    /// What a person reads when the file they chose cannot be a source: a sentence, never the
+    /// debug form of the refusal.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(why) => write!(f, "The file could not be read: {why}"),
+            Self::Empty => f.write_str("The file is empty."),
+            Self::NotMedia { detected } => {
+                write!(
+                    f,
+                    "That file is not a video, a sound or a picture: it looks like {detected}."
+                )
+            }
+            Self::Unrecognised => f.write_str(
+                "The file is not a kind the editor opens, and its name does not say what it is.",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProbeError {}
+
 /// The whole file for a small clip, a prefix for a large one, dispatched on the
 /// magic bytes.
 ///
@@ -106,22 +128,22 @@ pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> 
 /// that the bytes are media.
 fn non_media_signature(d: &[u8]) -> Option<&'static str> {
     const MAGIC: &[(&[u8], &str)] = &[
-        (b"%PDF-", "video-editor-file-pdf"),
-        (b"PK\x03\x04", "video-editor-file-zip"),
-        (b"PK\x05\x06", "video-editor-file-zip"),
-        (b"PK\x07\x08", "video-editor-file-zip"),
-        (b"\x7FELF", "video-editor-file-elf"),
-        (b"MZ", "video-editor-file-windows"),
-        (b"Rar!\x1A\x07", "video-editor-file-rar"),
-        (b"\x1F\x8B", "video-editor-file-gzip"),
-        (b"BZh", "video-editor-file-bzip2"),
-        (b"\xFD7zXZ\x00", "video-editor-file-xz"),
-        (b"7z\xBC\xAF\x27\x1C", "video-editor-file-7z"),
-        (b"SQLite format 3\x00", "video-editor-file-sqlite"),
-        (b"{\\rtf", "video-editor-file-rtf"),
-        (b"\xD0\xCF\x11\xE0", "video-editor-file-office"),
-        (b"\xCA\xFE\xBA\xBE", "video-editor-file-binary"),
-        (b"-----BEGIN ", "video-editor-file-pem"),
+        (b"%PDF-", "a PDF"),
+        (b"PK\x03\x04", "a zip archive"),
+        (b"PK\x05\x06", "a zip archive"),
+        (b"PK\x07\x08", "a zip archive"),
+        (b"\x7FELF", "a program"),
+        (b"MZ", "a Windows program"),
+        (b"Rar!\x1A\x07", "a RAR archive"),
+        (b"\x1F\x8B", "a gzip archive"),
+        (b"BZh", "a bzip2 archive"),
+        (b"\xFD7zXZ\x00", "an xz archive"),
+        (b"7z\xBC\xAF\x27\x1C", "a 7z archive"),
+        (b"SQLite format 3\x00", "a database"),
+        (b"{\\rtf", "a rich-text document"),
+        (b"\xD0\xCF\x11\xE0", "an Office document"),
+        (b"\xCA\xFE\xBA\xBE", "a Java program"),
+        (b"-----BEGIN ", "a key or a certificate"),
     ];
     for (magic, name) in MAGIC {
         if d.starts_with(magic) {
@@ -169,27 +191,27 @@ fn textual_kind(d: &[u8]) -> Option<&'static str> {
     let text = std::str::from_utf8(head.get(..end)?).ok()?;
     let lower = text.trim_start().to_ascii_lowercase();
     if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
-        return Some("video-editor-file-html");
+        return Some("a web page");
     }
     if lower.starts_with("<?xml") {
-        return Some("video-editor-file-xml");
+        return Some("an XML document");
     }
     if lower.starts_with("<svg") {
-        return Some("video-editor-file-svg");
+        return Some("a drawing");
     }
     if lower.starts_with("#extm3u") {
-        return Some("video-editor-file-playlist");
+        return Some("a playlist");
     }
     if lower.starts_with('{') || lower.starts_with('[') {
-        return Some("video-editor-file-json");
+        return Some("a JSON reply");
     }
     if lower.starts_with("#!") {
-        return Some("video-editor-file-script");
+        return Some("a script");
     }
     if lower.starts_with('<') {
-        return Some("video-editor-file-markup");
+        return Some("markup");
     }
-    Some("video-editor-file-text")
+    Some("text")
 }
 
 fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
@@ -1108,8 +1130,14 @@ mod tests {
                 assert_eq!(
                     err,
                     ProbeError::NotMedia {
-                        detected: "video-editor-file-html"
+                        detected: "a web page"
                     }
+                );
+                // What a person reads when the file they dropped cannot be a source: a
+                // sentence naming what it looks like, never a refusal's debug form.
+                assert_eq!(
+                    err.to_string(),
+                    "That file is not a video, a sound or a picture: it looks like a web page."
                 );
             }
             {
@@ -1120,7 +1148,7 @@ mod tests {
                 assert_eq!(
                     err,
                     ProbeError::NotMedia {
-                        detected: "video-editor-file-html"
+                        detected: "a web page"
                     }
                 );
                 std::fs::remove_file(&f).ok();
@@ -1130,32 +1158,32 @@ mod tests {
                     (
                         &b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..],
                         "paper.mov",
-                        "video-editor-file-pdf",
+                        "a PDF",
                     ),
                     (
                         &b"PK\x03\x04\x14\x00"[..],
                         "bundle.mp4",
-                        "video-editor-file-zip",
+                        "a zip archive",
                     ),
                     (
                         &b"\x7FELF\x02\x01\x01"[..],
                         "clip.mkv",
-                        "video-editor-file-elf",
+                        "a program",
                     ),
                     (
                         &b"{\"error\": \"not found\"}"[..],
                         "reply.mp4",
-                        "video-editor-file-json",
+                        "a JSON reply",
                     ),
                     (
                         &b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..],
                         "subs.mp4",
-                        "video-editor-file-text",
+                        "text",
                     ),
                     (
                         &b"#EXTM3U\n#EXT-X-VERSION:3\n"[..],
                         "stream.mp4",
-                        "video-editor-file-playlist",
+                        "a playlist",
                     ),
                 ] {
                     match probe_bytes(bytes, Path::new(name)) {

@@ -1881,6 +1881,85 @@ action cut_at(p: Project, at: Float) {
     }
 }
 
+/// The clips on screen at `at`, the bottom-most visible video track's first: the two angles a
+/// side-by-side frame is made of, and no more.
+fn cut_sides(p: Project, at: Float) -> List<Clip> {
+    let soloing = p.tracks.any(t -> t.form == .video and t.solo)
+    let video = p.tracks
+        .filter(t -> t.form == .video and not t.muted and (not soloing or t.solo))
+        .sort_by(t -> t.index)
+    let sides: List<Clip> = []
+    for t in video {
+        if sides.len() < 2 {
+            if let c = p.clips
+                    .filter(
+                        x -> x.track == t and x.start <= at and clip_end(x) > at,
+                    )
+                    .sort_by(x -> x.start)
+                    .at(0) {
+                sides = [sides, [c]].flat_map(x -> x)
+            }
+        }
+    }
+    sides
+}
+
+/// Whether the clip `c` stands on the left or the right half of the frame, as the two angles
+/// were placed.
+fn on_side(c: Clip) -> Bool {
+    let half = c.scale_x == 0.5 and c.scale_y == 1.0 and c.pos_y == 0.0 and c.anchor_y == 0.5
+    half and (c.pos_x == -0.25 and c.anchor_x == 0.0 or c.pos_x == 0.25 and c.anchor_x == 1.0)
+}
+
+/// Whether the two pictures that meet at `at` could be placed side by side there: both visible,
+/// neither track locked, and at least one of them not on its side already.
+fn side_by_side_available(p: Project, at: Float) -> Bool {
+    let sides = cut_sides(p, at)
+    sides.len() == 2 and not sides.any(c -> c.track.locked) and sides.any(c -> not on_side(c))
+}
+
+/// Places the two angles that meet at `at` side by side: the bottom-most visible video track
+/// takes the left half of the frame and the next one the right, so two camera angles of one
+/// moment play together.
+action place_two_angles(p: Project, at: Float) (icon: .columns_2, label: "Place side by side") {
+    require cut_sides(p, at).len() == 2 "Two pictures have to meet at that time"
+    require not cut_sides(p, at).any(c -> c.track.locked) "The track is locked"
+    require side_by_side_available(p, at) "The two pictures already sit side by side there"
+    let sides = cut_sides(p, at)
+    if let left = sides.at(0) {
+        left.scale_x = 0.5
+        left.scale_y = 1.0
+        left.pos_x = -0.25
+        left.pos_y = 0.0
+        left.anchor_x = 0.0
+        left.anchor_y = 0.5
+    }
+    if let right = sides.at(1) {
+        right.scale_x = 0.5
+        right.scale_y = 1.0
+        right.pos_x = 0.25
+        right.pos_y = 0.0
+        right.anchor_x = 1.0
+        right.anchor_y = 0.5
+    }
+    redraw(p)
+}
+
+/// Gives each of the two angles back the whole frame, where it still sits on its side: one the
+/// person has since placed elsewhere is left as they put it.
+action unplace_two_angles(p: Project, at: Float) (icon: .undo_2, label: "Unplace the angles") {
+    require cut_sides(p, at).any(c -> on_side(c)) "Neither picture sits beside the other there"
+    for c in cut_sides(p, at).filter(x -> on_side(x) and not x.track.locked) {
+        c.scale_x = 1.0
+        c.scale_y = 1.0
+        c.pos_x = 0.0
+        c.pos_y = 0.0
+        c.anchor_x = 0.5
+        c.anchor_y = 0.5
+    }
+    redraw(p)
+}
+
 /// Deletes the clips, and the sound linked to them with them.
 destructive action remove_clips(p: Project, cs: List<Clip>) (
     icon: .trash_2,
@@ -3723,6 +3802,16 @@ view window(e: Editor) {
                                 }
                                 ui.Button(std.say("Split"), icon: .scissors, key: "s") {
                                     on press: cut_at(p, playhead).then(set(selected, []))
+                                }
+                                if side_by_side_available(p, playhead) {
+                                    ui.Button(std.say("Place side by side"), icon: .columns_2) {
+                                        on press: place_two_angles(p, playhead)
+                                    }
+                                }
+                                if cut_sides(p, playhead).any(c -> on_side(c)) {
+                                    ui.Button(std.say("Unplace the angles"), icon: .undo_2) {
+                                        on press: unplace_two_angles(p, playhead)
+                                    }
                                 }
                                 if not chosen.is_empty() {
                                     ui.Button(std.say("Delete"), icon: .trash_2) {

@@ -1746,6 +1746,8 @@ d-kga7o3ur = Fenster
     .w-paste-at-the-playhead = An der Abspielmarke einfügen
     .w-duplicate = Duplizieren
     .w-delete-and-close-the-gap = Löschen und Lücke schließen
+    .w-place-side-by-side = Nebeneinander platzieren
+    .w-unplace-the-angles = Blickwinkel aufheben
     .w-trim-the-start-to-the-playhead = Anfang zur Abspielmarke kürzen
     .w-trim-the-end-to-the-playhead = Ende zur Abspielmarke kürzen
     .w-nudge-a-frame-earlier = Ein Bild früher
@@ -2153,6 +2155,24 @@ d-cvwyptge = Ende zur Abspielmarke kürzen
 d-cvwyptge-cs = Clips
 
 d-cvwyptge-at = Bei
+
+d-orr7gobh = Nebeneinander platzieren
+    .doc = Platziert die beiden Blickwinkel, die sich bei `at` treffen, nebeneinander: die unterste sichtbare Videospur nimmt die linke Hälfte des Bildes, die nächste die rechte, sodass zwei Kamerawinkel eines Moments zusammen laufen.
+    .w-two-pictures-have-to-meet-at = Zwei Bilder müssen sich zu dieser Zeit treffen
+    .w-the-track-is-locked = Die Spur ist gesperrt
+    .w-the-two-pictures-already-sit-side = Die beiden Bilder liegen dort schon nebeneinander
+
+d-orr7gobh-at = Bei
+
+d-uesuzxbh = Blickwinkel aufheben
+    .doc = Gibt jedem der beiden Blickwinkel das ganze Bild zurück, wo er noch auf seiner Seite liegt: einen, den die Person inzwischen anders platziert hat, lässt sie, wie sie ihn gelegt hat.
+    .w-neither-picture-sits-beside-the-other = Keines der Bilder liegt dort neben dem anderen
+
+d-uesuzxbh-at = Bei
+
+d-zsact6am = Blickwinkel nebeneinander platzieren
+
+d-sozmoup5 = Blickwinkel aufheben
 
 d-dpt2pbcu = Kopieren
     .doc = Legt die Clips mit ihrem Aussehen, ihren Schlüsselbildern und Effekten in die Zwischenablage.

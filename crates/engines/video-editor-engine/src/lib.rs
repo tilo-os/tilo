@@ -254,7 +254,7 @@ fn thumb(device: &Device, input: &str) -> Result<String, String> {
     let mut project = model::Project::new("thumb");
     project.set_frame_size(ask.width.clamp(16, 4096), ask.height.clamp(16, 4096));
     let path = media_path(device, &ask.url)?;
-    let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
+    let probed = video_edit::probe::probe_file(&path).map_err(|e| e.to_string())?;
     let media = model::MediaItem {
         id: uuid::Uuid::from_u128(1),
         name: "still".to_owned(),
@@ -308,7 +308,7 @@ fn probe(device: &Device, input: &str) -> Result<String, String> {
     }
     let ask: Ask = reads(input)?;
     let path = media_path(device, &ask.url)?;
-    let probed = video_edit::probe::probe_file(&path).map_err(|e| format!("{e:?}"))?;
+    let probed = video_edit::probe::probe_file(&path).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "kind": probed.kind.as_str(),
         "duration": probed.duration,

@@ -1912,4 +1912,102 @@ mod cases {
             }
         }
     }
+    tilo_test_env::scenario! {
+        fn two_angles_of_one_moment_stand_side_by_side;
+
+        phase the_lower_track_takes_the_left_half_and_the_next_the_right;
+        {
+            let s = Studio::new();
+            let p = s.new_project();
+            s.import(&p, "Harbour.mp4");
+            s.import(&p, "Kitchen.mp4");
+            let media = s.media(&p);
+            let v1 = s
+                .tracks(&p)
+                .into_iter()
+                .find(|t| s.text(t, "name") == "V1")
+                .expect("V1");
+            let video = Value::Enum(EnumValue {
+                ty: s.app.compiled.ids.get("Form").expect("Form").to_owned(),
+                variant: s.app.compiled.ids.get("Form.video").expect("video").to_owned(),
+                fields: std::collections::BTreeMap::default(),
+            });
+            let v2 = match s.call("add_track", vec![Value::resource(&p), video]) {
+                InvokeOutcome::Done(Value::Ref(r)) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("a video track is added: {other:?}"),
+            };
+            s.place(&p, &media[0], &v1, 0.0);
+            s.place(&p, &media[1], &v2, 0.0);
+            let clip_on = |track: &ResourceRef| {
+                s.clips(&p).into_iter().find(|c| {
+                    matches!(s.rt.read(c, "track").unwrap(), Value::Ref(r) if r.target.id_string() == track.id_string())
+                })
+            };
+
+            // At four seconds the two angles meet: the bottom-most visible track takes the left
+            // half of the frame, the next one the right.
+            s.call(
+                "place_two_angles",
+                vec![Value::resource(&p), Value::Float(4.0)],
+            );
+            for (track, pos_x, anchor_x) in [(&v1, -0.25, 0.0), (&v2, 0.25, 1.0)] {
+                let c = clip_on(track).expect("a picture on the track");
+                for (field, want) in [
+                    ("scale_x", 0.5),
+                    ("scale_y", 1.0),
+                    ("pos_x", pos_x),
+                    ("pos_y", 0.0),
+                    ("anchor_x", anchor_x),
+                    ("anchor_y", 0.5),
+                ] {
+                    assert!(
+                        (s.number(&c, field) - want).abs() < 1e-9,
+                        "{field} is {want}: {}",
+                        s.number(&c, field)
+                    );
+                }
+            }
+
+            // They sit side by side already: a second press changes nothing, and says so.
+            assert!(
+                s.try_call(
+                    "place_two_angles",
+                    vec![Value::resource(&p), Value::Float(4.0)]
+                )
+                .is_err(),
+                "the two pictures already sit side by side there"
+            );
+
+            // Unplace gives each the whole frame again.
+            s.call(
+                "unplace_two_angles",
+                vec![Value::resource(&p), Value::Float(4.0)],
+            );
+            for track in [&v1, &v2] {
+                let c = clip_on(track).expect("a picture on the track");
+                for (field, want) in [
+                    ("scale_x", 1.0),
+                    ("pos_x", 0.0),
+                    ("anchor_x", 0.5),
+                    ("anchor_y", 0.5),
+                ] {
+                    assert!((s.number(&c, field) - want).abs() < 1e-9, "{field}");
+                }
+            }
+        }
+
+        phase two_pictures_have_to_meet_at_the_playhead;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            assert!(
+                s.try_call(
+                    "place_two_angles",
+                    vec![Value::resource(&p), Value::Float(1.0)]
+                )
+                .is_err(),
+                "one picture alone has no second angle to stand beside"
+            );
+        }
+    }
 }
