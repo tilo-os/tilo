@@ -22,9 +22,12 @@ case "$(uname -m)" in
   *) false ;;
 esac || { printf 'package.sh %s must run on a native %s machine, not %s\n' "$arch" "$arch" "$(uname -m)" >&2; exit 1; }
 
-command -v flatpak-builder >/dev/null && command -v capnp >/dev/null || \
+command -v flatpak-builder >/dev/null && command -v capnp >/dev/null \
+  && command -v dbus-daemon >/dev/null && command -v gdbus >/dev/null \
+  && [ -x /usr/libexec/udisks2/udisksd ] && [ -x /usr/lib/systemd/systemd-udevd ] || \
   dnf install -y -q --setopt=install_weak_deps=False \
-    flatpak flatpak-builder capnproto bubblewrap fuse fuse-libs file desktop-file-utils
+    flatpak flatpak-builder capnproto bubblewrap fuse fuse-libs file desktop-file-utils \
+    dbus-daemon glib2 systemd-udev udisks2
 # The SDK and runtime the manifest names, system-wide, as a release builder has them.
 flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --system --noninteractive flathub \

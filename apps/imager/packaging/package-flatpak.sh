@@ -26,6 +26,28 @@ fi
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+
+# The probe reconciles what the sandbox sees with this machine's UDisks2, and a check's micro-VM
+# boots only its command, not a machine: give it a block device, and start the system bus and
+# UDisks2 the image carries, as a boot would.
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT
+install -d -m 0755 /run/udev /run/dbus /run/udisks2
+[ -S /run/udev/control ] || { /usr/lib/systemd/systemd-udevd --daemon; udevadm trigger --subsystem-match=block; udevadm settle; }
+truncate -s 64M "$work/probe-disk.img"
+losetup --find --show "$work/probe-disk.img"
+udevadm trigger --subsystem-match=block && udevadm settle
+dbus-daemon --system --fork --nopidfile
+/usr/libexec/udisks2/udisksd &
+tries=100
+while [ "$tries" -gt 0 ]; do
+  gdbus call --system --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.GetNameOwner org.freedesktop.UDisks2 >/dev/null 2>&1 && break
+  tries=$((tries - 1))
+  sleep 0.1
+done
+[ "$tries" -gt 0 ] || { printf 'UDisks2 never answered on the machine bus\n' >&2; exit 1; }
+busctl --system tree org.freedesktop.UDisks2
+
 target="${CARGO_TARGET_DIR:-$repo/target}"
 # The compiler's tree and the LLVM library its linker loads live under the host's /usr, which a
 # Flatpak sandbox reserves for its runtime: the link reads a copy under the build directory,
@@ -86,6 +108,8 @@ export FLATPAK_USER_DIR="$isolated_install"
 flatpak install --user --noninteractive --no-deps --bundle "$artifact"
 flatpak info --user org.tilo.Imager >/dev/null
 flatpak run --user org.tilo.Imager --tilo-package-smoke
+flatpak run --user --command=lsblk org.tilo.Imager -o NAME,SIZE,TYPE || \
+  printf 'the sandbox carries no lsblk for the smoke to show\n' >&2
 flatpak run --user org.tilo.Imager --tilo-flatpak-probe-smoke
 flatpak run --user --filesystem="$smoke" org.tilo.Imager \
   --shots "$smoke/flatpak-installed.png" \
