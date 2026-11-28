@@ -385,42 +385,85 @@ clipboard_read() {
 }
 clipboard_sentinel=tilo-clipboard-sentinel
 
-# Walk the disposable Connect branch to its non-secret field and focus it.
-# Proves the complete external-reader contract before the irreversible
-# identity choice: focus and write the field solely over AT-SPI and observe
-# the value through that same bus.
-oobe_to_connect_field() {
-  wait_for_names "Use my existing Tilo identity" "Create a new identity"
-  click_named "Use my existing Tilo identity"
-  wait_for_names "Restore from a backup" "Back"
-  click_named "Restore from a backup"
-  wait_for_names "Identity backup file" "Back"
-  focus_named "Identity backup file"
-  set_text_named "Identity backup file" "tilo-atspi-edit-probe"
+# Walk to a non-secret text field and focus it, writing it solely over AT-SPI and reading the
+# value back through the same bus. A sign-in that already made this account's person opens
+# setup at its backup, whose way to a plain field is the code for joining the person one
+# already has; a computer with no identity starts at the intro and takes the restore branch.
+oobe_to_plain_field() {
+  local attempt
+  for attempt in $(seq 1 400); do
+    collect_tree || { sleep 0.05; continue; }
+    if node_named "Code from your other device" >/dev/null; then
+      focus_named "Code from your other device"
+      set_text_named "Code from your other device" "tilo-atspi-edit-probe"
+      return 0
+    fi
+    if node_named "Identity backup file" >/dev/null; then
+      focus_named "Identity backup file"
+      set_text_named "Identity backup file" "tilo-atspi-edit-probe"
+      return 0
+    fi
+    if node_named "Restore from a backup" >/dev/null; then
+      click_named "Restore from a backup"
+    elif node_named "I already use Tilo on another device" >/dev/null; then
+      click_named "I already use Tilo on another device"
+    elif node_named "Use my existing Tilo identity" >/dev/null; then
+      click_named "Use my existing Tilo identity"
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never offered a plain field to write" >&2
+  printf '%s\n' "$names" >&2
+  return 1
 }
 
-# From Intro (or the Connect branch) to the backup step, where the identity
-# exists and the backup passphrase is a secret field. Each transition is made
-# through org.a11y.atspi.Action, then observed back through the live AT-SPI
-# tree. It catches a provider that advertises controls but drops
-# ActionRequest messages before the compositor's widget dispatcher.
+# Clear the plain field `oobe_to_plain_field` wrote, whichever page it was on.
+oobe_clear_plain_field() {
+  local name
+  for name in "Code from your other device" "Identity backup file"; do
+    if node_named "$name" >/dev/null; then
+      set_text_named "$name" ""
+    fi
+  done
+}
+
+# From where the plain field left the ceremony to the backup step, where the identity exists and
+# the backup passphrase is a secret field. Each transition is made through
+# org.a11y.atspi.Action, then observed back through the live AT-SPI tree. It catches a provider
+# that advertises controls but drops ActionRequest messages before the compositor's widget
+# dispatcher.
 # The backup step's acknowledgement, as the shell says it
 # (in setup's app, apps/tl/onboarding/app.tl).
 skip_backup_acknowledgement="I understand that without a recovery key or backup, losing this device means losing this identity."
 oobe_to_backup() {
+  local attempt
+  if node_named "Code from your other device" >/dev/null; then
+    click_named "Back"
+  fi
   if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
     click_named "Back"
     wait_for_names "Restore from a backup" "Back"
     click_named "Back"
   fi
-  wait_for_names "Use my existing Tilo identity" "Create a new identity"
-  click_named "Create a new identity"
-  wait_for_names \
-    "I understand that losing this device without a backup means losing this identity." \
-    "Create local identity"
-  click_named "I understand that losing this device without a backup means losing this identity."
-  wait_for_names "Create local identity"
-  click_named "Create local identity"
+  # The backup step itself, which a sign-in that made this account's person opens, or the
+  # intro whose create step makes it.
+  for attempt in $(seq 1 400); do
+    collect_tree || { sleep 0.05; continue; }
+    if node_named "Continue without backup" >/dev/null; then
+      break
+    fi
+    if node_named "Create a new identity" >/dev/null; then
+      click_named "Create a new identity"
+      wait_for_names \
+        "I understand that losing this device without a backup means losing this identity." \
+        "Create local identity"
+      click_named "I understand that losing this device without a backup means losing this identity."
+      wait_for_names "Create local identity"
+      click_named "Create local identity"
+      break
+    fi
+    sleep 0.05
+  done
   wait_for_names \
     "$skip_backup_acknowledgement" \
     "Continue without backup"
@@ -430,12 +473,11 @@ case "$mode" in
   oobe-copy-plain)
     # The control for `oobe-copy-secret`: keys typed and copied in an
     # ordinary chrome field do reach the clipboard this script reads.
-    oobe_to_connect_field
-    set_text_named "Identity backup file" ""
+    oobe_to_plain_field
+    oobe_clear_plain_field
     clipboard_seed "$clipboard_sentinel"
     ;;
   oobe-copy-secret)
-    wait_for_names "Identity backup file" "Back"
     oobe_to_backup
     focus_named "New backup passphrase"
     clipboard_seed "$clipboard_sentinel"
@@ -480,7 +522,8 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
   oobe|oobe-actions)
     collect_settled_tree
     if [[ $mode == oobe-actions ]] && ! node_named "Continue without backup" >/dev/null; then
-      oobe_to_connect_field
+      oobe_to_plain_field
+      oobe_clear_plain_field
       oobe_to_backup
     elif [[ $mode == oobe ]]; then
       wait_for_names "Use my existing Tilo identity" "Create a new identity"
