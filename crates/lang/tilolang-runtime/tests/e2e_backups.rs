@@ -18,15 +18,30 @@ mod cases {
 
     /// What the device asked for, in the words the app wrote, and the actions a job's start
     /// named as it moves and ends.
-    #[derive(Clone, Default)]
+    #[derive(Clone)]
     struct Engine {
         calls: Rc<RefCell<Vec<(String, String)>>>,
+        /// What the device answers when the app keeps a schedule: the repository with it.
+        schedule_catalog: Rc<RefCell<String>>,
         /// How the job stands now: `running` until the test says otherwise.
         state: Rc<RefCell<String>>,
         /// What a finished job answers with.
         answer: Rc<RefCell<String>>,
         cancelled: Rc<RefCell<Vec<String>>>,
         handlers: Rc<RefCell<Vec<JobHandlers>>>,
+    }
+
+    impl Default for Engine {
+        fn default() -> Self {
+            Self {
+                calls: Rc::default(),
+                schedule_catalog: Rc::new(RefCell::new(catalog_json())),
+                state: Rc::default(),
+                answer: Rc::default(),
+                cancelled: Rc::default(),
+                handlers: Rc::default(),
+            }
+        }
     }
 
     impl Engine {
@@ -75,6 +90,8 @@ mod cases {
                 .push((op.to_owned(), input.to_owned()));
             if op == "catalog" {
                 Ok(catalog_json())
+            } else if op == "schedule" {
+                Ok(self.schedule_catalog.borrow().clone())
             } else {
                 Err(format!("`{op}` is no op this device answers now"))
             }
@@ -223,6 +240,17 @@ mod cases {
             ],
         })
         .to_string()
+    }
+
+    /// The repository the device answers with once it kept a schedule: a daily run at six.
+    fn scheduled_catalog() -> String {
+        let mut catalog: serde_json::Value = serde_json::from_str(&catalog_json()).unwrap();
+        let source = &mut catalog["sources"][0];
+        source["schedule"] = serde_json::json!("daily");
+        source["at"] = serde_json::json!("18:00");
+        source["weekday"] = serde_json::json!("");
+        source["next_run_unix_seconds"] = serde_json::json!(1_782_100_800_i64);
+        catalog.to_string()
     }
 
     struct Backups {
@@ -870,6 +898,47 @@ mod cases {
             );
         }
 
+        phase the_schedule_is_the_engines_and_says_its_time;
+        {
+            let s = Backups::new();
+            s.set_up();
+            *s.engine.schedule_catalog.borrow_mut() = scheduled_catalog();
+            s.done(
+                "write_schedule",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text("daily"),
+                    Value::text("18:00"),
+                    Value::Int(0),
+                ],
+            );
+            let asked = s.engine.last_input();
+            assert_eq!(
+                asked["schedule_kind"],
+                "daily",
+                "the kind it was given: {:?}",
+                s.engine.calls.borrow()
+            );
+            assert_eq!(asked["schedule_at"], "18:00", "and the time");
+            assert_eq!(asked["destination"], "/home/you/backup-drive");
+            // The repository it answered names the schedule and the next run.
+            assert_eq!(s.text(&s.root, "source_at"), "18:00");
+            assert_eq!(s.number(&s.root, "next_run"), 1_782_100_800);
+            s.done(
+                "show_place",
+                vec![Value::resource(&s.root), Value::text("source")],
+            );
+            let window = s.window();
+            assert!(
+                says(window.tree(), "Every day at 18:00"),
+                "the page says when it backs up"
+            );
+            assert!(
+                says(window.tree(), "When it backs up"),
+                "the page offers the schedule"
+            );
+        }
+
         phase the_timeline_says_how_the_snapshots_stand;
         {
             let s = Backups::new();
@@ -1029,18 +1098,21 @@ mod cases {
                 .expect("the timeline says when the next run is");
             assert_eq!(prop(tile, "value"), "By hand");
 
-            // The same repository, with the source's schedule saying it runs every day.
+            // The same repository, with the source's schedule saying it runs every day: the
+            // engine names the instant it runs next.
             let mut daily: serde_json::Value =
                 serde_json::from_str(&catalog_json()).expect("the catalog is JSON");
             daily["sources"][0]["schedule"] = serde_json::json!("daily");
+            daily["sources"][0]["at"] = serde_json::json!("18:00");
+            daily["sources"][0]["next_run_unix_seconds"] = serde_json::json!(1_795_100_400_i64);
             s.done(
                 "keep_catalog",
                 vec![Value::resource(&s.root), Value::text(daily.to_string())],
             );
             assert_eq!(
                 s.number(&s.root, "next_run"),
-                1_795_080_000 + 86_400,
-                "one day after the newest whole snapshot"
+                1_795_100_400,
+                "the instant the engine names"
             );
             let window = s.window();
             let tile = of_kind(window.tree(), "ui.StatTile")

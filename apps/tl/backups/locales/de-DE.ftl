@@ -126,6 +126,15 @@ d-srrmxp5i = Quelle
 d-6e5yqotr = Ziel
     .doc = Der Ordner, in den Stände geschrieben werden; leer, bis eine Person einen wählt.
 
+d-cflircwr = Quellzeit
+    .doc = Die Tageszeit, zu der sie sich sichert, als `18:00`; leer, wenn sie von Hand läuft.
+
+d-grbmwjgb = Quellwochentag
+    .doc = Der Tag, an dem ein wöchentlicher Zeitplan läuft.
+
+d-5wqonrze = Eingetippte Zeit
+    .doc = Was die Person als Zeit des Zeitplans getippt hat, bevor sie verwendet wird.
+
 d-62wijgsn = Quellname
     .doc = Der Name des Quellordners.
 
@@ -281,6 +290,31 @@ d-3hxnk3mo = Ziel
 d-lbwhdcbx = Ersetzen
 
 d-3pulbfdz-filter-overwrite = Ersetzen
+
+d-ylkcsrzf = Zeitplanauftrag
+    .doc = Was die Engine behalten soll: wann die Quelle sich sichert.
+    .noun = { $count ->
+        [one] Zeitplanauftrag
+       *[other] Zeitplanaufträge
+    }
+        [one] schedule ask
+       *[other] schedule asks
+    }
+
+d-gbbg7sps = Quelle
+
+d-tezmcqsr = Ziel
+
+d-qxyq3nbt = Zeitplanart
+    .doc = `on_demand`, `hourly`, `daily` oder `weekly`.
+
+d-jl5fmocj = Zeitplanzeit
+    .doc = Die Tageszeit als `18:00`; leer für eine Quelle, die von Hand läuft.
+
+d-xs3bnmyr = Zeitplanwochentag
+    .doc = Der Tag, an dem ein wöchentlicher Zeitplan läuft, Montag als null.
+
+d-ylkcsrzf-filter-schedule_weekday = Zeitplanwochentag
 
 d-xzbqloor = Arbeitsdetails
     .doc = Was das Gerät über eine laufende Arbeit sagt und wenn sie endet.
@@ -448,6 +482,17 @@ d-h6ethwbw = Einen weniger behalten
 
 d-h6ethwbw-which = Welche
 
+d-pqix6wmj = Zeitplan setzen
+    .doc = Legt fest, wann die Quelle sich sichert: Die Engine behält es und antwortet mit dem Repository, sodass Fenster und Agent denselben Zeitplan lesen.
+    .w-choose-a-folder-to-protect-first = Wähle zuerst einen Ordner zum Schützen
+    .w-choose-where-snapshots-go-first = Wähle zuerst, wohin die Momentaufnahmen gehen
+
+d-pqix6wmj-kind = Art
+
+d-pqix6wmj-at = Zeit
+
+d-pqix6wmj-weekday = Wochentag
+
 d-x5h6br5g = Ausblenden
     .doc = Blendet die Zeile unter der Liste aus.
 
@@ -526,11 +571,12 @@ d-ho6s7tjb = Gesundheitswörter
     .w-failed = Fehlgeschlagen
     .w-complete = Vollständig
 
-d-x6mjn5zz = Rhythmuswörter
-    .w-every-hour = Jede Stunde
-    .w-every-day = Jeden Tag
-    .w-every-week = Jede Woche
-    .w-by-hand = Von Hand
+d-tnno3myx = Zeitplanwörter
+    .w-when-you-back-up = Wenn du sicherst
+    .w-every-hour-on-the-hour = Jede Stunde zur vollen Stunde
+    .w-every-hour-at-past = Jede Stunde um { $minute_of } nach
+    .w-every-day-at = Jeden Tag um { $source_at }
+    .w-every-at = Jeden { $source_weekday } um { $source_at }
 
 d-v7fwyqef = Herkunftswörter
     .w-home-folder = Home-Ordner
@@ -572,6 +618,8 @@ d-ngp7g7pa = Geprüft
 d-s2kwexka = Wiederherstellen angefragt
 
 d-4vnqjv4m = Wiederhergestellt
+
+d-gaktgwrl = Zeitplan setzen~present
 
 d-yeswuxpe = Fenster
 
@@ -675,6 +723,13 @@ d-nel5mdzq = Quellseite
     .w-needs-a-look = Braucht einen Blick
     .w-fine = In Ordnung
     .w-choose-another-folder = Anderen Ordner wählen
+    .w-when-it-backs-up = Wann sie sich sichert
+    .w-when-you-back-up = Wenn du sicherst
+    .w-every-hour = Jede Stunde
+    .w-every-day = Jeden Tag
+    .w-every-week = Jede Woche
+    .w-time = Zeit
+    .w-use-this-time = Diese Zeit verwenden
     .w-its-snapshots = Seine Stände
 
 d-6lykvoui = Zielseite

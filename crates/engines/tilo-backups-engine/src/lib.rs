@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 pub use model::{
     Catalog, DestKind, Destination, Health, MAX_KEPT, Retention, RetentionPolicy, Schedule,
-    SnapFile, SnapStatus, SnapType, Snapshot, Source, SourceKind,
+    SnapFile, SnapStatus, SnapType, Snapshot, Source, SourceKind, Weekday,
 };
 pub use repository::{
     BackupError, BackupManifest, Progress, Stop, Verification, catalog_from_local, create_snapshot,
@@ -36,7 +36,7 @@ pub use repository::{
 pub const APP: &str = "so.tilo.backups";
 
 /// What the app asks the device to do, read from JSON it wrote.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct Ask {
     /// The folder this device protects.
     #[serde(default)]
@@ -65,6 +65,14 @@ pub struct Ask {
     /// The stored snapshots the retention page asks about, newest first.
     #[serde(default)]
     pub stored: Vec<StoredSnapshot>,
+    /// The schedule the app sets: its kind (`on_demand`, `hourly`, `daily`, `weekly`), the time
+    /// of day it runs at as `18:00`, and the day a weekly one runs on (Monday is zero).
+    #[serde(default)]
+    pub schedule_kind: String,
+    #[serde(default)]
+    pub schedule_at: String,
+    #[serde(default)]
+    pub schedule_weekday: u8,
 }
 
 impl Ask {
@@ -112,6 +120,28 @@ fn folder(path: &str, what: &str) -> Result<PathBuf, String> {
         return Err(format!("Choose {what} first"));
     }
     Ok(PathBuf::from(path))
+}
+
+/// The hour and minute `at` writes (`18:00`), or nothing when the schedule runs by hand.
+fn clock(at: &str) -> Result<(u32, u32), String> {
+    if at.trim().is_empty() {
+        return Ok((0, 0));
+    }
+    let (hour, minute) = at
+        .split_once(':')
+        .ok_or_else(|| format!("`{at}` is no time; write it like 18:00"))?;
+    let hour: u32 = hour
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{at}` is no time; write it like 18:00"))?;
+    let minute: u32 = minute
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{at}` is no time; write it like 18:00"))?;
+    if hour > 23 || minute > 59 {
+        return Err(format!("`{at}` is no time; write it like 18:00"));
+    }
+    Ok((hour, minute))
 }
 
 /// The device's repository as the app reads it: one source, its snapshots, one destination.
@@ -168,8 +198,9 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-/// One `engine.call`: what is answered now. `catalog` reads the repository; `retained` says
-/// what a policy keeps without removing anything.
+/// One `engine.call`: what is answered now. `catalog` reads the repository; `schedule` keeps
+/// when the source backs itself up; `retained` says what a policy keeps without removing
+/// anything.
 ///
 /// # Errors
 ///
@@ -180,6 +211,23 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
     match op {
         "catalog" => serde_json::to_string(&catalog(&ask)?)
             .map_err(|error| format!("the catalog does not write: {error}")),
+        "schedule" => {
+            if ask.destination.trim().is_empty() {
+                return Err("Choose where snapshots go first".to_owned());
+            }
+            let destination = folder(&ask.destination, "a backup destination")?;
+            let (hour, minute) = clock(&ask.schedule_at)?;
+            let schedule = Schedule::from_parts(
+                &ask.schedule_kind,
+                hour,
+                minute,
+                Weekday::from_number(ask.schedule_weekday),
+            );
+            repository::write_schedule(&destination, schedule)
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&catalog(&ask)?)
+                .map_err(|error| format!("the catalog does not write: {error}"))
+        }
         "retained" => {
             ask.policy().valid()?;
             let stored: Vec<(String, u64)> = ask
@@ -435,19 +483,7 @@ mod tests {
             )
             .is_err()
         );
-        let empty = catalog(&Ask {
-            source: String::new(),
-            destination: String::new(),
-            snapshot: String::new(),
-            target: String::new(),
-            overwrite: false,
-            policy_hourly: 24,
-            policy_daily: 7,
-            policy_weekly: 4,
-            policy_monthly: 12,
-            stored: Vec::new(),
-        })
-        .unwrap();
+        let empty = catalog(&Ask::default()).unwrap();
         assert_eq!(empty, Catalog::default());
     }
 
@@ -476,16 +512,8 @@ mod tests {
     #[test]
     fn a_policy_beyond_the_kept_bound_is_refused() {
         let ask = Ask {
-            source: String::new(),
-            destination: String::new(),
-            snapshot: String::new(),
-            target: String::new(),
-            overwrite: false,
             policy_hourly: MAX_KEPT + 1,
-            policy_daily: 7,
-            policy_weekly: 4,
-            policy_monthly: 12,
-            stored: Vec::new(),
+            ..Ask::default()
         };
         assert!(ask.policy().valid().is_err());
     }

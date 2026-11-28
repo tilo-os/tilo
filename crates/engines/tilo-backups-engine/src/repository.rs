@@ -14,12 +14,13 @@ use walkdir::WalkDir;
 
 use crate::model::{
     Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, Schedule, SnapFile,
-    SnapStatus, SnapType, Snapshot, Source, SourceKind,
+    SnapStatus, SnapType, Snapshot, Source, SourceKind, Weekday,
 };
 
 const REPOSITORY_DIR: &str = ".tilo-backups";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const MANIFEST: &str = "manifest.json";
+const SCHEDULE: &str = "schedule.json";
 
 #[derive(Debug)]
 pub enum BackupError {
@@ -151,6 +152,76 @@ pub struct Verification {
 
 pub fn repository_path(destination: &Path) -> PathBuf {
     destination.join(REPOSITORY_DIR)
+}
+
+/// What a repository keeps of when its source backs itself up.
+#[derive(Serialize, Deserialize)]
+struct StoredSchedule {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    hour: u32,
+    #[serde(default)]
+    minute: u32,
+    #[serde(default)]
+    weekday: u8,
+}
+
+/// When the source `destination` keeps backs itself up: by hand where nothing was set.
+#[must_use]
+pub fn read_schedule(destination: &Path) -> Schedule {
+    let Ok(text) = fs::read_to_string(repository_path(destination).join(SCHEDULE)) else {
+        return Schedule::OnDemand;
+    };
+    let Ok(stored) = serde_json::from_str::<StoredSchedule>(&text) else {
+        return Schedule::OnDemand;
+    };
+    Schedule::from_parts(
+        &stored.kind,
+        stored.hour,
+        stored.minute,
+        Weekday::from_number(stored.weekday),
+    )
+}
+
+/// Keeps when the source `destination` keeps backs itself up.
+///
+/// # Errors
+///
+/// The repository cannot be made, or the schedule cannot be written.
+pub fn write_schedule(destination: &Path, schedule: Schedule) -> Result<()> {
+    let (hour, minute) = schedule.at().unwrap_or((0, 0));
+    let stored = StoredSchedule {
+        kind: schedule.kind().to_owned(),
+        hour,
+        minute,
+        weekday: schedule.weekday().map_or(0, Weekday::number),
+    };
+    let dir = repository_path(destination);
+    fs::create_dir_all(&dir).map_err(BackupError::Io)?;
+    let bytes = serde_json::to_vec_pretty(&stored).map_err(BackupError::Json)?;
+    fs::write(dir.join(SCHEDULE), bytes).map_err(BackupError::Io)
+}
+
+/// A schedule's time of day as a person reads it (`18:00`); empty by hand.
+fn at_text(schedule: Schedule) -> String {
+    schedule.at().map_or_else(String::new, |(hour, minute)| {
+        format!("{hour:02}:{minute:02}")
+    })
+}
+
+/// What a weekday is called.
+fn weekday_text(day: Weekday) -> String {
+    match day {
+        Weekday::Monday => "Monday",
+        Weekday::Tuesday => "Tuesday",
+        Weekday::Wednesday => "Wednesday",
+        Weekday::Thursday => "Thursday",
+        Weekday::Friday => "Friday",
+        Weekday::Saturday => "Saturday",
+        Weekday::Sunday => "Sunday",
+    }
+    .to_owned()
 }
 
 /// Validate source and destination before creating anything in the repository.
@@ -955,13 +1026,17 @@ pub fn catalog_from_local(
         })
         .collect::<Vec<_>>();
     let used = manifests.iter().map(|manifest| manifest.bytes).sum::<u64>();
+    let schedule = read_schedule(destination);
     Catalog {
         sources: vec![Source {
             id: "local-source".into(),
             name: source_name,
             path: source_label,
             kind: SourceKind::Custom,
-            schedule: Schedule::OnDemand,
+            schedule,
+            at: at_text(schedule),
+            weekday: schedule.weekday().map(weekday_text).unwrap_or_default(),
+            next_run_unix_seconds: schedule.next_after(unix_now().unwrap_or_default()),
             enabled: true,
             health: Health::Unknown,
         }],
@@ -981,6 +1056,32 @@ pub fn catalog_from_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A schedule is kept in the repository and named in the catalog, with its time of day.
+    #[test]
+    fn a_schedule_is_kept_and_named_in_the_catalog() {
+        let root =
+            std::env::temp_dir().join(format!("tilo-backups-schedule-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let schedule = Schedule::Weekly {
+            weekday: Weekday::Friday,
+            hour: 4,
+            minute: 30,
+        };
+        write_schedule(&root, schedule).unwrap();
+        assert_eq!(read_schedule(&root), schedule);
+        let catalog = catalog_from_local(Path::new("/home/you/Documents"), &root, &[]);
+        let source = &catalog.sources[0];
+        assert_eq!(source.schedule, schedule, "the catalog names the schedule");
+        assert_eq!(source.at, "04:30", "and the time it runs at");
+        assert_eq!(source.weekday, "Friday", "and its day");
+        assert!(
+            source.next_run_unix_seconds.is_some(),
+            "and when it runs next"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn manifest_entries_require_the_mode_key() {

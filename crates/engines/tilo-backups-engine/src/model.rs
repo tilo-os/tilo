@@ -27,14 +27,180 @@ impl SourceKind {
     }
 }
 
-/// When a source backs itself up.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// When a source backs itself up, and at what time of day.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Schedule {
+    /// When the person runs one.
+    #[default]
     OnDemand,
-    Hourly,
-    Daily,
-    Weekly,
+    /// Every hour at `minute` past.
+    Hourly { minute: u32 },
+    /// Every day at `hour:minute`.
+    Daily { hour: u32, minute: u32 },
+    /// Every `weekday` at `hour:minute`.
+    Weekly {
+        weekday: Weekday,
+        hour: u32,
+        minute: u32,
+    },
+}
+
+impl Schedule {
+    /// What the schedule is called, as the catalog names it.
+    #[must_use]
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::OnDemand => "on_demand",
+            Self::Hourly { .. } => "hourly",
+            Self::Daily { .. } => "daily",
+            Self::Weekly { .. } => "weekly",
+        }
+    }
+
+    /// The time of day it runs at, `(hour, minute)`; none when it runs by hand.
+    #[must_use]
+    pub const fn at(self) -> Option<(u32, u32)> {
+        match self {
+            Self::OnDemand => None,
+            Self::Hourly { minute } => Some((0, minute)),
+            Self::Daily { hour, minute } | Self::Weekly { hour, minute, .. } => {
+                Some((hour, minute))
+            }
+        }
+    }
+
+    /// The day a weekly schedule runs on.
+    #[must_use]
+    pub const fn weekday(self) -> Option<Weekday> {
+        match self {
+            Self::Weekly { weekday, .. } => Some(weekday),
+            _ => None,
+        }
+    }
+
+    /// The schedule a stored `kind` names, at the time and day given; unknown kinds run by hand.
+    #[must_use]
+    pub const fn from_parts(kind: &str, hour: u32, minute: u32, weekday: Weekday) -> Self {
+        match kind.as_bytes() {
+            b"hourly" => Self::Hourly {
+                minute: if minute < 60 { minute } else { 0 },
+            },
+            b"daily" => Self::Daily {
+                hour: if hour < 24 { hour } else { 0 },
+                minute: if minute < 60 { minute } else { 0 },
+            },
+            b"weekly" => Self::Weekly {
+                weekday,
+                hour: if hour < 24 { hour } else { 0 },
+                minute: if minute < 60 { minute } else { 0 },
+            },
+            _ => Self::OnDemand,
+        }
+    }
+
+    /// The next second since 1970 this schedule runs at or after `now`.
+    #[must_use]
+    pub fn next_after(self, now: u64) -> Option<u64> {
+        let (hour, minute) = self.at()?;
+        let day_start = now.checked_sub(now.checked_rem(86_400)?)?;
+        let seconds = u64::from(hour)
+            .checked_mul(3_600)?
+            .checked_add(u64::from(minute).checked_mul(60)?)?;
+        match self {
+            Self::OnDemand => None,
+            Self::Hourly { .. } => {
+                let hour_start = now.checked_sub(now.checked_rem(3_600)?)?;
+                let at = hour_start.checked_add(seconds)?;
+                Some(if at > now {
+                    at
+                } else {
+                    hour_start.checked_add(3_600)?.checked_add(seconds)?
+                })
+            }
+            Self::Daily { .. } => {
+                let at = day_start.checked_add(seconds)?;
+                Some(if at > now {
+                    at
+                } else {
+                    day_start.checked_add(86_400)?.checked_add(seconds)?
+                })
+            }
+            Self::Weekly { weekday, .. } => {
+                let today = day_start
+                    .checked_div(86_400)?
+                    .checked_add(3)?
+                    .checked_rem(7)?;
+                let ahead = u64::from(weekday.number())
+                    .checked_add(7)?
+                    .checked_sub(today)?
+                    .checked_rem(7)?;
+                let mut when = day_start
+                    .checked_add(ahead.checked_mul(86_400)?)?
+                    .checked_add(seconds)?;
+                if when <= now {
+                    when = when.checked_add(7 * 86_400)?;
+                }
+                Some(when)
+            }
+        }
+    }
+}
+
+impl Serialize for Schedule {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.kind())
+    }
+}
+
+impl<'de> Deserialize<'de> for Schedule {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let kind = String::deserialize(deserializer)?;
+        Ok(Self::from_parts(&kind, 0, 0, Weekday::Monday))
+    }
+}
+
+/// The day a weekly schedule runs on, Monday first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Weekday {
+    #[default]
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl Weekday {
+    /// The day's number, Monday as zero.
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Monday => 0,
+            Self::Tuesday => 1,
+            Self::Wednesday => 2,
+            Self::Thursday => 3,
+            Self::Friday => 4,
+            Self::Saturday => 5,
+            Self::Sunday => 6,
+        }
+    }
+
+    /// The day a number names, Monday as zero.
+    #[must_use]
+    pub const fn from_number(number: u8) -> Self {
+        match number {
+            1 => Self::Tuesday,
+            2 => Self::Wednesday,
+            3 => Self::Thursday,
+            4 => Self::Friday,
+            5 => Self::Saturday,
+            6 => Self::Sunday,
+            _ => Self::Monday,
+        }
+    }
 }
 
 /// Was the snapshot created by the scheduler or by hand?
@@ -142,6 +308,15 @@ pub struct Source {
     pub path: String,
     pub kind: SourceKind,
     pub schedule: Schedule,
+    /// The clock time it runs at, as a person reads it (`18:00`); empty when it runs by hand.
+    #[serde(default)]
+    pub at: String,
+    /// The day a weekly source runs on (`Monday`); empty otherwise.
+    #[serde(default)]
+    pub weekday: String,
+    /// The next second since 1970 this source backs itself up, where it runs on a schedule.
+    #[serde(default)]
+    pub next_run_unix_seconds: Option<u64>,
     pub enabled: bool,
     pub health: Health,
 }
@@ -328,5 +503,58 @@ impl Catalog {
             .iter()
             .filter(|snapshot| snapshot.status == SnapStatus::Complete)
             .max_by_key(|snapshot| snapshot.taken_unix_seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A daily schedule runs at its own time of day, and a weekly one on its own day.
+    #[test]
+    fn a_schedule_runs_at_its_time_and_day() {
+        let now = 1_782_000_000;
+        let daily = Schedule::Daily {
+            hour: 18,
+            minute: 0,
+        };
+        let next = daily.next_after(now).expect("a daily run");
+        assert!(next > now);
+        assert_eq!(
+            next.checked_rem(86_400).expect("a day's remainder"),
+            18 * 3_600,
+            "at six in the evening"
+        );
+        let weekly = Schedule::Weekly {
+            weekday: Weekday::Friday,
+            hour: 4,
+            minute: 0,
+        };
+        let next = weekly.next_after(now).expect("a weekly run");
+        assert!(next > now && next.checked_sub(now).expect("a later run") <= 7 * 86_400);
+        assert_eq!(
+            next.checked_div(86_400)
+                .expect("a day")
+                .checked_add(3)
+                .expect("shifted")
+                .checked_rem(7)
+                .expect("a weekday"),
+            4,
+            "on a Friday"
+        );
+        assert_eq!(
+            next.checked_rem(86_400).expect("a day's remainder"),
+            4 * 3_600,
+            "at four in the morning"
+        );
+        assert_eq!(Schedule::OnDemand.next_after(now), None);
+        assert_eq!(
+            Schedule::from_parts("daily", 18, 0, Weekday::Monday).at(),
+            Some((18, 0))
+        );
+        assert_eq!(
+            Schedule::from_parts("sometimes", 1, 2, Weekday::Monday),
+            Schedule::OnDemand
+        );
     }
 }

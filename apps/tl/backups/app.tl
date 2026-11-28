@@ -10,6 +10,7 @@ op "catalog"
 op "backup"
 op "verify"
 op "restore" changes device
+op "schedule" changes device
 
 /// Was a snapshot taken by the schedule or by hand?
 enum Taken {
@@ -125,6 +126,12 @@ type Backups (untitled: "Backups") {
     source: Text = ""
     /// The folder snapshots are written to; empty until a person picks one.
     destination: Text = ""
+    /// The time of day it backs itself up, as `18:00`; empty when it runs by hand.
+    source_at: Text = ""
+    /// The day a weekly schedule runs on.
+    source_weekday: Text = ""
+    /// What the person typed as the schedule's time, before it is used.
+    typed_at: Text = ""
     /// The name the source folder goes by.
     source_name: Text = ""
     source_origin: Origin = .custom
@@ -209,6 +216,9 @@ action keep_catalog(b: Backups, answer: Text) uses time {
                 b.source_name = text_at(source, "name")
                 b.source_origin = origin_of(text_at(source, "kind"))
                 b.source_cadence = cadence_of(text_at(source, "schedule"))
+                b.source_at = text_at(source, "at")
+                b.source_weekday = text_at(source, "weekday")
+                b.next_run = int_at(source, "next_run_unix_seconds")
                 b.source_failing = text_at(source, "health") == "warning"
             }
             for dest in entries(field(catalog, "destinations")) {
@@ -265,14 +275,7 @@ action keep_catalog(b: Backups, answer: Text) uses time {
                     )
                 }
             }
-            // The schedule says when the next run is due: at once for a source nothing has
-            // backed up yet, and one cadence after the newest whole snapshot otherwise.
-            let step = cadence_seconds(b.source_cadence)
-            b.next_run = if step == 0 {
-                0
-            } else if let last = last_complete(b) {
-                last.at + step
-            } else { (now - moment(0)).seconds() }
+            // The engine names when the next run is due; the app reads it as it is.
         }
     }
 }
@@ -552,6 +555,30 @@ action keep_fewer(b: Backups, which: Text) (icon: .minus, label: "Keep one fewer
     }
 }
 
+/// Sets when the source backs itself up: the engine keeps it and answers the repository, so
+/// the window and an agent read the same schedule.
+action write_schedule(b: Backups, kind: Text, at: Text, weekday: Int) uses time {
+    require b.source != "" "Choose a folder to protect first"
+    require b.destination != "" "Choose where snapshots go first"
+    match engine.call(
+        "schedule",
+        json.encode(
+            ScheduleAsk(
+                source: b.source,
+                destination: b.destination,
+                schedule_kind: kind,
+                schedule_at: at,
+                schedule_weekday: weekday,
+            ),
+        ),
+    ) {
+        .err(why) => {
+            b.trouble = why
+        }
+        .ok(answer) => { keep_catalog(b, answer) }
+    }
+}
+
 /// Dismisses the line under the list.
 action dismiss(b: Backups) {
     b.notice = ""
@@ -697,6 +724,18 @@ type RestoreAsk {
     snapshot: Text
     target: Text
     overwrite: Bool
+}
+
+/// What the engine is asked to keep: when the source backs itself up.
+type ScheduleAsk {
+    source: Text
+    destination: Text
+    /// `on_demand`, `hourly`, `daily` or `weekly`.
+    schedule_kind: Text
+    /// The time of day as `18:00`; empty for a source that runs by hand.
+    schedule_at: Text
+    /// The day a weekly one runs on, Monday as zero.
+    schedule_weekday: Int
 }
 
 /// What the device says of a piece of work as it runs and when it ends. Its failure is the
@@ -873,6 +912,54 @@ fn cadence_words(c: Cadence) -> Text {
     if c == .hourly {
         "Every hour"
     } else if c == .daily { "Every day" } else if c == .weekly { "Every week" } else { "By hand" }
+}
+
+/// What the source's schedule says, in the words a person reads: when it backs itself up and
+/// at what time.
+fn schedule_words(b: Backups) -> Text {
+    if b.source_cadence == .on_demand {
+        std.say("When you back up")
+    } else if b.source_cadence == .hourly {
+        if minute_of(b.source_at) == 0 {
+            std.say("Every hour, on the hour")
+        } else {
+            std.say("Every hour at {minute_of(b.source_at)} past")
+        }
+    } else if b.source_cadence == .daily {
+        std.say("Every day at {b.source_at}")
+    } else {
+        std.say("Every {b.source_weekday} at {b.source_at}")
+    }
+}
+
+/// The minute of a time written `18:05`.
+fn minute_of(at: Text) -> Int {
+    if let minute = at.split(":").at(1) { minute.trim().to_int() ?? 0 } else { 0 }
+}
+
+/// The days a schedule may run on, Monday first.
+fn weekdays() -> List<Text> {
+    ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+}
+
+/// Where `named` stands in the week, Monday as zero.
+fn weekday_index(named: Text) -> Int {
+    if named == "Tuesday" {
+        1
+    } else if named == "Wednesday" {
+        2
+    } else if named == "Thursday" {
+        3
+    } else if named == "Friday" {
+        4
+    } else if named == "Saturday" { 5 } else if named == "Sunday" { 6 } else { 0 }
+}
+
+/// The kind the engine names a cadence by.
+fn cadence_kind(c: Cadence) -> Text {
+    if c == .hourly {
+        "hourly"
+    } else if c == .daily { "daily" } else if c == .weekly { "weekly" } else { "on_demand" }
 }
 
 fn origin_words(o: Origin) -> Text {
@@ -1493,11 +1580,60 @@ view source_page(b: Backups) {
         ui.Property("Folder", b.source)
         ui.Property("Called", b.source_name)
         ui.Property("Kind", origin_words(b.source_origin))
-        ui.Property("Schedule", cadence_words(b.source_cadence))
+        ui.Property("Schedule", schedule_words(b))
         ui.Property("State", if b.source_failing { "Needs a look" } else { "Fine" })
     }
     ui.Button("Choose another folder", icon: .folder_open) {
         on press: choose_source(b)
+    }
+    ui.Section(title: "When it backs up") {
+        row(gap: .tight, wrap: true) {
+            ui.Chip("When you back up", selected: b.source_cadence == .on_demand) {
+                on press: write_schedule(b, kind: "on_demand", at: "", weekday: 0)
+            }
+            ui.Chip("Every hour", selected: b.source_cadence == .hourly) {
+                on press: write_schedule(b, kind: "hourly", at: b.source_at, weekday: 0)
+            }
+            ui.Chip("Every day", selected: b.source_cadence == .daily) {
+                on press: write_schedule(b, kind: "daily", at: b.source_at, weekday: 0)
+            }
+            ui.Chip("Every week", selected: b.source_cadence == .weekly) {
+                on press: write_schedule(
+                    b,
+                    kind: "weekly",
+                    at: b.source_at,
+                    weekday: weekday_index(b.source_weekday),
+                )
+            }
+        }
+        if b.source_cadence != .on_demand {
+            row(gap: .related, align: .center) {
+                ui.Text("Time", role: .label)
+                ui.TextInput(bind: b.typed_at, placeholder: b.source_at)
+                ui.Button("Use this time", icon: .check) {
+                    on press: write_schedule(
+                        b,
+                        kind: cadence_kind(b.source_cadence),
+                        at: b.typed_at,
+                        weekday: weekday_index(b.source_weekday),
+                    )
+                }
+            }
+        }
+        if b.source_cadence == .weekly {
+            row(gap: .tight, wrap: true) {
+                for day in weekdays() {
+                    ui.Chip(day, selected: b.source_weekday == day) {
+                        on press: write_schedule(
+                            b,
+                            kind: "weekly",
+                            at: b.source_at,
+                            weekday: weekday_index(day),
+                        )
+                    }
+                }
+            }
+        }
     }
     ui.Section(title: "Its snapshots") {
         for s in listed(b) {
