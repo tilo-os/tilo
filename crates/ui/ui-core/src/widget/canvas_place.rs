@@ -20,7 +20,7 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::{component::Component, component::Described};
 
-use crate::widget::arrange::{Align, Fit, Part, Stack};
+use crate::widget::arrange::{Align, Distribute, Fit, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::{
     widget::ContextMenuArea, widget::DragSource, widget::HoverToolbar, widget::MenuItemProps,
@@ -122,7 +122,7 @@ impl Described for CanvasPlace {
             Stack::stack()
                 .fill_width()
                 .fill_height()
-                .align(Align::End)
+                .distribute(Distribute::End)
                 .push(Box::new(said) as Element),
         );
         let caption: Element = match carries {
