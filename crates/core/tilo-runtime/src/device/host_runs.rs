@@ -67,11 +67,21 @@ impl HostRuns {
 /// device listed with their others, their root marked in their devices, and their root-only
 /// asks served here.
 pub(super) fn settling(
+    first: &Arc<super::first_workspace::FirstWorkspace>,
     workspaces: &Arc<ServiceWorkspaces>,
     asked: &Arc<super::asked::DeviceAsked>,
     tickets: &Arc<super::ticket::Tickets>,
     cert: &DeviceCert,
 ) -> super::first_workspace::Settling {
+    // A device that comes to hold their own workspace after its daemon started — one that logged
+    // in through another device, whose copy arrives later — is settled by that hold, not only by
+    // a call that reaches the workspace: the hold is what lists it with their others.
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(super::first_workspace::settle_as_workspaces_arrive(
+            Arc::clone(first),
+            workspaces.copies().clone(),
+        ));
+    }
     let workspaces = Arc::downgrade(workspaces);
     let (asked, tickets, cert) = (Arc::downgrade(asked), Arc::clone(tickets), cert.clone());
     Arc::new(move || {

@@ -1655,6 +1655,82 @@ async fn a_device_keeping_a_member_copy_lists_itself_through_the_server_that_hol
     host.server.shutdown().await;
 }
 
+/// A device that starts before its copy of the person's own workspace is here lists itself once
+/// the copy arrives, as a device that had one when it started lists itself then: the device is
+/// settled whenever a workspace it did not hold comes to be held, not only as its daemon starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_that_holds_its_persons_workspace_after_it_starts_lists_itself() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = servers_host(&root).await;
+    let admin =
+        tilo_server_protocol::servers::person_workspace_id(&root.verifying_key().to_bytes());
+    let login = login_to(&host.server, &admin, (&host.issuer_cert, &host.server_cert));
+    let state = tempfile::tempdir().unwrap();
+    let address = tilo_api::daemon::enter::server_of(&login).await.unwrap();
+    let service = Arc::new(
+        super::workspaces::ServiceWorkspaces::open_for_test(
+            &state.path().join("laptop"),
+            &host.issuer_key,
+            &host.issuer_cert,
+            &address,
+        )
+        .await
+        .expect("the device's service opens"),
+    );
+    // The login names their workspace, whose copy is not held here yet: what settles the device,
+    // and lists it with their others, is the copy's arrival.
+    let first = FirstWorkspace::open(Arc::clone(&service), Some(&admin));
+    let cert = host.issuer_cert.clone();
+    first.when_here(Arc::new({
+        let copies = service.copies().clone();
+        move || {
+            let (copies, cert) = (copies.clone(), cert.clone());
+            Box::pin(async move {
+                tilo_workspace_service::workspaces::person_workspace::devices::keep(&copies, &cert)
+                    .await?;
+                Ok(true)
+            })
+        }
+    }));
+    tilo_rt::app()
+        .handle()
+        .spawn(super::first_workspace::settle_as_workspaces_arrive(
+            Arc::clone(&first),
+            service.copies().clone(),
+        ));
+    let entered = tilo_test_env::within(
+        "the device to enter its person's workspace",
+        tilo_api::daemon::enter::connect(&host.issuer_key, &login, Some(service.lent())),
+    )
+    .await
+    .expect("the device enters");
+    tilo_test_env::within("the device to hold it", service.hold(&entered)).await;
+    let person = host.issuer_cert.user_public_key;
+    let listed =
+        |record: tilo_workspace_service::workspaces::person_workspace::devices::Devices| {
+            record
+                .listed(&person)
+                .iter()
+                .any(|entry| entry.cert.device_public_key == host.issuer_cert.device_public_key)
+        };
+    tilo_test_env::within("the server's record to list the device", async {
+        loop {
+            let record = tilo_workspace_service::workspaces::person_workspace::devices::of(
+                &host.hosted,
+                &person,
+            )
+            .await;
+            if listed(record) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    entered.close();
+    host.server.shutdown().await;
+}
+
 /// A logged-in issuer asks its host to write the entry: `tilo device add --server` on one of the
 /// person's laptops leaves the server's entry in the Servers document their server holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2998,6 +3074,7 @@ async fn the_first_app_launched_in_the_persons_workspace_lists_the_device_and_fo
         Box::new(|_| Err("nothing waits here to be sent again".to_owned())),
     );
     first.when_here(super::host_runs::settling(
+        &first,
         &workspaces,
         &asked,
         &tickets,

@@ -3247,8 +3247,10 @@ impl Daemon {
             }));
         }
         // A person whose workspace is founded here after the start, or comes in from their
-        // desktop, is held as the start holds one it finds: done by whatever first reaches it.
+        // desktop, is held as the start holds one it finds: done by whatever first reaches it,
+        // and by the arrival itself (the settling is told of every workspace held here).
         first.when_here(super::host_runs::settling(
+            &first,
             &workspaces,
             &asked,
             &tickets,
