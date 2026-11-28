@@ -617,14 +617,17 @@ view accounts_to_connect(g: Migration) {
 
 /// One account a browser was signed in to: its own sign-in, begun once the person confirmed
 /// connecting them, the page it asks on, and whether the workspace has it. Microsoft's asks for
-/// the address it signs in with when no saved password named it; Spotify's is Music's.
+/// the address it signs in with when no saved password named it; Spotify's is Music's; Discord's
+/// is Discord's own page in Browser, as its token never leaves the browser it was in.
 view account_to_connect(g: Migration, x: Item, begin: Bool) {
     state open: Text = ""
     state code: Text = ""
     state typed: Text = x.note
     let spotify = x.key.ends_with("/spotify")
+    let discord = x.key.ends_with("/discord")
     let provider = if x.key.ends_with("/google") { "google" } else { "microsoft" }
     let connected = not spotify
+        and not discord
         and accounts.accounts.accounts.any(
             a -> a.provider == provider and (typed == "" or a.address == typed),
         )
@@ -644,6 +647,15 @@ view account_to_connect(g: Migration, x: Item, begin: Bool) {
                 )
                 ui.Button("Open Music", icon: .link) {
                     on press: session.open_app(app: "so.tilo.music")
+                }
+            } else if discord {
+                text(
+                    "Discord lets no program act with your own sign-in, so it stays in the browser. Sign in on Discord's own page in Browser: its menu opens Discord in a window of its own.",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Button("Open Browser", icon: .link) {
+                    on press: session.open_app(app: "so.tilo.browser")
                 }
             } else if open != "" {
                 ui.Link(open, label: "Sign in on {x.title}'s page")

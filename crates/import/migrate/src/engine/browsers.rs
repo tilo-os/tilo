@@ -216,15 +216,19 @@ fn session_only_said(profile: &BrowserProfile, cookies: &[Cookie]) -> Option<Str
 /// brought in: the browser's cookies are no grant for the account's mail, calendars and files.
 pub const ACCOUNT_TO_CONNECT: &str = "account-to-connect";
 
-/// The accounts the profile listed under `key` was signed in to (`{key}/account/google`): each
+/// The accounts `profile`, listed under `key`, was signed in to (`{key}/account/google`): each
 /// titled by its provider, its note the address a password the profile saved for its sign-in
 /// page names.
-fn accounts_to_connect(key: &str, held: &Read) -> Vec<Item> {
-    let Ok(cookies) = &held.sign_ins else {
-        return Vec::new();
+fn accounts_to_connect(key: &str, profile: &BrowserProfile, held: &Read) -> Vec<Item> {
+    let mut accounts = match &held.sign_ins {
+        Ok(cookies) => browsers::sign_ins::accounts(cookies),
+        Err(_) => Vec::new(),
     };
+    if browsers::sign_ins::discord_signed_in(profile) {
+        accounts.push(browsers::sign_ins::Account::Discord);
+    }
     let logins = held.logins.as_deref().unwrap_or_default();
-    browsers::sign_ins::accounts(cookies)
+    accounts
         .into_iter()
         .map(|account| Item {
             key: format!("{key}/account/{}", account.key()),
@@ -322,7 +326,7 @@ pub fn review(home: &Path, config: &Path) -> Review {
                 note,
             });
         }
-        items.extend(accounts_to_connect(&key, &held));
+        items.extend(accounts_to_connect(&key, &profile, &held));
     }
     Review {
         source: "browsers".to_owned(),

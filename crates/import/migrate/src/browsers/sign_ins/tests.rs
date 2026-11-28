@@ -429,3 +429,57 @@ fn a_profile_names_the_accounts_it_was_signed_in_to_and_their_addresses() {
     );
     assert_eq!(address_of(Account::Spotify, &logins), None);
 }
+
+/// A profile is signed in to Discord when Discord's page kept its token in the profile's own
+/// storage: Firefox's database for the site, a Chromium browser's `Local Storage` log. A visit
+/// that kept something else, and a profile with no storage, are not.
+#[test]
+fn a_profile_signed_in_to_discord_says_so_from_where_its_page_kept_the_token() {
+    let home = tempfile::tempdir().unwrap();
+    firefox_home(home.path(), NOW);
+    chromium_home(home.path(), NOW);
+    let signed_in = |home: &Path| -> Vec<(String, bool)> {
+        profiles(home, &home.join(".config"))
+            .iter()
+            .map(|profile| (profile.label.clone(), discord_signed_in(profile)))
+            .collect()
+    };
+    assert_eq!(
+        signed_in(home.path()),
+        [
+            ("Chromium · Default".to_owned(), false),
+            ("Firefox · default-release".to_owned(), false),
+        ]
+    );
+
+    let storage = home
+        .path()
+        .join(".mozilla/firefox/p.default-release/storage/default/https+++discord.com/ls");
+    std::fs::create_dir_all(&storage).unwrap();
+    let connection = rusqlite::Connection::open(storage.join("data.sqlite")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE data (key TEXT PRIMARY KEY, value BLOB); \
+             INSERT INTO data VALUES ('locale', 'en');",
+        )
+        .unwrap();
+    let leveldb = home
+        .path()
+        .join(".config/chromium/Default/Local Storage/leveldb");
+    std::fs::create_dir_all(&leveldb).unwrap();
+    let mut log = b"\x01\x02_https://discord.com\x00\x01".to_vec();
+    log.extend_from_slice(b"token\"secret\"");
+    std::fs::write(leveldb.join("000003.log"), &log).unwrap();
+    assert_eq!(
+        signed_in(home.path()),
+        [
+            ("Chromium · Default".to_owned(), true),
+            ("Firefox · default-release".to_owned(), false),
+        ]
+    );
+    connection
+        .execute("INSERT INTO data VALUES ('token', 'secret')", [])
+        .unwrap();
+    drop(connection);
+    assert!(signed_in(home.path()).iter().all(|(_, yes)| *yes));
+}

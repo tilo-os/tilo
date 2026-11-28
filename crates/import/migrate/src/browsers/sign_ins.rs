@@ -130,18 +130,24 @@ pub enum Account {
     Google,
     Microsoft,
     Spotify,
+    /// Discord, whose sign-in a page keeps as a token in its own storage, not a cookie
+    /// ([`discord_signed_in`]). The token is never read: Discord lets no program act with a
+    /// person's own token, so the workspace's Discord connects through Discord's own sign-in.
+    Discord,
 }
 
 impl Account {
     const ALL: [Self; 3] = [Self::Google, Self::Microsoft, Self::Spotify];
 
-    /// The provider the workspace's accounts sign in with: `google`, `microsoft`, `spotify`.
+    /// The provider the workspace's accounts sign in with: `google`, `microsoft`, `spotify`,
+    /// `discord`.
     #[must_use]
     pub fn key(self) -> &'static str {
         match self {
             Self::Google => "google",
             Self::Microsoft => "microsoft",
             Self::Spotify => "spotify",
+            Self::Discord => "discord",
         }
     }
 
@@ -151,6 +157,7 @@ impl Account {
             Self::Google => "Google",
             Self::Microsoft => "Microsoft",
             Self::Spotify => "Spotify",
+            Self::Discord => "Discord",
         }
     }
 
@@ -170,6 +177,7 @@ impl Account {
                 ),
             ],
             Self::Spotify => &[("spotify.com", &["sp_dc"])],
+            Self::Discord => &[],
         }
     }
 
@@ -179,6 +187,7 @@ impl Account {
             Self::Google => &["accounts.google.com"],
             Self::Microsoft => &["login.live.com", "login.microsoftonline.com"],
             Self::Spotify => &["accounts.spotify.com"],
+            Self::Discord => &["discord.com"],
         }
     }
 }
@@ -219,6 +228,63 @@ pub fn address_of(account: Account, logins: &[crate::thunderbird::SavedLogin]) -
         .find(|name| name.contains('@'))
         .or_else(|| names.first())
         .map(|name| (*name).to_owned())
+}
+
+/// Where Discord's page keeps its sign-in token, as the key its storage names it by: a
+/// Chromium-family browser's `Local Storage` writes `_<origin>`, a zero, a one and the key.
+const DISCORD_TOKEN_KEY: &[u8] = b"_https://discord.com\x00\x01token";
+/// The largest storage file looked through for it.
+const MAX_STORAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// The most storage files looked through for it.
+const MAX_STORAGE_FILES: usize = 64;
+
+/// Whether `profile` is signed in to Discord: whether Discord's page kept its sign-in token in
+/// the profile's storage. Only that the key is there is read, never what it holds.
+#[must_use]
+pub fn discord_signed_in(profile: &BrowserProfile) -> bool {
+    match profile.engine {
+        Engine::Firefox => {
+            let Ok(Some((_directory, path))) = copied(
+                &profile.directory,
+                &["storage/default/https+++discord.com/ls/data.sqlite"],
+            ) else {
+                return false;
+            };
+            open(&path).is_ok_and(|connection| {
+                connection
+                    .query_row("SELECT count(*) FROM data WHERE key = 'token'", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .is_ok_and(|count| count > 0)
+            })
+        }
+        Engine::Chromium => {
+            let Ok(entries) = std::fs::read_dir(profile.directory.join("Local Storage/leveldb"))
+            else {
+                return false;
+            };
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "log" || extension == "ldb")
+                })
+                .take(MAX_STORAGE_FILES)
+                .any(|path| {
+                    // The file holds what the pages keep, a token among it: wiped once looked
+                    // through.
+                    bounded_read(&path, MAX_STORAGE_FILE_BYTES)
+                        .map(Zeroizing::new)
+                        .is_ok_and(|bytes| {
+                            bytes
+                                .windows(DISCORD_TOKEN_KEY.len())
+                                .any(|window| window == DISCORD_TOKEN_KEY)
+                        })
+                })
+        }
+        Engine::Safari => false,
+    }
 }
 
 /// Whether `domain` is `base` or one of its subdomains.
