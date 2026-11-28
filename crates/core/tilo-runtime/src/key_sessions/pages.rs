@@ -153,7 +153,58 @@ enum Held {
         /// reaches them alone. `None` on every other page.
         side: Option<String>,
     },
+    /// The workspace's front page while its desktop's window opens: the side, shown at once,
+    /// beside the place the desktop takes once it is drawn.
+    Home(Box<Home>),
     Search(Box<Search>),
+}
+
+/// A front page whose desktop is still opening ([`Held::Home`]).
+struct Home {
+    side: String,
+    workspace_id: WorkspaceId,
+    workspace: String,
+    caller: Caller,
+    /// The desktop's window, opened on a thread of its own: starting the shell's process takes
+    /// longer than a page may keep its person waiting for the rest. `None` once it failed.
+    opening: Option<std::sync::mpsc::Receiver<Result<OpenedView, PageRefusal>>>,
+}
+
+/// A view's window opened for a page: the window, the desktop's wells where it is the
+/// desktop, and the page whole as it drew it first (`(title, css, body)`).
+struct OpenedView {
+    window: WindowLink,
+    wells: Option<Box<DesktopWells>>,
+    shown: (String, String, String),
+}
+
+/// The window of `app_id` in `workspace` opened through `views` for the page's `caller` on the
+/// key `certificate` certifies, showing `show`: the shell's is the desktop, handed the layout as
+/// the page's person has it before it draws.
+fn open_view(
+    views: &dyn PageViews,
+    (workspace_id, workspace): (WorkspaceId, &str),
+    (dispatch, caller, certificate): (&SessionHost, &Caller, &DeviceCert),
+    app_id: &str,
+    show: Option<String>,
+) -> Result<OpenedView, PageRefusal> {
+    let mut window = views.open(workspace, app_id, (caller, certificate))?;
+    let mut wells = (app_id == tilo_app_host::shell::SHELL_APP).then(|| {
+        Box::new(DesktopWells {
+            workspace_id,
+            dispatch: dispatch.clone(),
+            caller: caller.clone(),
+        })
+    });
+    if let Some(wells) = &mut wells {
+        wells.follow(&mut window)?;
+    }
+    let shown = window.open(show).map_err(unavailable)?;
+    Ok(OpenedView {
+        window,
+        wells,
+        shown,
+    })
 }
 
 impl Pages {
@@ -258,37 +309,62 @@ impl Inner {
             .views
             .get()
             .ok_or_else(|| unavailable("this device shows no app's window on a page"))?;
-        // The front page is the workspace's desktop with its side beside it: the people, the
-        // way into search and the apps a member opens.
-        let side = address
-            .is_home()
-            .then(|| home_side(workspace_id, &dispatch, caller))
-            .transpose()?;
-        let desktop = side.is_some() || address.app == DESKTOP;
-        let app_id = if desktop {
+        if address.is_home() {
+            // The front page is the workspace's desktop with its side beside it: the people,
+            // the way into search and the apps a member opens. The side shows at once; the
+            // desktop takes its place once its window has drawn ([`Self::desktop_arrived`]).
+            let side = home_side(workspace_id, &dispatch, caller)?;
+            let (sent, opening) = std::sync::mpsc::channel();
+            let (views, at, certificate) = (Arc::clone(views), workspace.clone(), reader.1.clone());
+            let (dispatch, asker) = (dispatch, caller.clone());
+            std::thread::spawn(move || {
+                let opened = open_view(
+                    &*views,
+                    (workspace_id, &at),
+                    (&dispatch, &asker, &certificate),
+                    tilo_app_host::shell::SHELL_APP,
+                    None,
+                );
+                // A page closed meanwhile takes nothing: its window goes with it here.
+                let _ = sent.send(opened);
+            });
+            let body = beside_body(&side, DESKTOP_WAITING);
+            let page = self.hold(Held::Home(Box::new(Home {
+                side,
+                workspace_id,
+                workspace,
+                caller: caller.clone(),
+                opening: Some(opening),
+            })));
+            return Ok(OpenedPage {
+                page,
+                title: "Tilo".to_owned(),
+                css: page_css() + HOME_CSS,
+                body,
+            });
+        }
+        let app_id = if address.app == DESKTOP {
             tilo_app_host::shell::SHELL_APP.to_owned()
         } else {
             app_named(&dispatch, caller, &address.app)?
         };
-        let mut window = views.open(&workspace, &app_id, (caller, reader.1))?;
-        let mut wells = desktop.then(|| {
-            Box::new(DesktopWells {
-                workspace_id,
-                dispatch: dispatch.clone(),
-                caller: caller.clone(),
-            })
-        });
-        if let Some(wells) = &mut wells {
-            wells.follow(&mut window)?;
-        }
-        let shown = window.open(address.show.clone()).map_err(unavailable)?;
-        let (title, css, body) = beside(side.as_deref(), shown);
+        let OpenedView {
+            window,
+            wells,
+            shown: (title, css, body),
+        } = open_view(
+            &**views,
+            (workspace_id, &workspace),
+            (&dispatch, caller, reader.1),
+            &app_id,
+            address.show.clone(),
+        )?;
         let page = self.hold(Held::App {
             window: Box::new(window),
             workspace,
             app: address.app.clone(),
             wells,
-            side,
+            side: None,
         });
         self.route_call(page, workspace_id, &app_id, caller);
         Ok(OpenedPage {
@@ -299,6 +375,47 @@ impl Inner {
         })
     }
 
+    /// The front page `page` (held as `held`) once its desktop's window drew, waiting up to
+    /// `within` for it: the page holds the desktop from then on as the desktop's own page does,
+    /// with its side beside it, and the view's first draw is what the desktop shows (its body).
+    /// `None` while it is still opening, for a page that is no front page waiting for its
+    /// desktop, and for one whose desktop could not open, which keeps its side alone.
+    fn desktop_arrived(
+        &self,
+        page: u64,
+        held: &mut Held,
+        within: Duration,
+    ) -> Option<(String, String, String)> {
+        let Held::Home(home) = held else {
+            return None;
+        };
+        let opened = match home.opening.as_ref()?.recv_timeout(within) {
+            Ok(Ok(opened)) => opened,
+            Ok(Err(refusal)) => {
+                tracing::warn!(?refusal, "a front page's desktop did not open");
+                home.opening = None;
+                return None;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                home.opening = None;
+                return None;
+            }
+        };
+        let (workspace_id, caller) = (home.workspace_id, home.caller.clone());
+        let side = std::mem::take(&mut home.side);
+        let workspace = std::mem::take(&mut home.workspace);
+        *held = Held::App {
+            window: Box::new(opened.window),
+            workspace,
+            app: String::new(),
+            wells: opened.wells,
+            side: Some(side),
+        };
+        self.route_call(page, workspace_id, tilo_app_host::shell::SHELL_APP, &caller);
+        Some(opened.shown)
+    }
+
     fn act(&self, page: u64, act: Option<PageAct>) -> Result<Vec<PagePatch>, PageRefusal> {
         let held = self
             .open
@@ -307,6 +424,10 @@ impl Inner {
             .cloned()
             .ok_or_else(|| unavailable("the page was closed"))?;
         let mut held = held.lock_recover();
+        // A front page's desktop drew since: it takes the place the page kept for it.
+        if let Some((_, _, body)) = self.desktop_arrived(page, &mut held, Duration::ZERO) {
+            return Ok(vec![PagePatch::Replace { id: 0, html: body }]);
+        }
         match (&mut *held, act) {
             (
                 Held::App {
@@ -356,6 +477,8 @@ impl Inner {
                 patches.extend(window.changed().map_err(unavailable)?);
                 Ok(patches)
             }
+            // Nothing on the side acts; the desktop's place takes no act until it drew.
+            (Held::Home(_), _) => Ok(Vec::new()),
             (Held::Search(search), act) => Ok(search.act(act)),
         }
     }
@@ -371,6 +494,9 @@ impl Inner {
             .cloned()
             .ok_or_else(|| unavailable("the page was closed"))?;
         let mut held = held.lock_recover();
+        if let Some((_, _, body)) = self.desktop_arrived(page, &mut held, Duration::ZERO) {
+            return Ok(vec![PagePatch::Replace { id: 0, html: body }]);
+        }
         let Held::App { window, wells, .. } = &mut *held else {
             return Ok(Vec::new());
         };
@@ -388,8 +514,9 @@ impl Inner {
     }
 
     /// Draw `page` in the light or dark look `dark` names, as a window follows the system it runs
-    /// on: the page whole again, from its window. A page showing no window (the search) keeps
-    /// the look it has.
+    /// on: the page whole again, from its window. A front page waits a while for its desktop to
+    /// draw, so it is drawn whole in that look; a page showing no window (the search, a front
+    /// page whose desktop did not draw) keeps the look it has.
     fn appearance(&self, page: u64, dark: bool) -> Result<Option<OpenedPage>, PageRefusal> {
         let held = self
             .open
@@ -398,6 +525,7 @@ impl Inner {
             .cloned()
             .ok_or_else(|| unavailable("the page was closed"))?;
         let mut held = held.lock_recover();
+        self.desktop_arrived(page, &mut held, DESKTOP_WITHIN);
         let Held::App { window, side, .. } = &mut *held else {
             return Ok(None);
         };
@@ -1004,15 +1132,24 @@ fn beside(side: Option<&str>, shown: (String, String, String)) -> (String, Strin
         return shown;
     };
     let (_, css, body) = shown;
-    (
-        "Tilo".to_owned(),
-        css + HOME_CSS,
-        format!(
-            "<div class=\"tilo-home-canvas\">{side}<main class=\"tilo-home-canvas-view\">{body}\
-             </main></div>"
-        ),
+    ("Tilo".to_owned(), css + HOME_CSS, beside_body(side, &body))
+}
+
+/// The front page's body: its `side`, and the desktop's view `desktop` beside it.
+fn beside_body(side: &str, desktop: &str) -> String {
+    format!(
+        "<div class=\"tilo-home-canvas\">{side}<main class=\"tilo-home-canvas-view\">{desktop}\
+         </main></div>"
     )
 }
+
+/// Where the front page's desktop stands until its window has drawn: the view's own root, by
+/// its number, which the view's first draw replaces.
+const DESKTOP_WAITING: &str = "<div class=\"tilo-view\" data-p=\"0\"></div>";
+
+/// How long a front page's look waits for its desktop's window to draw, so the page is drawn
+/// whole in the look its browser reads pages in.
+const DESKTOP_WITHIN: Duration = Duration::from_secs(20);
 
 /// An app's first letter, on the tile its icon stands on.
 fn initial_tile(title: &str) -> String {

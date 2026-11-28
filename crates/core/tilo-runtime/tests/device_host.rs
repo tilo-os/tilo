@@ -624,11 +624,13 @@ impl tilo_runtime::key_sessions::PageViews for ShownWindow {
         std::thread::spawn(move || {
             while let Some(ask) = receive::<WindowAsk>(&mut window).unwrap() {
                 let answer = match ask {
-                    WindowAsk::Open { .. } if desktop => WindowAnswer::Shown {
-                        title: "Desktop".into(),
-                        css: ".d{}".into(),
-                        body: "<div class=\"tilo-view\" data-p=\"0\">the desktop</div>".into(),
-                    },
+                    WindowAsk::Open { .. } | WindowAsk::Appearance { .. } if desktop => {
+                        WindowAnswer::Shown {
+                            title: "Desktop".into(),
+                            css: ".d{}".into(),
+                            body: "<div class=\"tilo-view\" data-p=\"0\">the desktop</div>".into(),
+                        }
+                    }
                     WindowAsk::Open { show } => WindowAnswer::Shown {
                         title: "Notes".into(),
                         css: ".n{}".into(),
@@ -721,13 +723,30 @@ async fn a_member_opens_searches_and_acts_on_pages_the_device_serves() {
         "the front page opens Notes: {}",
         home.body
     );
+    // Beside them, the workspace's desktop: its place at once, and the desktop's view whole, in
+    // the look the browser asks for, once its window drew.
     assert!(
         home.body.contains(
+            "<main class=\"tilo-home-canvas-view\"><div class=\"tilo-view\" data-p=\"0\"></div>"
+        ),
+        "the front page keeps the desktop's place: {}",
+        home.body
+    );
+    let drawn = pages
+        .appearance(workspace_id, home.page, false)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("the front page draws whole once its desktop is there");
+    assert!(
+        drawn.body.contains(
             "<main class=\"tilo-home-canvas-view\"><div class=\"tilo-view\" data-p=\"0\">\
              the desktop</div>"
-        ),
-        "beside them, the workspace's desktop, numbered from its own root: {}",
-        home.body
+        ) && drawn
+            .body
+            .contains(&format!("href=\"/w/{workspace_id}/notes\"")),
+        "the desktop stands beside the side, numbered from its own root: {}",
+        drawn.body
     );
     assert!(
         home.body.contains("/search\""),
