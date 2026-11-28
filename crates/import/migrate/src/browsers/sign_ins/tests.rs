@@ -273,3 +273,72 @@ fn sign_ins_are_kept_per_service_and_for_the_persons_window_within_bounds() {
             .expect("every session is one the vault keeps");
     }
 }
+
+/// Adds cookies to the Firefox profile `firefox_home` made: `(name, host)`, each a day long.
+pub(crate) fn firefox_signed_in(home: &Path, now: i64, cookies: &[(&str, &str)]) {
+    let path = home.join(".mozilla/firefox/p.default-release/cookies.sqlite");
+    let connection = rusqlite::Connection::open(path).unwrap();
+    for (name, host) in cookies {
+        connection
+            .execute(
+                "INSERT INTO moz_cookies (name, value, host, path, expiry, isSecure, \
+                 isHttpOnly) VALUES (?1, 'signed-in', ?2, '/', ?3, 1, 1)",
+                rusqlite::params![name, host, now + 86_400],
+            )
+            .unwrap();
+    }
+}
+
+/// The accounts a profile was signed in to are those whose sign-in left its own cookie: a visit
+/// signed out (Google's `NID`, Microsoft's page without its session) names none, and the address
+/// comes from a password saved for the account's own sign-in page alone.
+#[test]
+fn a_profile_names_the_accounts_it_was_signed_in_to_and_their_addresses() {
+    let home = tempfile::tempdir().unwrap();
+    firefox_home(home.path(), NOW);
+    firefox_signed_in(
+        home.path(),
+        NOW,
+        &[
+            ("NID", ".google.com"),
+            ("MSPRequ", "login.live.com"),
+            ("sp_dc", ".spotify.com"),
+        ],
+    );
+    let cookies = read_all(home.path()).remove(0).1;
+    assert_eq!(accounts(&cookies), [Account::Spotify]);
+    firefox_signed_in(
+        home.path(),
+        NOW,
+        &[
+            ("__Secure-1PSID", ".google.com"),
+            ("ESTSAUTHPERSISTENT", "login.microsoftonline.com"),
+        ],
+    );
+    let cookies = read_all(home.path()).remove(0).1;
+    assert_eq!(
+        accounts(&cookies),
+        [Account::Google, Account::Microsoft, Account::Spotify]
+    );
+
+    let login = |origin: &str, username: &str| crate::thunderbird::SavedLogin {
+        origin: origin.into(),
+        username: username.into(),
+        password: Zeroizing::new("secret".into()),
+    };
+    let logins = [
+        login("https://mail.google.com", "elsewhere@gmail.com"),
+        login("https://accounts.google.com", "Ada"),
+        login("https://accounts.google.com", "ada@gmail.com"),
+        login("https://login.live.com", "ada@outlook.com"),
+    ];
+    assert_eq!(
+        address_of(Account::Google, &logins).as_deref(),
+        Some("ada@gmail.com")
+    );
+    assert_eq!(
+        address_of(Account::Microsoft, &logins).as_deref(),
+        Some("ada@outlook.com")
+    );
+    assert_eq!(address_of(Account::Spotify, &logins), None);
+}

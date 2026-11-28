@@ -120,6 +120,113 @@ pub fn sessions(cookies: &[Cookie]) -> Vec<(Service, Vec<Cookie>)> {
     sessions
 }
 
+/// An account a profile was signed in to that the workspace connects through the account's own
+/// sign-in: its cookies are never what connects it, as a browser's cookies are no grant a
+/// workspace may hold for mail, calendars and files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Account {
+    Google,
+    Microsoft,
+    Spotify,
+}
+
+impl Account {
+    const ALL: [Self; 3] = [Self::Google, Self::Microsoft, Self::Spotify];
+
+    /// The provider the workspace's accounts sign in with: `google`, `microsoft`, `spotify`.
+    #[must_use]
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Microsoft => "microsoft",
+            Self::Spotify => "spotify",
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Google => "Google",
+            Self::Microsoft => "Microsoft",
+            Self::Spotify => "Spotify",
+        }
+    }
+
+    /// The cookies only a signed-in visit leaves: `(domain, names)`. A visit signed out leaves
+    /// others of the same sites, which say nothing of an account.
+    fn signed_in_cookies(self) -> &'static [(&'static str, &'static [&'static str])] {
+        match self {
+            Self::Google => &[("google.com", &["SID", "__Secure-1PSID", "__Secure-3PSID"])],
+            Self::Microsoft => &[
+                (
+                    "login.live.com",
+                    &["__Host-MSAAUTH", "__Host-MSAAUTHP", "MSPAuth", "WLSSC"],
+                ),
+                (
+                    "login.microsoftonline.com",
+                    &["ESTSAUTH", "ESTSAUTHPERSISTENT"],
+                ),
+            ],
+            Self::Spotify => &[("spotify.com", &["sp_dc"])],
+        }
+    }
+
+    /// The sign-in pages a saved password for the account is kept for.
+    fn sign_in_hosts(self) -> &'static [&'static str] {
+        match self {
+            Self::Google => &["accounts.google.com"],
+            Self::Microsoft => &["login.live.com", "login.microsoftonline.com"],
+            Self::Spotify => &["accounts.spotify.com"],
+        }
+    }
+}
+
+/// The accounts `cookies` show their profile signed in to, each once, in [`Account`]'s order.
+#[must_use]
+pub fn accounts(cookies: &[Cookie]) -> Vec<Account> {
+    Account::ALL
+        .into_iter()
+        .filter(|account| {
+            cookies.iter().any(|cookie| {
+                account.signed_in_cookies().iter().any(|(domain, names)| {
+                    within(&cookie.domain, domain) && names.contains(&cookie.name.as_str())
+                })
+            })
+        })
+        .collect()
+}
+
+/// The address `account` was signed in with, as a password the profile saved for its sign-in
+/// page names it: the one that reads as an address, where several do.
+#[must_use]
+pub fn address_of(account: Account, logins: &[crate::thunderbird::SavedLogin]) -> Option<String> {
+    let names: Vec<&str> = logins
+        .iter()
+        .filter(|login| {
+            url::Url::parse(&login.origin).is_ok_and(|origin| {
+                origin
+                    .host_str()
+                    .is_some_and(|host| account.sign_in_hosts().contains(&host))
+            })
+        })
+        .map(|login| login.username.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    names
+        .iter()
+        .find(|name| name.contains('@'))
+        .or_else(|| names.first())
+        .map(|name| (*name).to_owned())
+}
+
+/// Whether `domain` is `base` or one of its subdomains.
+fn within(domain: &str, base: &str) -> bool {
+    domain == base
+        || domain
+            .strip_suffix(base)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 /// A copy of the database `name` in `profile` (and its write-ahead log beside it), which reads
 /// as it was while the browser holds the original open. `None` when there is none.
 fn copied(

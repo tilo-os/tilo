@@ -175,6 +175,57 @@ fn sign_ins_note(cookies: &[Cookie]) -> Option<String> {
     }
 }
 
+/// The kind of the items that name an account a profile was signed in to, which Migrations
+/// offers to connect through the account's own sign-in once a run is done. Nothing of them is
+/// brought in: the browser's cookies are no grant for the account's mail, calendars and files.
+pub const ACCOUNT_TO_CONNECT: &str = "account-to-connect";
+
+/// The accounts the profile listed under `key` was signed in to (`{key}/account/google`): each
+/// titled by its provider, its note the address a password the profile saved for its sign-in
+/// page names.
+fn accounts_to_connect(key: &str, held: &Read) -> Vec<Item> {
+    let Ok(cookies) = &held.sign_ins else {
+        return Vec::new();
+    };
+    let logins = held.logins.as_deref().unwrap_or_default();
+    browsers::sign_ins::accounts(cookies)
+        .into_iter()
+        .map(|account| Item {
+            key: format!("{key}/account/{}", account.key()),
+            kind: ACCOUNT_TO_CONNECT.to_owned(),
+            title: account.label().to_owned(),
+            count: 0,
+            counts: String::new(),
+            within: Some(key.to_owned()),
+            chosen: false,
+            note: browsers::sign_ins::address_of(account, logins),
+        })
+        .collect()
+}
+
+/// What a person reads, once a run is done, of the accounts `review` found its profiles signed
+/// in to.
+fn accounts_said(review: &Review) -> Option<String> {
+    let mut names: Vec<&str> = review
+        .items
+        .iter()
+        .filter(|item| item.kind == ACCOUNT_TO_CONNECT)
+        .map(|item| item.title.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let (last, rest) = names.split_last()?;
+    let listed = if rest.is_empty() {
+        (*last).to_owned()
+    } else {
+        format!("{} and {last}", rest.join(", "))
+    };
+    Some(format!(
+        "These browsers were also signed in to {listed}: connect them as the workspace's \
+         accounts in Migrations, each through its own sign-in page"
+    ))
+}
+
 /// `tilo migrate review browsers`: each profile in `home`, whose config directory is `config`, and
 /// its bookmarks, history, passwords and the sites it is signed in to.
 pub fn review(home: &Path, config: &Path) -> Review {
@@ -235,6 +286,7 @@ pub fn review(home: &Path, config: &Path) -> Review {
                 note,
             });
         }
+        items.extend(accounts_to_connect(&key, &held));
     }
     Review {
         source: "browsers".to_owned(),
@@ -429,6 +481,9 @@ pub fn land(home: &Path, config: &Path, review: &Review, lander: &mut Lander<'_>
             land_sign_ins(&profile, &key, &cookies, lander)?;
         }
     }
+    if let Some(said) = accounts_said(review) {
+        lander.say(&said);
+    }
     Ok(())
 }
 
@@ -598,5 +653,54 @@ mod tests {
         )
         .unwrap();
         assert!(again.websites.is_empty(), "nothing is kept twice");
+    }
+
+    /// The accounts a profile was signed in to are listed under it for Migrations to offer once
+    /// the run is done, bringing nothing in of their own.
+    #[test]
+    fn a_profiles_accounts_are_listed_to_connect_through_their_own_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        crate::browsers::sign_ins::tests::firefox_home(&home, now());
+        crate::browsers::sign_ins::tests::firefox_signed_in(
+            &home,
+            now(),
+            &[("SID", ".google.com"), ("sp_dc", ".spotify.com")],
+        );
+        let review = review(&home, &home.join(".config"));
+        let listed: Vec<(&str, &str, Option<&str>)> = review
+            .items
+            .iter()
+            .filter(|item| item.kind == ACCOUNT_TO_CONNECT)
+            .map(|item| {
+                (
+                    item.key.as_str(),
+                    item.title.as_str(),
+                    item.within.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (
+                    "firefox/default-release/account/google",
+                    "Google",
+                    Some("firefox/default-release")
+                ),
+                (
+                    "firefox/default-release/account/spotify",
+                    "Spotify",
+                    Some("firefox/default-release")
+                ),
+            ]
+        );
+        assert_eq!(
+            accounts_said(&review).as_deref(),
+            Some(
+                "These browsers were also signed in to Google and Spotify: connect them as the \
+                 workspace's accounts in Migrations, each through its own sign-in page"
+            )
+        );
     }
 }
