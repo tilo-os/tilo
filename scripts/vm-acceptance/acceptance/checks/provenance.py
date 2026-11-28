@@ -110,7 +110,20 @@ def session_unit_problem(fields: dict | None, during: list[str], account: str, c
             f"{session_unit.how_it_ended(fields)}")
 
 
-@check("P03", AREA, "No failed or restart-looping user services in the session")
+def _system_problems(ctx) -> list[str]:
+    """The system's own tilo services this boot: a failed unit, a restarted device daemon, or a
+    process killed by a syscall its sandbox refuses (SIGSYS, the kernel's audit type=1326)."""
+    said = ctx.vm.root_exec(
+        "systemctl list-units --failed --plain --no-legend | awk '$1 ~ /^tilo/ {print \"failed \" $1}'; "
+        "n=$(systemctl show -p NRestarts --value tilo-runtime.service); "
+        "[ \"$n\" = 0 ] || echo \"restarted $n times\"; "
+        "journalctl -b -o cat --no-pager --grep 'status=31/SYS\\|type=1326\\|SECCOMP' | "
+        "grep -E 'tilo[-a-z0-9@._]*\\.service|comm=\"tilo|exe=\"/usr/(libexec/tilo/|bin/tilo)' | "
+        "tail -n 3 | sed 's/^/killed by a refused syscall: /' || true")
+    return said.strip().splitlines()
+
+
+@check("P03", AREA, "No failed, restarting or refused services in the session or the system")
 def services(ctx, res):
     # Failed units are live state. Restart counts must be this boot: NRestarts
     # is the user manager's lifetime and can repeat image-bake history when
@@ -158,4 +171,7 @@ def services(ctx, res):
     problems = ([f"failed: {failed}" + "".join(f"; {unit} last logged: {text}" for unit, text in said.items()
                                                 if text)] if failed else []) \
         + ([f"restart loops: {looping}"] if looping else [])
-    expect(not problems and not session, "; ".join(problems + ([session] if session else [])))
+    system = _system_problems(ctx)
+    res.metrics["system"] = system
+    expect(not problems and not session and not system,
+           "; ".join(problems + ([session] if session else []) + system))
