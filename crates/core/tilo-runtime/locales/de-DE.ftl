@@ -93,6 +93,7 @@ so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen
 
 so-tilo-clipboard-share = Teilen, was dieses Gerät kopiert hat
 so-tilo-clipboard-receive = Annehmen, was ein anderes Gerät kopiert hat
+so-tilo-nearby-receive = Das Angebot eines anderen Geräts annehmen, damit die Person hier darüber entscheiden kann
 
 ## Arbeitsbereiche, die das gründende Gerät für die anderen Geräte der Person anlegt
 

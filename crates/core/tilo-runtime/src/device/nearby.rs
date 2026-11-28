@@ -88,6 +88,27 @@ pub(crate) struct Nearby {
     inner: Arc<Inner>,
 }
 
+/// The action another of the person's devices calls here, as this daemon declares it.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.nearby")]
+pub enum NearbyAction {
+    /// Take another device's offer, so its person can answer it here.
+    #[effect(kind = "outside")]
+    Receive,
+}
+
+/// The resource this daemon declares that action under.
+#[derive(tilo_resource::Row)]
+#[row(kind = "nearby-send", label = "Nearby Send")]
+struct NearbyRow;
+
+fn resources() -> Vec<tilo_actions::ResourceSpec> {
+    let spec = tilo_resource::typed_resource::<NearbyRow>(RESOURCE, "Nearby Send");
+    let mut spec = tilo_resource::offer::<NearbyAction>(spec);
+    spec.app_id = Some(APP.to_owned());
+    vec![spec]
+}
+
 struct Inner {
     workspaces: Arc<ServiceWorkspaces>,
     /// The record of the person's devices in their own workspace: where an offer can go.
@@ -1080,6 +1101,10 @@ pub fn piece() -> ActionDescriptor {
 }
 
 impl ActionProvider for Nearby {
+    fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
+        resources()
+    }
+
     fn invocation(
         &self,
         address: &ActionAddress,
