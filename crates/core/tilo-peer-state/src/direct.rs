@@ -5056,7 +5056,17 @@ impl DirectSync {
             .as_ref()
             .err()
             .filter(|error| !error.is_device_failure() && !arrived_late(error));
-        if let Some(own) = own.filter(|_| received.is_ok() || refused.is_some()) {
+        // A write this device filed no verdict on has nothing here to clear. The turn that
+        // clears one is signed only where one is filed: a device landing a record's history
+        // would otherwise write and sign its workspace once for every frame of it.
+        let clearing = own.as_ref().is_some_and(|own| {
+            self.0
+                .replica
+                .lock()
+                .workspace()
+                .files_write_refusal(own, &message)
+        });
+        if let Some(own) = own.filter(|_| refused.is_some() || clearing) {
             let filed = self
                 .signed_change(|peer, signer, now| match (&received, refused) {
                     (Ok(_), _) => peer
@@ -5343,6 +5353,7 @@ impl Serving {
         }
         link.host();
         links.insert(workspace, link.clone());
+        drop(links);
         Ok(link)
     }
 

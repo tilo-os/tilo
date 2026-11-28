@@ -175,6 +175,40 @@ tilo_test_env::scenario! {
             "a sender that names no device files no verdict"
         );
     }
+
+    phase files_write_refusal_says_what_a_landed_write_would_clear;
+    {
+        let (mut peer, a_key, b_key, _, now) = seeded();
+        let a_cert = certificate(&peer, &a_key);
+        let mut theirs = peer.clone();
+        let first = write(&mut theirs, &b_key, now, "first");
+        let second = write(&mut theirs, &b_key, now, "second");
+        let third = write(&mut theirs, &b_key, now, "third");
+        assert!(
+            !peer.workspace().files_write_refusal(&a_cert, &second),
+            "a write no verdict names has nothing a landing would clear"
+        );
+        peer.workspace_mut()
+            .refuse_write(&a_cert, &second, &forbidden(), &a_key, now)
+            .unwrap();
+        assert!(
+            peer.workspace().files_write_refusal(&a_cert, &second),
+            "the refused write landing clears the verdict"
+        );
+        assert!(
+            peer.workspace().files_write_refusal(&a_cert, &third),
+            "a later write of the same author clears it too"
+        );
+        assert!(
+            !peer.workspace().files_write_refusal(&a_cert, &first),
+            "a write before the refused one clears nothing"
+        );
+        let a_made = write(&mut peer.clone(), &a_key, now, "a's own");
+        assert!(
+            !peer.workspace().files_write_refusal(&a_cert, &a_made),
+            "no verdict filed on another author's write"
+        );
+    }
 }
 
 /// Two devices of one person, each filing its first verdict without seeing the

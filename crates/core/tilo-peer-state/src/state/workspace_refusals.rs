@@ -186,6 +186,47 @@ impl PeerWorkspace<'_> {
         }
         held
     }
+
+    /// Whether this device's own row files a verdict on the write `message` carries, of a
+    /// sequence at or before that write's: the landed write clears it, and a write no verdict
+    /// names has nothing here to clear. A read, so the frame a link brings asks before the
+    /// signed turn that clears one: a device that filed no verdict on a record's history runs
+    /// no signed turn for it.
+    #[must_use]
+    pub fn files_write_refusal(
+        self,
+        caller: &tilo_user_identity::DeviceCert,
+        message: &NeighbourMsg,
+    ) -> bool {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return false;
+        };
+        let Some(doc) = self.peer.core.workspace_doc.as_deref() else {
+            return false;
+        };
+        let Some(rows) = map_at(doc, &ROOT, WORKSPACE_WRITE_REFUSALS_KEY) else {
+            return false;
+        };
+        let key =
+            super::device_rows::person_row_key(&caller.user_public_key, &caller.device_public_key);
+        let Some(entries) = map_at(doc, &rows, &key) else {
+            return false;
+        };
+        let entry = entry_key(app_id, document_id, envelope.author.as_bytes());
+        let Some((Value::Scalar(value), _)) = doc.get(&entries, &entry).ok().flatten() else {
+            return false;
+        };
+        let ScalarValue::Bytes(bytes) = value.as_ref() else {
+            return false;
+        };
+        postcard::from_bytes::<WriteRefusal>(bytes).is_ok_and(|filed| filed.seq <= envelope.seq)
+    }
 }
 
 impl PeerWorkspaceMut<'_> {
