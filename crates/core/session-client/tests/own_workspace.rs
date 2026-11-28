@@ -198,23 +198,22 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         None
     );
 
-    // A plain ask for his own workspace, which only the device that makes his root founds, is
-    // answered here, where it is not kept, in words that say where it lives rather than that
-    // something failed: nothing is made for it.
+    // A plain ask for his own workspace makes one, named in the language he reads, and this
+    // device enters it: the workspace a newcomer's page sets itself up in is their person's here.
     let plain = device
         .enter_own_workspace("en-US", None, "Bob", |_| false, None)
         .await
-        .unwrap_err();
-    assert_eq!(plain.code, "refused", "{plain:?}");
+        .unwrap();
+    assert_eq!(plain.name, "My workspace");
+    assert_ne!(plain.workspace, lounge.workspace);
     assert_eq!(
-        plain.message,
-        "This site doesn't keep your own workspace: it lives on your devices. Name a new \
-         workspace to make one here, or open yours from a device of yours that has it.",
-        "the page reads where the workspace is, not that something failed: {plain:?}"
+        device.join(&plain.workspace).await.unwrap(),
+        plain.workspace_id
     );
     assert_eq!(
         workspaces.own_workspace_of(&bob.verifying_key().to_bytes()),
-        None
+        Some(plain.workspace.clone()),
+        "the first they made is the one their workspace is"
     );
 
     // One he names the host makes, and this device enters it: the workspace admits this very
@@ -240,8 +239,9 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "the person's own workspace is not titled after the site's"
     );
     assert_eq!(
-        workspaces.own_workspace_of(&bob.verifying_key().to_bytes()),
-        Some(own.workspace.clone())
+        workspaces.own_workspaces_of(&bob.verifying_key().to_bytes()),
+        [plain.workspace.clone(), own.workspace.clone()],
+        "the workspace he named is his beside the one his first ask made"
     );
     assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
     // The tab came in by a row it signed itself as one of Bob's devices, with no invitation: its

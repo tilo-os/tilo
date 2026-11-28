@@ -2686,6 +2686,8 @@ impl Daemon {
             Arc::clone(&workspaces),
             joined.then_some(workspace_id.as_str()),
         );
+        // The site's home workspace, its configuration's kept one with an entry.
+        let mut home_kept: Option<String> = None;
         // A server founds and keeps the workspaces its configuration lists of its own, where
         // this computer holds its person's root: founding one is the founder's own device's act,
         // which a server its person's ticket joined is not. Such a server keeps the workspaces
@@ -2698,6 +2700,10 @@ impl Daemon {
                     "this server keeps the workspaces its owners place on it; it founds none"
                 );
             } else if !joined && !listed.is_empty() {
+                home_kept = listed
+                    .iter()
+                    .find(|kept| kept.entry.is_some())
+                    .map(|kept| kept.id.as_uuid().to_string());
                 stage("founding the workspaces this server keeps");
                 let handle = tilo_rt::app().handle().clone();
                 for kept in listed {
@@ -2756,6 +2762,10 @@ impl Daemon {
         let own = !joined;
         if own {
             workspaces.offer_workspaces_here(&identity.cert.device_label);
+            // Its site's home workspace: the people its entry admits keep their own here.
+            if let Some(home) = home_kept.as_ref() {
+                workspaces.admit_own_through(home);
+            }
             tilo_rt::app()
                 .handle()
                 .block_on(workspaces.claim_workspaces_here(&identity.cert.user_public_key));

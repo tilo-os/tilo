@@ -3432,13 +3432,12 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     server.shutdown().await;
 }
 
-/// A browser asks for the person's own workspace by no id where none is kept: it is refused in
-/// the words that say where it comes from, and nothing is made, since only the device that makes
-/// their root founds it. An id the host never made is refused too, never read as the workspace
-/// the person has: with a workspace per customer, a wrong id must fail, not land in another one.
+/// A browser asks for the person's own workspace by no id where none is kept: one is made, named
+/// in the language they read, and it is theirs from then on, so the next press answers that one.
+/// An id the host never made is refused, never read as the workspace the person has: with a
+/// workspace per customer, a wrong id must fail, not land in another one.
 #[tokio::test]
-async fn a_person_workspace_asked_for_by_no_id_where_none_is_kept_is_refused_and_an_unknown_id_too()
-{
+async fn a_person_workspace_asked_for_by_no_id_is_made_and_an_unknown_id_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -3450,32 +3449,37 @@ async fn a_person_workspace_asked_for_by_no_id_where_none_is_kept_is_refused_and
     let_in(workspaces, &home, person).await;
 
     let (first_key, first) = tab_of(&root, "Firefox on Linux");
-    let refused = create_own(&host, &first, json!({})).await;
-    assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == super::NO_PERSON_WORKSPACE_HERE),
-        "{refused:?}"
+    let made = create_own(&host, &first, json!({})).await.unwrap();
+    assert_eq!(
+        made.workspace.name,
+        crate::i18n::workspace_name(None),
+        "one they did not name is named in the language they read"
     );
-    assert!(
-        workspaces.own_workspaces_of(&person).is_empty(),
-        "nothing is made for a plain ask"
-    );
-
-    let made = create_own(&host, &first, json!({"name": "Home"}))
-        .await
-        .unwrap();
     join(workspaces, &made, (&first_key, &first)).await;
     let own = made.workspace.workspace;
+    assert_eq!(
+        workspaces.own_workspaces_of(&person),
+        std::slice::from_ref(&own),
+        "the workspace is theirs"
+    );
+
+    // Another of their tabs asks by no id: it answers the one they made, not a second one.
     let (_, later) = tab_of(&root, "Firefox on Linux");
-    let unknown = uuid::Uuid::new_v4().to_string();
-    let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
-    assert!(
-        matches!(&refused, Err(ActionCallError::Refused { reason }) if AdminRefusal::from_reason(reason) == Some(AdminRefusal::NotYourOwn)),
-        "{refused:?}"
+    let again = create_own(&host, &later, json!({})).await.unwrap();
+    assert_eq!(
+        again.workspace.workspace, own,
+        "the first they made is the one their workspace is"
     );
     assert_eq!(
         workspaces.own_workspaces_of(&person),
         std::slice::from_ref(&own),
         "and no second one"
+    );
+    let unknown = uuid::Uuid::new_v4().to_string();
+    let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if AdminRefusal::from_reason(reason) == Some(AdminRefusal::NotYourOwn)),
+        "{refused:?}"
     );
 
     // A person with no workspace yet is refused an id the host never made too.

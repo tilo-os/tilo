@@ -692,6 +692,14 @@ impl ServiceWorkspaces {
         }
     }
 
+    /// Keep workspaces of people's own here only for the people this site's home workspace
+    /// `home` let in: those its entry, or an invitation into it, admitted.
+    pub(crate) fn admit_own_through(&self, home: &str) {
+        if !self.copies().admit_own_through(home) {
+            tracing::warn!(%home, "this device names no home workspace for workspaces of people's own");
+        }
+    }
+
     /// Record every workspace this device keeps as its person's own, so a workspace founded here
     /// before the host kept an index of their workspaces is theirs to branch and delete.
     pub(crate) async fn claim_workspaces_here(&self, person: &[u8; 32]) {

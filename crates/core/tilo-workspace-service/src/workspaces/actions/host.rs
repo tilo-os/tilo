@@ -71,12 +71,6 @@ const LABEL: &str = "Workspaces";
 /// own, redeems stays redeemable when it does not say.
 const OWN_INVITATION_SECONDS: u64 = 600;
 
-/// What a plain ask for the person's own workspace is told where it is not kept: nothing went
-/// wrong, it lives on their devices, and only the device that makes their root founds it.
-pub(crate) const NO_PERSON_WORKSPACE_HERE: &str = "This site doesn't keep your own workspace: \
-     it lives on your devices. Name a new workspace to make one here, or open yours from a device \
-     of yours that has it.";
-
 /// The part a person takes in a workspace of their own, as a listing names
 /// it: they made it and administer it.
 const OWNER_ROLE: &str = "owner";
@@ -1364,22 +1358,35 @@ impl Workspaces {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
             ));
-        } else if name.is_none() && labels.is_none() {
-            // A plain ask for "my workspace" answers the person's own, at the id their key names,
-            // where it is kept here: only `devices#found` founds it, on the device that makes
-            // their root.
-            self.summary(&tilo_action_policy::roles::person_workspace_id(&person))
-                .await
-                .map_err(|_| ActionCallError::refused(NO_PERSON_WORKSPACE_HERE))?
         } else {
-            // Another one, for a person the site let in ([`Self::check_account`]): one they did
-            // not name is named in their language. The person's own workspace and the entry in
-            // their list are their own device's to write: this host founds and writes neither.
-            let (made, at) = self
-                .make_own_workspace((caller, device), (name, moving, language), own)
-                .await?;
-            placed = at;
-            made
+            // A plain ask for "my workspace" answers the person's own where this host keeps one:
+            // the id their key names, else the first they made. Neither found, it is made below.
+            let own_id = tilo_action_policy::roles::person_workspace_id(&person);
+            let plain = name.is_none() && labels.is_none();
+            let mut answered = if plain {
+                self.summary(&own_id).await.ok()
+            } else {
+                None
+            };
+            if plain
+                && answered.is_none()
+                && let Some(first) = own.of(&person).first()
+            {
+                answered = Some(
+                    self.summary(first)
+                        .await
+                        .map_err(|error| ActionCallError::refused(error.to_string()))?,
+                );
+            }
+            if let Some(theirs) = answered {
+                theirs
+            } else {
+                let (made, at) = self
+                    .make_own_workspace((caller, device), (name, moving, language), own)
+                    .await?;
+                placed = at;
+                made
+            }
         };
         if let Some(labels) = labels {
             self.label(&summary.workspace, &labels).await?;
