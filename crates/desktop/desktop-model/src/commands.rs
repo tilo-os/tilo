@@ -1081,6 +1081,75 @@ pub fn apply_to_workspace(
     Ok(made)
 }
 
+/// A tab of its own for a second window of `tab`'s app in the workspace at
+/// `to`, named and viewed as `tab` is, at the end of that workspace's last
+/// strip (its first, made when it has none), standing as the app's place
+/// until the app's window fills it. `tab` stays where it is. The id of the
+/// tab made.
+///
+/// # Errors
+/// The tab is not on the desktop or shows no app, it is already in that
+/// workspace, or there is no such workspace.
+pub fn copy_tab_to_workspace(
+    tree: &mut Layout,
+    tab: u64,
+    to: WorkspaceId,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<u64, String> {
+    let (from, held) = tree
+        .workspaces
+        .iter()
+        .find_map(|workspace| {
+            workspace
+                .tabs()
+                .find(|held| held.id == tab)
+                .map(|held| (workspace.id(), held.clone()))
+        })
+        .ok_or("the window is not on this desktop")?;
+    if from == to {
+        return Err("the window is already in that workspace".into());
+    }
+    let app_id = match &held.tile {
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
+            app_id.clone()
+        }
+        _ => return Err("the window shows no app to open again".into()),
+    };
+    let destination = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id() == to)
+        .ok_or("there is no such workspace")?;
+    let id = mint()?;
+    let group = mint()?;
+    let copy = Tab {
+        id,
+        title: held.title.clone(),
+        tile: TileContent::LocalApp {
+            app_id,
+            label: held.title,
+            note: String::new(),
+        },
+        app_title: held.app_title,
+        view: held.view,
+        pinned: false,
+    };
+    let (placement, strip) = match destination.strips.last() {
+        Some(strip) => (
+            TabPlacement::NewGroup {
+                strip: strip.id.0,
+                after: strip.window_groups.last().map(|group| group.id),
+            },
+            None,
+        ),
+        None => (TabPlacement::EmptyWorkspace, Some(mint()?)),
+    };
+    place(destination, copy, &placement, group, strip)?;
+    let Workspace { strips, layout, .. } = destination;
+    layout.place_missing(strips);
+    Ok(id)
+}
+
 /// Move the window `tab` out of the workspace that holds it and into
 /// `to`, as a group of its own at the end of that workspace's last strip
 /// (its first, made when it has none). The window keeps its identity: the

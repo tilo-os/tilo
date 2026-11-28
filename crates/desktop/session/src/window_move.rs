@@ -43,6 +43,25 @@ const CARRY: &str = "window-move-carry";
 /// The action a move's notice offers: leave the window where it is.
 const STAY: &str = "window-move-stay";
 
+/// The action a move's notice offers: leave the window where it is and open its app in the
+/// destination on a copy of what it shows.
+const COPY: &str = "window-move-copy";
+
+/// The action a move's notice offers: leave the window where it is and open its app in the
+/// destination on nothing of the window's.
+const FRESH: &str = "window-move-fresh";
+
+/// What the person asked of a window and a workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// The window and the record it shows go there, and nothing of it stays.
+    Move,
+    /// The window stays, and its app opens there on a copy of the record it shows.
+    Copy,
+    /// The window stays, and its app opens there on nothing of the window's.
+    Fresh,
+}
+
 /// How long the app started where the tab went may take to open a window there.
 const OPENING: Duration = Duration::from_secs(30);
 
@@ -82,6 +101,11 @@ struct Asked {
     window: u64,
     /// Whether the window shows a record of its own, which moves with it.
     carries: bool,
+    /// What the person asked for: a move or a copy.
+    mode: Mode,
+    /// Another window in the workspace it is in shows the same record, which a move would take
+    /// from under it: a copy and a fresh window are offered instead.
+    blocked: bool,
 }
 
 /// The record a window shows, on its way to the workspace the person carried it to.
@@ -116,6 +140,9 @@ struct Crossing {
     /// The offer of the window to another device of the person's, when it moves there: `to_id`
     /// is that device's key.
     handing: Option<ContinuityOffer>,
+    /// The tab a copy or a fresh window leaves as it is, when this is one: `tab` is then the tab
+    /// made for the window there, which goes again if the app opens nothing in it.
+    copying: Option<TabId>,
     phase: Phase,
 }
 
@@ -173,13 +200,17 @@ impl Moves {
             let Some(asked) = self.asking.borrow_mut().remove(&tag) else {
                 continue;
             };
-            if key == CARRY {
-                self.carry(shared, handoff, asked);
+            match key.as_str() {
+                CARRY if !asked.blocked => self.carry(shared, handoff, asked),
+                COPY if asked.carries => self.open_again(shared, handoff, asked, Mode::Copy),
+                FRESH => self.open_again(shared, handoff, asked, Mode::Fresh),
+                // Any other answer keeps the window where it is, which is where it never left.
+                _ => {}
             }
-            // Any other answer keeps the window where it is, which is where it never left.
         }
         for carried in shared.desktop.with_policy(|policy| policy.take_carried()) {
-            self.consider(shared, handoff, carried.tab, carried.to);
+            let mode = if carried.copy { Mode::Copy } else { Mode::Move };
+            self.consider(shared, handoff, (carried.tab, carried.to), mode);
         }
         for (tab, screen) in shared.handle.take_device_moves() {
             self.send(shared, handoff, tab, screen);
@@ -190,14 +221,15 @@ impl Moves {
         }
     }
 
-    /// The person carried `tab` to the workspace at `to` : the app it shows starts again there on
-    /// the record it shows, and a move that touches other people is asked about first.
+    /// The person carried `tab` to the workspace at `to`, or asked for a copy of it there: the
+    /// app it shows starts again there, on the record it shows or a copy of it, and what touches
+    /// other people, or would take a record from under another window, is asked about first.
     fn consider(
         &self,
         shared: &Shared,
         handoff: Option<&WindowFollow>,
-        tab: TabId,
-        to: WorkspaceId,
+        (tab, to): (TabId, WorkspaceId),
+        mode: Mode,
     ) {
         let read = shared.desktop.with_policy(|policy| {
             policy.handle().read(|tree| {
@@ -208,16 +240,26 @@ impl Moves {
         });
         let Some((here, there)) = read else {
             // Nothing of an app shows in the tab any more, or its destination went: the tab goes
-            // where the person put it.
-            let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
+            // where the person put it, and a copy of nothing is no window at all.
+            if mode == Mode::Move {
+                let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
+            }
             return;
         };
         let Some(Launch::Package { app, .. }) = launch_of(&here.app) else {
             // One of this machine's own programs runs with no workspace around it, so its tab
-            // crosses as any tab does.
-            let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
+            // crosses as any tab does; it keeps what it shows in its process, which no copy
+            // reaches.
+            if mode == Mode::Move {
+                let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
+            }
             return;
         };
+        let shown = Self::travelling(shared, tab);
+        let blocked = shown.as_ref().is_some_and(|id| {
+            Self::shown_beside(shared, tab, here.workspace.id).contains(&id.as_str().to_owned())
+        });
+        let carries = shown.is_some();
         let asked = Asked {
             tab,
             from: here.workspace.id,
@@ -228,50 +270,198 @@ impl Moves {
             app_name: app_name(&app),
             app,
             window: here.window,
-            carries: Self::travelling(shared, tab).is_some(),
+            carries,
+            mode,
+            blocked,
         };
-        if here.workspace.others || there.others {
+        // A move touches whoever is in either workspace, and one that would take the record from
+        // under another window is no move at all; a copy touches only whoever sees it arrive.
+        let asks = match mode {
+            Mode::Move => here.workspace.others || there.others || blocked,
+            Mode::Copy => carries && there.others,
+            Mode::Fresh => false,
+        };
+        if asks {
             self.ask(asked, here.workspace.others, there.others);
-        } else {
+        } else if mode == Mode::Move {
             self.carry(shared, handoff, asked);
+        } else {
+            let mode = if carries { Mode::Copy } else { Mode::Fresh };
+            self.open_again(shared, handoff, asked, mode);
         }
     }
 
-    /// Ask the person what the move means before anything crosses: the window and the record it
-    /// takes are other people's to see, or leaving takes them away.
+    /// The records the other windows of the workspace at `workspace` show, besides `tab`'s.
+    fn shown_beside(shared: &Shared, tab: TabId, workspace: WorkspaceId) -> Vec<String> {
+        let tabs: Vec<TabId> = shared.desktop.with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .filter(|held| held.id() == workspace)
+                    .flat_map(Workspace::tabs)
+                    .map(|held| held.id)
+                    .filter(|held| *held != tab)
+                    .collect()
+            })
+        });
+        tabs.into_iter()
+            .filter_map(|other| shared.notes.window_record(other))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// Ask the person what the move or copy means before anything crosses, on one sheet: what
+    /// goes, what stays, and who sees it or loses it; with a move, a copy and a fresh window to
+    /// choose from, as far as each can be made, and leaving it as it is.
     fn ask(&self, asked: Asked, here: bool, there: bool) {
         let title = t_args(
-            "window-move-ask-title",
+            if asked.mode == Mode::Copy {
+                "window-move-ask-copy-title"
+            } else {
+                "window-move-ask-title"
+            },
             &[
                 ("app", asked.app_name.clone().into()),
                 ("workspace", asked.to_name.clone().into()),
             ],
         );
-        let mut body = t(if asked.carries {
-            "window-move-ask-carries"
-        } else {
-            "window-move-ask-what"
-        });
-        if there {
-            body.push(' ');
-            body.push_str(&t_args(
+        let from = || [("workspace", asked.from_name.clone().into())];
+        let mut lines = Vec::new();
+        let moves = asked.mode == Mode::Move && !asked.blocked;
+        if moves {
+            lines.push(t(if asked.carries {
+                "window-move-ask-carries"
+            } else {
+                "window-move-ask-what"
+            }));
+        }
+        if asked.blocked {
+            lines.push(t_args("window-move-ask-blocked", &from()));
+        }
+        if asked.carries {
+            lines.push(t("window-move-ask-copies"));
+        }
+        lines.push(t("window-move-ask-fresh"));
+        if there && asked.carries {
+            lines.push(t_args(
                 "window-move-ask-they-see",
                 &[("workspace", asked.to_name.clone().into())],
             ));
         }
-        if here {
-            body.push(' ');
-            body.push_str(&t_args(
-                "window-move-ask-you-leave",
-                &[("workspace", asked.from_name.clone().into())],
+        if here && moves {
+            lines.push(t_args(
+                if asked.carries {
+                    "window-move-ask-they-lose"
+                } else {
+                    "window-move-ask-you-leave"
+                },
+                &from(),
             ));
         }
-        let notice = Notice::new(t("window-move-app-name"), 1, title, body).choosing(vec![
-            (CARRY.to_owned(), t("window-move-ask-carry")),
-            (STAY.to_owned(), t("window-move-ask-stay")),
-        ]);
+        let mut choices = Vec::new();
+        if moves {
+            choices.push((CARRY.to_owned(), t("window-move-ask-carry")));
+        }
+        if asked.carries {
+            choices.push((COPY.to_owned(), t("window-move-ask-copy")));
+        }
+        choices.push((FRESH.to_owned(), t("window-move-ask-open-fresh")));
+        choices.push((STAY.to_owned(), t("window-move-ask-stay")));
+        let notice =
+            Notice::new(t("window-move-app-name"), 1, title, lines.join("\n")).choosing(choices);
         self.asking.borrow_mut().insert(notice.tag.clone(), asked);
         self.notices.show(&notice);
+    }
+
+    /// Leave the window where it is and open its app in the workspace the person chose, in a tab of
+    /// its own: on a copy of the record the window shows, made once the app saved what it holds,
+    /// or on nothing of the window's. A copy whose window never comes is taken back, and the tab
+    /// made for it goes.
+    fn open_again(
+        &self,
+        shared: &Shared,
+        handoff: Option<&WindowFollow>,
+        asked: Asked,
+        mode: Mode,
+    ) {
+        let Asked {
+            tab,
+            from,
+            from_name,
+            to,
+            to_name,
+            to_id,
+            app,
+            app_name,
+            ..
+        } = asked;
+        let unopened = |why: &str| self.unopened(&app_name, &to_name, &from_name, why);
+        let Some(from_id) = shared.desktop.with_policy(|policy| {
+            policy
+                .handle()
+                .read(|tree| workspace_at(tree, from, &shared.person, &shared.earlier))
+        }) else {
+            unopened(&t("window-move-reason-storage"));
+            return;
+        };
+        let placed = shared
+            .desktop
+            .with_policy(|policy| policy.open_copy(tab, to));
+        let opened = match placed {
+            Ok(opened) => opened,
+            Err(error) => {
+                tracing::warn!(%error, %app, "no tab was made for the window's copy");
+                unopened(&t("window-move-reason-storage"));
+                return;
+            }
+        };
+        if !shared
+            .desktop
+            .with_policy(|policy| policy.adopt(&app, opened, None))
+        {
+            shared
+                .desktop
+                .with_policy(|policy| policy.release_tab(opened));
+            unopened(&t("window-move-reason-storage"));
+            return;
+        }
+        let from_id = from_id.id.to_string();
+        let mut crossing = Crossing {
+            tab: opened,
+            from,
+            from_name,
+            from_id: from_id.clone(),
+            to_name,
+            to_id,
+            app,
+            app_name,
+            window: 0,
+            record: None,
+            handing: None,
+            copying: Some(tab),
+            phase: Phase::Finished,
+        };
+        let shown = (mode == Mode::Copy)
+            .then(|| Self::travelling(shared, tab))
+            .flatten();
+        let Some(id) = shown else {
+            self.start(shared, crossing);
+            return;
+        };
+        let Some(record) = Self::record(shared, &crossing, &from_id, id) else {
+            self.give_up(shared, &crossing, &t("window-move-reason-storage"));
+            return;
+        };
+        crossing.record = Some(record);
+        let asked_for = match handoff {
+            Some(handoff) => self.save_first(handoff, &crossing),
+            None => Phase::Finished,
+        };
+        if matches!(asked_for, Phase::Finished) {
+            self.carry_record(shared, crossing);
+        } else {
+            self.waiting(crossing, asked_for);
+        }
     }
 
     /// Carry the tab to the workspace the person chose, and take the record the window shows along.
@@ -329,6 +519,7 @@ impl Moves {
             window,
             record: None,
             handing: None,
+            copying: None,
             phase: Phase::Finished,
         };
         let Some(id) = Self::travelling(shared, crossing.tab) else {
@@ -361,7 +552,7 @@ impl Moves {
         handoff.save(
             &crossing.from_id,
             &crossing.app,
-            crossing.tab,
+            crossing.copying.unwrap_or(crossing.tab),
             token,
             move |report| {
                 // The pass that takes it up may already have given the move up.
@@ -421,6 +612,7 @@ impl Moves {
             window: shared.handle.window_of_tab(tab).unwrap_or_default(),
             record: None,
             handing: Some(offer),
+            copying: None,
             phase: Phase::Finished,
         };
         if !screen.online {
@@ -535,7 +727,8 @@ impl Moves {
     #[cfg(test)]
     fn checkpoint_asked(&self, tab: TabId) -> bool {
         self.crossing.borrow().iter().any(|crossing| {
-            crossing.tab == tab && matches!(crossing.phase, Phase::Checkpointing(_))
+            crossing.copying.unwrap_or(crossing.tab) == tab
+                && matches!(crossing.phase, Phase::Checkpointing(_))
         })
     }
 
@@ -575,6 +768,8 @@ impl Moves {
             None => landed(shared, crossing.tab, crossing.window),
         };
         match landed {
+            // A copy or a fresh window leaves the window it came from as it is.
+            Landed::Came if crossing.copying.is_some() => {}
             // A window the shell draws, moved to another device, closes as its place.
             Landed::Came if crossing.window == 0 => {
                 let _ = shared.handle.dispatch(LayoutEffect::CloseTab {
@@ -613,8 +808,16 @@ impl Moves {
             record.id.clone(),
             crossing.tab,
         );
-        let Some(answers) = window_transfer::off_loop(move || {
-            window_transfer::carry(&daemon, &workspaces, (&source, &destination), &id, tab)
+        let copying = crossing.copying;
+        let Some(answers) = window_transfer::off_loop(move || match copying {
+            Some(from) => window_transfer::copy(
+                &daemon,
+                &workspaces,
+                (&source, &destination),
+                &id,
+                (from, tab),
+            ),
+            None => window_transfer::carry(&daemon, &workspaces, (&source, &destination), &id, tab),
         }) else {
             self.give_up(shared, &crossing, &t("window-move-reason-storage"));
             return;
@@ -676,6 +879,20 @@ impl Moves {
             record.destination.clone(),
             record.id.clone(),
         );
+        // A copy goes: the record it was made of never left.
+        if crossing.copying.is_some() {
+            if let Err(error) = window_transfer::off_loop_detached(move || {
+                if let Err(fault) = window_transfer::withdraw_copy(&daemon, &destination, &moved) {
+                    tracing::warn!(
+                        ?fault,
+                        "a copy whose window never came stayed where it went"
+                    );
+                }
+            }) {
+                tracing::warn!(%error, "a copy whose window never came stayed where it went");
+            }
+            return;
+        }
         if let Err(error) = window_transfer::off_loop_detached(move || {
             if let Err(fault) =
                 window_transfer::move_record(&daemon, &destination, &source, &moved, &id)
@@ -690,6 +907,20 @@ impl Moves {
     /// The move cannot be made: the record goes back where it was, the tab goes back too, and the
     /// person is told why.
     fn give_up(&self, shared: &Shared, crossing: &Crossing, why: &str) {
+        // A copy or a fresh window left its window as it was: the copy and the tab made for it go.
+        if crossing.copying.is_some() {
+            Self::bring_back(crossing);
+            shared
+                .desktop
+                .with_policy(|policy| policy.release_tab(crossing.tab));
+            self.unopened(
+                &crossing.app_name,
+                &crossing.to_name,
+                &crossing.from_name,
+                why,
+            );
+            return;
+        }
         // A window offered to another device never left: nothing of it comes back.
         if crossing.handing.is_none() {
             Self::bring_back(crossing);
@@ -723,6 +954,26 @@ impl Moves {
         );
         let body = t_args(
             "window-move-stayed-body",
+            &[
+                ("workspace", source.to_owned().into()),
+                ("reason", why.to_owned().into()),
+            ],
+        );
+        self.notices
+            .show(&Notice::new(t("window-move-app-name"), 1, title, body));
+    }
+
+    /// Say `app` did not open again in `place`, the window in `source` is as it was, and why.
+    fn unopened(&self, app: &str, place: &str, source: &str, why: &str) {
+        let title = t_args(
+            "window-move-unopened-title",
+            &[
+                ("app", app.to_owned().into()),
+                ("place", place.to_owned().into()),
+            ],
+        );
+        let body = t_args(
+            "window-move-unopened-body",
             &[
                 ("workspace", source.to_owned().into()),
                 ("reason", why.to_owned().into()),
@@ -917,7 +1168,9 @@ mod tests {
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
     use tilo_session_core::desktop::state::banners::Banners as _;
-    use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
+    use tilo_session_core::desktop::state::window_menu::{
+        copy_to_workspace_id, move_to_workspace_id,
+    };
 
     use crate::apps::Apps;
     use crate::{AppActions, Options, Session};
@@ -1807,6 +2060,319 @@ verbs = [
         shell.grant(&shell.to_id.clone(), tilo_action_policy::Answer::Allow);
         shell.carry();
         refused(&mut shell, &showing, "window-move-reason-record");
+    }
+
+    impl Shell {
+        /// The person asks for a copy of the window in the workspace behind.
+        fn copy(&self) {
+            self.session
+                .handle()
+                .choose_window_menu(self.tab, &copy_to_workspace_id(self.to), None)
+                .expect("the person copies the window");
+        }
+
+        /// The tab made in the workspace behind for the window's copy, once there is one.
+        fn copy_tab(&mut self) -> TabId {
+            let to = self.to;
+            wait(
+                &mut self.session,
+                "a tab waits there for the copy",
+                |session| {
+                    tabs_of(session)
+                        .into_iter()
+                        .find(|tab| workspace_of(session, *tab) == Some(to))
+                },
+            )
+        }
+
+        /// The window the app opened in the destination takes the tab `tab` made there.
+        fn land_in(&mut self, tab: TabId) {
+            self.session
+                .desktop()
+                .with_policy(|policy| policy.map(window(12, PROBE)))
+                .expect("the window maps");
+            wait(
+                &mut self.session,
+                "the new window takes its tab",
+                |session| {
+                    matches!(
+                        tile_of(session, tab),
+                        Some(TileContent::Foreign { surface_id: 12, .. })
+                    )
+                    .then_some(())
+                },
+            );
+        }
+
+        /// The window is still where it was, as it was.
+        #[track_caller]
+        fn stays(&self) {
+            assert_eq!(
+                workspace_of(&self.session, self.tab),
+                Some(WorkspaceId::from_u128(1)),
+                "the window stays where it was"
+            );
+            assert_eq!(
+                tile_of(&self.session, self.tab),
+                Some(TileContent::Foreign {
+                    surface_id: 11,
+                    app_id: PROBE.into()
+                }),
+                "showing the window it had"
+            );
+        }
+
+        /// Someone else owns the workspace behind, as this shell shows it: what goes there is
+        /// theirs to see.
+        fn share_away(&self) {
+            let mut layout = self.session.handle().read(Clone::clone);
+            if let Some(away) = layout
+                .workspaces
+                .iter_mut()
+                .find(|held| held.id() == self.to)
+            {
+                away.policy.set_owner("bb".repeat(32));
+            }
+            self.session.handle().replace_tree(layout);
+        }
+
+        /// The sheet the person is shown about the window, once it is up.
+        fn sheet(&mut self) -> tilo_session_core::desktop::state::banners::Banner {
+            wait(&mut self.session, "the person is asked", |session| {
+                session
+                    .notifications()
+                    .feed()
+                    .banners
+                    .into_iter()
+                    .find(|banner| banner.actions.iter().any(|(key, _)| key == STAY))
+            })
+        }
+    }
+
+    /// The keys a sheet offers, in its order.
+    fn offered(sheet: &tilo_session_core::desktop::state::banners::Banner) -> Vec<&str> {
+        sheet.actions.iter().map(|(key, _)| key.as_str()).collect()
+    }
+
+    /// A copy of a window opens its app in the workspace behind on a copy of the record it shows,
+    /// made once the app saved it, in a tab of its own; the window and its record stay where they
+    /// were, and from then on each has its own edits.
+    #[test]
+    fn a_copied_window_opens_on_a_copy_there_and_the_window_stays() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.copy();
+        let tab = shell.tab;
+        wait(
+            &mut shell.session,
+            "the copy asks the app to save",
+            |session| session.shared.moves.checkpoint_asked(tab).then_some(()),
+        );
+        shell.typed(&showing, ", saved");
+        shell.saved();
+        let (_, copied) = shell.arrived();
+        assert_ne!(copied, showing, "the copy has an id of its own there");
+        let opened = shell.copy_tab();
+        assert_ne!(opened, shell.tab, "the copy opens in a tab of its own");
+        shell.land_in(opened);
+        shell.stays();
+        assert_eq!(
+            shell.note(&shell.to_id, &copied).as_deref(),
+            Some("first draft, saved"),
+            "the copy holds everything the window had saved"
+        );
+        shell.typed(&showing, " and more");
+        assert_eq!(
+            shell.note(&shell.from, &showing).as_deref(),
+            Some("first draft, saved and more"),
+            "the record stays where it was, and goes on"
+        );
+        assert_eq!(
+            shell.note(&shell.to_id, &copied).as_deref(),
+            Some("first draft, saved"),
+            "the copy keeps its own edits"
+        );
+        assert!(
+            shell.session.notifications().feed().banners.is_empty(),
+            "nobody else is in either workspace, so nobody is asked"
+        );
+    }
+
+    /// A copy whose app opens no window there takes nothing back from the window: the copy goes,
+    /// the tab made for it goes, the window and its record stay, and the person is told why.
+    #[test]
+    fn a_copy_whose_app_opens_no_window_takes_the_copy_and_its_tab_back() {
+        const GIVING_UP: Duration = Duration::from_millis(300);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(OPENING_ENV, GIVING_UP.as_millis().to_string());
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.copy();
+        shell.saved();
+        let _ = shell.arrived();
+        let said = shell.told();
+        assert!(
+            said.contains(&t_args(
+                "window-move-unopened-body",
+                &[
+                    ("workspace", "Home".into()),
+                    ("reason", t("window-move-reason-no-window").into()),
+                ],
+            )),
+            "and why: {said:?}"
+        );
+        shell.stays();
+        let to = shell.to;
+        wait(&mut shell.session, "the copy's tab goes", |session| {
+            (!tabs_of(session)
+                .into_iter()
+                .any(|tab| workspace_of(session, tab) == Some(to)))
+            .then_some(())
+        });
+        let (workspaces, to_id) = (shell.device.workspaces().clone(), shell.to_id.clone());
+        wait(&mut shell.session, "the copy goes", |_| {
+            notes_in(&workspaces, &to_id).is_empty().then_some(())
+        });
+        assert_eq!(
+            shell.note(&shell.from, &showing).as_deref(),
+            Some("first draft"),
+            "the record stays where it was"
+        );
+    }
+
+    /// A move into a workspace someone else is in asks first, on one sheet saying what goes, what
+    /// stays and who sees it, and offers a move, a copy and a fresh window; a fresh window opens
+    /// the app there on nothing of the window's, which stays as it is with its record.
+    #[test]
+    fn a_shared_move_offers_a_copy_and_a_fresh_window_and_a_fresh_window_keeps_everything() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.share_away();
+        shell
+            .session
+            .handle()
+            .choose_window_menu(shell.tab, &move_to_workspace_id(shell.to), None)
+            .expect("the person moves the window");
+        let sheet = shell.sheet();
+        assert_eq!(offered(&sheet), [CARRY, COPY, FRESH, STAY]);
+        let body = &sheet.notification.body;
+        for said in [
+            t("window-move-ask-carries"),
+            t("window-move-ask-copies"),
+            t("window-move-ask-fresh"),
+            t_args("window-move-ask-they-see", &[("workspace", "Away".into())]),
+        ] {
+            assert!(body.contains(&said), "the sheet says {said:?}: {body:?}");
+        }
+        assert_eq!(
+            starts(&shell.started),
+            1,
+            "nothing starts before they answer"
+        );
+        shell
+            .session
+            .notifications()
+            .invoke_action(sheet.notification.id, FRESH);
+        let opened = shell.copy_tab();
+        let (started, arguments) = (shell.started.clone(), shell.arguments.clone());
+        wait(&mut shell.session, "the app starts there", |_| {
+            (starts(&started) == 2 && handed(&arguments, "--workspace-id").is_some()).then_some(())
+        });
+        assert_eq!(
+            handed(&shell.arguments, "--workspace-id").as_deref(),
+            Some(shell.to_id.as_str())
+        );
+        assert_eq!(
+            handed(&shell.arguments, "--open-uri"),
+            None,
+            "a fresh window opens on nothing of the window's"
+        );
+        shell.land_in(opened);
+        shell.stays();
+        assert_eq!(
+            shell.note(&shell.from, &showing).as_deref(),
+            Some("first draft")
+        );
+        assert!(
+            shell.notes(&shell.to_id).is_empty(),
+            "nothing of it went there"
+        );
+    }
+
+    /// A second window on the same record blocks a move, which would take the record from under
+    /// it, and not a copy: the person is asked even between their own workspaces, the move is not
+    /// offered, and the copy they choose is made.
+    #[test]
+    fn a_second_window_on_the_record_blocks_the_move_but_not_the_copy() {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        // A second window of the app in the same workspace shows the same note.
+        let mut layout = shell.session.handle().read(Clone::clone);
+        let second = 9_999;
+        layout.workspaces[0].strips[0]
+            .window_groups
+            .push(tilo_desktop_model::WindowGroup {
+                id: 9_998,
+                active_tab: second,
+                tabs: vec![tilo_desktop_model::Tab {
+                    id: second,
+                    title: "Probe".into(),
+                    tile: TileContent::LocalApp {
+                        app_id: PROBE.into(),
+                        label: "Probe".into(),
+                        note: String::new(),
+                    },
+                    app_title: None,
+                    view: String::new(),
+                    pinned: false,
+                }],
+                width: tilo_desktop_model::WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+        shell.session.handle().replace_tree(layout);
+        shell
+            .session
+            .shared
+            .notes
+            .note(second, PROBE, &shell.from, showing.as_str());
+        shell
+            .session
+            .handle()
+            .choose_window_menu(shell.tab, &move_to_workspace_id(shell.to), None)
+            .expect("the person moves the window");
+        let sheet = shell.sheet();
+        assert_eq!(offered(&sheet), [COPY, FRESH, STAY], "no move is offered");
+        assert!(
+            sheet.notification.body.contains(&t_args(
+                "window-move-ask-blocked",
+                &[("workspace", "Home".into())]
+            )),
+            "and why: {:?}",
+            sheet.notification.body
+        );
+        shell
+            .session
+            .notifications()
+            .invoke_action(sheet.notification.id, COPY);
+        shell.saved();
+        let (_, copied) = shell.arrived();
+        let opened = shell.copy_tab();
+        shell.land_in(opened);
+        shell.stays();
+        assert_eq!(
+            shell.note(&shell.to_id, &copied).as_deref(),
+            Some("first draft")
+        );
+        assert_eq!(
+            shell.note(&shell.from, &showing).as_deref(),
+            Some("first draft"),
+            "the record stays for the window beside it"
+        );
     }
 
     /// The move `shell` made of the window showing `showing` was not made, and the person was told

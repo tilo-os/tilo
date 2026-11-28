@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use tilo_desktop_model::apps::{app_ids_match, shows_a_view};
-use tilo_desktop_model::commands::move_tab_to_workspace;
+use tilo_desktop_model::commands::{copy_tab_to_workspace, move_tab_to_workspace};
 use tilo_desktop_model::width::{WIDTH_MAX_PERMILLE, permille_for_px};
 use tilo_desktop_model::{
     Display, GroupId, IdMinter, Layout, Tab, TabId, TileContent, WindowWidth, Workspace,
@@ -265,6 +265,9 @@ pub struct CarriedTab {
     pub tab: TabId,
     /// The workspace they carried it to.
     pub to: WorkspaceId,
+    /// They asked for a copy: the tab stays where it is, and the app opens there in a tab of its
+    /// own ([`copy_tab_to_workspace`]).
+    pub copy: bool,
 }
 
 /// The tabs the person carried to another workspace, waiting for the session.
@@ -502,7 +505,20 @@ impl TileSource for Windows {
     }
 
     fn carry(&self, tab: TabId, to: WorkspaceId) -> bool {
-        self.carried.borrow_mut().push(CarriedTab { tab, to });
+        self.carried.borrow_mut().push(CarriedTab {
+            tab,
+            to,
+            copy: false,
+        });
+        true
+    }
+
+    fn copy(&self, tab: TabId, to: WorkspaceId) -> bool {
+        self.carried.borrow_mut().push(CarriedTab {
+            tab,
+            to,
+            copy: true,
+        });
         true
     }
 }
@@ -1671,6 +1687,20 @@ impl DesktopPolicy {
         move_tab_to_workspace(&mut tree, tab, to, &mut mint)?;
         self.handle.replace_tree(tree);
         Ok(())
+    }
+
+    /// A tab of its own in the workspace at `to` for the window of `tab`'s app that opens there,
+    /// named as `tab` is, with `tab` left where it is: what a copy or a fresh window takes. The
+    /// tab waits for the app's window ([`Self::adopt`]).
+    /// # Errors
+    /// The tab is not on the shell or shows no app, it is already in that workspace, or there is
+    /// no such workspace.
+    pub fn open_copy(&mut self, tab: TabId, to: WorkspaceId) -> Result<TabId, String> {
+        let mut tree = self.handle.read(Clone::clone);
+        let mut mint = || Ok(self.handle.mint_id());
+        let copy = copy_tab_to_workspace(&mut tree, tab, to, &mut mint)?;
+        self.handle.replace_tree(tree);
+        Ok(copy)
     }
 
     /// Whether `tab` still waits for the window of a saved app: what the

@@ -135,6 +135,10 @@ pub struct Destination {
     /// instead of a window of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// With `workspace`: leave the window where it is and open its app in that workspace on a copy
+    /// of what the window shows, or on nothing of its own when it shows nothing that travels.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
 }
 
 /// A share of its strip a window takes in one step.
@@ -1192,6 +1196,9 @@ pub enum Admitted {
     JoinGroup(RouteIds, GroupId),
     /// Take the tab into another workspace, as a window of its own.
     MoveToWorkspace(RouteIds, WorkspaceId),
+    /// Leave the window where it is and open its app in another workspace, on a copy of what it
+    /// shows.
+    CopyToWorkspace(RouteIds, WorkspaceId),
     /// Show the window on another display.
     MoveToDisplay(RouteIds, u32),
     /// Move the window to another of the person's devices, by key, onto that device's screen
@@ -1677,8 +1684,13 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &Layout) -> Result<Admitted
     if let Some(workspace) = &to.workspace {
         let workspace = workspace_id(workspace)?;
         let there = tree.workspaces.iter().any(|held| held.id() == workspace);
+        let admitted = if to.keep {
+            Admitted::CopyToWorkspace(ids, workspace)
+        } else {
+            Admitted::MoveToWorkspace(ids, workspace)
+        };
         return (there && workspace != ids.workspace)
-            .then_some(Admitted::MoveToWorkspace(ids, workspace))
+            .then_some(admitted)
             .ok_or_else(|| "Workspace unavailable".into());
     }
     if let Some(device) = &to.device {

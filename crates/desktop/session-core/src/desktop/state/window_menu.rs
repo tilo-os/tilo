@@ -206,6 +206,9 @@ pub const MOVE_TO_STRIP: &str = "window-move-to-strip";
 /// Carry the window into a strip made for it below the last one.
 pub const MOVE_TO_NEW_STRIP: &str = "window-move-to-new-strip";
 pub const MOVE_TO_WORKSPACE: &str = "window-move-to-workspace";
+/// Open the window's app again in another workspace, on a copy of what it shows, leaving the
+/// window where it is.
+pub const COPY_TO_WORKSPACE: &str = "window-copy-to-workspace";
 pub const MOVE_TO_DISPLAY: &str = "window-move-to-display";
 pub const WIDTH: &str = "window-width";
 pub const NEW_TAB: &str = "window-new-tab";
@@ -392,6 +395,11 @@ pub fn move_to_strip_id(strip: StripId) -> String {
 /// The id of the row taking the window into workspace `workspace`.
 pub fn move_to_workspace_id(workspace: WorkspaceId) -> String {
     format!("{MOVE_TO_WORKSPACE}:{workspace}")
+}
+
+/// The id of the row opening the window again in workspace `workspace`, on a copy of what it shows.
+pub fn copy_to_workspace_id(workspace: WorkspaceId) -> String {
+    format!("{COPY_TO_WORKSPACE}:{workspace}")
 }
 
 /// The id of the row showing the window on display `display` .
@@ -697,27 +705,7 @@ pub fn move_rows(tree: &Layout, route: &RouteIds, screens: &[OtherScreen]) -> Ve
                 .with_icon(Icon::ArrowUpDown),
         );
     }
-    let workspaces: Vec<Row> = tree
-        .workspaces
-        .iter()
-        .filter(|workspace| workspace.id() != route.workspace)
-        .map(|workspace| {
-            Row::offered(
-                move_to_workspace_id(workspace.id()),
-                crate::desktop::names::workspace(&workspace.name),
-            )
-        })
-        .collect();
-    if !workspaces.is_empty() {
-        rows.push(
-            Row::submenu(
-                MOVE_TO_WORKSPACE,
-                t("window-menu-move-to-workspace"),
-                workspaces,
-            )
-            .with_icon(Icon::Layers),
-        );
-    }
+    rows.extend(workspace_rows(tree, route));
     let here = tree.outputs.display_of(route.group);
     let displays: Vec<Row> = tree
         .outputs
@@ -743,6 +731,37 @@ pub fn move_rows(tree: &Layout, route: &RouteIds, screens: &[OtherScreen]) -> Ve
         );
     }
     rows
+}
+
+/// Move to workspace and Copy to workspace, each offering every other workspace by its name;
+/// nothing while there is no other workspace.
+fn workspace_rows(tree: &Layout, route: &RouteIds) -> Vec<Row> {
+    let others = |id: fn(WorkspaceId) -> String| -> Vec<Row> {
+        tree.workspaces
+            .iter()
+            .filter(|workspace| workspace.id() != route.workspace)
+            .map(|workspace| {
+                Row::offered(
+                    id(workspace.id()),
+                    crate::desktop::names::workspace(&workspace.name),
+                )
+            })
+            .collect()
+    };
+    let moves = others(move_to_workspace_id);
+    if moves.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        Row::submenu(MOVE_TO_WORKSPACE, t("window-menu-move-to-workspace"), moves)
+            .with_icon(Icon::Layers),
+        Row::submenu(
+            COPY_TO_WORKSPACE,
+            t("window-menu-copy-to-workspace"),
+            others(copy_to_workspace_id),
+        )
+        .with_icon(Icon::Copy),
+    ]
 }
 
 /// The row moving the window onto `screen` of another of the person's devices: refused, and why,
@@ -886,6 +905,15 @@ pub fn destination(tree: &Layout, route: &RouteIds, id: &str) -> Option<Destinat
             if let Some(strip) = id.strip_prefix(MOVE_TO_STRIP) {
                 Destination {
                     strip: Some(place_number(strip)?.to_string()),
+                    ..Destination::default()
+                }
+            } else if let Some(workspace) = id.strip_prefix(COPY_TO_WORKSPACE) {
+                Destination {
+                    workspace: Some(
+                        tilo_desktop_model::WorkspaceId::parse(workspace.strip_prefix(':')?)?
+                            .to_string(),
+                    ),
+                    keep: true,
                     ..Destination::default()
                 }
             } else if let Some(workspace) = id.strip_prefix(MOVE_TO_WORKSPACE) {
@@ -1593,7 +1621,12 @@ mod tests {
                 the strip, what it shows, and closing it"
         );
         // Nowhere to move it to: the place offers no row at all, rather than one that cannot be chosen.
-        for place in [MOVE_TO_STRIP, MOVE_TO_WORKSPACE, MOVE_TO_DISPLAY] {
+        for place in [
+            MOVE_TO_STRIP,
+            MOVE_TO_WORKSPACE,
+            COPY_TO_WORKSPACE,
+            MOVE_TO_DISPLAY,
+        ] {
             assert!(row(&rows, place).is_none(), "{place}");
         }
         assert_eq!(
@@ -1980,6 +2013,15 @@ mod tests {
             self.carried.borrow_mut().push((tab, to));
             true
         }
+
+        fn copy(&self, tab: TabId, to: WorkspaceId) -> bool {
+            // A copy is told apart from a move by the workspace's high bit, for the test alone.
+            self.carried.borrow_mut().push((
+                tab,
+                WorkspaceId::from_u128(to.as_uuid().as_u128() | 1 << 127),
+            ));
+            true
+        }
     }
 
     /// The window of an app this device started runs in the workspace that started it, with its grants
@@ -2037,6 +2079,28 @@ mod tests {
             below,
             vec![home],
             "the tab stays where it was until the app runs in the other workspace"
+        );
+
+        // Copying it asks the session for a second window there, and the tab never moves.
+        let copy = handle
+            .window_menu(route.tab)
+            .into_iter()
+            .find(|row| row.id == COPY_TO_WORKSPACE)
+            .and_then(|row| row.children.into_iter().next())
+            .expect("the copy is offered beside the move");
+        assert_eq!(copy.label, "Studio");
+        handle
+            .choose_window_menu(route.tab, &copy.id, None)
+            .unwrap();
+        settle_with(&handle, &mut tiles);
+        assert_eq!(
+            carried.borrow().last().copied(),
+            Some((route.tab, WorkspaceId::from_u128(0x5b | 1 << 127))),
+            "the session is asked for a copy there"
+        );
+        assert!(
+            handle.read(|tree| tree.workspaces[0].tabs().any(|tab| tab.id == route.tab)),
+            "a copy leaves the window where it is"
         );
     }
 

@@ -160,6 +160,13 @@ pub trait TileSource {
         false
     }
 
+    /// The person asked for `tab`'s window again in the workspace at `to`, on a copy of what it
+    /// shows, leaving `tab` as it is: the session opens the app there
+    /// ([`tilo_desktop_policy::DesktopPolicy::take_carried`]). Whether the session took it.
+    fn copy(&self, _tab: TabId, _to: WorkspaceId) -> bool {
+        false
+    }
+
     /// Whether this desktop draws the views windows embed of other apps' resources
     /// ([`Self::embed`]).
     fn draws_embeds(&self) -> bool {

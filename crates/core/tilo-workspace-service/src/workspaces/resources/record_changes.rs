@@ -516,6 +516,123 @@ impl Workspaces {
         (app, record, target): (&str, &str, &str),
         caller: &tilo_actions::remote::Caller,
     ) -> Result<(), String> {
+        self.carry_record((from, to), (app, record, target), caller, false)
+            .await
+    }
+
+    /// Copy `app`'s record `record` of the workspace `from` into `to`, as `caller` asks: founded
+    /// in `to` as `target`, holding what it holds now, and left as it is in `from`. Judged as a
+    /// move is ([`Self::move_record`]), the source's side included: a copy takes no more out than
+    /// a move of the same record would, so whoever could not move it out cannot copy it out.
+    ///
+    /// # Errors
+    /// The record is not here, or either workspace refused its side.
+    pub async fn copy_record(
+        &self,
+        (from, to): (&str, &str),
+        (app, record, target): (&str, &str, &str),
+        caller: &tilo_actions::remote::Caller,
+    ) -> Result<(), String> {
+        self.carry_record((from, to), (app, record, target), caller, true)
+            .await
+    }
+
+    /// Take back the copy `record` of `app` a copy founded in `workspace`, as `caller` asks, while
+    /// nobody has written it since: a copy whose window never opened goes, and one anyone changed
+    /// stays theirs. Judged as the caller's removal there.
+    ///
+    /// # Errors
+    /// The record is not here, it changed since it was copied, or the workspace refused it.
+    pub async fn withdraw_copy(
+        &self,
+        workspace: &str,
+        (app, record): (&str, &str),
+        caller: &tilo_actions::remote::Caller,
+    ) -> Result<(), String> {
+        let device = self.member_identity()?;
+        let author = device.device();
+        let stamp = Stamp {
+            verb: tilo_resource_store::MOVE_VERB.to_owned(),
+            invoker: Stamp::by(&caller.acting().by),
+            invocation: uuid::Uuid::new_v4().to_string(),
+            device: hex::encode(author),
+            device_name: device.cert.device_label.clone(),
+            ..Stamp::default()
+        };
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (device, stamp) = (&device, &stamp);
+        write_with_keys(&state, move |mut hosted| {
+            let device = std::sync::Arc::clone(device);
+            async move {
+                let (kind, removal) =
+                    self.withdrawal(&mut hosted, (workspace, app, record), stamp)?;
+                self.would_keep(
+                    &mut hosted,
+                    (caller, author),
+                    (app, kind.as_str()),
+                    &removal,
+                )
+                .map_err(|refused| format!("{workspace} refuses the copy going: {refused}"))?;
+                self.keep_writes(hosted, device, app, removal, None)
+                    .await
+                    .map(drop)
+            }
+        })
+        .await
+    }
+
+    /// The removal of the copy `record` of `app` in `workspace` under `stamp`, drafted on
+    /// `hosted`'s store, and the copy's kind; refused once anyone wrote the copy since.
+    fn withdrawal(
+        &self,
+        hosted: &mut HostedWorkspace,
+        (workspace, app, record): (&str, &str, &str),
+        stamp: &Stamp,
+    ) -> Result<(String, Vec<tilo_resource_store::Written>), String> {
+        let mut store = self.store_of(hosted);
+        let kind = kind_of(&self.inner.host.surfaces, &store, app, None, record)
+            .ok_or_else(|| format!("{app} keeps no record {record} in {workspace}"))?;
+        // A copy holds only what its founding wrote, under the move verb: any other
+        // step is someone's write since, which a withdrawal never takes away.
+        let written = store
+            .content_document(&kind, record)
+            .map_err(|error| error.to_string())?
+            .is_some_and(|held| {
+                held.get_changes(&[]).iter().any(|change| {
+                    change
+                        .message()
+                        .and_then(Stamp::read)
+                        .is_some_and(|(_, stamp)| stamp.verb != tilo_resource_store::MOVE_VERB)
+                })
+            });
+        if written {
+            return Err(format!(
+                "{record} changed in {workspace} since it was copied"
+            ));
+        }
+        let removal = Command::Remove {
+            kind: kind.clone(),
+            id: record.to_owned(),
+            stamp: stamp.clone(),
+        };
+        let removal = tilo_resource_store::wire::draft(&mut store, removal)
+            .map_err(|refused| refused.error.to_string());
+        drop(store);
+        Ok((kind, removal?))
+    }
+
+    /// Found `app`'s record `record` of `from` in `to` as `target`, and remove it from `from`
+    /// unless `keep` leaves it there as well.
+    async fn carry_record(
+        &self,
+        (from, to): (&str, &str),
+        (app, record, target): (&str, &str, &str),
+        caller: &tilo_actions::remote::Caller,
+        keep: bool,
+    ) -> Result<(), String> {
         if from == to {
             return Err("a record moves to another workspace than its own".to_owned());
         }
@@ -583,6 +700,9 @@ impl Workspaces {
         // Drafted again under the hold that keeps it, as the source stands then: a wait for keys
         // lets the hold go before the removal is kept.
         drop(removal);
+        if keep {
+            return Ok(());
+        }
         let (device, kind, stamp) = (&device, &kind, &stamp);
         write_with_keys(&source, move |mut hosted| {
             let device = std::sync::Arc::clone(device);
@@ -2078,6 +2198,101 @@ mod tests {
             title_in(workspaces, &kitchen_id, "plan").await.as_deref(),
             Some("Plan")
         );
+        assert_eq!(title_in(workspaces, &garage, "plan").await, None);
+    }
+
+    /// A copy of a note arrives holding what it held and leaves the original where it was; an
+    /// untouched copy can be taken back, and once anyone writes it, it is theirs and stays.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_copied_record_arrives_whole_stays_and_is_withdrawn_only_untouched() {
+        use automerge::ReadDoc as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (host, kitchen_id, garage) = Box::pin(two_rooms(dir.path())).await;
+        let workspaces = host.workspaces();
+        let me = caller_of(workspaces, &kitchen_id);
+
+        workspaces
+            .copy_record((&kitchen_id, &garage), (NOTES, "plan", "copy-1"), &me)
+            .await
+            .expect("the copy is made");
+        assert_eq!(
+            title_in(workspaces, &garage, "copy-1").await.as_deref(),
+            Some("Plan")
+        );
+        assert_eq!(
+            title_in(workspaces, &kitchen_id, "plan").await.as_deref(),
+            Some("Plan"),
+            "the original stays where it was"
+        );
+
+        workspaces
+            .withdraw_copy(&garage, (NOTES, "copy-1"), &me)
+            .await
+            .expect("an untouched copy is taken back");
+        assert_eq!(title_in(workspaces, &garage, "copy-1").await, None);
+        assert_eq!(
+            title_in(workspaces, &kitchen_id, "plan").await.as_deref(),
+            Some("Plan")
+        );
+
+        workspaces
+            .copy_record((&kitchen_id, &garage), (NOTES, "plan", "copy-2"), &me)
+            .await
+            .expect("a second copy is made");
+        let held = {
+            let state = workspaces.workspace(&garage).await.unwrap();
+            let mut hosted = state.lock().await;
+            let mut store = workspaces.store_of(&mut hosted);
+            store
+                .content_document(NOTE, "copy-2")
+                .unwrap()
+                .unwrap()
+                .save()
+        };
+        let mut edited = automerge::AutoCommit::load(&held).unwrap();
+        edited.put(automerge::ROOT, "title", "Plan B").unwrap();
+        commit(&mut edited, &typed_by(&me.acting().by));
+        write(workspaces, &garage, "copy-2", edited.save())
+            .await
+            .expect("the person writes the copy");
+        let refused = workspaces
+            .withdraw_copy(&garage, (NOTES, "copy-2"), &me)
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("since it was copied")),
+            "{refused:?}"
+        );
+        let state = workspaces.workspace(&garage).await.unwrap();
+        let mut hosted = state.lock().await;
+        let title = workspaces
+            .store_of(&mut hosted)
+            .content_document(NOTE, "copy-2")
+            .unwrap()
+            .and_then(|doc| {
+                doc.get(automerge::ROOT, "title")
+                    .unwrap()
+                    .and_then(|(value, _)| value.into_string().ok())
+            });
+        assert_eq!(title.as_deref(), Some("Plan B"), "a written copy stays");
+    }
+
+    /// A copy the workspace it leaves refuses (the person's agent may not move notes out of it)
+    /// writes nothing: a copy takes out no more than a move would.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_copy_its_source_refuses_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, kitchen_id, garage) = Box::pin(two_rooms(dir.path())).await;
+        let workspaces = host.workspaces();
+        let scout = scout(workspaces, &kitchen_id);
+        grant_scout(workspaces, &kitchen_id, Answer::Deny).await;
+        grant_scout(workspaces, &garage, Answer::Allow).await;
+
+        let refused = workspaces
+            .copy_record((&kitchen_id, &garage), (NOTES, "plan", "plan"), &scout)
+            .await;
+        assert!(refused.is_err(), "{refused:?}");
         assert_eq!(title_in(workspaces, &garage, "plan").await, None);
     }
     /// The items `record` of the notes app keeps in `workspace`'s store, in order.

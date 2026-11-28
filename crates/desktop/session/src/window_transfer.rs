@@ -84,23 +84,127 @@ pub(crate) fn move_record(
     id: &DocumentId,
     target: &DocumentId,
 ) -> Result<(), Fault> {
+    across(
+        daemon,
+        tilo_resource_store::MOVE_VERB,
+        (from, to),
+        id,
+        target,
+    )
+}
+
+/// Copy the record `id` of `from` into `to`'s workspace as `target`, leaving it where it is,
+/// through the store's copy, as the person `daemon` answers.
+pub(crate) fn copy_record(
+    daemon: &DaemonShell,
+    from: &Profile,
+    to: &Profile,
+    id: &DocumentId,
+    target: &DocumentId,
+) -> Result<(), Fault> {
+    across(
+        daemon,
+        tilo_resource_store::COPY_ACTION,
+        (from, to),
+        id,
+        target,
+    )
+}
+
+/// Take back the copy `id` a copy founded in `at`, while nobody has written it since.
+pub(crate) fn withdraw_copy(
+    daemon: &DaemonShell,
+    at: &Profile,
+    id: &DocumentId,
+) -> Result<(), Fault> {
+    invoke(
+        daemon,
+        at,
+        id,
+        tilo_resource_store::WITHDRAW_COPY_ACTION,
+        serde_json::Map::new(),
+    )
+}
+
+/// `action` of the record `id` of `from`, taking it to `to`'s workspace as `target`.
+fn across(
+    daemon: &DaemonShell,
+    action: &str,
+    (from, to): (&Profile, &Profile),
+    id: &DocumentId,
+    target: &DocumentId,
+) -> Result<(), Fault> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("to".to_owned(), to.workspace.clone().into());
     arguments.insert("target".to_owned(), target.as_str().into());
+    invoke(daemon, from, id, action, arguments)
+}
+
+/// `action` of the record `id` the app of `at` keeps in its workspace, as the person `daemon`
+/// answers.
+fn invoke(
+    daemon: &DaemonShell,
+    at: &Profile,
+    id: &DocumentId,
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Fault> {
     let request = InvokeRequest::plain(
         RemoteActionTarget {
-            provider: from.app.clone(),
-            address: tilo_actions::ActionAddress::new(
-                record_path(&from.app, id.as_str()),
-                tilo_resource_store::MOVE_VERB,
-            ),
+            provider: at.app.clone(),
+            address: tilo_actions::ActionAddress::new(record_path(&at.app, id.as_str()), action),
         },
         arguments,
     );
     daemon
-        .invoke_blocking(&from.workspace, request)
+        .invoke_blocking(&at.workspace, request)
         .map(drop)
         .map_err(Fault::Refused)
+}
+
+/// Copy the record `id` that the window of tab `tabs.0` shows in `source` into `destination`,
+/// under an id minted for it there, which this answers, and give the window of tab `tabs.1` there
+/// the presentation the first has, so it opens where the person was. A presentation that cannot
+/// be kept takes the copy back, so a copy that fails leaves nothing behind.
+pub(crate) fn copy(
+    daemon: &DaemonShell,
+    workspaces: &DeviceWorkspaces,
+    (source, destination): (&Profile, &Profile),
+    id: &DocumentId,
+    (from_tab, to_tab): (u64, u64),
+) -> Result<DocumentId, Fault> {
+    let port = workspaces.port();
+    let view = source
+        .views(&port)?
+        .saved_view(from_tab)
+        .map_err(|error| Fault::Profile(error.to_string()))?
+        .filter(|view| view.document_id == id.as_str());
+    let target = DocumentId::minted();
+    copy_record(daemon, source, destination, id, &target)?;
+    let Some(view) = view else {
+        return Ok(target);
+    };
+    let checkout = DocumentCheckout::new(
+        target.clone(),
+        ResourceType::new(view.resource_type.clone()),
+    );
+    let adopted = destination.views(&port).and_then(|views| {
+        views
+            .adopt_view(&view, to_tab, &checkout)
+            .map_err(|error| Fault::Profile(error.to_string()))
+    });
+    match adopted {
+        Ok(()) => Ok(target),
+        Err(fault) => {
+            if let Err(back) = withdraw_copy(daemon, destination, &target) {
+                tracing::warn!(
+                    ?back,
+                    "a copy whose window could not follow stayed where it went"
+                );
+            }
+            Err(fault)
+        }
+    }
 }
 
 /// Move the record `id` that the window of tab `tab` shows in `source` to `destination`, under

@@ -165,6 +165,20 @@ fn put_back(
     true
 }
 
+/// A copy is the session's alone: it opens the app in `to` on a copy of what the window shows,
+/// and this tab stays as it is. A desktop with no session to open it changes nothing.
+fn copy_to_workspace(
+    shared: &Shared,
+    tiles: &dyn TileSource,
+    ids: RouteIds,
+    to: WorkspaceId,
+) -> bool {
+    if navigation::locate(&shared.tree, ids).is_some() && shared.window_of_tab(ids.tab).is_some() {
+        tiles.copy(ids.tab, to);
+    }
+    false
+}
+
 fn apply(
     shared: &mut Shared,
     tiles: &mut dyn TileSource,
@@ -266,6 +280,7 @@ fn apply(
         {
             false
         }
+        Admitted::CopyToWorkspace(ids, to) => copy_to_workspace(shared, tiles, ids, to),
         // Another device opens the window's app on the same record: the session hands it over
         // through the record of the person's devices, and closes this window once it did.
         Admitted::MoveToDevice(ids, device, output) => {

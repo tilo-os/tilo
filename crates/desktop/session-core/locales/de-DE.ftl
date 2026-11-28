@@ -1109,6 +1109,7 @@ window-menu-move-left = Nach links verschieben
 window-menu-move-right = Nach rechts verschieben
 window-menu-move-to-strip = In eine Leiste verschieben
 window-menu-move-to-workspace = In einen Arbeitsbereich verschieben
+window-menu-copy-to-workspace = In einen Arbeitsbereich kopieren
 window-menu-move-to-display = Auf einen Bildschirm verschieben
 window-menu-device-screen = { $screen } von { $device }
 window-menu-device-offline = { $device } ist offline

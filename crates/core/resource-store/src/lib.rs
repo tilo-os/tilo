@@ -42,9 +42,9 @@ pub use id::{doc_of, item_of, split_device_id};
 pub use index::{Change, Commit, CommitHook, Index};
 pub use port::{LocalPort, Port};
 pub use schema::{
-    BRANCH_VERB, CREATE_VERB, Declared, Expected, FIELD_EDIT, Field, FieldKind, HISTORY_VERBS,
-    MAX_MARK_ARGS, MIGRATE_VERB, MOVE_VERB, ORIGIN_VERB, PLATFORM_VERBS, RESERVED_VERBS, Schema,
-    Type, Verb, Writes,
+    BRANCH_VERB, COPY_ACTION, CREATE_VERB, Declared, Expected, FIELD_EDIT, Field, FieldKind,
+    HISTORY_VERBS, MAX_MARK_ARGS, MIGRATE_VERB, MOVE_VERB, ORIGIN_VERB, PLATFORM_VERBS,
+    RESERVED_VERBS, Schema, Type, Verb, WITHDRAW_COPY_ACTION, Writes,
 };
 pub use store::{
     CHANGED, CREATED, Live, RecordReader, Review, Source, Store, StoreError, UPDATED, Written,

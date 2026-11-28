@@ -24,6 +24,15 @@ pub const HISTORY_VERBS: [&str; 3] = ["checkpoint", "describe", "link"];
 /// schema has it, as it has the verbs of history.
 pub const MOVE_VERB: &str = "move";
 
+/// The action that copies a resource into another workspace: the destination's founding of it,
+/// under the move verb, judged as a move's both sides are, while the source keeps it. A call names
+/// it as it names the move; no change does, and no app can declare it.
+pub const COPY_ACTION: &str = "$copy";
+
+/// The action that takes back a copy ([`COPY_ACTION`]) nobody has written since it arrived: its
+/// removal, under the move verb, judged as the caller's removal there.
+pub const WITHDRAW_COPY_ACTION: &str = "$withdraw-copy";
+
 /// The verb that founds an empty resource of a declared kind: an app's record its first write
 /// names no verb of, which the app opens empty. It writes nothing in it. Every schema has it, as
 /// it has the move, and no app declares it.
@@ -66,7 +75,9 @@ pub const MIGRATE_VERB: &str = tilo_actions::stamp::Stamp::MIGRATE_VERB;
 /// recorded step of them. `None` for every other verb, which an app declares or no call names.
 #[must_use]
 pub fn platform_kind(verb: &str) -> Option<tilo_actions::ActionKind> {
-    (verb == MOVE_VERB || verb == MIGRATE_VERB).then_some(tilo_actions::ActionKind::Undoable)
+    [MOVE_VERB, MIGRATE_VERB, COPY_ACTION, WITHDRAW_COPY_ACTION]
+        .contains(&verb)
+        .then_some(tilo_actions::ActionKind::Undoable)
 }
 
 /// The most bytes the arguments of a history verb's change take, as JSON.

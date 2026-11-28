@@ -1075,6 +1075,7 @@ window-menu-move-left = Move left
 window-menu-move-right = Move right
 window-menu-move-to-strip = Move to strip
 window-menu-move-to-workspace = Move to workspace
+window-menu-copy-to-workspace = Copy to workspace
 window-menu-move-to-display = Move to display
 window-menu-device-screen = { $screen } on { $device }
 window-menu-device-offline = { $device } is offline
