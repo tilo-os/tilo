@@ -8241,7 +8241,7 @@ evidence = ["/target/stack-upgrade/state/logs/**"]
 timeout_secs = 3600
 
 [[check]]
-name = "e2e"
+name = "tilo-sh-e2e/{flow}"
 # Heavy: on main's newest head with the room main's heads leave (`idle`), keyed on every commit, so
 # a failure is still bisected to the commit that broke it and told to its pusher. At every head
 # it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
@@ -8253,26 +8253,31 @@ on = ["idle", "stable"]
 # runtime holding number 0's relays still sends by design — a relay name to the sandbox's resolver
 # and a router port over SSDP (iroh's portmapper) — is declared exactly, as the page checks do.
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
-# `--input flows=signin` runs the flows named there (space separated) instead of all of them, the
-# script's E2E_FLOWS: one flow's pages, and what it says, without the rest waiting on it.
-dispatch_inputs = { flows = "" }
-run = "E2E_FLOWS=\"$T_INPUT_FLOWS\" bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e"
+# One job a flow, each against a stack of its own (the script's E2E_FLOWS): t sizes each flow by
+# what its own runs measured, and a flow that fails is the one named. As one job, every run of the
+# ten was booked at the width the single-flow runs taught, and on a loaded node agent-setup was
+# throttled for most of its time and two flows reached their limits, a verdict no one could tell
+# from the code's.
+run = "E2E_FLOWS={flow} bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx python3-pip openssl && dnf clean all && python3 -m pip install --no-cache-dir blake3", egress = { to = ["0.0.0.0/0", "::/0"] } }
-# Its flows run at once, each with its browsers: the job bounds them, as onboarding's (below), never
-# the supervisor's two-browser share of a developer's machine, which held every flow but two waiting
-# for a browser against its own time limit.
+# Its browsers are bounded by the job, as onboarding's (below), never the supervisor's two-browser
+# share of a developer's machine, which held every flow but two waiting for a browser against its
+# own time limit.
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/e2e/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 # What it found, not what it ran: each flow's pages, reports and consoles, and each of the stack's
 # own logs; the site it served is the web entry's laid-out context again.
-outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
+outputs = ["/target/e2e/*.log", "/target/e2e/state/logs/*.log", "/target/e2e/signin/**", "/target/e2e/directory/**", "/target/e2e/boot/**", "/target/e2e/agent-setup/**", "/target/e2e/setup-resume/**", "/target/e2e/visa/**", "/target/e2e/entry/**", "/target/e2e/passkey/**", "/target/e2e/wait-list/**", "/target/e2e/onboarding/**"]
 # What a failure keeps of why: every service's log, which says which of them did not answer.
 evidence = ["/target/e2e/state/logs/**"]
 timeout_secs = 1800
+[check.matrix]
+# test-e2e.sh's flows, as its `all` names them.
+flow = ["signin", "directory", "boot", "agent-setup", "setup-resume", "visa", "entry", "passkey", "wait-list", "onboarding"]
 
 # A stranger's way into tilo.sh, end to end, on a whole stack of its own, brought up the way
 # production's manifests bring it up (test-onboarding.sh, one flow of the e2e check's): the wait
@@ -9464,7 +9469,7 @@ name = "release-tilo-sh"
 # admitting a page. It prints the three digests, which tools/release/tilo-sh.sh pins in the
 # infra repo after starting production's pods on them.
 run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
-needs = ["publish-lounge", "publish-web-entry", "publish-api", "e2e", "onboarding", "tilo-sh-admits-a-page"]
+needs = ["publish-lounge", "publish-web-entry", "publish-api", "tilo-sh-e2e/signin", "tilo-sh-e2e/directory", "tilo-sh-e2e/boot", "tilo-sh-e2e/agent-setup", "tilo-sh-e2e/setup-resume", "tilo-sh-e2e/visa", "tilo-sh-e2e/entry", "tilo-sh-e2e/passkey", "tilo-sh-e2e/wait-list", "tilo-sh-e2e/onboarding", "onboarding", "tilo-sh-admits-a-page"]
 requires = ["arch=any"]
 on = ["dispatch"]
 

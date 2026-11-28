@@ -169,7 +169,7 @@ With `--images`, the first three are the images themselves.
   no variable redirects it; `bwrap` mounts this machine's roots over that path
   for the server and the API server alone.
 - **Natively, Caddy** is the one the caller built (`TILO_SH_CADDY`, which
-  `t test e2e` hands the stack), else the `caddy` on your `PATH`, else the pinned
+  `t test 'tilo-sh-e2e/*'` hands the stack), else the `caddy` on your `PATH`, else the pinned
   release in `caddy.env`, fetched once and checked against its published
   checksum.
 - **Natively, compression** needs `brotli` and `zstd`; without them the site is
@@ -243,8 +243,8 @@ sandbox, browser user and device key the guest image promises, fills the test
 page through page actions with a person's answers, and runs Linux commands in
 the workspace's own VM as its tenant rather than as its Browser user.
 
-`t test e2e` runs the same steps against a stack it already has up, as flows
-beside the page's own (`check.sh --flow signin|visa|entry|passkey`).
+`t test 'tilo-sh-e2e/*'` runs the same steps, one check a flow, each against a
+stack of its own, as flows beside the page's own (`check.sh --flow signin|visa|entry|passkey`).
 `t test tilo-sh-local-vm` runs the check with the VM host, from the images that
 host runs. The report in the work directory holds the bring-up time, the visa
 run's duration and each visitor's entry time, so it says where the time went.

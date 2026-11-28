@@ -14,7 +14,7 @@ both, and `stack.sh help` covers the commands.
 | `build-on-builder.sh` | the programs built on the build server, in one command |
 | `port-check.py` | which of a base's ports this machine would not give the stack (another process's, or the kernel's temporary ports), and where that machine's temporary-port range begins: `stack.sh up` checks it here and on the build server |
 | `Caddyfile` | production's server routing (tilo/infra `apps/tilo-sh-server/Caddyfile`) on loopback ports |
-| `check.sh` | the startup identity, the visa flow, a fresh visitor's timed entry and a passkey, as steps of one check (`stack.sh check`) or as flows beside the page's (`t test e2e`, `check.sh --flow`) |
+| `check.sh` | the startup identity, the visa flow, a fresh visitor's timed entry and a passkey, as steps of one check (`stack.sh check`) or as flows beside the page's (`t test 'tilo-sh-e2e/*'`, `check.sh --flow`) |
 | `caddy.env` | production's Caddy, one pin: the stack fetches it once, and `t test tilo-sh-caddy` builds it for the checks |
 | `check-in-vm.sh` | `t test tilo-sh-local-vm`: `check.sh` as an unprivileged user in a micro-VM, its VM host started as root through that user's sudo as on a developer's machine |
 | `integration/person.mjs` | a person in their own headless Chromium: arrives, follows an invitation, approves a key on `/sign-in` |
