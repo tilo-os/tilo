@@ -3737,16 +3737,36 @@ impl Core {
     /// was invoked from. The window's bar shows it for a few seconds, with the person's undo as
     /// its one button when `undo` says so; a newer one replaces it, and saying nothing
     /// (`text` empty) takes it down. Nothing is written to the workspace and no device is told:
-    /// a run nothing looks through says it to nobody.
+    /// a run nothing looks through says it to nobody. The run's journal answers a run that
+    /// replays after an effect it waited on, so a notice said before that call is said once.
     fn notice_import(&self, text_h: i32, kind_h: i32, undo_h: i32) -> HResult<Option<Wasm>> {
         let text = self.text(text_h)?;
         let kind = crate::notice::Kind::parse(&self.text(kind_h)?);
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                self.said.borrow_mut().push(crate::notice::Said {
+                    text,
+                    kind,
+                    undo: undo_h != 0,
+                });
+                return ret_void();
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                if !matches!(entry, crate::run::JournalEntry::Said) {
+                    return trap("the run diverged from its journal: expected a notice's entry");
+                }
+                run.cursor = run.cursor.saturating_add(1);
+                return ret_void();
+            }
+        }
         self.said.borrow_mut().push(crate::notice::Said {
             text,
             kind,
             undo: undo_h != 0,
         });
-        Ok(None)
+        self.journal_push(crate::run::JournalEntry::Said)?;
+        ret_void()
     }
 
     /// `notify(to, title, body, opens)`: tell the person `to` something, once. The notice is a
@@ -4078,6 +4098,7 @@ fn entry_value(entry: &JournalEntry) -> Value {
         | JournalEntry::Web { .. }
         | JournalEntry::Wrote { .. }
         | JournalEntry::Notified
+        | JournalEntry::Said
         | JournalEntry::Engine { .. }
         | JournalEntry::Listing { .. }
         | JournalEntry::Page { .. } => Value::Unit,

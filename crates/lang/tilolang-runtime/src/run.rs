@@ -67,6 +67,9 @@ pub enum JournalEntry {
     /// here, so it walks what the run walked; the run never lists the items it did not read, so
     /// moving a task among three thousand finished ones journals the two it looked at.
     Listing { reads: Vec<ListingRead> },
+    /// The window the run was invoked from was told something in passing (`notice`): a run
+    /// that replays after an effect it waited on says it once, not once a pass.
+    Said,
 }
 
 /// One read a run made of a collection ([`JournalEntry::Listing`]), with its answer.
