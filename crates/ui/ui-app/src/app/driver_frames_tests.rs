@@ -603,12 +603,12 @@ fn a_part_laid_out_and_never_drawn_asks_once_for_its_measure() {
 
 /// A cell of a tree drawn where it changed: it paints a block and counts each draw, asking for
 /// another while `changed` stands, as a row whose text moved does.
-struct Cell {
+struct Tile {
     drew: Rc<std::cell::Cell<usize>>,
     changed: Rc<std::cell::Cell<bool>>,
 }
 
-impl Widget for Cell {
+impl Widget for Tile {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -669,7 +669,7 @@ fn a_driver_that_keeps_its_pixels_draws_only_the_cell_that_changed() {
     let drew: [Rc<std::cell::Cell<usize>>; 2] = [Rc::default(), Rc::default()];
     let changed: [Rc<std::cell::Cell<bool>>; 2] = [Rc::default(), Rc::default()];
     let cell = |index: usize| {
-        Box::new(Cell {
+        Box::new(Tile {
             drew: Rc::clone(&drew[index]),
             changed: Rc::clone(&changed[index]),
         }) as Box<dyn Widget>
