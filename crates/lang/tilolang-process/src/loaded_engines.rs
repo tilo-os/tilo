@@ -140,6 +140,10 @@ fn engine_of(app: &str) -> Result<EngineApi, String> {
     // the one entry whose `EngineApi` shares this build's types.
     let engine = unsafe { tilo_engine_loader::engine(library) }
         .map_err(|why| format!("the engine of {app} did not open: {why}"));
+    if let Err(why) = &engine {
+        // Every call the app makes of it fails from here on, each with only its own refusal.
+        tracing::error!(%why, library, "an app's engine is missing from this device");
+    }
     opened.insert(library, engine.clone());
     engine
 }
