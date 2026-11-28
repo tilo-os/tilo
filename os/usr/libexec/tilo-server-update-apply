@@ -34,9 +34,8 @@ UPDATES="${TILO_SERVER_UPDATE_UPDATES:-/usr/libexec/tilo-update-channel}"
 FLOOR_AUTHORITY="${TILO_SERVER_UPDATE_FLOOR_AUTHORITY:-/usr/share/tilo/tpm2-pcr-signing.public.pem}"
 APPROVALS="${TILO_SERVER_UPDATE_APPROVALS:-/var/lib/tilo/rollback/approvals}"
 # Where the daemon keeps what the person's devices signed, for this root unit to
-# carry into the approvals directory it alone may write: its own state, under the
-# state home its profile (/var/lib/tilo/state) gives it.
-STAGING="${TILO_SERVER_UPDATE_APPROVAL_STAGING:-/var/lib/tilo/state/state/tilo/device/own/approvals-next}"
+# carry into the approvals directory it alone may write: its profile.
+STAGING="${TILO_SERVER_UPDATE_APPROVAL_STAGING:-/var/lib/tilo/state/approvals-next}"
 
 status="$("$BOOTC" status --format json 2>/dev/null)" || true
 field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }

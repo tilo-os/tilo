@@ -336,6 +336,7 @@ impl Keeping {
         let Self { mut cfg, runtime } = self;
         let On {
             dir,
+            machine,
             joined,
             identity,
             service,
@@ -370,6 +371,7 @@ impl Keeping {
                 endpoint,
                 joined,
                 app_serving,
+                machine: machine.to_path_buf(),
             }))
             .map_err(|error| io::Error::other(format!("what this server keeps: {error}")))?;
         // The Browser this device places answers its workspaces' devices from here: it was
@@ -407,7 +409,7 @@ impl Keeping {
                 relay: Some(relay),
                 web,
                 runtime: Some(runtime),
-                state_root,
+                state_root: machine.to_path_buf(),
             },
             protocols,
         ))
@@ -536,6 +538,9 @@ fn local_hosts(listen: SocketAddr) -> Vec<String> {
 pub(crate) struct On<'a> {
     /// The device's directory, where its workspace service is kept.
     pub(crate) dir: &'a Path,
+    /// The daemon's profile, where the machine's root-run units read what the server asks of
+    /// them and answer it.
+    pub(crate) machine: &'a Path,
     /// Whether a ticket signed the device in.
     pub(crate) joined: bool,
     /// The device, as [`Keeping::itself`] names it.

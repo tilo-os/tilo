@@ -159,6 +159,9 @@ pub struct OnDevice {
     pub joined: bool,
     /// What answers the apps' actions addressed to this device, when it serves apps.
     pub app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+    /// Where the machine's root-run units read what this server asks of them: the daemon's
+    /// profile on the image (/var/lib/tilo/state).
+    pub machine: PathBuf,
 }
 
 /// The server state the page's pre-session routes answer with.
@@ -418,6 +421,7 @@ impl KeptServer {
         let service = Arc::clone(workspaces.service());
         let joined = crate::device::keep::servers::first_install::joined(&cfg.identity_root);
         let (server, protocols) = Server::on_device(OnDevice {
+            machine: cfg.state_root.clone(),
             cfg,
             identity,
             service: Arc::clone(&service),
@@ -500,6 +504,7 @@ impl Server {
             endpoint,
             joined,
             app_serving,
+            machine,
         } = parts;
         endpoints_agree(&identity, &endpoint)?;
         if cfg.work.takes_nothing() {
@@ -605,7 +610,7 @@ impl Server {
             tokio::spawn(install_and_follow(
                 hosted.clone(),
                 endpoint.clone(),
-                cfg.state_root.clone(),
+                machine,
                 joined,
                 identity.device_cert.clone(),
             )),
@@ -899,7 +904,7 @@ fn site_name(web_entry: &str) -> String {
 async fn install_and_follow(
     workspaces: tilo_workspace_service::workspaces::Workspaces,
     endpoint: Endpoint,
-    state_root: PathBuf,
+    machine: PathBuf,
     joined: bool,
     cert: tilo_user_identity::DeviceCert,
 ) {
@@ -918,11 +923,10 @@ async fn install_and_follow(
             return;
         }
     }
-    // What the document asks of the machine is written in the server's own state, where the
-    // image's root-run units read it (its state root is /var/lib/tilo/state there): a server that
-    // is not the image's, one a stack or a container runs, can write nowhere else.
+    // What the document asks of the machine is written where the image's root-run units read it
+    // (the daemon's profile, /var/lib/tilo/state there).
     let requests = crate::device::keep::servers::applied::Requests::at(
-        state_root.join(crate::device::keep::servers::policy::POLICY_REQUEST_FILE),
+        machine.join(crate::device::keep::servers::policy::POLICY_REQUEST_FILE),
     );
     // The document is applied while the installation waits on the person's
     // answers.
@@ -930,7 +934,7 @@ async fn install_and_follow(
         &workspaces,
         requests.clone(),
         Some(endpoint),
-        state_root,
+        machine,
     );
     if joined {
         match crate::device::keep::servers::first_install::install(
