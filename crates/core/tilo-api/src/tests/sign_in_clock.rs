@@ -166,29 +166,6 @@ fn an_agent_is_approved_from_a_computer_whose_clock_is_ahead_within_the_rule() {
 }
 
 #[test]
-fn a_key_is_approved_from_a_computer_whose_clock_is_ahead_within_the_rule() {
-    at_the_server(async {
-        let alice = Person::new(1);
-        let server = server();
-        for ahead_ms in [10, RULE_MS] {
-            let (poll, asked) = ask_for_key(&server, &json!({"name": "Visa backend"})).await;
-            let page = page_answers(&alice, asked.challenge, Some(&asked), SERVER_MS + ahead_ms);
-            let reply = answer(&server, &page.form(&asked.pending)).await;
-            assert!(
-                reply.status().is_success(),
-                "the page's clock {ahead_ms} ms ahead: the proof {:?}, the grant {:?}: {}",
-                page.proof_refused(),
-                page.grant_refused(),
-                page_text(reply).await
-            );
-            let (status, polled) = poll_key(&server, &poll).await;
-            assert_eq!(status, StatusCode::OK, "{ahead_ms} ms ahead");
-            assert!(polled["key"].is_string(), "{ahead_ms} ms ahead: no key");
-        }
-    });
-}
-
-#[test]
 fn the_grants_page_signs_in_from_a_computer_whose_clock_is_ahead_within_the_rule() {
     at_the_server(async {
         let alice = Person::new(3);

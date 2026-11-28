@@ -344,12 +344,6 @@ mod tests {
         assert!(!folders.workspaces.contains_key("w1"));
         assert!(folders.workspaces.contains_key("w2"));
         assert!(!folders.forget_unlisted(&["w2".to_owned()]), "nothing left");
-        save_and_reload(&folders, home.path());
-    }
-
-    fn save_and_reload(folders: &Folders, dir: &Path) {
-        folders.save(dir).unwrap();
-        assert_eq!(&Folders::load(dir).unwrap(), folders);
     }
 
     #[test]

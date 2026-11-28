@@ -35,7 +35,6 @@ pub async fn ask_model(
         anyhow::Error::new(Refusal {
             code: "unavailable".into(),
             message: why,
-            retry_after_ms: None,
         })
     };
     let socket = super::daemon_socket().map_err(unavailable)?;
@@ -63,7 +62,6 @@ pub async fn ask_model(
         anyhow::Error::new(Refusal {
             code: "refused".into(),
             message: why,
-            retry_after_ms: None,
         })
     };
     let receipt = client
@@ -91,7 +89,6 @@ pub async fn ask_model(
         anyhow::Error::new(Refusal {
             code: code.into(),
             message,
-            retry_after_ms: None,
         })
     })
 }

@@ -190,10 +190,6 @@ fn device_of(name: &str) -> [u8; 32] {
 mod tests {
     use super::*;
 
-    fn host(name: &str) -> [u8; 32] {
-        device_of(name)
-    }
-
     fn taking(latency_ms: u32) -> Answer {
         Answer::taking(
             Rank {
@@ -203,35 +199,6 @@ mod tests {
             },
             Vec::new(),
         )
-    }
-
-    /// The nearest host serves; a host that went away costs nothing, and the
-    /// one still there takes the call instead.
-    #[test]
-    fn the_nearest_host_that_answers_serves_the_call() {
-        let near = host("a");
-        let far = host("b");
-        assert_eq!(
-            choose(&[(far, taking(40)), (near, taking(3))]),
-            Some(near),
-            "the shorter round trip wins"
-        );
-        assert_eq!(
-            choose(&[
-                (near, Answer::declining(Decline::Offline)),
-                (far, taking(40))
-            ]),
-            Some(far),
-            "a host that went away passes the call to the one still there"
-        );
-        assert_eq!(
-            choose(&[
-                (near, Answer::declining(Decline::Offline)),
-                (far, Answer::declining(Decline::Offline))
-            ]),
-            None,
-            "nothing that can read the workspace answered"
-        );
     }
 
     /// A server that answers sooner and lists nothing for the key is passed

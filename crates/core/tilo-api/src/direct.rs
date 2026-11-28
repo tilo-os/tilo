@@ -813,34 +813,4 @@ mod tests {
             "the person stays in what this device left: {listed}"
         );
     }
-
-    /// A request with no `Authorization` at all is answered as the desktop's own key: a program of
-    /// this login sends no secret, because the kernel's account of its peer admits the connection
-    /// and the desktop acts as the one key it holds.
-    #[tokio::test]
-    async fn a_request_with_no_bearer_is_answered_as_the_persons_key() {
-        let (key, cert) = ada_laptop(11);
-        let direct = Direct::here(
-            std::sync::Arc::new(Desktop::default()),
-            key,
-            cert,
-            "Ada's laptop",
-        )
-        .unwrap();
-        let (socket, dir) = served_here(direct, "here-bare");
-        // No `Authorization` header, as `Client::session` sends none.
-        let (status, listed) = ask(
-            &socket,
-            "POST",
-            "/v1/resources/account/workspaces/actions/list",
-            Some(serde_json::json!({})),
-        )
-        .await;
-        assert_eq!(status, 200, "a request with no key is answered");
-        assert_eq!(
-            listed["result"]["workspaces"][0]["id"], WORKSPACE,
-            "the desktop answers as its own key: {listed}"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 }

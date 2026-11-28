@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 use tilo_action_line::LineClient;
+use tilo_action_line::handed::WORKSPACE_ENV;
 use tilo_mcp::McpServer;
 
 mod model_ask;
@@ -50,13 +51,6 @@ use vault_actions::vault;
 
 /// Names a key file a command acts as, as `--key-file` does.
 pub const KEY_FILE_ENV: &str = "TILO_KEY_FILE";
-
-/// Names the descriptor of the connection to the daemon's native endpoint the launcher opened for
-/// an app it started, which the daemon admits as that app.
-pub const NATIVE_FD_ENV: &str = tilo_action_line::handed::NATIVE_FD_ENV;
-
-/// Names the workspace an app the launcher started acts in.
-pub const WORKSPACE_ENV: &str = tilo_action_line::handed::WORKSPACE_ENV;
 
 /// How long a call the workspace was not ready for is asked again: a workspace that does not
 /// serve this computer yet is on its way.
@@ -129,13 +123,11 @@ pub fn device_keys() -> tilo_device_identity::IdentityPaths {
     tilo_identity::provisioning::collaboration_identity_paths()
 }
 
-/// A call that was refused: the code it answered, its words, and the wait it asked for before
-/// the same call works.
+/// A call that was refused: the code it answered and its words.
 #[derive(Clone, Debug)]
 pub struct Refusal {
     code: String,
     message: String,
-    retry_after_ms: Option<u64>,
 }
 
 impl Refusal {
@@ -151,12 +143,6 @@ impl Refusal {
         &self.code
     }
 
-    /// How long the caller was asked to wait before asking again.
-    #[must_use]
-    pub fn retry_after_ms(&self) -> Option<u64> {
-        self.retry_after_ms
-    }
-
     /// `error` in the words a person at a command reads: its message, its code, and the calls
     /// that would work instead.
     fn said(error: &ApiError) -> Self {
@@ -170,7 +156,6 @@ impl Refusal {
         Self {
             code: body.code.clone(),
             message: crate::v1::names::said(&said, crate::v1::names::Surface::Cli),
-            retry_after_ms: body.retry_after_ms,
         }
     }
 }
@@ -320,7 +305,7 @@ impl Calls {
     }
 
     /// A program's connection to this computer's daemon, as the SDKs make it: the stream the
-    /// launcher connected for an app it started ([`NATIVE_FD_ENV`], admitted as that app in the
+    /// launcher connected for an app it started ([`NATIVE_FD_ENV`](tilo_action_line::handed::NATIVE_FD_ENV), admitted as that app in the
     /// workspace [`WORKSPACE_ENV`] names), else `socket`, else this computer's daemon
     /// ([`daemon_socket`]), admitted as the account connecting. `workspace` names the one
     /// workspace the connection acts in when it knows it; without it, an app's comes from
@@ -377,33 +362,6 @@ impl Calls {
             },
             app: false,
         }
-    }
-
-    /// The same actions, with a program session of their own: what a program run through them
-    /// continues is what their own programs left, never what this one's did.
-    #[must_use]
-    pub fn apart(&self) -> Self {
-        let at = match &self.at {
-            At::Daemon {
-                line,
-                workspace,
-                person,
-                again,
-                ..
-            } => {
-                let provider: Provider = line.clone();
-                At::Daemon {
-                    server: Box::new(served(provider, workspace, person)),
-                    line: Arc::clone(line),
-                    workspace: workspace.clone(),
-                    person: person.clone(),
-                    again: *again,
-                    elsewhere: Elsewhere::default(),
-                }
-            }
-            At::Key(direct, _) => At::Key(direct.clone(), tokio::sync::Mutex::default()),
-        };
-        Self { at, app: self.app }
     }
 
     /// The workspace this computer's daemon serves, for calls that reach it.
@@ -944,7 +902,6 @@ impl Calls {
                 message: "Waiting for your approval: Tilo asks you on the devices that keep \
                           your identity (your Tilo tab). It is done once you allow it there."
                     .to_owned(),
-                retry_after_ms: None,
             }));
         }
         Ok(answer

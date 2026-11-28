@@ -13,9 +13,8 @@
 //! and every host and runtime checks the certificate, its scope and the
 //! person's revocations themselves. Revoking the grant forgets the key.
 
-use ed25519_dalek::Signer as _;
 use std::time::Duration;
-use tilo_user_identity::{AgentScope, DeviceCert, SignInProof};
+use tilo_user_identity::{AgentScope, DeviceCert};
 
 /// How long the person is asked to let a grant last: a day short of the
 /// most a grant's certificate may (90 days), so a page whose clock runs
@@ -236,17 +235,5 @@ impl GrantKey {
     #[must_use]
     pub fn holds(&self, now_ns: u64) -> bool {
         tilo_user_identity::verify_device_cert_at(&self.cert, now_ns).is_ok()
-    }
-
-    /// The key's answer to `challenge` from the service `audience`.
-    #[must_use]
-    pub fn prove(&self, audience: &str, challenge: [u8; 32]) -> Option<SignInProof> {
-        let digest = tilo_user_identity::sign_in_digest(&self.cert, audience, &challenge).ok()?;
-        Some(SignInProof {
-            cert: self.cert.clone(),
-            audience: audience.to_owned(),
-            challenge,
-            signature: self.key.sign(&digest).to_bytes(),
-        })
     }
 }

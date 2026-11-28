@@ -455,29 +455,6 @@ impl DaemonPlace {
     pub fn actions(&self) -> tilo_device_identity::login::daemon::DeviceActions {
         tilo_device_identity::login::daemon::DeviceActions::at(&self.native)
     }
-
-    /// The record `record` of `app`, in this login's workspace, read through the one record API
-    /// (`tilo_read` of `record:<app>:<record>`): the reading, its records each with the value the
-    /// app keeps, or the refusal's words.
-    ///
-    /// # Errors
-    /// The daemon does not answer, or refused the read.
-    pub fn read_record(&self, app: &str, record: &str) -> Result<serde_json::Value, String> {
-        let (typed, text, failed) = self
-            .actions()
-            .tool(
-                "tilo_read",
-                &serde_json::json!({ "path": format!("record:{app}:{record}") }),
-            )
-            .map_err(|refused| refused.message)?;
-        if typed.get("records").is_some() {
-            return Ok(typed);
-        }
-        if failed {
-            return Err(text);
-        }
-        serde_json::from_str(&text).map_err(|_| format!("Tilo read no record of {app}: {text}"))
-    }
 }
 
 /// `line` with the session this connection is written in, when it is the client's `initialize`

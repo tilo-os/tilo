@@ -304,12 +304,6 @@ impl Server {
         }
     }
 
-    /// The live MCP sessions.
-    #[must_use]
-    pub fn session_count(&self) -> usize {
-        lock(&self.sessions).len()
-    }
-
     /// Answer one HTTP request.
     pub async fn respond(self: &Arc<Self>, request: Request<Incoming>) -> Reply {
         let (parts, body) = request.into_parts();
@@ -1349,17 +1343,6 @@ impl Server {
                 }}),
             ))),
         }
-    }
-
-    /// The sessions keys hold open here that still reach their workspaces,
-    /// by name ("Visa backend #3"): a revoked key's are gone from it.
-    #[must_use]
-    pub fn open_sessions(&self) -> Vec<String> {
-        lock(&self.sessions)
-            .values()
-            .filter(|session| session.is_live())
-            .map(|session| session.label.clone())
-            .collect()
     }
 
     /// `grant`'s run for the calls of the API: one per key, named for it

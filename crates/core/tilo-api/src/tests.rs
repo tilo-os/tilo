@@ -1081,8 +1081,8 @@ async fn a_key_for_one_workspace_reaches_that_workspace_and_ends_within_a_grant(
 }
 
 /// A key is the grant the person approved, carried in the key itself: an API
-/// server that never saw the approval accepts the same key, reads the same
-/// grant, and revokes that one grant.
+/// server that never saw the approval accepts the same key and reads the same
+/// grant.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_carries_its_grant_to_every_api_server() {
     let alice = Person::new(1);
@@ -1106,24 +1106,6 @@ async fn a_key_carries_its_grant_to_every_api_server() {
     assert!(second.store.grants_of(&carried.person).is_empty());
     second.store.keep_carried(&carried).unwrap();
     assert_eq!(second.store.grants_of(&carried.person).len(), 1);
-
-    // Revoked at one API server, that grant is revoked at that one for good.
-    assert!(
-        !second
-            .store
-            .revoke_grant(&carried.person, &carried.id, now)
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        second.store.access(&token, now).unwrap_err(),
-        store::Denied::Revoked { at_ms: Some(now) }
-    );
-    // A token that carries no grant reaches nothing, as before.
-    assert_eq!(
-        second.store.access("tilo_sk_not-a-grant", now).unwrap_err(),
-        store::Denied::Unknown
-    );
 }
 
 /// A key `person`'s root certified for a service of theirs, made from

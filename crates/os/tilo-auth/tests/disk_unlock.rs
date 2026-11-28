@@ -326,7 +326,12 @@ fn carried_half(
             .device_key()
             .expect("the daemon says its key"),
     );
-    let records = record_value(&daemon.read_record(DEVICES.0, DEVICES.1).unwrap());
+    let path = format!("record:{}:{}", DEVICES.0, DEVICES.1);
+    let (read, _, _) = daemon
+        .actions()
+        .tool("tilo_read", &serde_json::json!({ "path": path }))
+        .unwrap();
+    let records = record_value(&read);
     let entry = &records["devices"][&this];
     let fact = entry.get("v").unwrap_or(entry)["facts"]["unlock"]
         .as_str()
