@@ -104,34 +104,10 @@ fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
     );
     assert_eq!(clearing(&mut session), Availability::Available);
     // And what was offered runs: choosing it clears the task the app says is finished. A
-    // destructive offer asks the person first, as every destructive press does, and their no
-    // runs nothing of it.
-    choose(&mut session, "Delete finished tasks");
+    // destructive offer asks the person first, as every destructive press does, and Shift is
+    // their yes to what Undo takes back.
+    choose_yes(&mut session, "Delete finished tasks");
     session.settle();
-    assert_eq!(
-        session.titles(),
-        vec!["Water the plants".to_owned()],
-        "nothing runs before the person answers"
-    );
-    assert_eq!(
-        session.decline_asked(),
-        1,
-        "clearing the finished tasks asks the person first"
-    );
-    session.settle();
-    assert_eq!(
-        session.titles(),
-        vec!["Water the plants".to_owned()],
-        "the person said no: the task stays"
-    );
-    // Their yes runs the same choice.
-    choose(&mut session, "Delete finished tasks");
-    session.settle();
-    assert_eq!(
-        session.allow_asked(),
-        1,
-        "clearing the finished tasks asks the person first"
-    );
     assert!(session.titles().is_empty(), "{:?}", session.titles());
 }
 

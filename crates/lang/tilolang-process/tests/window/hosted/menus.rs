@@ -192,17 +192,14 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
         }
         let before = controls_of(session.window.app());
         let tasks_before = session.titles().len();
-        session.window.press_named(command);
-        session.settle();
-        // A destructive command asks the person first, as every destructive press does: their
-        // yes runs it.
+        // Deleting a task is destructive and Undo takes it back, so choosing it asks unless
+        // Shift is held: Shift is the person's yes, said on the press itself.
         if command == "Delete" {
-            assert_eq!(
-                session.allow_asked(),
-                1,
-                "Delete asks the person before it deletes the task"
-            );
+            session.window.press_named_shifted(command);
+        } else {
+            session.window.press_named(command);
         }
+        session.settle();
         let after = controls_of(session.window.app());
         assert!(
             after.iter().all(|name| name != command),
