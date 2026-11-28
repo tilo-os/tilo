@@ -243,6 +243,13 @@ impl Session {
         ));
         let watched = std::sync::Arc::clone(&notification_policy);
         let woken = options.wake.handle();
+        // An answer to what the person was told names the device it happened on, as their other
+        // devices know it.
+        if let Some(identity) = crate::sync::device_identity() {
+            notifications
+                .borrow()
+                .name_this_device(identity.device_cert.device_label);
+        }
         // The pictures the shell shows are this device's: a change of the person's reaches them too.
         let wallpapers = std::sync::Arc::new(crate::wallpapers::Wallpapers::new(
             options.records.as_ref(),
@@ -2019,6 +2026,7 @@ impl Session {
             window_routes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
+            telling_read: crate::notifications::telling::Reading::default(),
             personal,
             clipboard,
             layout,

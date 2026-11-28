@@ -445,6 +445,9 @@ pub(crate) struct Shared {
     /// What the loop does with the answers of async work it started (a signature, a commit into a
     /// workspace's record), on the pass after each landed.
     pub(crate) landings: Rc<crate::landing::Landings>,
+    /// The one ask for what the person's assistant told them that stands while nothing is new:
+    /// the log is followed with one held read at a time.
+    pub(crate) telling_read: crate::notifications::telling::Reading,
     /// The person's own workspaces, as all their devices hold the list of
     /// them: `None` when this computer has no identity to keep it for.
     #[cfg(target_os = "linux")]

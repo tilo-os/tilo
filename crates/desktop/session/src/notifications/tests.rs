@@ -1799,3 +1799,215 @@ fn a_banner_read_in_full_lands_on_its_page_in_the_centre() {
         "and closes nothing: it stays in the centre"
     );
 }
+
+/// A thing the person's assistant told them, waiting for them, as the log keeps it.
+fn told_waits(
+    id: &str,
+    kind: tilo_person_services::person_telling::Kind,
+) -> tilo_person_services::person_telling::Told {
+    use tilo_person_services::person_telling::{About, Mark, Offered, OfferedTarget, Teller, Told};
+    let target = |action: &str| OfferedTarget {
+        app: "so.tilo.chat".into(),
+        record: "issue/1".into(),
+        resource: "issue".into(),
+        action: action.into(),
+    };
+    Told {
+        seq: 0,
+        id: id.into(),
+        at_ms: 0,
+        kind,
+        from: Some(Teller {
+            agent: "agent-1".into(),
+            name: "Pilot".into(),
+        }),
+        title: "May I deploy?".into(),
+        words: "The build is green; shall I ship it?".into(),
+        about: Some(About {
+            workspace: "ws-1".into(),
+            app: "so.tilo.chat".into(),
+            record: "issue/1".into(),
+            resource: "issue".into(),
+        }),
+        task: None,
+        cause: None,
+        mark: Mark::default(),
+        reaches: true,
+        outside: true,
+        actions: vec![
+            Offered {
+                id: "decline".into(),
+                label: "Not now".into(),
+                main: false,
+                target: target("decline"),
+                arguments: serde_json::Map::new(),
+            },
+            Offered {
+                id: "approve".into(),
+                label: "Ship it".into(),
+                main: true,
+                target: target("approve"),
+                arguments: serde_json::json!({ "release": "42" })
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+        ],
+        offered_by: None,
+        insists: None,
+        acknowledged: None,
+        withdrawn_at_ms: None,
+        pushed: Vec::new(),
+    }
+}
+
+/// Take `list` as what the person's log answered, read in the workspace the scenarios use.
+fn takes(rig: &Rig, list: tilo_person_services::person_telling::ToldList) {
+    rig.bridge.borrow().take_told(list, "ws-1");
+}
+
+// What the person's assistant told them arrives in the one centre the shell shows, and what they
+// do with a notice goes back to their log: the rows group under whoever told them, the answer a
+// thing expects ends the row, a thing answered elsewhere goes, and a thing's words stay off a
+// banner where the host keeps them.
+tilo_test_env::scenario! {
+    fn what_the_person_was_told_stands_in_the_centre;
+
+    phase a_waiting_thing_stands_under_whoever_told_it;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        takes(&rig, ToldList {
+            told: vec![told_waits("question:ws-1:1", Kind::Question)],
+            newest: 1,
+        });
+        let centre = rig.bridge.borrow().centre();
+        assert_eq!(centre.notices.len(), 1, "the thing stands in the centre");
+        let notice = &centre.notices[0];
+        assert_eq!(notice.title, "May I deploy?");
+        assert_eq!(notice.from, "Pilot", "the row groups under whoever told it");
+        assert_eq!(
+            notice.actions.iter().map(|action| action.key.as_str()).collect::<Vec<_>>(),
+            ["decline", "approve"],
+            "the answer it expects first ends the row"
+        );
+        assert_eq!(centre.count, 1, "it waits unread");
+    }
+
+    phase what_another_device_answered_goes_from_this_one;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        let mut waiting = told_waits("question:ws-1:1", Kind::Question);
+        waiting.acknowledged = Some(tilo_person_services::person_telling::Acknowledged {
+            at_ms: 10,
+            device: "phone".into(),
+            by: "approve".into(),
+        });
+        takes(&rig, ToldList { told: vec![waiting], newest: 2 });
+        assert!(
+            rig.bridge.borrow().centre().notices.is_empty(),
+            "a thing answered on another device of theirs goes from this one"
+        );
+    }
+
+    phase choosing_a_thing_runs_its_own_action_and_answers_it;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList, TOLD};
+        let rig = rig();
+        takes(&rig, ToldList { told: vec![told_waits("question:ws-1:2", Kind::Question)], newest: 1 });
+        let number = rig.bridge.borrow().centre().notices[0].number;
+        rig.bridge.borrow().run_action(number, "approve");
+        let asks = rig.bridge.borrow().take_told_asks();
+        assert_eq!(asks.len(), 2, "the action, then the answer");
+        assert_eq!(asks[0].target.provider, "application:ws-1:so.tilo.chat:issue/1");
+        assert_eq!(asks[0].target.address.action, "approve");
+        assert_eq!(
+            asks[0].arguments.get("release").and_then(|value| value.as_str()),
+            Some("42"),
+            "the thing's own arguments go with its action"
+        );
+        assert_eq!(
+            asks[1].target,
+            tilo_person_services::person_telling::target(TOLD, "acknowledge")
+        );
+        assert_eq!(
+            asks[1].arguments.get("by").and_then(|value| value.as_str()),
+            Some("approve"),
+            "the thing hears which answer it was"
+        );
+    }
+
+    phase opening_where_a_thing_is_answers_it_as_seen;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        takes(&rig, ToldList { told: vec![told_waits("question:ws-1:3", Kind::Question)], newest: 1 });
+        let number = rig.bridge.borrow().centre().notices[0].number;
+        assert_eq!(
+            rig.bridge.borrow().open(number),
+            tilo_session_core::desktop::notifications::HistoryActivation::Invoked,
+            "a thing of the log opens where it says, not as a page"
+        );
+        let asks = rig.bridge.borrow().take_told_asks();
+        assert_eq!(
+            asks[0].arguments.get("by").and_then(|value| value.as_str()),
+            Some(tilo_person_services::person_telling::BY_OPENED),
+        );
+        let places = rig.bridge.borrow().take_told_places();
+        assert_eq!(places[0].0, "ws-1", "it opens in the workspace it is in");
+        assert_eq!(places[0].1.app, "so.tilo.chat");
+        assert_eq!(places[0].1.resource, "issue");
+    }
+
+    phase putting_a_notice_away_answers_it_dismissed_and_takes_the_row;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        takes(&rig, ToldList { told: vec![told_waits("question:ws-1:4", Kind::Question)], newest: 1 });
+        let number = rig.bridge.borrow().centre().notices[0].number;
+        rig.bridge.borrow().dismiss(Some(number), None);
+        assert!(rig.bridge.borrow().centre().notices.is_empty(), "the row goes");
+        let asks = rig.bridge.borrow().take_told_asks();
+        assert_eq!(
+            asks[0].arguments.get("by").and_then(|value| value.as_str()),
+            Some(tilo_person_services::person_telling::BY_DISMISSED),
+        );
+    }
+
+    phase a_thing_whose_words_may_not_leave_the_host_keeps_them_off_a_banner;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        let mut kept = told_waits("question:ws-1:5", Kind::Question);
+        kept.outside = false;
+        takes(&rig, ToldList { told: vec![kept], newest: 1 });
+        let log = rig.desktop.log();
+        let notice = log
+            .active()
+            .last()
+            .or_else(|| log.history().first())
+            .expect("the thing stands in the centre");
+        assert!(!notice.show_preview, "its words stay on the host");
+        drop(log);
+        assert_eq!(
+            rig.bridge.borrow().centre().notices[0].body,
+            "Open Tilo to see it.",
+            "the notice says only where to look"
+        );
+    }
+
+    phase a_mention_is_told_once_by_the_record_it_names;
+    {
+        use tilo_person_services::person_telling::{Kind, ToldList};
+        let rig = rig();
+        takes(&rig, ToldList {
+            told: vec![told_waits("mention:ws-1:6", Kind::Mention)],
+            newest: 1,
+        });
+        assert!(
+            rig.bridge.borrow().centre().notices.is_empty(),
+            "the session's own mention notice is the one the person reads"
+        );
+    }
+}

@@ -296,6 +296,9 @@ impl Session {
         steps.step("text inputs");
         self.follow_notifications();
         self.shared.open_notifications();
+        // What the person did on a notice of their log, and what they opened from one, goes to
+        // the daemon in the pass that took it.
+        self.shared.follow_telling();
         steps.step("notifications");
         // What Super alone asked for: the search of a tap, and the keys a hold shows or takes
         // away, before the pass that runs the chord ending them.

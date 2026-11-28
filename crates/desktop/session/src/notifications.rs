@@ -4,6 +4,7 @@
 //! devices ([`across`]).
 
 mod across;
+pub(crate) mod telling;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +20,7 @@ use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
+use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_client::device_records::{Arrived, DeviceRecord};
 use tilo_session_core::desktop::notifications;
@@ -78,6 +80,14 @@ pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32
 
 /// The most unread notifications one app's icon counts to.
 const MAX_BADGE: u32 = 9_999;
+
+/// How long the read of the person's log is held for something new: a device that waits counts
+/// as looking, so a thing told while the session runs reaches it at once.
+const TELLING_WAIT_MS: u64 = 3_000;
+
+/// How long the ask for it may take end to end: longer than the hold, so the log's own wait is
+/// what answers it.
+const TELLING_REQUEST_WAIT_MS: u64 = 5_000;
 
 /// Keep what the centre holds, so the next session opens the centre this one had: its titles, its
 /// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
@@ -411,6 +421,11 @@ pub(crate) struct SessionNotifications {
     closed: ClosedTags,
     /// The notice each notification the session told carries, until the shell shows it.
     told: RefCell<BTreeMap<u32, Notice>>,
+    /// What the person's assistant told them, as one more sender in this centre
+    /// ([`telling::Telling`]).
+    telling: telling::Telling,
+    /// What the person's other devices call this one, as an answer to a telling names it.
+    device: RefCell<String>,
 }
 
 /// Now, in ms since the epoch, as the record of the person's devices keeps times.
@@ -526,6 +541,8 @@ impl SessionNotifications {
             showing: RefCell::default(),
             closed,
             told: RefCell::default(),
+            telling: telling::Telling::default(),
+            device: RefCell::new("Desktop".to_owned()),
         }
     }
 
@@ -816,6 +833,12 @@ impl SessionNotifications {
     /// Choose a retained notification in the centre, as the panel asks: one that names nowhere to
     /// lead is read whole there instead, where it stays until the way back.
     pub(crate) fn open(&self, id: u64) -> notifications::HistoryActivation {
+        // A notice of what the person's assistant told them opens where the thing says, and the
+        // thing hears it was seen.
+        if self.telling.of(id).is_some() {
+            self.telling.opened(id, &self.device.borrow());
+            return notifications::HistoryActivation::Invoked;
+        }
         let activation = self.desktop.activate_history(id);
         if activation == notifications::HistoryActivation::Unavailable {
             self.read_in_centre(id);
@@ -888,11 +911,59 @@ impl SessionNotifications {
         std::mem::take(&mut *self.handed.borrow_mut())
     }
 
+    /// What the person's other devices call this one, as an answer to a telling names it.
+    pub(crate) fn name_this_device(&self, name: String) {
+        if !name.trim().is_empty() {
+            *self.device.borrow_mut() = name;
+        }
+    }
+
+    /// What this device is called, as an answer to a telling names it.
+    pub(crate) fn device_name(&self) -> String {
+        self.device.borrow().clone()
+    }
+
+    /// The place in the log of what the person was told this has read up to.
+    pub(crate) fn telling_after(&self) -> u64 {
+        self.telling.after()
+    }
+
+    /// Take what the person's log says into the centre, read in `workspace`: a thing that still
+    /// waits stands there, and one answered or taken back goes. What is held back from banners is
+    /// held back here too.
+    pub(crate) fn take_told(
+        &self,
+        list: tilo_person_services::person_telling::ToldList,
+        workspace: &str,
+    ) {
+        let quiet = self.quiet_status().is_some();
+        self.telling
+            .take(list, &self.desktop, quiet, workspace, self.reading_notice());
+    }
+
+    /// What the person did on a notice of the log, to ask the daemon on this pass.
+    pub(crate) fn take_told_asks(&self) -> Vec<telling::Invocation> {
+        self.telling.take_asks()
+    }
+
+    /// Where the person asked to go from a notice of the log, with the workspace it is in.
+    pub(crate) fn take_told_places(&self) -> Vec<(String, crate::platform::notice::Place)> {
+        self.telling.take_places()
+    }
+
     /// Dismiss a retained notification, or every one an app grouped: the centre and the panel list
     /// them no more.
     pub(crate) fn dismiss(&self, id: Option<u64>, group: Option<&str>) {
         match (id, group) {
-            (Some(id), _) => self.desktop.dismiss_history(id),
+            (Some(id), _) => {
+                // A notice of the log answers its thing as dismissed, and goes.
+                if self.telling.of(id).is_some() {
+                    self.telling
+                        .dismissed(id, &self.device.borrow(), &self.desktop);
+                    return;
+                }
+                self.desktop.dismiss_history(id);
+            }
             (None, Some(group)) => {
                 let ids: Vec<u64> = self
                     .desktop
@@ -914,6 +985,11 @@ impl SessionNotifications {
 
     /// Run one of a retained notification's own actions.
     pub(crate) fn run_action(&self, id: u64, key: &str) {
+        // A notice of the log runs the thing's own action and answers it by that button.
+        if self.telling.of(id).is_some() {
+            self.telling.acted(id, key, &self.device.borrow());
+            return;
+        }
         self.desktop.invoke_action(id, key);
     }
 
@@ -1656,6 +1732,116 @@ impl crate::Shared {
     /// What the session's own roles tell the person, as the one place that shows it.
     pub(crate) fn telling(&self) -> Rc<dyn Notices> {
         RoleNotices::of(&self.notifications)
+    }
+
+    /// Follow the log of what the person's assistant told them, on the session's one shell
+    /// connection: one held read stands while nothing is new, what it answers goes into the
+    /// centre, and what the person did with those notices goes back to the log.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn follow_telling(&self) {
+        self.answer_telling();
+        #[cfg(target_os = "linux")]
+        self.open_told_places();
+        if self.telling_read.out() {
+            return;
+        }
+        let Some(view) = self.view.as_deref() else {
+            return;
+        };
+        // The log belongs to the person, and the daemon answers it in a workspace they act in:
+        // the one in front, or the first of theirs while none is.
+        let mut workspace = self.active_workspace_id();
+        if workspace.is_empty() {
+            workspace = view
+                .workspaces()
+                .first()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+        }
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&workspace) else {
+            return;
+        };
+        let reading_in = workspace.to_string();
+        let after = self.notifications.borrow().telling_after();
+        let asking = tilo_person_services::person_telling::ToldAction::List {
+            after: Some(after),
+            wait_ms: Some(TELLING_WAIT_MS),
+            device: Some(self.notifications.borrow().device_name()),
+        };
+        let answer = crate::landing::off_loop(view.ask_in_waiting(
+            workspace,
+            tilo_person_services::person_telling::target(
+                tilo_person_services::person_telling::TOLD,
+                asking.id(),
+            ),
+            asking.arguments(),
+            TELLING_REQUEST_WAIT_MS,
+        ));
+        let notifications = Rc::clone(&self.notifications);
+        let reading = self.telling_read.clone();
+        self.landings.then(answer, move |answer| {
+            reading.end();
+            match answer {
+                Some(Ok(value)) => {
+                    match serde_json::from_value::<tilo_person_services::person_telling::ToldList>(
+                        value,
+                    ) {
+                        Ok(list) => notifications.borrow().take_told(list, &reading_in),
+                        Err(error) => {
+                            tracing::warn!(%error, "what the person was told does not read");
+                        }
+                    }
+                }
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "the person's log of what they were told is not read");
+                }
+                None => {}
+            }
+        });
+        self.telling_read.begin();
+    }
+
+    /// Ask the daemon what the person did on the notices of their log: the thing's own action as
+    /// they chose it, and the answer written into the log.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn answer_telling(&self) {
+        let asks = self.notifications.borrow().take_told_asks();
+        for ask in asks {
+            let Some(view) = self.view.as_deref() else {
+                return;
+            };
+            let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&ask.workspace) else {
+                continue;
+            };
+            let what = ask.what;
+            let answer =
+                crate::landing::off_loop(view.ask_in(workspace, ask.target, ask.arguments));
+            self.landings.then(answer, move |answer| {
+                if let Some(Err(error)) = answer {
+                    tracing::warn!(%error, %what, "what the person answered of a telling was refused");
+                }
+            });
+        }
+    }
+
+    /// Open where the person asked to go from a notice of their log, in the workspace it is in.
+    #[cfg(target_os = "linux")]
+    fn open_told_places(&self) {
+        let places = self.notifications.borrow().take_told_places();
+        if places.is_empty() {
+            return;
+        }
+        let Some(apps) = &self.apps else {
+            return;
+        };
+        for (workspace, place) in places {
+            let open = tilo_desktop_search::InvokeTarget::place(workspace.as_str(), &place);
+            if let Err(error) =
+                crate::search::AppActions::invoke(&**apps, open.remote(), open.arguments)
+            {
+                tracing::warn!(%error, app = %place.app, "what a telling names is not opened");
+            }
+        }
     }
 
     /// Send each kept notification the person handed to an agent ([`SessionNotifications::hand`])

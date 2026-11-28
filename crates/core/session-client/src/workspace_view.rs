@@ -634,6 +634,21 @@ impl WorkspaceView {
             .invoke(Some(workspace.to_string()), request(target, arguments))
     }
 
+    /// [`Self::ask_in`], where the answer may wait on the workspace for `wait_ms`: a read that
+    /// stands until what it follows moves, so a reader asks once while nothing is new.
+    #[must_use]
+    pub fn ask_in_waiting(
+        &self,
+        workspace: WorkspaceId,
+        target: tilo_actions::remote::RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        wait_ms: u64,
+    ) -> ServiceAnswer {
+        let mut request = request(target, arguments);
+        request.wait_ms = Some(u32::try_from(wait_ms).unwrap_or(u32::MAX));
+        self.asks.invoke(Some(workspace.to_string()), request)
+    }
+
     /// Ask the host's own operation `action` (`machine.plan` and the rest) with `arguments`.
     #[must_use]
     pub fn ask_own_host(
