@@ -110,6 +110,25 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     );
     opens_what_the_workspace_runs(&server, &phone);
 
+    // A note made just before the phone stops, with Notes open and the phone in the workspace,
+    // is kept: the stop takes seconds, and the note is on the server once the phone is back.
+    // Notes opens again on the note it shows last.
+    let mut window = server::notes_opened(&phone, &server.workspace);
+    server::press("Notes offers New note", &mut window, "new_note");
+    let stopping = std::time::Instant::now();
+    phone.stop().expect("the phone's daemon stops");
+    let took = stopping.elapsed();
+    assert!(took.as_secs() < 3, "the phone took {took:?} to stop");
+    drop(window);
+    let phone = tilo_runtime::in_process::Device::start(&support::profile()).unwrap();
+    support::until(
+        "the note made before the stop is on the server",
+        || match notes_on_server(&server)? {
+            2.. => Ok(()),
+            kept => Err(format!("the server keeps {kept} notes")),
+        },
+    );
+
     // Started again while the server is away, the phone opens Notes on the copy it keeps, not
     // after the 30 s a wait on the server costs.
     phone.stop().expect("the phone's daemon stops");
@@ -143,8 +162,6 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
 
     // The note is the workspace's: the person's server, which keeps it for their other devices,
     // holds it.
-    let person = hex::encode(server.person.verifying_key().to_bytes());
-    let packages = server::notes_packages();
     let mut said = Vec::new();
     support::until(
         "the note made on the phone is on the person's server",
@@ -153,32 +170,37 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
             if let Some(view) = window.view_mut() {
                 said.extend(view.take_notices());
             }
-            let who =
-                tilolang_workspace::records::member(tilo_actions::MemberId::person(person.clone()));
-            let changes = server
-                .runtime
-                .block_on(tilolang_workspace::records::with_tl_record(
-                    &server.workspaces(),
-                    &server.workspace,
-                    &packages,
-                    (who, &person),
-                    |opened| opened.changes(),
-                ))?;
-            // A note is made in the notebook: a resource created under the notebook's root.
-            let made = changes.iter().any(|change| {
-                change["happened"] == "created"
-                    && change["resource"].as_str().is_some_and(|resource| {
-                        resource.contains(":root-") && resource.contains('/')
-                    })
-            });
-            if made {
-                Ok(())
-            } else {
-                Err(format!(
-                    "the window said {said:?}; the server keeps {}",
-                    serde_json::Value::Array(changes)
-                ))
+            match notes_on_server(server)? {
+                0 => Err(format!(
+                    "the window said {said:?}; the server keeps no note"
+                )),
+                _ => Ok(()),
             }
         },
     );
+}
+
+/// How many notes the person's server keeps in the workspace: resources created under the
+/// notebook's root.
+fn notes_on_server(server: &Server) -> Result<usize, String> {
+    let person = hex::encode(server.person.verifying_key().to_bytes());
+    let who = tilolang_workspace::records::member(tilo_actions::MemberId::person(person.clone()));
+    let changes = server
+        .runtime
+        .block_on(tilolang_workspace::records::with_tl_record(
+            &server.workspaces(),
+            &server.workspace,
+            &server::notes_packages(),
+            (who, &person),
+            |opened| opened.changes(),
+        ))?;
+    Ok(changes
+        .iter()
+        .filter(|change| {
+            change["happened"] == "created"
+                && change["resource"]
+                    .as_str()
+                    .is_some_and(|resource| resource.contains(":root-") && resource.contains('/'))
+        })
+        .count())
 }

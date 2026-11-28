@@ -34,10 +34,6 @@ const OPENING_POLL: Duration = Duration::from_millis(100);
 const RELEASING: Duration = Duration::from_secs(3);
 /// How often a daemon starting looks whether the one leaving let go of the lock.
 const POLL: Duration = Duration::from_millis(50);
-/// How long a holder's process waits for its runtime's threads once it ended. A step that walks
-/// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
-/// behind rather than hanging until it finishes.
-const SHUTDOWN: Duration = Duration::from_secs(2);
 /// How long a stop waits for one folder to unmount: one whose mount thread is inside a step on
 /// the tree is left behind, and its mount cleared when the next holder shows it.
 pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
@@ -220,9 +216,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
     // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
     // were kept, above.
-    ending_step(None, "the person's part's runtime", SHUTDOWN, move || {
-        runtime.shutdown_timeout(SHUTDOWN);
-    });
+    runtime.shutdown_background();
     drop(watching);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open. The next
@@ -243,7 +237,7 @@ pub(crate) fn hold(daemon: &Arc<Daemon>, home: PathBuf, stop: &Stop) -> Result<s
             {
                 tracing::warn!("the workspaces' files did not close in time");
             }
-            releasing.shutdown_timeout(SHUTDOWN);
+            releasing.shutdown_background();
         });
     }
     *NOT_IN
@@ -322,11 +316,6 @@ const ENDING_POLL: Duration = Duration::from_millis(100);
 
 /// What a step of the person's part ending is given past its own bound before it is left behind.
 const ENDING_SLACK: Duration = Duration::from_secs(1);
-
-/// How long a daemon between its person's parts takes to end when it is told to stop: there is
-/// nothing to unmount or keep there, and the start that follows may wait on something that
-/// never answers.
-const BETWEEN_PARTS: Duration = Duration::from_secs(2);
 
 /// What tells a daemon running in this process to stop ([`crate::daemon::Running::stop`]): heard
 /// by its holder's loop, and by its wait for a person to claim the device.
@@ -774,14 +763,12 @@ impl Drop for Watching {
 }
 
 /// How long a daemon told to stop takes at most to end: every wait of its stop together (the
-/// folders and trees, the workspace service ending, the session closing, the runtime's threads,
-/// the stores closing). Less than the user service gives a stop, so the service never has to
+/// folders and trees, the workspace service ending, the session closing, the stores
+/// closing). Less than the user service gives a stop, so the service never has to
 /// kill it.
 pub(crate) const STOPPED_WITHIN: Duration = STOPPING
     .saturating_add(super::presence::CLOSING)
-    .saturating_add(SHUTDOWN)
-    .saturating_add(RELEASING)
-    .saturating_add(SHUTDOWN);
+    .saturating_add(RELEASING);
 
 /// What ends this daemon from outside: the user service stopping it, or a person's Ctrl-C,
 /// heard from its first moment and through its whole life.
@@ -821,9 +808,6 @@ pub(crate) fn hear_stops(stop: Stop, within: Duration, native: PathBuf) -> Resul
                 listen_for_stops(signalled);
                 if let Some(name) = heard.recv().await {
                     stop.told_by(name);
-                    if !stop.part_serves() {
-                        tokio::time::sleep(BETWEEN_PARTS).await;
-                    }
                     if stop.part_serves() {
                         tokio::time::sleep(within).await;
                     }
@@ -1388,34 +1372,6 @@ mod tests {
             took < Duration::from_secs(30),
             "the stopped child ended only after {} s",
             took.as_secs()
-        );
-    }
-
-    /// A holder whose workers are both inside a step that walks a whole folder tree still ends
-    /// when it is stopped: the steps are left behind rather than waited for, which is what a
-    /// stop (the user service's, or `tilo folders stop`) hangs on otherwise.
-    #[test]
-    fn a_stop_does_not_wait_for_a_worker_inside_a_step() {
-        let runtime = bridge_runtime().unwrap();
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        for _ in 0..BRIDGE_THREADS {
-            let done = std::sync::Arc::clone(&done);
-            runtime.spawn(async move {
-                // A step on a folder's tree: it does not yield until it is done.
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::hint::spin_loop();
-                }
-            });
-        }
-        std::thread::sleep(Duration::from_millis(200));
-        let started = Instant::now();
-        runtime.shutdown_timeout(SHUTDOWN);
-        let waited = started.elapsed();
-        done.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            waited < SHUTDOWN.saturating_mul(2),
-            "the runtime waited {} ms for a step to end",
-            waited.as_millis()
         );
     }
 

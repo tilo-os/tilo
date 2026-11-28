@@ -28,9 +28,9 @@ use super::workspaces::ServiceWorkspaces;
 const ENTERING: Duration = Duration::from_secs(25);
 /// The longest the daemon waits, as it goes, for its session to close: the host then sees the
 /// connection end at once, and takes the agent down, rather than after the connection's silence
-/// ends. A session's endpoint gives its packet relay up to three seconds to hear it go, and a
-/// session entered anew under the same key waits that out.
-pub(crate) const CLOSING: Duration = Duration::from_secs(5);
+/// ends. A session that has not closed by then is left to the endpoint closing after it, which
+/// tells the host as well.
+pub(crate) const CLOSING: Duration = Duration::from_secs(1);
 
 /// This device in the workspace its login names.
 pub(crate) struct Session {
