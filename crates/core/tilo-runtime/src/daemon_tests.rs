@@ -3518,6 +3518,17 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
     native.seats.follow_launches(std::sync::Arc::new(|pid| {
         (pid == APP).then(|| ("so.tilo.notes".to_owned(), "a-workspace".to_owned()))
     }));
+    // The app's connection is served as the app: the seats answer the link it asks, which is no
+    // session's, and the device's own actions answer what it asks of them.
+    let app_answers = std::sync::Arc::clone(&native);
+    native.serve_apps(Box::new(move |stream, slot, seated, _app| {
+        if super::asks_the_seats(&stream) {
+            super::serve_a_seat(&stream, &seated);
+            Ok(())
+        } else {
+            app_answers.device_only(stream, slot, seated)
+        }
+    }));
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
