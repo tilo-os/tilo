@@ -492,3 +492,324 @@ fn with_kind(node: &UiNode, kind: &str, into: &mut Vec<String>) {
         with_kind(child, kind, into);
     }
 }
+
+/// The nodes of `kind`, in order.
+fn of_kind<'a>(node: &'a UiNode, kind: &str, into: &mut Vec<&'a UiNode>) {
+    if node.kind == kind {
+        into.push(node);
+    }
+    for child in &node.children {
+        of_kind(child, kind, into);
+    }
+}
+
+/// The first place of the window's list called `label`, as the list drew it.
+fn place<'a>(node: &'a UiNode, label: &str) -> Option<&'a UiNode> {
+    let mut places = Vec::new();
+    of_kind(node, "ui.NavItem", &mut places);
+    places
+        .into_iter()
+        .find(|place| place.props.get("label") == Some(&Value::text(label)))
+}
+
+/// Where `word` stands in what the window shows.
+fn at(words: &[String], word: &str) -> usize {
+    words
+        .iter()
+        .position(|text| text == word)
+        .unwrap_or_else(|| panic!("{word} shows: {words:?}"))
+}
+
+/// A computer whose zones come over in the order firewalld keeps them, which the list does not:
+/// work before public, and work the active one.
+const WORK_FIRST: &str = r#"{
+  "serving": true,
+  "read_error": null,
+  "problem": null,
+  "enabled": true,
+  "panic_mode": false,
+  "default_zone": "work",
+  "zones": [
+    {
+      "kind": "work",
+      "target": "default",
+      "interfaces": [],
+      "services": ["ipp"],
+      "rules": [],
+      "masquerade": false
+    },
+    {
+      "kind": "public",
+      "target": "default",
+      "interfaces": ["wlan0"],
+      "services": ["ssh"],
+      "rules": [],
+      "masquerade": false
+    }
+  ],
+  "blocked": [],
+  "blocked_total": 0,
+  "blocked_window_minutes": 60,
+  "blocked_read_at_ms": 0,
+  "blocked_error": null,
+  "blocked_note": null,
+  "pending": []
+}"#;
+
+#[test]
+fn the_zones_read_least_trusted_first_and_the_active_one_says_so() {
+    let app = installed(WORK_FIRST);
+    let window = app.window();
+    let mut places = Vec::new();
+    of_kind(window.tree(), "ui.NavItem", &mut places);
+    let labels: Vec<Value> = places
+        .iter()
+        .filter_map(|place| place.props.get("label").cloned())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![Value::text("Public"), Value::text("Work")],
+        "the public zone stands before work whatever order firewalld hands them over in"
+    );
+    let work = place(window.tree(), "Work").expect("the work place");
+    assert_eq!(
+        work.props.get("secondary"),
+        Some(&Value::text("Active")),
+        "the active zone's row says so: {:?}",
+        work.props
+    );
+    let public = place(window.tree(), "Public").expect("the public place");
+    assert_ne!(
+        public.props.get("secondary"),
+        Some(&Value::text("Active")),
+        "a zone that is not active does not: {:?}",
+        public.props
+    );
+}
+
+#[test]
+fn panic_mode_and_a_stopped_firewall_say_what_they_mean() {
+    let guarded = WORK_FIRST
+        .replace("\"enabled\": true", "\"enabled\": false")
+        .replace("\"panic_mode\": false", "\"panic_mode\": true");
+    let app = installed(&guarded);
+    let window = app.window();
+    let words = shown(&window);
+    for wanted in [
+        "Panic mode is on",
+        "All incoming and outgoing network traffic is dropped.",
+        "The firewall is stopped",
+        "No rules are enforced until you turn it on.",
+    ] {
+        assert!(has(&window, wanted), "{wanted} shows: {words:?}");
+    }
+}
+
+#[test]
+fn the_rules_are_one_list_sorted_by_any_of_its_columns() {
+    let app = installed(READING);
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        at(&words, "Allow") < at(&words, "Deny"),
+        "rules that allow come before ones that deny: {words:?}"
+    );
+    let mut strips = Vec::new();
+    of_kind(window.tree(), "ui.ToggleGroup", &mut strips);
+    let sorting = strips
+        .into_iter()
+        .find(|strip| strip.props.get("caption") == Some(&Value::text("Sort by")))
+        .unwrap_or_else(|| panic!("the rule list's sort control: {words:?}"));
+    // Sorting by the rule's protocol, then turning the order around: HTTPS (TCP) before
+    // Port 3389 (TCP) reads the same, so the proof is the action list turned around below.
+    window
+        .fire_with(&sorting.key, "change", Some(&Value::Int(0)))
+        .expect("the sort is chosen");
+    let mut toggles = Vec::new();
+    of_kind(window.tree(), "ui.Toggle", &mut toggles);
+    let descending = toggles
+        .into_iter()
+        .find(|toggle| toggle.props.get("label") == Some(&Value::text("Descending")))
+        .unwrap_or_else(|| panic!("the sort's direction: {:?}", shown(&window)));
+    window
+        .fire_with(&descending.key, "check", Some(&Value::Bool(true)))
+        .expect("the direction is turned");
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        at(&words, "Deny") < at(&words, "Allow"),
+        "largest first puts the rules that deny first: {words:?}"
+    );
+}
+
+#[test]
+fn choosing_a_zone_in_the_list_opens_its_page() {
+    let app = installed(READING);
+    let window = app.window();
+    let work = place(window.tree(), "Work").expect("the work place");
+    window
+        .fire(&work.key, "select")
+        .expect("the place is chosen");
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        has(
+            &window,
+            "For work networks where you mostly trust the other computers."
+        ),
+        "the page says what work is for: {words:?}"
+    );
+    assert!(
+        has(&window, "Make active zone"),
+        "work is not the active zone, so the page offers to make it one: {words:?}"
+    );
+    assert!(
+        !has(&window, "wlan0, eth0"),
+        "the public zone's details are not shown on work's page: {words:?}"
+    );
+}
+
+/// The rule in `zone` that matches `port`, by its id.
+fn rule_of(app: &Pane, zone: &str, port: &str) -> String {
+    let zones = app
+        .host
+        .runtime()
+        .read(app.root(), "zones")
+        .expect("the zones read");
+    let Value::List(zones) = zones else {
+        panic!("zones are a list: {zones:?}")
+    };
+    let held = zones
+        .iter()
+        .find_map(|entry| {
+            let Value::Ref(entry) = entry else {
+                return None;
+            };
+            let held = std::rc::Rc::unwrap_or_clone(entry.target.clone());
+            let kind = app.host.runtime().read(&held, "kind").expect("kind");
+            (kind == Value::text(zone)).then_some(held)
+        })
+        .unwrap_or_else(|| panic!("the {zone} zone"));
+    let rules = app
+        .host
+        .runtime()
+        .read(&held, "rules")
+        .expect("the rules read");
+    let Value::List(rules) = rules else {
+        panic!("rules are a list: {rules:?}")
+    };
+    rules
+        .iter()
+        .find_map(|rule| {
+            let Value::Ref(rule) = rule else { return None };
+            let rule = std::rc::Rc::unwrap_or_clone(rule.target.clone());
+            let matched = app.host.runtime().read(&rule, "port").expect("port");
+            (matched == Value::text(port)).then_some(rule.id_string())
+        })
+        .unwrap_or_else(|| panic!("the rule for port {port}"))
+}
+
+#[test]
+fn a_switch_round_trips_through_the_configuration_to_the_device() {
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
+        .unwrap();
+    let rule = rule_of(&app, "public", "3389");
+    app.try_call(
+        "toggle_rule",
+        vec![
+            app.root_value(),
+            Value::text("public"),
+            Value::text(rule),
+            Value::Bool(true),
+        ],
+    )
+    .expect("the rule is turned on");
+    let asked = app.sent.asked("apply");
+    let config = match &asked[asked.len() - 1] {
+        Value::Text(text) => text.clone(),
+        other => panic!("the configuration is JSON text, not {other:?}"),
+    };
+    assert!(
+        config.contains(r#"{"service":"","port":"3389","proto":"tcp","verdict":"deny","source":"","enabled":true}"#),
+        "the switched rule reaches the device: {config}"
+    );
+    app.try_call(
+        "allow_service",
+        vec![
+            app.root_value(),
+            Value::text("public"),
+            Value::text("ssh"),
+            Value::Bool(false),
+        ],
+    )
+    .expect("ssh stops being allowed");
+    let asked = app.sent.last_asked("apply");
+    let config = match &asked[asked.len() - 1] {
+        Value::Text(text) => text.clone(),
+        other => panic!("the configuration is JSON text, not {other:?}"),
+    };
+    assert!(
+        !config.contains(r#""services":["mdns","ssh"]"#),
+        "the service the person stopped allowing is no longer let through: {config}"
+    );
+}
+
+#[test]
+fn the_firewalls_controls_are_in_the_window_header() {
+    let app = installed(READING);
+    let window = app.window();
+    let words = shown(&window);
+    for wanted in ["Stop", "Panic mode", "Apply", "Add rule", "Read firewalld"] {
+        assert!(has(&window, wanted), "{wanted} is offered: {words:?}");
+    }
+}
+
+#[test]
+fn the_window_says_what_it_did_with_a_rule_and_the_active_zone() {
+    let app = installed(READING);
+    app.try_call("import_device", vec![app.root_value()])
+        .unwrap();
+    let _ = app.host.runtime().take_said();
+    app.try_call("make_active", vec![app.root_value(), Value::text("work")])
+        .expect("work becomes the active zone");
+    assert_eq!(
+        app.host
+            .runtime()
+            .read(app.root(), "default_zone")
+            .expect("the active zone"),
+        Value::text("work"),
+        "the configuration names work as the active zone"
+    );
+    let said = app.host.runtime().take_said();
+    assert_eq!(
+        said.iter()
+            .map(|said| said.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Made Work the active zone"],
+        "{said:?}"
+    );
+    app.try_call(
+        "add_rule",
+        vec![
+            app.root_value(),
+            Value::text("work"),
+            Value::text(""),
+            Value::Bool(true),
+            Value::text("HTTPS"),
+            Value::text(""),
+            Value::text("tcp"),
+            Value::text("allow"),
+            Value::text(""),
+        ],
+    )
+    .expect("a rule is added");
+    let said = app.host.runtime().take_said();
+    assert_eq!(
+        said.iter()
+            .map(|said| said.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Added a rule for HTTPS"],
+        "{said:?}"
+    );
+}

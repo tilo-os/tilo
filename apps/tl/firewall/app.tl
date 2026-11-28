@@ -2,7 +2,7 @@ app so.tilo.firewall "Firewall" (
     icon: .shield,
     category: .system,
     tagline: "The firewalld zones and rules this computer enforces, shared with the workspace",
-    keywords: ["firewall", "firewalld", "network", "rules", "security", "ports", "zones", "sicherheit", "netzwerk"],
+    keywords: ["firewall", "firewalld", "network", "rules", "security", "ports", "zones", "nftables", "ufw", "gufw", "protection", "filter", "block", "sicherheit", "netzwerk", "brandmauer", "schutz"],
     splash_budget: 250,
 )
 
@@ -393,6 +393,51 @@ fn ipv4(text: Text) -> Bool {
     parts.len() == 4 and parts.all(part -> octet(part))
 }
 
+/// How much a zone kind is trusted: firewalld's own order, least trusted first. The list reads
+/// in it whatever order firewalld hands the zones over in.
+fn zone_rank(kind: Text) -> Int {
+    if kind == "drop" {
+        0
+    } else if kind == "block" {
+        1
+    } else if kind == "public" {
+        2
+    } else if kind == "external" {
+        3
+    } else if kind == "dmz" {
+        4
+    } else if kind == "work" {
+        5
+    } else if kind == "home" { 6 } else if kind == "internal" { 7 } else { 8 }
+}
+
+/// The zones in the order a person reads them: least trusted first, the active one marked where
+/// it stands.
+fn zones_ordered(f: Firewall) -> List<Zone> {
+    f.zones.sort_by(zone -> zone_rank(zone.kind))
+}
+
+/// What a rule's sort key is, for the column `sort_by` names: what the row shows in it.
+fn rule_sort_key(rule: Rule, sort_by: Text) -> Text {
+    if sort_by == "protocol" {
+        rule.proto.upper()
+    } else if sort_by == "source" {
+        if rule.source.trim() == "" { "Anywhere" } else { rule.source.trim() }
+    } else if sort_by == "rule" {
+        matcher(rule)
+    } else if rule.verdict == "allow" { "0" } else { "1" }
+}
+
+/// The zone's rules as the person sorted them: by the rule they match, its protocol, where it
+/// applies from, or what it does (allowing before denying), ascending unless they said otherwise.
+fn rules_ordered(zone: Zone, sort_by: Text, descending: Bool) -> List<Rule> {
+    if descending {
+        zone.rules.map(rule -> rule).sort_by(rule -> rule_sort_key(rule, sort_by), desc)
+    } else {
+        zone.rules.map(rule -> rule).sort_by(rule -> rule_sort_key(rule, sort_by))
+    }
+}
+
 /// The zone the window shows: the chosen one, else the active one, else the first.
 fn zone_shown(f: Firewall, chosen: Text) -> Option<Zone> {
     if let found = f.zones.find(zone -> zone.kind == chosen) {
@@ -568,6 +613,7 @@ action import_device(f: Firewall) (icon: .rotate_cw, label: "Read this device's 
             )
         }
     }
+    notice("Connected to firewalld", kind: .success)
 }
 
 /// Starts firewalld.
@@ -605,6 +651,7 @@ action exit_panic(f: Firewall) (icon: .shield, label: "Exit panic mode") {
 action make_active(f: Firewall, zone: Text) (icon: .circle_check, label: "Make active zone") {
     f.default_zone = zone
     device.apply(device.firewall, config: payload(f))
+    notice("Made {zone_title(zone)} the active zone", kind: .success)
 }
 
 /// Turns a rule on or off in a zone.
@@ -651,17 +698,19 @@ action add_rule(
     if let held = f.zones.find(x -> x.kind == zone) {
         let matched_service = if as_service { service_id_of(service) } else { "" }
         let matched_port = if as_service { "" } else { port.trim() }
+        let title = rule_title_of(matched_service, matched_port)
         if let found = rule_at(held, editing) {
-            found.title = rule_title_of(matched_service, matched_port)
+            found.title = title
             found.service = matched_service
             found.port = matched_port
             found.proto = proto
             found.verdict = verdict
             found.source = source.trim()
+            notice("Updated the rule for {title}", kind: .success)
         } else {
             held.rules.insert(
                 Rule(
-                    title: rule_title_of(matched_service, matched_port),
+                    title: title,
                     service: matched_service,
                     port: matched_port,
                     proto: proto,
@@ -669,6 +718,7 @@ action add_rule(
                     source: source.trim(),
                 ),
             )
+            notice("Added a rule for {title}", kind: .success)
         }
         device.apply(device.firewall, config: payload(f))
     }
@@ -683,6 +733,7 @@ destructive action delete_rule(f: Firewall, zone: Text, rule: Text) (
         if let found = rule_at(held, rule) {
             held.rules.remove(found)
             device.apply(device.firewall, config: payload(f))
+            notice("Deleted a rule from the {zone_title(zone)} zone", kind: .info)
         }
     }
 }
@@ -710,6 +761,9 @@ view window(f: Firewall) {
     state draft_verdict: Text = "allow"
     state draft_source: Text = ""
     state pending_switch: Text = ""
+    // Which of a rule's own columns the list is sorted by, and whether the order is descending.
+    state sort_by: Text = "action"
+    state descending: Bool = false
     let now = device.firewall
     let shown_kind = if let zone = zone_shown(f, chosen) { zone.kind } else { "" }
     let title = if shown_kind == "" { "Firewall" } else { zone_title(shown_kind) }
@@ -718,24 +772,21 @@ view window(f: Firewall) {
             stack {
                 ui.NavList(selected: shown_kind) {
                     ui.NavSection("Zones") {
-                        for zone in f.zones {
+                        for zone in zones_ordered(f) {
                             ui.NavItem(
                                 zone.kind,
                                 zone_title(zone.kind),
                                 icon: .shield,
                                 count: zone.rules.len(),
+                                secondary: if zone.kind == f.default_zone {
+                                    .some("Active")
+                                } else { .none },
                                 item: zone,
                             ) {
                                 on select: set(chosen, zone.kind)
                             }
                         }
                     }
-                }
-                if now.panic_mode {
-                    ui.StatusLine("Panic mode is on", status: .error)
-                }
-                if not f.enabled and not f.zones.is_empty() {
-                    ui.StatusLine("The firewall is stopped", status: .warning)
                 }
             }
         }
@@ -795,6 +846,22 @@ view window(f: Firewall) {
                 and not device_holds(f, now) {
                 every 2s: apply_stored(f)
             }
+            if f.panic_mode {
+                ui.Banner(
+                    "Panic mode is on",
+                    message: "All incoming and outgoing network traffic is dropped.",
+                    kind: .error,
+                    icon: .shield_alert,
+                )
+            }
+            if not f.enabled and not f.zones.is_empty() {
+                ui.Banner(
+                    "The firewall is stopped",
+                    message: "No rules are enforced until you turn it on.",
+                    kind: .warning,
+                    icon: .power,
+                )
+            }
             if let problem = now.problem {
                 ui.Banner(problem, kind: .error, icon: .triangle_alert)
             }
@@ -813,6 +880,8 @@ view window(f: Firewall) {
                     draft_proto,
                     draft_verdict,
                     draft_source,
+                    sort_by,
+                    descending,
                 )
             }
         }
@@ -863,6 +932,8 @@ view zone_page(
     draft_proto: State<Text>,
     draft_verdict: State<Text>,
     draft_source: State<Text>,
+    sort_by: State<Text>,
+    descending: State<Bool>,
 ) {
     let allow = rule_count(zone, true)
     let deny = rule_count(zone, false)
@@ -903,6 +974,8 @@ view zone_page(
                 draft_verdict,
                 draft_source,
                 adding,
+                sort_by,
+                descending,
             )
         }
         ui.Section("Services") {
@@ -920,7 +993,8 @@ view zone_page(
     }
 }
 
-/// The zone's rules, each with its switch and its verbs.
+/// The zone's rules, each with its switch and its verbs, in the order the person chose by any of
+/// the columns it shows.
 view rules_page(
     f: Firewall,
     zone: Zone,
@@ -932,12 +1006,26 @@ view rules_page(
     draft_verdict: State<Text>,
     draft_source: State<Text>,
     adding: State<Bool>,
+    sort_by: State<Text>,
+    descending: State<Bool>,
 ) {
     if zone.rules.is_empty() {
         ui.Text("This zone has no rules yet.", role: .body, secondary: true)
     } else {
         stack(gap: .related) {
-            for rule in zone.rules {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.ToggleGroup(selected: sort_index(sort_by), caption: "Sort by") {
+                    ui.Segment("Action")
+                    ui.Segment("Rule")
+                    ui.Segment("Protocol")
+                    ui.Segment("Source")
+                    on change(index): set(sort_by, sort_name(index))
+                }
+                ui.Toggle(shown: descending, label: "Descending") {
+                    on check(on): set(descending, on)
+                }
+            }
+            for rule in rules_ordered(zone, sort_by, descending) {
                 let source = if rule.source.trim() == "" { "Anywhere" } else { rule.source.trim() }
                 let name = matcher(rule)
                 let protocol = rule.proto.upper()
@@ -978,6 +1066,20 @@ view rules_page(
             }
         }
     }
+}
+
+/// Where the sort control stands for `sort_by`: the index of its segment.
+fn sort_index(sort_by: Text) -> Int {
+    if sort_by == "rule" {
+        1
+    } else if sort_by == "protocol" { 2 } else if sort_by == "source" { 3 } else { 0 }
+}
+
+/// The column the segment at `index` sorts by.
+fn sort_name(index: Int) -> Text {
+    if index == 1 {
+        "rule"
+    } else if index == 2 { "protocol" } else if index == 3 { "source" } else { "action" }
 }
 
 /// The catalog's services, each with a switch that lets it through the zone.

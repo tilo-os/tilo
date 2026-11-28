@@ -165,6 +165,7 @@ d-dguxp5s2 = Beschreibung
 
 d-rmbzih5s = Die firewalld dieses Geräts lesen
     .doc = Übernimmt, was die firewalld dieses Geräts hält: die Zonen, ihre Dienste und Regeln und die Schalter.
+    .w-connected-to-firewalld = Mit firewalld verbunden
 
 d-wvp77mci = Firewall starten
     .doc = Startet firewalld.
@@ -182,6 +183,7 @@ d-t5pt7a72 = Panikmodus ausschalten
 
 d-fas2qr4c = Zur aktiven Zone machen
     .doc = Macht eine Zone zur aktiven.
+    .w-made-the-active-zone = { $zone_title } zur aktiven Zone gemacht
 
 d-fas2qr4c-zone = Zone
 
@@ -208,6 +210,8 @@ d-ipsf2opk = Regel hinzufügen
     .w-choose-a-service = Wähle einen Dienst
     .w-that-is-not-a-port-or = Das ist kein Port und kein Portbereich, den diese Firewall annimmt
     .w-that-is-not-an-ipv4-address = Das ist keine IPv4-Adresse und kein Netz
+    .w-updated-the-rule-for = Die Regel für { $title } aktualisiert
+    .w-added-a-rule-for = Eine Regel für { $title } hinzugefügt
 
 d-ipsf2opk-zone = Zone
 
@@ -227,6 +231,7 @@ d-ipsf2opk-source = Quelle
 
 d-qf5szroz = Regel löschen
     .doc = Löscht eine Regel aus einer Zone.
+    .w-deleted-a-rule-from-the-zone = Eine Regel aus der Zone { $zone_title } gelöscht
 
 d-qf5szroz-zone = Zone
 
@@ -301,8 +306,11 @@ d-vxibtymz = Regel hinzufügen~present
 d-okktoj56 = Fenster
     .w-firewall = Firewall
     .w-zones = Zonen
+    .w-active = Aktiv
     .w-panic-mode-is-on = Der Panikmodus ist an
+    .w-all-incoming-and-outgoing-network-traffic = Der gesamte ein- und ausgehende Netzwerkverkehr wird verworfen.
     .w-the-firewall-is-stopped = Die Firewall ist gestoppt
+    .w-no-rules-are-enforced-until-you = Es werden keine Regeln durchgesetzt, bis du die Firewall einschaltest.
     .w-stop = Stoppen
     .w-start = Starten
     .w-leave-panic-mode = Panikmodus verlassen
@@ -325,6 +333,9 @@ d-okktoj56 = Fenster
     .w-off = Aus
     .w-rules = Regeln
     .w-this-zone-has-no-rules-yet = Diese Zone hat noch keine Regeln.
+    .w-sort-by = Sortieren nach
+    .w-rule = Regel
+    .w-descending = Absteigend
     .w-allow = Erlauben
     .w-deny = Ablehnen
     .w-edit = { $name } bearbeiten
