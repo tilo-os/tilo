@@ -389,8 +389,8 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
     let mut changes = publishers.changes.subscribe();
     // This ask's launch or start of the app, kept until it is answered, and whether it ran.
     let (mut ours, mut ran) = (None, false);
-    // The start of the instance with no window asked for, until it ends.
-    let mut starting: Option<WindowlessStart> = None;
+    // The start of the app with no window asked for, until it ends, and whether one ended.
+    let (mut starting, mut ended): (Option<WindowlessStart>, bool) = (None, false);
     loop {
         host.check_origin(ask)?;
         if completer.is_abandoned() {
@@ -477,8 +477,14 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
             }
             () = &mut deadline => return Err(expired()),
             () = &mut abandoned => return Err(stopped_waiting()),
-            // A start that failed is the action's answer now, with why.
-            failed = start_failed(&mut starting, app_id) => return Err(failed),
+            // A start that ended before the app took the call (its workspace moved here as it
+            // started) is made once more, its ownership read again; a second is the answer.
+            failed = start_failed(&mut starting, app_id) => {
+                if std::mem::replace(&mut ended, true) {
+                    return Err(failed);
+                }
+                ran = false;
+            }
         }
     }
 }

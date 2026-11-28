@@ -2276,64 +2276,67 @@ mod tests {
             assert_eq!(window.try_recv().expect("delivered").action, "new-window");
         }
 
-        phase a_windowless_instance_that_failed_refuses_with_its_reason;
-        // The host's failure to run an app without a window is the action's
-        // refusal, with its reason, and launches no window in its place.
+        phase a_windowless_start_that_fails_refuses_at_once_with_its_reason;
+        // The host's failure to run an app without a window, as it is asked or once a start it
+        // made again ended too, is the action's refusal with why, rather than a wait for the
+        // delivery deadline, and launches no window in its place.
         {
-            let (state, workspace) = broker(&workspace());
-            let launches = app_comes_up_later(&state);
-            state
-                .launchable
-                .replace_windowless_for_test(Arc::new(|_, _| Err("no broker".into())));
-            let owner = Caller::local_person("owner").in_workspace(&workspace);
-            let target = tilo_actions::remote::application_action_target(
-                &workspace,
-                APP,
-                "files.app",
-                "new-window",
-            );
-            match invoke(&state, &owner, &target.provider, "new-window", None) {
-                Err(ActionCallError::Unavailable { reason }) => {
-                    assert!(
-                        reason.contains("no broker") && reason.contains(APP),
-                        "{reason}"
-                    );
+            let failing: [(WindowlessStarter, &str); 2] = [
+                (Arc::new(|_, _| Err("no broker".into())), "no broker"),
+                (
+                    Arc::new(|_, _| Ok(Some(started(Err("the record did not open".into()))))),
+                    "the record did not open",
+                ),
+            ];
+            for (starts, why) in failing {
+                let (state, workspace) = broker(&workspace());
+                let launches = app_comes_up_later(&state);
+                state.launchable.replace_windowless_for_test(starts);
+                let owner = Caller::local_person("owner").in_workspace(&workspace);
+                let target = tilo_actions::remote::application_action_target(
+                    &workspace,
+                    APP,
+                    "files.app",
+                    "new-window",
+                );
+                match invoke(&state, &owner, &target.provider, "new-window", None) {
+                    Err(ActionCallError::Unavailable { reason }) => {
+                        assert!(reason.contains(why) && reason.contains(APP), "{reason}");
+                    }
+                    other => panic!("expected the start's failure, got {other:?}"),
                 }
-                other => panic!("expected the failure's reason, got {other:?}"),
+                assert!(launches.lock().expect("launches").is_empty(), "no window");
             }
-            assert!(
-                launches.lock().expect("launches").is_empty(),
-                "no window instead"
-            );
         }
 
-        phase a_windowless_start_that_fails_refuses_at_once_with_its_reason;
-        // An instance with no window that fails to start after it was asked
-        // for answers the action at once, with why, rather than leaving it to
-        // wait out the delivery deadline for a publisher that never comes.
+        phase a_start_that_ends_as_the_workspace_moves_here_starts_the_app_again;
+        // The workspace moved here while the app started, ending its run before it took the
+        // call: the app starts again and takes it, long before the delivery deadline.
         {
             let (state, workspace) = broker(&workspace());
-            let launches = app_comes_up_later(&state);
-            state
-                .launchable
-                .replace_windowless_for_test(Arc::new(|_, _| {
-                    Ok(Some(started(Err("the record did not open".into()))))
-                }));
+            let (mut windowless, asked) = app_starts_windowless(&state, 9);
+            let comes_up = state.launchable.windowless().expect("installed").0;
+            let moved = std::sync::atomic::AtomicBool::new(false);
+            state.launchable.replace_windowless_for_test(Arc::new(move |app, at| {
+                if moved.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    return comes_up(app, at);
+                }
+                Ok(Some(started(Err("it ended before it took a call".into()))))
+            }));
             let owner = Caller::local_person("owner").in_workspace(&workspace);
-            let target = tilo_actions::remote::application_action_target(
+            let target = tilo_actions::remote::application_resource_target(
                 &workspace,
                 APP,
+                &collab_types::person_document_id("files.places"),
                 "files.app",
                 "new-window",
             );
-            match invoke(&state, &owner, &target.provider, "new-window", None) {
-                Err(ActionCallError::Unavailable { reason }) => assert!(
-                    reason.contains("the record did not open") && reason.contains(APP),
-                    "{reason}"
-                ),
-                other => panic!("expected the start's failure, got {other:?}"),
-            }
-            assert!(launches.lock().expect("launches").is_empty());
+            let began = std::time::Instant::now();
+            invoke(&state, &owner, &target.provider, "new-window", None).expect("taken");
+            let took = began.elapsed();
+            assert!(took < DELIVERY_TIMEOUT / 20, "answered in {took:?}");
+            assert_eq!(windowless.try_recv().expect("delivered").action, "new-window");
+            assert_eq!(asked.lock().expect("asked").len(), 1, "started once more");
         }
     }
 

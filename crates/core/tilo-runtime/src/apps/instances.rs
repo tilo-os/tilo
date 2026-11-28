@@ -32,7 +32,7 @@ use tilo_app_host::services::{AuthenticatedApplicationLaunch, WindowlessStart};
 use tilo_lock::MutexRecover as _;
 
 use super::OpenedView;
-use crate::device::processes::{Instance, Launcher, Processes};
+use crate::device::processes::{Ends, Instance, Launcher, Processes};
 
 /// What an instance shows.
 pub(super) enum Shows {
@@ -100,9 +100,6 @@ pub(crate) struct Instances {
     /// keeps: what its apps mint a resource's link under, `None` where it keeps no server.
     serving: OnceLock<Option<Serving>>,
     made: Mutex<Vec<Made>>,
-    /// The instances started here that show nothing, by app, workspace and instance: kept while
-    /// their process runs them.
-    no_view: Mutex<Vec<(String, String, u64)>>,
     next: AtomicU64,
 }
 
@@ -391,7 +388,6 @@ impl Instances {
             own_lines: OnceLock::new(),
             serving: OnceLock::new(),
             made: Mutex::default(),
-            no_view: Mutex::default(),
             next: AtomicU64::new(1),
         }
     }
@@ -528,7 +524,8 @@ impl Instances {
     }
 
     /// Start an instance of `app` in `workspace` that shows nothing, to take the calls the
-    /// dispatch delivers to it: it runs once it is handed to its process.
+    /// dispatch delivers to it: the start fails, saying why, when it or its process
+    /// ends before a call reached it.
     pub(crate) fn start_with_no_view(
         &self,
         app: &str,
@@ -536,18 +533,14 @@ impl Instances {
         origin: Option<Descriptor>,
         caller: Option<&Caller>,
     ) -> Result<WindowlessStart, String> {
-        let instance = self.start(
+        let (ends, start) = tokio::sync::oneshot::channel();
+        self.start(
             (app, workspace, origin),
             self.person()?,
             Shows::Nothing(caller.map(|caller| Box::new(caller.clone()))),
             None,
-            (None, None),
+            (None, None, Some(ends)),
         )?;
-        self.no_view
-            .lock_recover()
-            .push((app.to_owned(), workspace.to_owned(), instance));
-        let (started, start) = tokio::sync::oneshot::channel();
-        let _ = started.send(Ok(()));
         Ok(start)
     }
 
@@ -557,18 +550,10 @@ impl Instances {
         let Some(processes) = self.processes.get() else {
             return 0;
         };
-        let running = processes.instances();
-        let mut no_view = self.no_view.lock_recover();
-        no_view.retain(|(app, workspace, instance)| {
-            running.iter().any(|process| {
-                &process.app == app
-                    && &process.workspace == workspace
-                    && process.instances.contains(instance)
-            })
-        });
-        no_view
-            .iter()
-            .filter(|(running, of, _)| running == app && of == workspace)
+        let starts = processes.starts.lock_recover();
+        starts
+            .values()
+            .filter(|(of, at, _)| of == app && at == workspace)
             .count()
     }
 
@@ -587,7 +572,7 @@ impl Instances {
             self.person()?,
             Shows::Window,
             None,
-            (None, None),
+            (None, None, None),
         )
         .map(drop)
     }
@@ -628,7 +613,7 @@ impl Instances {
             person,
             Shows::View(Box::new((caller.clone(), certificate.cloned()))),
             Some(patch),
-            (record, reveal),
+            (record, reveal, None),
         )?;
         Ok(OpenedView {
             patch: view,
@@ -659,7 +644,7 @@ impl Instances {
             self.person()?,
             Shows::Window,
             Some(patch),
-            (None, None),
+            (None, None, None),
         )?;
         Ok(HostedWindow {
             instance,
@@ -696,14 +681,15 @@ impl Instances {
 
     /// Hand an instance of `app` in `workspace`, with `person` at it and reaching its origin's
     /// connector over `origin` when its app has one, to its process, starting the process when
-    /// none runs: shown over `patch` when it has one. The instance it started.
+    /// none runs: shown over `patch` when it has one, and telling `ends` why should it end
+    /// first. The one it started.
     fn start(
         &self,
         (app, workspace, origin): (&str, &str, Option<Descriptor>),
         person: String,
         shows: Shows,
         patch: Option<Descriptor>,
-        (document, reveal): (Option<String>, Option<String>),
+        (document, reveal, ends): (Option<String>, Option<String>, Option<Ends>),
     ) -> Result<u64, String> {
         if !crate::device::package_runs::runs_in_process(app) {
             return Err(format!("{app} is no tilolang app installed here"));
@@ -716,6 +702,10 @@ impl Instances {
         let chooser = self.chooser_for(app, workspace);
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let chooser = None;
+        if let Some(ends) = ends {
+            let start = (app.to_owned(), workspace.to_owned(), ends);
+            processes.starts.lock_recover().insert(instance, start);
+        }
         processes
             .hand_over_now(Instance {
                 app: app.to_owned(),
@@ -737,7 +727,10 @@ impl Instances {
                 link_home: self.link_home(workspace),
             })
             .map(|_| instance)
-            .map_err(|error| format!("{app}'s instance did not start: {error}"))
+            .map_err(|error| {
+                processes.starts.lock_recover().remove(&instance);
+                format!("{app}'s instance did not start: {error}")
+            })
     }
 
     /// The instance's collaboration connection, made from this process and named as

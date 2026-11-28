@@ -136,6 +136,9 @@ struct HostKey {
     app_runtime: String,
 }
 
+/// How the start of an app's run that shows nothing ends ([`Processes::starts`]).
+pub(crate) type Ends = tokio::sync::oneshot::Sender<Result<(), String>>;
+
 /// A running process.
 struct Host {
     /// The daemon's end of its socket.
@@ -318,6 +321,9 @@ pub struct Processes {
     /// Records each app started, through the device's package cache ([`super::packages::opened`]).
     opened: Box<Opened>,
     running: Mutex<HashMap<HostKey, Host>>,
+    /// The runs that show nothing, by number, with their app and workspace: each start is told
+    /// why once its run or its process ends. One that took a call by then was answered.
+    pub(crate) starts: Mutex<HashMap<u64, (String, String, Ends)>>,
     generations: AtomicU64,
     /// Whether the app store is watched for reinstalls.
     follows_reinstalls: AtomicBool,
@@ -390,6 +396,7 @@ impl Processes {
             verifies,
             opened,
             running: Mutex::new(HashMap::new()),
+            starts: Mutex::default(),
             generations: AtomicU64::new(1),
             follows_reinstalls: AtomicBool::new(false),
             playing: Mutex::new(Playing::default()),
@@ -1206,7 +1213,9 @@ impl Processes {
                 // The process is ending: start another.
                 Err(error) => {
                     tracing::info!(%error, "a tilolang process's socket is closed");
-                    processes.remove(key);
+                    if let Some(ended) = processes.remove(key) {
+                        self.starts_end(&ended, &error.to_string());
+                    }
                 }
             }
         }
@@ -1445,16 +1454,29 @@ impl Processes {
             if processes
                 .get(key)
                 .is_some_and(|process| process.generation == generation)
+                && let Some(ended) = processes.remove(key)
             {
-                processes.remove(key);
+                self.starts_end(&ended, &reason);
             }
         }
         self.engines().ended_process(key, generation);
     }
 
+    /// Tell the start of each run `ended` carried that it ended with its process, and why.
+    fn starts_end(&self, ended: &Host, why: &str) {
+        let mut starts = self.starts.lock_recover();
+        for (_, _, start) in ended.instances.keys().filter_map(|run| starts.remove(run)) {
+            let _ = start.send(Err(format!("its process ended: {why}")));
+        }
+    }
+
     /// The process `key` (its start `generation`) says the instance of the window `instance` ended.
     /// Once its last instance ended it is idle, and ends [`IDLE`] later unless called again.
     fn ended(self: &Arc<Self>, key: &HostKey, generation: u64, instance: u64) {
+        let start = self.starts.lock_recover().remove(&instance);
+        if let Some((_, _, start)) = start {
+            let _ = start.send(Err("it ended before it took a call".to_owned()));
+        }
         let idle = {
             let mut processes = self.running();
             let Some(process) = processes

@@ -306,8 +306,8 @@ pub enum ExecutingBindingPhase {
     Abandoned,
 }
 
-/// How the start of a windowless instance ends: `Ok` once it runs, why not otherwise; a sender
-/// dropped unsent is a host that stopped starting it.
+/// How a start of an app with no window ends: `Ok` once it runs, why not once it ended before it
+/// took a call; a sender dropped unsent is a host that stopped starting it.
 pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
 
 pub trait LauncherServices: Send + Sync {
