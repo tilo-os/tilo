@@ -976,6 +976,7 @@ heavy = true
 # Its key is the shell's and the session's files, which tilolang-tilo includes in its build.
 [[check]]
 name = "shell-compiles"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilolang-tilo --test it -- shell_compiles::"
 env = { CARGO_PROFILE_DEV_DEBUG = "0" }
@@ -1037,6 +1038,7 @@ default = false
 # at once.
 [[check]]
 name = "app-surfaces"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 isolation = "nested"
 gate = true
@@ -1051,6 +1053,7 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 # writes the file.
 [[check]]
 name = "device-surface"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "cargo test --locked -p tilo-device-surfaces --lib the_device_surface_file_is_what_the_device_publishes"
 fix = "UPDATE_SNAPSHOTS=1 cargo test --locked -p tilo-device-surfaces --lib the_device_surface_file_is_what_the_device_publishes"
@@ -1162,6 +1165,7 @@ heavy = true
 # builds' features are the point, so their units are their own.
 [[check]]
 name = "workspace-service-features"
+requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' device-keys apps agents test-support agents,test-support; do\n    cargo check --locked -p tilo-person-services --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' agents files agents,files test-support agents,test-support; do\n    cargo check --locked -p tilo-app-host --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
