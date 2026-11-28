@@ -226,13 +226,15 @@ impl HostedWorkspace {
     }
 
     /// Carry this host's own changes of the workspace not carried yet, in the
-    /// order they were made, each as the frame its device signed. Stops at a
-    /// change that could not be carried, with why, for the next settle to
-    /// carry again.
+    /// order they were made, each as the frame its device signed, and answer
+    /// them: a host tells the devices on its link there what it changed here.
+    /// Stops at a change that could not be carried, with why, for the next
+    /// settle to carry again.
     pub(super) fn carry_unsent(
         &mut self,
         records: &crate::workspace_documents::WorkspaceDocuments,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<neighbour_wire::NeighbourMsg>, String> {
+        let mut carried = Vec::with_capacity(self.unsent.len());
         while let Some(frame) = self.unsent.first() {
             let body = postcard::to_stdvec(frame).map_err(|error| error.to_string())?;
             records
@@ -241,9 +243,9 @@ impl HostedWorkspace {
                     &crate::workspace_documents::HostCommit { body },
                 )
                 .map_err(|error| format!("this host's change was not carried: {error}"))?;
-            self.unsent.remove(0);
+            carried.push(self.unsent.remove(0));
         }
-        Ok(())
+        Ok(carried)
     }
 
     /// Write the host's copy, as following members' writes changed it,

@@ -367,6 +367,12 @@ pub struct HostedWorkspace {
     /// ([`Workspaces::settle`]): only what this device wrote. A member's change
     /// reaches the others as its own device sent it, carried unchanged.
     unsent: Vec<neighbour_wire::NeighbourMsg>,
+    /// The workspace's changes this host's copy took in that no link of its
+    /// brought: a device's own signed admission, which the entry hands the
+    /// host here. The next settle sends them to the devices on the host's
+    /// link, as it sends the host's own changes: the devices sent them to the
+    /// host, not to each other.
+    arriving: Vec<Vec<u8>>,
     /// This host's sessions to the workspace's other holders
     /// ([`Workspaces::dial_holders`]).
     holders: holding::Holders,
@@ -403,28 +409,32 @@ fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
         .map_err(|error| format!("workspace exceeds exact admission bounds: {error}"))
 }
 
-/// What `candidate`, built from `replica`, holds of the workspace's document
-/// that `device`'s host wrote itself, as the one frame its device signs and
-/// sends: none when it wrote nothing. What else `candidate` took in past
-/// `replica` is a member's, which reached it as that member's device sent it.
-fn own_changes(
+/// The changes `candidate`, built from `replica`, holds beyond it: `device`'s own, as the
+/// one frame its device signs and sends, and the other devices' changes this host's copy
+/// took in past `replica` without a link bringing them — a device's own signed admission,
+/// which the entry hands the host here, and which no other device hears unless this host
+/// tells it.
+fn changes_taken(
     replica: &StatePeer,
     candidate: &StatePeer,
     device: &[u8; 32],
-) -> Option<neighbour_wire::NeighbourMsg> {
+) -> (Option<neighbour_wire::NeighbourMsg>, Vec<Vec<u8>>) {
     let actor = candidate.workspace_actor_for(device);
-    let changes: Vec<Vec<u8>> = candidate
-        .workspace_changes_since(&replica.workspace_heads().unwrap_or_default())
-        .into_iter()
-        .filter(|bytes| {
-            automerge::Change::try_from(bytes.as_slice())
-                .is_ok_and(|change| *change.actor_id() == actor)
-        })
-        .collect();
-    (!changes.is_empty()).then(|| neighbour_wire::NeighbourMsg::SyncResp {
-        changes,
+    let (mut own, mut theirs) = (Vec::new(), Vec::new());
+    for bytes in candidate.workspace_changes_since(&replica.workspace_heads().unwrap_or_default()) {
+        let of_device = automerge::Change::try_from(bytes.as_slice())
+            .is_ok_and(|change| *change.actor_id() == actor);
+        if of_device {
+            own.push(bytes);
+        } else {
+            theirs.push(bytes);
+        }
+    }
+    let own = (!own.is_empty()).then(|| neighbour_wire::NeighbourMsg::SyncResp {
+        changes: own,
         workspace: candidate.workspace_id().to_owned(),
-    })
+    });
+    (own, theirs)
 }
 
 /// The people `peer`'s governance admits now.
@@ -642,6 +652,7 @@ impl HostedWorkspace {
             asking: std::collections::BTreeSet::new(),
             kept_heads,
             unsent: Vec::new(),
+            arriving: Vec::new(),
             holders: holding::Holders::default(),
             invitations,
         };
@@ -867,10 +878,11 @@ impl HostedWorkspace {
             }
             _ => false,
         };
+        let (own, arriving) = changes_taken(replica, &candidate, &device);
         let own = if compacts {
             Some(candidate.workspace_message())
         } else {
-            own_changes(replica, &candidate, &device)
+            own
         };
         let mut record = self.record.clone();
         record.peer = self.parts.stage(&candidate)?;
@@ -884,6 +896,7 @@ impl HostedWorkspace {
         self.kept_heads = candidate.workspace_heads();
         *replica = candidate;
         self.unsent.extend(own);
+        self.arriving.extend(arriving);
         // The workspace's governance, which every decision here about who may do what in it
         // reads, moved: whatever decides by it (the broker's admitted windows among them) checks
         // again, reading it once the caller lets go of the replica.
@@ -3722,7 +3735,8 @@ impl Workspaces {
         // now. A host carries to its members from that store and has no member
         // link to itself.
         let workspace_id = workspace.workspace_id();
-        let forwarded: Vec<_> = if self.member_link(workspace_id).is_some() {
+        let member = self.member_link(workspace_id).is_some();
+        let forwarded: Vec<_> = if member {
             workspace
                 .unsent
                 .iter()
@@ -3732,9 +3746,35 @@ impl Workspaces {
         } else {
             Vec::new()
         };
-        workspace.carry_unsent(&self.inner.records)?;
+        let own = workspace.carry_unsent(&self.inner.records)?;
         for message in forwarded {
             self.forward_member_document(workspace_id, message);
+        }
+        // A host's own change of the workspace — a member it admitted, a device it listed —
+        // and what its copy took in that no link brought it reach the devices on its link as
+        // they are made, not only a link made after: the devices already there read the member
+        // list it changed, and their groups follow it.
+        let arriving = std::mem::take(&mut workspace.arriving);
+        let arriving = (!arriving.is_empty()).then(|| neighbour_wire::NeighbourMsg::SyncResp {
+            changes: arriving,
+            workspace: workspace_id.to_string(),
+        });
+        if member {
+            if let Some(arriving) = arriving {
+                self.forward_member_document(workspace_id, arriving);
+            }
+        } else if let Some(link) = self.inner.direct.link(workspace_id) {
+            let name = workspace.workspace().to_owned();
+            for message in own.into_iter().chain(arriving) {
+                if let Err(error) = link.publish(move |_| Ok(message)) {
+                    tracing::warn!(
+                        workspace = %name,
+                        %error,
+                        "this host's change was not told to the devices on its link"
+                    );
+                    break;
+                }
+            }
         }
         self.dial_holders(workspace);
         self.governance_moved(workspace);
