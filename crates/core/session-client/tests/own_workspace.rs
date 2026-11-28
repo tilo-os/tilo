@@ -352,6 +352,19 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         own.workspace
     );
     in_workspace(&switcher, own.workspace_id).await;
+    // A workspace the host holds but does not list turns the entry away in its own words: the
+    // session keeps them as the host's last answer for it, never a bare code.
+    let unlisted = workspaces.create("Unlisted").await.unwrap();
+    switcher
+        .send(tilo_session_client::Cmd::Join(unlisted.workspace_id))
+        .unwrap();
+    let said = switcher
+        .until(FOLLOWING, |status| {
+            status.refused.get(&unlisted.workspace_id).cloned()
+        })
+        .await
+        .expect("the host answered the join");
+    assert_eq!(said, "the server refused: that workspace is not public");
     switcher.close();
 
     // Asked again by its id, it answers the same workspace.

@@ -1505,9 +1505,16 @@ impl Task {
                 host: Some(host), ..
             } => host,
             // The entry said why the workspace does not have this device: asking again with the
-            // same certificate answers the same.
+            // same certificate answers the same. What the entry itself said is kept in its words,
+            // which are what a person reads and what the session last answered for the workspace;
+            // a workspace that refused the device the entry let in keeps its code, which the
+            // session stops on.
             tilo_server_protocol::entering::Entered::Refused(refusal) => {
-                return Err(LinkError::Refused(refusal_code(&refusal).to_owned()));
+                use tilo_server_protocol::entering::EnterRefusal;
+                return Err(LinkError::Refused(match &refusal {
+                    EnterRefusal::Entry { .. } => refusal.reason().to_owned(),
+                    EnterRefusal::Workspace(_) => refusal_code(&refusal).to_owned(),
+                }));
             }
             // An admission with no address is a host that keeps no signed address for the
             // workspace: there is nowhere to take it in from.
