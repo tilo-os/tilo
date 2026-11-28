@@ -29,6 +29,12 @@ RECORDED = ("bash", "sh", "env", "dirname", "basename", "id", "uname", "awk", "s
             "setpriv", "flock")
 
 
+def setups(rule: dict) -> set[str]:
+    """The setup steps a profile rule runs: a test that needs more than one names them as a list."""
+    setup = rule["setup"]
+    return {setup} if isinstance(setup, str) else set(setup)
+
+
 def recorders(directory: Path, *more: str) -> tuple[Path, Path]:
     """A PATH entry whose programs each note their name in a file and then run the real one:
     RECORDED's, and any `more`."""
@@ -186,7 +192,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         ])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "session-siblings"]
+                     if "session-siblings" in setups(rule)]
             expected = ([("package(tilo-session)",
                          {"host": 'cfg(target_os = "linux")'})]
                         if profile == "default" else [])
@@ -203,7 +209,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                             "launcher:tilo-launcher=launcher/dev-overrides"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "vault-siblings"]
+                     if "vault-siblings" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and test(device_branch::)",
@@ -218,7 +224,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                              "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "lounge-siblings"]
+                     if "lounge-siblings" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and test(lounge_e2e::)",
@@ -234,7 +240,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(page["command"], ["bash", "tools/build-page-bundle.sh"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "page-bundle"]
+                     if "page-bundle" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session-client) and binary(it) and (test(passkey_root::) or "
@@ -248,7 +254,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(module["command"], ["bash", "tools/test-env-setup.sh", "pam-module"])
         def rules(profile: str, setup: str) -> list[dict]:
             return [rule for rule in config["profile"][profile]["scripts"]
-                    if rule["setup"] == setup]
+                    if setup in setups(rule)]
         (pam,) = rules("default", "pam-module")
         self.assertEqual(pam["filter"], "package(pam-tilo)")
         (siblings_rule,) = rules("default", "session-siblings")
@@ -266,7 +272,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                              "tilolang-process:tilolang-process=tilolang-process/app-launch"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "app-open-siblings"]
+                     if "app-open-siblings" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-session) and binary(it) and test(app_open_budget::)",
@@ -275,17 +281,21 @@ class TestEnvironmentSetupTests(unittest.TestCase):
             )
         # A device's views of its installed tilolang apps start the app's window
         # as the device does: `tilo-launcher tilolang-process`, on a runtime
-        # bundle the test bakes with the tilolang host in it.
+        # bundle the test bakes with the tilolang host in it. The flows' server
+        # runs the workspace's apps the same way.
         view = scripts.pop("view-siblings")
         self.assertEqual(view["command"], ["bash", "tools/build-sibling-binaries.sh",
                                            "tilolang-process:tilolang-process=tilolang-process/app-launch",
                                            "launcher:tilo-launcher=launcher/dev-overrides"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "view-siblings"]
+                     if "view-siblings" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
-                [("package(tilo-daemon) and binary(it) and "
+                [("package(tilo-session-client) and binary(it) and (test(lounge_fresh_page::) or "
+                  "test(flow_four_devices::) or test(flow_laptop_phone_server::))",
+                  {"host": 'cfg(target_os = "linux")'}),
+                 ("package(tilo-daemon) and binary(it) and "
                   "(test(language::app_views::) or test(language::keeping_pages::) or "
                   "test(language::chat::) or test(language::hosted_turns::))",
                   {"host": 'cfg(target_os = "linux")'})],
@@ -298,7 +308,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                               "install:tilo-install"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
-                     if rule["setup"] == "install-siblings"]
+                     if "install-siblings" in setups(rule)]
             self.assertEqual(
                 [(rule["filter"], rule["platform"]) for rule in rules],
                 [("package(tilo-daemon)", {"host": 'cfg(target_os = "linux")'})],
@@ -332,7 +342,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(lounge_fresh_page::) or test(flow_four_devices::) or "
                                  "test(flow_laptop_phone_server::))":
-                                     "lounge-siblings",
+                                     ["lounge-siblings", "view-siblings"],
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
                                  "package(tilo-daemon) and binary(it) and "

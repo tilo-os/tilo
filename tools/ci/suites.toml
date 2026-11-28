@@ -787,9 +787,13 @@ readers = [
 
 [[cargo]]
 package = "app-cli"
-# The runtime fetch test builds an app against an edited copy of the standard library's source.
-inputs = ["crates/lang/tilolang/std/"]
-readers = ["crates/os/app-cli/tests/runtime_fetch.rs"]
+# The runtime fetch test builds an app against an edited copy of the standard library's source,
+# and the compiled root it checks is the one the release publishes.
+inputs = ["crates/lang/tilolang/std/", "os/publication.env"]
+readers = [
+  "crates/os/app-cli/tests/runtime_fetch.rs",
+  "crates/os/app-cli/src/config.rs",
+]
 
 [[cargo]]
 package = "tilo-api"
@@ -1031,7 +1035,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/link_editor.rs",
   "crates/lang/tilolang-tilo/tests/links.rs",
   "crates/lang/tilolang-tilo/tests/logs.rs",
-  "crates/lang/tilolang-tilo/tests/mail_recipients.rs",
   "crates/lang/tilolang-tilo/tests/messages.rs",
   "crates/lang/tilolang-tilo/tests/monitor.rs",
   "crates/lang/tilolang-tilo/tests/naming.rs",
@@ -1068,8 +1071,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/chat_export.rs",
   "crates/lang/tilolang-tilo/tests/shell_staged.rs",
   "crates/lang/tilolang-tilo/tests/shortcuts_draft.rs",
-  "crates/lang/tilolang-tilo/tests/chat_recording.rs",
-  "crates/lang/tilolang-tilo/tests/chat_system.rs",
   "crates/lang/tilolang-tilo/tests/settings_devices.rs",
   "crates/lang/tilolang-tilo/tests/settings_mobile.rs",
   "crates/lang/tilolang-tilo/tests/settings_storage.rs",
@@ -1518,6 +1519,7 @@ package = "tilo-device-identity"
 inputs = [
   "os/usr/lib/systemd/system/tilo-device-key-init.service",
   "os/usr/lib/systemd/system/tilo-device-branch.service",
+  "os/usr/lib/systemd/system/tilo-runtime.service",
 ]
 readers = ["crates/core/tilo-device-identity/src/bin/tilo-device-key-init.rs"]
 
@@ -1709,10 +1711,16 @@ package = "tilo-daemon"
 # tilo.sh book to the pages it lists.
 inputs = ["apps/", "dist/macos/collection_local_runtime.py", "docs/tilo-sh/pages.toml"]
 readers = [
-  "crates/os/daemon/tests/language/host/apps.rs",
   "crates/os/daemon/tests/language/customer_workspaces.rs",
   "crates/os/daemon/tests/language/triggers_tests.rs",
 ]
+
+[[cargo]]
+package = "test-server"
+# A test's device installs the tilolang apps from the tree's sources, and a developer's Mac stages
+# the tilolang runtime they load beside this build's host.
+inputs = ["apps/tl/", "dist/macos/collection_local_runtime.py"]
+readers = ["tools/test-server/src/apps.rs"]
 
 [[cargo]]
 package = "tilo-collab-types"
@@ -2397,6 +2405,10 @@ suites = ["tools/ci/test_rystic_ci.py"]
 suite = "tools/ci/run-rystic-ci.sh"
 reason = "metered integration runner"
 check = "cloud-rystic"
+
+[[unrequired]]
+suite = "tools/ci/test_selection.py"
+reason = "prints the nextest filter a narrowed run selects by; it is a runner the nextest wrappers use, and tests nothing itself"
 
 [[cargo]]
 package = "tilo-cli"
