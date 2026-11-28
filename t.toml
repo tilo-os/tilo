@@ -3918,6 +3918,10 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/layout-check.sh"
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/**"]
+# A run with findings fails, and the report and the frames its findings came from (dump.txt) are
+# what says why: they are kept as evidence, so `t outputs layout-check` fetches them from a failed
+# run too.
+evidence = ["/target/layout-check/**"]
 timeout_secs = 1800
 dispatch_inputs = { app = "", size = "", shots = "false", press = "", dump = "false", shot_height = "", hover = "", state = "" }
 
