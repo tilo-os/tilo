@@ -2351,7 +2351,9 @@ const WORKSPACES: &str = "workspaces";
 /// The layout of the frames a store keeps: segments of records, each frame one
 /// [`NeighbourMsg`] whose claims carry the caller's signed call, which the claim's signature
 /// covers, and whose identity hello may name a placed device's certificate or a placement grant
-/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 12 is version 11's layout,
+/// ([`tilo_user_identity::DeviceCapabilities::records`]). Version 13 is version 12's layout,
+/// whose messages may be the apps a workspace runs ([`NeighbourMsg::WorkspaceApps`]), which a
+/// build of version 12 refuses; version 12 is version 11's layout,
 /// whose claims name the types they store by the crates those types lived in before they moved
 /// below the policy, which changes no byte a frame holds; version 11 is version 10's layout,
 /// whose identity hello may name an agent's grant that names its agent by its id
@@ -2362,10 +2364,10 @@ const WORKSPACES: &str = "workspaces";
 /// build of version 9 refuses; version 9 is version 8's, whose messages may be the content asked
 /// for and answered with many at a time ([`NeighbourMsg::DocumentContentWants`] and
 /// [`NeighbourMsg::DocumentContentPieces`]); version 8 is version 7's, whose identity hello a
-/// build of version 7 refuses. A store of version 7 to 11 is relabelled as it opens, its frames
+/// build of version 7 refuses. A store of version 7 to 12 is relabelled as it opens, its frames
 /// left as they are; one of version 1 to 6 has its frames written again ([`WRITTEN_AGAIN`]). A
 /// store of a later version is refused as it opens, by its version, and left as it is.
-pub(crate) const FRAMES_VERSION: u32 = 12;
+pub(crate) const FRAMES_VERSION: u32 = 13;
 /// The versions whose frames' claims name no call: 5, and 6, which differs from it only in the
 /// definitions a certificate's capabilities are pinned by. A store of either is written again as
 /// it opens, every frame kept with the signature its author made ([`Store::pack_earlier`]).

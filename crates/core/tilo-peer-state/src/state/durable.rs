@@ -19,25 +19,28 @@ use automerge::transaction::Transactable as _;
 /// stored bumps this: a build refuses state of another version by name
 /// rather than reading it as this one's, except the versions from 10 on,
 /// which it brings up ([`brought_up`]).
-pub const DURABLE_VERSION: u32 = 20;
+pub const DURABLE_VERSION: u32 = 21;
 
-/// The version before [`DURABLE_VERSION`]: the same layout, whose claims name the types they
-/// store by the crates those types lived in before they moved below the policy
-/// ([`tilo_member_types::Acting`], [`tilo_actions::ActionAddress`]), so a build that does not
-/// relabel it refuses it by name ([`brought_up`]).
-pub(super) const PREVIOUS: u32 = 19;
+/// The version before [`DURABLE_VERSION`]: the same layout, whose waiting writes may not be a
+/// message of a kind this build appends ([`NeighbourMsg::WorkspaceApps`]), so a build that reads
+/// none refuses a state that carries one rather than reading its writes wrong ([`brought_up`]).
+pub(super) const PREVIOUS: u32 = 20;
 
 /// The oldest version before [`PREVIOUS`] that reads as this build's layout once its version is
-/// relabelled: version 19 stores the same bytes, naming the types its claims hold by the crates
+/// relabelled: version 20 differs only in the message a waiting write may be, which this build
+/// appends; version 19 stores the same bytes, naming the types its claims hold by the crates
 /// they live in now; versions 18 and 17 add only content messages a build before them never
 /// wrote, version 15 only a certificate marker, and version 14 only the mark a removed device's
 /// governance row carries ([`brought_up`]).
 pub(super) const RELABELLED: u32 = 14;
 
-/// `bytes`, a durable state, in this build's layout: versions 19 ([`PREVIOUS`]) to 14
+/// `bytes`, a durable state, in this build's layout: versions 20 ([`PREVIOUS`]) to 14
 /// ([`RELABELLED`]) relabelled, any other as it is, for [`Durable::read`] to read or refuse.
 ///
-/// Version 19 is this build's layout under another number: the types its claims name moved below
+/// Version 20 differs from this one only in what a write waiting to be sent may be: this build
+/// appends the apps a workspace runs ([`NeighbourMsg::WorkspaceApps`]), which version 20's builds
+/// refuse, and a message version 20 wrote reads the same here. Version 19 is this build's layout
+/// under another number: the types its claims name moved below
 /// the policy, which changes no byte a state holds. Version 18 differs from this one only in what
 /// a certificate it keeps may name: this build's
 /// may be an agent's grant naming its agent by its id, under a binary marker version 18's builds
@@ -58,8 +61,8 @@ pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Str
     if (RELABELLED..=PREVIOUS).contains(&version) {
         // This build's layout with its version relabelled: the messages, a
         // placed device's certificate and the mark a removed device's row
-        // carries need no other change to read, and version 19's bytes are
-        // this build's own.
+        // carries need no other change to read, and the bytes a version since
+        // 14 wrote read as this build's.
         let mut kept = postcard::to_allocvec(&DURABLE_VERSION).map_err(err)?;
         kept.extend_from_slice(rest);
         return Ok(kept.into());

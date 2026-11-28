@@ -444,3 +444,40 @@ what = """the frames a store device keeps for its workspaces: one postcard Neigh
 types = [
   "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
 ]
+
+[[layout]]
+format = "peer durable state"
+version = 21
+digest = "ea94840070e75ed0"
+what = """a replica's durable state: its workspace, documents, certificates, receipts, the writes it holds for a prerequisite (each a NeighbourMsg, a document write ending with its reader set) and each sealed document's writes, and the keys those writes are sealed under, derived from the document and its reader set (version 10 was written both with and without a waiting document write's reader set; version 13 is version 12's layout, whose certificates name the retired grants their binary form already carried; version 14 is the layout whose claims carry the caller's signed call, a state's held and sealed writes dropped as it comes up because their signatures no longer verify; version 15 is version 14's layout, whose governance rows mark a device the workspace removed without deleting the row; version 16 is version 15's layout, whose certificates may name a placed device's records or a placement grant, which a build of version 15 refuses; version 17 is version 16's layout, whose waiting writes may be the content asked for and answered many at a time, which a build of version 16 refuses; version 18 is version 17's layout, whose waiting writes may be the word that pushed content is kept or let go of, which a build of version 17 refuses; version 19 is version 20's layout, whose claims name the types they store by the crates those types lived in before they moved below the policy, which changes no byte it holds; version 20 is version 21's layout, whose waiting writes may not be the apps a workspace runs, which this build appends, so a build of version 20 refuses a state that carries one and a state version 20 wrote reads the same here)"""
+types = [
+  "crates/core/tilo-peer-state/src/state/durable.rs:Durable",
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
+  "crates/core/tilo-peer-state/src/state.rs:DurableDocument",
+  "crates/core/collab-types/src/op.rs:SignedOp",
+  "crates/core/collab-types/src/op.rs:DocumentMutation",
+  "crates/core/collab-types/src/op.rs:EncryptionMetadata",
+  "crates/core/collab-types/src/op.rs:document_artifact_id",
+  "crates/core/collab-types/src/op.rs:document_attestation_id",
+  "crates/core/collab-types/src/op.rs:derived_document_uuid",
+  "crates/core/collab-types/src/op.rs:derived_uuid",
+  "crates/core/collab-types/src/op.rs:DOCUMENT_ATTESTATION_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:content_artifact_id",
+  "crates/core/collab-types/src/readers.rs:reader_group",
+  "crates/core/collab-types/src/readers.rs:app_document_id",
+  "crates/core/collab-types/src/readers.rs:store_document_readers",
+  "crates/core/collab-types/src/readers.rs:reader_set_name",
+  "crates/core/collab-types/src/readers.rs:EVERY_MEMBER",
+  "crates/core/collab-types/src/readers.rs:CONTENT_ARTIFACT_DOMAIN",
+  "crates/core/collab-types/src/readers.rs:READER_GROUP_DOMAIN",
+  "crates/core/tilo-server-protocol/src/live.rs:live_artifact",
+]
+
+[[layout]]
+format = "peer store frames"
+version = 13
+digest = "34f1d5cccb7f9ae0"
+what = """the frames a store device keeps for its workspaces: one postcard NeighbourMsg per file in a store's workspaces directory, named by workspace, resource and author, under the version its frames-version file records (version 1, kept before that file, ended a document write before its reader set; version 3 is a document write whose envelope may name its own content key; version 6 is version 5's layout, whose identity hello names a certificate carrying the retired grants its binary form already wrote; version 7 is the frames whose claims carry the caller's signed call, which their signature covers, so a store opening a frame of version 6 or before drops it rather than writing it again; version 8 is version 7's layout, whose identity hello may name a placed device's certificate or a placement grant, which a build of version 7 refuses, so a store of version 7 is relabelled and keeps its segments; version 9 is version 8's layout, whose messages may be the content asked for and answered many at a time, which a build of version 8 refuses, so a store of version 8 is relabelled and keeps its segments; version 10 is version 9's layout, whose messages may be the word that pushed content is kept or let go of, which a build of version 9 refuses, so a store of version 9 is relabelled and keeps its segments; version 11 is version 12's layout, whose claims name the types they store by the crates those types lived in before they moved below the policy, which changes no byte a frame holds; version 12 is version 13's layout, whose messages may not be the apps a workspace runs, which this build appends, so a build of version 12 refuses a frame that carries one and a store of version 12 is relabelled and keeps its segments)"""
+types = [
+  "crates/core/neighbour-wire/src/lib.rs:NeighbourMsg",
+]
