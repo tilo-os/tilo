@@ -888,6 +888,36 @@ impl Workspaces {
         )
     }
 
+    /// Whether `asking` reads the content at `hash`, asked as `app_id`'s. A file's bytes, its
+    /// manifest and the chunks it names, are named by the workspace's files tree rather than by a
+    /// resource's fields: whoever reads the tree reads them, as every read of the workspace's
+    /// files is decided (the tree's own records, read in `workspace`), and a device that does not
+    /// reads none of them. Any other content is read through a resource that names it
+    /// ([`Self::reads_content`]).
+    fn reads(
+        &self,
+        workspace: &str,
+        asking: &Asking,
+        asker: &[u8; 32],
+        app_id: &str,
+        hash: &str,
+    ) -> bool {
+        #[cfg(feature = "files")]
+        if app_id == fs_protocol::tree::FILES_APP {
+            let now = tilo_clock::wall();
+            let peer = asking.reading.replica.read(StatePeer::clone);
+            let tree = fs_protocol::tree::document_id();
+            let records = collab_types::document_node(workspace, app_id, &tree);
+            return peer
+                .read_access(*asker, app_id, &tree, now)
+                .is_ok_and(|access| access.allows(&records, ActionKind::Read, now));
+        }
+        #[cfg(not(feature = "files"))]
+        let _ = workspace;
+        tilo_actions::content_resource(hash)
+            .is_some_and(|address| self.reads_content(asking, asker, &address))
+    }
+
     /// Answer `body`, a presence the member device `asker` of `workspace`
     /// published, when it asks for content: the pieces of what this host
     /// keeps, many to a frame, and word of each it keeps none of, as frames
@@ -946,8 +976,7 @@ impl Workspaces {
                 if let Some(code) = self.app_code(workspace, app_id, hash) {
                     return Some(code);
                 }
-                let address = tilo_actions::content_resource(hash)?;
-                if !self.reads_content(asking, asker, &address) {
+                if !self.reads(workspace, asking, asker, app_id, hash) {
                     return None;
                 }
                 let kept = ahead.read(app_id, hash, |app_id, hash| {
@@ -1432,6 +1461,101 @@ mod tests {
             ))
             .is_some(),
             "a stranger's device is answered as content not kept"
+        );
+        fixture.server.shutdown().await;
+    }
+
+    /// A file of the workspace's tree is read by whoever reads the workspace's files: its bytes
+    /// are named by the tree, not by a resource's fields. A device the workspace knows no member
+    /// by, and a member the workspace refuses its files, read none of them, answered as content
+    /// not kept.
+    #[cfg(feature = "files")]
+    #[tokio::test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the server stays live until its consuming shutdown"
+    )]
+    async fn a_files_bytes_are_answered_to_whoever_reads_the_workspaces_files() {
+        /// The bytes of one file of the workspace, kept as Files keeps them.
+        struct File {
+            workspace: String,
+            bytes: Vec<u8>,
+        }
+        impl WorkspaceContent for File {
+            fn read(&self, workspace: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
+                (workspace == self.workspace
+                    && app == fs_protocol::tree::FILES_APP
+                    && hash == blake3::hash(&self.bytes).to_hex().as_str())
+                .then(|| self.bytes.clone())
+            }
+        }
+        let want = |workspace: &str, asker: &[u8; 32], hash: &str| {
+            postcard::to_allocvec(&NeighbourMsg::DocumentContentWants {
+                requester: peer_handle(asker),
+                cluster_id: workspace.into(),
+                wants: vec![neighbour_wire::content::Wanted {
+                    app_id: fs_protocol::tree::FILES_APP.into(),
+                    hash: hash.into(),
+                    have: Vec::new(),
+                }],
+            })
+            .unwrap()
+        };
+        let bytes = vec![5_u8; 64];
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let fixture = fixture(|_, _| Vec::new()).await;
+        fixture.workspaces.serve_content(Arc::new(File {
+            workspace: fixture.workspace.clone(),
+            bytes: bytes.clone(),
+        }));
+        let reader = admit_device(&fixture.workspaces, &fixture.workspace, &fixture.cert, 7).await;
+        let reader = reader.1.device_public_key;
+        assert_eq!(
+            gathered(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &reader,
+                &want(&fixture.workspace, &reader, &hash)
+            ))
+            .0,
+            bytes,
+            "a member who reads the workspace's files reads the file"
+        );
+
+        let stranger = [9_u8; 32];
+        assert!(
+            lacks_of(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &stranger,
+                &want(&fixture.workspace, &stranger, &hash)
+            ))
+            .is_some(),
+            "a stranger's device is answered as content not kept"
+        );
+
+        let refused = admit_device(&fixture.workspaces, &fixture.workspace, &fixture.cert, 8).await;
+        answer_grant(
+            &fixture.workspaces,
+            &fixture.workspace,
+            Grant::new(
+                "refused-reads-no-files",
+                Grantee::person(hex::encode(refused.1.user_public_key)),
+                TreePath::workspace(&fixture.workspace).app(fs_protocol::tree::FILES_APP),
+                KindSet::READ,
+                Answer::Deny,
+                Grantee::person(fixture.person.clone()),
+            ),
+        )
+        .await
+        .expect("the owner refuses the member the workspace's files");
+        let refused = refused.1.device_public_key;
+        assert!(
+            lacks_of(&fixture.workspaces.content_answer(
+                &fixture.workspace,
+                &refused,
+                &want(&fixture.workspace, &refused, &hash)
+            ))
+            .is_some(),
+            "a member refused the workspace's files reads none of them"
         );
         fixture.server.shutdown().await;
     }
