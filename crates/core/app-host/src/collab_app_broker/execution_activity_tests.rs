@@ -610,6 +610,33 @@ tilo_test_env::scenario! {
     }
 }
 
+/// An immediate action that waits on its person's yes says where it waits, which its caller
+/// reads; it reports no background progress.
+#[tokio::test]
+async fn an_immediate_action_says_it_is_asked_and_reports_no_progress() {
+    let (state, caller, mut app) = fixture();
+    let mut surfaces = state.published_surfaces();
+    let contract = &mut surfaces[0].actions[0].contract;
+    (contract.execution, contract.result) = Default::default();
+    state.replace_published_surfaces_for_test(surfaces);
+    let _ = state
+        .action_invoke(&caller, None, None, &request())
+        .poll_ready();
+    let delivered = app.try_recv().unwrap();
+    let asked = tilo_actions::remote::asked::RecordRef {
+        workspace: "ws".into(),
+        record: "asked-1".into(),
+        device: None,
+    };
+    let mut progress = asked.waiting(delivered.invocation);
+    if let tilo_actions::InvocationUpdate::Progress { phase, .. } = &mut progress {
+        "Copying".clone_into(phase);
+    }
+    let update = |update| state.apply_invocation_update(7, delivered.id, update, None);
+    assert!(update(progress).await.is_err(), "no background progress");
+    update(asked.waiting(delivered.invocation)).await.unwrap();
+}
+
 #[tokio::test]
 async fn wrong_peer_stale_progress_and_post_terminal_updates_emit_nothing() {
     let (state, caller, mut app) = fixture();

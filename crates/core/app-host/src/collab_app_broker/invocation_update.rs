@@ -28,7 +28,10 @@ pub(super) fn validate_invocation_update(
         ..
     } = update
     {
-        if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) {
+        // An immediate action may still wait on its person's yes, and says where; it reports
+        // no other progress.
+        let asked = tilo_actions::remote::asked::RecordRef::waited_in(update).is_some();
+        if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) && !asked {
             return Err(BrokerError::failed(
                 "immediate action reported background progress".into(),
             ));
