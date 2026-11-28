@@ -843,15 +843,15 @@ impl WorkspaceKeys {
         self.changed.get(&workspace).copied().unwrap_or(0)
     }
 
-    /// The key group of `readers` in `workspace` ([`collab_types::reader_group`]), which
-    /// [`Self::access`] then answers for: this device settles it from now on as it settles the
-    /// workspace's own. `None` when `readers` names no set.
-    /// Whether this device creates `group` itself ([`Self::creates`]).
+    /// Whether this device creates `group` itself when it needs its keys ([`Self::creates`]).
     #[must_use]
     pub fn creates_group(&self, group: WorkspaceId, wall: u64) -> bool {
         self.creates(group, wall)
     }
 
+    /// The key group of `readers` in `workspace` ([`collab_types::reader_group`]), which
+    /// [`Self::access`] then answers for: this device settles it from now on as it settles the
+    /// workspace's own. `None` when `readers` names no set.
     pub fn reader_group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         let known = self.directory.kept().len();
         let group = self.directory.group(workspace, readers)?;
@@ -2163,22 +2163,24 @@ impl WorkspaceKeys {
         Ok(true)
     }
 
-    /// Create `group`'s group when this device created the workspace
-    /// ([`KeyDirectory::founds`]) and holds its keys. A device that has
-    /// seen a genesis never creates one.
-    /// Whether this device creates `group` when it has none: the workspace's own group is the
-    /// work of the device that founds it, and every other group of the lowest of the devices its
-    /// readers are, which each device reads the same from the workspace's governance.
+    /// Whether this device creates `group` when it needs its keys and knows of no genesis: the
+    /// workspace's own group is the work of the device that founds it, and every other group of
+    /// any device of its readers. A write never waits on another reader's device, which may be
+    /// off. Two devices that create a group at once settle on the genesis with the lower digest,
+    /// the same on every device, and the device whose genesis lost keeps its keys, joins the
+    /// winner's group and hands them to its members with its next commit ([`GroupPeer`]): what
+    /// it sealed under the genesis that lost opens for every reader.
     fn creates(&self, group: WorkspaceId, wall: u64) -> bool {
         if self.directory.carrier(group) == group {
             return self.directory.founds(group);
         }
         self.allowed_devices(group, wall)
-            .and_then(|allowed| allowed.iter().next().copied())
             .zip(self.device())
-            .is_some_and(|(creator, device)| creator == device)
+            .is_some_and(|(allowed, device)| allowed.contains(&device))
     }
 
+    /// Create `group`'s group when this device creates it ([`Self::creates`]), may read it and
+    /// holds none of it. A device that has seen a genesis never creates one.
     fn found(&mut self, workspace: WorkspaceId, now: Instant, wall: u64) {
         let Some(entry) = self.peers.get(&workspace) else {
             return;
@@ -2190,11 +2192,11 @@ impl WorkspaceKeys {
         {
             return;
         }
-        // A group is created by one device: the device that founds the workspace's own group, for
-        // that group, and the lowest of a group's devices for any other. Each device reads the
-        // same governance, so one creates it and the others ask and join, never racing a genesis
-        // whose loser lets go of the keys a write was told had arrived.
-        if !self.creates(workspace, wall) {
+        // A group other than the workspace's own is created by a device that needs its keys: one
+        // taken up only because another device asked leaves the creating to the asker, which
+        // reads it too, and joins whatever it makes.
+        let needed = entry.wanted || self.directory.carrier(workspace) == workspace;
+        if !needed || !self.creates(workspace, wall) {
             return;
         }
         let reads = self
@@ -2558,7 +2560,6 @@ impl SharedKeys {
             .unwrap_or(false)
     }
 
-    /// See [`WorkspaceKeys::reader_group`]; `None` also when the service is unavailable.
     /// Whether this device creates `group` itself ([`WorkspaceKeys::creates_group`]); false when
     /// the service is unavailable.
     #[must_use]
@@ -2568,6 +2569,7 @@ impl SharedKeys {
             .unwrap_or(false)
     }
 
+    /// See [`WorkspaceKeys::reader_group`]; `None` also when the service is unavailable.
     pub fn reader_group(&self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         self.inner.lock().ok()?.reader_group(workspace, readers)
     }
@@ -2959,7 +2961,7 @@ impl KeyProvider {
         wait: Duration,
     ) -> Option<Result<ContentKeys, String>> {
         // Whether this device may create the group itself, or must be answered by the one that
-        // keeps the workspace: what a wait that ends unsanswered says.
+        // keeps the workspace: what a wait that ends unanswered says.
         let creates = self
             .get()
             .is_some_and(|access| access.creates_group(workspace));

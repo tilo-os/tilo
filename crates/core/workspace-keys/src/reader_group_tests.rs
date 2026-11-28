@@ -2,10 +2,10 @@
 // the devices of its people hold the keys, no one else's, and a person or a device that leaves
 // gets none of what is sealed after.
 
-/// The people a device is one of, by seed: devices 1 and 4 are Ada's, 2 Bob's, 3 Cleo's.
+/// The people a device is one of, by seed: devices 1, 4 and 6 are Ada's, 2 Bob's, 3 Cleo's.
 fn person_of(seed: u8) -> [u8; 32] {
     match seed {
-        1 | 4 => [0xa0; 32],
+        1 | 4 | 6 => [0xa0; 32],
         2 => [0xb0; 32],
         _ => [0xc0; 32],
     }
@@ -544,76 +544,183 @@ fn a_persons_own_reader_set_is_read_by_their_devices_alone() {
     );
 }
 
-/// A reader set's group is created by one of its devices, and that device's peers ask it for the
-/// keys and join what it made. Both devices come to the group at once with a write that needs its
-/// keys; the one that is not the group's creator publishes no genesis of its own, and both hold
-/// the group the creator made.
+/// The devices of Ada that read a reader set of hers, by seed, the one whose device key sorts
+/// lowest first.
+fn adas_devices_lowest_first() -> [u8; 3] {
+    let mut seeds = [1, 4, 6];
+    seeds.sort_by_key(|seed| public(*seed));
+    seeds
+}
+
+/// Who signed the genesis of `group` as `device` holds it.
+fn genesis_signer(device: &Device, group: WorkspaceId) -> Option<collab_types::Ed25519PublicKey> {
+    device.service.peers[&group]
+        .peer
+        .current_frames()
+        .into_iter()
+        .find(|frame| matches!(frame.action, collab_types::MlsGovernanceAction::Genesis))
+        .map(|frame| frame.signed_by)
+}
+
+/// The lowest of a reader set's devices is off. Another of its devices needs the group's keys for
+/// a write: it creates the group itself and writes at once, and every reader's device that comes
+/// up later is let in and reads what it wrote.
 #[test]
-fn a_member_device_joins_the_reader_groups_group_its_creation_made() {
+fn a_write_never_waits_on_the_lowest_reader_that_is_off() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
-    let policy = people_policy([1, 4]);
-    let dirs = [(); 2].map(|()| tempfile::tempdir().unwrap());
+    let policy = people_policy([1, 4, 6]);
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
     let mut now = Instant::now();
-    // Ada's laptop creates the workspace; Ada's phone joined it.
-    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
-    let mut phone = device(&workspace, workspace_id, 1, 4, &policy, dirs[1].path());
-    assert!(ready_epoch(&create(&mut ada, workspace_id, now)).is_some());
-    let readers = collab_types::Readers::people([person_of(1), person_of(4)])
+    let [lowest_seed, writer_seed, later_seed] = adas_devices_lowest_first();
+    let mut lowest = device(
+        &workspace,
+        workspace_id,
+        0,
+        lowest_seed,
+        &policy,
+        dirs[0].path(),
+    );
+    let mut writer = device(
+        &workspace,
+        workspace_id,
+        1,
+        writer_seed,
+        &policy,
+        dirs[1].path(),
+    );
+    let mut later = device(
+        &workspace,
+        workspace_id,
+        2,
+        later_seed,
+        &policy,
+        dirs[2].path(),
+    );
+    assert!(ready_epoch(&create(&mut lowest, workspace_id, now)).is_some());
+    writer.service.access(workspace_id, now);
+    later.service.access(workspace_id, now);
+    pump_for(&mut [&mut lowest, &mut writer, &mut later], &mut now, 20);
+    let readers = collab_types::Readers::people([person_of(1)])
         .unwrap()
         .text();
     let group = collab_types::reader_group(workspace_id, &readers).unwrap();
 
-    // Both come to the group at once. Only the lowest of its devices creates it, Ada's (her key
-    // sorts below her phone's): nothing the phone publishes is a genesis, only the request its
-    // keys are answered from.
-    reader_access(&mut ada, workspace_id, &readers, now);
-    reader_access(&mut phone, workspace_id, &readers, now);
-    pump_for(&mut [&mut phone], &mut now, 1);
-    assert!(
-        !published_genesis(&workspace, &public(4)),
-        "the device that is not the group's creator makes no group of its own"
+    // The lowest device is off: only the writer runs, and its write has its keys at once.
+    reader_access(&mut writer, workspace_id, &readers, now);
+    pump_for(&mut [&mut writer], &mut now, 1);
+    let keys = reader_keys(&mut writer, workspace_id, &readers, now);
+    let artifact = collab_types::content_artifact_id(
+        &workspace_id.to_string(),
+        &readers,
+        "settings/appearance#0",
+    );
+    let (metadata, payload) = keys
+        .seal_content(
+            artifact,
+            ContentRetention::Delta,
+            b"dark, while the laptop was off",
+        )
+        .unwrap();
+
+    // The other devices come up, and come to the group as they read the write.
+    reader_access(&mut lowest, workspace_id, &readers, now);
+    reader_access(&mut later, workspace_id, &readers, now);
+    pump_for(&mut [&mut lowest, &mut writer, &mut later], &mut now, 60);
+    for reader in [&mut lowest, &mut writer, &mut later] {
+        let keys = reader_keys(reader, workspace_id, &readers, now);
+        assert_eq!(
+            keys.open_content(artifact, &metadata, &payload)
+                .unwrap()
+                .as_slice(),
+            b"dark, while the laptop was off",
+            "every reader's device reads what was written while the lowest was off"
+        );
+        assert_eq!(
+            genesis_signer(reader, group),
+            Some(public(writer_seed)),
+            "every device holds the group the writer created"
+        );
+    }
+}
+
+/// Two of a reader set's devices need its group at once and each creates one, and each writes
+/// under its own before it hears of the other. Every device settles on the same genesis, and both
+/// writes open on every reader's device, one that comes up only afterwards included.
+#[test]
+fn two_readers_that_create_a_group_at_once_settle_on_one_and_both_writes_open() {
+    // Which genesis wins is down to its digest: enough workspaces that both sides win.
+    for _ in 0..6 {
+        two_readers_that_create_a_group_at_once_settle_on_one_once();
+    }
+}
+
+fn two_readers_that_create_a_group_at_once_settle_on_one_once() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1, 4, 6]);
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut phone = device(&workspace, workspace_id, 1, 4, &policy, dirs[1].path());
+    let mut tablet = device(&workspace, workspace_id, 2, 6, &policy, dirs[2].path());
+    assert!(ready_epoch(&create(&mut ada, workspace_id, now)).is_some());
+    phone.service.access(workspace_id, now);
+    tablet.service.access(workspace_id, now);
+    pump_for(&mut [&mut ada, &mut phone, &mut tablet], &mut now, 20);
+    let readers = collab_types::Readers::people([person_of(1)])
+        .unwrap()
+        .text();
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+    let id = workspace_id.to_string();
+
+    // Both create the group before either hears of the other's, and write under it.
+    let mut writes = Vec::new();
+    for (device, text) in [
+        (&mut ada, b"from the laptop".as_slice()),
+        (&mut phone, b"from the phone".as_slice()),
+    ] {
+        reader_access(device, workspace_id, &readers, now);
+        device.service.found(group, now, 1_000);
+        let keys = reader_keys(device, workspace_id, &readers, now);
+        let artifact = collab_types::content_artifact_id(&id, &readers, "settings/#0");
+        let (metadata, payload) = keys
+            .seal_content(artifact, ContentRetention::Delta, text)
+            .unwrap();
+        writes.push((artifact, metadata, payload, text));
+    }
+    assert_ne!(
+        genesis_signer(&ada, group),
+        genesis_signer(&phone, group),
+        "each created a group of its own"
     );
 
     pump_for(&mut [&mut ada, &mut phone], &mut now, 60);
-    let settled = reader_keys(&mut ada, workspace_id, &readers, now).epoch();
-    assert_eq!(
-        reader_keys(&mut phone, workspace_id, &readers, now).epoch(),
-        settled,
-        "the phone holds the group its creator made"
-    );
-    let genesis_of = |device: &mut Device| {
-        device
-            .service
-            .frames_for(group, &public(4), 0, 1_000)
-            .into_iter()
-            .next()
-            .map(|frame| frame.signed_by)
-    };
-    assert_eq!(
-        genesis_of(&mut ada),
-        Some(public(1)),
-        "the lowest of the group's devices created it"
-    );
-}
-
-/// Whether the workspace's transport carried a genesis the device `device` made: what a device
-/// publishes when it creates a group of its own.
-fn published_genesis(workspace: &Arc<Workspace>, device: &collab_types::Ed25519PublicKey) -> bool {
-    workspace
-        .queues
-        .lock()
-        .unwrap()
-        .values()
-        .flatten()
-        .any(|governance| match governance {
-            InboundGovernance::Frame { frame, .. } => {
-                matches!(&frame.action, collab_types::MlsGovernanceAction::Genesis)
-                    && frame.signed_by == *device
-            }
-            InboundGovernance::AccessRequest { .. }
-            | InboundGovernance::DocumentFrame { .. }
-            | InboundGovernance::DocumentAccessRequest { .. }
-            | InboundGovernance::Settled(_) => false,
-        })
+    // The tablet was off for all of it, and comes to the group afterwards.
+    reader_access(&mut tablet, workspace_id, &readers, now);
+    pump_for(&mut [&mut ada, &mut phone, &mut tablet], &mut now, 60);
+    let winner = genesis_signer(&ada, group);
+    assert!(winner.is_some());
+    let settled = reader_keys(&mut ada, workspace_id, &readers, now);
+    for reader in [&mut ada, &mut phone, &mut tablet] {
+        assert_eq!(
+            genesis_signer(reader, group),
+            winner,
+            "every device keeps the same genesis"
+        );
+        let keys = reader_keys(reader, workspace_id, &readers, now);
+        assert!(
+            keys.same_write_key(&settled),
+            "every device seals under one key"
+        );
+        for (artifact, metadata, payload, text) in &writes {
+            assert_eq!(
+                keys.open_content(*artifact, metadata, payload)
+                    .unwrap()
+                    .as_slice(),
+                *text,
+                "a write sealed under either genesis opens on every reader's device"
+            );
+        }
+    }
 }

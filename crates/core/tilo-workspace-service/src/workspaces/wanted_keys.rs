@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use key_group::ContentKeys;
+
 use super::sealed_documents::DocumentKeys;
 use super::{DeviceKeys, HostedWorkspace};
 use crate::documents::sealed::DocumentKeyAsk;
@@ -35,13 +37,13 @@ impl WantedKeys {
 
     /// Wait for the keys, opening the group when it has none yet: called with no workspace's
     /// lock taken.
-    async fn arrive(&self) -> Result<(), String> {
+    async fn arrive(&self) -> Result<ContentKeys, String> {
         match self
             .device
             .group_keys(&self.group, &self.readers, true)
             .await
         {
-            Some(Ok(_)) => Ok(()),
+            Some(Ok(keys)) => Ok(keys),
             Some(Err(error)) => Err(error),
             None => Err("this device holds no keys of the document's readers yet".into()),
         }
@@ -104,10 +106,14 @@ impl std::fmt::Debug for Unkept {
     }
 }
 
-/// The waits of one write for its keys: the group it last waited for, so keys that arrived and
-/// are not there again when the write looks under the lock end the write rather than loop.
+/// The waits of one write for its keys: the group it last waited for and the keys that answered,
+/// so keys that arrived and are not there when the write looks under the lock end the write
+/// rather than loop. Other keys of the same group answering are no loop: two devices created the
+/// group at once, this device's genesis lost, and it joined the group that won (what it sealed
+/// under its own opens for every reader once it hands those keys over), so the write is made
+/// again under the winner's keys.
 #[derive(Default)]
-pub(in crate::workspaces) struct KeyWaits(Option<(String, String)>);
+pub(in crate::workspaces) struct KeyWaits(Option<(String, String, ContentKeys)>);
 
 impl KeyWaits {
     /// Wait for the keys `unkept` names, with no workspace's lock taken: `Ok` to make the write
@@ -117,15 +123,18 @@ impl KeyWaits {
             Unkept::Refused(why) => return Err(why),
             Unkept::Keys(wanted) => wanted,
         };
-        let group = (wanted.group.clone(), wanted.readers.clone());
-        if self.0.as_ref() == Some(&group) {
+        let keys = wanted.arrive().await?;
+        if let Some((group, readers, answered)) = &self.0
+            && *group == wanted.group
+            && *readers == wanted.readers
+            && answered.same_write_key(&keys)
+        {
             return Err(format!(
                 "the keys of {} arrived and were gone again when the write looked for them",
                 wanted.group
             ));
         }
-        wanted.arrive().await?;
-        self.0 = Some(group);
+        self.0 = Some((wanted.group, wanted.readers, keys));
         Ok(())
     }
 }
@@ -148,5 +157,77 @@ where
             Ok(written) => return Ok(written),
             Err(unkept) => waits.wait(unkept).await?,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use key_group::{KeyGroup, MemberKey};
+
+    use super::super::{GroupKeys, GroupKeysAnswerFuture};
+    use super::*;
+
+    /// A device's keys of one group as they answer in turn: the first answer is the keys of a
+    /// genesis that loses, the next the winner's, and the last answers from then on.
+    struct Answers(Mutex<Vec<ContentKeys>>);
+
+    impl GroupKeys for Answers {
+        fn group_keys<'a>(
+            &'a self,
+            _workspace: &'a str,
+            _readers: &'a str,
+            _create: bool,
+        ) -> GroupKeysAnswerFuture<'a> {
+            let mut answers = self.0.lock().unwrap();
+            let keys = if answers.len() > 1 {
+                answers.remove(0)
+            } else {
+                answers[0].clone()
+            };
+            Box::pin(std::future::ready(Some(Ok(keys))))
+        }
+    }
+
+    fn created(group: &str) -> ContentKeys {
+        KeyGroup::create(
+            collab_types::WorkspaceId::parse(group).unwrap(),
+            MemberKey::generate(group).unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap()
+    }
+
+    /// Two devices created a group at once and this one's genesis lost: the keys its write
+    /// waited for are gone when it looks, and the winner's answer. The write is made again under
+    /// those, and only the same keys answering a second time ends it.
+    #[tokio::test]
+    async fn a_write_whose_keys_lost_to_another_genesis_is_made_again_under_the_winners() {
+        let group = collab_types::WorkspaceId::new().to_string();
+        let device: DeviceKeys =
+            Arc::new(Answers(Mutex::new(vec![created(&group), created(&group)])));
+        let wanted = || {
+            Unkept::Keys(WantedKeys::new(
+                &device,
+                group.clone(),
+                collab_types::EVERY_MEMBER.to_owned(),
+            ))
+        };
+        let mut waits = KeyWaits::default();
+        waits
+            .wait(wanted())
+            .await
+            .expect("the keys of its own genesis");
+        waits
+            .wait(wanted())
+            .await
+            .expect("the winner's keys: the write is made again");
+        let refused = waits
+            .wait(wanted())
+            .await
+            .expect_err("the same keys answering again would loop");
+        assert!(refused.contains("arrived and were gone again"), "{refused}");
     }
 }
