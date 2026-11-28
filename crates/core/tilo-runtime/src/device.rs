@@ -125,6 +125,7 @@ pub mod packages;
 mod page_media;
 #[cfg(test)]
 mod page_ticket_tests;
+mod paths;
 pub mod peer;
 pub(crate) mod presence;
 pub mod processes;

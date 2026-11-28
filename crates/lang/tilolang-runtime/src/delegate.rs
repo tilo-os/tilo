@@ -146,10 +146,11 @@ pub enum Invoked {
 pub trait Invoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked;
 
-    /// Calls the action `action` of `resource` (`tl:<app>:<path>`) with `arguments` on the
-    /// device's dispatch: what it answered, or why it refused. A host with no such line refuses.
-    fn call(&self, resource: &str, action: &str, arguments: &Json) -> Result<Json, String> {
-        let _ = (resource, action, arguments);
+    /// Calls the action `address` names (`so.tilo.notes/notes/n1#find`) with `arguments` on
+    /// the device's dispatch, which walks the address as an agent's call does: what it
+    /// answered, or why it refused. A host with no such line refuses.
+    fn call(&self, address: &str, arguments: &Json) -> Result<Json, String> {
+        let _ = (address, arguments);
         Err("This host calls no action by address".to_owned())
     }
 }

@@ -72,6 +72,21 @@ pub fn held() -> bool {
 /// # Errors
 /// The process has no line, the daemon refused the call, or did not answer in time.
 pub fn call(target: RemoteActionTarget, argument: Map<String, Value>) -> Result<Value, String> {
+    ask(InvokeRequest::plain(target, argument))
+}
+
+/// Call the action at the settled address `address` (`so.tilo.notes/notes/n1#find`) with
+/// `argument`: the daemon walks the address as an agent's call and the command line do, and
+/// calls the target that walk finds as this process's app.
+///
+/// # Errors
+/// As [`call`], and an address the walk does not resolve.
+pub fn call_at(address: &str, argument: Map<String, Value>) -> Result<Value, String> {
+    ask(InvokeRequest::at_path(address, argument))
+}
+
+/// Ask `request` on the daemon's line, as this process's app, and read its receipt.
+fn ask(request: InvokeRequest) -> Result<Value, String> {
     let line = line().get().ok_or_else(|| NO_LINE.to_owned())?;
     // The daemon knows the caller by the line: the call names nobody.
     let caller = Caller::local_person("");
@@ -80,7 +95,7 @@ pub fn call(target: RemoteActionTarget, argument: Map<String, Value>) -> Result<
         other => other.to_string(),
     };
     let answer = line
-        .invoke(&caller, InvokeRequest::plain(target, argument))
+        .invoke(&caller, request)
         .wait_timeout(ANSWERED_WITHIN)
         .map_err(|_| "Your computer's daemon did not answer in time".to_owned())?
         .ok_or_else(|| "Your computer's daemon did not answer".to_owned())?

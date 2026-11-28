@@ -243,7 +243,9 @@ impl Frames {
             let daemon = weak
                 .upgrade()
                 .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-            daemon.app_tree(&app, &workspace)
+            let (provider, caller) = daemon.app_tree(&app, &workspace)?;
+            let paths: Tree = Arc::new(super::paths::Paths::wrapping(provider, workspace.clone()));
+            Ok((paths, caller))
         })
         .answering_as(daemon, &at.app);
         frames.own_process = Some((Arc::new(own) as Tree, caller));

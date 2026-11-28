@@ -2918,7 +2918,6 @@ impl Hosted {
                     },
                 ),
                 platform: Rc::clone(&self.platform),
-                workspace: self.spec.workspace.clone(),
                 prefs: self
                     .callees
                     .apps
@@ -5478,8 +5477,6 @@ struct Apis {
     /// The platform packages this window reads: their resources are no records here, and what a
     /// view changes of one runs where the session serves it, before the calling action goes on.
     platform: Rc<RefCell<Roots>>,
-    /// The workspace whose dispatch a call by address reaches, on the daemon's line.
-    workspace: String,
     /// Where this app's own preferences are published (`settings/apps/<app>`), when it declares
     /// any: a field set on them is that field's setter in the settings service.
     prefs: Option<String>,
@@ -5601,31 +5598,13 @@ impl Invoker for Apis {
         self.calls.invoke(invocation)
     }
 
-    /// One action at the address the registry names, called on the daemon's line as this app.
-    fn call(&self, resource: &str, action: &str, arguments: &Json) -> Result<Json, String> {
-        let (app, published) = published_resource(resource)?;
+    /// One action at the settled address, called on the daemon's line as this app: the
+    /// dispatch walks the address as an agent's call does.
+    fn call(&self, address: &str, arguments: &Json) -> Result<Json, String> {
         let Some(arguments) = arguments.as_object().cloned() else {
             return Err("`call` takes its arguments as one object, by name".to_owned());
         };
-        let target = tilo_actions::remote::application_action_target(
-            &self.workspace,
-            &app,
-            published,
-            action,
-        );
-        crate::daemon_line::call(target, arguments)
-    }
-}
-
-/// The app publishing `resource` and the id its dispatch addresses it by, `tl:<app>:<path>`.
-fn published_resource(resource: &str) -> Result<(String, String), String> {
-    match tilolang_tilo::publish::split_published(resource) {
-        Some((app, path)) if !app.is_empty() && !path.is_empty() => {
-            Ok((app.to_owned(), resource.to_owned()))
-        }
-        _ => Err(format!(
-            "`{resource}` names no app: write it as `tl:<app>:<path>`"
-        )),
+        crate::daemon_line::call_at(address, arguments)
     }
 }
 

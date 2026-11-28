@@ -21,7 +21,7 @@ use tilo_lock::MutexRecover as _;
 use super::level::read_on;
 use super::{
     Address, Level, Node, Segment, TypeNames, app_meant, is_program_form, level_of, path_name,
-    pick, rank,
+    pick, pick_action, rank,
 };
 use crate::ActionDescriptor;
 use crate::InvocationId;
@@ -1474,6 +1474,31 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         self.resolve_with(parsed, None, usize::MAX)
             .await
             .map(|found| (found, false))
+    }
+
+    /// The target the settled address `path` names (`so.tilo.notes/notes/n1#find`), as an
+    /// agent's call resolves one: the app the path starts with, started where this caller may
+    /// and it runs nowhere, the resource its names walk to, and the action after `#` among what
+    /// that resource publishes. A caller that cannot name a provider itself asks the dispatch
+    /// for this, the one resolution every way in uses.
+    ///
+    /// # Errors
+    /// The path names no action, the walk does not reach the resource, or the resource offers
+    /// no action by that name.
+    pub async fn target_at(&self, path: &str) -> Result<crate::remote::RemoteActionTarget, String> {
+        let parsed = Address::parse(path)?;
+        let action = parsed.action.clone().ok_or_else(|| {
+            format!("`{path}` names no action: write `<app>/<resource>#<action>`")
+        })?;
+        let (resolved, _) = self
+            .resolve(&parsed, None)
+            .await
+            .map_err(|why| why.to_string())?;
+        let picked = pick_action(&action, &resolved.actions, &resolved.path)?;
+        Ok(crate::remote::RemoteActionTarget {
+            provider: resolved.provider,
+            address: picked.address.clone(),
+        })
     }
 
     /// [`Self::resolve`] reading the names a path segment may go by as `forms` says they are

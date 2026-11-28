@@ -816,7 +816,30 @@ impl InvokeRequest {
             asks: false,
         }
     }
+
+    /// A request for the settled address `path` (`so.tilo.notes/notes/n1#find`), which the
+    /// dispatch resolves in the walk ([`PATH_PROVIDER`]): for a caller that cannot name a
+    /// provider itself.
+    pub fn at_path(
+        path: impl Into<String>,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        let path = path.into();
+        let (resource, action) = path
+            .rsplit_once('#')
+            .map_or((path.as_str(), ""), |(resource, action)| (resource, action));
+        let target = RemoteActionTarget {
+            provider: PATH_PROVIDER.to_owned(),
+            address: ActionAddress::new(resource, action),
+        };
+        Self::plain(target, arguments)
+    }
 }
+
+/// The provider token a request names when it carries a settled address for the dispatch to
+/// walk (`so.tilo.notes/notes/n1#find`): a caller that cannot resolve one itself names
+/// this, and the serving dispatch calls the target the walk finds.
+pub const PATH_PROVIDER: &str = "path";
 
 /// Action id that closes a running application's windows in a workspace.
 pub const APPLICATION_CLOSE_ACTION: &str = "close";
@@ -2544,5 +2567,19 @@ mod tests {
         assert_eq!(unavailable.said(), "unavailable: service off");
         let owned_unavailable = String::from("service off");
         assert_eq!(ActionCallError::unavailable(owned_unavailable), unavailable);
+    }
+
+    /// A request that names a settled address carries it under [`PATH_PROVIDER`], with the
+    /// resource and action the address writes, so the dispatch serving it walks the address.
+    #[test]
+    fn a_path_request_names_the_address_for_the_dispatch_to_walk() {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("query".to_owned(), serde_json::json!("x"));
+        let request = InvokeRequest::at_path("so.tilo.notes/notes/n1#find", arguments);
+        assert_eq!(request.target.provider, PATH_PROVIDER);
+        assert_eq!(
+            request.target.address,
+            ActionAddress::new("so.tilo.notes/notes/n1", "find")
+        );
     }
 }

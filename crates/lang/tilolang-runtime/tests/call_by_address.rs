@@ -13,11 +13,11 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.probe "Probe"
 
 action find(arguments: json.Value) -> json.Value {
-    call("tl:so.tilo.notes:n1", "find", arguments)
+    call("so.tilo.notes/notes/n1", "find", arguments)
 }
 
 action try_find(arguments: json.Value) -> Text {
-    match try_call("tl:so.tilo.notes:n1", "find", arguments) {
+    match try_call("so.tilo.notes/notes/n1", "find", arguments) {
         .ok(found) => json.encode(found),
         .err(why) => why,
     }
@@ -34,10 +34,10 @@ action try_find(arguments: json.Value) -> Text {
             panic!("a call by address is the dispatch's call: {invocation:?}");
         }
 
-        fn call(&self, resource: &str, action: &str, arguments: &Json) -> Result<Json, String> {
-            let wanted = ("tl:so.tilo.notes:n1", "find", &json!({"query": "x"}));
-            if (resource, action, arguments) != wanted {
-                return Err(format!("unexpected call {resource}#{action} {arguments}"));
+        fn call(&self, address: &str, arguments: &Json) -> Result<Json, String> {
+            let wanted = ("so.tilo.notes/notes/n1#find", &json!({"query": "x"}));
+            if (address, arguments) != wanted {
+                return Err(format!("unexpected call {address} {arguments}"));
             }
             match self.refusal.borrow().clone() {
                 Some(why) => Err(why),

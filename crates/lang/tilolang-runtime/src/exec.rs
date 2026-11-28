@@ -3220,8 +3220,9 @@ impl Core {
         let (resource, action) = (self.text(resource_h)?, self.text(action_h)?);
         let arguments =
             crate::value::to_json(&self.val_whole(arguments_h)?).map_err(HostFail::Trap)?;
+        let address = format!("{resource}#{action}");
         let answer = self.journaled_read(|| match self.invoker.borrow().as_ref() {
-            Some(invoker) => match invoker.call(&resource, &action, &arguments) {
+            Some(invoker) => match invoker.call(&address, &arguments) {
                 Ok(value) => Ok(Value::Json(Box::new(value))),
                 Err(reason) => Ok(Value::Error(reason)),
             },
