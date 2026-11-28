@@ -280,8 +280,10 @@ impl Apps {
                 let answer = not_opened(policy, &asked, Some(&event.title), why, said, printed);
                 policy.not_opened(&asked, &event.title, answer)
             } else {
-                // In the tab its last window was in, where the person left it.
-                let tab = launch.and_then(|launch| launch.tab);
+                // In the tab its last window was in, where the person left it. A window that
+                // took the tab its launch held needs no window of its own to be known by: the
+                // tab the launch was asked for is where the person saw it.
+                let tab = launch.and_then(|launch| launch.tab.or(launch.instance));
                 policy.stopped(&asked, &event.title, closed, tab)
             }
         });

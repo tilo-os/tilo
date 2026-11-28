@@ -1188,8 +1188,12 @@ impl Spawner {
     fn report_gone(&mut self, dir: &Path, end: Option<End>) {
         let launch = crate::kept::written_launch(dir);
         let heard = end.or_else(|| crate::kept::recorded_end(dir));
-        let killed = heard.is_none();
         let end = heard.unwrap_or(End::KeeperStopped);
+        // An app that stopped working while no desktop was there — its keeper killed with no
+        // word, or the app ended by a signal — keeps its tab to say so; one that closed as it
+        // meant to leaves its saved tabs to close with it. Either way the restore places what it
+        // says, so this end opens no notice of its own.
+        let stopped = end.crashed();
         // What it wrote while no desktop read it is in its keeper's files, which go with the
         // directory: its end carries their tail, as one this desktop saw would.
         let said = launch
@@ -1209,8 +1213,8 @@ impl Spawner {
         };
         let id = self.next;
         self.next = self.next.wrapping_add(1);
-        if killed {
-            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, "not adopted: its keeper was killed while the desktop was away");
+        if stopped {
+            tracing::warn!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it stopped while the desktop was away");
             self.stopped.insert(id, launch.clone());
         } else {
             tracing::info!(target: tilo_startup_metrics::KEPT_APPS_TARGET, app = %launch.app, %end, "not adopted: it ended while the desktop was away");
@@ -1221,7 +1225,7 @@ impl Spawner {
             app: launch.app,
             title: launch.title,
             end,
-            killed,
+            killed: stopped,
             asked_to_end: false,
             said,
         });

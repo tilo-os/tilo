@@ -305,11 +305,19 @@ impl Restore {
         }
         #[cfg(target_os = "linux")]
         {
+            let waited = self
+                .kept_since
+                .is_some_and(|since| since.elapsed() >= KEPT_WAIT);
             let shown = self.outdated.len();
             for keeper in self.claim_kept(desktop) {
                 apps.attach_kept(keeper);
             }
-            self.claim_outdated(apps, shown);
+            // A card stands in the tab the app's window was in, as a kept window does: it waits
+            // for the workspaces' layouts, where those tabs are, rather than open a tab of its
+            // own before the shell holds them.
+            if self.read || waited {
+                self.claim_outdated(apps, shown);
+            }
             // Before the tabs are asked for: no app is started for one that says its app stopped.
             self.show_stopped(desktop);
         }
@@ -615,7 +623,7 @@ impl Restore {
         let waited = self
             .kept_since
             .is_some_and(|since| since.elapsed() >= KEPT_WAIT);
-        if self.stopped.is_empty() || !(self.seeded || waited) {
+        if self.stopped.is_empty() || !(self.read || waited) {
             return;
         }
         for launch in std::mem::take(&mut self.stopped) {
