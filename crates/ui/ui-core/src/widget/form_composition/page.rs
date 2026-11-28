@@ -8,6 +8,7 @@ use super::{
     PageLayout, Parts, Point, Scrollable, TaffyTree, Text, TextRenderer, TextRole, Theme, Widget,
     column_style, fr, length, minmax, percent, spacing,
 };
+use tilo_ui_base::component::{Component, Described};
 use tilo_ui_base::tokens::Rhythm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -561,9 +562,7 @@ fn title_text(title: &str) -> Element {
 macro_rules! framed_page {
     ($ty:ty, $name:literal) => {
         impl Widget for $ty {
-            fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-                Some(self)
-            }
+            tilo_ui_base::described!();
             fn layout_info(&self) -> Option<LayoutInfo> {
                 self.effective_layout().map(LayoutInfo::Page)
             }
@@ -594,3 +593,33 @@ macro_rules! framed_page {
 
 framed_page!(Page, "Page");
 framed_page!(FormPage, "FormPage");
+
+/// A page of sections: what it holds stands on the readable column at the leading edge of the
+/// column it fills, a group apart, scrolling when it is taller than the room. The shell's header
+/// titles it, so the page carries no title of its own.
+#[derive(Component, Default)]
+#[component(
+    name = "Page",
+    role = "Group",
+    not_in_gallery = "a page is a window's whole content column, which the gallery's own content column already fills: a page inside it counts the page's gutter twice"
+)]
+pub struct PageProps {
+    /// What the page holds, in order: a `Section`, a group of rows, a card grid. The first stands
+    /// at the page's top and each one after it a group under the one over it.
+    #[component(part(default))]
+    pub content: Vec<Element>,
+}
+
+impl Described for Page {
+    type Props = PageProps;
+
+    fn from_props(_key: &str, props: PageProps) -> Self {
+        props.content.into_iter().fold(Self::new(), Self::section)
+    }
+
+    /// What it takes is set when it is built: its sections are its part, which the host changes by
+    /// building the page again.
+    fn set_props(&mut self, _props: PageProps) -> bool {
+        true
+    }
+}

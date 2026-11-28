@@ -3571,6 +3571,23 @@
       }
     },
     {
+      "name": "Page",
+      "doc": "A page of sections: what it holds stands on the readable column at the leading edge of the column it fills, a group apart, scrolling when it is taller than the room. The shell's header titles it, so the page carries no title of its own.",
+      "parts": [
+        {
+          "name": "content",
+          "doc": "What the page holds, in order: a `Section`, a group of rows, a card grid. The first stands at the page's top and each one after it a group under the one over it.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "not_in_gallery": "a page is a window's whole content column, which the gallery's own content column already fills: a page inside it counts the page's gutter twice"
+      }
+    },
+    {
       "name": "Fullscreen",
       "doc": "A view shown filling the audience's screen while it is presented.",
       "props": [

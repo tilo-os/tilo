@@ -1085,7 +1085,8 @@ impl Reconciler {
         if crate::adapter::component_name(&node.kind).is_some() {
             // A component lays its own parts out: a call of a view it holds takes the gap of the
             // component's part, never of the layout the component stands in.
-            let around = self.gap_around.take();
+            let around = self.gap_around;
+            self.gap_around = Some(self.parts_gap(node));
             let built = self.component(node);
             self.gap_around = around;
             return built;
@@ -1258,7 +1259,12 @@ impl Reconciler {
             else {
                 return Some(self.build(new_node));
             };
+            // A call of a view among them takes the gap of the component's part, as one it builds
+            // with does ([`Self::build_kind`]).
+            let around = self.gap_around;
+            self.gap_around = Some(self.parts_gap(new_node));
             self.reconcile_views(views, &old, &new);
+            self.gap_around = around;
         }
         // A part of components whose own views changed (a run's items, each holding a view of its
         // own): the part's views change where they stand, so the widget keeps what they hold
@@ -1488,8 +1494,9 @@ impl Reconciler {
             "fragment" => rhythm(parent, "gap", self.gap_around.unwrap_or(Rhythm::Tight)),
             "scroll" => Rhythm::Sibling,
             // A page's parts stand its content gutter apart, as the toolkit's pages and the form
-            // composition's page space their sections.
-            "page" => Rhythm::Group,
+            // composition's page space their sections; the toolkit's `ui.Page` holds the same
+            // sections, so a call of a view it holds takes their spacing.
+            "page" | "ui.Page" => Rhythm::Group,
             _ => Rhythm::Tight,
         }
     }
@@ -3526,11 +3533,47 @@ mod tests {
             (in_page - sections).abs() < 0.5,
             "a page lays its parts a group apart: {in_page} against {sections}"
         );
+        let in_toolkit_page = spread("ui.Page", None, vec![call(None)]);
+        assert!(
+            (in_toolkit_page - sections).abs() < 0.5,
+            "a call under the toolkit's page takes its sections' gap: {in_toolkit_page} against \
+             {sections}"
+        );
         let own = spread("stack", Some("group"), vec![call(Some("tight"))]);
         let tight = apart("tight");
         assert!(
             (own - tight).abs() < 0.5,
             "a call that writes its own gap keeps it: {own} against {tight}"
+        );
+    }
+
+    /// A pane's call comes into a page the view already built: the call built where it stands
+    /// takes the page's gap, as one the page was built under does.
+    #[test]
+    fn a_view_call_put_under_a_toolkit_page_takes_its_gap() {
+        fn page(call: &str) -> UiNode {
+            let mut body = node("fragment", call);
+            body.children = vec![
+                text(&format!("{call}~above"), "Above"),
+                text(&format!("{call}~below"), "Below"),
+            ];
+            UiNode {
+                children: vec![body],
+                ..node("ui.Page", "page")
+            }
+        }
+        let (old, new) = (page("one"), page("two"));
+        let mut reconciler = reconciler();
+        let built = reconciler.build(&old);
+        let updated = reconciler.update(built, &old, &new);
+        let harness =
+            ui::headless::Driver::new(ui::State::new(), window_content(updated), (500, 600));
+        let rects: std::collections::BTreeMap<String, ui::vello::kurbo::Rect> =
+            harness.targets().into_iter().collect();
+        let gap = rects["two~below"].y0 - rects["two~above"].y1;
+        assert!(
+            (gap - 24.0).abs() < 0.5,
+            "the call put in the page stands its sections a group apart: {gap}"
         );
     }
 
