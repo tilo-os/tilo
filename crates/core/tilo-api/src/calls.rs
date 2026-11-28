@@ -698,6 +698,7 @@ impl Calls {
         group: Option<Value>,
     ) -> Result<Value, ApiError> {
         let until = Instant::now().checked_add(READY_DEADLINE);
+        let mut told = false;
         loop {
             // Boxed: each way's call nests deep, and a command's futures are laid out whole.
             match Box::pin(self.typed_once(workspace, tool, arguments.clone(), group.clone())).await
@@ -707,6 +708,10 @@ impl Calls {
                     if matches!(refused.body.code.as_str(), "not_ready" | "unanswered")
                         && until.is_some_and(|until| Instant::now() < until) =>
                 {
+                    // A person waiting on a computer that is still starting is told it is.
+                    if !std::mem::replace(&mut told, true) {
+                        eprintln!("tilo: Tilo is still starting on this computer; waiting for it");
+                    }
                     let pause = refused
                         .body
                         .retry_after_ms

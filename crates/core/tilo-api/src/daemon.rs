@@ -299,21 +299,33 @@ impl DaemonPlace {
         founding: Option<&Founding>,
     ) -> Result<Option<serde_json::Value>, String> {
         let socket = &self.native;
-        let deadline = Instant::now()
+        let mut deadline = Instant::now()
             .checked_add(within)
             .unwrap_or_else(Instant::now);
-        let mut started = false;
+        let (mut started, mut joining) = (false, false);
         loop {
             if tilo_files::native::socket::connect(socket).is_ok() {
-                // A device no person's certificate names serves nobody yet: its own account
-                // founds its person here, as its first command always has.
-                if !self.system && who::who().is_ok_and(|who| !who.claimed) {
-                    return founding.map_or_else(
-                        || self.found(&Founding::default()),
-                        |founding| self.found(founding),
-                    );
+                let unclaimed = (!self.system).then(who::who).and_then(Result::ok);
+                match unclaimed.filter(|who| !who.claimed) {
+                    // A device no person's certificate names serves nobody yet: its own account
+                    // founds its person here, as its first command always has.
+                    Some(who) if who.person.is_none() => {
+                        return founding.map_or_else(
+                            || self.found(&Founding::default()),
+                            |founding| self.found(founding),
+                        );
+                    }
+                    // One their certificate names is still taking it up (a server spending the
+                    // ticket it started with): it is waited for, never asked to found a person,
+                    // and taking it up has a wait of its own.
+                    Some(_) => {
+                        if !std::mem::replace(&mut joining, true) {
+                            deadline = Instant::now().checked_add(within).unwrap_or(deadline);
+                            eprintln!("tilo: this computer is still joining your devices; waiting");
+                        }
+                    }
+                    None => return Ok(None),
                 }
-                return Ok(None);
             }
             if self.starts && !started && !self.alive() {
                 started = true;
