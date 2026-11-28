@@ -269,6 +269,7 @@ d-fg57jp5b = Später ansehen~present
 d-h6g3amy7 = Suchen~present
 
 d-mufcicuu = Feed
+    .w-your-queue-and-history-are-still = Deine Warteschlange und dein Verlauf sind noch hier.
     .w-youtube = YouTube
     .w-search-youtube = YouTube durchsuchen
     .w-subscriptions = Abonnements
@@ -353,6 +354,7 @@ d-5oxdbju7 = Gefällt mir
     .doc = Die Kommentare, denen die Person gefällt, nach dem Schlüssel des Kommentars: ihre eigenen, beim Arbeitsbereich behalten.
 
 d-w7mpbzm4 = Videoseite
+    .w-skip = { $kind_name } überspringen
     .w-like-the-comment = Kommentar gefällt mir
     .w-play = Abspielen
     .w-unsubscribe = Abonnement beenden
@@ -688,6 +690,8 @@ d-qynvz25p-filter-comments = Kommentare
 d-qynvz25p-filter-speed = Geschwindigkeit
 
 d-pol5o6e3 = Einstellungen
+    .w-replace-titles = Titel ersetzen
+    .w-replace-pictures = Bilder ersetzen
     .w-playback = Wiedergabe
     .w-play-the-next-video-on-its = Nächstes Video von selbst abspielen
     .w-show-comments = Kommentare zeigen
@@ -913,3 +917,57 @@ d-v4uvkmjd = Gerät koppeln~present
 d-oxlndeat = Gerät freigeben~present
 
 d-ca7eyfuf = Jetzt abgleichen~present
+
+d-33leryeo = DeArrow-Vorschaubilder
+    .doc = Die Bilder der Community zeigen, wo DeArrow welche hat, wenn DeArrow überhaupt an ist.
+
+d-mp7srcur = Abschnitte
+    .doc = Wie mit jeder Art markierter Abschnitte umgegangen wird, nach der Art, die SponsorBlock nennt: „skip“ (überspringen), „show“ (mit einer Schaltfläche zum Überspringen markiert, nie von selbst übersprungen) oder „disabled“. Eine Art, die fehlt, wird übersprungen.
+
+d-kjvstsjk = DeArrow-Titel
+    .doc = Die Titel der Community zeigen, wo DeArrow welche hat, wenn DeArrow überhaupt an ist.
+
+d-6fuioukm = Community-Titel
+    .doc = Ob ein Video die Titel der Community zeigt, wo DeArrow welche hat.
+
+d-6fuioukm-on = An
+
+d-osu25zii = Community-Bilder
+    .doc = Ob ein Video die Bilder der Community zeigt, wo DeArrow welche hat.
+
+d-osu25zii-on = An
+
+d-kh6faioq = Eine Art markierter Abschnitt
+    .doc = Wie mit den Abschnitten einer Art umgegangen wird: „skip“, „show“ oder „disabled“.
+    .w-is-not-a-kind-sponsorblock-marks = { $category } ist keine Art, die SponsorBlock markiert
+    .w-is-not-a-way-to-handle = { $mode } ist keine Behandlung für einen Abschnitt
+
+d-kh6faioq-category = Art
+
+d-kh6faioq-mode = Behandlung
+
+d-k6qykpuo = Behandlungsname
+    .w-skip = Überspringen
+    .w-show = Zeigen
+    .w-off = Aus
+
+d-rcds4j7t = Artname
+    .w-sponsor = Sponsor
+    .w-self-promotion = Eigenwerbung
+    .w-interaction = Interaktion
+    .w-intro = Intro
+    .w-outro = Outro
+    .w-preview = Vorschau
+    .w-music-off-topic = Musik (off-topic)
+    .w-filler = Füller
+
+d-oevhnobc = Abschnittsart setzen~present
+
+d-ts6c2joa = Den Abschnitt überspringen
+    .doc = Überspringt den Abschnitt, den der Player neben seinem Bild anbietet, wo die Person eine Art lieber markiert als überspringt: die Abspielmarke springt an sein Ende.
+
+d-ts6c2joa-at = Bei
+
+d-qynvz25p-filter-dearrow_titles = DeArrow-Titel
+
+d-qynvz25p-filter-dearrow_thumbnails = DeArrow-Vorschaubilder

@@ -187,6 +187,88 @@ mod cases {
             )
         }
 
+        /// A video whose maker's title and picture differ from the community's: what `DeArrow`
+        /// offers, and what the settings decide between.
+        fn branded_video(
+            &self,
+            key: &str,
+            title: &str,
+            channel_key: &str,
+            name: &str,
+        ) -> ResourceRef {
+            seed_origin(
+                &self.rt,
+                "youtube.video",
+                &self.yt,
+                &field_id(&self.app, "YouTube", "videos"),
+                &type_id(&self.app, "Video"),
+                vec![
+                    ("key", Value::text(key)),
+                    ("title", Value::text(title)),
+                    ("channel_key", Value::text(channel_key)),
+                    ("channel_name", Value::text(name)),
+                    ("duration", Value::Int(600)),
+                    ("published", Value::text("2026-11-01T12:00:00Z")),
+                    (
+                        "stream",
+                        Value::text(format!("https://video.example/{key}.mp4")),
+                    ),
+                    (
+                        "thumbnail",
+                        Value::text(format!("https://img.example/{key}-maker.jpg")),
+                    ),
+                    (
+                        "dearrow_title",
+                        Value::text(format!("The community's {key}")),
+                    ),
+                    (
+                        "dearrow_thumbnail",
+                        Value::text(format!("https://img.example/{key}-community.jpg")),
+                    ),
+                ],
+            )
+        }
+
+        /// One `SponsorBlock` segment of `video`, from `start` to `end` seconds.
+        fn segment(&self, key: &str, video: &str, category: &str, start: i64, end: i64) {
+            seed_origin(
+                &self.rt,
+                "youtube.segment",
+                &self.yt,
+                &field_id(&self.app, "YouTube", "segments"),
+                &type_id(&self.app, "Segment"),
+                vec![
+                    ("key", Value::text(key)),
+                    ("video_key", Value::text(video)),
+                    ("category", Value::text(category)),
+                    ("start", Value::Int(start)),
+                    ("end", Value::Int(end)),
+                    ("votes", Value::Int(4)),
+                ],
+            );
+        }
+
+        /// Runs the app's scenario `name`, which answers the resource it names.
+        fn scenario(&self, name: &str) -> ResourceRef {
+            let action = self
+                .app
+                .meta()
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.name == name)
+                .unwrap_or_else(|| panic!("no scenario {name}"))
+                .action
+                .clone();
+            match self
+                .rt
+                .invoke_action(&me(), (action.as_str(), vec![]))
+                .unwrap()
+            {
+                InvokeOutcome::Done(Value::Ref(at)) => std::rc::Rc::unwrap_or_clone(at.target),
+                other => panic!("the scenario {name} answers: {other:?}"),
+            }
+        }
+
         fn comment(&self, key: &str, video_key: &str, text: &str) -> ResourceRef {
             seed_origin(
                 &self.rt,
@@ -917,5 +999,203 @@ mod cases {
             );
             assert!(app.devices().is_empty(), "nothing was recorded");
         }
+    }
+    tilo_test_env::scenario! {
+        fn each_kind_of_marked_segment_has_its_own_handling;
+
+        phase the_defaults_skip_the_kinds_and_the_person_changes_one_at_a_time;
+        {
+            let w = Watch::new();
+            w.channel("mkbhd", "MKBHD");
+            let first = w.video("v1", "A week on one charge", "mkbhd", "MKBHD");
+            // A six hundred second video: an intro, a sponsor read and filler.
+            w.segment("s-intro", "v1", "intro", 0, 10);
+            w.segment("s-sponsor", "v1", "sponsor", 120, 180);
+            w.segment("s-filler", "v1", "filler", 300, 330);
+
+            // Every kind is skipped until the person says otherwise: the sponsor read at a
+            // quarter of the way in is passed.
+            w.call_and_approve(
+                "skip_segment",
+                vec![Value::resource(&first), Value::Float(0.25)],
+            );
+            assert_eq!(
+                history_progress(&w, "v1").to_bits(),
+                0.3_f64.to_bits(),
+                "the playhead moved to the sponsor read's end"
+            );
+
+            // Filler is marked rather than skipped, and the intro is ignored.
+            w.call(
+                "set_segment_mode",
+                vec![
+                    Value::resource(&w.yt),
+                    Value::text("filler"),
+                    Value::text("show"),
+                ],
+            );
+            w.call(
+                "set_segment_mode",
+                vec![
+                    Value::resource(&w.yt),
+                    Value::text("intro"),
+                    Value::text("disabled"),
+                ],
+            );
+            let second = w.video("v2", "Three cameras, one question", "mkbhd", "MKBHD");
+            w.segment("s2-intro", "v2", "intro", 0, 10);
+            w.segment("s2-filler", "v2", "filler", 300, 330);
+            w.segment("s2-sponsor", "v2", "sponsor", 120, 180);
+            w.call_and_approve(
+                "skip_segment",
+                vec![Value::resource(&second), Value::Float(0.01)],
+            );
+            assert_eq!(
+                history_progress(&w, "v2").to_bits(),
+                0.0_f64.to_bits(),
+                "an ignored kind is not skipped, and nothing is watched"
+            );
+            w.call_and_approve(
+                "skip_segment",
+                vec![Value::resource(&second), Value::Float(0.52)],
+            );
+            assert_eq!(
+                history_progress(&w, "v2").to_bits(),
+                0.0_f64.to_bits(),
+                "a kind the person chose to see is never skipped on its own"
+            );
+            w.call_and_approve(
+                "skip_segment",
+                vec![Value::resource(&second), Value::Float(0.25)],
+            );
+            assert_eq!(
+                history_progress(&w, "v2").to_bits(),
+                0.3_f64.to_bits(),
+                "a kind left alone is still skipped"
+            );
+
+            // The press the player offers for a kind shown rather than skipped skips it: the
+            // playhead moves to the filler's end.
+            w.call_and_approve(
+                "skip_marked",
+                vec![Value::resource(&second), Value::Float(0.52)],
+            );
+            assert_eq!(
+                history_progress(&w, "v2").to_bits(),
+                0.55_f64.to_bits(),
+                "the press moves the playhead to the filler's end"
+            );
+            // It skips nothing where the kind is one the player handles on its own.
+            w.call_and_approve(
+                "skip_marked",
+                vec![Value::resource(&second), Value::Float(0.25)],
+            );
+            assert_eq!(
+                history_progress(&w, "v2").to_bits(),
+                0.55_f64.to_bits(),
+                "a skipped kind is not the button's"
+            );
+        }
+
+        phase dearrow_titles_and_pictures_are_two_switches;
+        {
+            let w = Watch::new();
+            w.channel("mkbhd", "MKBHD");
+            let video = w.branded_video("v1", "A week on one charge", "mkbhd", "MKBHD");
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let said = Watch::texts(&page);
+            assert!(
+                said.iter().any(|t| t == "The community's v1"),
+                "both halves on reads the community's title: {said:?}"
+            );
+            assert!(poster(&page) == Some("https://img.example/v1-community.jpg".to_owned()));
+
+            // Titles off alone: the maker's title, the community's picture still.
+            w.call("set_dearrow_titles", vec![Value::resource(&w.yt), Value::Bool(false)]);
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let said = Watch::texts(&page);
+            assert!(
+                said.iter().any(|t| t == "A week on one charge"),
+                "titles off reads the maker's: {said:?}"
+            );
+            assert_eq!(
+                poster(&page),
+                Some("https://img.example/v1-community.jpg".to_owned()),
+                "the picture is still the community's"
+            );
+
+            // Pictures off as well: the maker's picture, and the title stays the maker's.
+            w.call(
+                "set_dearrow_thumbnails",
+                vec![Value::resource(&w.yt), Value::Bool(false)],
+            );
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            assert_eq!(
+                poster(&page),
+                Some("https://img.example/v1-maker.jpg".to_owned()),
+                "pictures off reads the maker's"
+            );
+            // Titles back on alone reads the community's title again.
+            w.call("set_dearrow_titles", vec![Value::resource(&w.yt), Value::Bool(true)]);
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            assert!(
+                Watch::texts(&page)
+                    .iter()
+                    .any(|t| t == "The community's v1"),
+                "titles on alone reads the community's"
+            );
+        }
+
+        phase a_service_that_cannot_be_reached_says_what_is_still_here;
+        {
+            let w = Watch::new();
+            let _ = w.scenario("YouTube cannot be reached");
+            let page = w.open("feed", vec![Value::resource(&w.yt)]);
+            let banner = of_kind(page.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("the notice stands over the place");
+            assert_eq!(
+                text_prop(banner, "title"),
+                "Can't reach YouTube",
+                "the notice names the service"
+            );
+            let said = Watch::texts(&page);
+            assert!(
+                said.iter()
+                    .any(|t| t == "Your queue and history are still here."),
+                "and says what still works: {said:?}"
+            );
+        }
+    }
+
+    /// The poster the video page shows, as the address it reads.
+    fn poster(page: &ViewInstance) -> Option<String> {
+        of_kind(page.tree(), "ui.Image")
+            .into_iter()
+            .find_map(|image| match image.props.get("src") {
+                Some(Value::Text(src)) => Some(src.clone()),
+                _ => None,
+            })
+    }
+
+    /// How far into the video keyed `key` the person's history says they got.
+    fn history_progress(w: &Watch, key: &str) -> f64 {
+        let held = match w.rt.read(&w.yt, "history").unwrap() {
+            Value::List(items) => items,
+            other => panic!("history reads {other:?}"),
+        };
+        for item in held {
+            let Value::Ref(at) = item else { continue };
+            let at = std::rc::Rc::unwrap_or_clone(at.target);
+            if w.rt.read(&at, "key").unwrap() != Value::text(key) {
+                continue;
+            }
+            return match w.rt.read(&at, "progress").unwrap() {
+                Value::Float(progress) => progress,
+                other => panic!("progress reads {other:?}"),
+            };
+        }
+        0.0
     }
 }

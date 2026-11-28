@@ -200,6 +200,14 @@ type PlaybackPrefs {
     sponsorblock: Bool = true
     /// Show the community's titles and pictures where DeArrow has them.
     dearrow: Bool = true
+    /// Show the community's titles where DeArrow has them, when DeArrow is on at all.
+    dearrow_titles: Bool = true
+    /// Show the community's pictures where DeArrow has them, when DeArrow is on at all.
+    dearrow_thumbnails: Bool = true
+    /// How each kind of marked segment is handled, by the kind SponsorBlock names: `skip`,
+    /// `show` (marked with a Skip button, never skipped on its own) or `disabled`. A kind left
+    /// out is skipped.
+    segments: Map<Text>
     /// Show how many people disliked a video, as Return YouTube Dislike estimates it.
     dislikes: Bool = true
     /// Show the comments under a video.
@@ -488,16 +496,16 @@ fn quality_of(yt: YouTube, who: Actor) -> Text {
 /// has one, else its maker's.
 fn shown_title(yt: YouTube, v: Video, who: Actor) -> Text {
     let pref = prefs_for(yt, who)
-    if (pref?.dearrow ?? true) and v.dearrow_title != "" { v.dearrow_title } else { v.title }
+    let shown = (pref?.dearrow ?? true) and (pref?.dearrow_titles ?? true)
+    if shown and v.dearrow_title != "" { v.dearrow_title } else { v.title }
 }
 
 /// The picture the video is drawn with: the community's when the person shows one and it has
 /// one, else its maker's still.
 fn shown_picture(yt: YouTube, v: Video, who: Actor) -> Text {
     let pref = prefs_for(yt, who)
-    if (pref?.dearrow ?? true) and v.dearrow_thumbnail != "" {
-        v.dearrow_thumbnail
-    } else { v.thumbnail }
+    let shown = (pref?.dearrow ?? true) and (pref?.dearrow_thumbnails ?? true)
+    if shown and v.dearrow_thumbnail != "" { v.dearrow_thumbnail } else { v.thumbnail }
 }
 
 /// The video's comments, most liked first.
@@ -510,8 +518,17 @@ fn replies_to(yt: YouTube, comment: Text) -> List<Reply> {
     yt.replies.filter(r -> r.comment == comment).sort_by(.said)
 }
 
+/// How the segments of `category` are handled, as the person chose: a kind they left alone is
+/// skipped.
+fn kind_mode(pref: Option<PlaybackPrefs>, category: Text) -> Text {
+    match pref {
+        .none => "skip",
+        .some(held) => held.segments.get(category) ?? "skip",
+    }
+}
+
 /// The SponsorBlock segment of the video that `at` (a share of its length) falls in, when the
-/// person skips the segments the community marks: the one that plays there, if any.
+/// person skips the segments of its kind: the one that plays there, if any.
 fn segment_at(yt: YouTube, v: Video, at: Float, who: Actor) -> Option<Segment> {
     let pref = prefs_for(yt, who)
     if not (pref?.sponsorblock ?? true) {
@@ -520,10 +537,53 @@ fn segment_at(yt: YouTube, v: Video, at: Float, who: Actor) -> Option<Segment> {
     let seconds = at * v.duration.to_float()
     yt.segments.find(
         s -> s.video_key == v.key
-            and s.category != "filler"
+            and kind_mode(pref, s.category) == "skip"
             and seconds >= s.start.to_float()
             and seconds < s.end.to_float(),
     )
+}
+
+/// The segment of the video that `at` falls in whose kind the person chose to see marked: the
+/// player offers it a Skip button, and never skips it on its own.
+fn segment_offered(yt: YouTube, v: Video, at: Float, who: Actor) -> Option<Segment> {
+    let pref = prefs_for(yt, who)
+    if not (pref?.sponsorblock ?? true) {
+        return .none
+    }
+    let seconds = at * v.duration.to_float()
+    yt.segments.find(
+        s -> s.video_key == v.key
+            and kind_mode(pref, s.category) == "show"
+            and seconds >= s.start.to_float()
+            and seconds < s.end.to_float(),
+    )
+}
+
+/// The kinds SponsorBlock marks, in the order the settings list them.
+fn segment_kinds() -> List<Text> {
+    ["sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "music_offtopic", "filler"]
+}
+
+/// What handling `mode` is called, as the settings offer it.
+fn mode_name(mode: Text) -> Text {
+    if mode == "skip" { "Skip" } else if mode == "show" { "Show" } else { "Off" }
+}
+
+/// What a kind of marked segment is called, as a person reads it.
+fn kind_name(category: Text) -> Text {
+    if category == "sponsor" {
+        "Sponsor"
+    } else if category == "selfpromo" {
+        "Self-promotion"
+    } else if category == "interaction" {
+        "Interaction"
+    } else if category == "intro" {
+        "Intro"
+    } else if category == "outro" {
+        "Outro"
+    } else if category == "preview" {
+        "Preview"
+    } else if category == "music_offtopic" { "Music (off-topic)" } else { "Filler" }
 }
 
 /// Which kinds a search shows, as the person narrowed it: `all` shows every kind.
@@ -763,6 +823,17 @@ action skip_segment(v: Video, at: Float) uses time (
     }
 }
 
+/// Skips the segment the player offers beside its picture, where the person chose a kind to be
+/// marked rather than skipped: the playhead moves to its end.
+action skip_marked(v: Video, at: Float) uses time (icon: .skip_forward, label: "Skip the segment") {
+    let yt = root YouTube
+    if let segment = segment_offered(yt, v, at, invoker) {
+        if v.duration > 0 {
+            progress(v, segment.end.to_float() / v.duration.to_float())
+        }
+    }
+}
+
 /// Takes one video out of the person's own history.
 destructive action forget(v: Video) (icon: .trash, label: "Delete from history") {
     let yt = root YouTube
@@ -903,6 +974,47 @@ action set_dearrow(yt: YouTube, on: Bool) (
     } else {
         let made = yt.playback.insert(PlaybackPrefs(member: mine))
         made.dearrow = on
+    }
+}
+
+/// How the segments of one kind are handled: `skip`, `show` or `disabled`.
+action set_segment_mode(yt: YouTube, category: Text, mode: Text) (
+    icon: .skip_forward,
+    label: "A kind of marked segment",
+) {
+    require segment_kinds().contains(category) "{category} is not a kind SponsorBlock marks"
+    require mode == "skip" or mode == "show" or mode == "disabled" "{mode} is not a way to handle a segment"
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.segments.put(category, mode)
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.segments.put(category, mode)
+    }
+}
+
+/// Whether a video shows the community's titles where DeArrow has them.
+action set_dearrow_titles(yt: YouTube, on: Bool) (icon: .pen_tool, label: "Community titles") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.dearrow_titles = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.dearrow_titles = on
+    }
+}
+
+/// Whether a video shows the community's pictures where DeArrow has them.
+action set_dearrow_thumbnails(yt: YouTube, on: Bool) (
+    icon: .pen_tool,
+    label: "Community pictures",
+) {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.dearrow_thumbnails = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.dearrow_thumbnails = on
     }
 }
 
@@ -1458,6 +1570,24 @@ view feed(yt: YouTube) {
         content: {
             scroll {
                 page(full) {
+                    // YouTube unreachable says so over whichever place the person stands on, in
+                    // the service's own words, and the way to ask again: what the workspace
+                    // keeps is still here to watch, queue and read.
+                    if not yt.online or yt.trouble != "" {
+                        std.service_banner(
+                            "YouTube",
+                            yt.online,
+                            yt.trouble,
+                            retry: refresh_feed(yt),
+                        )
+                        if not yt.online {
+                            text(
+                                "Your queue and history are still here.",
+                                role: .caption,
+                                secondary: true,
+                            )
+                        }
+                    }
                     if here == "search" {
                         search_results(yt)
                     } else if here == "history" {
@@ -1512,19 +1642,7 @@ view feed(yt: YouTube) {
                             }
                         }
                     } else {
-                        // The videos under it are what was last fetched: the notice says why
-                        // YouTube does not stand well, in YouTube's own words, and `Try again`
-                        // reads the feed again. The column's own gap holds the notice over the
-                        // grid, so the card keeps its distance above and below alike.
-                        stack(gap: .group) {
-                            std.service_banner(
-                                "YouTube",
-                                yt.online,
-                                yt.trouble,
-                                retry: refresh_feed(yt),
-                            )
-                            video_grid(subs, "")
-                        }
+                        video_grid(subs, "")
                     }
                 }
             }
@@ -1845,6 +1963,22 @@ view video_page(v: Video) {
                     }
                 }
             } else if held {
+                // Where the person chose to see a kind of segment rather than have it skipped,
+                // the button stands over the picture and nothing moves until they press it.
+                if let playing = p {
+                    // The card keeps where it stands in seconds; a segment is found by the share
+                    // of the video it covers.
+                    let share = if v.duration > 0 {
+                        playing.at / v.duration.to_float()
+                    } else { 0.0 }
+                    if let segment = segment_offered(yt, v, share, mine) {
+                        stack(at: .bottom_trailing, padding: .related) {
+                            ui.Button("Skip {kind_name(segment.category)}", icon: .skip_forward) {
+                                on press: skip_marked(v, share)
+                            }
+                        }
+                    }
+                }
                 // The session is playing this video: the player is the session's own, so the
                 // live card, the media keys and another device move the same playhead.
                 if let playing = p {
@@ -2150,11 +2284,31 @@ view settings_page(yt: YouTube) {
             ) {
                 on check(on): set_sponsorblock(yt, on)
             }
+            // Each kind the community marks is handled on its own: skipped, marked with a Skip
+            // button, or ignored.
+            for kind in segment_kinds() {
+                row(gap: .tight, align: .center, wrap: true) {
+                    text(kind_name(kind), role: .caption, fill: 1.0)
+                    for mode in ["skip", "show", "disabled"] {
+                        ui.Button(mode_name(mode), toggled: kind_mode(prefs, kind) == mode) {
+                            on press: set_segment_mode(yt, kind, mode)
+                        }
+                    }
+                }
+            }
             ui.Toggle(
                 shown: prefs?.dearrow ?? true,
                 label: "Community titles and pictures (DeArrow)",
             ) {
                 on check(on): set_dearrow(yt, on)
+            }
+            if prefs?.dearrow ?? true {
+                ui.Toggle(shown: prefs?.dearrow_titles ?? true, label: "Replace titles") {
+                    on check(on): set_dearrow_titles(yt, on)
+                }
+                ui.Toggle(shown: prefs?.dearrow_thumbnails ?? true, label: "Replace pictures") {
+                    on check(on): set_dearrow_thumbnails(yt, on)
+                }
             }
             text(
                 "Dislike counts come from Return YouTube Dislike, as its users voted.",
