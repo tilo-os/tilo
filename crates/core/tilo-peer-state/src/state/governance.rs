@@ -26,29 +26,6 @@ impl GovernanceHeads {
                 .is_some_and(|doc| doc.has_change(&automerge::ChangeHash(*head)))
         })
     }
-
-    /// Whether this state holds a change for every head an op names
-    /// ([`collab_types::SignedOp::governance`]). Asked only of a change that
-    /// would be refused: a head that is one of the governance's own is found
-    /// at once, an older one by a pass over its change hashes.
-    #[must_use]
-    pub fn holds_named(&self, heads: &[[u8; 4]]) -> bool {
-        let Some(doc) = self.0.as_ref() else {
-            return heads.is_empty();
-        };
-        let current: Vec<_> = automerge::transaction::Transactable::base_heads(&**doc)
-            .iter()
-            .map(|head| collab_types::governance_head(&head.0))
-            .collect();
-        heads.iter().all(|head| {
-            current.contains(head)
-                || doc
-                    .committed_document()
-                    .change_hashes()
-                    .iter()
-                    .any(|hash| collab_types::governance_head(&hash.0) == *head)
-        })
-    }
 }
 
 impl PeerGovernance<'_> {
@@ -219,32 +196,6 @@ impl PeerGovernance<'_> {
                     .map(|member| (device, member))
             })
             .collect())
-    }
-    /// Current member access, derived from the workspace's member set: its
-    /// members by their roots, and the devices of theirs it lists now.
-    ///
-    /// [`Self::access_of`], and how many times deriving it walked the
-    /// workspace's certificates and grants: the tests hold that to one walk
-    /// however many devices the workspace names, a count that does not pass by
-    /// waiting longer.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::access_of`].
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn access_of_with_walks(
-        self,
-        devices: &[[u8; 32]],
-        now: SystemTime,
-    ) -> Result<
-        (
-            std::collections::BTreeMap<[u8; 32], tilo_action_policy::MemberAccess>,
-            u64,
-        ),
-        String,
-    > {
-        let (access, walks) = super::authority::walks::taken(|| self.access_of(devices, now));
-        Ok((access?, walks))
     }
 
     /// A person is a member by their root, whatever devices of theirs the
