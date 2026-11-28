@@ -102,4 +102,5 @@ __pycache__/
 # Core dumps a crashing process writes into its working directory; a
 # directory named `core` stays tracked.
 core
+core.[0-9]*
 !core/
