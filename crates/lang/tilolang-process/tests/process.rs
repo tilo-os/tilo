@@ -1649,6 +1649,8 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         writes_sent(&sent) > writes,
         "the typing went out on the connection"
     );
+    // What the keys read: the search below reads the notes to find the words it typed.
+    let listed = notebook_listed(&sent).saturating_sub(listed_before);
     let labels = host
         .instances()
         .next()
@@ -1657,19 +1659,7 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         .iter()
         .map(|action| action.resource_label.clone())
         .collect();
-    let found = page(
-        &mut host,
-        &mut window,
-        &directory,
-        ActionDirectoryQuery {
-            needle: typed.to_owned(),
-            ..query()
-        },
-    )
-    .rows
-    .into_iter()
-    .map(|row| row.resource_label)
-    .collect();
+    let found = found_of(&mut host, &mut window, &directory, typed);
     Typed {
         built,
         relabeled,
@@ -1680,9 +1670,32 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         swept: sweeps,
         rendered,
         asked,
-        listed: notebook_listed(&sent).saturating_sub(listed_before),
+        listed,
         slowest,
     }
+}
+
+/// The labels of the rows `directory` finds for the words `typed`, searched as the window's search
+/// button asks it: the app's rows matching the words, named as the window names them.
+fn found_of(
+    host: &mut TilolangProcess,
+    window: &mut Window,
+    directory: &Rc<RefCell<Directory>>,
+    typed: &str,
+) -> Vec<String> {
+    page(
+        host,
+        window,
+        directory,
+        ActionDirectoryQuery {
+            needle: typed.to_owned(),
+            ..query()
+        },
+    )
+    .rows
+    .into_iter()
+    .map(|row| row.resource_label)
+    .collect()
 }
 
 /// How many times the instance's connection read the notebook's notes as a list: a page of
