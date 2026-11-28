@@ -56,6 +56,8 @@ tilo_test_env::scenario! {
             lenses: Vec::new(),
             pending: false,
             mutations: true,
+            unread: Vec::new(),
+            capped: 0,
         };
         let own = |byte: u8, summary: &str| HistoryEntry {
             id: HistoryEntryId::from_bytes([byte; 16]),
