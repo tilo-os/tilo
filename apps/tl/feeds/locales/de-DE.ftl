@@ -526,6 +526,8 @@ d-qpdqpwvk = Feeds
     .w-no-feeds-yet = Noch keine Feeds
     .w-subscribe-to-an-rss-atom-or = Abonniere einen RSS-, Atom- oder Gemini-Feed, um zu lesen.
     .w-add-feed = Feed hinzufügen
+    .w-no-article-selected = Kein Artikel ausgewählt
+    .w-choose-a-story-from-the-list = Wähle eine Geschichte aus der Liste, um sie hier zu lesen.
 
 d-3dhsfin6 = Bibliotheksmenü
     .w-library = Bibliothek

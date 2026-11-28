@@ -881,6 +881,15 @@ view feeds(lib: Library) {
                 }
             }
         }
+        // What the reading pane says before an article is opened. An article's page stands in
+        // its place once one is.
+        content: {
+            ui.EmptyState(
+                "No article selected",
+                message: "Choose a story from the list to read it here.",
+                icon: .file_text,
+            )
+        }
     }
 }
 

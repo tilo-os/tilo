@@ -1166,6 +1166,57 @@ mod tests {
         (places, unopened)
     }
 
+    /// An app's line for what its content pane says while nothing is open stands there until a
+    /// page opens in it: the page takes the pane, and the line comes back when the page closes.
+    #[test]
+    fn an_apps_content_placeholder_stands_until_a_page_opens_in_it() {
+        let placeholder = node(
+            "EmptyState",
+            "unopened",
+            &[("title", Value::text("No article selected"))],
+        );
+        let root = shell(
+            "feeds",
+            vec![
+                (
+                    "overview",
+                    vec![stack("list", vec![button("row", "A quiet morning")])],
+                ),
+                ("content", vec![placeholder]),
+            ],
+            &[("content_kind", Value::Enum("reading".to_owned()))],
+        );
+        let alone = compose(&root, None);
+        let content = part_children(&alone, "content");
+        assert_eq!(
+            content.first().and_then(|state| state.props.get("title")),
+            Some(&Value::text("No article selected")),
+            "the window says nothing is open where the article would read: {content:?}"
+        );
+
+        let page = shell(
+            "article",
+            vec![(
+                "content",
+                vec![node(
+                    "Text",
+                    "body",
+                    &[("text", Value::text("The streets are empty."))],
+                )],
+            )],
+            &[("title", Value::text("A quiet morning"))],
+        );
+        let opened = compose(&root, Some(&page));
+        assert!(
+            find(&opened, "unopened").is_none(),
+            "the page takes the pane, and the line with it"
+        );
+        assert!(
+            find(&opened, "body").is_some(),
+            "what opened stands where the line did"
+        );
+    }
+
     #[test]
     fn a_window_with_nothing_at_all_to_list_shows_one_state_alone() {
         let (places, unopened) = empty_places();

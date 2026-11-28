@@ -767,6 +767,16 @@ mod cases {
                 "{places:?}"
             );
 
+            // The reading pane says nothing is open until an article is: what the window shows
+            // where a story reads.
+            assert!(
+                of_kind(window.tree(), "ui.EmptyState")
+                    .into_iter()
+                    .any(|state| state.props.get("title")
+                        == Some(&Value::text("No article selected"))),
+                "the window's reading pane says nothing is open"
+            );
+
             // A folder's row and a subscription's row each offer what is done to them, on the
             // row itself.
             feeds.call(
