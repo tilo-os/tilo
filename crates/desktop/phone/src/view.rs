@@ -262,11 +262,17 @@ impl ui::widget::Decorator for PhoneView {
         event: &ui::winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Android's Back closes the app shown over the shell.
+        // Android's Back closes the app shown over the shell: winit names Android's Back key
+        // `BrowserBack`.
         if let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state.is_pressed()
-            && key.logical_key
-                == ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::GoBack)
+            && matches!(
+                key.logical_key,
+                ui::winit::keyboard::Key::Named(
+                    ui::winit::keyboard::NamedKey::BrowserBack
+                        | ui::winit::keyboard::NamedKey::GoBack
+                )
+            )
             && self.back()
         {
             return;
