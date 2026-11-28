@@ -516,11 +516,6 @@ pub struct ChangeNote {
     /// reads a resource's versions from. The store fills it in when it commits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub touched: Vec<String>,
-    /// The members who alone read the change, when what it touched says who reads it
-    /// (`Core::change_readers`): history lists it to them alone. `None` when it touched
-    /// nothing that names its readers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub readers: Option<Vec<tilo_member_types::MemberId>>,
     /// The run it was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Run>,

@@ -209,7 +209,6 @@ impl TaskApi for Apps {
                 arguments["field"].as_str().unwrap(),
                 &arguments["value"],
                 Some(&caller.actor),
-                &|_: &tilolang_runtime::value::ResourceRef| None,
             )
         } else {
             let request = PlanRequest {

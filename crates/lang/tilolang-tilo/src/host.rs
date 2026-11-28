@@ -40,13 +40,6 @@ use tilo_action_policy::MemberAccess;
 /// line a person typed names no item, so the action does not run.
 type PlannedArgs = Option<(Vec<Value>, serde_json::Map<String, Json>)>;
 
-/// What a plan's run leaves: the arguments its invocation records, and the members who alone
-/// read the change it made (`None` when no record it touched names its readers).
-type PlannedRecord = (
-    serde_json::Map<String, Json>,
-    Option<Vec<tilo_member_types::MemberId>>,
-);
-
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     #[error("{0}")]
@@ -1117,13 +1110,8 @@ impl HostInner {
             .caller
             .map_or_else(|| self.viewer.clone(), |caller| caller.actor.clone());
         // A bound control's edit of a field is no declared action: it writes the field itself.
-        if let Some(edit) = crate::publish::plan_edit(
-            &self.store,
-            &package.meta,
-            request,
-            &invoker,
-            &|at: &ResourceRef| self.runtime.readers(at),
-        ) {
+        if let Some(edit) = crate::publish::plan_edit(&self.store, &package.meta, request, &invoker)
+        {
             return edit;
         }
         let action = self.admitted_action(&package, request, &invoker)?;
@@ -1138,7 +1126,7 @@ impl HostInner {
                 .and_then(|caller| caller.on_behalf_of.clone()),
             request.caller.and_then(crate::publish::Caller::acting_for),
         );
-        let (recorded, readers) = self.run_planned(&package, request, action, &invoker)?;
+        let recorded = self.run_planned(&package, request, action, &invoker)?;
         Ok(DynAction {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
@@ -1153,7 +1141,6 @@ impl HostInner {
                 count: 1,
                 invocation: None,
                 gesture: None,
-                readers,
             },
         })
     }
@@ -1215,15 +1202,14 @@ impl HostInner {
     }
 
     /// Run the admitted `action` of `package`, returning what its invocation records as the
-    /// plan's arguments and who reads the change it made. A line that names nothing runs
-    /// nothing and records itself.
+    /// plan's arguments. A line that names nothing runs nothing and records itself.
     fn run_planned(
         &self,
         package: &Package,
         request: &PlanRequest<'_>,
         action: &tilolang::meta::ActionMeta,
         invoker: &Actor,
-    ) -> Result<PlannedRecord, String> {
+    ) -> Result<serde_json::Map<String, Json>, String> {
         // What the action writes is told apart from what was written before it: a call that
         // makes nothing — the one line typed names no item — answers nothing made, and what
         // another write made is neither its answer nor a later one's.
@@ -1231,7 +1217,7 @@ impl HostInner {
         let Some((args, recorded)) = self.planned_args(package, action, request)? else {
             // The one line typed names nothing — only space and what the action's other
             // parameters take — so the action does not run and makes no change.
-            return Ok((request.args.clone(), None));
+            return Ok(request.args.clone());
         };
         // The API admitted the call before it asked for its plan, asking the person first
         // where it had to: the run does not ask them again.
@@ -1262,39 +1248,7 @@ impl HostInner {
             }
             InvokeOutcome::Denied => return Err("the action is not allowed".to_owned()),
         }
-        // What it touched says who reads the change: a draft's author alone, and everyone for
-        // a record whose type names no readers.
-        let mut touched = self.store.made_since();
-        if let Some(target) = request.resource
-            && let Some(at) = ResourceRef::parse_id(target, String::new())
-        {
-            touched.push(at);
-        }
-        Ok((recorded, self.change_readers(touched)))
-    }
-
-    /// The members who alone read the change that touched `targets`: those every record among
-    /// them that names its readers names ([`tilolang_runtime::Runtime::readers`]), so a change
-    /// to a draft is its author's alone and a change to a record whose type names none is every
-    /// member's. `None` when none of them names its readers.
-    fn change_readers(
-        &self,
-        targets: impl IntoIterator<Item = ResourceRef>,
-    ) -> Option<Vec<tilo_member_types::MemberId>> {
-        let mut readers: Option<Vec<tilo_member_types::MemberId>> = None;
-        for at in targets {
-            let Some(of) = self.runtime.readers(&at) else {
-                continue;
-            };
-            readers = Some(match readers.take() {
-                None => of,
-                Some(held) => held
-                    .into_iter()
-                    .filter(|member| of.contains(member))
-                    .collect(),
-            });
-        }
-        readers
+        Ok(recorded)
     }
 
     /// The action's arguments as its invocation records them: those the API was given, and

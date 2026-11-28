@@ -172,11 +172,6 @@ pub struct Authorship {
     /// and undo takes back as one step. `None` for a change that is a step of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gesture: Option<tilo_actions::ActionId>,
-    /// The members who alone read what the change wrote, when it wrote under a record that
-    /// names its readers ([`tilolang_runtime::store::ChangeNote::readers`]): history lists the
-    /// change to them alone ([`tilo_actions::READERS_FACET`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub readers: Option<Vec<tilo_actions::MemberId>>,
 }
 
 /// The invocation a run's changes name ([`Authorship::invocation`]) as the workspace writes it:
@@ -252,10 +247,6 @@ impl Action for DynAction {
     /// already. The invocation records what was invoked, for history and the API.
     fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
         Ok(())
-    }
-
-    fn readers(&self) -> Option<Vec<tilo_actions::MemberId>> {
-        self.authorship.readers.clone()
     }
 }
 

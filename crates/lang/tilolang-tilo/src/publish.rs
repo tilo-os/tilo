@@ -2345,7 +2345,6 @@ pub fn edit_action(
     field: &str,
     value: &Json,
     invoker: Option<&Actor>,
-    readers: &dyn Fn(&ResourceRef) -> Option<Vec<tilo_actions::MemberId>>,
 ) -> Result<DynAction, String> {
     let declared = meta
         .type_named(type_name)
@@ -2423,7 +2422,6 @@ pub fn edit_action(
             args,
             invoker,
         },
-        readers,
     )
 }
 
@@ -2445,7 +2443,6 @@ fn commit_edit(
     store: &ResourceStore,
     meta: &Meta,
     change: EditChange<'_>,
-    readers: &dyn Fn(&ResourceRef) -> Option<Vec<tilo_actions::MemberId>>,
 ) -> Result<DynAction, String> {
     let EditChange {
         kind,
@@ -2461,9 +2458,6 @@ fn commit_edit(
         store.rollback(txn);
         return Err(error.to_string());
     }
-    // Asked with the field as the edit wrote it: an edit that makes a draft sent makes a
-    // change every member reads.
-    let readers = readers(at);
     store
         .commit(
             txn,
@@ -2472,7 +2466,6 @@ fn commit_edit(
                 args: args.clone(),
                 invoker: invoker.cloned(),
                 module: meta.module_hash.clone(),
-                readers: readers.clone(),
                 ..ChangeNote::default()
             },
         )
@@ -2485,7 +2478,6 @@ fn commit_edit(
         authorship: crate::action::Authorship {
             invoker: invoker.cloned(),
             module: meta.module_hash.clone(),
-            readers,
             ..crate::action::Authorship::default()
         },
     })
@@ -2514,7 +2506,6 @@ pub fn plan_edit(
     meta: &Meta,
     request: &PlanRequest<'_>,
     invoker: &Actor,
-    readers: &dyn Fn(&ResourceRef) -> Option<Vec<tilo_actions::MemberId>>,
 ) -> Option<Result<DynAction, String>> {
     if let Some(edit) = BLOCK_EDITS
         .into_iter()
@@ -2537,7 +2528,6 @@ pub fn plan_edit(
             request.args,
             edit,
             Some(invoker),
-            readers,
         ));
     }
     let flag = DIRECT_EDITS
@@ -2573,7 +2563,6 @@ pub fn plan_edit(
         field,
         &value,
         Some(invoker),
-        readers,
     ))
 }
 
@@ -2647,7 +2636,6 @@ pub fn edit_block_action(
     args: &serde_json::Map<String, Json>,
     edit: BlockEdit,
     invoker: Option<&Actor>,
-    readers: &dyn Fn(&ResourceRef) -> Option<Vec<tilo_actions::MemberId>>,
 ) -> Result<DynAction, String> {
     let declared = meta
         .type_named(type_name)
@@ -2736,7 +2724,6 @@ pub fn edit_block_action(
             args: Json::Object(recorded),
             invoker,
         },
-        readers,
     )
 }
 

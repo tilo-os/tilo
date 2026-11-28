@@ -4996,16 +4996,33 @@ mod store {
     /// mailbox every member reads, so another member finds it by no read at all (a get, a
     /// listing, a search, a count, a field's values, its history, the newest changes or its kind
     /// by its id alone), while its author finds it by every one. Once sent, every member reads
-    /// it, and it is not taken back.
+    /// it, and it is not taken back. Who reads each change is the store's to say too, whatever
+    /// its writer marked: the draft's are Ada's alone, the mailbox's no one's alone.
     #[test]
     fn a_draft_is_read_by_its_author_alone_until_it_is_sent() {
         use collab_types::store::wire::Command;
+        use tilo_actions::{MemberId, contract};
         let mut store = mailboxes();
+        // Every write claims Bo alone reads it.
+        let bo = contract::readers_facet(&[MemberId::person("bo")]);
+        let facets = vec![tilo_actions::ActionFacet::new(
+            tilo_actions::READERS_FACET,
+            bo,
+        )];
         let as_ = |who: &str| Stamp {
             invoker: who.to_owned(),
+            context: Some(Box::new(tilo_actions::ActionContext {
+                facets: facets.clone(),
+                ..Default::default()
+            })),
             ..Stamp::default()
         };
-        tilo_resource_store::wire::write(
+        let marked = |written: &[Written]| -> Vec<Option<Vec<String>>> {
+            let stamp = |write: &Written| Stamp::of(&write.change).expect("stamped");
+            let named = |stamp: Stamp| contract::readers_named(&stamp.context?.facets);
+            written.iter().map(stamp).map(named).collect()
+        };
+        let mailbox = tilo_resource_store::wire::write(
             &mut store,
             Command::Put {
                 kind: MAILBOX.to_owned(),
@@ -5020,6 +5037,11 @@ mod store {
             },
         )
         .unwrap();
+        assert_eq!(
+            marked(&mailbox),
+            vec![None],
+            "the mailbox's change is no one's alone"
+        );
         let put = |store: &mut Store, subject: &str, sent: bool| {
             tilo_resource_store::wire::write(
                 store,
@@ -5039,6 +5061,12 @@ mod store {
                 .iter()
                 .map(|write| &write.readers)
                 .collect::<Vec<_>>()
+        );
+        let ada = Some(vec![contract::reader_name(&MemberId::person("ada"))]);
+        assert!(
+            marked(&written).iter().all(|readers| *readers == ada),
+            "{:?}",
+            marked(&written)
         );
         let every = vec![
             "get",

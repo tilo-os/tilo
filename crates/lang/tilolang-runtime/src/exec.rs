@@ -1335,7 +1335,6 @@ impl Core {
                 let mut note = *a.note;
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
-                note.readers = self.change_readers(&note.touched, note.invoker.as_ref());
                 // The one change records what the run over every item read, in order.
                 note.effects = a
                     .run
@@ -2156,7 +2155,6 @@ impl Core {
                 let mut note = *a.note;
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
-                note.readers = self.change_readers(&note.touched, note.invoker.as_ref());
                 // What the run read of the world outside Tilo on its way, beside the change it
                 // makes: the moment and the zone it read, and what it fetched or drew
                 // (convergence.md, "Actions").
@@ -3604,7 +3602,6 @@ impl Core {
                 None => note.at = note.at.clone().or(Some(at)),
             }
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
-            note.readers = self.change_readers(&note.touched, note.invoker.as_ref());
             (state.txn, note)
         };
         let next = {

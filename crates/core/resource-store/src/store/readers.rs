@@ -27,6 +27,13 @@ pub trait RecordReader: Send + Sync {
     /// it), and `None` where it reads none of the record (no member, or a grant that does not
     /// reach it).
     fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId>;
+
+    /// The people who hold the role `role` (by its key) or one that includes it: who reads a
+    /// record its rule gives to that role, as the workspace has them now.
+    fn holders(&self, role: &str) -> Vec<PersonId> {
+        let _ = role;
+        Vec::new()
+    }
 }
 
 impl Store {
@@ -38,8 +45,89 @@ impl Store {
     /// A put names readers for a kind whose rule names them, takes back what an `until` field
     /// held, or its rule names no person.
     pub(crate) fn placed_by_rules(&self, mut command: Command) -> Result<Command, StoreError> {
-        self.place_by_rules(&mut command, &mut HashMap::new())?;
+        let mut placed = HashMap::new();
+        self.place_by_rules(&mut command, &mut placed)?;
+        self.mark_readers(&mut command, &placed);
         Ok(command)
+    }
+
+    /// Mark every change `command` makes with who alone reads it, as the store placed what it
+    /// touches ([`tilo_actions::READERS_FACET`]), in place of whatever its writer marked: who
+    /// reads a change is the store's to say, as who reads a record is.
+    fn mark_readers(&self, command: &mut Command, placed: &HashMap<String, String>) {
+        let (mut readers, mut stamps) = (None::<Vec<String>>, Vec::new());
+        let mut pending = vec![command];
+        while let Some(command) = pending.pop() {
+            match command {
+                Command::Batch(commands) => pending.extend(commands.iter_mut()),
+                Command::Put { id, stamp, .. }
+                | Command::Remove { id, stamp, .. }
+                | Command::Edit { id, stamp, .. } => {
+                    let held = placed.get(id.as_str()).cloned();
+                    if let Some(people) = held
+                        .or_else(|| self.readers_of_id(id))
+                        .and_then(|held| self.people_reading(&held))
+                    {
+                        readers = Some(match readers {
+                            Some(before) => {
+                                before.into_iter().filter(|p| people.contains(p)).collect()
+                            }
+                            None => people,
+                        });
+                    }
+                    stamps.push(stamp);
+                }
+                _ => {}
+            }
+        }
+        let facet = readers.map(|readers| {
+            let named: Vec<MemberId> = readers
+                .iter()
+                .map(|p| MemberId::person(p.as_str()))
+                .collect();
+            let value = tilo_actions::contract::readers_facet(&named);
+            tilo_actions::ActionFacet::new(tilo_actions::READERS_FACET, value)
+        });
+        // A stamp with no context and no readers to name keeps none.
+        for stamp in stamps
+            .into_iter()
+            .filter(|stamp| stamp.context.is_some() || facet.is_some())
+        {
+            let facets = &mut stamp.context.get_or_insert_with(Box::default).facets;
+            facets.retain(|facet| facet.key != tilo_actions::READERS_FACET);
+            facets.extend(facet.clone());
+        }
+    }
+
+    /// The people the reader set `readers` (as the store names a document's) is, sorted, when it
+    /// is not every member: those it names, and the holders of the role it names.
+    fn people_reading(&self, readers: &str) -> Option<Vec<String>> {
+        if readers == collab_types::EVERY_MEMBER {
+            return None;
+        }
+        let (role, people) = match readers.strip_prefix(collab_types::ROLE_READERS) {
+            Some(rest) => rest
+                .split_once(',')
+                .map_or((Some(rest), ""), |(r, p)| (Some(r), p)),
+            None => (None, readers),
+        };
+        let holders = role
+            .zip(self.reader.as_deref())
+            .map(|(role, reader)| reader.holders(role));
+        let mut out: Vec<String> = people
+            .split(',')
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned)
+            .collect();
+        out.extend(
+            holders
+                .into_iter()
+                .flatten()
+                .map(|p| p.as_str().to_ascii_lowercase()),
+        );
+        out.sort();
+        out.dedup();
+        Some(out)
     }
 
     fn place_by_rules(

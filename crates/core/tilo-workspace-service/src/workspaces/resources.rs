@@ -268,6 +268,18 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
             MemberId::Bot(_) => None,
         }
     }
+
+    fn holders(&self, role: &str) -> Vec<tilo_member_types::PersonId> {
+        let policy = self
+            .0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = tilo_action_policy::Role::parse(role).map(|role| policy.holders(role));
+        held.into_iter()
+            .flatten()
+            .map(tilo_member_types::PersonId::from)
+            .collect()
+    }
 }
 
 /// A query an app holds open: whenever a change makes what its page shows different, the page

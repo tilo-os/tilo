@@ -301,15 +301,6 @@ fn envelope_pinned(
             "true",
         ));
     }
-    if let Some(readers) = action.readers() {
-        context
-            .facets
-            .retain(|facet| facet.key != crate::READERS_FACET);
-        context.facets.push(crate::ActionFacet::new(
-            crate::READERS_FACET,
-            crate::contract::readers_facet(&readers),
-        ));
-    }
     if context.gesture.is_none() {
         context.gesture = current_step();
     }

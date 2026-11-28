@@ -262,15 +262,6 @@ pub trait Action: std::fmt::Debug {
         false
     }
 
-    /// The members who alone read what this value changes, when what it
-    /// changes says who reads it (a direct conversation); `None` when every
-    /// member who reads the record reads it. The executor marks its change
-    /// with [`READERS_FACET`](crate::READERS_FACET). Must be a pure function
-    /// of `self`.
-    fn readers(&self) -> Option<Vec<crate::MemberId>> {
-        None
-    }
-
     /// Whether this value leaves the system for good (a message sent to
     /// people outside it), so a person's own press of it always confirms
     /// first. See [`LEAVES_TAG`](crate::LEAVES_TAG). Must be a pure function

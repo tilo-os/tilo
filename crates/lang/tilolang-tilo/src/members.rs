@@ -267,6 +267,17 @@ impl tilo_resource_store::RecordReader for MemberRecordReads {
         drop(guard);
         reader
     }
+
+    fn holders(&self, role: &str) -> Vec<PersonId> {
+        let (Some(role), Ok(guard)) = (tilo_action_policy::Role::parse(role), self.state.lock())
+        else {
+            return Vec::new();
+        };
+        let policy = guard.as_ref().map(|state| &state.access.policy);
+        policy
+            .map(|policy| policy.holders(role).map(PersonId::from).collect())
+            .unwrap_or_default()
+    }
 }
 
 impl Host {

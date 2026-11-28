@@ -670,6 +670,16 @@ impl WorkspacePolicy {
         grants
     }
 
+    /// Who holds `role` or one that includes it, by person id: the owner and every member so,
+    /// as a record its reader rule gives to that role is read.
+    pub fn holders(&self, role: Role) -> impl Iterator<Item = &str> + '_ {
+        self.owner
+            .iter()
+            .chain(self.members.keys())
+            .map(String::as_str)
+            .filter(move |person| self.role_of(person).is_some_and(|held| held.includes(role)))
+    }
+
     /// The workspace's administrators, by person id, in id order.
     pub fn administrators(&self) -> impl Iterator<Item = &str> + '_ {
         self.members

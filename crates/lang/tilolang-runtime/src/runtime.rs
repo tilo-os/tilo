@@ -2141,12 +2141,20 @@ impl Runtime {
     }
 
     /// The members who alone read `at`: those every record holding it that names its readers
-    /// (`type Direct (readers: people)`, `type Draft (readers: author until sent)`) names, as
-    /// history lists a change of it to them alone. `None` when no record holding it names its
-    /// readers, so whoever reads its document reads it.
+    /// (`type Direct (readers: people)`) names; `None` when none does, so whoever reads its
+    /// document reads it.
     #[must_use]
     pub fn readers(&self, at: &ResourceRef) -> Option<Vec<tilo_member_types::MemberId>> {
-        self.core.change_readers(&[at.id_string()], None)
+        let mut named = self.core.readers_of(at).into_iter().map(|people| {
+            people
+                .iter()
+                .filter_map(|who| who.member_id().cloned())
+                .collect::<Vec<_>>()
+        });
+        let first = named.next()?;
+        Some(named.fold(first, |held, people| {
+            held.into_iter().filter(|m| people.contains(m)).collect()
+        }))
     }
 
     /// Where settled outside effects go.

@@ -366,9 +366,9 @@ pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
 /// new one by it, whoever wrote the copy.
 pub const ORIGIN_FACET: &str = "origin";
 
-/// Facet the executor writes on a change of what only some members read
-/// ([`Action::readers`](crate::Action::readers)): the members who alone read
-/// it, as a JSON list of what each member's changes are named by
+/// Facet the store writes on a change of what only some members read, as it
+/// placed what the change touched: the members who alone read it, as a JSON
+/// list of what each member's changes are named by
 /// ([`MemberId::actor_bytes`](crate::MemberId::actor_bytes)). History lists
 /// the change to them alone ([`reads_change`]).
 pub const READERS_FACET: &str = "readers";
