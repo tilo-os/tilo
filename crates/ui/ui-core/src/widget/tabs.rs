@@ -1632,7 +1632,7 @@ impl TabBar {
             }
             if face.agent {
                 let colour = ctx.theme.tokens.colors.presence.of_rgb(face.colour);
-                paint_tab_face(ctx, rect, "", colour, true, ring);
+                paint_tab_face(ctx, rect, &face.name, colour, true, ring);
             } else {
                 let colour =
                     vello::peniko::Color::from_rgb8(face.colour.0, face.colour.1, face.colour.2);

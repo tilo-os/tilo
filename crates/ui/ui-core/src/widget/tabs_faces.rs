@@ -86,8 +86,10 @@ impl PillFaces {
     }
 }
 
-/// One face on a pill: a person's initials in their colour, or an agent's mark, ringed so it
-/// stands off whatever is under it.
+/// One face on a pill: initials on a disc in the member's toned colour, ringed so it stands off
+/// whatever is under it. An agent wears the same face as a person does, so it reads as who opened
+/// or is at the window rather than as an app's icon, with the small agent mark on its corner to
+/// say it is software.
 pub(super) fn paint_tab_face(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -96,31 +98,31 @@ pub(super) fn paint_tab_face(
     agent: bool,
     ring: vello::peniko::Color,
 ) {
-    if agent {
-        let theme = ctx.theme;
-        let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            ring,
-            None,
-            &RoundedRect::from_rect(
-                rect.inflate(ring_px, ring_px),
-                f64::from(theme.tokens.radii.detail),
-            ),
-        );
-        tilo_ui_base::agent_identity::draw_agent_identity_mark(
-            ctx.scene,
-            ctx.transform,
-            rect,
-            colour,
-            theme,
-            tilo_ui_base::agent_identity::AgentIdentityStyle::Solid,
-        );
-    } else {
-        tilo_ui_base::widget::AvatarFace::new(name, "")
-            .presence(colour)
-            .ringed_on(ring)
-            .paint(ctx, rect);
+    let face = tilo_ui_base::widget::AvatarFace::new(name, "")
+        .presence(colour)
+        .ringed_on(ring);
+    face.paint(ctx, rect);
+    if !agent {
+        return;
     }
+    let theme = ctx.theme;
+    let badge = face.status_rect(rect, theme);
+    // The ring a face's status badge stands on, so the mark reads apart from the face it sits on.
+    let ring_px = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
+    let outer = badge.inflate(ring_px, ring_px);
+    ctx.scene.fill(
+        vello::peniko::Fill::NonZero,
+        ctx.transform,
+        ring,
+        None,
+        &RoundedRect::from_rect(outer, outer.width() / 2.0),
+    );
+    tilo_ui_base::agent_identity::draw_agent_identity_mark(
+        ctx.scene,
+        ctx.transform,
+        badge,
+        face.colour(theme),
+        theme,
+        tilo_ui_base::agent_identity::AgentIdentityStyle::Solid,
+    );
 }
