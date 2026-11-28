@@ -307,6 +307,7 @@ d-4bljtzpr-file = Datei
 d-khrlaoyo = An den Drucker senden
     .doc = Druckt das gewählte Dokument auf dem gewählten Drucker mit den Einstellungen des Formulars.
     .w-choose-a-printer = Wähle einen Drucker
+    .w-sent-to = An { $queue } gesendet
     .w-choose-a-document-to-print = Wähle ein Dokument zum Drucken
 
 d-if3hgspw = Druck beendet
@@ -414,8 +415,78 @@ d-cc2z6dbc = Größenwörter
     .w-kb = { $value } KB
     .w-mb = { $value } MB
 
+d-vlvvan3h = Seitenbereichsfehler
+    .w-that-page-range-is-too-long = Dieser Seitenbereich ist zu lang für einen Auftrag.
+
+d-k6yd4jhu = Teilefehler
+    .w-a-page-range-cannot-have-an = Ein Seitenbereich darf keinen leeren Teil haben.
+    .w-page-numbers-are-written-with-digits = Seitenzahlen schreibt man mit Ziffern, etwa 1-3.
+    .w-a-page-range-cannot-end-before = Ein Seitenbereich darf nicht vor seinem Anfang enden.
+
+d-hxm6e7la = Vorherige Seite
+    .doc = Zeigt die Seite vor der im Druckformular angezeigten.
+    .w-this-is-the-first-page = Das ist die erste Seite
+
+d-fda67szt = Nächste Seite
+    .doc = Zeigt die Seite nach der im Druckformular angezeigten.
+    .w-this-is-the-last-page = Das ist die letzte Seite
+
+d-qud7zxqa = Seite zeigen
+    .doc = Zeigt `page` von `doc` in der Vorschau des Formulars.
+
+d-qud7zxqa-page = Seite
+
+d-hdzrpvn5 = Vorschaueseite
+    .doc = Die Seite des Dokuments, die das Formular zeigt, gezählt ab 1, und wie viele die Datei hat.
+
+d-6lzmadgb = Vorschaueseiten
+
+d-v2sqfqls = Vorschaueseite
+    .doc = Eine Seite der Datei, die gedruckt wird, so wie das Gerät die Seiten der Datei liest.
+    .noun = { $count ->
+        [one] Vorschaueseite
+       *[other] Vorschaueseiten
+    }
+
+d-cfgzxti7 = Seite
+
+d-gnb26f4f = Breite
+
+d-2nz7ejic = Höhe
+
+d-v2sqfqls-filter-page = Seite
+
+d-v2sqfqls-filter-width = Breite
+
+d-v2sqfqls-filter-height = Höhe
+
+d-ekbl57nl-filter-preview_page = Vorschaueseite
+
+d-ekbl57nl-filter-preview_pages = Vorschaueseiten
+
 d-m2njqkkd = Fenster
     .w-the-printer-service-refused-that = Der Druckdienst hat das abgelehnt
+    .w-looking-for-printers-on-your-network = Drucker werden in deinem Netzwerk gesucht.
+    .w-printers = Drucker
+    .w-waiting = Wartet
+    .w-scanners = Scanner
+    .w-no-printers = Keine Drucker
+    .w-look-for-one-on-the-network = Suche einen im Netzwerk.
+    .w-printing-now = Druckt jetzt
+    .w-untitled-document = Unbenanntes Dokument
+    .w-cancel = Abbrechen
+    .w-retry = Erneut
+    .w-print-again = Erneut drucken
+    .w-how-far-it-is = Wie weit er ist
+    .w-needs-attention = Braucht Aufmerksamkeit
+    .w-nothing-waits-to-print = Nichts wartet zu drucken
+    .w-nothing-printed-yet = Noch nichts gedruckt
+    .w-1-page-captured-new-scans-are = 1 Seite erfasst. Neue Scans kommen zu diesem Dokument hinzu.
+    .w-pages-captured-new-scans-are-added = { $len } Seiten erfasst. Neue Scans kommen zu diesem Dokument hinzu.
+    .w-cancel-this-document = Dieses Dokument abbrechen?
+    .w-will-be-removed-from-the-printer = { $name } wird aus dem Drucker entfernt. Das lässt sich nicht rückgängig machen.
+    .w-cancel-this-document-2 = Dieses Dokument abbrechen
+    .w-keep-it = Behalten
     .w-pages-scanned-on-this-computer = Auf diesem Computer gescannte Seiten
     .w-no-scanner = Kein Scanner
     .w-this-computer-has-no-scanner-or = Dieser Computer hat keinen Scanner, oder keiner antwortete.
@@ -478,15 +549,6 @@ d-x7ix7hae = Ein Dokument drucken
 
 d-apnoqrhc = Scanner
 
-d-bu6ryoak = Übersicht
-    .w-printers = Drucker
-    .w-waiting = Wartet
-    .w-scanners = Scanner
-    .w-no-printers = Keine Drucker
-    .w-look-for-one-on-the-network = Suche einen im Netzwerk.
-    .w-printing-now = Druckt jetzt
-    .w-needs-attention = Braucht Aufmerksamkeit
-
 d-homrycev = Druckerkarte
     .w-default = Voreinstellung
     .w-not-reachable = Nicht erreichbar
@@ -495,19 +557,8 @@ d-homrycev = Druckerkarte
     .w-use-first = Zuerst verwenden
     .w-resume = Fortsetzen
     .w-pause = Pausieren
+    .w-check-printer = Drucker prüfen
     .w-remove = Entfernen
-
-d-6aqnines = Auftragszeile
-    .w-untitled-document = Unbenanntes Dokument
-    .w-retry = Erneut
-    .w-cancel = Abbrechen
-    .w-how-far-it-is = Wie weit er ist
-
-d-oxq26tal = Warteschlangenbereich
-    .w-nothing-waits-to-print = Nichts wartet zu drucken
-
-d-bewyx43k = Verlaufsbereich
-    .w-nothing-printed-yet = Noch nichts gedruckt
 
 d-j5jydnqh = Diagnosebereich
     .w-state = Stand
@@ -540,6 +591,11 @@ d-dxj763u4 = Druckformular
 d-lua6ahaf = Druckbereich
     .w-print-a-document = Ein Dokument drucken
     .w-choose-a-document = Ein Dokument wählen
+    .w-the-original-document-is-unchanged = Das Originaldokument bleibt unverändert.
+    .w-previous = Zurück
+    .w-next = Weiter
+    .w-page-of = Seite { $preview_page } von { $preview_pages }
+    .w-preview-unavailable = Vorschau nicht verfügbar
     .w-the-document-is-going-to-the = Das Dokument geht an den Drucker
     .w-printer = Printer
     .w-no-printer-is-added-on-this = Auf diesem Computer ist kein Drucker hinzugefügt.
@@ -574,3 +630,7 @@ d-jpc2hzw6-bottom = Unten
 d-jpc2hzw6-page = Seite
 
 d-mpdrfthh = Neues gescanntes Dokument~present
+
+d-uoenfw2s = Vorherige Seite~present
+
+d-lckc6ixw = Nächste Seite~present

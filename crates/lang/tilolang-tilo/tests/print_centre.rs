@@ -64,6 +64,53 @@ impl BlobHost for Device {
     }
 }
 
+/// The device's PDF engine for the print form: a file of `pages` pages, each drawn as the
+/// document's own bytes. Every other read is one this test does not do.
+struct Pdf {
+    pages: usize,
+}
+
+impl tilolang_runtime::pdf::PdfHost for Pdf {
+    fn pages(&self, _bytes: &[u8]) -> Result<String, String> {
+        let rows: Vec<serde_json::Value> = (1..=self.pages)
+            .map(|page| serde_json::json!({"page": page, "width": 612.0, "height": 792.0}))
+            .collect();
+        Ok(serde_json::Value::Array(rows).to_string())
+    }
+
+    fn outline(&self, _bytes: &[u8]) -> Result<String, String> {
+        Err("this test reads no contents".to_owned())
+    }
+
+    fn text(&self, _bytes: &[u8], _page: i64) -> Result<String, String> {
+        Err("this test reads no text".to_owned())
+    }
+
+    fn links(&self, _bytes: &[u8], _page: i64) -> Result<String, String> {
+        Err("this test reads no links".to_owned())
+    }
+
+    fn fields(&self, _bytes: &[u8]) -> Result<String, String> {
+        Err("this test reads no form".to_owned())
+    }
+
+    fn markup(&self, _bytes: &[u8]) -> Result<String, String> {
+        Err("this test reads no markup".to_owned())
+    }
+
+    fn picture(&self, bytes: &[u8], _page: i64, _width: i64) -> Result<Vec<u8>, String> {
+        Ok(bytes.to_vec())
+    }
+
+    fn import(&self, _bytes: &[u8]) -> Result<String, String> {
+        Err("this test imports no page".to_owned())
+    }
+
+    fn save(&self, _sources: &[&[u8]], _request: &str) -> Result<Vec<u8>, String> {
+        Err("this test writes no PDF".to_owned())
+    }
+}
+
 fn me() -> Actor {
     Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"))
 }
@@ -345,6 +392,8 @@ fn shown(view: &ViewInstance) -> Vec<String> {
             "message",
             "action",
             "secondary",
+            "description",
+            "primary",
         ],
     )
 }
@@ -800,15 +849,33 @@ fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
     );
 
     // What still prints can be cancelled; what printed or failed cannot, and the failed one can
-    // be tried again.
+    // be tried again. Cancelling asks first: the document is taken out of the printer's queue,
+    // which is not a change this workspace can take back.
     pick(&mut window, "place", Value::text("queue"));
     let cancel = buttons(&window, "Cancel").first().map_or_else(
         || panic!("the printing job can be cancelled: {:?}", shown(&window)),
         |button| button.key.clone(),
     );
     window
-        .press_answering(&app.host, &me(), &cancel)
-        .expect("the button cancels the job");
+        .fire(&cancel, "press")
+        .expect("the button asks first");
+    window.poll_patches().expect("the question draws");
+    assert!(
+        !app.sent.names().iter().any(|name| name == "cancel-job"),
+        "nothing is cancelled before the person's yes"
+    );
+    assert!(
+        contains(&window, "Report will be removed from the printer."),
+        "the question names the document: {:?}",
+        shown(&window)
+    );
+    let question = window.tree().of_kind("ui.ModalDialog").first().map_or_else(
+        || panic!("the question: {:?}", shown(&window)),
+        |question| question.key.clone(),
+    );
+    window
+        .fire_with_answering(&app.host, &me(), &question, "act_primary", None)
+        .expect("the yes cancels the job");
     let asked = printers_asked(&app, "cancel_job");
     assert!(
         asked
@@ -825,6 +892,11 @@ fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
         buttons(&window, "Retry").len(),
         1,
         "the failed job is tried again"
+    );
+    assert_eq!(
+        buttons(&window, "Print again").len(),
+        1,
+        "the document that printed is offered again"
     );
 
     // The printer says why the job failed, and the service says what it refused.
@@ -849,6 +921,228 @@ fn printers_their_paper_queue_and_failures_are_kept_in_one_place() {
     );
     assert!(
         contains(&window, "studio did not take the job"),
+        "{:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_long_documents_pages_are_stepped_through_in_the_form() {
+    let app = Installed::new();
+    app.host.runtime().set_pdf(Pdf { pages: 3 });
+    app.call(
+        "absorb_document",
+        vec![
+            app.root_value(),
+            Value::file(tilolang_runtime::blob::FileValue::new(
+                "Long report.pdf",
+                "application/pdf",
+                2048,
+                "h1",
+            )),
+        ],
+    );
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("print"));
+    assert!(contains(&window, "Page 1 of 3"), "{:?}", shown(&window));
+    assert!(
+        contains(&window, "The original document is unchanged."),
+        "{:?}",
+        shown(&window)
+    );
+    let next = buttons(&window, "Next").first().map_or_else(
+        || panic!("the form's Next: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window
+        .press_answering(&app.host, &me(), &next)
+        .expect("the press shows the next page");
+    window.poll_patches().expect("the window runs again");
+    assert!(contains(&window, "Page 2 of 3"), "{:?}", shown(&window));
+    let previous = buttons(&window, "Previous").first().map_or_else(
+        || panic!("the form's Previous: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window
+        .press_answering(&app.host, &me(), &previous)
+        .expect("the press shows the page before");
+    window.poll_patches().expect("the window runs again");
+    assert!(contains(&window, "Page 1 of 3"), "{:?}", shown(&window));
+}
+
+#[test]
+fn the_scan_defaults_are_the_ones_the_controls_offer() {
+    let app = Installed::new();
+    // A resolution the controls do not offer is refused, and the default stands.
+    app.call("set_resolution", vec![app.root_value(), Value::Int(200)]);
+    app.call("scan_page", vec![app.root_value()]);
+    let asked = app.engine.asked.borrow().clone();
+    let (_, input) = asked
+        .iter()
+        .find(|(op, _)| op == "scan")
+        .unwrap_or_else(|| panic!("the engine scans: {asked:?}"));
+    assert!(input.contains(r#""resolution":300"#), "{input}");
+    // One the controls offer is what the scanner is asked for.
+    app.call("set_resolution", vec![app.root_value(), Value::Int(600)]);
+    app.call("scan_page", vec![app.root_value()]);
+    let asked = app.engine.asked.borrow().clone();
+    let last = asked
+        .iter()
+        .rfind(|(op, _)| op == "scan")
+        .unwrap_or_else(|| panic!("the engine scans: {asked:?}"));
+    assert!(last.1.contains(r#""resolution":600"#), "{}", last.1);
+}
+
+/// The field of the print form that takes the pages to print.
+fn pages_field(window: &ViewInstance) -> String {
+    window
+        .tree()
+        .of_kind("ui.TextInput")
+        .into_iter()
+        .find(|field| field.props.get("placeholder") == Some(&Value::text("1-3")))
+        .map_or_else(
+            || panic!("the pages field: {:?}", shown(window)),
+            |field| field.key.clone(),
+        )
+}
+
+#[test]
+fn a_page_range_is_checked_before_the_document_leaves_the_window() {
+    let app = Installed::new();
+    app.call(
+        "absorb_document",
+        vec![
+            app.root_value(),
+            Value::file(tilolang_runtime::blob::FileValue::new(
+                "Report.pdf",
+                "application/pdf",
+                2048,
+                "h1",
+            )),
+        ],
+    );
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("print"));
+    let field = pages_field(&window);
+    window
+        .edit(&field, &Value::text("12-3"))
+        .expect("the field takes the range");
+    window.poll_patches().expect("the window runs again");
+    assert!(
+        contains(&window, "A page range cannot end before it starts."),
+        "the form says why the range cannot print: {:?}",
+        shown(&window)
+    );
+    let print = buttons(&window, "Print")
+        .first()
+        .map_or_else(|| panic!("the Print button"), |button| button.key.clone());
+    window
+        .press_answering(&app.host, &me(), &print)
+        .expect("the press runs");
+    assert!(
+        !app.engine.ops().iter().any(|op| op == "print"),
+        "a range nobody can print never reaches the printer: {:?}",
+        app.engine.ops()
+    );
+    let window = app.window();
+    assert!(
+        contains(&window, "A page range cannot end before it starts."),
+        "{:?}",
+        shown(&window)
+    );
+
+    // A range the printer takes is the range it is asked for.
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("print"));
+    let field = pages_field(&window);
+    window
+        .edit(&field, &Value::text("1-3,5"))
+        .expect("the field takes the range");
+    window.poll_patches().expect("the window runs again");
+    let print = buttons(&window, "Print")
+        .first()
+        .map_or_else(|| panic!("the Print button"), |button| button.key.clone());
+    window
+        .press_answering(&app.host, &me(), &print)
+        .expect("the press prints");
+    let asked = app.engine.asked.borrow().clone();
+    let (_, input) = asked
+        .iter()
+        .find(|(op, _)| op == "print")
+        .unwrap_or_else(|| panic!("the engine prints: {asked:?}"));
+    assert!(input.contains(r#""pages":"1-3,5""#), "{input}");
+}
+
+#[test]
+fn a_finished_document_is_printed_again_from_the_history() {
+    let app = Installed::new();
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("history"));
+    let again = buttons(&window, "Print again").first().map_or_else(
+        || panic!("the printed document: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window
+        .press_answering(&app.host, &me(), &again)
+        .expect("the press prints it again");
+    let asked = printers_asked(&app, "retry_job");
+    assert!(
+        asked
+            .iter()
+            .any(|value| matches!(value, Value::Text(text) if text == "studio-6")),
+        "the document that printed is the one printed again: {asked:?}"
+    );
+}
+
+#[test]
+fn a_captured_page_counts_towards_its_document() {
+    let app = Installed::new();
+    app.call("scan_page", vec![app.root_value()]);
+    app.moves(
+        |handlers| handlers.done.clone(),
+        &record(
+            "scan-1",
+            "done",
+            serde_json::json!({"url": "tilo-blob://page1"}),
+        ),
+    );
+    let mut window = app.window();
+    pick(&mut window, "place", Value::text("scan"));
+    assert!(
+        contains(
+            &window,
+            "1 page captured. New scans are added to this document."
+        ),
+        "{:?}",
+        shown(&window)
+    );
+}
+
+#[test]
+fn a_printer_is_checked_and_the_search_is_said_while_it_runs() {
+    let app = Installed::new();
+    let window = app.window();
+    let check = buttons(&window, "Check printer").first().map_or_else(
+        || panic!("the printer's check: {:?}", shown(&window)),
+        |button| button.key.clone(),
+    );
+    window
+        .press_answering(&app.host, &me(), &check)
+        .expect("the check asks the device");
+    assert!(
+        app.sent.names().iter().any(|name| name == "find"),
+        "the printer is read again: {:?}",
+        app.sent.names()
+    );
+    let searching = PRINTERS.replace(r#""pending": []"#, r#""pending": ["find"]"#);
+    app.host
+        .runtime()
+        .set_reading(&printers(), &searching)
+        .expect("the printers read");
+    let mut window = app.window();
+    window.poll_patches().expect("the window runs again");
+    assert!(
+        contains(&window, "Looking for printers on your network."),
         "{:?}",
         shown(&window)
     );

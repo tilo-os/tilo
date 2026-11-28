@@ -2,7 +2,7 @@ app so.tilo.print-centre "Print Centre" (
     icon: .printer,
     category: .system,
     tagline: "The printers, their jobs, and the scanner on this computer",
-    keywords: ["print", "printer", "printing", "scan", "scanner", "cups", "jobs", "drucken", "drucker", "scannen"],
+    keywords: ["print", "printer", "printing", "scan", "scanner", "cups", "jobs", "print queue", "pdf export", "printers and scanners", "devices and printers", "printer settings", "system-config-printer", "drucken", "drucker", "scannen"],
     splash_budget: 250,
 )
 
@@ -66,9 +66,19 @@ type PrintDocument (readers: author) {
     failed: Text = ""
     /// Why the printer was not accepted, from the last try.
     trouble: Text = ""
+    /// The page of the document the form previews, counted from 1, and how many the file holds.
+    preview_page: Int = 1
+    preview_pages: Int = 1
     /// Another app handed it over to print: the person's own windows show the print form until
     /// they choose a place themselves. Their document, so no one else's window moves.
     handed: Bool = false
+}
+
+/// One page of the file being printed, as the device reads the file's own pages.
+type PreviewPage {
+    page: Int
+    width: Float
+    height: Float
 }
 
 /// An option a printer reports, with what it is called and whether it is its default.
@@ -205,6 +215,61 @@ fn size_words(bytes: Int) -> Text {
     } else { std.say("{bytes / 1000000} MB") }
 }
 
+/// Why `pages` is not a range this printer can take; empty when it is, or when every page prints.
+///
+/// The same shape `lp` takes: `1-3`, `1,4,9`, `2-`. Pages are counted from 1, a range never runs
+/// backwards, and nothing else is let through, so a range nobody can print is refused before the
+/// document leaves the window.
+fn page_range_error(pages: Text) -> Text {
+    let value = pages.trim()
+    if value == "" {
+        ""
+    } else if value.len() > 64 {
+        std.say("That page range is too long to be one job.")
+    } else { parts_error(value.split(","), 0) }
+}
+
+/// Why any of `parts` is not a page or a page range; empty when they all are.
+fn parts_error(parts: List<Text>, at: Int) -> Text {
+    if at >= parts.len() {
+        ""
+    } else {
+        let problem = part_error(parts.at(at) ?? "")
+        if problem != "" { problem } else { parts_error(parts, at + 1) }
+    }
+}
+
+/// Why `part` is not a page (`7`) or a page range (`2-9`, `2-`); empty when it is.
+fn part_error(part: Text) -> Text {
+    let value = part.trim()
+    if value == "" {
+        std.say("A page range cannot have an empty part.")
+    } else {
+        let bounds = value.split("-")
+        let first = bounds.at(0) ?? ""
+        let last = bounds.at(1) ?? ""
+        if bounds.len() > 2 or not page_number(first) {
+            std.say("Page numbers are written with digits, as in 1-3.")
+        } else if bounds.len() == 2 and last != "" and not page_number(last) {
+            std.say("Page numbers are written with digits, as in 1-3.")
+        } else if bounds.len() == 2 and last != "" and number(last) < number(first) {
+            std.say("A page range cannot end before it starts.")
+        } else { "" }
+    }
+}
+
+/// Whether `text` is a page's number: digits only, counted from 1.
+fn page_number(text: Text) -> Bool {
+    let value = text.trim()
+    let parsed = number(value)
+    value != "" and parsed > 0 and "{parsed}" == value
+}
+
+/// `text` as a whole number, or -1 when it is not one.
+fn number(text: Text) -> Int {
+    text.to_int() ?? -1
+}
+
 /// The jobs waiting on `queue`.
 fn queue_jobs(jobs: List<device.PrintJob>, queue: Text, active: Bool) -> List<device.PrintJob> {
     jobs.filter(job -> job.destination == queue and job_active(job) == active)
@@ -237,6 +302,62 @@ action preview_of_file(file: File) -> Option<File> uses image {
     } else { .none }
 }
 
+/// How many pages the file holds, when the device can read them: one for a picture or a text, and
+/// one for a file the device cannot count.
+fn page_count(file: File) -> Int {
+    if file.media == "application/pdf" or file.name.ends_with(".pdf") {
+        match pdf.pages(file) {
+            .ok(text) => match json.decode<List<PreviewPage>>(text) {
+                .ok(pages) => pages.len().max(1),
+                .err(why) => 1,
+            },
+            .err(why) => 1,
+        }
+    } else { 1 }
+}
+
+/// Whether the form's document has a page before the one it previews.
+fn has_previous_page(p: PrintCentre) -> Bool {
+    if let doc = p.documents.first() { doc.preview_page > 1 } else { false }
+}
+
+/// Whether the form's document has a page after the one it previews.
+fn has_next_page(p: PrintCentre) -> Bool {
+    if let doc = p.documents.first() { doc.preview_page < doc.preview_pages } else { false }
+}
+
+/// Shows the page before the one the print form previews.
+action previous_page(p: PrintCentre) uses image {
+    require has_previous_page(p) "This is the first page"
+    let doc = document_of(p)
+    show_page(doc, doc.preview_page - 1)
+}
+
+/// Shows the page after the one the print form previews.
+action next_page(p: PrintCentre) uses image {
+    require has_next_page(p) "This is the last page"
+    let doc = document_of(p)
+    show_page(doc, doc.preview_page + 1)
+}
+
+/// Shows `page` of `doc` in the form's preview.
+action show_page(doc: PrintDocument, page: Int) uses image {
+    let last = doc.preview_pages.max(1)
+    let wanted = if page < 1 { 1 } else if page > last { last } else { page }
+    if wanted == doc.preview_page {
+        return
+    }
+    if let file = doc.file {
+        match pdf.picture(file, wanted, 480) {
+            .ok(picture) => {
+                doc.preview = .some(picture)
+                doc.preview_page = wanted
+            }
+            .err(why) => {}
+        }
+    }
+}
+
 /// Asks the engine what the chosen printer reports, so the form offers only what it can do.
 action ask_options(p: PrintCentre) {
     let doc = document_of(p)
@@ -265,6 +386,8 @@ action absorb_document(p: PrintCentre, file: File) {
     doc.name = file.name
     doc.trouble = ""
     doc.preview = preview_of_file(file)
+    doc.preview_page = 1
+    doc.preview_pages = page_count(file)
     if doc.queue == "" {
         let printers = device.printers
         if let first = printers.queues.first() {
@@ -300,8 +423,11 @@ fn handed(p: PrintCentre) -> Bool {
 /// Prints the chosen document on the chosen printer, with the form's settings.
 action send_to_printer(p: PrintCentre) {
     let doc = document_of(p)
+    let range = page_range_error(doc.pages)
     if doc.queue == "" {
         doc.failed = std.say("Choose a printer")
+    } else if range != "" {
+        doc.failed = range
     } else if let file = doc.file {
         let asked = PrintAsk(
             queue: doc.queue,
@@ -322,6 +448,7 @@ action send_to_printer(p: PrintCentre) {
             .ok(job) => {
                 doc.job = job
                 doc.failed = ""
+                notice("Sent to {doc.queue}", kind: .success)
             }
         }
     } else {
@@ -589,6 +716,8 @@ view window(p: PrintCentre) {
     // The page whose crop frame is open, by its id, and the part of it the person kept.
     state cropping: Text = ""
     state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
+    // The job the person asked to cancel, while they are asked to confirm it.
+    state cancel_job: Text = ""
     let printers = device.printers
     let scanners = device.scanners
     // A document another app handed over opens the person's print form, so they choose the
@@ -660,6 +789,9 @@ view window(p: PrintCentre) {
             if let problem = printers.problem {
                 ui.Banner("The printer service refused that", message: problem, kind: .error)
             }
+            if printers.pending.contains("find") {
+                ui.StatusLine("Looking for printers on your network.", status: .active)
+            }
             if not printers.serving {
                 ui.EmptyState(
                     "No printer service",
@@ -667,11 +799,11 @@ view window(p: PrintCentre) {
                     icon: .printer,
                 )
             } else if here == "dashboard" {
-                dashboard(p, printers, scanners)
+                dashboard(p, printers, scanners, cancel_job)
             } else if here == "queue" {
-                queue_pane(printers)
+                queue_pane(printers, cancel_job)
             } else if here == "history" {
-                history_pane(printers)
+                history_pane(printers, cancel_job)
             } else if here == "diagnostics" {
                 diagnostics_pane(printers, scanners)
             } else if here == "discover" {
@@ -689,10 +821,36 @@ view window(p: PrintCentre) {
             }
         }
     }
+    cancel_dialog(printers, cancel_job)
+}
+
+/// Asks before a waiting document goes: taking it out of the printer's queue cannot be undone.
+view cancel_dialog(printers: device.Printers, cancel: State<Text>) {
+    let job = printers.jobs.find(job -> job.id == cancel and job_active(job))
+    if let job = job {
+        let name = if job.title != "" { job.title } else { std.say("Untitled document") }
+        ui.ModalDialog(
+            title: "Cancel this document?",
+            description: .some("{name} will be removed from the printer. This cannot be undone."),
+            open: true,
+            primary: "Cancel this document",
+            secondary: "Keep it",
+            destructive: true,
+        ) {
+            on act_primary: device.cancel_job(device.printers, job: job.id).then(set(cancel, ""))
+            on act_secondary: set(cancel, "")
+            on dismiss: set(cancel, "")
+        }
+    }
 }
 
 /// What the computer prints to, what waits, and what it can scan, at a glance.
-view dashboard(p: PrintCentre, printers: device.Printers, scanners: device.Scanners) {
+view dashboard(
+    p: PrintCentre,
+    printers: device.Printers,
+    scanners: device.Scanners,
+    cancel: State<Text>,
+) {
     ui.StatGroup {
         ui.StatTile("Printers", "{printers.queues.len()}")
         ui.StatTile("Waiting", "{printers.jobs.count(job -> job_active(job))}")
@@ -710,7 +868,7 @@ view dashboard(p: PrintCentre, printers: device.Printers, scanners: device.Scann
     if not waiting.is_empty() {
         ui.Section("Printing now") {
             for job in waiting {
-                job_row(job, printers)
+                job_row(job, printers, cancel)
             }
         }
     }
@@ -718,7 +876,7 @@ view dashboard(p: PrintCentre, printers: device.Printers, scanners: device.Scann
     if not failed.is_empty() {
         ui.Section("Needs attention") {
             for job in failed {
-                job_row(job, printers)
+                job_row(job, printers, cancel)
             }
         }
     }
@@ -785,6 +943,9 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
                     paused: queue.state != .paused,
                 )
             }
+            ui.Button("Check printer", icon: .refresh, size: .small) {
+                on press: device.find(device.printers)
+            }
             ui.Button("Remove", icon: .trash, icon_only: true, role: .destructive, size: .small) {
                 on press: device.remove(device.printers, printer: queue.name)
             }
@@ -793,7 +954,7 @@ view printer_card(queue: device.PrinterQueue, printers: device.Printers) {
 }
 
 /// One job: what it is, where it goes and how far it is.
-view job_row(job: device.PrintJob, printers: device.Printers) {
+view job_row(job: device.PrintJob, printers: device.Printers, cancel: State<Text>) {
     // A job that stopped or failed says why its printer stands as it does, when it says.
     let queue = printers.queues.find(q -> q.name == job.destination)
     let why: Option<Text> = if not job_failed(job) {
@@ -813,11 +974,6 @@ view job_row(job: device.PrintJob, printers: device.Printers) {
     ) {
         trailing: {
             row(gap: .tight) {
-                if job.state == .stopped or job.state == .failed {
-                    ui.Button("Retry", size: .small) {
-                        on press: device.retry_job(device.printers, job: job.id)
-                    }
-                }
                 if job_active(job) {
                     ui.Button(
                         "Cancel",
@@ -826,7 +982,15 @@ view job_row(job: device.PrintJob, printers: device.Printers) {
                         role: .destructive,
                         size: .small,
                     ) {
-                        on press: device.cancel_job(device.printers, job: job.id)
+                        on press: set(cancel, job.id)
+                    }
+                } else if job_failed(job) {
+                    ui.Button("Retry", size: .small) {
+                        on press: device.retry_job(device.printers, job: job.id)
+                    }
+                } else {
+                    ui.Button("Print again", icon: .refresh, size: .small) {
+                        on press: device.retry_job(device.printers, job: job.id)
                     }
                 }
             }
@@ -838,7 +1002,7 @@ view job_row(job: device.PrintJob, printers: device.Printers) {
 }
 
 /// The jobs that wait or print, queue by queue.
-view queue_pane(printers: device.Printers) {
+view queue_pane(printers: device.Printers, cancel: State<Text>) {
     let waiting = printers.jobs.filter(job -> job_active(job))
     if waiting.is_empty() {
         ui.EmptyState("Nothing waits to print", icon: .printer)
@@ -848,7 +1012,7 @@ view queue_pane(printers: device.Printers) {
         if not jobs.is_empty() {
             ui.Section(queue.name) {
                 for job in jobs {
-                    job_row(job, printers)
+                    job_row(job, printers, cancel)
                 }
             }
         }
@@ -856,14 +1020,14 @@ view queue_pane(printers: device.Printers) {
 }
 
 /// What this computer printed, and what did not come out.
-view history_pane(printers: device.Printers) {
+view history_pane(printers: device.Printers, cancel: State<Text>) {
     let finished = printers.jobs.filter(job -> not job_active(job))
     if finished.is_empty() {
         ui.EmptyState("Nothing printed yet", icon: .clock)
     }
     stack(gap: .none) {
         for job in finished {
-            job_row(job, printers)
+            job_row(job, printers, cancel)
         }
     }
 }
@@ -1001,9 +1165,27 @@ view print_pane(p: PrintCentre, doc: PrintDocument, printers: device.Printers) {
                 ],
             )
         }
-        if let preview = doc.preview {
-            ui.Image(src: preview.url, alt: doc.name, fit: .contain, aspect: 0.7727)
+    }
+    if let preview = doc.preview {
+        ui.Image(src: preview.url, alt: doc.name, fit: .contain, aspect: 0.7727)
+        ui.Text("The original document is unchanged.", role: .caption, secondary: true)
+        if doc.preview_pages > 1 {
+            row(gap: .tight, align: .center) {
+                ui.Button("Previous", icon: .chevron_left, size: .small) {
+                    on press: previous_page(p)
+                }
+                ui.Button("Next", icon: .chevron_right, size: .small) {
+                    on press: next_page(p)
+                }
+                ui.Text(
+                    "Page {doc.preview_page} of {doc.preview_pages}",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
         }
+    } else if doc.file != .none {
+        ui.Text("Preview unavailable", role: .caption, secondary: true)
     }
     let failed = doc.failed
     if failed != "" {
@@ -1033,6 +1215,9 @@ view print_pane(p: PrintCentre, doc: PrintDocument, printers: device.Printers) {
         }
         field("Pages", help: "Empty for all of them; `1-3,5` for a range.") {
             ui.TextInput(bind: doc.pages, placeholder: "1-3")
+        }
+        if page_range_error(doc.pages) != "" {
+            ui.StatusLine(page_range_error(doc.pages), status: .error)
         }
         field("Both sides") {
             ui.Toggle(bind: doc.two_sided, label: "Print on both sides") {
@@ -1209,6 +1394,15 @@ view scan_pane(
     let pages = ordered(scan.pages.map(page -> page))
     if not pages.is_empty() {
         ui.Section("Pages") {
+            ui.Text(
+                if pages.len() == 1 {
+                    "1 page captured. New scans are added to this document."
+                } else {
+                    "{pages.len()} pages captured. New scans are added to this document."
+                },
+                role: .caption,
+                secondary: true,
+            )
             ui.Text(
                 "Press a page to turn it, and use its row's controls to order it.",
                 role: .caption,
