@@ -79,6 +79,11 @@ impl Instance {
         {
             self.windowless = false;
             self.open_root(&host);
+            // What opening the root did is written before a caller reads the view: the views
+            // are run again over it, as a window's next frame would, so the lines read hold the
+            // state the opening made (a person's session, a folder read) and not what stood
+            // before it.
+            self.poll_views();
         }
     }
 
