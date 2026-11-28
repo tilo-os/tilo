@@ -3731,27 +3731,18 @@ fn fit_of(header: &Header) -> HeaderFit {
         .actions
         .iter()
         .position(|action| button_of(&**action).is_some_and(Button::is_menu_only));
-    // The action the row never gives up: the one the app marks primary, else the first that
-    // stands in the row rather than in the menu.
-    let primary = header
-        .actions
-        .iter()
-        .position(|action| {
-            button_of(&**action).is_some_and(|button| {
-                button.role_of() == ButtonRole::Primary && !button.is_menu_only()
-            })
-        })
-        .or_else(|| {
-            header
-                .actions
-                .iter()
-                .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
-        });
-    // The action the app itself marks primary: the one that keeps its words while the row's
-    // secondary actions give theirs.
+    // The action the app itself marks primary — the one that keeps its words while the row's
+    // secondary actions give theirs — and, where the app marks none, the action the row never
+    // gives up: the first that stands in the row rather than in its menu.
     let words = header.actions.iter().position(|action| {
         button_of(&**action)
             .is_some_and(|button| button.role_of() == ButtonRole::Primary && !button.is_menu_only())
+    });
+    let primary = words.or_else(|| {
+        header
+            .actions
+            .iter()
+            .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
     });
     let controls: Vec<usize> = header
         .actions
