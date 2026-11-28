@@ -265,6 +265,29 @@ async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
     assert!(!failed, "the window goes to {place:?}: {said}");
 }
 
+/// The lines the window shows at `place` once it has got there: what `ready` says of them. A
+/// press of a place is the agent's call, and the window draws it when its next frame reads it.
+async fn at_place(
+    session: &Session<'_>,
+    workspace: &str,
+    place: &str,
+    ready: impl Fn(&str) -> bool,
+) -> String {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        goes_to(session, workspace, place).await;
+        let lines = view(session, workspace).await;
+        if ready(&lines) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the window never shows {place:?}: {lines}",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 /// A folder on this device is shown only once the person picks it: nothing of the machine's own
 /// folders is read before, and the folder the person picked reads with nothing beside it.
 #[test]
@@ -275,16 +298,20 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
         let session = Session::Agent(&agent);
         // The person's own files, and this machine's, are reached by no standing grant.
         for place in ["~", "/etc"] {
-            goes_to(&session, &workspace, place).await;
-            let lines = view(&session, &workspace).await;
+            let lines = at_place(&session, &workspace, place, |lines| {
+                lines.contains("Couldn’t open")
+            })
+            .await;
             assert!(
                 lines.contains("Couldn’t open"),
                 "{place} is refused, and the window says so: {lines}",
             );
         }
         // The workspace's own folder is no device path: it reads as it did.
-        goes_to(&session, &workspace, "").await;
-        let lines = view(&session, &workspace).await;
+        let lines = at_place(&session, &workspace, "", |lines| {
+            !lines.contains("Couldn’t open")
+        })
+        .await;
         assert!(
             !lines.contains("Couldn’t open"),
             "the workspace's own folder reads: {lines}",
@@ -318,8 +345,13 @@ fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
         };
         assert!(!lines.contains("outside-the-pick"), "{lines}");
 
-        goes_to(&session, &workspace, &beside.path().to_string_lossy()).await;
-        let lines = view(&session, &workspace).await;
+        let lines = at_place(
+            &session,
+            &workspace,
+            &beside.path().to_string_lossy(),
+            |lines| lines.contains("Couldn’t open"),
+        )
+        .await;
         assert!(
             lines.contains("Couldn’t open"),
             "a folder the person never picked is refused: {lines}",
