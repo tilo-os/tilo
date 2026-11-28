@@ -280,6 +280,81 @@ fn the_records_detail_shows_its_fields() {
     }
 }
 #[test]
+fn the_severity_filter_offers_the_threshold_it_keeps() {
+    let app = installed(READING);
+    let window = app.window();
+    let (options, values) = {
+        let severity = of_kind(window.tree(), "ui.Dropdown")
+            .into_iter()
+            .find(|node| node.props.get("caption") == Some(&Value::text("Severity")))
+            .expect("the severity filter is a dropdown");
+        let Some(Value::List(options)) = severity.props.get("options") else {
+            panic!("the filter offers its options: {:?}", severity.props);
+        };
+        let Some(Value::List(values)) = severity.props.get("values") else {
+            panic!("each option stands for its level: {:?}", severity.props);
+        };
+        (options.clone(), values.clone())
+    };
+    let words: Vec<&str> = options
+        .iter()
+        .filter_map(Value::as_text)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        words,
+        [
+            "Emergency only",
+            "Alert and above",
+            "Critical and above",
+            "Error and above",
+            "Warning and above",
+            "Notice and above",
+            "Info and above",
+            "All levels",
+        ],
+        "each option says what it keeps, not the level's key"
+    );
+    // The words stand for the levels the filter reads: choosing one sets its level, and the
+    // records below it go.
+    assert_eq!(
+        values.iter().filter_map(Value::as_text).collect::<Vec<_>>(),
+        [
+            "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"
+        ],
+        "the option for errors sets `err`"
+    );
+    // Choosing the option for errors sets `err`: the records below it go.
+    app.try_call("set_severity", vec![app.root_value(), Value::text("err")])
+        .expect("the severity is set");
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        words.iter().any(|text| text == "renderer stalled 2 frames"),
+        "the error stays: {words:?}"
+    );
+    assert!(
+        !words.iter().any(|text| text == "Linux version 7.0.9"),
+        "the information it keeps above goes: {words:?}"
+    );
+}
+
+#[test]
+fn the_list_names_a_service_by_its_own_name() {
+    let app = installed(READING);
+    let window = app.window();
+    let words = shown(&window);
+    assert!(
+        words
+            .iter()
+            .any(|text| text == "09:00:01.000 · shell · shell"),
+        "the row names the service short: {words:?}"
+    );
+    assert!(
+        words.iter().any(|text| text == "shell.service"),
+        "the record's detail keeps the unit's whole name: {words:?}"
+    );
+}
+#[test]
 fn a_computer_without_a_readable_journal_says_so() {
     let app = installed(MISSING);
     let window = app.window();

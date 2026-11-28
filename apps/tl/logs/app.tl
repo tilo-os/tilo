@@ -101,6 +101,29 @@ fn severity_words(level: Int) -> Text {
     } else if level == 6 { std.say("Info") } else { std.say("Debug") }
 }
 
+/// The threshold a severity filter sets, as the person reads it: what choosing it shows.
+fn threshold_words(severity: Text) -> Text {
+    if severity == "emerg" {
+        std.say("Emergency only")
+    } else if severity == "alert" {
+        std.say("Alert and above")
+    } else if severity == "crit" {
+        std.say("Critical and above")
+    } else if severity == "err" {
+        std.say("Error and above")
+    } else if severity == "warning" {
+        std.say("Warning and above")
+    } else if severity == "notice" {
+        std.say("Notice and above")
+    } else if severity == "info" { std.say("Info and above") } else { std.say("All levels") }
+}
+
+/// A unit's name as the list reads it: `sshd` for `sshd.service`, as a service's own name is its
+/// own; a socket, timer or any other unit keeps its suffix.
+fn short_unit(unit: Text) -> Text {
+    if unit.ends_with(".service") { unit.slice(0, unit.len() - 8) } else { unit }
+}
+
 /// Whether `entry` survives every facet of the filter.
 fn passes(l: Logs, entry: device.JournalEntry) -> Bool {
     entry.priority <= level_of(l.severity)
@@ -285,9 +308,21 @@ view window(l: Logs) {
         sidebar: {
             stack(gap: .group) {
                 ui.Section("Filter") {
+                    // The words a person chooses by, each standing for the level it sets: what
+                    // the filter keeps is what the option says.
                     ui.Dropdown(
                         bind: l.severity,
                         options: [
+                            "Emergency only",
+                            "Alert and above",
+                            "Critical and above",
+                            "Error and above",
+                            "Warning and above",
+                            "Notice and above",
+                            "Info and above",
+                            "All levels",
+                        ],
+                        values: [
                             "emerg",
                             "alert",
                             "crit",
@@ -388,7 +423,7 @@ view journal_page(l: Logs, now: device.Journal, entries: List<device.JournalEntr
                     role: .caption,
                     secondary: true,
                 )
-                scroll {
+                ui.Scroll(label: "Journal entries") {
                     stack(gap: .none) {
                         for entry in entries {
                             let key = entry_key(entry)
@@ -404,7 +439,7 @@ view journal_page(l: Logs, now: device.Journal, entries: List<device.JournalEntr
                                 stack(gap: .none) {
                                     ui.Text(entry.message, role: .body, lines: 2)
                                     ui.Text(
-                                        "{entry.time} · {entry.unit} · {entry.identifier}",
+                                        "{entry.time} · {short_unit(entry.unit)} · {entry.identifier}",
                                         role: .caption,
                                         secondary: true,
                                     )
