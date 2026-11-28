@@ -24,6 +24,12 @@ use tilo_process_services::notify::{Notification, Notifier};
 /// How the link a notification opens begins: `tilo-phone://told/<thing>[/<button>]`.
 pub const LINK: &str = "tilo-phone://told/";
 
+/// The notification a thing this device knows as `name` stands under, a push's or the log's.
+#[must_use]
+pub fn tag_named(name: &str) -> String {
+    format!("tilo-told-{name}")
+}
+
 /// One notification as it stands on the phone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Shown {
@@ -162,8 +168,8 @@ impl Watching {
     #[must_use]
     fn tag_of(&self, id: &str) -> String {
         match &self.auth {
-            Some(auth) => format!("tilo-told-{}", person_telling::known_as(auth, id)),
-            None => format!("tilo-told-{id}"),
+            Some(auth) => tag_named(&person_telling::known_as(auth, id)),
+            None => tag_named(id),
         }
     }
 
@@ -180,8 +186,11 @@ impl Watching {
             let bytes = hex::decode(text).ok()?;
             String::from_utf8(bytes).ok()
         };
+        // A closed app's push names the thing only as its notification does.
+        let told = decode(thing)?;
+        let shown = self.shown.iter().find(|(_, shown)| shown.tag == told);
         Some(Tap {
-            told: decode(thing)?,
+            told: shown.map_or(told, |(id, _)| id.clone()),
             action: action.and_then(decode),
         })
     }

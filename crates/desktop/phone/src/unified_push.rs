@@ -198,6 +198,16 @@ pub struct Push {
     /// Whether the thing waits no more, and what showed it is taken back.
     #[serde(default)]
     pub gone: bool,
+    /// Its buttons: what each answers by, never what it invokes.
+    #[serde(default)]
+    pub actions: Vec<PushButton>,
+}
+
+/// One button a push offers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushButton {
+    pub id: String,
+    pub label: String,
 }
 
 /// What a push of a thing told says it is.

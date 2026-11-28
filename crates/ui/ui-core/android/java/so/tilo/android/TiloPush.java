@@ -221,11 +221,17 @@ public class TiloPush extends BroadcastReceiver {
             TiloNotifications.withdraw(context, shown[0]);
             return;
         }
-        // A push says nothing of where the thing is: the tap opens Tilo, which reads the person's
-        // own log and shows the same notification again, with its buttons and what it opens.
+        // A push says nothing of where the thing is: a tap opens Tilo, which reads the person's own
+        // log, and a button answers by the link it opens, as one shown while Tilo runs does.
         String words = shown[2] != null ? shown[2] : "";
-        TiloNotifications.show(
-                context, shown[0], shown[1], words, "", new String[0], new String[0]);
+        int buttons = (shown.length - 3) / 2;
+        String[] labels = new String[buttons];
+        String[] links = new String[buttons];
+        for (int i = 0; i < buttons; i++) {
+            labels[i] = shown[3 + 2 * i];
+            links[i] = shown[4 + 2 * i];
+        }
+        TiloNotifications.show(context, shown[0], shown[1], words, "", labels, links);
     }
 
     /** Load the app's Rust library, which the activity loads too when it runs. */

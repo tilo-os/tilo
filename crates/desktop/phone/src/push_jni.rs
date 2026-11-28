@@ -13,9 +13,9 @@ use jni::JNIEnv;
 use jni::objects::{JByteArray, JClass, JObject, JObjectArray, JString};
 use jni::sys::jobjectArray;
 
-/// Open the push `body` and answer `[tag, title, body]`, the title and body empty where what it
-/// showed waits no more; null where this device does not read it. `files` is the app's
-/// `getFilesDir()`: a push may start the process with no activity, and so with none of the launch
+/// Open the push `body` and answer `[tag, title, body]`, then each button's label and link, the
+/// title and body empty where what it showed waits no more; null where this device does not read
+/// it. `files` is the app's `getFilesDir()`: a push may start the process with no activity, and so with none of the launch
 /// environment the app's own places are read from.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_so_tilo_android_TiloPush_nativePush<'local>(
@@ -50,16 +50,33 @@ fn open<'local>(
         .map_err(|error| error.to_string())?;
     let plain = key.open(&body)?;
     let push = crate::unified_push::Push::read(&plain)?;
-    let fields: [&str; 3] = if push.gone {
-        [&push.tag, "", ""]
+    let tag = crate::telling::tag_named(&push.tag);
+    let mut fields = vec![tag.clone()];
+    if push.gone {
+        fields.extend([String::new(), String::new()]);
     } else {
-        [&push.tag, &push.title, &push.body]
-    };
+        fields.extend([push.title, push.body]);
+        // Each button answers as one the app shows while it runs: by the link it opens.
+        let thing = hex::encode(&tag);
+        for button in push
+            .actions
+            .iter()
+            .take(tilo_process_services::notify::MAX_BUTTONS)
+        {
+            let link = format!(
+                "{}{thing}/{}",
+                crate::telling::LINK,
+                hex::encode(&button.id)
+            );
+            fields.extend([button.label.clone(), link]);
+        }
+    }
+    let len = i32::try_from(fields.len()).unwrap_or_default();
     let array = env
-        .new_object_array(3, "java/lang/String", JObject::null())
+        .new_object_array(len, "java/lang/String", JObject::null())
         .map_err(|error| error.to_string())?;
     for (index, text) in fields.iter().enumerate() {
-        let text = env.new_string(*text).map_err(|error| error.to_string())?;
+        let text = env.new_string(text).map_err(|error| error.to_string())?;
         env.set_object_array_element(&array, i32::try_from(index).unwrap_or_default(), &text)
             .map_err(|error| error.to_string())?;
     }
