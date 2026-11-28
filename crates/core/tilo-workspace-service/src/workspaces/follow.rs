@@ -597,7 +597,9 @@ impl Workspaces {
         .with_store(Arc::clone(&self.inner.store))
         .announcing(announcing);
         link.drop_refused_workspace_changes().await;
-        self.inner.direct.serve(link.clone())?;
+        // The instance this workspace is served with, which a workspace served already keeps:
+        // the devices attached to it are on the stream this host publishes on, and stay there.
+        let link = self.inner.direct.serve(link)?;
         // The devices that keep no store read the apps the workspace runs from the link; a
         // workspace whose governance kept them before its store did has them brought over.
         self.tell_apps(workspace);

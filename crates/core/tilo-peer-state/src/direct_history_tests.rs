@@ -507,3 +507,39 @@ async fn a_device_is_never_handed_back_its_own_key_group_frames() {
         "the device was handed back the access request it wrote"
     );
 }
+
+/// A workspace keeps one serving instance: a link built after a device attached to it is given
+/// the instance the device is on, so a frame this host publishes after that link came still
+/// reaches the device. Built again, the workspace had two, and a device on the first heard
+/// nothing more of what the host published.
+#[tokio::test]
+async fn a_second_link_joins_the_serving_instance_and_a_device_on_it_still_hears() {
+    let ((_, _, _, _, _), owner_copy, key) = hosted_fixture_at(tilo_clock::wall());
+    let first = DirectSync::over(Replica::new(owner_copy.clone()), key.clone());
+    let serving = super::Serving::default();
+    let served = serving.serve(first.clone()).unwrap();
+    assert!(
+        Arc::ptr_eq(&served.0, &first.0),
+        "the first link serves the workspace"
+    );
+    // The devices attaching to it subscribe to what this instance publishes.
+    let mut attached = served.0.outgoing.subscribe();
+    // A workspace served again builds another link, as a store-backed host does.
+    let second = DirectSync::over(Replica::new(owner_copy), key.clone());
+    let serving_now = serving.serve(second.clone()).unwrap();
+    assert!(
+        Arc::ptr_eq(&serving_now.0, &served.0),
+        "the workspace keeps the instance it was served with"
+    );
+    assert!(
+        !Arc::ptr_eq(&serving_now.0, &second.0),
+        "the second link replaces nothing"
+    );
+    serving_now
+        .send(channel_frame(&key, collab_types::WorkspaceId::new(), 2))
+        .unwrap();
+    assert!(
+        attached.try_recv().is_ok(),
+        "a device attached before the second link is still sent what the host publishes"
+    );
+}

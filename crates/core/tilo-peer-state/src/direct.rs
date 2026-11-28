@@ -5327,16 +5327,23 @@ impl Serving {
         }
     }
 
-    /// Serve `link`'s workspace, replacing a link this host served before.
+    /// Serve `link`'s workspace, and answer the link this host already serves it with where
+    /// there is one: a device attaching to the workspace joins the instance the devices already
+    /// there are on, so what this host publishes after the second link was built still reaches
+    /// them.
     ///
     /// # Errors
     ///
     /// The link's replica names no workspace id.
-    pub fn serve(&self, link: DirectSync) -> Result<(), String> {
+    pub fn serve(&self, link: DirectSync) -> Result<DirectSync, String> {
         let workspace = link.workspace()?;
+        let mut links = self.links.write_recover();
+        if let Some(serving) = links.get(&workspace) {
+            return Ok(serving.clone());
+        }
         link.host();
-        self.links.write_recover().insert(workspace, link);
-        Ok(())
+        links.insert(workspace, link.clone());
+        Ok(link)
     }
 
     /// Stop serving `workspace`: a workspace this host released.
