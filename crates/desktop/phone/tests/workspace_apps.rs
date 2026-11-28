@@ -37,9 +37,6 @@ use ui::widget::Widget as _;
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
     let (_home, mut server) = Server::for_phone();
-    // The phone starts again in this process, where the daemon that ended still holds its port.
-    let mut port = tilo_test_env::ScopedEnv::new();
-    port.set("TILO_DEVICE_PORT", "0");
     // The person's server runs the language its program links, as a computer's daemon does: what
     // reads the workspace's Notes record there, as their other devices read it.
     server.serving_tilolang();

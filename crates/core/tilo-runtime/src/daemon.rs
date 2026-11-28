@@ -909,7 +909,10 @@ fn serve_device(
     let device_key = device.device_key();
     // The endpoint the part that ends hands to the part that starts: this device is reached at
     // one port for as long as the daemon runs, whichever server its person's parts enter through.
-    let mut handed: Option<iroh::Endpoint> = None;
+    let mut handed = LEFT
+        .lock_recover()
+        .take()
+        .and_then(|(key, left)| (key == device_key).then_some(left));
     let _lock = device.device_lock();
     loop {
         // A stop heard while this computer waited for its person ends the daemon without
@@ -987,7 +990,9 @@ fn serve_device(
         if stop.told() {
             // The part ended because it was told to stop: what it served is let go by the
             // process ending, as a kill would let go of it, rather than closed for a start that
-            // will not come.
+            // will not come. Its endpoint is left for a daemon of the same device started again in
+            // this process, which still holds the port the endpoint bound.
+            *LEFT.lock_recover() = Some((device_key, session.serving().endpoint()));
             drop(session);
             return Ok(());
         }
@@ -1066,6 +1071,12 @@ fn serve_device(
         tracing::info!("this daemon's person's part starts again");
     }
 }
+
+/// The endpoint a part told to stop left in this process, with the device key it was bound for:
+/// a daemon of that device started again here takes it up, as the part after a sign-in does,
+/// rather than binding a port the stopped part's tasks still hold. A runtime of each part's own,
+/// shut down with the part, would let go of the port and make this slot unneeded.
+static LEFT: std::sync::Mutex<Option<([u8; 32], iroh::Endpoint)>> = std::sync::Mutex::new(None);
 
 /// In a build that is not a release, a test can hold the daemon between its person's parts, where
 /// a step of the part that ended does not return: what a folder that will not unmount does. The

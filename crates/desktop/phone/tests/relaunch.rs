@@ -30,12 +30,6 @@ const PHONE: &str = "so.tilo.phone";
 #[test]
 fn a_signed_in_phone_opens_its_window_in_the_workspace() {
     let (home, server) = Server::for_phone();
-    // Both launches run in this one process, where the daemon that ended has not let go of the
-    // fixed port a device takes its workspaces' work on by the time the second starts; a phone
-    // launched again is a process of its own, which finds it free. Each launch here binds a
-    // port of its own instead.
-    let mut port = tilo_test_env::ScopedEnv::new();
-    port.set("TILO_DEVICE_PORT", "0");
     let laptop = server.laptop();
 
     // The phone's first launch: the person signs in with the ticket their laptop printed, and
