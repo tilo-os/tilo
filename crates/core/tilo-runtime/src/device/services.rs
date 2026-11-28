@@ -3369,6 +3369,9 @@ impl Daemon {
                 },
             ));
             broker.state().serve_records(Arc::clone(&reads) as _);
+            // The person's own shell reads them too, its own invocations among them: the read
+            // over its link is answered by the same one reader, decided as the person.
+            shell_dispatch.serve_records(Arc::clone(&reads) as _);
             // One decision of who reads a record, for search and for records served windowless.
             let may_read = tilo_workspace_search::reading_records(reads);
             workspaces

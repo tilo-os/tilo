@@ -124,9 +124,18 @@ pub(crate) struct Dispatching {
     person: OnceLock<PersonDispatch>,
     /// The person whose programs the API is served to, and the daemon that serves it.
     api: OnceLock<([u8; 32], std::sync::Weak<super::services::Daemon>)>,
+    /// The device's one reader of its workspaces' records, once the daemon holds it: what the
+    /// shell's reads outside an app are answered from, its own invocations among them.
+    records: OnceLock<Arc<dyn tilo_actions::remote::ResourceReads>>,
 }
 
 impl Dispatching {
+    /// The person's calls read the device's records through `records` from now on: the one
+    /// reader this device's daemon serves its apps and agents too.
+    pub(crate) fn serve_records(&self, records: Arc<dyn tilo_actions::remote::ResourceReads>) {
+        let _ = self.records.set(records);
+    }
+
     /// The person's calls reach `person` from now on.
     pub(crate) fn serve(&self, person: PersonDispatch) {
         let _ = self.person.set(person);
@@ -208,6 +217,7 @@ impl ShellActions for Actions {
                     caller: shell,
                     workspace: None,
                     agents: None,
+                    dispatching: Arc::clone(&self.dispatching),
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 person,
             ))));
@@ -218,6 +228,7 @@ impl ShellActions for Actions {
         if kept.workspaces.confined().is_some() {
             let cert = kept.workspaces.device_cert();
             let device = Caller::visitor(cert.device_public_key).in_workspace(workspace.clone());
+            let dispatching = Arc::clone(&self.dispatching);
             return Box::pin(std::future::ready(
                 super::confined::forwarded(&kept.workspaces, Some(&workspace)).map(|host| {
                     (
@@ -226,6 +237,7 @@ impl ShellActions for Actions {
                             caller: shell,
                             workspace: Some(host),
                             agents: None,
+                            dispatching,
                         }) as Arc<dyn ActionProvider + Send + Sync>,
                         device,
                     )
@@ -280,6 +292,7 @@ impl ShellActions for Actions {
                     caller: shell,
                     workspace: Some(dispatch),
                     agents: Some(agents),
+                    dispatching: Arc::clone(&self.dispatching),
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 caller,
             )
@@ -297,6 +310,8 @@ struct Shell {
     /// Where the calls the shell makes for an agent its person admitted go, in the workspace
     /// it names.
     agents: Option<AgentsHere>,
+    /// What the daemon answers its person's shell with, the device's record reader among it.
+    dispatching: Arc<Dispatching>,
 }
 
 /// The runs of the person's agents in the one workspace a shell's call names.
@@ -407,6 +422,17 @@ fn kept_here(request: &InvokeRequest) -> bool {
 }
 
 impl ActionProvider for Shell {
+    /// The shell reads records outside their apps through the device's one reader, as the apps
+    /// and agents it admits do: its own invocations among them, which only this device's
+    /// dispatch can answer. A shell placed for another workspace's records reads none here: its
+    /// host decides those.
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        if self.kept.workspaces.confined().is_some() {
+            return None;
+        }
+        self.dispatching.records.get().cloned()
+    }
+
     fn query(
         &self,
         caller: &Caller,
