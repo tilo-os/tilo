@@ -283,7 +283,10 @@ impl super::Workspaces {
 
     /// Refuse a workspace `workspace` names that this host already holds, has released, has
     /// deleted, or serves.
-    async fn refuse_a_workspace_no_device_holds(&self, workspace: Option<&str>) -> Result<(), String> {
+    async fn refuse_a_workspace_no_device_holds(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<(), String> {
         if let Some(workspace) = workspace
             && self.inner.workspaces.lock().await.contains_key(workspace)
         {

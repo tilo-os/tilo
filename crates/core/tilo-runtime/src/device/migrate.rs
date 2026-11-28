@@ -46,7 +46,12 @@ fn carried_over(app: &str) -> bool {
 /// Walk every entry `keeper` holds, handing each app's secret to `adopt`, and take the entry out
 /// once `adopt` answered. The secret is handed on and never written down: no log line, record or
 /// history carries it. An entry `adopt` refused stays, to be adopted on a later start.
-fn walk_old_secret_store(workspace: &str, person: &str, keeper: &dyn OldSecretStore, adopt: &mut Adopt<'_>) {
+fn walk_old_secret_store(
+    workspace: &str,
+    person: &str,
+    keeper: &dyn OldSecretStore,
+    adopt: &mut Adopt<'_>,
+) {
     let entries = match keeper.entries() {
         Ok(entries) => entries,
         Err(error) => {

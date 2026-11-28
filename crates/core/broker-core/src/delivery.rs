@@ -423,7 +423,10 @@ pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
         // An instance of the app with no window runs already: another would publish what it
         // does, so the ask waits for what that one publishes next instead of running the app
         // twice.
-        if launch && !shows && publishers.runs_without_a_window(app_id, ask.workspace, ask.opened_on) {
+        if launch
+            && !shows
+            && publishers.runs_without_a_window(app_id, ask.workspace, ask.opened_on)
+        {
             ran = true;
             continue;
         }
