@@ -216,6 +216,22 @@ mod cases {
             assert!(s.rows(&d).is_empty());
         }
 
+        phase bytes_a_caller_hands_over_open_as_their_own_file;
+        {
+            let s = Desk::new();
+            let d = returned_ref(s.call(
+                "open_bytes",
+                vec![
+                    Value::resource(&s.root),
+                    Value::text("made.txt"),
+                    Value::text("YWJj"),
+                ],
+            ));
+            assert_eq!(s.text(&d, "name"), "made.txt");
+            assert!((s.number(&d, "length") - 3.0).abs() < f64::EPSILON);
+            assert_eq!(s.rows(&d), ["616263"]);
+        }
+
         phase typed_hex_digits_overwrite_a_byte_and_advance;
         {
             let s = Desk::new();
