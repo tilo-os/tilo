@@ -1062,7 +1062,15 @@ fn a_store_change_is_decided_by_the_kinds_of_its_records_or_waits_for_its_earlie
     let mut doc = AutoCommit::load(change.raw_bytes()).unwrap();
     let (_, record) = doc.get(ROOT, "r:n1").unwrap().unwrap();
     doc.put(&record, "title", "Groceries").unwrap();
-    doc.commit_with(CommitOptions::default().with_message(change.message().unwrap()));
+    // A device's own edit of the record it does not make: its stamp names no finer action, so
+    // no kind. Its kind is read from the record the receiver holds, never from the empty
+    // stand-in a record that keeps no unit index is decided by.
+    let stamp = collab_types::stamp::Stamp {
+        invoker: "ada".into(),
+        invocation: "i2".into(),
+        ..collab_types::stamp::Stamp::default()
+    };
+    doc.commit_with(CommitOptions::default().with_message(stamp.message()));
     let later = parse_changes(&doc.save()).unwrap().remove(1);
     let op = signed_store_op(
         collab_types::op::DocumentMutation::Incremental(later.raw_bytes().to_vec())
@@ -1071,6 +1079,19 @@ fn a_store_change_is_decided_by_the_kinds_of_its_records_or_waits_for_its_earlie
     );
     let decided = |held| decide_op(&op, &store, None, held, &surfaces, &|_, _, _| true);
     assert_eq!(decided(None), Ok(Receipt::Hold));
+    let mut records = AutoCommit::load(&doc.save()).unwrap();
+    assert_eq!(
+        decide_opened(
+            (&op, None),
+            &store,
+            (None, Some(AutoCommit::new()), None),
+            Some(records.document()),
+            &surfaces,
+            &|_, _, _| true,
+            (None, None),
+        ),
+        Ok(Receipt::Admit)
+    );
 }
 
 /// A store's content document holds one resource, whose kind its id names. A change of it that

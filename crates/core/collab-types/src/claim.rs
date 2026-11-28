@@ -706,7 +706,7 @@ pub fn store_record_kinds_placed(
     if !crate::is_store_document(record) {
         return (kinds, unplaced);
     }
-    if let Some(kind) = content_kind(record) {
+    if let Some(kind) = crate::store_content_resource(record).map(|(kind, _)| kind) {
         for change in changes {
             kinds.insert(change.hash().0, std::iter::once(kind.to_owned()).collect());
         }
@@ -902,30 +902,34 @@ pub fn is_store_change(change: &automerge::Change) -> bool {
 /// the id alike, so a change of such a document that names no kind is decided against it.
 #[must_use]
 pub fn store_content_kind(record: &str) -> Option<&str> {
-    crate::is_store_document(record)
-        .then(|| content_kind(record))
-        .flatten()
+    crate::store_content_resource(record).map(|(kind, _)| kind)
 }
 
-/// The kind of the one resource a content document of a resource store holds, as its id names it
-/// (`<readers>/<kind>/<id>~<n>`); `None` for a document of resources.
-pub(crate) fn content_kind(record: &str) -> Option<&str> {
-    let (rest, number) = record.rsplit_once('~')?;
-    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let (_, rest) = rest.split_once('/')?;
-    // A kind names no `/`; an id may.
-    rest.split_once('/').map(|(kind, _)| kind)
-}
-
-/// Name in each claim of `claims` that edits its record whole the kinds `kinds` holds for its
-/// change ([`store_record_kinds`]).
+/// Name in each claim of `claims` that names no kind of the records it writes the kinds `kinds`
+/// holds for its change ([`store_record_kinds`]): a stamp's write names the record its context
+/// names when it can, and a change nothing else names (a history mark, a device's own edit) is
+/// named by the store that holds the records. A framework change is no record's write and names
+/// no kind here: it is decided as itself.
 pub fn name_record_kinds(claims: &mut [ChangeClaim], kinds: &RecordKinds) {
     for claim in claims {
+        let store_write = matches!(
+            claim.action,
+            ClaimedAction::Edit { .. } | ClaimedAction::Group(_)
+        );
+        let named = claim
+            .action
+            .members()
+            .into_iter()
+            .any(|member| match member {
+                ClaimedAction::Verb { action, .. } => !action.kind.is_empty(),
+                ClaimedAction::Edit { kind, .. } => !kind.is_empty(),
+                _ => false,
+            });
+        if !store_write || named {
+            continue;
+        }
         let verb = claim.action.store_verb().map(str::to_owned);
-        let unnamed = ClaimedAction::store_write(verb.as_deref().unwrap_or_default());
-        let Some(written) = kinds.get(&claim.change).filter(|_| claim.action == unnamed) else {
+        let Some(written) = kinds.get(&claim.change) else {
             continue;
         };
         let mut edits: Vec<ClaimedAction> = written

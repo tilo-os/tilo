@@ -372,13 +372,14 @@ fn decide_cleartext_changes(
     // entry names the same.
     check_continuations(changes, holding, holding.is_some())?;
     // A resource store's change names the kinds of the records it writes as this receiver
-    // reads them, before the change and after it: never as its writer says.
+    // reads them, before the change and after it: never as its writer says. The kinds are read
+    // from the record as this peer keeps it (`holding`), which holds the records a change edits:
+    // `held` stands in an empty record for one that keeps no unit index, which says nothing of
+    // the kind of a record the change writes without making it.
     let mut held = held;
-    let (kinds, unplaced) = collab_types::claim::store_record_kinds_placed(
-        document.document,
-        held.as_mut().map(automerge::AutoCommit::document),
-        changes,
-    );
+    let written_records = holding.or_else(|| held.as_mut().map(automerge::AutoCommit::document));
+    let (kinds, unplaced) =
+        collab_types::claim::store_record_kinds_placed(document.document, written_records, changes);
     let written = held.and_then(|held| collab_types::units::units_by_change(held, changes));
     let mut claims = cleartext_claims(changes, written.as_ref(), (imported, signer))?;
     collab_types::claim::name_record_kinds(&mut claims, &kinds);
