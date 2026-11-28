@@ -307,14 +307,7 @@ impl FanoutState {
             return;
         }
         let scope = CrdtRoute::cluster(frame.cluster.clone());
-        if let Ok(Some(payload)) =
-            collab_types::presence::PresencePayload::from_live(frame.payload.clone())
-        {
-            let event = CollabEvent::RemotePresenceUpdate {
-                member: member.clone(),
-                key: frame.key.clone(),
-                payload,
-            };
+        if let Ok(Some(event)) = CollabEvent::heard(member.clone(), frame.clone()) {
             for sub in self.local_subs() {
                 if sub.wants(&scope) {
                     (sub.sink)(&event, &scope);

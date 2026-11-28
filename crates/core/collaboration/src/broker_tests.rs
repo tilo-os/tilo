@@ -286,8 +286,8 @@ pub type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
 
 #[derive(Clone)]
 pub struct SeedPresence {
-    member: collab_types::MemberId,
-    frame: collab_types::presence::Presence,
+    pub member: collab_types::MemberId,
+    pub frame: collab_types::presence::Presence,
 }
 
 #[derive(Clone)]

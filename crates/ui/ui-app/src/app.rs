@@ -2283,6 +2283,7 @@ impl App {
             CollabEvent::FollowChanged { .. }
                 | CollabEvent::RemoteCursorMoved { .. }
                 | CollabEvent::RemotePresenceUpdate { .. }
+                | CollabEvent::RemoteName { .. }
         )
     }
 }

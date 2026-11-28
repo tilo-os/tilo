@@ -964,6 +964,9 @@ impl App {
             } => {
                 self.apply_remote_presence(member, key, payload);
             }
+            CollabEvent::RemoteName { member, name } => {
+                self.presence_ctx.set_display_name(member, name);
+            }
             CollabEvent::Document { route, mutation } => {
                 self.apply_document_collab_event(&route, mutation);
             }

@@ -13,7 +13,7 @@
 use crate::route::{KeyAccessState, RouteSpec};
 use collab_types::{
     DocumentMutation,
-    presence::{PresenceKey, PresencePayload},
+    presence::{Payload, Presence, PresenceKey, PresencePayload},
 };
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
@@ -91,6 +91,12 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         member: collab_types::MemberId,
         key: PresenceKey,
         payload: PresencePayload,
+    },
+    /// The name a bot goes by in the workspace's live presence: someone an app carries in from
+    /// another service, as that app's persona says them ("Dana (Discord)"). No roster names them.
+    RemoteName {
+        member: collab_types::MemberId,
+        name: String,
     },
     /// What this endpoint can do with one route's end-to-end encrypted
     /// content changed: it was admitted, is waiting for access (a new device
@@ -171,5 +177,27 @@ impl<C: EndpointOwnership> CollabEvent<C> {
             Self::Document { mutation, .. } => Some(mutation),
             _ => None,
         }
+    }
+
+    /// What `member`'s word `frame`, heard in the workspace's live session, is to an app: a bot's
+    /// name, the word an app shows, or `None` for the desktop's own.
+    ///
+    /// # Errors
+    ///
+    /// A word that does not decode ([`PresencePayload::from_live`]).
+    pub fn heard(member: collab_types::MemberId, frame: Presence) -> Result<Option<Self>, String> {
+        if let (collab_types::MemberId::Bot(_), Payload::Person { name }) =
+            (&member, &frame.payload)
+        {
+            let name = name.clone();
+            return Ok(Some(Self::RemoteName { member, name }));
+        }
+        Ok(
+            PresencePayload::from_live(frame.payload)?.map(|payload| Self::RemotePresenceUpdate {
+                member,
+                key: frame.key,
+                payload,
+            }),
+        )
     }
 }

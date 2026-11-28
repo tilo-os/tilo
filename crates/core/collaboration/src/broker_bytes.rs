@@ -428,6 +428,11 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             presence_payload_bytes(payload, &mut meter);
             "RemotePresenceUpdate"
         }
+        CollabEvent::RemoteName { member, name } => {
+            meter.member(member);
+            meter.string_capacity(name);
+            "RemoteName"
+        }
         CollabEvent::Document { route, mutation } => {
             meter.string_capacity(&route.app_id);
             if let Some(record) = &route.document {

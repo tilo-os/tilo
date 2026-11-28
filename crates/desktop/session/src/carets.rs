@@ -227,19 +227,31 @@ impl Carets {
                 }
             }
             self.show(&workspace, placed);
+            let mut names = HashMap::new();
             let words = sync
                 .apps_heard(&workspace)
                 .into_iter()
                 .filter(|(who, ..)| Some(who) != me.as_ref())
-                .map(|(who, _, app, key, payload)| ((who, app, key), payload))
+                .map(|(who, persona, app, key, payload)| {
+                    if let Some(persona) = persona {
+                        names.insert(who.clone(), persona.shown());
+                    }
+                    ((who, app, key), payload)
+                })
                 .collect();
-            self.hand_words(&workspace, words);
+            self.hand_words(&workspace, words, &names);
         }
     }
 
     /// Hand the apps of `workspace` what each other member's apps said that changed since they
-    /// were last handed it, and leave each key nobody says anything under any more.
-    fn hand_words(&self, workspace: &str, words: HashMap<Word, Payload>) {
+    /// were last handed it, and leave each key nobody says anything under any more. Someone an app
+    /// carries in is named by `names` before their word, as no roster names them.
+    fn hand_words(
+        &self,
+        workspace: &str,
+        words: HashMap<Word, Payload>,
+        names: &HashMap<MemberId, String>,
+    ) {
         let mut heard = self.heard.borrow_mut();
         let held = heard.entry(workspace.to_owned()).or_default();
         for ((who, app, key), _) in held.iter().filter(|(word, _)| !words.contains_key(*word)) {
@@ -247,6 +259,10 @@ impl Carets {
         }
         for ((who, app, key), payload) in &words {
             if held.get(&(who.clone(), app.clone(), key.clone())) != Some(payload) {
+                if let Some(name) = names.get(who) {
+                    let name = Payload::Person { name: name.clone() };
+                    self.hand(workspace, who, app, key.clone(), name);
+                }
                 self.hand(workspace, who, app, key.clone(), payload.clone());
             }
         }
@@ -562,7 +578,7 @@ mod tests {
                 automatic: false,
             };
             let heard = || HashMap::from([(word.clone(), status.clone())]);
-            carets.hand_words(WORKSPACE, heard());
+            carets.hand_words(WORKSPACE, heard(), &HashMap::new());
             assert_eq!(
                 take(),
                 [PresencePayload::Status {
@@ -570,10 +586,28 @@ mod tests {
                     automatic: false
                 }]
             );
-            carets.hand_words(WORKSPACE, heard());
+            carets.hand_words(WORKSPACE, heard(), &HashMap::new());
             assert_eq!(take(), [], "nothing he said changed");
-            carets.hand_words(WORKSPACE, HashMap::new());
+            carets.hand_words(WORKSPACE, HashMap::new(), &HashMap::new());
             assert_eq!(take(), [PresencePayload::Left], "he said nothing there any more");
+
+            // Someone an app carries in is named before their word, as no roster names them.
+            let dana = MemberId::bot("so.tilo.discord/discord:3001");
+            let named = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&named);
+            let _names = fanout.subscribe_workspaces(
+                vec![WORKSPACE.to_owned()],
+                Box::new(move |event, _| {
+                    if let CollabEvent::RemoteName { member, name } = event {
+                        sink.lock_recover().push((member.clone(), name.clone()));
+                    }
+                }),
+            );
+            let word = (dana.clone(), "so.tilo.discord".to_owned(), channel());
+            let names = HashMap::from([(dana.clone(), "Dana (Discord)".to_owned())]);
+            carets.hand_words(WORKSPACE, HashMap::from([(word, composing(true))]), &names);
+            assert_eq!(take(), [drafting(true)]);
+            assert_eq!(*named.lock_recover(), [(dana, "Dana (Discord)".to_owned())]);
         }
     }
 }

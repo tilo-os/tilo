@@ -138,6 +138,7 @@ impl AppBrokerState {
             // What a member says reaches the apps as the frame they said it in ([`Self::heard`]).
             CollabEvent::RemoteCursorMoved { .. }
             | CollabEvent::RemotePresenceUpdate { .. }
+            | CollabEvent::RemoteName { .. }
             | CollabEvent::Document { .. }
             | CollabEvent::KeyAccess { .. }
             | CollabEvent::CommittedDocument { .. }

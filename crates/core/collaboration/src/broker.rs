@@ -5316,12 +5316,8 @@ fn heard_event(
     member: collab_types::MemberId,
     frame: collab_types::presence::Presence,
 ) -> Option<CollabEvent> {
-    match PresencePayload::from_live(frame.payload) {
-        Ok(payload) => payload.map(|payload| CollabEvent::RemotePresenceUpdate {
-            member,
-            key: frame.key,
-            payload,
-        }),
+    match CollabEvent::heard(member.clone(), frame) {
+        Ok(event) => event,
         Err(error) => {
             tracing::warn!(%member, %error, "collab: refused a word that does not decode");
             None

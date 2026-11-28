@@ -497,3 +497,37 @@ fn view_presence_broadcasts_and_follow_binds_the_local_viewport() {
         );
     }
 }
+
+/// Someone a bridge app carries in, heard through the session, reads in a Rust window by their
+/// name on the service, never by the bot's id: "Dana (Discord) is typing".
+#[test]
+fn someone_an_app_carries_in_types_by_their_name_in_a_rust_window() {
+    use collab_types::presence::{Payload, Presence};
+    let dana = tilo_ui_base::permissions::MemberId::bot("so.tilo.discord/discord:3001");
+    let key = PresenceKey::resource("so.tilo.discord", "channel-1", "TextChannel");
+    let said = |payload| {
+        let frame = Presence::app("so.tilo.discord", "workspace", key.clone(), payload);
+        (dana.clone(), frame)
+    };
+    let name = Payload::Person {
+        name: "Dana (Discord)".to_owned(),
+    };
+    let mut broker = ::collaboration::CollaborationManager::heard_fixture_for_test(
+        "so.tilo.chat",
+        vec![said(name), said(Payload::Composing { composing: true })],
+    );
+    let mut app = app_with_root(ViewRoot::new());
+    let typing = |app: &App| {
+        let presence = app.presence_ctx();
+        (presence.composing_at(&key, crate::time::now()).iter())
+            .map(|member| presence.display_name(member))
+            .collect::<Vec<_>>()
+    };
+    tilo_test_env::wait_until("Dana typing in the window", || {
+        for event in broker.poll() {
+            app.apply_collab_event_for_test(event);
+        }
+        !typing(&app).is_empty()
+    });
+    assert_eq!(typing(&app), ["Dana (Discord)"]);
+}

@@ -204,6 +204,24 @@ impl CollaborationManager {
         (manager, invocations)
     }
 
+    /// A connection whose host hands it `heard`, each a member's word in the workspace's live
+    /// presence, as the session's broker hands an app what others said.
+    pub fn heard_fixture_for_test(
+        app: &str,
+        heard: Vec<(collab_types::MemberId, collab_types::presence::Presence)>,
+    ) -> Self {
+        let presence_backlog = heard
+            .into_iter()
+            .map(|(member, frame)| tests::SeedPresence { member, frame })
+            .collect();
+        let broker = FakeBroker {
+            presence_backlog,
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, _thread) = tests::stand_up_fake_broker(broker);
+        Self::from_sdk_fd_for_test(fd, app, Uuid::new_v4())
+    }
+
     /// A connected route whose document reads are not Required, as a
     /// standalone runtime admits it.
     #[allow(
