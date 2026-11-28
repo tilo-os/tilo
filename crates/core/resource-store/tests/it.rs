@@ -751,7 +751,7 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
     }));
     let schema = Schema::of_app("so.tilo.test", &surface);
     let names: Vec<&str> = schema.types.iter().map(|ty| ty.name.as_str()).collect();
-    assert_eq!(names, ["Tracker", "Issue", "Comment"]);
+    assert_eq!(names, ["Tracker", "Issue", "Comment", "tasks.tracker"]);
     let issue = schema.get("Issue").unwrap();
     let fields: Vec<(&str, FieldKind)> = issue
         .fields

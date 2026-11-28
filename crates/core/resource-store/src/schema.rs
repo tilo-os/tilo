@@ -364,6 +364,16 @@ impl Schema {
             declared.push(own_type(surface));
             surface.kind.clone()
         };
+        // A surface may name its own record's type after its label; a store still judges a record
+        // against the type its kind names, so the record's type is declared under its kind too.
+        let mut named_by_label = false;
+        if own_name != surface.kind
+            && let Some(mut own) = declared.iter().find(|ty| ty.name == own_name).cloned()
+        {
+            own.name.clone_from(&surface.kind);
+            declared.push(own);
+            named_by_label = true;
+        }
         let own = declared.iter().find(|ty| ty.name == own_name);
         // The outside service kind the surface's origin verb declares, for a record an origin
         // keeps in step with a service.
@@ -385,7 +395,7 @@ impl Schema {
                 let mut ty_of = Type::of(ty, &enums, &cases);
                 // A record one of the surface's own fields holds is nested in its record, as an
                 // item of a collection is: its type names no `stored`, the surface's field does.
-                if ty.name == own_name {
+                if ty.name == own_name || (named_by_label && ty.name == surface.kind) {
                     ty_of.nested.extend(held_records(surface));
                     ty_of.live.clone_from(&live);
                     ty_of.founding = collab_types::document::founding::containers(surface);
