@@ -262,13 +262,12 @@ impl WidgetSurface {
         // three of their own. Each event still reaches the widgets at once,
         // against the layout the person saw.
         host.set_coalesce_input_frames(true);
-        // Each frame is compared with the one the layer shows, so only what
-        // changed is drawn again.
-        host.track_scene_parts(true);
         // What only fades, grows or moves is posed by the compositor rather than drawn again.
         host.lift_parts(true);
         // The frames are presented over the pixels of the last one ([`Frames`]): a frame draws
-        // what it changed alone, and the target is repainted where it changed.
+        // what it changed alone, and the target is repainted where it changed. A frame whose
+        // draws the damage parts record cannot be drawn for its damage, so nothing here asks
+        // for them.
         host.draws_only_damage(true);
         let _ = host.set_input_scale(placement.scale);
         let size = placement.physical_size();
