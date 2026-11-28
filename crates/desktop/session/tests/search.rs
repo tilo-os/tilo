@@ -717,8 +717,11 @@ fn a_welcome_card_does_what_its_published_action_does() {
             target.address.resource.as_str(),
             target.address.action.as_str()
         ),
-        ("console.effects", "view-connect"),
-        "Console opens where agents are let in: {target:?}"
+        (
+            tilo_session_core::desktop::launchpad::CONSOLE_RESOURCE,
+            "open_connect"
+        ),
+        "Console opens where agents are let in, by the action it publishes: {target:?}"
     );
     let card = session
         .controls()
