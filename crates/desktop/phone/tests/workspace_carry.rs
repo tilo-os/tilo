@@ -23,7 +23,7 @@ mod carried;
 mod server;
 mod support;
 
-use server::Server;
+use server::{Joined, Server};
 use tilo_phone::view::Records;
 use tilolang_process::window::hosted::HostedWindow;
 use ui::widget::Widget as _;
@@ -39,6 +39,8 @@ use ui::widget::Widget as _;
     reason = "one story: an app used before sign-in, the sign-in, the carry, and what is refused"
 )]
 fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
+    // The phone's home comes first, and the package the APK carries is in its store before the
+    // person's own workspace is founded: a workspace starts with the apps its device carries.
     let mut home = support::Home::new();
     let scratch = tempfile::tempdir().unwrap();
     // Notes as this build makes it: the file a workspace installs and the package this phone's
@@ -50,18 +52,8 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     server::Server::install_on_device(&notes.tapp);
     let server = Server::start();
     home.relay(&server.relay_url());
-    let tilolang = tilolang_workspace::host();
-    server
-        .workspaces()
-        .provide_tilolang(tilolang.clone())
-        .expect("the build's tilolang apps declare their surfaces");
-    {
-        let _entered = server.runtime.enter();
-        tilolang.records.serve(&server.workspaces());
-    }
-    let own = tilo_server_protocol::servers::person_workspace_id(
-        &server.person.verifying_key().to_bytes(),
-    );
+    server.serving_tilolang();
+    let own = server.own();
     // The workspace runs Notes before the phone ever joins it.
     server.install(&notes.tapp);
     carried::declare();
@@ -70,10 +62,10 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     // the directory its window keeps an app's documents in.
     let dir = scratch.path().join("tilolang");
     let mut window = signed_out_notes(&server, &dir);
-    press("Notes offers New note", &mut window, "new_note");
+    server::press("Notes offers New note", &mut window, "new_note");
     support::until("the note stands in the notebook", || {
         window.update(&(), &());
-        note_in(&window)
+        server::note_in(&window)
     });
     drop(window);
 
@@ -81,35 +73,16 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     let mut window = signed_out_notes(&server, &dir);
     support::until("the note kept on the phone is still there", || {
         window.update(&(), &());
-        note_in(&window)
+        server::note_in(&window)
     });
     drop(window);
 
     // The person's laptop prints the ticket the phone signs in with.
-    let laptop = support::Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
-    let mut phone =
-        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
-    phone
-        .log_in(&laptop.ticket(), "Pixel")
-        .expect("the phone redeems the ticket its person's laptop printed");
-    let devices = support::until("the phone lists the workspace it joined", || {
-        let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
-        if devices
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.key == server.workspace)
-        {
-            Ok(devices)
-        } else {
-            Err(format!("{devices:?}"))
-        }
-    });
+    let Joined {
+        laptop,
+        phone,
+        devices,
+    } = server.joined();
     // The phone is in the person's own workspace, which every device of theirs finds by their
     // key alone: there is where what they kept before sign-in goes.
     assert_eq!(devices.own.as_deref(), Some(own.as_str()));
@@ -147,17 +120,7 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
         }
     });
     // The person's own workspace runs the app the phone carries.
-    support::until(
-        "the person's own workspace runs the app the phone carries",
-        || {
-            let apps = phone.apps(&own).map_err(|error| format!("{error:#}"))?;
-            if apps.iter().any(|app| app.key == server::NOTES) {
-                Ok(())
-            } else {
-                Err(format!("the workspace runs {apps:?}"))
-            }
-        },
-    );
+    server::notes_listed(&phone, &own);
     assert!(
         !dir.join(server::NOTES).exists(),
         "the app's kept documents are gone once they are the workspace's"
@@ -208,7 +171,7 @@ fn a_phone_carries_what_it_kept_before_sign_in_into_the_workspace() {
     });
     support::until("the joined window shows the note the phone kept", || {
         joined.update(&(), &());
-        note_in(&joined)
+        server::note_in(&joined)
     });
     drop(joined);
 
@@ -261,40 +224,4 @@ fn signed_out_notes(server: &Server, dir: &std::path::Path) -> HostedWindow {
             Records::Here(Some(dir.to_path_buf())),
         )
     })
-}
-
-/// The person presses the action whose id ends with `action` in the window, as its palette
-/// offers it.
-fn press(what: &str, window: &mut HostedWindow, action: &str) {
-    let offered = support::until(what, || {
-        window.update(&(), &());
-        let view = window.view().ok_or("the window is not connected")?;
-        view.actions()
-            .iter()
-            .find(|offered| offered.address.action.ends_with(action))
-            .map(|offered| offered.address.clone())
-            .ok_or_else(|| format!("the window offers {:?}", view.actions()))
-    });
-    window
-        .view_mut()
-        .expect("the window is connected")
-        .invoke_action(offered, None);
-    window.update(&(), &());
-}
-
-/// Whether a note stands in the window: an action its `Note` type declares, which the window
-/// publishes only where a note is shown.
-fn note_in(window: &HostedWindow) -> Result<(), String> {
-    let view = window.view().ok_or("the window is not connected")?;
-    let offered = view.actions();
-    let stand = offered.iter().any(|offered| {
-        ["retitle", "pin", "duplicate"]
-            .iter()
-            .any(|action| offered.address.action.ends_with(action))
-    });
-    if stand {
-        Ok(())
-    } else {
-        Err(format!("the window offers {offered:?}"))
-    }
 }

@@ -27,7 +27,7 @@ mod support;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use server::Server;
+use server::{Joined, Server};
 use tilo_app_host::wakeups::{Notification, Notifier, NotifyError, Scheduled, SystemTime};
 use tilolang_workspace::records::{Packages, member, with_tl_record};
 use tilolang_workspace::runtime::{ResourceRef, Value};
@@ -174,49 +174,15 @@ fn armed_once(
 
 #[test]
 fn an_alarm_set_for_the_phone_rings_there_with_no_network() {
-    let mut home = support::Home::new();
-    let server = Server::start();
-    home.relay(&server.relay_url());
+    let (_home, server) = Server::for_phone();
     // The person's server runs the language its program links, as a computer's daemon does.
-    let tilolang = tilolang_workspace::host();
-    server
-        .workspaces()
-        .provide_tilolang(tilolang.clone())
-        .expect("the build's tilolang apps declare their surfaces");
-    {
-        // A record's writes wait on the reactor its records were registered on: the server's.
-        let _entered = server.runtime.enter();
-        tilolang.records.serve(&server.workspaces());
-    }
+    server.serving_tilolang();
     // The phone mounts on its daemon what its app does, its platform's notifications among it.
     let platform = Arc::new(Platform::default());
     tilo_runtime::device::capabilities::mount(tilo_phone::worker::capabilities(
         Arc::clone(&platform) as Arc<dyn Notifier>,
     ));
-    let laptop = support::Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
-    let mut phone =
-        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
-    phone
-        .log_in(&laptop.ticket(), "Pixel")
-        .expect("the phone redeems the ticket its person's laptop printed");
-    support::until("the phone lists the person's workspace", || {
-        let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
-        if devices
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.key == server.workspace)
-        {
-            Ok(())
-        } else {
-            Err(format!("{devices:?}"))
-        }
-    });
+    let Joined { laptop, phone, .. } = server.joined();
     let (key, _) =
         tilo_device_identity::persist::load_or_create_device_key(&tilo_api::calls::device_keys())
             .expect("the phone's key");

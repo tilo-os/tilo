@@ -29,22 +29,14 @@ const PHONE: &str = "so.tilo.phone";
 
 #[test]
 fn a_signed_in_phone_opens_its_window_in_the_workspace() {
-    let mut home = support::Home::new();
+    let (home, server) = Server::for_phone();
     // Both launches run in this one process, where the daemon that ended has not let go of the
     // fixed port a device takes its workspaces' work on by the time the second starts; a phone
     // launched again is a process of its own, which finds it free. Each launch here binds a
     // port of its own instead.
     let mut port = tilo_test_env::ScopedEnv::new();
     port.set("TILO_DEVICE_PORT", "0");
-    let server = Server::start();
-    home.relay(&server.relay_url());
-    let laptop = support::Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
+    let laptop = server.laptop();
 
     // The phone's first launch: the person signs in with the ticket their laptop printed, and
     // the phone closes.
@@ -94,9 +86,7 @@ fn a_signed_in_phone_opens_its_window_in_the_workspace() {
 
     // Before the person picks a workspace the window is in their own: their server, which keeps
     // it for their other devices, holds the window's record.
-    let own = tilo_server_protocol::servers::person_workspace_id(
-        &server.person.verifying_key().to_bytes(),
-    );
+    let own = server.own();
     let kept = support::until(
         "the phone's window record is in the person's own workspace",
         || match windows_in(&server, &own, &mut window)? {

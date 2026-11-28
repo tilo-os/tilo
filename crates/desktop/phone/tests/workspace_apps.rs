@@ -31,26 +31,15 @@ mod carried;
 mod server;
 mod support;
 
-use server::Server;
+use server::{Joined, Server};
 use ui::widget::Widget as _;
 
 #[test]
 fn a_fresh_phone_lists_its_workspaces_apps() {
-    let mut home = support::Home::new();
-    let server = Server::start();
-    home.relay(&server.relay_url());
+    let (_home, server) = Server::for_phone();
     // The person's server runs the language its program links, as a computer's daemon does: what
     // reads the workspace's Notes record there, as their other devices read it.
-    let tilolang = tilolang_workspace::host();
-    server
-        .workspaces()
-        .provide_tilolang(tilolang.clone())
-        .expect("the build's tilolang apps declare their surfaces");
-    {
-        // A record's writes wait on the reactor its records were registered on: the server's.
-        let _entered = server.runtime.enter();
-        tilolang.records.serve(&server.workspaces());
-    }
+    server.serving_tilolang();
     let scratch = tempfile::tempdir().unwrap();
     // The workspace runs Notes before the phone ever joins it, and the phone's own start installs
     // the package its APK carries: it opens Notes from the install it verified, as any device.
@@ -58,52 +47,22 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     server.install(&tapp);
     server::Server::install_on_device(&tapp);
     carried::declare();
-    let laptop = support::Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
-    let mut phone =
-        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
-    phone
-        .log_in(&laptop.ticket(), "Pixel")
-        .expect("the phone redeems the ticket its person's laptop printed");
-    let devices = support::until("the phone lists the workspace it joined", || {
-        let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
-        if devices
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.key == server.workspace)
-        {
-            Ok(devices)
-        } else {
-            Err(format!("{devices:?}"))
-        }
-    });
+    let Joined {
+        laptop,
+        phone,
+        devices,
+    } = server.joined();
     // Before the person picks one, the phone is in their own workspace: the one their root
     // names, whatever order the workspaces are listed in.
     assert_eq!(
         devices.own,
-        Some(tilo_server_protocol::servers::person_workspace_id(
-            &server.person.verifying_key().to_bytes()
-        )),
+        Some(server.own()),
         "the phone is in the person's own workspace: {devices:?}"
     );
 
     // What the phone's view lists under the workspace (`device.apps`): the apps the workspace's
     // host installed into it, which its device reads from the record its follower reads too.
-    let apps = support::until("the phone lists Notes, which the workspace runs", || {
-        let apps = phone
-            .apps(&server.workspace)
-            .map_err(|error| format!("{error:#}"))?;
-        if apps.iter().any(|app| app.key == server::NOTES) {
-            Ok(apps)
-        } else {
-            Err(format!("the phone lists {apps:?}"))
-        }
-    });
+    let apps = server::notes_listed(&phone, &server.workspace);
     assert!(
         apps.iter().any(|app| app.name == "Notes"),
         "Notes is listed by its name: {apps:?}"
@@ -127,44 +86,15 @@ fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_proce
     // in the window the phone's view shows it in, joined to the workspace over the connection the
     // phone's daemon made for it. The phone lists Notes and opens it; the window that comes up is
     // Notes'.
-    let mut window = support::until("the phone opens Notes, which its workspace runs", || {
-        let connection = phone
-            .window_connection(server::NOTES, &server.workspace)
-            .map_err(|error| format!("{error:#}"))?;
-        tilo_phone::view::open(
-            server::NOTES,
-            &server.workspace,
-            tilo_phone::view::Records::Workspace(connection),
-        )
-    });
+    let mut window = server::notes_window(phone, &server.workspace);
     assert_eq!(
         window.app(),
         Some(server::NOTES),
         "the window runs the app the person opened"
     );
-    support::until("Notes' window shows Notes", || {
-        window.update(&(), &());
-        let view = window.view().ok_or("the window is not connected")?;
-        match view.title() {
-            Some("Notes") => Ok(()),
-            other => Err(format!("the window shows {other:?}")),
-        }
-    });
 
     // The person presses New note in it, as Notes' window offers it.
-    let new_note = support::until("Notes offers New note", || {
-        window.update(&(), &());
-        let view = window.view().ok_or("the window is not connected")?;
-        view.actions()
-            .iter()
-            .find(|action| action.address.action.ends_with("new_note"))
-            .map(|action| action.address.clone())
-            .ok_or_else(|| format!("Notes offers {:?}", view.actions()))
-    });
-    window
-        .view_mut()
-        .expect("the window is connected")
-        .invoke_action(new_note, None);
+    server::press("Notes offers New note", &mut window, "new_note");
 
     // The note is the workspace's: the person's server, which keeps it for their other devices,
     // holds it.

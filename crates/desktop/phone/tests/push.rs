@@ -28,7 +28,7 @@ mod support;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use server::Server;
+use server::{Joined, Server};
 use tilo_app_host::agents::telling::{Pace, Teller};
 use tilo_person_services::ToTell;
 use tilo_person_services::person_telling::{self, Kind};
@@ -150,33 +150,14 @@ fn to_tell(words: &str, title: &str) -> ToTell {
 
 #[test]
 fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_it_is_closed() {
-    let mut home = support::Home::new();
-    let server = Server::start();
-    home.relay(&server.relay_url());
-    let laptop = support::Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
+    let (_home, server) = Server::for_phone();
     let person = server.person.verifying_key().to_bytes();
     let push = PushService::start(&server.runtime);
-
-    let mut phone =
-        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
-    phone
-        .log_in(&laptop.ticket(), "Pixel")
-        .expect("the phone redeems the ticket its person's laptop printed");
-    support::until("the phone lists the person's workspace", || {
-        let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
-        devices
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.key == server.workspace)
-            .then_some(devices.clone())
-            .ok_or_else(|| format!("{devices:?}"))
-    });
+    let Joined {
+        laptop: _laptop,
+        phone,
+        ..
+    } = server.joined();
 
     // The phone's own key, kept in its files, is what it hands its host and what opens its pushes.
     let data = tilo_paths::data_dir().expect("the phone's data directory");

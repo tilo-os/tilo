@@ -26,14 +26,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_phone::workspace_files;
-use tilo_runtime::in_process::Device;
 use tilo_workspace_service::content::{
     ContentScope, ContentShelf, RouteContentService, routes_content,
 };
 use tilo_workspace_service::files::Paths;
 
-use server::{Server, WORKSPACE_NAME};
-use support::{Home, Issuing};
+use server::{Joined, Server, WORKSPACE_NAME};
 
 /// A picture the person's brother saves on the phone.
 const PHOTO: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46];
@@ -43,21 +41,9 @@ const EDITED: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x
 
 #[test]
 fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() {
-    let mut home = Home::new();
-    let server = Server::start();
-    home.relay(&server.relay_url());
-    let laptop = Issuing::start(
-        server.runtime.handle(),
-        &server.person,
-        server.entry(),
-        server.workspaces(),
-    )
-    .expect("the laptop's ticket and endpoint are made");
+    let (_home, server) = Server::for_phone();
     let kept = kept_workspace(&server);
-    let mut phone = Device::start(&support::profile()).expect("the phone's daemon");
-    phone
-        .log_in(&laptop.ticket(), "Pixel")
-        .expect("the phone redeems the ticket its person's laptop printed");
+    let Joined { laptop, phone, .. } = server.joined();
     let workspace = server.workspace.clone();
 
     // The phone offers the person's workspace as a root of the picker, by the name the person

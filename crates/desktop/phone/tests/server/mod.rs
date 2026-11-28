@@ -1,7 +1,7 @@
 //! The person's server and the apps it is given, as the phone's tests stand them up: a host on
 //! this machine's loopback keeping the person's workspace — the server a phone's daemon lists the
-//! person's workspaces from, and enters each where that list says it is kept — and Notes built
-//! from the tree into a signed `.tapp`.
+//! person's workspaces from, and enters each where that list says it is kept — Notes built from
+//! the tree into a signed `.tapp`, and the window a phone opens on it.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,6 +19,8 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_address,
 };
 use tilo_device_identity::login::Entry;
+use tilolang_process::window::hosted::HostedWindow;
+use ui::widget::Widget as _;
 
 use crate::support;
 
@@ -27,6 +29,82 @@ pub const WORKSPACE_NAME: &str = "Studio";
 
 /// The app the workspace runs, by the id every device and view names it: Notes.
 pub const NOTES: &str = "so.tilo.notes";
+
+/// What `phone` lists for `workspace`, once Notes is among it: the apps the workspace runs.
+pub fn notes_listed(
+    phone: &tilo_runtime::in_process::Device,
+    workspace: &str,
+) -> Vec<tilo_runtime::in_process::App> {
+    support::until("the phone lists Notes, which the workspace runs", || {
+        let apps = phone
+            .apps(workspace)
+            .map_err(|error| format!("{error:#}"))?;
+        if apps.iter().any(|app| app.key == NOTES) {
+            Ok(apps)
+        } else {
+            Err(format!("the phone lists {apps:?}"))
+        }
+    })
+}
+
+/// Notes' window joined to `workspace`, once it shows Notes' own page.
+pub fn notes_window(phone: &tilo_runtime::in_process::Device, workspace: &str) -> HostedWindow {
+    let mut window = support::until("the phone opens Notes, which its workspace runs", || {
+        let connection = phone
+            .window_connection(NOTES, workspace)
+            .map_err(|error| format!("{error:#}"))?;
+        tilo_phone::view::open(
+            NOTES,
+            workspace,
+            tilo_phone::view::Records::Workspace(connection),
+        )
+    });
+    support::until("Notes' window shows Notes", || {
+        window.update(&(), &());
+        let view = window.view().ok_or("the window is not connected")?;
+        match view.title() {
+            Some("Notes") => Ok(()),
+            other => Err(format!("the window shows {other:?}")),
+        }
+    });
+    window
+}
+
+/// The person presses the action whose id ends with `action` in the window, as its palette
+/// offers it.
+pub fn press(what: &str, window: &mut HostedWindow, action: &str) {
+    let offered = support::until(what, || {
+        window.update(&(), &());
+        let view = window.view().ok_or("the window is not connected")?;
+        view.actions()
+            .iter()
+            .find(|offered| offered.address.action.ends_with(action))
+            .map(|offered| offered.address.clone())
+            .ok_or_else(|| format!("the window offers {:?}", view.actions()))
+    });
+    window
+        .view_mut()
+        .expect("the window is connected")
+        .invoke_action(offered, None);
+    window.update(&(), &());
+}
+
+/// Whether a note stands in the window: an action its `Note` type declares, which the window
+/// publishes only where a note is shown.
+pub fn note_in(window: &HostedWindow) -> Result<(), String> {
+    let view = window.view().ok_or("the window is not connected")?;
+    let offered = view.actions();
+    let stand = offered.iter().any(|offered| {
+        ["retitle", "pin", "duplicate"]
+            .iter()
+            .any(|action| offered.address.action.ends_with(action))
+    });
+    if stand {
+        Ok(())
+    } else {
+        Err(format!("the window offers {offered:?}"))
+    }
+}
 
 /// The person's server: a host on this machine's loopback keeping the person's workspace, which
 /// they own, and the runtime the laptop that prints the phone's ticket runs on.
@@ -39,7 +117,81 @@ pub struct Server {
     pub workspace: String,
 }
 
+/// A phone of the person's, signed in with the ticket their laptop printed, once it lists the
+/// workspace it joined: what every test here that drives a phone starts from.
+pub struct Joined {
+    /// The person's laptop, which printed the ticket the phone signed in with.
+    pub laptop: support::Issuing,
+    pub phone: tilo_runtime::in_process::Device,
+    /// What the phone lists once it joined: the person's workspaces.
+    pub devices: tilo_runtime::in_process::Devices,
+}
+
 impl Server {
+    /// The person's server with this test's phone home laid out: the daemon reads its places from
+    /// the process's environment once, before anything starts.
+    pub fn for_phone() -> (support::Home, Self) {
+        let mut home = support::Home::new();
+        let server = Self::start();
+        home.relay(&server.relay_url());
+        (home, server)
+    }
+
+    /// The person's own workspace, which every device of theirs finds by their key alone.
+    pub fn own(&self) -> String {
+        tilo_server_protocol::servers::person_workspace_id(&self.person.verifying_key().to_bytes())
+    }
+
+    /// The person's laptop, serving the ticket a phone signs in with.
+    pub fn laptop(&self) -> support::Issuing {
+        support::Issuing::start(
+            self.runtime.handle(),
+            &self.person,
+            self.entry(),
+            self.workspaces(),
+        )
+        .expect("the laptop's ticket and endpoint are made")
+    }
+
+    /// Run the language this build links on the person's server, as a computer's daemon does: a
+    /// record's writes wait on the reactor its records were registered on, the server's.
+    pub fn serving_tilolang(&self) {
+        let tilolang = tilolang_workspace::host();
+        self.workspaces()
+            .provide_tilolang(tilolang.clone())
+            .expect("the build's tilolang apps declare their surfaces");
+        let _entered = self.runtime.enter();
+        tilolang.records.serve(&self.workspaces());
+    }
+
+    /// A phone of the person's, signed in with the ticket their laptop printed, once it lists the
+    /// workspace it joined.
+    pub fn joined(&self) -> Joined {
+        let laptop = self.laptop();
+        let mut phone = tilo_runtime::in_process::Device::start(&support::profile())
+            .expect("the phone's daemon");
+        phone
+            .log_in(&laptop.ticket(), "Pixel")
+            .expect("the phone redeems the ticket its person's laptop printed");
+        let devices = support::until("the phone lists the workspace it joined", || {
+            let devices = phone.devices().map_err(|error| format!("{error:#}"))?;
+            if devices
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.key == self.workspace)
+            {
+                Ok(devices)
+            } else {
+                Err(format!("{devices:?}"))
+            }
+        });
+        Joined {
+            laptop,
+            phone,
+            devices,
+        }
+    }
+
     pub fn start() -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
