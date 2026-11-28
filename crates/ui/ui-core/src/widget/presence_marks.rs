@@ -22,11 +22,15 @@ pub struct PeerSpot {
     pub name: String,
     /// The presence palette slot they wear, where the workspace gave them one.
     pub hue: Option<u8>,
-    /// Across the document, in its own units.
+    /// Across the document, in its own units: where they point.
     pub x: f64,
     /// Down the document, in its own units.
     pub y: f64,
-    /// How wide what they selected is, in the same units; zero with `tall` for a point.
+    /// Across the document: where what they selected begins.
+    pub sx: f64,
+    /// Down the document: where what they selected begins.
+    pub sy: f64,
+    /// How wide what they selected is, in the same units; zero with `tall` for none.
     pub wide: f64,
     /// How tall what they selected is, in the same units.
     pub tall: f64,
@@ -55,7 +59,7 @@ impl PeerSpot {
     /// in the document's own units.
     #[must_use]
     pub fn selection(&self) -> Option<(f64, f64, f64, f64)> {
-        (self.wide != 0.0 || self.tall != 0.0).then_some((self.x, self.y, self.wide, self.tall))
+        (self.wide != 0.0 || self.tall != 0.0).then_some((self.sx, self.sy, self.wide, self.tall))
     }
 }
 
@@ -99,6 +103,8 @@ impl PropType for PeerSpot {
             hue,
             x: number("x")?,
             y: number("y")?,
+            sx: number("sx")?,
+            sy: number("sy")?,
             wide: number("wide")?,
             tall: number("tall")?,
         })
@@ -119,13 +125,30 @@ pub fn peer_spot_description() -> EnumDescription {
             doc: "One member at work in the document.".to_owned(),
             fields: vec![
                 case_field_description("who", Type::Actor, None, "Whose place it is."),
-                case_field_description("x", Type::Float, None, "Across the document."),
+                case_field_description(
+                    "x",
+                    Type::Float,
+                    None,
+                    "Across the document: where they point.",
+                ),
                 case_field_description("y", Type::Float, None, "Down the document."),
+                case_field_description(
+                    "sx",
+                    Type::Float,
+                    None,
+                    "Across the document: where what they selected begins.",
+                ),
+                case_field_description(
+                    "sy",
+                    Type::Float,
+                    None,
+                    "Down the document: where what they selected begins.",
+                ),
                 case_field_description(
                     "wide",
                     Type::Float,
                     Some(Value::Float(0.0)),
-                    "How wide their selection is; zero with `tall` for a point.",
+                    "How wide their selection is; zero with `tall` for none.",
                 ),
                 case_field_description(
                     "tall",

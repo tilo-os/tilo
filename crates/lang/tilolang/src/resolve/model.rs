@@ -117,6 +117,8 @@ pub struct StateInfo {
     pub name: String,
     pub id: String,
     pub ty: Ty,
+    /// The platform keeps it in the window, never in the person's record (`state … kept`).
+    pub kept: bool,
 }
 
 #[derive(Clone, Debug)]

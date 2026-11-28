@@ -3198,6 +3198,7 @@ impl Resolver<'_> {
                 name: d.name.name.clone(),
                 id: id_of(lock, &format!("{}.{}", v.name.name, d.name.name)),
                 ty,
+                kept: d.kept,
             });
         }
     }

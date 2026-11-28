@@ -21,7 +21,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pictures::Pictures;
 use crate::widget::{PeerSpot, PictureSource};
-use tilo_ui_base::presence::{SpotMark, draw_peer_spots};
+use tilo_ui_base::presence::{PeerGlide, SpotMark, draw_peer_spots, peer_glide_timing};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
@@ -47,6 +47,9 @@ pub struct PaintSurface {
     /// Other members at work in the artwork, as the app read them from `spots(a)`: placed on
     /// the artwork's own units, so their carets and selections move with the view.
     pub(crate) peers: Vec<PeerSpot>,
+    /// Where each of their marks is drawn as they move: gliding from where it showed to where
+    /// they are now, and landing at once where motion is reduced.
+    glide: PeerGlide,
     pub(crate) overlay_opacity: f64,
     pub(crate) pictures: Option<Pictures>,
     pub(crate) rect: Rect,
@@ -93,6 +96,7 @@ impl Default for PaintSurface {
             overlay: None,
             overlay_rect: None,
             peers: Vec::new(),
+            glide: PeerGlide::default(),
             overlay_opacity: 1.0,
             pictures: None,
             rect: Rect::ZERO,
@@ -219,6 +223,32 @@ impl PaintSurface {
         scene.pop_layer();
     }
 
+    /// Send every member's mark to the place they say, in the surface's own pixels.
+    fn sync_peers(&mut self, theme: &Theme) {
+        let (scale, origin) = self.fit();
+        let place = |x: f64, y: f64| {
+            Point::new(
+                origin.x + (x - self.pan.x) * scale,
+                origin.y + (y - self.pan.y) * scale,
+            )
+        };
+        let marks: Vec<(tilo_ui_base::permissions::MemberId, Point, Option<Rect>)> = self
+            .peers
+            .iter()
+            .filter_map(|peer| {
+                let user = peer.who.member_id()?.clone();
+                let selection = peer.selection().map(|(x, y, wide, tall)| {
+                    let a = place(x, y);
+                    let b = place(x + wide, y + tall);
+                    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
+                });
+                Some((user, place(peer.x, peer.y), selection))
+            })
+            .collect();
+        let now = tilo_ui_base::motion::frame_now();
+        self.glide.retarget(marks, peer_glide_timing(theme), now);
+    }
+
     /// Other members at work in the artwork: their caret where they point, and the outline of
     /// what they selected, placed through the same view the artwork is drawn at.
     fn paint_peers(
@@ -231,26 +261,20 @@ impl PaintSurface {
         if self.peers.is_empty() {
             return;
         }
-        let (scale, origin) = self.fit();
-        let place = |x: f64, y: f64| {
-            Point::new(
-                origin.x + (x - self.pan.x) * scale,
-                origin.y + (y - self.pan.y) * scale,
-            )
-        };
+        let now = tilo_ui_base::motion::frame_now();
         let marks: Vec<SpotMark<'_>> = self
             .peers
             .iter()
-            .map(|peer| SpotMark {
-                color: peer.color(),
-                name: &peer.name,
-                agent: peer.is_agent(),
-                point: place(peer.x, peer.y),
-                selection: peer.selection().map(|(x, y, wide, tall)| {
-                    let a = place(x, y);
-                    let b = place(x + wide, y + tall);
-                    Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
-                }),
+            .filter_map(|peer| {
+                let user = peer.who.member_id()?;
+                let (point, selection) = self.glide.shown(user, now)?;
+                Some(SpotMark {
+                    color: peer.color(),
+                    name: &peer.name,
+                    agent: peer.is_agent(),
+                    point,
+                    selection,
+                })
             })
             .collect();
         draw_peer_spots(scene, transform, text, theme, &marks);
@@ -383,11 +407,12 @@ impl Widget for PaintSurface {
             reason = "a draw binds only the parts it paints with"
         )]
         let (scene, transform, text, theme, _env) = ctx.parts();
+        self.sync_peers(theme);
         self.paint(scene, transform, text, theme);
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.glide.moving(tilo_ui_base::motion::frame_now())
     }
 
     fn mark_drawn(&mut self) {

@@ -21,11 +21,11 @@ use crate::value::Value;
 
 use Imp::{
     Abort, ActAnswer, ActBlur, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
-    ActClose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPerson, ActorPrincipal,
-    ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, Call, CallFn, CallInputs,
-    CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport,
-    CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
+    ActClose, ActKeep, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen,
+    ActUndo, Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPerson,
+    ActorPrincipal, ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, Call, CallFn,
+    CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture,
+    CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
     CanvasRemoveAlong, CanvasSample, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport,
     CanvasWand, ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText,
     ClipboardPasteImage, ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert,
@@ -47,10 +47,10 @@ use Imp::{
     FloatTan, FloatTanh, FloatToDegrees, FloatToRadians, FloatToStr, FloatTrunc, FontFamilies,
     ForeignRef, Grep, GroupBy, HeldClose, HeldOpen, HeldSaid, HeldSend, IdentPart, IntAbs,
     IntClamp, IntMax, IntMin, IntToStr, InvocationPop, InvocationPush, Invoke, Invoked, Invoker,
-    IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, Lenses, LinesRun, Links, ListAvg,
-    ListConcat, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
-    ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MadeFrom,
-    MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
+    IsError, IsSome, JsonDecode, JsonEncode, JsonParse, Keep, KeptGet, Lenses, LinesRun, Links,
+    ListAvg, ListConcat, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+    ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
+    MadeFrom, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew, MapPut, MapPutValue, MapRemove,
     MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup, MayRead, Me, Members, Mentions, MetaOf,
     MissingV, ModelCall, NoneV, Notice, Notify, Now, Occurrences, OfType, Outside, OutsideAt,
     PageCall, PdfFields, PdfImport, PdfLinks, PdfMarkup, PdfOutline, PdfPages, PdfPicture, PdfSave,
@@ -901,10 +901,11 @@ impl Core {
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropB | UiPropF | UiPropPic | UiChild | UiBind
             | UiBindBegin | UiOn | UiChoose | UiAnchor | SpaceI | SpaceF | RowOpen
-            | UiBindState | UiBindStateAt | StateGet | StateShown | StateAt | ArgAt | ActSet
-            | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView
-            | UiActions | UiAction | ActChoose | ActChooseFolder | ActSave | ActBlur | ActClose
-            | ActCall | ActCallInput | ActCallVolume | ActRunLine => self.ui_import(imp, a),
+            | UiBindState | UiBindStateAt | StateGet | KeptGet | StateShown | StateAt | ArgAt
+            | ActSet | ActKeep | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen
+            | ActUndo | ChangeView | UiActions | UiAction | ActChoose | ActChooseFolder
+            | ActSave | ActBlur | ActClose | ActCall | ActCallInput | ActCallVolume
+            | ActRunLine => self.ui_import(imp, a),
             EventValue | EventPart | EventPress | Actions | Lenses | Spots | CallMembers
             | CallInputs | Invoked | LinesRun | Delivery | Reach | MetaOf | Versions
             | VersionChange | Links | RunChanges | Unreadable | Unseen | FirstUnseen | SeenBy

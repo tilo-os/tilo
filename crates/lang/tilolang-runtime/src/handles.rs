@@ -171,7 +171,7 @@ pub struct ViewState {
     /// Where the person looking is in a document this run draws, as the view declared it with
     /// `presence`: the resource, and the point and what they selected, in the document's own
     /// units. The host says it of the person after the view is drawn.
-    pub declared_spot: Option<(crate::value::ResourceRef, [f64; 4])>,
+    pub declared_spot: Option<(crate::value::ResourceRef, [f64; 6])>,
     pub nodes: Vec<NodeBuild>,
 }
 

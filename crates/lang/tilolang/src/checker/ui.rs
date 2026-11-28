@@ -51,13 +51,15 @@ impl Checker<'_> {
                 (Some(e), _) => self.expr_as(e, &info.ty),
                 (None, _) => self.zero_of(&info.ty, d.name.span),
             };
-            // The part's value, or the default while it is empty; scalars travel boxed.
+            // The part's value, or the default while it is empty; scalars travel boxed. A kept
+            // state is the window's, never the person's record.
+            let read = if d.kept { Imp::KeptGet } else { Imp::StateGet };
             let args = vec![Ex::str(&info.id), Self::handle_of(fallback)];
             let value = if info.ty.is_scalar() {
                 let boxed = Ty::Option(Box::new(info.ty.clone()));
-                Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &info.ty)
+                Self::unwrap_opt(Ex::host(read, args, boxed), &info.ty)
             } else {
-                Ex::host(Imp::StateGet, args, info.ty.clone())
+                Ex::host(read, args, info.ty.clone())
             };
             let local = self.declare(&info.name, info.ty.clone());
             self.emit(Stmt::Set(local, value));
@@ -67,6 +69,7 @@ impl Checker<'_> {
                     id: info.id.clone(),
                     ty: info.ty.clone(),
                     local,
+                    kept: d.kept,
                 },
             );
         }
@@ -826,17 +829,17 @@ impl Checker<'_> {
         n
     }
 
-    /// `presence(r, x, y, wide, tall)`, a view's declaration of where its person works in the
-    /// document of `r`: the point they are at and the rectangle they selected around it, in the
+    /// `presence(r, x, y, sx, sy, wide, tall)`, a view's declaration of where its person works
+    /// in the document of `r`: the point they are at and the rectangle they selected, in the
     /// document's own units. The platform says it to the workspace; the view builds no node
     /// where it is written.
     fn presence_statement(&mut self, args: &[ast::Arg], span: Span) -> LocalId {
-        let [resource, x, y, wide, tall] = args else {
+        let [resource, x, y, sx, sy, wide, tall] = args else {
             self.err(
                 "E022",
                 span,
                 "`presence` takes the document, the place in it and what is selected there: \
-                 `presence(r, x, y, wide, tall)`",
+                 `presence(r, x, y, sx, sy, wide, tall)`",
             );
             for a in args {
                 let _ = self.expr(&a.value, None);
@@ -846,18 +849,19 @@ impl Checker<'_> {
         let Some(r) = self.resource_arg("presence", std::slice::from_ref(resource), span) else {
             return self.dead_node();
         };
-        for arg in [x, y, wide, tall] {
+        for arg in [x, y, sx, sy, wide, tall] {
             if arg.name.is_some() {
                 self.err(
                     "E022",
                     arg.value.span,
-                    "`presence` takes its place by position: `presence(r, x, y, wide, tall)`",
+                    "`presence` takes its place by position: \
+                     `presence(r, x, y, sx, sy, wide, tall)`",
                 );
             }
         }
         let mut at = vec![r];
         at.extend(
-            [x, y, wide, tall]
+            [x, y, sx, sy, wide, tall]
                 .iter()
                 .map(|arg| self.expr_as(&arg.value, &Ty::Float)),
         );

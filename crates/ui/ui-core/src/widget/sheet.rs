@@ -17,6 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::scrollbar::Scrollbar;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::presence::{SpotMark, draw_peer_spots};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ScrollMetrics;
@@ -55,10 +56,14 @@ impl SheetCell {
 }
 
 /// Another person at work in the sheet: the cells they chose and whose they are.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Peer {
     pub area: String,
     pub who: String,
+    /// The colour their presence wears, so their selection reads as theirs.
+    pub colour: vello::peniko::Color,
+    /// It is software's: its name chip carries the agent glyph.
+    pub agent: bool,
 }
 
 /// A column's width or a row's height, where the person sized it.
@@ -262,7 +267,7 @@ pub struct Sheet {
     revision: u64,
     commented: HashSet<Addr>,
     answered: HashSet<Addr>,
-    peers: Vec<((Addr, Addr), String)>,
+    peers: Vec<((Addr, Addr), Peer)>,
     editable: bool,
     /// The chosen cells: where the choice started, and where it reaches.
     anchor: Addr,
@@ -452,9 +457,9 @@ impl Sheet {
             self.answered = answered;
             changed = true;
         }
-        let peers: Vec<((Addr, Addr), String)> = peers
+        let peers: Vec<((Addr, Addr), Peer)> = peers
             .into_iter()
-            .filter_map(|peer| Some((parse_area(&peer.area)?, peer.who)))
+            .filter_map(|peer| Some((parse_area(&peer.area)?, peer)))
             .collect();
         if self.peers != peers {
             self.peers = peers;
@@ -1182,22 +1187,6 @@ impl Widget for Sheet {
                 }
             }
         }
-        for &((peer_start, peer_end), _) in &self.peers {
-            for row in rows.clone() {
-                if row < peer_start.1 || row > peer_end.1 {
-                    continue;
-                }
-                for column in columns.clone() {
-                    if column < peer_start.0 || column > peer_end.0 {
-                        continue;
-                    }
-                    let rect = self.cell_rect((column, row)).intersect(body);
-                    if rect.width() > 0.0 && rect.height() > 0.0 {
-                        ctx.fill_rect(rect, colors.intent.selection_tint);
-                    }
-                }
-            }
-        }
         // The cells.
         let style = theme.text(TextRole::Body);
         for row in rows.clone() {
@@ -1806,32 +1795,28 @@ impl Sheet {
                 );
             }
         }
-        // What others chose, in their own ink with their name over it.
-        let style = theme.text(TextRole::Caption);
-        for ((peer_start, peer_end), who) in &self.peers {
-            let a = self.cell_rect(*peer_start);
-            let b = self.cell_rect(*peer_end);
-            let outline = Rect::new(a.x0, a.y0, b.x1, b.y1).intersect(body);
-            if outline.is_zero_area() {
-                continue;
-            }
-            ctx.stroke_rect(outline, colors.intent.you, 1.5);
-            let (width, height) = ctx.text.measure_style(who, None, &style);
-            let label = Rect::new(
-                outline.x0,
-                (outline.y0 - f64::from(height)).max(self.rect.y0),
-                outline.x0 + f64::from(width) + 8.0,
-                (outline.y0).max(self.rect.y0) + 2.0,
-            );
-            ctx.fill_round(label, 3.0, colors.intent.you);
-            ctx.text(
-                who,
-                &style,
-                colors.text_primary,
-                Point::new(label.x0 + 4.0, label.y0 + 1.0),
-                None,
-            );
-        }
+        // What others chose, in their own colour with their name over it: the one mark every
+        // surface over a document draws.
+        let marks: Vec<SpotMark<'_>> = self
+            .peers
+            .iter()
+            .filter_map(|((peer_start, peer_end), peer)| {
+                let a = self.cell_rect(*peer_start);
+                let b = self.cell_rect(*peer_end);
+                let outline = Rect::new(a.x0, a.y0, b.x1, b.y1).intersect(body);
+                if outline.is_zero_area() {
+                    return None;
+                }
+                Some(SpotMark {
+                    color: peer.colour,
+                    name: &peer.who,
+                    agent: peer.agent,
+                    point: outline.origin(),
+                    selection: Some(outline),
+                })
+            })
+            .collect();
+        draw_peer_spots(ctx.scene, ctx.transform, ctx.text, theme, &marks);
     }
 
     /// The scrollbars, quiet until the pointer is near them.

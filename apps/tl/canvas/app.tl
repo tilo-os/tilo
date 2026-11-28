@@ -4460,7 +4460,10 @@ action clear_notice(a: Artwork) {
 /// what they selected, in the artwork's own units. The surface draws them; this view only hands
 /// them where they are.
 fn peers_in(a: Artwork) -> List<ui.SpotPeer> {
-    spots(a).map(p -> .peer(who: p.who, x: p.x, y: p.y, wide: p.wide, tall: p.tall))
+    spots(a)
+        .map(
+            p -> .peer(who: p.who, x: p.x, y: p.y, sx: p.sx, sy: p.sy, wide: p.wide, tall: p.tall),
+        )
 }
 
 view artwork(a: Artwork) {
@@ -4494,12 +4497,15 @@ view artwork(a: Artwork) {
     state export_transparent: Bool = false
     state export_region: Text = ""
     // Where the person's pointer is over the artwork, in the artwork's own units: where they
-    // work, which presence says to everyone else. Empty until the pointer is over the surface.
-    state pointer: List<Float> = []
+    // work, which presence says to everyone else. Kept by the window, never in their record: a
+    // pointer is where they are, not what they chose.
+    state pointer: List<Float> = [] kept
     // Where the person works in this artwork, as presence: the platform says it to the
     // workspace, and draws everyone else's place from it.
     if pointer.len() >= 2 {
-        presence(a, pointer.at(0) ?? 0.0, pointer.at(1) ?? 0.0, 0.0, 0.0)
+        let px = pointer.at(0) ?? 0.0
+        let py = pointer.at(1) ?? 0.0
+        presence(a, px, py, px, py, 0.0, 0.0)
     }
     std.page(a, canvas: true, fill: true) {
         header: {

@@ -483,6 +483,7 @@ fn state_meta<'a>(
             id: s.id.clone(),
             name: s.name.clone(),
             ty: s.ty.meta_text(app),
+            kept: s.kept,
         })
         .collect()
 }

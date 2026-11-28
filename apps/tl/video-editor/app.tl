@@ -3377,10 +3377,6 @@ view window(e: Editor) {
         // word while the cut plays, so the head moves with the picture rather than once a second,
         // and the frame that stands otherwise.
         let head = live_word ?? if p.still_at >= 0.0 { p.still_at } else { playhead }
-        // Where the person works in the cut, as presence: the second the playhead stands at,
-        // in the timeline's own units. The platform says it to the workspace, and the timeline
-        // draws everyone else's from it.
-        presence(p, head, 0.0, 0.0, 0.0)
         // A play that reached the cut's end has stopped: the picture stands where it stopped,
         // and the transport offers the play again.
         let ended = match live_word {
@@ -3393,6 +3389,17 @@ view window(e: Editor) {
                 .then(hear_mix(p))
         }
         let chosen = p.clips.filter(c -> selected.contains(c.id()))
+        // Where the person works in the cut, as presence: the playhead's second, and the clip
+        // they chose — its start, its track and its length — in the timeline's own units. The
+        // platform says it to the workspace, and the timeline draws everyone else's from it.
+        let at_clip = chosen.first()
+        let clip_start = if let c = at_clip { c.start } else { head }
+        let clip_row = if let c = at_clip {
+            ordered_tracks(p).map(t -> t.id()).index_of(c.track.id()) ?? 0
+        } else { 0 }
+        let clip_length = if let c = at_clip { shown(c) } else { 0.0 }
+        let clip_rows = if at_clip == .none { 0.0 } else { 1.0 }
+        presence(p, head, 0.0, clip_start, clip_row.to_float(), clip_length, clip_rows)
         let clip = clip_named(p, selected.last() ?? "")
         let media = p.media.find(m -> m.id() == picked_media)
         let pct = percent(p)
@@ -3858,7 +3865,10 @@ view window(e: Editor) {
 /// Other members at work in the cut, as presence reports them: where each plays from, in the
 /// timeline's own units. The timeline draws them; the view only hands them where they are.
 fn timeline_peers(p: Project) -> List<ui.SpotPeer> {
-    spots(p).map(s -> .peer(who: s.who, x: s.x, y: 0.0, wide: s.wide, tall: 0.0))
+    spots(p)
+        .map(
+            s -> .peer(who: s.who, x: s.x, y: 0.0, sx: s.sx, sy: s.sy, wide: s.wide, tall: s.tall),
+        )
 }
 
 /// What the window shows: the cut it has open, else the first there is.

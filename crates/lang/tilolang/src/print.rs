@@ -1456,6 +1456,7 @@ impl Printer<'_> {
                 self.line(&format!("{head}{v}"));
             }
             UiKind::State(d) => {
+                let kept = if d.kept { " kept" } else { "" };
                 let head = format!("state {}: {}", d.name.name, print_type(&d.ty));
                 let default = match &d.default {
                     Some(e) => {
@@ -1464,7 +1465,7 @@ impl Printer<'_> {
                     }
                     None => String::new(),
                 };
-                self.line(&format!("{head}{default}"));
+                self.line(&format!("{head}{default}{kept}"));
             }
             UiKind::For { var, iter, body } => {
                 let head = format!("for {} in ", var.name);

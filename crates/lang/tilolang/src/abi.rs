@@ -307,6 +307,11 @@ imports! {
     UiBindState = "ui_bind_state" ([H, H] -> []);
     UiBindStateAt = "ui_bind_state_at" ([H, H, I64] -> []);
     StateGet = "state_get" ([H, H] -> [H]);
+    // `kept_state(id, default)`: what the window keeps for the person at a `kept` state, else
+    // the default: where they are, never in their record.
+    KeptGet = "kept_state" ([H, H] -> [H]);
+    // `keep_window(id, value)`: the action that puts a value in the window's `kept` state `id`.
+    ActKeep = "keep_window" ([H, H] -> [H]);
     StateShown = "state_shown" ([H, H] -> [H]);
     ActSet = "act_set" ([H, H] -> [H]);
     WindowState = "window_state" ([H, H, H] -> []);
@@ -330,7 +335,7 @@ imports! {
     // `presence(r, x, y, wide, tall)`: where the person looking is in the document of `r`, in
     // its own units, and what they selected around it (nothing when `wide` and `tall` are zero).
     // The view declares it; the platform says it and draws everyone else's.
-    Presence = "presence" ([H, F64, F64, F64, F64] -> []);
+    Presence = "presence" ([H, F64, F64, F64, F64, F64, F64] -> []);
     // `call_members(r)`: who is in the system's call held on the resource `r` now, as its call
     // service hears it.
     CallMembers = "call_members" ([H] -> [H]);

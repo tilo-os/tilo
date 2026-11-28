@@ -420,7 +420,7 @@ pub struct Instance {
     lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
     /// Where each member is in each resource's document, as presence last reported it: the
     /// member, their point and what they selected, in the document's own units.
-    spots: HashMap<String, Vec<(MemberId, [f64; 4])>>,
+    spots: HashMap<String, Vec<(MemberId, [f64; 6])>>,
     lenses_changed: bool,
     /// The workspace's members' resource named a different list since the window was last told
     /// what people are called ([`Self::take_member_names`]).
@@ -1681,7 +1681,7 @@ impl Instance {
     /// Where each other member is in the document of each resource, as their app declared it
     /// with `presence`, by the resource's id: the member, their point and what they selected, in
     /// the document's own units. What `spots(r)` reads in this app's views.
-    pub fn set_spots(&mut self, spots: HashMap<String, Vec<(MemberId, [f64; 4])>>) {
+    pub fn set_spots(&mut self, spots: HashMap<String, Vec<(MemberId, [f64; 6])>>) {
         if spots == self.spots {
             return;
         }
@@ -1697,7 +1697,7 @@ impl Instance {
                 if self.spots.get(resource) == Some(at) {
                     continue;
                 }
-                let at: Vec<(Actor, [f64; 4])> = at
+                let at: Vec<(Actor, [f64; 6])> = at
                     .iter()
                     .map(|(who, at)| (Actor::Member(who.clone()), *at))
                     .collect();
@@ -1713,7 +1713,7 @@ impl Instance {
     /// in the document's own units. The detail view's when it declares one (the document in
     /// front), else the root view's (a window that draws its document itself, like a cut).
     #[must_use]
-    pub fn declared_spot(&self) -> Option<(ResourceRef, [f64; 4])> {
+    pub fn declared_spot(&self) -> Option<(ResourceRef, [f64; 6])> {
         self.level(Level::Detail)
             .and_then(|shown| shown.view.borrow().declared_spot())
             .or_else(|| {

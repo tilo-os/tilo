@@ -3702,7 +3702,14 @@ impl Core {
     /// put anywhere.
     fn presence_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let target = self.ref_arg(a.h(0)?)?;
-        let at = [a.float(1)?, a.float(2)?, a.float(3)?, a.float(4)?];
+        let at = [
+            a.float(1)?,
+            a.float(2)?,
+            a.float(3)?,
+            a.float(4)?,
+            a.float(5)?,
+            a.float(6)?,
+        ];
         if !at.iter().all(|value| value.is_finite()) {
             return trap("`presence` takes a place a document has: its numbers are not finite");
         }
@@ -3737,6 +3744,11 @@ impl Core {
             let Some(state) = view.state.iter().find(|state| state.name == name) else {
                 return trap(format!("the window's view declares no state `{name}`"));
             };
+            if state.kept {
+                return trap(format!(
+                    "`window_state` keeps what a person set in their record; `{name}` is kept by the window, and its view sets it with `set`"
+                ));
+            }
             (state.id.clone(), state.ty.clone())
         };
         if declared != ty {

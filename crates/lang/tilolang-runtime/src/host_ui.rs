@@ -404,6 +404,47 @@ impl Core {
         ret_void()
     }
 
+    /// `keep(id, value)`: the action that puts `value` in the window's `kept` state `id` — the
+    /// platform's reading of where the person is, never an entry in their record.
+    fn act_keep(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let state = self.text(a.h(0)?)?;
+        let value = self.val_whole(a.h(1)?)?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: KEEP_ACTION.to_owned(),
+            args: vec![Value::Text(state), value],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `kept_state(id, default)`: what the window keeps for the person at `id`, else `default`.
+    /// Read at the slot the window's own keeps live in, so a view that read it runs again when
+    /// the person moves.
+    fn kept_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let state = self.text(a.h(0)?)?;
+        let fallback = self.val_whole(a.h(1)?)?;
+        let (key, generation, held) = self.with_view(|vs| {
+            let key = crate::view_state::StateKey::runtime(
+                vs.window.clone(),
+                Some(vs.viewer.clone()),
+                state.clone(),
+            );
+            let states = self.view_states.borrow();
+            let held = states.get(&key).cloned().unwrap_or(fallback);
+            let generation = states.generation(&key);
+            Ok((key, generation, held))
+        })?;
+        let value = self.held_while_here(held);
+        let seen = value.clone();
+        self.with_view(|vs| {
+            vs.state_reads.push((key.clone(), generation));
+            vs.state_seen.push((key, seen));
+            Ok(())
+        })?;
+        self.ret_h(value)
+    }
+
     fn act_set(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let key = self.state_key(a.h(0)?)?;
         let value = self.val_whole(a.h(1)?)?;
@@ -864,6 +905,8 @@ impl Core {
                 self.bind_state(a, Some(at))
             }
             Imp::ActSet => self.act_set(a),
+            Imp::ActKeep => self.act_keep(a),
+            Imp::KeptGet => self.kept_get(a),
             Imp::ActThen => self.act_then(a),
             Imp::ActAnswer => self.act_answer(a),
             Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),

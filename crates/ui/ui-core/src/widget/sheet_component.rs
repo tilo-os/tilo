@@ -102,11 +102,38 @@ impl PropType for Peer {
         }) else {
             return Err("`peer` needs `area`, the cells they chose as `A1` or `A1:B2`".to_owned());
         };
-        let who = match field("who") {
-            Some(Value::Actor { name, .. } | Value::Text(name)) => name.clone(),
+        let (who, colour, agent) = match field("who") {
+            Some(Value::Actor {
+                identity,
+                name,
+                hue,
+                ..
+            }) => {
+                let slot = (*hue).map_or_else(
+                    || tilo_ui_base::tokens::PresenceHue::of_member(identity),
+                    |slot| tilo_ui_base::tokens::PresenceHue::from_slot(usize::from(slot)),
+                );
+                let colour = tilo_ui_base::presence::presence_colour(
+                    tilo_ui_base::presence::identity_rgb(slot),
+                );
+                let agent = identity
+                    .member_id()
+                    .is_none_or(|member| !member.is_person());
+                (name.clone(), colour, agent)
+            }
+            Some(Value::Text(name)) => (
+                name.clone(),
+                tilo_ui_base::presence::identity_colour(name),
+                false,
+            ),
             _ => return Err("`peer` needs `who`, the person they are".to_owned()),
         };
-        Ok(Self { area, who })
+        Ok(Self {
+            area,
+            who,
+            colour,
+            agent,
+        })
     }
 }
 
@@ -289,5 +316,40 @@ impl Described for Sheet {
         // they edit stay: nothing about the grid is built again.
         self.take(props);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_ui_base::tokens::PresenceHue;
+
+    /// A peer wears the colour their presence does, not the grid's own "you" ink.
+    #[test]
+    fn a_peers_selection_wears_their_own_colour() {
+        let identity = tilo_member_types::Actor::from(tilo_member_types::MemberId::person("ada"));
+        let value = Value::Case {
+            case: "peer".to_owned(),
+            fields: vec![
+                ("area".to_owned(), Value::Text("A1:B2".to_owned())),
+                (
+                    "who".to_owned(),
+                    Value::Actor {
+                        identity,
+                        name: "Ada".to_owned(),
+                        hue: Some(3),
+                        picture: None,
+                    },
+                ),
+            ],
+        };
+        let peer = <Peer as PropType>::from_value(&value).expect("a peer");
+        let colour = tilo_ui_base::presence::presence_colour(tilo_ui_base::presence::identity_rgb(
+            PresenceHue::from_slot(3),
+        ));
+        assert_eq!(peer.colour, colour);
+        assert_eq!(peer.who, "Ada");
+        assert_eq!(peer.area, "A1:B2");
+        assert!(!peer.agent);
     }
 }

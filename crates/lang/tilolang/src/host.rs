@@ -529,12 +529,26 @@ pub const VALUE_TYPES: &[ValueType] = &[
               places everyone's.",
         fields: &[
             ("who", "Actor", "Whose place it is."),
-            ("x", "Float", "Across the document, in its own units."),
+            (
+                "x",
+                "Float",
+                "Across the document, in its own units: where they point.",
+            ),
             ("y", "Float", "Down the document, in its own units."),
+            (
+                "sx",
+                "Float",
+                "Across the document: where what they selected begins.",
+            ),
+            (
+                "sy",
+                "Float",
+                "Down the document: where what they selected begins.",
+            ),
             (
                 "wide",
                 "Float",
-                "How wide what they selected is, in the same units; zero with `tall` for a point.",
+                "How wide what they selected is, in the same units; zero with `tall` for none.",
             ),
             (
                 "tall",

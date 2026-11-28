@@ -220,6 +220,9 @@ pub struct TrackTimeline {
     /// Where other members are at work in the cut, as the view read them from `spots(p)`: where
     /// each plays from and the stretch each selected.
     pub(crate) peers: Vec<crate::widget::PeerSpot>,
+    /// Where each of their marks is drawn as they move: gliding from where it showed to where
+    /// they are now, and landing at once where motion is reduced.
+    peers_glide: crate::presence::PeerGlide,
     pub(crate) scrub: Event,
     pub(crate) seek: Event,
     pub(crate) zoomed: Event,
@@ -262,6 +265,7 @@ impl TrackTimeline {
             tracks: Vec::new(),
             markers: Vec::new(),
             peers: Vec::new(),
+            peers_glide: crate::presence::PeerGlide::default(),
             scrub: Event::None,
             seek: Event::None,
             zoomed: Event::None,
@@ -1130,6 +1134,31 @@ impl TrackTimeline {
         ink.colour(theme)
     }
 
+    /// Send every member's mark to the place they say, on this ruler's own geometry.
+    fn sync_peers(&mut self, theme: &Theme) {
+        let geom = self.geom();
+        let ruler = geom.ruler();
+        let marks: Vec<(tilo_ui_base::permissions::MemberId, Point, Option<Rect>)> = self
+            .peers
+            .iter()
+            .filter_map(|peer| {
+                let user = peer.who.member_id()?.clone();
+                let selection = peer.selection().and_then(|(at, row, wide, _tall)| {
+                    if row < 0.0 {
+                        return None;
+                    }
+                    let row = usize::try_from(tilo_ui_base::num::u32_of_f64(row)).ok()?;
+                    (wide > 0.0 && row < self.tracks.len())
+                        .then(|| geom.span_rect(row, at, wide, 2.0))
+                });
+                Some((user, Point::new(geom.x_of(peer.x), ruler.y1), selection))
+            })
+            .collect();
+        let now = tilo_ui_base::motion::frame_now();
+        self.peers_glide
+            .retarget(marks, crate::presence::peer_glide_timing(theme), now);
+    }
+
     fn paint(&self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
@@ -1433,26 +1462,16 @@ impl TrackTimeline {
         let marks: Vec<tilo_ui_base::presence::SpotMark<'_>> = self
             .peers
             .iter()
-            .map(|peer| tilo_ui_base::presence::SpotMark {
-                color: peer.color(),
-                name: &peer.name,
-                agent: peer.is_agent(),
-                point: Point::new(geom.x_of(peer.x), ruler.y1),
-                selection: peer.selection().map(|(at, _, wide, tall)| {
-                    let from = geom.x_of(at);
-                    let to = geom.x_of(at + wide);
-                    let row = if tall > 0.0 {
-                        tall
-                    } else {
-                        tracks_bottom - ruler.y1
-                    };
-                    Rect::new(
-                        from.min(to),
-                        ruler.y1,
-                        from.max(to),
-                        (ruler.y1 + row).min(tracks_bottom),
-                    )
-                }),
+            .filter_map(|peer| {
+                let user = peer.who.member_id()?;
+                let (point, selection) = self.peers_glide.shown(user, now)?;
+                Some(tilo_ui_base::presence::SpotMark {
+                    color: peer.color(),
+                    name: &peer.name,
+                    agent: peer.is_agent(),
+                    point,
+                    selection,
+                })
             })
             .collect();
         tilo_ui_base::presence::draw_peer_spots(ctx.scene, ctx.transform, ctx.text, theme, &marks);
@@ -1989,6 +2008,7 @@ impl Widget for TrackTimeline {
             return;
         }
         self.theme = Some(theme.clone());
+        self.sync_peers(theme);
         let mut paint = PaintCtx::new(scene, transform, text_renderer, theme);
         self.paint(&mut paint);
         self.dirty = false;
@@ -2090,7 +2110,9 @@ impl Widget for TrackTimeline {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.needs_animation_frame()
+        self.dirty
+            || self.needs_animation_frame()
+            || self.peers_glide.moving(tilo_ui_base::motion::frame_now())
     }
 
     fn mark_drawn(&mut self) {

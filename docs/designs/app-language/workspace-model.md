@@ -89,11 +89,12 @@ window or a place.
 - **Embedded views** (a card in a chat message, an agent's answer) aren't windows; each viewer
   has their own lens on them. Opening something from them goes to its window.
 - **A view that draws a document declares where its person works there**, in one line:
-  `presence(r, x, y, wide, tall)`, in the document's own units — the point they are at and the
-  rectangle they selected around it (a point when `wide` and `tall` are zero). The platform says
-  it to the workspace and hands every other member's back as `spots(r)`; the surface that draws
-  the document — a canvas, a sheet, a timeline — places them and draws them with the shared
-  presence marks and their colours. An app never draws another member itself.
+  `presence(r, x, y, sx, sy, wide, tall)`, in the document's own units — the point they are at
+  and the rectangle they selected, whose own top left is `sx, sy` (no selection when `wide` and
+  `tall` are zero). The platform says it to the workspace and hands every other member's back as
+  `spots(r)`; the surface that draws the document — a canvas, a sheet, a timeline — places them
+  and draws them with the shared presence marks and their colours, gliding as they move. An app
+  never draws another member itself.
 
 ## 6. Layout
 
@@ -135,7 +136,8 @@ default view note_editor for Note
   window's control invoked changes that window's state with `window_state(name, value)`: a search
   result opens its file in the window it was pressed in. State everyone
   should share is a field of the resource. Scroll, focus, cursor and selection are kept by the
-  platform without being declared.
+  platform without being declared; an app whose place the platform cannot read declares it with
+  `state … kept`, which the window keeps and the person's record never holds.
 - An app whose data is each person's own (mail) says so in its header:
   `app so.tilo.mail "Mail" (resources: .own)`. Each member then keeps the app's resources in
   their own document of the workspace (of the package kind `tl.<app>`, `collab_types::OwnResource`),

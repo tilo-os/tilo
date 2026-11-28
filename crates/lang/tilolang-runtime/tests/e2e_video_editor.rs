@@ -5,6 +5,10 @@
 
 #[cfg(test)]
 mod cases {
+    #![allow(
+        clippy::float_cmp,
+        reason = "a test's own numbers, which the cut and its presence carry unchanged"
+    )]
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -13,7 +17,7 @@ mod cases {
     use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
-        AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
+        Actor, AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/video-editor/app.tl");
@@ -848,6 +852,55 @@ mod cases {
             assert!(rows.iter().any(|r| r == "Harbour.mp4"), "the bin lists it: {rows:?}");
         }
 
+        phase a_peer_plays_from_a_second_and_their_chosen_clip_stands_on_its_track;
+        {
+            let s = Studio::new();
+            let (p, _, clip) = s.placed();
+            let mut window = s.window();
+            // The clip chosen here, as a press on its span chooses it.
+            window.set_view_state(
+                "selected",
+                Value::List(vec![Value::text(clip.id_string())]),
+            );
+            window.poll_patches().expect("the window runs again");
+            let (target, at) = window.declared_spot().expect("the cut says where its person works");
+            assert_eq!(target.id_string(), p.id_string(), "the cut they are in");
+            let start = s.number(&clip, "start");
+            let length = (s.number(&clip, "out_point") - s.number(&clip, "in_point"))
+                / s.number(&clip, "speed_rate");
+            assert_eq!(at[0], 0.0, "the playhead, where it stands");
+            assert_eq!(at[2], start, "the clip they chose, where it starts");
+            assert_eq!(at[4], length, "and how long it runs");
+            assert_eq!(at[5], 1.0, "one clip chosen");
+
+            // A peer at work in the cut: playing from 2.5 s, their clip from 1 s over 3.
+            let peers = tilolang_runtime::ids::MemberId::person("ben");
+            s.rt.set_spots(
+                &p.id_string(),
+                &[(
+                    Actor::from(peers),
+                    [2.5, 0.0, 1.0, 0.0, 3.0, 1.0],
+                )],
+            );
+            window.poll_patches().expect("the window runs again");
+            let tree = window.tree();
+            let timeline = of_kind(tree, "ui.TrackTimeline")[0];
+            let Some(Value::List(held)) = timeline.props.get("peers") else {
+                panic!("the timeline holds its peers:\n{}", dump(tree));
+            };
+            let Value::Enum(peer) = &held[0] else {
+                panic!("a peer's place: {held:?}");
+            };
+            assert_eq!(peer.variant, "peer");
+            let number = |field: &str| match peer.fields.get(field) {
+                Some(Value::Float(n)) => *n,
+                other => panic!("`{field}`: {other:?}"),
+            };
+            assert_eq!(number("x"), 2.5, "their playhead");
+            assert_eq!(number("sx"), 1.0, "their clip's start");
+            assert_eq!(number("sy"), 0.0, "on the first track");
+            assert_eq!(number("wide"), 3.0, "its length");
+        }
 
         phase a_batch_names_the_files_that_did_not_arrive;
         {

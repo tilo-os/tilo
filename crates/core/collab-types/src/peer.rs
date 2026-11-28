@@ -165,6 +165,8 @@ pub enum PeerPresencePayload {
     Spot {
         x: f32,
         y: f32,
+        sx: f32,
+        sy: f32,
         wide: f32,
         tall: f32,
     },
@@ -260,12 +262,16 @@ mod tests {
             PeerPresencePayload::Spot {
                 x: 512.0,
                 y: 96.5,
+                sx: 512.0,
+                sy: 96.5,
                 wide: 0.0,
                 tall: 0.0,
             },
             PeerPresencePayload::Spot {
                 x: 0.0,
                 y: 3.0,
+                sx: 0.0,
+                sy: 3.0,
                 wide: 4.0,
                 tall: 2.0,
             },

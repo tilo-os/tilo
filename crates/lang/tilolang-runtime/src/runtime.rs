@@ -1797,7 +1797,7 @@ impl Runtime {
     /// app declared it with `presence`: the member, their point and what they selected, in the
     /// document's own units. What `spots(r)` reads; a view that read it runs again when one
     /// moves.
-    pub fn set_spots(&self, resource: &str, spots: &[(Actor, [f64; 4])]) {
+    pub fn set_spots(&self, resource: &str, spots: &[(Actor, [f64; 6])]) {
         let key = crate::platform::spot_key(resource);
         let value = Value::List(
             spots
@@ -1809,6 +1809,8 @@ impl Runtime {
                         Value::Float(at[1]),
                         Value::Float(at[2]),
                         Value::Float(at[3]),
+                        Value::Float(at[4]),
+                        Value::Float(at[5]),
                     ])
                 })
                 .collect(),

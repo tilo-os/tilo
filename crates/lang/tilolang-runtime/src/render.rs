@@ -83,7 +83,7 @@ pub struct Rendered {
     pub changes_at: Option<i64>,
     /// Where the person looking is in a document the view draws, as it declared with `presence`:
     /// the resource, and the point and what they selected, in the document's own units.
-    pub spot: Option<(crate::value::ResourceRef, [f64; 4])>,
+    pub spot: Option<(crate::value::ResourceRef, [f64; 6])>,
 }
 
 pub(crate) struct Acc {

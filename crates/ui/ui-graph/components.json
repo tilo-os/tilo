@@ -14604,7 +14604,7 @@
             {
               "name": "x",
               "ty": "float",
-              "doc": "Across the document."
+              "doc": "Across the document: where they point."
             },
             {
               "name": "y",
@@ -14612,12 +14612,22 @@
               "doc": "Down the document."
             },
             {
+              "name": "sx",
+              "ty": "float",
+              "doc": "Across the document: where what they selected begins."
+            },
+            {
+              "name": "sy",
+              "ty": "float",
+              "doc": "Down the document: where what they selected begins."
+            },
+            {
               "name": "wide",
               "ty": "float",
               "default": {
                 "float": 0.0
               },
-              "doc": "How wide their selection is; zero with `tall` for a point."
+              "doc": "How wide their selection is; zero with `tall` for none."
             },
             {
               "name": "tall",

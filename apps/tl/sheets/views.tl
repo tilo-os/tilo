@@ -274,7 +274,7 @@ fn area_spot(range: Text) -> List<Float> {
 /// Other members at work in the workbook, as presence reports them: the cells each chose, as
 /// the grid draws them.
 fn sheet_peers(w: Workbook) -> List<ui.SheetPeer> {
-    spots(w).map(p -> .peer(area: peer_area(p.x, p.y, p.wide, p.tall), who: p.who))
+    spots(w).map(p -> .peer(area: peer_area(p.sx, p.sy, p.wide, p.tall), who: p.who))
 }
 
 /// The cells a member's place covers, as `A1` or `A1:B2`.
@@ -305,7 +305,11 @@ template view sheet_grid(
     // Where the person works in the workbook, as presence: the cells they chose, in the sheet's
     // own units. The platform says it to the workspace and draws everyone else's from it.
     let at = area_spot(area)
-    presence(w, at.at(0) ?? 0.0, at.at(1) ?? 0.0, at.at(2) ?? 0.0, at.at(3) ?? 0.0)
+    let first = at.at(0) ?? 0.0
+    let top = at.at(1) ?? 0.0
+    let across = at.at(2) ?? 1.0
+    let down = at.at(3) ?? 1.0
+    presence(w, first, top, first, top, across, down)
     ui.Sheet(
         name: .some(s.name),
         columns: count.columns,

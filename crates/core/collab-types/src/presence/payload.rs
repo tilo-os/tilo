@@ -59,19 +59,23 @@ pub enum PresencePayload {
 }
 
 /// Where a member is in a document a view draws: a point in the document's own units, and the
-/// rectangle of what they selected around it.
+/// rectangle of what they selected beside it, whose own top left is a second point.
 ///
 /// The units are the app's own — artwork units on a canvas, cells on a sheet, seconds on a
 /// timeline — because the app is the only one that knows them. The surface that draws the
-/// document is the only one that knows how to place them, so the point travels as declared and
-/// is placed by the surface, never re-derived from pixels.
+/// document is the only one that knows how to place them, so the points travel as declared and
+/// are placed by the surface, never re-derived from pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Spot {
-    /// Across the document, in its own units.
+    /// Across the document, in its own units: where they point.
     pub x: f32,
     /// Down the document, in its own units.
     pub y: f32,
-    /// How wide what they selected is, in the same units; zero with `tall` for a point.
+    /// Across the document, in its own units: where what they selected begins.
+    pub sx: f32,
+    /// Down the document, in its own units.
+    pub sy: f32,
+    /// How wide what they selected is, in the same units; zero with `tall` for none.
     pub wide: f32,
     /// How tall what they selected is, in the same units.
     pub tall: f32,
@@ -87,7 +91,7 @@ impl Spot {
     /// Whether its numbers are ones a document can be placed at.
     #[must_use]
     pub fn is_finite(&self) -> bool {
-        [self.x, self.y, self.wide, self.tall]
+        [self.x, self.y, self.sx, self.sy, self.wide, self.tall]
             .iter()
             .all(|value| value.is_finite())
     }
@@ -133,6 +137,8 @@ impl PresencePayload {
             Self::Spot(spot) => Payload::Spot {
                 x: spot.x,
                 y: spot.y,
+                sx: spot.sx,
+                sy: spot.sy,
                 wide: spot.wide,
                 tall: spot.tall,
             },
@@ -176,8 +182,22 @@ impl PresencePayload {
             }
             Payload::Status { text, automatic } => Self::Status { text, automatic },
             Payload::Composing { composing } => Self::Composing { composing },
-            Payload::Spot { x, y, wide, tall } => {
-                let spot = Spot { x, y, wide, tall };
+            Payload::Spot {
+                x,
+                y,
+                sx,
+                sy,
+                wide,
+                tall,
+            } => {
+                let spot = Spot {
+                    x,
+                    y,
+                    sx,
+                    sy,
+                    wide,
+                    tall,
+                };
                 if !spot.is_finite() {
                     return Err("a spot is not a place a document has".to_owned());
                 }

@@ -989,6 +989,9 @@ pub struct StateDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,
+    /// `state pointer: List<Float> = [] kept`: where the person is (a pointer, a selection),
+    /// which the platform keeps in the window and never in their record.
+    pub kept: bool,
     pub span: Span,
 }
 

@@ -1803,6 +1803,15 @@ impl Checker<'_> {
             return Ex::error();
         };
         let v = self.arg_at_press(&value.value, &state.ty);
+        if state.kept {
+            // A state the platform keeps is the window's: setting it is one step that leaves no
+            // entry in the person's record.
+            return Ex::host(
+                Imp::ActKeep,
+                vec![Ex::str(&state.id), Self::handle_of(v)],
+                Ty::Action,
+            );
+        }
         Self::set_action(&state, v)
     }
 

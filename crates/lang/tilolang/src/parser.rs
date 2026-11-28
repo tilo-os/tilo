@@ -3090,11 +3090,18 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
+                // `kept`: the platform keeps it in the window, never in the person's record —
+                // where they are (a pointer, a selection), not what they chose.
+                let kept = matches!(self.peek(), Tok::Ident(word) if word == "kept");
+                if kept {
+                    self.bump();
+                }
                 UiKind::State(StateDecl {
                     node,
                     name,
                     ty,
                     default,
+                    kept,
                     span: start.to(Span::new(self.prev_end(), self.prev_end())),
                 })
             }

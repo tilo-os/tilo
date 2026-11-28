@@ -389,6 +389,9 @@ pub struct StateMeta {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
+    /// The platform keeps it in the window, never in the person's record: where they are.
+    #[serde(default)]
+    pub kept: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

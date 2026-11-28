@@ -74,7 +74,7 @@ pub(crate) struct Bound {
     pub changes_at: Option<i64>,
     /// Where the person looking is in a document this boundary draws, as the view declared it
     /// with `presence`: the resource, and the place in the document's own units.
-    pub spot: Option<(crate::value::ResourceRef, [f64; 4])>,
+    pub spot: Option<(crate::value::ResourceRef, [f64; 6])>,
     /// What the row was drawn knowing: whether the list it stands in stands a divider where
     /// its unseen part starts, which its own marks answer to. A row is built again when that
     /// changes under it, so a mark it drew for being new goes when the divider arrives.

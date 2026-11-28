@@ -1,10 +1,14 @@
 //! Presence of a place in a document, as a view declares it and reads it:
-//! `presence(r, x, y, wide, tall)` says where the person looking works in the document of `r`,
+//! `presence(r, x, y, sx, sy, wide, tall)` says where the person looking works in the document of `r`,
 //! and `spots(r)` reads where everyone else is there, in the document's own units, as the
 //! platform says it. A view that read either runs again when it moves.
 
 #[cfg(test)]
 mod cases {
+    #![allow(
+        clippy::float_cmp,
+        reason = "a test's own numbers, which the view declares unchanged"
+    )]
     use crate::common::*;
     use tilolang_runtime::{
         Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -25,7 +29,9 @@ action move(board: Board, x: Float, y: Float) {
 
 view board(b: Board) {
     let p = b.place
-    presence(b, p.at(0) ?? 0.0, p.at(1) ?? 0.0, 0.0, 0.0)
+    let x = p.at(0) ?? 0.0
+    let y = p.at(1) ?? 0.0
+    presence(b, x, y, x, y, 0.0, 0.0)
     ui.Text(value: teammates(b))
 }
 
@@ -81,8 +87,8 @@ fn teammates(b: Board) -> Text {
         }
 
         /// Where each other member is, as the platform says it to the app: `(who, place)`.
-        fn say(&self, at: &[(&str, [f64; 4])]) {
-            let at: Vec<(Actor, [f64; 4])> = at
+        fn say(&self, at: &[(&str, [f64; 6])]) {
+            let at: Vec<(Actor, [f64; 6])> = at
                 .iter()
                 .map(|(who, spot)| {
                     (
@@ -114,7 +120,7 @@ fn teammates(b: Board) -> Text {
             let mut view = spots.view();
             assert_eq!(
                 view.declared_spot().map(|(_, at)| at),
-                Some([0.0, 0.0, 0.0, 0.0]),
+                Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 "a view that declares its place says the one it has"
             );
             assert_eq!(
@@ -126,14 +132,14 @@ fn teammates(b: Board) -> Text {
             let _ = view.poll_patches().unwrap();
             assert_eq!(
                 view.declared_spot().map(|(_, at)| at),
-                Some([12.0, 34.0, 0.0, 0.0]),
+                Some([12.0, 34.0, 12.0, 34.0, 0.0, 0.0]),
                 "the place the view declares is the person's"
             );
             spots.move_to(56.0, 78.0);
             let _ = view.poll_patches().unwrap();
             assert_eq!(
                 view.declared_spot().map(|(_, at)| at),
-                Some([56.0, 78.0, 0.0, 0.0]),
+                Some([56.0, 78.0, 56.0, 78.0, 0.0, 0.0]),
                 "moved where they moved"
             );
         }
@@ -146,15 +152,15 @@ fn teammates(b: Board) -> Text {
             let spots = Spots::new();
             let mut view = spots.view();
             assert_eq!(texts(view.tree()), [""], "nobody else is here yet");
-            spots.say(&[("ben", [10.0, 20.0, 0.0, 0.0])]);
+            spots.say(&[("ben", [10.0, 20.0, 10.0, 20.0, 0.0, 0.0])]);
             let _ = view.poll_patches().unwrap();
             assert_eq!(texts(view.tree()), ["ben@10,20"], "Ben is at work here");
-            spots.say(&[("ben", [30.0, 40.0, 0.0, 0.0])]);
+            spots.say(&[("ben", [30.0, 40.0, 30.0, 40.0, 0.0, 0.0])]);
             let _ = view.poll_patches().unwrap();
             assert_eq!(texts(view.tree()), ["ben@30,40"], "he moved");
             spots.say(&[
-                ("ben", [30.0, 40.0, 0.0, 0.0]),
-                ("cleo", [5.0, 6.0, 4.0, 2.0]),
+                ("ben", [30.0, 40.0, 30.0, 40.0, 0.0, 0.0]),
+                ("cleo", [5.0, 6.0, 5.0, 6.0, 4.0, 2.0]),
             ]);
             let _ = view.poll_patches().unwrap();
             assert_eq!(
@@ -162,12 +168,59 @@ fn teammates(b: Board) -> Text {
                 ["ben@30,40; cleo@5,6"],
                 "two of them are here, in the order the platform lists them"
             );
-            spots.say(&[("cleo", [5.0, 6.0, 4.0, 2.0])]);
+            spots.say(&[("cleo", [5.0, 6.0, 5.0, 6.0, 4.0, 2.0])]);
             let _ = view.poll_patches().unwrap();
             assert_eq!(texts(view.tree()), ["cleo@5,6"], "Ben left");
             spots.say(&[]);
             let _ = view.poll_patches().unwrap();
             assert_eq!(texts(view.tree()), [""], "nobody is here");
+        }
+    }
+
+    /// An app whose pointer is a `kept` state: the window holds it, never the person's record.
+    const KEPT: &str = r#"app so.tilo.kept "Kept"
+
+type Board {
+    title: Text
+}
+
+view board(b: Board) {
+    state pointer: List<Float> = [] kept
+    ui.Button("Take") {
+        on press: set(pointer, [3.0, 4.0])
+    }
+    ui.Text(value: "at {(pointer.at(0) ?? -1.0).to_int()},{(pointer.at(1) ?? -1.0).to_int()}")
+}
+"#;
+
+    tilo_test_env::scenario! {
+        fn kept_state;
+
+        phase a_kept_state_is_the_windows_and_leaves_no_write_in_the_persons_record;
+        // A pointer is where a person is, not what they chose: the window keeps it, and a view
+        // that read it runs again when it moves. Nothing of it is handed to the record.
+        {
+            let app = App::compile(KEPT, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let board = rt.create("Board").unwrap();
+            let mut view = rt
+                .open_view(
+                    &me(),
+                    &app.view("board"),
+                    vec![Value::resource(&board)],
+                )
+                .unwrap();
+            assert_eq!(texts(view.tree()), ["at -1,-1"], "nothing moved yet");
+            let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
+            view.fire(&button, "press").unwrap();
+            let _ = view.poll_patches().unwrap();
+            assert_eq!(texts(view.tree()), ["at 3,4"], "the window reads where they moved");
+            assert_eq!(view.view_state("pointer"), None, "it is no declared slot");
+            assert!(
+                rt.take_view_writes().is_empty(),
+                "a pointer leaves no write in the person's record"
+            );
         }
     }
 }

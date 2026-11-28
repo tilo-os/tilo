@@ -291,6 +291,8 @@ pub(crate) struct StateRef {
     pub id: String,
     pub ty: Ty,
     pub local: LocalId,
+    /// The platform keeps it in the window, never in the person's record (`state … kept`).
+    pub kept: bool,
 }
 
 /// A template being expanded: the package whose names its body sees, its name, and the id its
@@ -1903,6 +1905,7 @@ impl Checker<'_> {
                     id: declared.id.clone(),
                     ty,
                     local,
+                    kept: declared.kept,
                 },
             );
         }

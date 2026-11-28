@@ -888,6 +888,7 @@ impl Checker<'_> {
                     id: id.clone(),
                     ty: ty.clone(),
                     local,
+                    kept: false,
                 },
             );
             self.states.push((
@@ -897,6 +898,7 @@ impl Checker<'_> {
                     name: d.name.name.clone(),
                     id,
                     ty,
+                    kept: false,
                 },
             ));
         }

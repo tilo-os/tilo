@@ -13,6 +13,7 @@ pub mod draft;
 mod faces;
 pub mod frame;
 mod geom;
+mod glide;
 mod interaction;
 pub mod key;
 mod labels;
@@ -36,6 +37,7 @@ pub use draft::DraftSaid;
 pub(crate) use faces::paint_active_ring;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
+pub use glide::{PeerGlide, peer_glide_timing};
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, MarkerPlace, TERMINAL_INTERACTION_DWELL,
 };

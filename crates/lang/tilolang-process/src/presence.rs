@@ -10,7 +10,7 @@
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. A view
 //! that draws a document also declares where its person works there, in the document's own
-//! units (`presence(r, x, y, wide, tall)`); it is said here and handed back to the views as
+//! units (`presence(r, x, y, sx, sy, wide, tall)`); it is said here and handed back to the views as
 //! `spots(r)`, whoever's app said it, so a surface draws every member at work and an app
 //! holding a conversation's reference (a bridge) reads who types there. What the instance says
 //! of its own person is where they are (the resource the detail view shows), where in its
@@ -56,7 +56,7 @@ pub struct Presence {
     /// spot there: the key its place is said under, so leaving the document withdraws it.
     said_spot: Option<PresenceKey>,
     /// Where in that document it last said the person is.
-    said_spot_at: Option<[f64; 4]>,
+    said_spot_at: Option<[f64; 6]>,
     /// What the instance last said of the draft its person writes.
     said_composing: DraftSaid,
     /// What the window shows of the people here as a window with a connection of its own does,
@@ -180,7 +180,7 @@ impl Presence {
     fn say_at(
         &mut self,
         at: Option<PresenceKey>,
-        spot: Option<(PresenceKey, [f64; 4])>,
+        spot: Option<(PresenceKey, [f64; 6])>,
         draft: Option<(PresenceKey, u64)>,
         now: ui_core::time::Instant,
         mut send: impl FnMut(Said),
@@ -217,12 +217,14 @@ impl Presence {
         }
         if let Some((key, at)) = spot {
             if self.said_spot_at != Some(at) {
-                let [x, y, wide, tall] = at;
+                let [x, y, sx, sy, wide, tall] = at;
                 send(Said {
                     key: key.clone(),
                     payload: Payload::Spot {
                         x: to_f32(x),
                         y: to_f32(y),
+                        sx: to_f32(sx),
+                        sy: to_f32(sy),
                         wide: to_f32(wide),
                         tall: to_f32(tall),
                     },
@@ -250,13 +252,13 @@ impl Presence {
     /// Where each other member is in each resource's document, by the resource's id, whoever
     /// published it there: their point and what they selected, in the document's own units.
     /// What the windows read as `spots(r)` to place them on the surface that draws the document.
-    fn spots(&self) -> HashMap<String, Vec<(MemberId, [f64; 4])>> {
-        let mut spots: HashMap<String, Vec<(MemberId, [f64; 4])>> = HashMap::new();
+    fn spots(&self) -> HashMap<String, Vec<(MemberId, [f64; 6])>> {
+        let mut spots: HashMap<String, Vec<(MemberId, [f64; 6])>> = HashMap::new();
         for (key, list) in &self.heard.spots {
             let PresenceKey::Resource { id, .. } = key else {
                 continue;
             };
-            let mut here: Vec<(MemberId, [f64; 4])> = list
+            let mut here: Vec<(MemberId, [f64; 6])> = list
                 .iter()
                 .filter(|(who, _)| *who != self.me)
                 .map(|(who, spot)| {
@@ -265,6 +267,8 @@ impl Presence {
                         [
                             f64::from(spot.x),
                             f64::from(spot.y),
+                            f64::from(spot.sx),
+                            f64::from(spot.sy),
                             f64::from(spot.wide),
                             f64::from(spot.tall),
                         ],
@@ -408,7 +412,7 @@ mod tests {
         let say = |ada: &mut Presence,
                    bo: &mut Presence,
                    at: PresenceKey,
-                   spot: Option<(PresenceKey, [f64; 4])>| {
+                   spot: Option<(PresenceKey, [f64; 6])>| {
             ada.say_at(Some(at), spot, None, now, |said| {
                 if let Ok(Some(payload)) = PresencePayload::from_live(said.payload) {
                     bo.heard.apply_remote_presence_at(
@@ -420,18 +424,18 @@ mod tests {
                 }
             });
         };
-        let place = |key: PresenceKey, spot: [f64; 4]| Some((key, spot));
+        let place = |key: PresenceKey, spot: [f64; 6]| Some((key, spot));
         say(
             &mut ada,
             &mut bo,
             channel(),
-            place(channel(), [12.0, 34.0, 0.0, 0.0]),
+            place(channel(), [12.0, 34.0, 12.0, 34.0, 0.0, 0.0]),
         );
         assert_eq!(
             bo.spots(),
             HashMap::from([(
                 "channel-1".to_owned(),
-                vec![(MemberId::person("ada"), [12.0, 34.0, 0.0, 0.0])]
+                vec![(MemberId::person("ada"), [12.0, 34.0, 12.0, 34.0, 0.0, 0.0])]
             )]),
             "Bo reads where Ada works in the channel's document"
         );
@@ -439,13 +443,13 @@ mod tests {
             &mut ada,
             &mut bo,
             channel(),
-            place(channel(), [56.0, 78.0, 4.0, 2.0]),
+            place(channel(), [56.0, 78.0, 56.0, 78.0, 4.0, 2.0]),
         );
         assert_eq!(
             bo.spots(),
             HashMap::from([(
                 "channel-1".to_owned(),
-                vec![(MemberId::person("ada"), [56.0, 78.0, 4.0, 2.0])]
+                vec![(MemberId::person("ada"), [56.0, 78.0, 56.0, 78.0, 4.0, 2.0])]
             )]),
             "and follows her when she moves"
         );
@@ -455,13 +459,13 @@ mod tests {
             &mut ada,
             &mut bo,
             other.clone(),
-            place(other, [1.0, 2.0, 0.0, 0.0]),
+            place(other, [1.0, 2.0, 1.0, 2.0, 0.0, 0.0]),
         );
         assert_eq!(
             bo.spots(),
             HashMap::from([(
                 "channel-2".to_owned(),
-                vec![(MemberId::person("ada"), [1.0, 2.0, 0.0, 0.0])]
+                vec![(MemberId::person("ada"), [1.0, 2.0, 1.0, 2.0, 0.0, 0.0])]
             )]),
             "the place she left is gone, and the one she is in is there"
         );

@@ -261,7 +261,7 @@ impl ViewInstance {
     /// `presence`: the resource it is in, and the point and what they selected, in the
     /// document's own units.
     #[must_use]
-    pub fn declared_spot(&self) -> Option<(crate::value::ResourceRef, [f64; 4])> {
+    pub fn declared_spot(&self) -> Option<(crate::value::ResourceRef, [f64; 6])> {
         self.live.bound(crate::live::ROOT)?.spot.clone()
     }
 
@@ -1671,7 +1671,12 @@ impl ViewInstance {
             Some(self.live.viewer.clone()),
             state.to_owned(),
         );
-        self.core.view_states.borrow_mut().set(key, value.clone());
+        // A scalar is boxed as a slot holds it, so a view reads back what the person moved.
+        let value = match value {
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) => Value::some(value.clone()),
+            other => other.clone(),
+        };
+        self.core.view_states.borrow_mut().set(key, value);
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
