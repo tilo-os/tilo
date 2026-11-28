@@ -589,6 +589,27 @@ mod cases {
                 "{}",
                 text(banner, "message")
             );
+
+            // The subscription's own row carries why it failed, under its name, until a refresh
+            // brings it back: a person who comes back to the window still sees it.
+            let row = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| item.props.get("label") == Some(&Value::text("broken.test")))
+                .expect("the failing subscription's row")
+                .clone();
+            assert_eq!(
+                text(&row, "secondary"),
+                "The site refused the request (HTTP 403)"
+            );
+            let capsule_row = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|item| item.props.get("label") == Some(&Value::text("example.org")))
+                .expect("the capsule's row")
+                .clone();
+            assert!(
+                matches!(capsule_row.props.get("secondary"), None | Some(Value::Opt(None))),
+                "a subscription that reads well says nothing under its name"
+            );
         }
 
         phase opening_an_article_reads_it_and_its_marks_and_tags_are_the_persons;
@@ -746,6 +767,33 @@ mod cases {
                 "{places:?}"
             );
 
+            // A folder's row and a subscription's row each offer what is done to them, on the
+            // row itself.
+            feeds.call(
+                "new_folder",
+                &[
+                    ("lib", Value::resource(&feeds.lib)),
+                    ("name", Value::text("Reading")),
+                ],
+            );
+            let window = feeds.feeds_window();
+            let menu_of = |label: &str| -> Vec<String> {
+                let row = of_kind(window.tree(), "ui.NavItem")
+                    .into_iter()
+                    .find(|item| item.props.get("label") == Some(&Value::text(label)))
+                    .unwrap_or_else(|| panic!("the row called {label}"))
+                    .clone();
+                row.of_kind("ui.MenuItem")
+                    .into_iter()
+                    .map(|item| text(item, "label"))
+                    .collect()
+            };
+            assert_eq!(menu_of("Reading"), ["Rename", "Delete folder"]);
+            assert_eq!(
+                menu_of("The Guardian: World"),
+                ["Mark all as read", "Rename", "Move to folder", "Unsubscribe"]
+            );
+
             // A subscription just added is read and shown, so the window stands on it.
             let rows = of_kind(window.tree(), "ui.ListItem")
                 .into_iter()
@@ -766,6 +814,24 @@ mod cases {
                 .map(row_item)
                 .count();
             assert_eq!(rows, 3, "two articles and the capsule's");
+
+            // Marking a subscription read from its row reads what it holds, wherever the person
+            // is reading.
+            let guardian = feeds.feed(GUARDIAN);
+            feeds.call(
+                "mark_read",
+                &[
+                    ("lib", Value::resource(&feeds.lib)),
+                    (
+                        "place",
+                        Value::text(format!("feed:{}", guardian.id_string())),
+                    ),
+                ],
+            );
+            assert_eq!(
+                feeds.field(&feeds.article("A quiet morning"), "read"),
+                json!(true)
+            );
             the_article_reads_in_the_chosen_size_face_and_paper(&feeds);
             a_search_hit_and_a_tag_name_their_place(&feeds);
         }

@@ -27,6 +27,10 @@ enum FeedFormat {
 /// A folder that keeps related subscriptions together in the sidebar.
 type Folder (title: name) {
     name: Text
+
+    search {
+        sort name a_z
+    }
 }
 
 /// One subscription: the feed a person reads, and what this workspace knows of it.
@@ -46,6 +50,10 @@ type Feed (title: name) {
     pin: Text = ""
     /// Why the last refresh failed, in words; empty while it stands well.
     trouble: Text = ""
+
+    search {
+        sort name a_z
+    }
 }
 
 /// One article a refresh brought in: what the feed says of it, and what its readers decided.
@@ -914,6 +922,14 @@ view places(lib: Library, reader: Reader) {
                     count: unread_in_folder(lib, folder),
                 ) {
                     on select: show_place(reader, "folder:{folder.id()}")
+                    menu: {
+                        ui.MenuItem("Rename", icon: .pencil) {
+                            on choose: rename_folder(folder)
+                        }
+                        ui.MenuItem("Delete folder", icon: .trash_2) {
+                            on choose: delete_folder(lib, folder)
+                        }
+                    }
                 }
             }
             for folder in lib.folders {
@@ -938,17 +954,32 @@ view places(lib: Library, reader: Reader) {
 }
 
 /// One subscription in the sidebar, under its folder when it has one, with what waits in it, and
-/// why its last refresh failed.
+/// why its last refresh failed under its name until a refresh brings it back.
 view feed_place(lib: Library, reader: Reader, feed: Feed, under: Option<Text>) {
     ui.NavItem(
         "feed:{feed.id()}",
         feed.name,
         icon: if feed.format == .gemini { .file_text } else { .rss },
+        secondary: if feed.trouble == "" { .none } else { .some(feed.trouble) },
         live: unread_in_feed(lib, feed),
         parent: under,
         item: feed,
     ) {
         on select: show_place(reader, "feed:{feed.id()}")
+        menu: {
+            ui.MenuItem("Mark all as read", icon: .check) {
+                on choose: mark_read(lib, "feed:{feed.id()}")
+            }
+            ui.MenuItem("Rename", icon: .pencil) {
+                on choose: rename_feed(feed)
+            }
+            ui.MenuItem("Move to folder", icon: .folder) {
+                on choose: move_feed(feed)
+            }
+            ui.MenuItem("Unsubscribe", icon: .trash_2) {
+                on choose: unsubscribe(lib, feed)
+            }
+        }
     }
 }
 

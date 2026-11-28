@@ -85,6 +85,27 @@
       ]
     },
     {
+      "id": "search",
+      "said": "Find a folder of subscriptions through the system's search",
+      "ops": [
+        {
+          "use": {
+            "kind": "Library",
+            "action": "new-folder",
+            "args": {
+              "name": "Reading"
+            }
+          }
+        },
+        {
+          "search": "Reading"
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    },
+    {
       "id": "all",
       "said": "Back to every article, and the subscription listed under Feeds",
       "ops": [

@@ -41,10 +41,6 @@ d-2wtntp4k = Zertifikat
 d-py34q4xk = Störung
     .doc = Warum die letzte Aktualisierung fehlschlug, in Worten; leer, solange er gut steht.
 
-d-56bq23fl-filter-folder = Ordner
-
-d-56bq23fl-filter-format = Format
-
 d-a3monasj = Artikel
     .doc = Ein Artikel, den eine Aktualisierung brachte: was der Feed über ihn sagt, und was seine Leser entschieden haben.
     .noun = { $count ->
@@ -543,8 +539,14 @@ d-xudd2qzl = Orte
     .w-feeds = Feeds
     .w-folder = Ordner: { $id }
     .w-tags = Schlagwörter
+    .w-rename = Umbenennen
+    .w-delete-folder = Ordner löschen
 
 d-5ohvr24p = Feed-Ort
+    .w-mark-all-as-read = Alle als gelesen markieren
+    .w-rename = Umbenennen
+    .w-move-to-folder = In einen Ordner verschieben
+    .w-unsubscribe = Abo beenden
 
 d-k2jb46f2 = Aktualisierungsleiste
     .w-refreshing-of-feeds = Aktualisiere { $done } von { $total } Feeds
