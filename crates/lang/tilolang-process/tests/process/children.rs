@@ -859,30 +859,38 @@ tilo_test_env::scenario! {
 
     phase pressed_the_answer_in_the_palette_runs_its_send_without_asking;
     {
-        // Ada picked `answer` in the system's palette with a press the dispatch attested: the
-        // call is her act, so the send its own code makes runs without asking her again.
+        // Ada picked `answer` in the system's palette with a press the dispatch attested. Its
+        // send asks first, and a press is no yes: the run hands the call it was given back to
+        // the dispatch, on behalf of her pick, saying it asks nothing itself, and the dispatch
+        // decides whether she is asked. Once she says yes, the send runs on it, asked no more.
         let (mut host, mut window, sent, inbox, answer) = answers();
-        deliver(
-            &inbox,
-            8,
-            InvocationId::new(),
-            answer,
-            (
-                &serde_json::json!({ "to": "bo@example.org", "body": "Noon works" }),
-                Behind::Pressed,
-            ),
-        );
+        let picked = InvocationId::new();
+        let arguments = serde_json::json!({ "to": "bo@example.org", "body": "Noon works" });
+        deliver(&inbox, 8, picked, answer.clone(), (&arguments, Behind::Pressed));
+        settle(&mut host, &mut window);
+        let child = child_sent(&sent).expect("the call went through the dispatch");
+        assert!(child.on_behalf_of == Some(picked) && !child.asks, "{child:?}");
+        assert_eq!(child.target.address.action, answer.1, "{child:?}");
+        deliver(&inbox, 9, child.invocation, answer, (&arguments, Behind::Approved));
         settle(&mut host, &mut window);
         assert!(
-            child_sent(&sent).is_none(),
-            "nobody is asked about the send her pick made"
+            matches!(answered(&sent, 9), Some(InvocationUpdate::Succeeded { .. })),
+            "her yes runs the answer and its send: {:?}",
+            answered(&sent, 9)
         );
+        assert_eq!(
+            child_sent(&sent).map(|again| again.invocation),
+            Some(child.invocation),
+            "nobody is asked about the send"
+        );
+        assert_eq!(drafts(host.instances().next().unwrap()), [true], "the draft went");
+        receipt(&inbox, child.invocation, completed(serde_json::Value::Null));
+        settle(&mut host, &mut window);
         assert!(
             matches!(answered(&sent, 8), Some(InvocationUpdate::Succeeded { .. })),
             "the picked answer runs to its end: {:?}",
             answered(&sent, 8)
         );
-        assert_eq!(drafts(host.instances().next().unwrap()), [true], "the draft went");
     }
 
     phase declined_the_answer_ends_and_its_draft_is_taken_back;
