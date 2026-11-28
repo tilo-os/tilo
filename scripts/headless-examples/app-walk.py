@@ -1208,8 +1208,12 @@ def machine_during(samples: list[dict], at: float) -> dict:
 def session_env(state: Path) -> dict:
     """What a walk's session is told about the stand-ins beside it: where the
     wireless display broker listens, so the display sheet finds the walk's
-    stand-in rather than a service this machine does not run."""
+    stand-in rather than a service this machine does not run; and where the
+    person's app secrets are kept, so an app's engine that holds a key (the App
+    Publisher's, a mail account's) reaches the walk's file-backed store instead
+    of asking a keyring no walk runs."""
     return {"TILO_PROJECTOR_RUNTIME_DIR": str(state / "projector"),
+            "TILO_SECRETS_DIR": str(state / "secrets"),
             # Each open's timings, which the walk holds to the open bar (`Walk.opens`).
             "RUST_LOG": f"{os.environ.get('RUST_LOG') or 'warn'},tilo::launch_latency=info"}
 
